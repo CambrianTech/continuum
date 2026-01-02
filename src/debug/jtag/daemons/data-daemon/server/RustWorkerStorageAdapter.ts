@@ -33,7 +33,7 @@ import {
   type VectorEmbedding,
   toNumberArray
 } from '../shared/VectorSearchTypes';
-import { EmbeddingService } from '../../../system/core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../system/core/services/RustEmbeddingClient';
 import { Logger } from '../../../system/core/logging/Logger';
 
 const log = Logger.create('RustWorkerStorageAdapter', 'data');
@@ -130,7 +130,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     this.config = {
       socketPath: options.socketPath,
       dbPath: options.dbPath,
-      timeout: options.timeout || 30000
+      timeout: options.timeout || 60000  // 60s - needed for large vector searches (3K+ vectors)
     };
 
     await this.connect();
@@ -689,15 +689,22 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       if (options.queryVector) {
         queryVector = options.queryVector;
       } else if (options.queryText) {
-        // Generate embedding via EmbeddingService
-        const embedding = await EmbeddingService.embedText(options.queryText);
-        if (!embedding) {
+        // Generate embedding directly via Rust worker (fast, ~5ms)
+        const client = RustEmbeddingClient.instance;
+        if (!await client.isAvailable()) {
           return {
             success: false,
-            error: 'Failed to generate query embedding'
+            error: 'Rust embedding worker not available'
           };
         }
-        queryVector = embedding;
+        try {
+          queryVector = await client.embed(options.queryText);
+        } catch (error: any) {
+          return {
+            success: false,
+            error: `Failed to generate query embedding: ${error.message}`
+          };
+        }
       } else {
         return {
           success: false,

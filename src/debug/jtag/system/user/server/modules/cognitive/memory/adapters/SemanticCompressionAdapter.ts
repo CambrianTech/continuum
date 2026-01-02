@@ -19,7 +19,7 @@ import { MemoryType } from '../../../MemoryTypes';
 import { generateUUID } from '../../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../../data/domains/CoreTypes';
 import type { PersonaUser } from '../../../../PersonaUser';
-import { EmbeddingService } from '../../../../../../core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../../../../core/services/RustEmbeddingClient';
 import { BackpressureService } from '../../../../../../core/services/BackpressureService';
 
 /**
@@ -108,22 +108,24 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
       }
 
       try {
-        // Create IEmbeddable wrapper for the memory
-        const embeddableMemory = {
-          ...memory,
-          getEmbeddableContent: () => memory.content
-        };
+        // Generate embedding directly via Rust worker (fast, ~5ms)
+        const client = RustEmbeddingClient.instance;
+        if (!await client.isAvailable()) {
+          this.log(`[Embedding] Rust worker not available, skipping memory ${memory.id}`);
+          embeddingsSkipped++;
+          continue;
+        }
 
-        // Generate embedding via EmbeddingService
-        await EmbeddingService.embedIfNeeded(embeddableMemory, {
-          log: (msg: string) => this.log(`[Embedding] ${msg}`)
-        });
+        const content = memory.content;
+        if (!content || !content.trim()) {
+          continue;
+        }
 
-        // Copy embedding data back to memory
-        if (embeddableMemory.embedding) {
-          memory.embedding = embeddableMemory.embedding;
-          memory.embeddedAt = embeddableMemory.embeddedAt;
-          memory.embeddingModel = embeddableMemory.embeddingModel;
+        const embedding = await client.embed(content);
+        if (embedding) {
+          memory.embedding = embedding;
+          memory.embeddedAt = new Date().toISOString() as ISOString;
+          memory.embeddingModel = 'fastembed-onnx';
           embeddingsGenerated++;
         }
       } catch (error) {

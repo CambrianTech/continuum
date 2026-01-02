@@ -12,7 +12,7 @@ import type { InboxTask } from './PersonaInbox';
 import type { TaskEntity, TaskStatus } from '../../../data/entities/TaskEntity';
 import type { PersonaStateManager } from './PersonaState';
 import type { PersonaMemory } from './cognitive/memory/PersonaMemory';
-import { EmbeddingService } from '../../../core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../core/services/RustEmbeddingClient';
 import { MemoryEntity, MemoryType } from '../../../data/entities/MemoryEntity';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import { getFineTuningAdapter, supportsFineTuning } from '../../../genome/fine-tuning/server/FineTuningAdapterFactory';
@@ -170,11 +170,16 @@ export class PersonaTaskExecutor {
       const text = msg.content?.text || '';
       if (!text.trim()) continue;
 
-      // Generate embedding for semantic search
+      // Generate embedding for semantic search via Rust worker (fast, ~5ms)
       let embedding: number[] | null = null;
       try {
-        embedding = await EmbeddingService.embedText(text);
-        if (embedding) embeddingsGenerated++;
+        const client = RustEmbeddingClient.instance;
+        if (await client.isAvailable()) {
+          embedding = await client.embed(text);
+          if (embedding) embeddingsGenerated++;
+        } else {
+          this.log(`⚠️ ${this.displayName}: Rust embedding worker not available`);
+        }
       } catch (error) {
         this.log(`⚠️ ${this.displayName}: Embedding generation failed for message: ${error}`);
       }
