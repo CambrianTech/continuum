@@ -421,6 +421,12 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
           entityData = this.toCamelCaseObject(rest) as T;
         }
 
+        // Ensure id is always present in entityData
+        // Some callers access data.id directly instead of the wrapper
+        if (!(entityData as any).id) {
+          (entityData as any).id = item.id;
+        }
+
         return {
           id: item.id,
           collection: query.collection,
