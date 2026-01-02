@@ -12,6 +12,7 @@ use std::collections::HashMap;
 
 pub mod bow;
 pub mod bm25;
+pub mod cosine;
 
 // ============================================================================
 // Core Types
@@ -85,6 +86,7 @@ impl AlgorithmRegistry {
         // Register factories
         registry.register("bow", bow::BowAlgorithm::create);
         registry.register("bm25", bm25::Bm25Algorithm::create);
+        registry.register("cosine", cosine::CosineAlgorithm::create);
 
         registry
     }

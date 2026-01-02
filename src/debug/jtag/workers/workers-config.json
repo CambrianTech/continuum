@@ -34,7 +34,7 @@
       "binary": "workers/search/target/release/search-worker",
       "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
-      "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
+      "description": "Search algorithms (BoW, BM25, Cosine vector similarity) off main thread via Unix socket",
       "enabled": true
     }
   ],
