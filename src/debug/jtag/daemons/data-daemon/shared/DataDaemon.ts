@@ -153,10 +153,22 @@ export class DataDaemon {
     return DataDaemon.sharedInstance.adapter;
   }
 
-  constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter) {
+  /**
+   * Create DataDaemon instance
+   *
+   * @param config - Storage strategy configuration
+   * @param adapter - Storage adapter instance
+   * @param adapterAlreadyInitialized - If true, skip calling adapter.initialize()
+   *        Use this when creating temporary DataDaemon instances with adapters
+   *        that are already initialized (e.g., from DatabaseHandleRegistry)
+   */
+  constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter, adapterAlreadyInitialized: boolean = false) {
     this.config = config;
     this.adapter = adapter;
     this.paginatedQueryManager = new PaginatedQueryManager();
+    // If adapter is already initialized, mark ourselves as initialized too
+    // This prevents re-calling adapter.initialize() with incomplete config
+    this.isInitialized = adapterAlreadyInitialized;
   }
   
   /**
