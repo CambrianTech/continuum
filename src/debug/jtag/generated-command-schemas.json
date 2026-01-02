@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-02T05:14:19.455Z",
+  "generated": "2026-01-02T05:48:53.028Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2788,6 +2788,32 @@
           "type": "boolean",
           "required": false,
           "description": "quiet parameter"
+        }
+      }
+    },
+    {
+      "name": "development/benchmark-vectors",
+      "description": "BenchmarkVectorsTypes - Types for vector operation benchmarking\n *\n * Measures performance of:\n * - Cosine similarity (single pair)\n * - Batch similarity (one-to-many)\n * - Full vector search (all-to-all ranking)",
+      "params": {
+        "vectorCount": {
+          "type": "number",
+          "required": false,
+          "description": "vectorCount parameter"
+        },
+        "dimensions": {
+          "type": "number",
+          "required": false,
+          "description": "dimensions parameter"
+        },
+        "iterations": {
+          "type": "number",
+          "required": false,
+          "description": "iterations parameter"
+        },
+        "benchmark": {
+          "type": "string",
+          "required": false,
+          "description": "benchmark parameter"
         }
       }
     },

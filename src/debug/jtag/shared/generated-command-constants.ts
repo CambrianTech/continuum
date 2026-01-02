@@ -91,6 +91,7 @@ export const COMMANDS = {
   DATA_SCHEMA: 'data/schema',
   DATA_TRUNCATE: 'data/truncate',
   DATA_VECTOR_SEARCH: 'data/vector-search',
+  DEVELOPMENT_BENCHMARK_VECTORS: 'development/benchmark-vectors',
   DEVELOPMENT_BUILD: 'development/build',
   DEVELOPMENT_CODE_PATTERN_SEARCH: 'development/code/pattern-search',
   DEVELOPMENT_CODE_READ: 'development/code/read',

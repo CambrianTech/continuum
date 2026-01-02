@@ -27,11 +27,12 @@ import {
 } from '../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../shared/SqlNamingConverter';
 import { SearchWorkerClient } from '../../../workers/search/SearchWorkerClient';
-import type {
-  VectorSearchOptions,
-  VectorSearchResponse,
-  VectorSearchResult,
-  VectorEmbedding
+import {
+  type VectorSearchOptions,
+  type VectorSearchResponse,
+  type VectorSearchResult,
+  type VectorEmbedding,
+  toNumberArray
 } from '../shared/VectorSearchTypes';
 import { EmbeddingService } from '../../../system/core/services/EmbeddingService';
 import { Logger } from '../../../system/core/logging/Logger';
@@ -753,15 +754,17 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       }
 
       // 3. Extract corpus vectors and send to Rust search worker
+      // Convert to number[][] for JSON serialization to Rust worker
       const corpusVectors: number[][] = itemsWithEmbeddings.map((item: any) => {
         const rawEmbedding = item.embedding || item.data?.embedding;
-        return typeof rawEmbedding === 'string' ? JSON.parse(rawEmbedding) : rawEmbedding;
+        const parsed = typeof rawEmbedding === 'string' ? JSON.parse(rawEmbedding) : rawEmbedding;
+        return toNumberArray(parsed);  // Ensure number[] for JSON
       });
       log.debug(`Vector search: sending ${corpusVectors.length} vectors (${corpusVectors[0]?.length} dims) to Rust worker`);
 
       const searchClient = SearchWorkerClient.getInstance();
       const searchResult = await searchClient.vectorSearch({
-        queryVector,
+        queryVector: toNumberArray(queryVector),  // Convert VectorEmbedding to number[]
         corpusVectors,
         normalize: true,
         threshold: options.similarityThreshold || 0.0
