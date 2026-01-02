@@ -176,45 +176,62 @@ export class ToolRegistry {
   /**
    * Search tools by keyword (matches name and description)
    * Same algorithm as MCP search_tools for consistency
+   *
+   * IMPORTANT: If category filter yields 0 results, falls back to searching ALL tools.
    */
   searchTools(query: string, category?: string, limit: number = 10): Array<{ name: string; description: string; category: string }> {
     const queryLower = query.toLowerCase();
-    const results: Array<{ name: string; description: string; category: string; score: number }> = [];
 
-    for (const tool of this.tools.values()) {
-      const nameLower = tool.name.toLowerCase();
-      const descLower = (tool.description || '').toLowerCase();
+    // Helper to search a set of tools
+    const searchToolSet = (toolSet: Iterable<ToolDefinition>): Array<{ name: string; description: string; category: string; score: number }> => {
+      const results: Array<{ name: string; description: string; category: string; score: number }> = [];
 
-      // Category filter
-      if (category) {
-        const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
-        if (!nameLower.startsWith(categoryPrefix) && nameLower !== category) {
-          continue;
+      for (const tool of toolSet) {
+        const nameLower = tool.name.toLowerCase();
+        const descLower = (tool.description || '').toLowerCase();
+
+        // Score matches
+        let score = 0;
+        if (nameLower.includes(queryLower)) score += 10;
+        if (nameLower.startsWith(queryLower)) score += 5;
+        if (descLower.includes(queryLower)) score += 3;
+
+        // Exact segment match (e.g., "css" matches "widget-css")
+        const segments = nameLower.split(/[\/\-_]/);
+        if (segments.includes(queryLower)) score += 8;
+
+        if (score > 0) {
+          const toolCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
+          results.push({
+            name: tool.name,
+            description: tool.description || tool.name,
+            category: toolCategory,
+            score,
+          });
         }
       }
 
-      // Score matches
-      let score = 0;
-      if (nameLower.includes(queryLower)) score += 10;
-      if (nameLower.startsWith(queryLower)) score += 5;
-      if (descLower.includes(queryLower)) score += 3;
+      return results;
+    };
 
-      // Exact segment match (e.g., "css" matches "widget-css")
-      const segments = nameLower.split(/[\/\-_]/);
-      if (segments.includes(queryLower)) score += 8;
+    // First, try with category filter if provided
+    if (category) {
+      const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+      const filteredTools = Array.from(this.tools.values()).filter(t => {
+        const nameLower = t.name.toLowerCase();
+        return nameLower.startsWith(categoryPrefix) || nameLower === category;
+      });
 
-      if (score > 0) {
-        const toolCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
-        results.push({
-          name: tool.name,
-          description: tool.description || tool.name,
-          category: toolCategory,
-          score,
-        });
+      const categoryResults = searchToolSet(filteredTools);
+      if (categoryResults.length > 0) {
+        categoryResults.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+        return categoryResults.slice(0, limit).map(({ name, description, category }) => ({ name, description, category }));
       }
+      // Fall through to search ALL tools if category had no results
     }
 
-    // Sort by score descending, then name
+    // Search all tools
+    const results = searchToolSet(this.tools.values());
     results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
     return results.slice(0, limit).map(({ name, description, category }) => ({ name, description, category }));
   }
@@ -222,6 +239,9 @@ export class ToolRegistry {
   /**
    * BM25 search for tools (better than keyword, runs on Rust worker off main thread)
    * Returns tools ranked by BM25 score with TF-IDF weighting
+   *
+   * IMPORTANT: If category filter yields 0 results, falls back to searching ALL tools.
+   * This ensures users can find tools like "ai/rag/inspect" even if they guess wrong category.
    */
   async bm25SearchTools(
     query: string,
@@ -237,43 +257,54 @@ export class ToolRegistry {
     }
 
     // Build corpus from tools
-    const tools = this.getAllTools();
-    let filteredTools = tools;
+    const allTools = this.getAllTools();
 
-    // Apply category filter before search
-    if (category) {
-      const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
-      filteredTools = tools.filter(t => {
-        const nameLower = t.name.toLowerCase();
-        return nameLower.startsWith(categoryPrefix) || nameLower === category;
-      });
-    }
+    // Helper to run BM25 search on a tool set
+    const runSearch = async (toolSet: ToolDefinition[]): Promise<Array<{ name: string; description: string; category: string; score: number }>> => {
+      if (toolSet.length === 0) return [];
 
-    if (filteredTools.length === 0) {
-      return [];
-    }
-
-    // Create corpus: "name: description" for each tool
-    const corpus = filteredTools.map(t => `${t.name}: ${t.description}`);
-
-    try {
-      // BM25 search via Rust worker (off main thread!)
+      const corpus = toolSet.map(t => `${t.name}: ${t.description}`);
       const results = await client.bm25(query, corpus);
 
-      // Map results back to tool definitions
       return results
-        .filter(r => r.score > 0.01) // Filter out zero/near-zero scores
+        .filter(r => r.score > 0.01)
         .slice(0, limit)
         .map(r => {
-          const tool = filteredTools[r.index];
+          const tool = toolSet[r.index];
           const toolCategory = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
           return {
             name: tool.name,
             description: tool.description,
             category: toolCategory,
-            score: Math.round(r.score * 1000) / 1000, // Round to 3 decimals
+            score: Math.round(r.score * 1000) / 1000,
           };
         });
+    };
+
+    try {
+      // First, try with category filter if provided
+      if (category) {
+        const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+        const filteredTools = allTools.filter(t => {
+          const nameLower = t.name.toLowerCase();
+          return nameLower.startsWith(categoryPrefix) || nameLower === category;
+        });
+
+        const categoryResults = await runSearch(filteredTools);
+
+        // If category search found results, return them
+        if (categoryResults.length > 0) {
+          return categoryResults;
+        }
+
+        // Category filter yielded 0 results - fall back to searching ALL tools
+        // This is the key fix: user searched for "inspect" in "development" category,
+        // but it's actually in "ai/rag/inspect" - we should still find it!
+        console.log(`⚠️ ToolRegistry: No results in category "${category}", searching all tools...`);
+      }
+
+      // Search all tools (either no category provided, or category had 0 results)
+      return await runSearch(allTools);
     } catch (error) {
       console.error('❌ ToolRegistry: BM25 search failed:', error);
       // Fallback to keyword search

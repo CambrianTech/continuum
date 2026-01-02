@@ -495,48 +495,69 @@ function getToolHelp(toolName: string): {
 
 /**
  * Search tools by keyword
+ *
+ * IMPORTANT: If category filter yields 0 results, falls back to searching ALL tools.
+ * This ensures users can find tools like "ai/rag/inspect" even if they guess wrong category.
  */
 function searchTools(query: string, category?: string, limit: number = 10): Array<{ name: string; description: string; category: string }> {
   const queryLower = query.toLowerCase();
-  const results: Array<{ name: string; description: string; category: string; score: number }> = [];
 
-  for (const command of schemas.commands) {
-    const nameLower = command.name.toLowerCase();
-    const descLower = (command.description || '').toLowerCase();
+  // Helper to search a set of commands
+  const searchCommandSet = (commands: any[]): Array<{ name: string; description: string; category: string; score: number }> => {
+    const results: Array<{ name: string; description: string; category: string; score: number }> = [];
 
-    // Category filter
-    if (category) {
-      const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
-      if (!nameLower.startsWith(categoryPrefix) && nameLower !== category) {
-        continue;
+    for (const command of commands) {
+      const nameLower = command.name.toLowerCase();
+      const descLower = (command.description || '').toLowerCase();
+
+      // Score matches
+      let score = 0;
+      if (nameLower.includes(queryLower)) score += 10;
+      if (nameLower.startsWith(queryLower)) score += 5;
+      if (descLower.includes(queryLower)) score += 3;
+
+      // Exact segment match (e.g., "css" matches "widget-css" but scores higher than "discussion")
+      const segments = nameLower.split(/[\/\-_]/);
+      if (segments.includes(queryLower)) score += 8;
+
+      if (score > 0) {
+        // Determine category from name
+        const cmdCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
+        results.push({
+          name: command.name,
+          description: command.description || command.name,
+          category: cmdCategory,
+          score,
+        });
       }
     }
 
-    // Score matches
-    let score = 0;
-    if (nameLower.includes(queryLower)) score += 10;
-    if (nameLower.startsWith(queryLower)) score += 5;
-    if (descLower.includes(queryLower)) score += 3;
+    return results;
+  };
 
-    // Exact segment match (e.g., "css" matches "widget-css" but scores higher than "discussion")
-    const segments = nameLower.split(/[\/\-_]/);
-    if (segments.includes(queryLower)) score += 8;
+  // First, try with category filter if provided
+  if (category) {
+    const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+    const filteredCommands = schemas.commands.filter((c: any) => {
+      const nameLower = c.name.toLowerCase();
+      return nameLower.startsWith(categoryPrefix) || nameLower === category;
+    });
 
-    if (score > 0) {
-      // Determine category from name
-      const cmdCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
-      results.push({
-        name: command.name,
-        description: command.description || command.name,
-        category: cmdCategory,
-        score,
-      });
+    const categoryResults = searchCommandSet(filteredCommands);
+    if (categoryResults.length > 0) {
+      categoryResults.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+      return categoryResults.slice(0, limit).map(({ name, description, category }) => ({
+        name,
+        description,
+        category,
+      }));
     }
+    // Fall through to search ALL tools if category had no results
   }
 
-  // Sort by score descending, then name
+  // Search all commands
+  const results = searchCommandSet(schemas.commands);
   results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-
   return results.slice(0, limit).map(({ name, description, category }) => ({
     name,
     description,
