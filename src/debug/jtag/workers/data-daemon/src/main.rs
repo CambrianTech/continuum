@@ -115,6 +115,7 @@ enum Request {
 
     /// Vector similarity search - reads vectors from SQLite, computes cosine similarity
     /// Query vector comes from TypeScript (small: 384 floats), corpus stays in Rust
+    /// Returns full records with scores (not just IDs) to avoid k IPC round trips
     #[serde(rename = "vector/search")]
     VectorSearch {
         handle: AdapterHandle,
@@ -122,6 +123,8 @@ enum Request {
         query_vector: Vec<f64>,
         k: Option<usize>,
         threshold: Option<f64>,
+        /// If true, return full record data (not just IDs) - eliminates k IPC round trips
+        include_data: Option<bool>,
     },
 }
 
@@ -157,13 +160,14 @@ trait ConcurrencyStrategy: Send + Sync {
     fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String>;
 
     /// Vector similarity search - reads vectors from storage, computes cosine similarity
-    /// Returns top-k results with record IDs and scores
+    /// Returns top-k results with record IDs/scores, optionally with full record data
     fn vector_search(
         &self,
         collection: &str,
         query_vector: &[f64],
         k: usize,
         threshold: f64,
+        include_data: bool,
     ) -> Result<Value, String>;
 
     /// Close adapter and cleanup resources
@@ -531,12 +535,14 @@ impl ConcurrencyStrategy for SqliteStrategy {
 
     /// Vector search: read embeddings from SQLite, compute cosine similarity with rayon
     /// Vectors stay in Rust - only query vector comes over IPC (small: 3KB for 384 dims)
+    /// When include_data=true, returns full record data with scores (eliminates k IPC round trips)
     fn vector_search(
         &self,
         collection: &str,
         query_vector: &[f64],
         k: usize,
         threshold: f64,
+        include_data: bool,
     ) -> Result<Value, String> {
         let conn = self.connection.lock().unwrap();
 
@@ -555,21 +561,27 @@ impl ConcurrencyStrategy for SqliteStrategy {
 
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
-            let blob: Vec<u8> = row.get(1)?;
-            Ok((id, blob))
+            // Try BLOB first, then TEXT (JSON array)
+            let embedding: Vec<f64> = if let Ok(blob) = row.get::<_, Vec<u8>>(1) {
+                blob_to_f64_vec(&blob)
+            } else if let Ok(text) = row.get::<_, String>(1) {
+                // Parse JSON array: "[0.1, 0.2, ...]"
+                serde_json::from_str(&text).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            Ok((id, embedding))
         }).map_err(|e| format!("Vector query failed: {}", e))?;
 
         for row in rows {
-            let (id, blob) = row.map_err(|e| format!("Row error: {}", e))?;
-            let embedding = blob_to_f64_vec(&blob);
+            let (id, embedding) = row.map_err(|e| format!("Row error: {}", e))?;
             if !embedding.is_empty() {
                 corpus.push((id, embedding));
             }
         }
 
-        // Release connection lock before parallel computation
+        // Release statement before parallel computation
         drop(stmt);
-        drop(conn);
 
         if corpus.is_empty() {
             return Ok(json!({
@@ -597,23 +609,100 @@ impl ConcurrencyStrategy for SqliteStrategy {
         // Sort by score descending
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Take top-k
-        let results: Vec<Value> = scored
+        // Take top-k IDs
+        let top_k: Vec<(String, f64)> = scored.into_iter().take(k).collect();
+        let count = top_k.len();
+
+        if !include_data || top_k.is_empty() {
+            // Fast path: just return IDs and scores
+            let results: Vec<Value> = top_k
+                .into_iter()
+                .map(|(id, score)| {
+                    json!({
+                        "id": id,
+                        "score": score,
+                        "distance": 1.0 - score
+                    })
+                })
+                .collect();
+
+            return Ok(json!({
+                "results": results,
+                "count": count,
+                "corpus_size": corpus_size
+            }));
+        }
+
+        // Optimized path: fetch full records for top-k IDs in a single query
+        // Build IN clause with top-k IDs
+        let id_list: Vec<String> = top_k.iter().map(|(id, _)| format!("'{}'", id.replace("'", "''"))).collect();
+        let full_query = format!(
+            "SELECT * FROM {} WHERE id IN ({})",
+            collection,
+            id_list.join(", ")
+        );
+
+        let mut full_stmt = conn.prepare(&full_query)
+            .map_err(|e| format!("Failed to prepare full record query: {}", e))?;
+
+        // Get column names
+        let column_count = full_stmt.column_count();
+        let column_names: Vec<String> = (0..column_count)
+            .map(|i| full_stmt.column_name(i).unwrap_or("unknown").to_string())
+            .collect();
+
+        // Fetch all records into a map by ID
+        let mut records_by_id: HashMap<String, Value> = HashMap::new();
+
+        let record_rows = full_stmt.query_map([], |row| {
+            let mut row_data = serde_json::Map::new();
+            for (i, column_name) in column_names.iter().enumerate() {
+                // Skip embedding column entirely (large, not needed in results)
+                if column_name == "embedding" {
+                    continue;
+                }
+                // Try to get as different types
+                if let Ok(v) = row.get::<_, String>(i) {
+                    row_data.insert(column_name.clone(), json!(v));
+                } else if let Ok(v) = row.get::<_, i64>(i) {
+                    row_data.insert(column_name.clone(), json!(v));
+                } else if let Ok(v) = row.get::<_, f64>(i) {
+                    row_data.insert(column_name.clone(), json!(v));
+                } else if let Ok(v) = row.get::<_, Vec<u8>>(i) {
+                    row_data.insert(column_name.clone(), json!(format!("[BLOB {} bytes]", v.len())));
+                } else {
+                    row_data.insert(column_name.clone(), Value::Null);
+                }
+            }
+            Ok(Value::Object(row_data))
+        }).map_err(|e| format!("Full record query failed: {}", e))?;
+
+        for row_result in record_rows {
+            let row = row_result.map_err(|e| format!("Row error: {}", e))?;
+            if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                records_by_id.insert(id.to_string(), row);
+            }
+        }
+
+        // Build results in score order, merging data with scores
+        let results: Vec<Value> = top_k
             .into_iter()
-            .take(k)
-            .map(|(id, score)| {
-                json!({
-                    "id": id,
-                    "score": score,
-                    "distance": 1.0 - score
+            .filter_map(|(id, score)| {
+                records_by_id.get(&id).map(|data| {
+                    json!({
+                        "id": id,
+                        "score": score,
+                        "distance": 1.0 - score,
+                        "data": data
+                    })
                 })
             })
             .collect();
 
-        let count = results.len();
+        let final_count = results.len();
         Ok(json!({
             "results": results,
-            "count": count,
+            "count": final_count,
             "corpus_size": corpus_size
         }))
     }
@@ -666,6 +755,7 @@ impl ConcurrencyStrategy for PostgresStrategy {
         _query_vector: &[f64],
         _k: usize,
         _threshold: f64,
+        _include_data: bool,
     ) -> Result<Value, String> {
         Err("Postgres vector search not yet implemented".to_string())
     }
@@ -736,6 +826,7 @@ impl ConcurrencyStrategy for JsonStrategy {
         _query_vector: &[f64],
         _k: usize,
         _threshold: f64,
+        _include_data: bool,
     ) -> Result<Value, String> {
         Err("JSON vector search not yet implemented".to_string())
     }
@@ -794,11 +885,12 @@ impl AdapterRegistry {
         query_vector: &[f64],
         k: usize,
         threshold: f64,
+        include_data: bool,
     ) -> Result<Value, String> {
         let adapters = self.adapters.lock().unwrap();
         let (_, strategy) = adapters.get(&handle)
             .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
-        strategy.vector_search(collection, query_vector, k, threshold)
+        strategy.vector_search(collection, query_vector, k, threshold, include_data)
     }
 
     fn close(&self, handle: AdapterHandle) -> Result<(), String> {
@@ -879,8 +971,8 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::VectorSearch { handle, collection, query_vector, k, threshold } => {
-                match self.vector_search(handle, &collection, &query_vector, k, threshold) {
+            Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
+                match self.vector_search(handle, &collection, &query_vector, k, threshold, include_data) {
                     Ok(data) => Response::Ok { data },
                     Err(e) => Response::Error { message: e },
                 }
@@ -1000,13 +1092,13 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::VectorSearch { handle, collection, query_vector, k, threshold } => {
+            Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
                 timer.set_adapter_handle(&format!("{:?}", handle));
                 timer.set_collection(&collection);
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
                 let execute_start = Instant::now();
-                let result = self.vector_search(handle, &collection, &query_vector, k, threshold);
+                let result = self.vector_search(handle, &collection, &query_vector, k, threshold, include_data);
                 timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
 
                 match result {
@@ -1197,6 +1289,7 @@ impl RustDataDaemon {
 
     /// Vector similarity search - delegates to adapter strategy
     /// Query vector comes over IPC (small: 3KB for 384 dims), corpus stays in Rust
+    /// When include_data=true, returns full record data with scores (eliminates k IPC round trips)
     fn vector_search(
         &self,
         handle: AdapterHandle,
@@ -1204,16 +1297,18 @@ impl RustDataDaemon {
         query_vector: &[f64],
         k: Option<usize>,
         threshold: Option<f64>,
+        include_data: Option<bool>,
     ) -> Result<Value, String> {
         let k = k.unwrap_or(10);
         let threshold = threshold.unwrap_or(0.0);
+        let include_data = include_data.unwrap_or(true); // Default to include_data for optimization
 
         println!(
-            "🔍 VectorSearch: collection={}, k={}, threshold={:.3}, query_dim={}",
-            collection, k, threshold, query_vector.len()
+            "🔍 VectorSearch: collection={}, k={}, threshold={:.3}, query_dim={}, include_data={}",
+            collection, k, threshold, query_vector.len(), include_data
         );
 
-        self.registry.vector_search(handle, collection, query_vector, k, threshold)
+        self.registry.vector_search(handle, collection, query_vector, k, threshold, include_data)
     }
 
     // ========================================================================
