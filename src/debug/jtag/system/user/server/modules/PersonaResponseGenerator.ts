@@ -74,6 +74,7 @@ export interface PersonaResponseGeneratorConfig {
   mediaConfig: PersonaMediaConfig;
   getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
   logger: import('./PersonaLogger').PersonaLogger;  // For persona-specific logging
+  genome?: import('./PersonaGenome').PersonaGenome;  // For accessing trained LoRA adapters
 }
 
 /**
@@ -90,6 +91,7 @@ export class PersonaResponseGenerator {
   private mediaConfig: PersonaMediaConfig;
   private getSessionId: () => UUID | null;
   private logger: import('./PersonaLogger').PersonaLogger;
+  private genome?: import('./PersonaGenome').PersonaGenome;
 
   /** Content deduplicator - prevents same content from being posted within time window */
   private contentDeduplicator: ContentDeduplicator;
@@ -282,10 +284,97 @@ export class PersonaResponseGenerator {
     this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
+    this.genome = config.genome;
 
     // Initialize modular helpers
     this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
     this.responseCleaner = new ResponseCleaner({ log: this.log.bind(this) });
+  }
+
+  /**
+   * Get effective model for inference
+   *
+   * Priority:
+   * 1. Trait-specific trained adapter (if context provides task domain)
+   * 2. Current active adapter (most recently used)
+   * 3. Any available trained adapter
+   * 4. Base model configured for this persona
+   *
+   * @param context - Optional context for trait-aware selection
+   * @returns The model name to use for inference
+   */
+  private getEffectiveModel(context?: { taskDomain?: string }): string {
+    if (this.genome) {
+      // 1. Try trait-specific adapter based on task context
+      if (context?.taskDomain) {
+        const relevantTrait = this.determineRelevantTrait(context);
+        const traitAdapter = this.genome.getAdapterByTrait(relevantTrait);
+        if (traitAdapter) {
+          const ollamaModel = traitAdapter.getOllamaModelName();
+          if (ollamaModel) {
+            this.log(`🧬 ${this.personaName}: Using trait-specific model: ${ollamaModel} (trait: ${relevantTrait})`);
+            return ollamaModel;
+          }
+        }
+      }
+
+      // 2. Fall back to current active adapter (most recently used)
+      const currentAdapter = this.genome.getCurrentAdapter();
+      if (currentAdapter) {
+        const ollamaModel = currentAdapter.getOllamaModelName();
+        if (ollamaModel) {
+          this.log(`🧬 ${this.personaName}: Using trained model: ${ollamaModel} (adapter: ${currentAdapter.getName()})`);
+          return ollamaModel;
+        }
+      }
+
+      // 3. Check for any available trained adapter
+      const allAdapters = this.genome.getAllAdapters();
+      for (const adapter of allAdapters) {
+        const ollamaModel = adapter.getOllamaModelName();
+        if (ollamaModel) {
+          this.log(`🧬 ${this.personaName}: Using available trained model: ${ollamaModel} (adapter: ${adapter.getName()})`);
+          return ollamaModel;
+        }
+      }
+    }
+
+    // 4. Fall back to configured base model
+    return this.modelConfig.model || 'llama3.2:3b';
+  }
+
+  /**
+   * Determine which trait adapter is most relevant for the current context
+   *
+   * Maps task domains to trait types:
+   * - code → reasoning_style
+   * - creative → creative_expression
+   * - support/help → social_dynamics
+   * - default → tone_and_voice
+   */
+  private determineRelevantTrait(context: { taskDomain?: string }): string {
+    const domain = context.taskDomain?.toLowerCase();
+
+    switch (domain) {
+      case 'code':
+      case 'debug':
+      case 'analysis':
+        return 'reasoning_style';
+      case 'creative':
+      case 'art':
+      case 'writing':
+        return 'creative_expression';
+      case 'support':
+      case 'help':
+      case 'social':
+        return 'social_dynamics';
+      case 'facts':
+      case 'knowledge':
+      case 'expertise':
+        return 'domain_expertise';
+      default:
+        return 'tone_and_voice';  // Default trait for general chat
+    }
   }
 
   /**
@@ -717,9 +806,10 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         provider: this.modelConfig.provider
       });
 
+      const effectiveModel = this.getEffectiveModel();
       const request: TextGenerationRequest = {
         messages,
-        model: this.modelConfig.model || 'llama3.2:3b',  // Use persona's configured model
+        model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
@@ -816,7 +906,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
               status: getStageStatus(generateDuration, 'generate'),
               metadata: {
-                model: this.modelConfig.model,
+                model: effectiveModel,  // Use the actual model used (may be trained LoRA adapter)
                 provider: this.modelConfig.provider,
                 tokensUsed: aiResponse.text.length
               }

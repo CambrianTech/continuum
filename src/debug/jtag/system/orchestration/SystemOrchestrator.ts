@@ -174,7 +174,8 @@ export class SystemOrchestrator extends EventEmitter {
       console.warn(`⚠️ Unknown entry point: ${entryPoint}, using default requirements`);
       return [SYSTEM_MILESTONES.SERVER_READY];
     }
-    return requirements;
+    // Spread to convert readonly array to mutable
+    return [...requirements];
   }
 
   /**
@@ -208,8 +209,8 @@ export class SystemOrchestrator extends EventEmitter {
       // First try the signaler for complete system readiness (increase timeout for CLI)
       const systemReady = await this.signaler.checkSystemReady(3000); // More generous timeout
       if (systemReady) {
-        const milestonesToComplete = [SYSTEM_MILESTONES.SERVER_START, SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.SYSTEM_HEALTHY];
-        
+        const milestonesToComplete: SystemMilestone[] = [SYSTEM_MILESTONES.SERVER_START, SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.SYSTEM_HEALTHY];
+
         // If browser is already ready according to signal, mark browser milestones as completed
         // but the browser launch execution will check if it actually needs to open a new tab
         if (systemReady.browserReady) {
@@ -821,17 +822,17 @@ export class SystemOrchestrator extends EventEmitter {
         failedMilestone: progress.current || missingMilestones[0],
         error: errorMessage,
         browserOpened: progress.completedMilestones.includes(SYSTEM_MILESTONES.BROWSER_READY),
-        serverProcess: this.serverProcess
+        serverProcess: this.serverProcess ?? undefined
       };
     }
-    
+
     return {
       success: true,
       completedMilestones: progress.completedMilestones,
       failedMilestone: undefined,
       error: undefined,
       browserOpened: progress.completedMilestones.includes(SYSTEM_MILESTONES.BROWSER_READY),
-      serverProcess: this.serverProcess
+      serverProcess: this.serverProcess ?? undefined
     };
   }
 

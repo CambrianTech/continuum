@@ -25,7 +25,7 @@ export interface DataSchemaParams extends CommandParams {
  */
 export interface SchemaField {
   fieldName: string;
-  fieldType: 'primary' | 'foreign_key' | 'date' | 'enum' | 'text' | 'json' | 'number' | 'boolean';
+  fieldType: 'primary' | 'foreign_key' | 'date' | 'enum' | 'text' | 'json' | 'blob' | 'number' | 'boolean';
   required: boolean; // Derived from !nullable
   nullable: boolean;
   index?: boolean;

@@ -38,6 +38,7 @@ import { generateUUID } from '../../core/types/CrossPlatformUUID';
 import { Logger, FileMode, type ComponentLogger } from '../../core/logging/Logger';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import { BlobStorage, storeIfLarge } from '../../storage/BlobStorage';
 
 /**
  * Parameters for logging a decision
@@ -150,6 +151,19 @@ export class CoordinationDecisionLogger {
         // companionSuggestion: undefined  // Future: Phase 5D meta-learning
       };
 
+      // Store large RAG contexts in blob storage to avoid bloating SQLite
+      // Threshold: 4KB - typical ragContext is 73KB average
+      let ragContext: RAGContext | undefined;
+      let ragContextRef: string | undefined;
+
+      const blobResult = await storeIfLarge(params.ragContext, 4096);
+      if (blobResult.isBlob) {
+        ragContextRef = blobResult.ref.hash;
+        this.logger.debug(`📦 Stored RAG context in blob storage: ${blobResult.ref.hash} (${blobResult.ref.size} → ${blobResult.ref.compressedSize} bytes, ${Math.round((1 - blobResult.ref.compressedSize / blobResult.ref.size) * 100)}% compression)`);
+      } else {
+        ragContext = blobResult.data;
+      }
+
       // Create the entity
       const entity = {
         id: generateUUID(),
@@ -165,8 +179,9 @@ export class CoordinationDecisionLogger {
         triggerEventId: params.triggerEventId,
         domain: 'chat' as const,
 
-        // Complete context
-        ragContext: params.ragContext,
+        // Complete context - either inline or blob reference
+        ragContext,
+        ragContextRef,
         visualContext: params.visualContext,
         coordinationSnapshot,
         ambientState,
@@ -239,5 +254,28 @@ export class CoordinationDecisionLogger {
       scrollPosition,
       activeTab
     };
+  }
+
+  /**
+   * Retrieve RAG context from a coordination decision
+   * Handles both inline storage and blob storage transparently
+   *
+   * @param decision - The coordination decision entity
+   * @returns The RAG context, or null if not found
+   */
+  static async retrieveRAGContext(
+    decision: { ragContext?: RAGContext; ragContextRef?: string }
+  ): Promise<RAGContext | null> {
+    // Inline storage - return directly
+    if (decision.ragContext) {
+      return decision.ragContext;
+    }
+
+    // Blob storage - retrieve from BlobStorage
+    if (decision.ragContextRef) {
+      return await BlobStorage.retrieve<RAGContext>(decision.ragContextRef);
+    }
+
+    return null;
   }
 }

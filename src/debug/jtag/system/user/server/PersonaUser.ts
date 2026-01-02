@@ -372,7 +372,8 @@ export class PersonaUser extends AIUser {
       mediaConfig: this.mediaConfig,
       getSessionId: () => this.sessionId,
       homeDirectory: this.homeDirectory,
-      logger: this.logger
+      logger: this.logger,
+      memory: this.memory  // For accessing trained LoRA adapters during inference
     });
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
@@ -384,7 +385,15 @@ export class PersonaUser extends AIUser {
     this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // Task execution module (delegated for modularity, uses this.memory getter)
-    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState, cognitionLogger);
+    // Pass provider so fine-tuning uses the correct adapter (Ollama, OpenAI, Together, etc.)
+    this.taskExecutor = new PersonaTaskExecutor(
+      this.id,
+      this.displayName,
+      this.memory,
+      this.personaState,
+      this.modelConfig.provider || 'ollama',
+      cognitionLogger
+    );
 
     // CNS: Central Nervous System orchestrator (capability-based)
     // Note: mind/soul/body are non-null at this point (initialized above)
@@ -660,6 +669,7 @@ export class PersonaUser extends AIUser {
       content: messageEntity.content?.text || '',
       senderId: messageEntity.senderId,
       senderName: messageEntity.senderName,
+      senderType: messageEntity.senderType as 'human' | 'persona' | 'agent' | 'system',
       timestamp: this.timestampToNumber(messageEntity.timestamp),
       priority
     };

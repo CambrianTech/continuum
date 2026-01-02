@@ -95,6 +95,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
       responseContent: entity.decision.responseContent,
       modelUsed: entity.decision.modelUsed,
       ragContext: entity.ragContext,
+      ragContextRef: entity.ragContextRef,  // Support blob storage
       coordinationSnapshot: entity.coordinationSnapshot,
       ambientState: entity.ambientState,
       metadata: entity.metadata

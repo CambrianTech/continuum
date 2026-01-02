@@ -41,6 +41,7 @@ export interface PersonaGenomeConfig {
     path: string;
     sizeMB: number;
     priority?: number;
+    ollamaModelName?: string;
   }>;
 }
 
@@ -112,6 +113,7 @@ export class PersonaGenome {
     path: string;
     sizeMB: number;
     priority?: number;
+    ollamaModelName?: string;
   }): void {
     const adapter = new LoRAAdapter({
       id: randomUUID() as UUID,
@@ -120,12 +122,14 @@ export class PersonaGenome {
       path: config.path,
       sizeMB: config.sizeMB,
       priority: config.priority,
+      ollamaModelName: config.ollamaModelName,
       logger: this.log
     });
 
     this.availableAdapters.set(config.name, adapter);
 
-    this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB)`);
+    const modelInfo = config.ollamaModelName ? `, ollama=${config.ollamaModelName}` : '';
+    this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB${modelInfo})`);
   }
 
   /**
@@ -288,6 +292,26 @@ export class PersonaGenome {
    */
   getCurrentAdapter(): LoRAAdapter | null {
     return this.currentAdapter;
+  }
+
+  /**
+   * Get adapter by trait name (domain)
+   *
+   * Checks both active and available adapters.
+   * Prefers active adapters since they're already loaded.
+   */
+  getAdapterByTrait(traitName: string): LoRAAdapter | null {
+    // Check active adapters first (already loaded, faster)
+    if (this.activeAdapters.has(traitName)) {
+      return this.activeAdapters.get(traitName)!;
+    }
+
+    // Check available adapters (registered but not loaded)
+    if (this.availableAdapters.has(traitName)) {
+      return this.availableAdapters.get(traitName)!;
+    }
+
+    return null;
   }
 
   /**

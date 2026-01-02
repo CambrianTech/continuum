@@ -42,6 +42,10 @@ export interface LoRAAdapterState {
 
   /** Priority score (0.0-1.0) - higher = less likely to evict */
   priority: number;
+
+  /** Ollama model name if registered (e.g., 'helper-ai-chat-v1234567890')
+   * This is the model name to use during inference with Ollama */
+  ollamaModelName?: string;
 }
 
 /**
@@ -64,6 +68,7 @@ export class LoRAAdapter {
     path: string;
     sizeMB: number;
     priority?: number;
+    ollamaModelName?: string;
     aiProvider?: AIProviderAdapter;
     logger?: (message: string) => void;
   }) {
@@ -77,7 +82,8 @@ export class LoRAAdapter {
       lastUsed: 0,
       sizeMB: config.sizeMB,
       trainingActive: false,
-      priority: config.priority ?? 0.5
+      priority: config.priority ?? 0.5,
+      ollamaModelName: config.ollamaModelName
     };
     this.aiProvider = config.aiProvider;
   }
@@ -136,6 +142,14 @@ export class LoRAAdapter {
    */
   getPriority(): number {
     return this.state.priority;
+  }
+
+  /**
+   * Get Ollama model name (if registered)
+   * This is the model to use during inference
+   */
+  getOllamaModelName(): string | undefined {
+    return this.state.ollamaModelName;
   }
 
   /**

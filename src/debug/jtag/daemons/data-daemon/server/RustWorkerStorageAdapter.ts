@@ -806,6 +806,169 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     }
   }
 
+  // =========================================================================
+  // Blob Storage Methods - Content-addressable storage through Rust worker
+  // =========================================================================
+
+  /**
+   * Store JSON data as compressed blob in content-addressable storage
+   * @param data - JSON-serializable data to store
+   * @param basePath - Optional custom blob storage path
+   * @returns Blob reference with hash, size, compression info
+   */
+  async blobStore<T>(data: T, basePath?: string): Promise<{
+    hash: string;
+    size: number;
+    compressedSize: number;
+    deduplicated: boolean;
+    storedAt: string;
+  }> {
+    const response = await this.sendCommand<{
+      hash: string;
+      size: number;
+      compressedSize: number;
+      deduplicated: boolean;
+      storedAt: string;
+    }>('blob/store', {
+      data,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok' || !response.data) {
+      throw new Error(response.message || 'Blob store failed');
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Retrieve JSON data from blob by hash
+   * @param hash - Blob hash (sha256:...)
+   * @param basePath - Optional custom blob storage path
+   * @returns Original JSON data
+   */
+  async blobRetrieve<T>(hash: string, basePath?: string): Promise<T> {
+    const response = await this.sendCommand<T>('blob/retrieve', {
+      hash,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Blob retrieve failed');
+    }
+
+    return response.data as T;
+  }
+
+  /**
+   * Check if blob exists
+   * @param hash - Blob hash (sha256:...)
+   * @param basePath - Optional custom blob storage path
+   */
+  async blobExists(hash: string, basePath?: string): Promise<boolean> {
+    const response = await this.sendCommand<{ exists: boolean }>('blob/exists', {
+      hash,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Blob exists check failed');
+    }
+
+    return response.data?.exists ?? false;
+  }
+
+  /**
+   * Delete blob by hash
+   * @param hash - Blob hash (sha256:...)
+   * @param basePath - Optional custom blob storage path
+   * @returns true if deleted, false if not found
+   */
+  async blobDelete(hash: string, basePath?: string): Promise<boolean> {
+    const response = await this.sendCommand<{ deleted: boolean }>('blob/delete', {
+      hash,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Blob delete failed');
+    }
+
+    return response.data?.deleted ?? false;
+  }
+
+  /**
+   * Get blob storage statistics
+   * @param basePath - Optional custom blob storage path
+   */
+  async blobStats(basePath?: string): Promise<{
+    totalBlobs: number;
+    totalCompressedBytes: number;
+    shardCount: number;
+    basePath: string;
+  }> {
+    const response = await this.sendCommand<{
+      totalBlobs: number;
+      totalCompressedBytes: number;
+      shardCount: number;
+      basePath: string;
+    }>('blob/stats', {
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok' || !response.data) {
+      throw new Error(response.message || 'Blob stats failed');
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Store data as blob only if it exceeds threshold
+   * @param data - Data to store
+   * @param threshold - Size threshold in bytes (default: 4096)
+   * @returns Either inline data or blob reference
+   */
+  async blobStoreIfLarge<T>(
+    data: T,
+    threshold: number = 4096
+  ): Promise<{ isBlob: true; hash: string; size: number; compressedSize: number } | { isBlob: false; data: T }> {
+    const json = JSON.stringify(data);
+    const size = Buffer.byteLength(json, 'utf8');
+
+    if (size < threshold) {
+      return { isBlob: false, data };
+    }
+
+    const result = await this.blobStore(data);
+    return {
+      isBlob: true,
+      hash: result.hash,
+      size: result.size,
+      compressedSize: result.compressedSize
+    };
+  }
+
+  /**
+   * Retrieve data that may be inline or in blob storage
+   * @param inlineData - Data if stored inline
+   * @param blobRef - Blob hash if stored externally
+   */
+  async blobRetrieveOrInline<T>(
+    inlineData: T | null | undefined,
+    blobRef: string | null | undefined
+  ): Promise<T | null> {
+    if (inlineData) {
+      return inlineData;
+    }
+
+    if (blobRef) {
+      return await this.blobRetrieve<T>(blobRef);
+    }
+
+    return null;
+  }
+
   /**
    * Close connection to Rust worker
    */

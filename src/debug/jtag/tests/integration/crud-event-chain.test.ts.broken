@@ -287,7 +287,7 @@ class CompleteCRUDEventChainTester {
     try {
       const output = execSync(`./jtag debug/logs --filterPattern="data:" --tailLines=50`, {
         encoding: 'utf8',
-        cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+        cwd: process.cwd(),
         timeout: 10000 // 10 second timeout for comprehensive log search
       });
 
@@ -389,7 +389,7 @@ class CompleteCRUDEventChainTester {
         // Use timeout-protected execution to prevent hanging
         const output = execSync(`./jtag debug/widget-state --widgetSelector="${widget}"`, {
           encoding: 'utf8',
-          cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+          cwd: process.cwd(),
           timeout: 5000 // 5 second timeout
         });
 

@@ -126,6 +126,45 @@ enum Request {
         /// If true, return full record data (not just IDs) - eliminates k IPC round trips
         include_data: Option<bool>,
     },
+
+    /// Store JSON data in content-addressable blob storage
+    /// Returns sha256 hash for retrieval
+    #[serde(rename = "blob/store")]
+    BlobStore {
+        /// JSON data to store (will be compressed)
+        data: Value,
+        /// Base path for blob storage (default: ~/.continuum/blobs)
+        base_path: Option<String>,
+    },
+
+    /// Retrieve JSON data from blob storage by hash
+    #[serde(rename = "blob/retrieve")]
+    BlobRetrieve {
+        /// SHA256 hash (format: "sha256:abc123...")
+        hash: String,
+        /// Base path for blob storage
+        base_path: Option<String>,
+    },
+
+    /// Check if blob exists
+    #[serde(rename = "blob/exists")]
+    BlobExists {
+        hash: String,
+        base_path: Option<String>,
+    },
+
+    /// Delete blob by hash
+    #[serde(rename = "blob/delete")]
+    BlobDelete {
+        hash: String,
+        base_path: Option<String>,
+    },
+
+    /// Get blob storage statistics
+    #[serde(rename = "blob/stats")]
+    BlobStats {
+        base_path: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -977,6 +1016,41 @@ impl RustDataDaemon {
                     Err(e) => Response::Error { message: e },
                 }
             }
+
+            Request::BlobStore { data, base_path } => {
+                match self.blob_store(&data, base_path.as_deref()) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobRetrieve { hash, base_path } => {
+                match self.blob_retrieve(&hash, base_path.as_deref()) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobExists { hash, base_path } => {
+                match self.blob_exists(&hash, base_path.as_deref()) {
+                    Ok(exists) => Response::Ok { data: json!({ "exists": exists }) },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobDelete { hash, base_path } => {
+                match self.blob_delete(&hash, base_path.as_deref()) {
+                    Ok(deleted) => Response::Ok { data: json!({ "deleted": deleted }) },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobStats { base_path } => {
+                match self.blob_stats(base_path.as_deref()) {
+                    Ok(stats) => Response::Ok { data: stats },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
         }
     }
 
@@ -1106,6 +1180,82 @@ impl RustDataDaemon {
                         let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
                         (Response::Ok { data }, count)
                     }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            // Blob operations (no adapter handle needed, file-based)
+            Request::BlobStore { data, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_store(&data, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobRetrieve { hash, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_retrieve(&hash, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobExists { hash, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_exists(&hash, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(exists) => (Response::Ok { data: json!({ "exists": exists }) }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobDelete { hash, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_delete(&hash, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(deleted) => (Response::Ok { data: json!({ "deleted": deleted }) }, Some(if deleted { 1 } else { 0 })),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobStats { base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_stats(base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(stats) => (Response::Ok { data: stats }, None),
                     Err(e) => {
                         timer.set_error(&e);
                         (Response::Error { message: e }, None)
@@ -1491,6 +1641,197 @@ impl RustDataDaemon {
 
         result
     }
+
+    // ========================================================================
+    // Blob Storage Methods (Content-addressable file storage)
+    // ========================================================================
+
+    /// Get default blob base path relative to home directory
+    fn get_blob_base_path(&self, custom_path: Option<&str>) -> PathBuf {
+        if let Some(path) = custom_path {
+            PathBuf::from(path)
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            PathBuf::from(home).join(".continuum/blobs")
+        }
+    }
+
+    /// Get blob file path from hash (sharded by first 2 chars)
+    fn get_blob_path(&self, base: &Path, hash: &str) -> PathBuf {
+        // Remove "sha256:" prefix if present
+        let hex = hash.strip_prefix("sha256:").unwrap_or(hash);
+        let shard = &hex[..2.min(hex.len())];
+        let filename = &hex[2.min(hex.len())..];
+        base.join(shard).join(format!("{}.blob", filename))
+    }
+
+    /// Store JSON data as compressed blob, return content hash
+    fn blob_store(&self, data: &Value, base_path: Option<&str>) -> Result<Value, String> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use sha2::{Sha256, Digest};
+        use std::io::Write as IoWrite;
+
+        let base = self.get_blob_base_path(base_path);
+
+        // Serialize to JSON
+        let json = serde_json::to_string(data)
+            .map_err(|e| format!("JSON serialize failed: {}", e))?;
+        let original_size = json.len();
+
+        // Compute SHA256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(json.as_bytes());
+        let hash_bytes = hasher.finalize();
+        let hash = format!("sha256:{:x}", hash_bytes);
+
+        // Get file path
+        let file_path = self.get_blob_path(&base, &hash);
+
+        // Check if already exists (deduplication)
+        if file_path.exists() {
+            let metadata = fs::metadata(&file_path)
+                .map_err(|e| format!("Failed to stat blob: {}", e))?;
+            return Ok(json!({
+                "hash": hash,
+                "size": original_size,
+                "compressedSize": metadata.len(),
+                "deduplicated": true,
+                "storedAt": format!("{:?}", metadata.modified().ok())
+            }));
+        }
+
+        // Ensure directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create blob dir: {}", e))?;
+        }
+
+        // Compress with gzip
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json.as_bytes())
+            .map_err(|e| format!("Compression failed: {}", e))?;
+        let compressed = encoder.finish()
+            .map_err(|e| format!("Compression finish failed: {}", e))?;
+        let compressed_size = compressed.len();
+
+        // Write atomically (write to temp, then rename)
+        let temp_path = file_path.with_extension("tmp");
+        fs::write(&temp_path, &compressed)
+            .map_err(|e| format!("Failed to write temp blob: {}", e))?;
+        fs::rename(&temp_path, &file_path)
+            .map_err(|e| format!("Failed to rename blob: {}", e))?;
+
+        Ok(json!({
+            "hash": hash,
+            "size": original_size,
+            "compressedSize": compressed_size,
+            "deduplicated": false,
+            "storedAt": chrono::Utc::now().to_rfc3339()
+        }))
+    }
+
+    /// Retrieve JSON data from blob by hash
+    fn blob_retrieve(&self, hash: &str, base_path: Option<&str>) -> Result<Value, String> {
+        use flate2::read::GzDecoder;
+        use std::io::Read as IoRead;
+
+        let base = self.get_blob_base_path(base_path);
+        let file_path = self.get_blob_path(&base, hash);
+
+        if !file_path.exists() {
+            return Err(format!("Blob not found: {}", hash));
+        }
+
+        // Read compressed data
+        let compressed = fs::read(&file_path)
+            .map_err(|e| format!("Failed to read blob: {}", e))?;
+
+        // Decompress
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut json_str = String::new();
+        decoder.read_to_string(&mut json_str)
+            .map_err(|e| format!("Decompression failed: {}", e))?;
+
+        // Parse JSON
+        let data: Value = serde_json::from_str(&json_str)
+            .map_err(|e| format!("JSON parse failed: {}", e))?;
+
+        Ok(data)
+    }
+
+    /// Check if blob exists
+    fn blob_exists(&self, hash: &str, base_path: Option<&str>) -> Result<bool, String> {
+        let base = self.get_blob_base_path(base_path);
+        let file_path = self.get_blob_path(&base, hash);
+        Ok(file_path.exists())
+    }
+
+    /// Delete blob by hash
+    fn blob_delete(&self, hash: &str, base_path: Option<&str>) -> Result<bool, String> {
+        let base = self.get_blob_base_path(base_path);
+        let file_path = self.get_blob_path(&base, hash);
+
+        if !file_path.exists() {
+            return Ok(false);
+        }
+
+        fs::remove_file(&file_path)
+            .map_err(|e| format!("Failed to delete blob: {}", e))?;
+        Ok(true)
+    }
+
+    /// Get blob storage statistics
+    fn blob_stats(&self, base_path: Option<&str>) -> Result<Value, String> {
+        let base = self.get_blob_base_path(base_path);
+
+        if !base.exists() {
+            return Ok(json!({
+                "totalBlobs": 0,
+                "totalCompressedBytes": 0,
+                "shardCount": 0
+            }));
+        }
+
+        let mut total_blobs = 0u64;
+        let mut total_bytes = 0u64;
+        let mut shard_count = 0u64;
+
+        // Walk shard directories
+        let entries = fs::read_dir(&base)
+            .map_err(|e| format!("Failed to read blob dir: {}", e))?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                shard_count += 1;
+
+                let files = fs::read_dir(&path)
+                    .map_err(|e| format!("Failed to read shard dir: {}", e))?;
+
+                for file in files {
+                    let file = file.map_err(|e| format!("File entry error: {}", e))?;
+                    let file_path = file.path();
+
+                    if file_path.extension().map_or(false, |e| e == "blob") {
+                        total_blobs += 1;
+                        if let Ok(metadata) = fs::metadata(&file_path) {
+                            total_bytes += metadata.len();
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(json!({
+            "totalBlobs": total_blobs,
+            "totalCompressedBytes": total_bytes,
+            "shardCount": shard_count,
+            "basePath": base.to_string_lossy()
+        }))
+    }
 }
 
 // ============================================================================
@@ -1537,6 +1878,11 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
             Request::DataDelete { .. } => "data/delete",
             Request::DataUpdate { .. } => "data/update",
             Request::VectorSearch { .. } => "vector/search",
+            Request::BlobStore { .. } => "blob/store",
+            Request::BlobRetrieve { .. } => "blob/retrieve",
+            Request::BlobExists { .. } => "blob/exists",
+            Request::BlobDelete { .. } => "blob/delete",
+            Request::BlobStats { .. } => "blob/stats",
         };
 
         // Start request timer

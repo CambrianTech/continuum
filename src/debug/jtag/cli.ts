@@ -108,7 +108,9 @@ async function main() {
     const [command, ...rawParams] = commandArgs;
 
     // Parse parameters into object format
-    const params: Record<string, string | boolean | number> = {};
+    // ParsedValue supports primitives, arrays (for repeated flags), and objects (for complex params)
+    type ParsedValue = string | boolean | number | null | ParsedValue[] | { [key: string]: ParsedValue };
+    const params: Record<string, ParsedValue> = {};
     let i = 0;
     while (i < rawParams.length) {
       const arg = rawParams[i];
@@ -209,17 +211,18 @@ async function main() {
         i++;
       } else {
         // Handle positional arguments - add them to a general array
-        if (!params._positional) {
+        if (!params._positional || !Array.isArray(params._positional)) {
           params._positional = [];
         }
-        params._positional.push(arg);
+        (params._positional as ParsedValue[]).push(arg);
         i++;
       }
     }
 
     // Handle positional arguments for single-parameter commands
     // This allows `./jtag help screenshot` instead of `./jtag help commandName=screenshot`
-    if (params._positional && params._positional.length > 0) {
+    const positional = params._positional;
+    if (Array.isArray(positional) && positional.length > 0) {
       // Map of commands to their primary parameter name
       const singleParamCommands: Record<string, string> = {
         'help': 'commandName',
@@ -236,20 +239,27 @@ async function main() {
       const primaryParam = singleParamCommands[command];
       if (primaryParam && !params[primaryParam]) {
         // Use first positional arg as the primary parameter
-        params[primaryParam] = params._positional[0];
+        params[primaryParam] = positional[0] as ParsedValue;
         // Remove from positional array
-        params._positional = params._positional.slice(1);
-        if (params._positional.length === 0) {
+        params._positional = positional.slice(1);
+        if ((params._positional as ParsedValue[]).length === 0) {
           delete params._positional;
         }
       }
     }
 
     // INTELLIGENT ENTRY POINT: Adapts behavior based on detected agent type
+    type OutputFormat = 'json' | 'human' | 'auto' | 'compact' | 'ai-friendly';
+    const formatValue = params.format as string | undefined;
+    const validFormats: OutputFormat[] = ['json', 'human', 'auto', 'compact', 'ai-friendly'];
+    const format: OutputFormat = (formatValue && validFormats.includes(formatValue as OutputFormat))
+      ? formatValue as OutputFormat
+      : 'auto';
+
     const entryPoint = new EntryPointAdapter({
-      verbose: params.verbose,
-      quiet: params.quiet,
-      format: params.format || 'auto',
+      verbose: params.verbose as boolean | undefined,
+      quiet: params.quiet as boolean | undefined,
+      format,
       showAgentInfo: !params.quiet
     });
 
@@ -290,7 +300,7 @@ async function main() {
     }
     
     const clientOptions: JTAGClientConnectOptions = {
-      targetEnvironment: 'server', 
+      targetEnvironment: 'server',
       transportType: 'websocket',
       serverUrl: `ws://localhost:${instanceConfig.ports.websocket_server}`,
       enableFallback: false,
@@ -300,8 +310,7 @@ async function main() {
         cli: {
           command,
           args: commandArgs,
-          timestamp: new Date().toISOString(),
-          sessionPersistence: sessionId ? 'reused' : 'new'
+          timestamp: new Date().toISOString()
         }
       }
     };
@@ -326,7 +335,7 @@ async function main() {
 
       const isConnectionRefused = connectionError.message.includes('ECONNREFUSED') ||
                                 connectionError.message.includes('connect') ||
-                                (err && typeof err === 'object' && 'code' in err && err.code === 'ECONNREFUSED');
+                                (err && typeof err === 'object' && 'code' in err && (err as {code?: string}).code === 'ECONNREFUSED');
 
       if (behavior.logLevel === 'verbose') {
         console.log('='.repeat(60));
@@ -337,7 +346,7 @@ async function main() {
           console.error('✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds');
         } else {
           console.error('🔍 Connection details:', connectionError.message);
-          console.error('🔍 Error code:', connectionError.code || 'unknown');
+          console.error('🔍 Error code:', (connectionError as Error & {code?: string}).code || 'unknown');
         }
       } else {
         // Clean JSON error for connection failures - send to stderr
@@ -407,18 +416,22 @@ async function main() {
       
       // Special parameter transformation for screenshot command
       if (command === 'screenshot') {
+        // Ensure options is an object
+        if (!params.options || typeof params.options !== 'object' || Array.isArray(params.options)) {
+          params.options = {};
+        }
+        const options = params.options as { [key: string]: ParsedValue };
+
         // Convert comma-separated presets to array
         if (params.presets && typeof params.presets === 'string') {
-          params.options = params.options || {};
-          params.options.presets = params.presets.split(',').map((p: string) => p.trim());
+          options.presets = params.presets.split(',').map((p: string) => p.trim());
           delete params.presets;
         }
-        
+
         // Convert comma-separated resolutions to array (if provided as JSON string)
         if (params.resolutions && typeof params.resolutions === 'string') {
           try {
-            params.options = params.options || {};
-            params.options.resolutions = JSON.parse(params.resolutions);
+            options.resolutions = JSON.parse(params.resolutions);
             delete params.resolutions;
           } catch (e) {
             console.warn(`⚠️ Invalid resolutions JSON: ${params.resolutions}`);

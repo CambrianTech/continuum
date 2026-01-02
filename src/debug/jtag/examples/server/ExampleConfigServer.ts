@@ -8,7 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { getServerConfig } from '../../system/config/ServerConfig';
-import type { ExampleConfig, ExampleDefinition } from '../shared/ExampleConfigTypes';
+import type { ExampleConfig, ExampleDefinition, ExamplePorts } from '../shared/ExampleConfigTypes';
 
 /**
  * Singleton configuration loaded from package.json + config.env
@@ -106,7 +106,7 @@ class ExampleConfigServerImpl {
   /**
    * Get active example ports
    */
-  getActivePorts(): Record<string, number> {
+  getActivePorts(): ExamplePorts {
     const example = this.getActiveExample();
     if (process.env.JTAG_VERBOSE === 'true') {
       console.log(`📋 getActivePorts:`, JSON.stringify(example.ports, null, 2));
@@ -117,7 +117,7 @@ class ExampleConfigServerImpl {
   /**
    * Get active example ports (sync version)
    */
-  getActivePortsSync(): Record<string, number> {
+  getActivePortsSync(): ExamplePorts {
     return this.getActivePorts();
   }
 

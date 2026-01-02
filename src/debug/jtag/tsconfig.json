@@ -43,6 +43,7 @@
     "noEmitOnError": false
   },
   "include": [
+    "cli.ts",
     "index.ts",
     "browser-index.ts",
     "server-index.ts",

@@ -9,7 +9,12 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { SystemReadySignal, SystemHealth, BuildStatus } from '../shared/SystemSignalingTypes';
+import type { SystemReadySignal, SystemHealth, BuildStatus } from '../shared/SystemSignalingTypes';
+
+// Mutable version of SystemReadySignal for building metrics incrementally
+type MutableSystemReadySignal = {
+  -readonly [K in keyof SystemReadySignal]: SystemReadySignal[K] extends ReadonlyArray<infer U> ? U[] : SystemReadySignal[K];
+};
 import { getSignalConfig } from '../shared/MilestoneConfiguration';
 import { JTAG_LOG_PATTERNS } from '../../../system/core/client/shared/JTAGClientConstants';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
@@ -21,7 +26,7 @@ export class SystemMetricsCollector {
   private browserReadyLogged: boolean = false;
 
   async collectSystemMetrics(): Promise<SystemReadySignal> {
-    const metrics: Partial<SystemReadySignal> = {
+    const metrics: Partial<MutableSystemReadySignal> = {
       timestamp: new Date().toISOString(),
       readySignalVersion: getSignalConfig().VERSION,
       errors: [],

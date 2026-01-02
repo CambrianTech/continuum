@@ -218,11 +218,11 @@ export class PersonaAutonomousLoop {
         roomId: item.roomId,
         senderId: item.senderId,
         senderName: item.senderName,
+        senderType: item.senderType,  // Preserve actual sender type
         content: { text: item.content },
         timestamp: item.timestamp,
         // Fields not critical for evaluation:
         senderDisplayName: item.senderName,
-        senderType: 'user', // Assumption: will be corrected by senderIsHuman check
         status: 'delivered',
         priority: item.priority,
         metadata: {},
@@ -234,8 +234,8 @@ export class PersonaAutonomousLoop {
         deletedAt: undefined
       };
 
-      // Determine if sender is human (not an AI persona)
-      const senderIsHuman = !item.senderId.startsWith('persona-');
+      // Determine if sender is human (from actual senderType, not ID prefix)
+      const senderIsHuman = item.senderType === 'human';
 
       // Extract message text
       const messageText = item.content;
