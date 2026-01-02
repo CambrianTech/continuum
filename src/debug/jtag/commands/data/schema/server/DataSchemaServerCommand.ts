@@ -15,7 +15,7 @@ import { getFieldMetadata, hasFieldMetadata, type FieldMetadata } from '../../..
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 // Use the existing entity registry system - works with ANY registered entity type
-import { getRegisteredEntity } from '../../../../daemons/data-daemon/server/SqliteStorageAdapter';
+import { getRegisteredEntity } from '../../../../daemons/data-daemon/server/EntityRegistry';
 
 export class DataSchemaServerCommand extends CommandBase<DataSchemaParams, DataSchemaResult> {
 

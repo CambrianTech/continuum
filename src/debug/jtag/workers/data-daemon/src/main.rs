@@ -99,6 +99,14 @@ enum Request {
         collection: String,
         id: String,
     },
+
+    #[serde(rename = "data/update")]
+    DataUpdate {
+        handle: AdapterHandle,
+        collection: String,
+        id: String,
+        data: Value,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -584,6 +592,13 @@ impl RustDataDaemon {
                     Err(e) => Response::Error { message: e },
                 }
             }
+
+            Request::DataUpdate { handle, collection, id, data } => {
+                match self.data_update(handle, &collection, &id, &data) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
         }
     }
 
@@ -709,6 +724,50 @@ impl RustDataDaemon {
 
         println!("🗑️  DataDelete query: {}", query);
         self.registry.execute_write(handle, &query, &json!({}))
+    }
+
+    /// Update an entity in a collection by ID
+    fn data_update(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        // Build SET clauses
+        let set_clauses: Vec<String> = obj.iter()
+            .filter(|(key, _)| *key != "id") // Don't update id
+            .map(|(key, value)| {
+                let val_str = match value {
+                    Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    Value::Array(_) | Value::Object(_) => {
+                        // Serialize complex types as JSON strings
+                        format!("'{}'", serde_json::to_string(value).unwrap_or_default().replace("'", "''"))
+                    }
+                };
+                format!("{} = {}", key, val_str)
+            })
+            .collect();
+
+        if set_clauses.is_empty() {
+            return Err("No fields to update".to_string());
+        }
+
+        let query = format!(
+            "UPDATE {} SET {} WHERE id = '{}'",
+            collection,
+            set_clauses.join(", "),
+            id.replace("'", "''")
+        );
+
+        println!("✏️  DataUpdate query: {}", query);
+        self.registry.execute_write(handle, &query, data)
     }
 }
 

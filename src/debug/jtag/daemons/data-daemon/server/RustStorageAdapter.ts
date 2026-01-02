@@ -69,8 +69,8 @@ interface RustSqliteOptions {
   timeout?: number;           // Busy timeout in ms
 }
 
-// Re-export entity registry functions for backwards compatibility
-export { registerEntity, getRegisteredEntity, type EntityConstructor };
+// REMOVED: Re-exports of entity registry functions
+// Import from EntityRegistry.ts directly instead
 
 /**
  * Rust Storage Adapter - Uses Rust worker for SQL execution

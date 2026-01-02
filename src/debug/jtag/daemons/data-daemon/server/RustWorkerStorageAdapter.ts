@@ -395,7 +395,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Update record - not yet implemented in Rust worker
+   * Update record - delegates to Rust worker
    */
   async update<T extends RecordData>(
     collection: string,
@@ -403,8 +403,48 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     data: Partial<T>,
     incrementVersion?: boolean
   ): Promise<StorageResult<DataRecord<T>>> {
-    // TODO: Implement data/update in Rust worker
-    return { success: false, error: 'Update not yet implemented in Rust worker' };
+    if (!this.adapterHandle) {
+      return { success: false, error: 'Adapter not initialized' };
+    }
+
+    try {
+      // Convert data keys to snake_case for SQL columns
+      const snakeCaseData = this.toSnakeCaseObject(data as Record<string, any>);
+
+      // Add updated_at and version
+      const updateData = {
+        ...snakeCaseData,
+        updated_at: new Date().toISOString(),
+        version: incrementVersion ? { $increment: 1 } : undefined
+      };
+
+      const response = await this.sendCommand('data/update', {
+        handle: this.adapterHandle,
+        collection: SqlNamingConverter.toTableName(collection),
+        id,
+        data: updateData
+      });
+
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Update failed' };
+      }
+
+      return {
+        success: true,
+        data: {
+          id,
+          collection,
+          data: data as T,
+          metadata: {
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            version: 1
+          }
+        }
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
   }
 
   /**

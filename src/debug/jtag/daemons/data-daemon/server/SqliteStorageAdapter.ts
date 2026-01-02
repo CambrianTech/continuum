@@ -67,8 +67,9 @@ interface SqliteOptions {
   timeout?: number;         // Busy timeout in ms
 }
 
-// Re-export entity registry functions for backwards compatibility
-export { registerEntity, getRegisteredEntity, type EntityConstructor };
+// REMOVED: Re-exports of entity registry functions
+// Import from EntityRegistry.ts directly instead:
+// import { registerEntity, getRegisteredEntity } from './EntityRegistry';
 
 /**
  * SQLite Storage Adapter with Proper Relational Schema
