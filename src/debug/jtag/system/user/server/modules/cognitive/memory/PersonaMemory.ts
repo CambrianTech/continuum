@@ -16,6 +16,13 @@ import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
 import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
+import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
+
+/**
+ * Collection for storing persona RAG contexts
+ * Separate from main chat/memory to avoid conflicts
+ */
+const PERSONA_RAG_COLLECTION = 'persona_rag_contexts';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -65,35 +72,66 @@ export class PersonaMemory {
    * RAG Context Storage - Store conversation context for a room
    * Enables persona to maintain context across sessions
    *
-   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
-   * For now, store in memory until artifact commands are implemented
+   * Uses DataDaemon for persistence in per-persona database
    */
   async storeRAGContext(roomId: UUID, context: PersonaRAGContext): Promise<void> {
-    if (!this.client) {
-      this.log(`⚠️ Cannot store RAG context - no client`);
-      return;
-    }
+    // Create record ID from persona+room for upsert pattern
+    const recordId = `rag-${this.personaId}-${roomId}`;
 
-    // TODO Phase 2: Use artifacts daemon when commands are implemented
-    // await this.client.daemons.artifacts.writeJSON(...)
+    // Store context as a simple entity with JSON stringified context
+    const record = {
+      id: recordId,
+      personaId: this.personaId,
+      roomId,
+      contextJson: JSON.stringify(context)  // Store as JSON string
+    };
+
+    try {
+      // Check if record exists
+      const existing = await DataDaemon.read(PERSONA_RAG_COLLECTION, recordId);
+
+      if (existing.success && existing.data) {
+        // Update existing record (DataDaemon handles updatedAt)
+        await DataDaemon.update(PERSONA_RAG_COLLECTION, recordId, record as any);
+      } else {
+        // Create new record
+        await DataDaemon.store(PERSONA_RAG_COLLECTION, record as any);
+      }
+    } catch (error) {
+      this.log(`❌ Failed to store RAG context: ${error}`);
+    }
   }
 
   /**
    * RAG Context Loading - Load conversation context for a room
    * Returns null if no context exists yet
    *
-   * Phase 2: Direct ArtifactsDaemon access (proper implementation pending)
-   * For now, return null until artifact commands are implemented
+   * Uses DataDaemon for persistence in per-persona database
    */
   async loadRAGContext(roomId: UUID): Promise<PersonaRAGContext | null> {
-    if (!this.client) {
-      this.log(`⚠️ Cannot load RAG context - no client`);
+    const recordId = `rag-${this.personaId}-${roomId}`;
+
+    try {
+      const result = await DataDaemon.read(PERSONA_RAG_COLLECTION, recordId);
+
+      if (!result.success || !result.data) {
+        return null;
+      }
+
+      // Parse the stored JSON context from the data.data.contextJson field
+      // DataRecord structure: { id, collection, data: { ...entityFields }, ... }
+      const entityData = result.data.data as any;
+      const storedContext = entityData?.contextJson;
+
+      if (typeof storedContext === 'string') {
+        return JSON.parse(storedContext) as PersonaRAGContext;
+      }
+
+      return null;
+    } catch (error) {
+      this.log(`❌ Failed to load RAG context: ${error}`);
       return null;
     }
-
-    // TODO Phase 2: Use artifacts daemon when commands are implemented
-    // return await this.client.daemons.artifacts.readJSON<PersonaRAGContext>(...)
-    return null;
   }
 
   /**
@@ -163,9 +201,14 @@ export class PersonaMemory {
    * Clear memory for a room (e.g., when leaving room or on request)
    */
   async clearRoomMemory(roomId: UUID): Promise<void> {
-    // For now, just log (actual clearing will happen when artifact storage is implemented)
-    this.log(`🗑️ Clearing memory for room ${roomId}`);
-    // TODO: Delete artifact when artifacts daemon is implemented
+    const recordId = `rag-${this.personaId}-${roomId}`;
+
+    try {
+      await DataDaemon.remove(PERSONA_RAG_COLLECTION, recordId);
+      this.log(`🗑️ Cleared memory for room ${roomId}`);
+    } catch (error) {
+      this.log(`❌ Failed to clear room memory: ${error}`);
+    }
   }
 
   /**

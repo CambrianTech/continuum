@@ -78,6 +78,7 @@ export interface ToolDefinition {
   permissions: string[];
   examples: ToolExample[];
   category: 'file' | 'code' | 'system' | 'media' | 'data';
+  accessLevel?: ToolAccessLevel;  // Access level required to use this tool (default: 'public')
 }
 
 /**
@@ -88,6 +89,66 @@ export interface ToolExecutionContext {
   sessionId: UUID;
   timestamp: string;
   permissions: string[];
+}
+
+/**
+ * Tool Access Level - controls which personas can use which tools
+ *
+ * public: All personas can use (default - most tools)
+ * privileged: Only trusted personas (admin-created, verified)
+ * admin: Only admin personas (system owner, super-users)
+ */
+export type ToolAccessLevel = 'public' | 'privileged' | 'admin';
+
+/**
+ * Sensitive commands that require elevated access
+ * These are commands that could cause harm if misused by untrusted personas
+ */
+const PRIVILEGED_COMMANDS = new Set([
+  'development/exec-command',      // Arbitrary command execution
+  'development/sandbox-execute',   // Sandbox execution
+  'system/shutdown',               // System control
+  'system/restart',                // System control
+  'data/delete',                   // Data destruction
+  'data/drop-collection',          // Data destruction
+  'genome/fine-tune',              // Model modification
+]);
+
+const ADMIN_COMMANDS = new Set([
+  'system/config/set',             // System configuration
+  'user/delete',                   // User management
+  'user/set-role',                 // Role assignment
+  'secrets/set',                   // Secret management
+  'secrets/delete',                // Secret management
+]);
+
+/**
+ * Determine access level required for a command
+ */
+function getCommandAccessLevel(commandName: string): ToolAccessLevel {
+  if (ADMIN_COMMANDS.has(commandName)) return 'admin';
+  if (PRIVILEGED_COMMANDS.has(commandName)) return 'privileged';
+  return 'public';
+}
+
+/**
+ * Filter tools based on persona access level
+ */
+function filterToolsByAccessLevel(
+  tools: ToolDefinition[],
+  personaAccessLevel: ToolAccessLevel
+): ToolDefinition[] {
+  const levelOrder: Record<ToolAccessLevel, number> = {
+    'public': 0,
+    'privileged': 1,
+    'admin': 2
+  };
+  const personaLevel = levelOrder[personaAccessLevel];
+
+  return tools.filter(tool => {
+    const toolLevel = levelOrder[tool.accessLevel || 'public'];
+    return toolLevel <= personaLevel;
+  });
 }
 
 /**
@@ -227,7 +288,8 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
       properties,
       required
     },
-    examples: []  // Could add examples in future
+    examples: [],  // Could add examples in future
+    accessLevel: getCommandAccessLevel(cmd.name)  // Access level based on command sensitivity
   };
 }
 
@@ -260,11 +322,22 @@ export function getAllToolDefinitions(): ToolDefinition[] {
 /**
  * Get all available tools with guaranteed initialization
  * Blocks until tools are loaded (use for critical paths)
+ *
+ * @param accessLevel - Optional access level to filter tools (default: 'public')
+ *                      Pass persona's access level to filter out tools they can't use
  */
-export async function getAllToolDefinitionsAsync(): Promise<ToolDefinition[]> {
+export async function getAllToolDefinitionsAsync(
+  accessLevel?: ToolAccessLevel
+): Promise<ToolDefinition[]> {
   if (toolCache.length === 0 || (Date.now() - lastRefreshTime) > CACHE_TTL_MS) {
     await refreshToolDefinitions();
   }
+
+  // If access level specified, filter tools
+  if (accessLevel) {
+    return filterToolsByAccessLevel(toolCache, accessLevel);
+  }
+
   return toolCache;
 }
 

@@ -772,15 +772,24 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
         // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
+        const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);  // ~4 chars/token
+        const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
+        const cost = this.calculateCost(
+          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.model ?? 'llama3.2:3b',
+          inputTokenEstimate,
+          outputTokenEstimate
+        );
+
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
           this.modelConfig.provider ?? 'ollama',
           this.modelConfig.model ?? 'llama3.2:3b',
           `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
-          messages.reduce((sum, m) => sum + m.content.length, 0),  // Rough token estimate
-          aiResponse.text.length,  // Completion tokens estimate
-          0.0,  // Cost (TODO: calculate based on provider)
+          inputTokenEstimate,
+          outputTokenEstimate,
+          cost,  // Calculated cost based on provider/model pricing
           aiResponse.text.slice(0, 500),  // First 500 chars of response
           generateDuration,
           'success',
@@ -1441,5 +1450,72 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       AIDecisionLogger.logError(this.personaName, 'Redundancy check', error instanceof Error ? error.message : String(error));
       return false; // On error, allow the response (fail open)
     }
+  }
+
+  /**
+   * Calculate API cost based on provider pricing
+   *
+   * Pricing is per 1M tokens (input/output rates differ)
+   * Local models (Ollama) are free
+   */
+  private calculateCost(
+    provider: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number
+  ): number {
+    // Pricing per 1M tokens (as of late 2024)
+    // Format: { input: $/1M tokens, output: $/1M tokens }
+    const pricing: Record<string, { input: number; output: number }> = {
+      // Anthropic
+      'anthropic/claude-3-opus': { input: 15.0, output: 75.0 },
+      'anthropic/claude-3-sonnet': { input: 3.0, output: 15.0 },
+      'anthropic/claude-3-haiku': { input: 0.25, output: 1.25 },
+      'anthropic/claude-3.5-sonnet': { input: 3.0, output: 15.0 },
+
+      // OpenAI
+      'openai/gpt-4o': { input: 5.0, output: 15.0 },
+      'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
+      'openai/gpt-4-turbo': { input: 10.0, output: 30.0 },
+      'openai/gpt-3.5-turbo': { input: 0.5, output: 1.5 },
+
+      // Together AI
+      'together/llama-3': { input: 0.2, output: 0.2 },
+      'together/llama-3.1-70b': { input: 0.88, output: 0.88 },
+      'together/llama-3.1-8b': { input: 0.18, output: 0.18 },
+      'together/mixtral-8x7b': { input: 0.6, output: 0.6 },
+
+      // DeepSeek
+      'deepseek/deepseek-chat': { input: 0.14, output: 0.28 },
+      'deepseek/deepseek-coder': { input: 0.14, output: 0.28 },
+
+      // Groq (free tier, but has rate limits)
+      'groq/llama-3': { input: 0.05, output: 0.08 },
+      'groq/mixtral-8x7b': { input: 0.27, output: 0.27 },
+
+      // Local (Ollama) - FREE
+      'ollama/*': { input: 0, output: 0 }
+    };
+
+    // Try exact match first
+    const key = `${provider}/${model}`;
+    let rates = pricing[key];
+
+    // If no exact match, check for provider/* wildcard (e.g., ollama/*)
+    if (!rates) {
+      const wildcardKey = `${provider}/*`;
+      rates = pricing[wildcardKey];
+    }
+
+    // Default to free (unknown provider, likely local)
+    if (!rates) {
+      rates = { input: 0, output: 0 };
+    }
+
+    // Calculate cost (rates are per 1M tokens)
+    const inputCost = (inputTokens / 1_000_000) * rates.input;
+    const outputCost = (outputTokens / 1_000_000) * rates.output;
+
+    return inputCost + outputCost;
   }
 }
