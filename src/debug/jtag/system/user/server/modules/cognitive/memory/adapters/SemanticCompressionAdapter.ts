@@ -20,6 +20,7 @@ import { generateUUID } from '../../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../../data/domains/CoreTypes';
 import type { PersonaUser } from '../../../../PersonaUser';
 import { EmbeddingService } from '../../../../../../core/services/EmbeddingService';
+import { BackpressureService } from '../../../../../../core/services/BackpressureService';
 
 /**
  * Group of related thoughts for synthesis
@@ -56,12 +57,23 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
 
     this.log(`🧠 [${context.personaName}] SemanticCompression: ${thoughts.length} thoughts → ${groups.length} groups`);
 
-    // Synthesize each group via LLM
+    // Synthesize each group via LLM (with backpressure awareness)
     const memories: MemoryEntity[] = [];
     let synthesisCount = 0;
+    let skippedDueToLoad = 0;
     const errors: Array<{ domain: string; error: string }> = [];
 
     for (const group of groups) {
+      // BACKPRESSURE: Check system load before expensive LLM synthesis
+      // Memory synthesis is low priority - defer when system is loaded
+      if (!BackpressureService.shouldProceed('low')) {
+        skippedDueToLoad++;
+        // Use fallback (no LLM call) when under load
+        const fallback = this.createFallbackMemory(group, context);
+        memories.push(fallback);
+        continue;
+      }
+
       try {
         const synthesis = await this.synthesizeGroup(group, context);
         memories.push(synthesis);
@@ -79,9 +91,22 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
       }
     }
 
+    if (skippedDueToLoad > 0) {
+      this.log(`🚦 [${context.personaName}] Backpressure: Skipped ${skippedDueToLoad}/${groups.length} LLM syntheses (system load=${BackpressureService.getLoad().toFixed(2)})`);
+    }
+
     // Phase 2: Generate embeddings for all memories (semantic cognition)
+    // BACKPRESSURE: Embeddings are background priority - only generate when system is idle
     let embeddingsGenerated = 0;
+    let embeddingsSkipped = 0;
+
     for (const memory of memories) {
+      // Check backpressure before each embedding (background priority)
+      if (!BackpressureService.shouldProceed('background')) {
+        embeddingsSkipped++;
+        continue; // Skip embedding, memory is still stored without it
+      }
+
       try {
         // Create IEmbeddable wrapper for the memory
         const embeddableMemory = {
@@ -107,6 +132,9 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
       }
     }
 
+    if (embeddingsSkipped > 0) {
+      this.log(`🚦 [${context.personaName}] Backpressure: Skipped ${embeddingsSkipped}/${memories.length} embeddings (will retry when idle)`);
+    }
     this.log(`🧠 [${context.personaName}] Embeddings: ${embeddingsGenerated}/${memories.length} generated`);
 
     return {
@@ -115,6 +143,8 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
         synthesisCount,
         groupsCreated: groups.length,
         embeddingsGenerated,
+        skippedDueToLoad,      // LLM syntheses skipped due to backpressure
+        embeddingsSkipped,     // Embeddings skipped due to backpressure
         errors: errors.length > 0 ? errors : undefined
       }
     };

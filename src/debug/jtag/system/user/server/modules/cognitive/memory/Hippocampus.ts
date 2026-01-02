@@ -39,6 +39,7 @@ import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
 import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
 import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
 import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../../daemons/data-daemon/shared/VectorSearchTypes';
+import { BackpressureService } from '../../../../../core/services/BackpressureService';
 
 /**
  * Snapshot of persona state at tick time
@@ -361,6 +362,16 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       ...this.metrics,
       tickCount: this.metrics.tickCount + 1
     };
+
+    // BACKPRESSURE: Skip consolidation entirely when system is under high load
+    // Consolidation involves LLM calls (expensive) - wait until load drops
+    if (BackpressureService.isHighLoad()) {
+      // Log only occasionally to avoid spam (every 30 ticks = ~30 seconds at 1s tick)
+      if (this.metrics.tickCount % 30 === 0) {
+        this.log(`🚦 Backpressure: Deferring consolidation (load=${BackpressureService.getLoad().toFixed(2)})`);
+      }
+      return;
+    }
 
     // Snoop on PersonaUser's working memory (thoughts during cognition)
     if (this.persona.prefrontal?.workingMemory) {
