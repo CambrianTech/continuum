@@ -20,6 +20,8 @@ import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { RoomEntity } from '../../../data/entities/RoomEntity';
 import { CognitionLogger } from './cognition/CognitionLogger';
+import { SignalDetector, getSignalDetector } from './SignalDetector';
+import { getTrainingBuffer } from './TrainingBuffer';
 import type { Task } from './cognition/reasoning/types';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
@@ -58,7 +60,108 @@ import type { PersonaUser } from '../PersonaUser';
  * - Heuristic scoring and fallbacks
  */
 export class PersonaMessageEvaluator {
-  constructor(private readonly personaUser: PersonaUser) {}
+  private readonly signalDetector: SignalDetector;
+
+  constructor(private readonly personaUser: PersonaUser) {
+    this.signalDetector = getSignalDetector();
+  }
+
+  /**
+   * Detect training signals from human messages and add to training buffer
+   *
+   * Part of continuous micro-LoRA: when a human corrects or approves an AI response,
+   * we capture that as a training signal for the appropriate trait adapter.
+   */
+  private async detectAndBufferTrainingSignal(
+    messageEntity: ChatMessageEntity
+  ): Promise<void> {
+    // Signal detection focuses on MESSAGE CONTENT, not sender type
+    // The AI classifier determines if it's feedback based on what's written
+    try {
+      // Get the preceding AI message (if any)
+      const precedingAIMessage = await this.getPrecedingAIMessage(messageEntity);
+
+      // Get recent conversation history for context
+      const conversationHistory = await this.getRecentConversationHistory(messageEntity.roomId);
+
+      // Use AI-powered signal detection (async) for semantic classification
+      const signal = await this.signalDetector.detectSignalAsync(
+        messageEntity,
+        precedingAIMessage,
+        conversationHistory
+      );
+
+      if (signal && signal.type !== 'none') {
+        this.log(`🎓 ${this.personaUser.displayName}: Training signal detected via AI classification`);
+        this.log(`   Type: ${signal.type}, Trait: ${signal.trait}, Polarity: ${signal.polarity}`);
+        this.log(`   Confidence: ${(signal.confidence * 100).toFixed(0)}%`);
+
+        // Add to training buffer with persona-specific logger
+        const trainingLogger = (msg: string) => this.log(`[TrainingBuffer] ${msg}`);
+        const buffer = getTrainingBuffer(this.personaUser.id, this.personaUser.displayName, trainingLogger);
+        const trainingTriggered = await buffer.add(signal);
+
+        if (trainingTriggered) {
+          this.log(`🔥 ${this.personaUser.displayName}: Micro-training triggered for ${signal.trait}!`);
+        }
+      }
+    } catch (error) {
+      // Don't let signal detection failures block message processing
+      this.log(`⚠️ ${this.personaUser.displayName}: Signal detection error (non-fatal):`, error);
+    }
+  }
+
+  /**
+   * Get the preceding AI message before a human message (for correction detection)
+   */
+  private async getPrecedingAIMessage(humanMessage: ChatMessageEntity): Promise<ChatMessageEntity | null> {
+    try {
+      const result = await DataDaemon.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: {
+          roomId: humanMessage.roomId,
+          timestamp: { $lt: humanMessage.timestamp },
+          senderType: { $ne: 'human' }  // AI or persona
+        },
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 1
+      });
+
+      if (result.success && result.data && result.data.length > 0) {
+        // Only return if it's from THIS persona (we're learning from our own corrections)
+        const msg = result.data[0].data;
+        if (msg.senderId === this.personaUser.id) {
+          return msg;
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get recent conversation history for training context
+   */
+  private async getRecentConversationHistory(roomId: UUID, limit: number = 10): Promise<ChatMessageEntity[]> {
+    try {
+      const result = await DataDaemon.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: { roomId },
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit
+      });
+
+      if (result.success && result.data) {
+        return result.data.map(record => record.data).reverse();  // Chronological order
+      }
+
+      return [];
+    } catch {
+      return [];
+    }
+  }
 
   /**
    * Log to persona's cognition.log file
@@ -85,6 +188,12 @@ export class PersonaMessageEvaluator {
     messageText: string
   ): Promise<void> {
     const taskStartTime = Date.now();
+
+    // SIGNAL DETECTION: Analyze message content for training signals
+    // Fire-and-forget - AI classifier determines if content is feedback
+    this.detectAndBufferTrainingSignal(messageEntity).catch(err => {
+      this.log(`⚠️ ${this.personaUser.displayName}: Signal detection failed (non-fatal):`, err);
+    });
 
     // STEP 1: Create Task from message
     const task: Task = {
