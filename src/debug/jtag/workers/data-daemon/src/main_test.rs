@@ -25,6 +25,7 @@ use uuid::Uuid;
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JTAGRequest {
     id: String,
     #[serde(rename = "type")]
@@ -54,6 +55,7 @@ struct JTAGResponse {
 // Database Handle Registry
 // ============================================================================
 
+#[allow(dead_code)]
 struct DatabaseHandle {
     connection: Connection,
     path: String,
@@ -67,6 +69,7 @@ type HandleRegistry = Arc<Mutex<HashMap<String, DatabaseHandle>>>;
 // ============================================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct OpenDatabaseRequest {
     filename: String,
     #[serde(rename = "adapterType")]

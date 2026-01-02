@@ -17,10 +17,10 @@
       "binary": "workers/data-daemon/target/release/data-daemon-worker",
       "socket": "/tmp/jtag-data-daemon-worker.sock",
       "args": [
-        ".continuum/jtag/data/database.sqlite"
+        "/tmp/jtag-data-daemon-worker.sock"
       ],
       "description": "Data daemon worker for WAL cleanup and fast SQLite operations",
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "logger",
@@ -34,7 +34,7 @@
       "binary": "workers/search/target/release/search-worker",
       "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
-      "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
+      "description": "Search algorithms (BoW, BM25, Cosine vector similarity) off main thread via Unix socket",
       "enabled": true
     }
   ],

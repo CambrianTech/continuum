@@ -11,10 +11,7 @@
  */
 
 import * as net from 'net';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { getDatabasePath } from '../../../system/config/ServerConfig';
 import {
   DataStorageAdapter,
   type DataRecord,
@@ -25,42 +22,44 @@ import {
   type RecordData,
   type CollectionStats,
   type StorageOperation,
-  type QueryExplanation
+  type QueryExplanation,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
+import { SqlNamingConverter } from '../shared/SqlNamingConverter';
+import {
+  type VectorSearchOptions,
+  type VectorSearchResponse,
+  type VectorSearchResult as VectorSearchResultType,
+  type VectorEmbedding,
+  toNumberArray
+} from '../shared/VectorSearchTypes';
+import { EmbeddingService } from '../../../system/core/services/EmbeddingService';
+import { Logger } from '../../../system/core/logging/Logger';
+
+const log = Logger.create('RustWorkerStorageAdapter', 'data');
 
 /**
  * Configuration for Rust worker connection
+ * ALL fields are required - no defaults, caller must provide everything
  */
 export interface RustWorkerConfig {
-  /** Path to Unix socket */
+  /** Path to Rust worker Unix socket (e.g., /tmp/jtag-data-daemon-worker.sock) */
   socketPath: string;
-  /** Optional database path (if not using default) */
-  dbPath?: string;
-  /** Database handle from registry */
-  dbHandle?: string;
-  /** Connection timeout in ms */
-  timeout?: number;
+  /** Absolute path to SQLite database file */
+  dbPath: string;
+  /** Connection/request timeout in ms */
+  timeout: number;
 }
 
 /**
- * JTAG protocol message format (matches Rust JTAGRequest/JTAGResponse)
+ * Rust worker request/response format (simpler than full JTAG protocol)
+ * Uses serde's tag-based enum serialization
  */
-interface JTAGRequest<T = any> {
-  id: string;
-  type: string;
-  timestamp: string;
-  payload: T;
-}
-
-interface JTAGResponse<T = any> {
-  id: string;
-  type: string;
-  timestamp: string;
-  payload: T;
-  requestId: string;
-  success: boolean;
-  error?: string;
-  errorType?: string;
+interface RustResponse {
+  status: 'ok' | 'error' | 'pong';
+  data?: any;
+  message?: string;
+  uptime_seconds?: number;
 }
 
 /**
@@ -69,14 +68,39 @@ interface JTAGResponse<T = any> {
 export class RustWorkerStorageAdapter extends DataStorageAdapter {
   private config!: RustWorkerConfig;
   private socket: net.Socket | null = null;
-  private pendingRequests: Map<string, {
+  private adapterHandle: string | null = null;  // Handle from adapter/open
+  private pendingResponse: {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
-  }> = new Map();
+  } | null = null;
 
   private reconnecting: boolean = false;
   private buffer: string = '';
+
+  /**
+   * Convert object keys from camelCase to snake_case (for sending to Rust/SQL)
+   */
+  private toSnakeCaseObject(obj: Record<string, any>): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const snakeKey = SqlNamingConverter.toSnakeCase(key);
+      result[snakeKey] = value;
+    }
+    return result;
+  }
+
+  /**
+   * Convert object keys from snake_case to camelCase (for returning to TypeScript)
+   */
+  private toCamelCaseObject(obj: Record<string, any>): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      const camelKey = SqlNamingConverter.toCamelCase(key);
+      result[camelKey] = value;
+    }
+    return result;
+  }
 
   constructor(config?: RustWorkerConfig) {
     super();
@@ -87,17 +111,44 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
 
   /**
    * Initialize connection to Rust worker
+   *
+   * REQUIRED in config.options:
+   * - socketPath: Path to Rust worker Unix socket
+   * - dbPath: Absolute path to SQLite database file
    */
   async initialize(config: StorageAdapterConfig): Promise<void> {
-    // Merge initialization config with constructor config
+    const options = config.options as any;
+
+    // Require socket and database paths - no defaults
+    if (!options?.socketPath) {
+      throw new Error('RustWorkerStorageAdapter requires socketPath in options');
+    }
+    if (!options?.dbPath) {
+      throw new Error('RustWorkerStorageAdapter requires dbPath in options');
+    }
+
     this.config = {
-      socketPath: this.config?.socketPath || '/tmp/data-worker.sock',
-      dbPath: (config.options as any)?.dbPath || getDatabasePath(),
-      dbHandle: (config.options as any)?.dbHandle || 'default',
-      timeout: this.config?.timeout || 30000
+      socketPath: options.socketPath,
+      dbPath: options.dbPath,
+      timeout: options.timeout || 30000
     };
 
     await this.connect();
+
+    // Open SQLite adapter and store handle
+    const response = await this.sendCommand<{ handle: string }>('adapter/open', {
+      config: {
+        adapter_type: 'sqlite',
+        connection_string: this.config.dbPath
+      }
+    });
+
+    if (response.status === 'ok' && response.data?.handle) {
+      this.adapterHandle = response.data.handle;
+      console.log(`✅ Opened SQLite adapter: ${this.config.dbPath} → handle ${this.adapterHandle}`);
+    } else {
+      throw new Error(`Failed to open adapter: ${response.message || 'Unknown error'}`);
+    }
   }
 
   /**
@@ -125,9 +176,9 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       });
 
       this.socket.on('close', () => {
-        console.warn('⚠️  Rust worker connection closed');
+        console.warn('⚠️  Rust worker connection closed, will reconnect on next request');
         this.socket = null;
-        // TODO: Implement reconnection logic
+        this.adapterHandle = null; // Need to reopen adapter after reconnect
       });
 
       // Connection timeout
@@ -153,18 +204,13 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       if (!line.trim()) continue;
 
       try {
-        const response: JTAGResponse = JSON.parse(line);
-        const pending = this.pendingRequests.get(response.requestId);
+        const response: RustResponse = JSON.parse(line);
 
-        if (pending) {
-          clearTimeout(pending.timeout);
-          this.pendingRequests.delete(response.requestId);
-
-          if (response.success) {
-            pending.resolve(response.payload);
-          } else {
-            pending.reject(new Error(response.error || 'Unknown error'));
-          }
+        if (this.pendingResponse) {
+          clearTimeout(this.pendingResponse.timeout);
+          const pending = this.pendingResponse;
+          this.pendingResponse = null;
+          pending.resolve(response);
         }
       } catch (error) {
         console.error('Failed to parse response from Rust worker:', error);
@@ -173,32 +219,44 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Send message to Rust worker and wait for response
+   * Send command to Rust worker and wait for response
+   * Uses Rust's serde tag format: {"command": "name", ...params}
+   * Auto-reconnects if connection was lost
    */
-  private async sendMessage<T>(type: string, payload: any): Promise<T> {
+  private async sendCommand<T = any>(command: string, params: Record<string, any> = {}): Promise<RustResponse & { data?: T }> {
+    // Auto-reconnect if socket is closed
     if (!this.socket) {
-      throw new Error('Not connected to Rust worker');
+      console.log('🔄 Reconnecting to Rust worker...');
+      await this.connect();
+
+      // Reopen adapter after reconnect
+      const response = await this.sendCommand<{ handle: string }>('adapter/open', {
+        config: {
+          adapter_type: 'sqlite',
+          connection_string: this.config.dbPath
+        }
+      });
+
+      if (response.status === 'ok' && response.data?.handle) {
+        this.adapterHandle = response.data.handle;
+        console.log(`✅ Reopened SQLite adapter: ${this.config.dbPath} → handle ${this.adapterHandle}`);
+      } else {
+        throw new Error(`Failed to reopen adapter: ${response.message || 'Unknown error'}`);
+      }
     }
 
-    const requestId = uuidv4();
-    const request: JTAGRequest = {
-      id: requestId,
-      type,
-      timestamp: new Date().toISOString(),
-      payload: {
-        ...payload,
-        dbHandle: this.config.dbHandle,
-        dbPath: this.config.dbPath
-      }
+    const request = {
+      command,
+      ...params
     };
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.pendingRequests.delete(requestId);
-        reject(new Error(`Request timeout: ${type}`));
+        this.pendingResponse = null;
+        reject(new Error(`Request timeout: ${command}`));
       }, this.config.timeout);
 
-      this.pendingRequests.set(requestId, { resolve, reject, timeout });
+      this.pendingResponse = { resolve, reject, timeout };
 
       // Send newline-delimited JSON
       this.socket!.write(JSON.stringify(request) + '\n');
@@ -206,71 +264,106 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Ensure we're connected and have an adapter handle (auto-reconnect)
+   */
+  private async ensureConnected(): Promise<void> {
+    if (!this.socket || !this.adapterHandle) {
+      // Force reconnect by calling sendCommand with a benign command
+      // The reconnect logic in sendCommand will re-establish connection and adapter
+      await this.sendCommand('ping', {});
+    }
+  }
+
+  /**
    * Create record - delegates to Rust worker
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
     try {
-      // Send raw entity data to Rust (it doesn't need full DataRecord structure)
-      const response = await this.sendMessage<{ data: T }>(DATA_COMMANDS.CREATE, {
-        collection: record.collection,
-        document: record.data
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      // Convert data keys to snake_case for SQL columns
+      const snakeCaseData = this.toSnakeCaseObject(record.data as Record<string, any>);
+
+      // Add id and metadata fields for storage
+      const fullData = {
+        id: record.id,
+        ...snakeCaseData,
+        created_at: record.metadata?.createdAt || new Date().toISOString(),
+        updated_at: record.metadata?.updatedAt || new Date().toISOString(),
+        version: record.metadata?.version || 1
+      };
+
+      const response = await this.sendCommand('data/create', {
+        handle: this.adapterHandle,
+        collection: SqlNamingConverter.toTableName(record.collection),
+        data: fullData
       });
 
-      // Rust returns raw entity, wrap back in DataRecord with metadata
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Create failed' };
+      }
+
       return {
         success: true,
         data: {
           id: record.id,
           collection: record.collection,
-          data: response.data,
+          data: record.data,
           metadata: record.metadata
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Read single record by ID
+   * Read single record by ID - uses query with filter
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
     try {
-      const response = await this.sendMessage<{ data: T | null }>(DATA_COMMANDS.READ, {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      const response = await this.sendCommand<{ items: T[]; count: number }>('data/list', {
+        handle: this.adapterHandle,
         collection,
-        id
+        filter: { id },
+        limit: 1
       });
 
-      if (!response.data) {
-        return {
-          success: false,
-          error: 'Record not found'
-        };
+      if (response.status !== 'ok' || !response.data?.items?.length) {
+        return { success: false, error: 'Record not found' };
       }
 
-      // Wrap raw entity in DataRecord structure
-      // Note: Rust doesn't return metadata separately yet, so we create default metadata
+      const item = response.data.items[0];
+      // Ensure id is always present in the data object
+      // Some callers expect data.data.id to be set
+      if (!item.id) {
+        item.id = id;
+      }
       return {
         success: true,
         data: {
           id,
           collection,
-          data: response.data,
+          data: item,
           metadata: {
-            createdAt: new Date().toISOString(), // TODO: Get from Rust
+            createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             version: 1
           }
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -279,46 +372,87 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
     try {
-      const response = await this.sendMessage<{
-        items: T[];
-        total: number;
-      }>(DATA_COMMANDS.LIST, {
-        collection: query.collection,
-        filter: query.filter,
-        orderBy: query.sort,
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      // Convert filter keys to snake_case for SQL
+      const snakeCaseFilter = query.filter ? this.toSnakeCaseObject(query.filter) : undefined;
+
+      // Convert sort field names to snake_case
+      const snakeCaseOrderBy = query.sort?.map(s => ({
+        field: SqlNamingConverter.toSnakeCase(s.field),
+        direction: s.direction
+      }));
+
+      const response = await this.sendCommand<{ items: T[]; count: number }>('data/list', {
+        handle: this.adapterHandle,
+        collection: SqlNamingConverter.toTableName(query.collection),
+        filter: snakeCaseFilter,
+        order_by: snakeCaseOrderBy,
         limit: query.limit,
         offset: query.offset
       });
 
-      // Wrap raw entities in DataRecord structures
-      const records: DataRecord<T>[] = response.items.map((item: any) => ({
-        id: item.id,
-        collection: query.collection,
-        data: item,
-        metadata: {
-          createdAt: new Date().toISOString(), // TODO: Get from Rust
-          updatedAt: new Date().toISOString(),
-          version: 1
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Query failed' };
+      }
+
+      const records: DataRecord<T>[] = (response.data?.items || []).map((item: any) => {
+        // Two table formats:
+        // 1. Simple entity: has 'data' column containing JSON string
+        // 2. Entity-specific: has individual columns for each field
+
+        let entityData: T;
+
+        if (typeof item.data === 'string') {
+          // Simple entity table - parse JSON from data column
+          // Data inside is already camelCase (stored as-is)
+          entityData = JSON.parse(item.data) as T;
+        } else if (item.data && typeof item.data === 'object') {
+          // Data is already an object (maybe pre-parsed by Rust)
+          entityData = item.data as T;
+        } else {
+          // Entity-specific table - extract non-BaseEntity fields
+          // Rust returns snake_case columns, convert to camelCase
+          const { id, created_at, updated_at, version, ...rest } = item;
+          entityData = this.toCamelCaseObject(rest) as T;
         }
-      }));
+
+        // Ensure id is always present in entityData
+        // Some callers access data.id directly instead of the wrapper
+        if (!(entityData as any).id) {
+          (entityData as any).id = item.id;
+        }
+
+        return {
+          id: item.id,
+          collection: query.collection,
+          data: entityData,
+          metadata: {
+            createdAt: item.created_at || new Date().toISOString(),
+            updatedAt: item.updated_at || new Date().toISOString(),
+            version: item.version || 1
+          }
+        };
+      });
 
       return {
         success: true,
         data: records,
         metadata: {
-          totalCount: response.total
+          totalCount: response.data?.count || records.length
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Update record
+   * Update record - delegates to Rust worker
    */
   async update<T extends RecordData>(
     collection: string,
@@ -327,38 +461,76 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     incrementVersion?: boolean
   ): Promise<StorageResult<DataRecord<T>>> {
     try {
-      const response = await this.sendMessage<{ data: T }>(DATA_COMMANDS.UPDATE, {
-        collection,
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      // Convert data keys to snake_case for SQL columns
+      const snakeCaseData = this.toSnakeCaseObject(data as Record<string, any>);
+
+      // Add updated_at and version
+      const updateData = {
+        ...snakeCaseData,
+        updated_at: new Date().toISOString(),
+        version: incrementVersion ? { $increment: 1 } : undefined
+      };
+
+      const response = await this.sendCommand('data/update', {
+        handle: this.adapterHandle,
+        collection: SqlNamingConverter.toTableName(collection),
         id,
-        updates: data
+        data: updateData
       });
+
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Update failed' };
+      }
 
       return {
         success: true,
         data: {
           id,
           collection,
-          data: response.data,
+          data: data as T,
           metadata: {
-            createdAt: new Date().toISOString(), // TODO: Get from Rust
+            createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            version: incrementVersion ? 2 : 1 // TODO: Track properly
+            version: 1
           }
         }
       };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
   /**
-   * Delete record - TODO: Implement in Rust worker first
+   * Delete record
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
-    throw new Error('Delete not yet implemented in Rust worker');
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      const response = await this.sendCommand('data/delete', {
+        handle: this.adapterHandle,
+        collection,
+        id
+      });
+
+      if (response.status !== 'ok') {
+        return { success: false, error: response.message || 'Delete failed' };
+      }
+
+      return { success: true, data: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
   }
 
   /**
@@ -431,7 +603,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   /**
    * Ensure collection schema exists (no-op for now, SQLite is schemaless for our use)
    */
-  async ensureSchema(collection: string, schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collection: string, schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     // Rust worker uses dynamic table creation on first insert
     // No need to explicitly create schema
     return {
@@ -490,19 +662,170 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Vector search using Rust data-daemon worker
+   *
+   * OPTIMIZED: Only the query vector (3KB for 384 dims) is sent to Rust.
+   * Rust reads corpus vectors directly from SQLite (BLOB format) and computes
+   * cosine similarity with rayon parallelism. Only top-k IDs and scores are
+   * returned, then we fetch full records for those IDs.
+   *
+   * Process:
+   * 1. Generate query embedding if text provided (uses EmbeddingService)
+   * 2. Send query vector to Rust worker's vector/search command
+   * 3. Rust reads vectors from SQLite, computes similarity in parallel
+   * 4. Fetch full records for top-k IDs returned by Rust
+   */
+  async vectorSearch<T extends RecordData>(
+    options: VectorSearchOptions
+  ): Promise<StorageResult<VectorSearchResponse<T>>> {
+    const startTime = Date.now();
+    const collection = SqlNamingConverter.toTableName(options.collection);
+
+    try {
+      await this.ensureConnected();
+
+      // 1. Get query vector
+      let queryVector: VectorEmbedding;
+      if (options.queryVector) {
+        queryVector = options.queryVector;
+      } else if (options.queryText) {
+        // Generate embedding via EmbeddingService
+        const embedding = await EmbeddingService.embedText(options.queryText);
+        if (!embedding) {
+          return {
+            success: false,
+            error: 'Failed to generate query embedding'
+          };
+        }
+        queryVector = embedding;
+      } else {
+        return {
+          success: false,
+          error: 'Must provide either queryText or queryVector'
+        };
+      }
+
+      const k = options.k || 10;
+      const threshold = options.similarityThreshold || 0.0;
+
+      // 2. Send ONLY query vector to Rust worker (small payload: 3KB for 384 dims)
+      // Rust reads corpus vectors directly from SQLite and computes cosine similarity
+      interface RustVectorSearchResponse {
+        results: Array<{ id: string; score: number; distance: number }>;
+        count: number;
+        corpus_size: number;
+      }
+
+      const searchResult = await this.sendCommand<RustVectorSearchResponse>('vector/search', {
+        handle: this.adapterHandle,
+        collection,
+        query_vector: toNumberArray(queryVector),
+        k,
+        threshold
+      });
+
+      if (searchResult.status !== 'ok' || !searchResult.data) {
+        // Fallback message for collections without embeddings
+        if (searchResult.message?.includes('no such column: embedding')) {
+          return {
+            success: true,
+            data: {
+              results: [],
+              totalResults: 0,
+              queryVector,
+              metadata: {
+                collection: options.collection,
+                searchMode: options.hybridMode || 'semantic',
+                embeddingModel: options.embeddingModel?.name || 'unknown',
+                queryTime: Date.now() - startTime
+              }
+            }
+          };
+        }
+        return {
+          success: false,
+          error: searchResult.message || 'Vector search failed in Rust worker'
+        };
+      }
+
+      const rustResults = searchResult.data.results;
+      const corpusSize = searchResult.data.corpus_size;
+      log.debug(`Vector search: Rust returned ${rustResults.length}/${corpusSize} results`);
+
+      // 3. Fetch full records for top-k IDs
+      // Only fetch records we actually need (much more efficient than fetching all)
+      const results: VectorSearchResultType<T>[] = [];
+
+      for (const rustResult of rustResults) {
+        // Fetch full record by ID
+        const recordResult = await this.read<T>(options.collection, rustResult.id as UUID);
+
+        if (recordResult.success && recordResult.data) {
+          results.push({
+            id: rustResult.id as UUID,
+            data: recordResult.data.data,
+            score: rustResult.score,
+            distance: rustResult.distance,
+            metadata: {
+              collection: options.collection,
+              embeddingModel: options.embeddingModel?.name,
+              queryTime: Date.now() - startTime
+            }
+          });
+        }
+      }
+
+      log.info(`Vector search: ${options.collection} found ${results.length}/${corpusSize} (threshold=${threshold}, k=${k})`);
+
+      return {
+        success: true,
+        data: {
+          results,
+          totalResults: results.length,
+          queryVector,
+          metadata: {
+            collection: options.collection,
+            searchMode: options.hybridMode || 'semantic',
+            embeddingModel: options.embeddingModel?.name || 'unknown',
+            queryTime: Date.now() - startTime
+          }
+        }
+      };
+    } catch (error: any) {
+      log.error(`Vector search failed: ${error.message}`);
+      return {
+        success: false,
+        error: `Vector search failed: ${error.message}`
+      };
+    }
+  }
+
+  /**
    * Close connection to Rust worker
    */
   async close(): Promise<void> {
+    // Close adapter in Rust first
+    if (this.adapterHandle && this.socket) {
+      try {
+        await this.sendCommand('adapter/close', { handle: this.adapterHandle });
+        console.log(`✅ Closed SQLite adapter: ${this.adapterHandle}`);
+      } catch (error) {
+        console.warn('⚠️  Failed to close adapter in Rust:', error);
+      }
+      this.adapterHandle = null;
+    }
+
+    // Close socket
     if (this.socket) {
       this.socket.destroy();
       this.socket = null;
     }
 
-    // Reject all pending requests
-    for (const [id, pending] of this.pendingRequests) {
-      clearTimeout(pending.timeout);
-      pending.reject(new Error('Connection closed'));
+    // Reject pending response
+    if (this.pendingResponse) {
+      clearTimeout(this.pendingResponse.timeout);
+      this.pendingResponse.reject(new Error('Connection closed'));
+      this.pendingResponse = null;
     }
-    this.pendingRequests.clear();
   }
 }

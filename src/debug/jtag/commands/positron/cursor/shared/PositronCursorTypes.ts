@@ -1,0 +1,59 @@
+/**
+ * Positron Cursor Command Types
+ *
+ * Enables AIs to point, highlight, and draw attention to elements in the UI.
+ * The cursor is the AI's "hand" - its spatial presence in the interface.
+ */
+
+import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import { createPayload } from '@system/core/types/JTAGTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+
+export type CursorAction = 'focus' | 'unfocus' | 'draw' | 'clear';
+export type DrawShape = 'circle' | 'rectangle' | 'arrow' | 'underline';
+
+export interface PositronCursorParams extends CommandParams {
+  /** Action to perform */
+  action: CursorAction;
+
+  /** Target - either coordinates or selector */
+  x?: number;
+  y?: number;
+  selector?: string;
+
+  /** For draw action - shape type */
+  shape?: DrawShape;
+
+  /** Visual customization */
+  color?: string;
+
+  /** Auto-hide after duration (ms), 0 for persistent */
+  duration?: number;
+
+  /** Optional message/tooltip */
+  message?: string;
+
+  /** Persona making this cursor action */
+  personaId?: string;
+  personaName?: string;
+}
+
+export interface PositronCursorResult extends CommandResult {
+  success: boolean;
+  action: CursorAction;
+  message?: string;
+}
+
+/**
+ * Factory function for creating PositronCursorResult
+ */
+export const createPositronCursorResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  action: CursorAction,
+  data: Omit<Partial<PositronCursorResult>, 'context' | 'sessionId' | 'action'>
+): PositronCursorResult => createPayload(context, sessionId, {
+  success: true,
+  action,
+  ...data
+});

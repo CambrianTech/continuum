@@ -421,6 +421,11 @@ export class EventBridge {
       return true;
     }
 
+    // Positron RAG context events should be bridged (new unified state system)
+    if (eventName.includes('positron:rag-context')) {
+      return true;
+    }
+
     return false;
   }
 }

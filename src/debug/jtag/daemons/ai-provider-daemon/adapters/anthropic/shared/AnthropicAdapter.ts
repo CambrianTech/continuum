@@ -18,6 +18,8 @@ import type {
   TextGenerationRequest,
   TextGenerationResponse,
   HealthStatus,
+  ToolCall,
+  NativeToolSpec,
 } from '../../../shared/AIProviderTypesV2';
 import { AIProviderError } from '../../../shared/AIProviderTypesV2';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
@@ -30,6 +32,7 @@ import {
 } from '../../../shared/ModelTiers';
 import { MODEL_IDS } from '../../../../../system/shared/Constants';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
+import { MediaContentFormatter } from '../../../shared/MediaContentFormatter';
 
 export class AnthropicAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'anthropic';
@@ -79,9 +82,10 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
     try {
       // Log incoming request messages
-      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal`);
+      const hasNativeTools = request.tools && request.tools.length > 0;
+      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal, ${hasNativeTools ? `${request.tools!.length} native tools` : 'no native tools'}`);
 
-      // Convert messages to Anthropic format
+      // Convert messages to Anthropic format using MediaContentFormatter
       const messages = request.messages.map((msg, index) => {
         const isMultimodal = typeof msg.content !== 'string';
         this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${msg.role}, ${isMultimodal ? 'MULTIMODAL' : 'text-only'}`);
@@ -90,11 +94,35 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           role: msg.role === 'assistant' ? 'assistant' : 'user',
           content: typeof msg.content === 'string'
             ? msg.content
-            : this.formatMultimodalContent(msg.content),
+            : MediaContentFormatter.formatForAnthropic(msg.content),
         };
       });
 
-      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Sending API request with ${messages.length} messages to Anthropic`);
+      this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Sending API request with ${messages.length} messages to Anthropic${hasNativeTools ? ' (with native tools)' : ''}`);
+
+      // Build request body
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages,
+        system: request.systemPrompt,
+        max_tokens: request.maxTokens || 1024,
+        temperature: request.temperature ?? 0.7,
+        top_p: request.topP,
+        stop_sequences: request.stopSequences,
+      };
+
+      // Add native tools if provided (Anthropic's JSON tool format)
+      if (hasNativeTools) {
+        requestBody.tools = request.tools;
+        if (request.tool_choice) {
+          // Anthropic tool_choice format: 'auto', 'any', 'none', or { type: 'tool', name: 'tool_name' }
+          if (typeof request.tool_choice === 'object' && 'name' in request.tool_choice) {
+            requestBody.tool_choice = { type: 'tool', name: request.tool_choice.name };
+          } else {
+            requestBody.tool_choice = { type: request.tool_choice };
+          }
+        }
+      }
 
       // Make API request
       const response = await this.makeRequest<any>('/v1/messages', {
@@ -104,21 +132,30 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           'x-api-key': this.apiKey,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          system: request.systemPrompt,
-          max_tokens: request.maxTokens || 1024,
-          temperature: request.temperature ?? 0.7,
-          top_p: request.topP,
-          stop_sequences: request.stopSequences,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const responseTime = Date.now() - startTime;
 
-      // Parse response
-      const text = response.content?.[0]?.text || '';
+      // Parse response - handle both text and tool_use content blocks
+      let text = '';
+      const toolCalls: ToolCall[] = [];
+
+      for (const block of response.content || []) {
+        if (block.type === 'text') {
+          text += block.text;
+        } else if (block.type === 'tool_use') {
+          // Native tool call from Claude
+          toolCalls.push({
+            id: block.id,
+            name: block.name,
+            input: block.input || {},
+          });
+          this.log(request, 'debug', `🔧 [ANTHROPIC-ADAPTER] Native tool call: ${block.name} (id: ${block.id})`);
+        }
+      }
+
+      const hasToolCalls = toolCalls.length > 0;
 
       return {
         text,
@@ -133,6 +170,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         },
         responseTime,
         requestId,
+        ...(hasToolCalls && { toolCalls }),
       };
     } catch (error) {
       throw new AIProviderError(
@@ -155,10 +193,10 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.003, output: 0.015 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsFunctions: true,  // Native tool_use support enabled
       },
       {
-        id: MODEL_IDS.ANTHROPIC.OPUS_3,
+        id: MODEL_IDS.ANTHROPIC.OPUS_4,
         name: 'Claude 3 Opus',
         provider: 'anthropic',
         capabilities: ['text-generation', 'chat', 'multimodal'],
@@ -166,10 +204,10 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.015, output: 0.075 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsFunctions: true,  // Native tool_use support enabled
       },
       {
-        id: MODEL_IDS.ANTHROPIC.HAIKU_3,
+        id: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
         name: 'Claude 3 Haiku',
         provider: 'anthropic',
         capabilities: ['text-generation', 'chat', 'multimodal'],
@@ -177,7 +215,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.00025, output: 0.00125 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsFunctions: true,  // Native tool_use support enabled
       },
     ];
   }
@@ -196,7 +234,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: MODEL_IDS.ANTHROPIC.HAIKU_3,
+          model: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 1,
         }),
@@ -245,8 +283,8 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
     const models = {
       [MODEL_IDS.ANTHROPIC.SONNET_4_5]: { input: 0.003, output: 0.015 },
-      [MODEL_IDS.ANTHROPIC.OPUS_3]: { input: 0.015, output: 0.075 },
-      [MODEL_IDS.ANTHROPIC.HAIKU_3]: { input: 0.00025, output: 0.00125 },
+      [MODEL_IDS.ANTHROPIC.OPUS_4]: { input: 0.015, output: 0.075 },
+      [MODEL_IDS.ANTHROPIC.HAIKU_3_5]: { input: 0.00025, output: 0.00125 },
     };
 
     const pricing = models[model as keyof typeof models];
@@ -258,71 +296,13 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
     return inputCost + outputCost;
   }
 
-  private formatMultimodalContent(content: any[]): any {
-    this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() called with ${content.length} parts, ${content.some(p => p.type === 'image') ? 'has images' : 'no images'}`);
+  // Multimodal content formatting now handled by MediaContentFormatter
+  // See: daemons/ai-provider-daemon/shared/MediaContentFormatter.ts
 
-    const formatted = content.map((part, index) => {
-      if (part.type === 'text') {
-        this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: text (${part.text.length} chars)`);
-        return { type: 'text', text: part.text };
-      } else if (part.type === 'image') {
-        this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: image detected (base64: ${!!part.base64}, url: ${!!part.url})`);
-
-        // Handle base64 images (from screenshots, tool results)
-        // Support both flat format (part.base64) and nested format (part.image.base64)
-        const base64Data = part.base64 || part.image?.base64;
-        const mimeType = part.mimeType || part.image?.mimeType || 'image/png';
-
-        if (base64Data) {
-          const formatted = {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType,
-              data: base64Data
-            }
-          };
-          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as base64 image (${formatted.source.data.length} chars, ${formatted.source.media_type})`);
-          return formatted;
-        }
-        // Handle URL images
-        if (part.url) {
-          const formatted = {
-            type: 'image',
-            source: {
-              type: 'url',
-              url: part.url
-            }
-          };
-          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as URL image (${formatted.source.url})`);
-          return formatted;
-        }
-        // Fallback: try legacy format (part.image.url)
-        if (part.image?.url) {
-          const formatted = {
-            type: 'image',
-            source: {
-              type: 'url',
-              url: part.image.url
-            }
-          };
-          this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Formatted as legacy URL image (${formatted.source.url})`);
-          return formatted;
-        }
-
-        this.log(null, 'warn', `📸 [ANTHROPIC-ADAPTER] Part ${index}: Image part has no valid source`);
-      }
-      return part;
-    });
-
-    this.log(null, 'debug', `📸 [ANTHROPIC-ADAPTER] formatMultimodalContent() result: ${formatted.length} parts (${formatted.filter(p => p.type === 'image').length} images, ${formatted.filter(p => p.type === 'text').length} text)`);
-
-    return formatted;
-  }
-
-  private mapFinishReason(reason: string): 'stop' | 'length' | 'error' {
+  private mapFinishReason(reason: string): 'stop' | 'length' | 'error' | 'tool_use' {
     if (reason === 'end_turn') return 'stop';
     if (reason === 'max_tokens') return 'length';
+    if (reason === 'tool_use') return 'tool_use';
     return 'error';
   }
 
@@ -365,11 +345,11 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
   async resolveModelTier(tier: ModelTier): Promise<ModelResolution> {
     // Anthropic tier mappings
     const tierMappings: Record<ModelTier, string> = {
-      [ModelTier.FAST]: MODEL_IDS.ANTHROPIC.HAIKU_3,
+      [ModelTier.FAST]: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
       [ModelTier.BALANCED]: MODEL_IDS.ANTHROPIC.SONNET_4_5, // Latest Sonnet
-      [ModelTier.PREMIUM]: MODEL_IDS.ANTHROPIC.OPUS_3,
+      [ModelTier.PREMIUM]: MODEL_IDS.ANTHROPIC.OPUS_4,
       [ModelTier.LATEST]: MODEL_IDS.ANTHROPIC.SONNET_4_5, // Always latest
-      [ModelTier.FREE]: MODEL_IDS.ANTHROPIC.HAIKU_3, // Cheapest, not truly free
+      [ModelTier.FREE]: MODEL_IDS.ANTHROPIC.HAIKU_3_5, // Cheapest, not truly free
     };
 
     const modelId = tierMappings[tier];

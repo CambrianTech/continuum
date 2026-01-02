@@ -61,18 +61,24 @@ export const COMMON_EVENT_NAMES = {
   CHAT_MESSAGE_RECEIVED: 'chat-message-received',
   CHAT_PARTICIPANT_JOINED: 'chat-participant-joined',
   CHAT_PARTICIPANT_LEFT: 'chat-participant-left',
-  
+
   // System events
   SYSTEM_STATUS_CHANGE: 'system-status-change',
   SYSTEM_HEALTH_UPDATE: 'system-health-update',
-  
+
   // Session events
   SESSION_CREATED: 'session-created',
   SESSION_DESTROYED: 'session-destroyed',
-  
+
   // Command events
   COMMAND_EXECUTED: 'command-executed',
-  COMMAND_FAILED: 'command-failed'
+  COMMAND_FAILED: 'command-failed',
+
+  // Canvas events (collaborative drawing)
+  CANVAS_STROKE_ADDED: 'canvas:stroke:added',
+  CANVAS_STROKE_DELETED: 'canvas:stroke:deleted',
+  CANVAS_CLEARED: 'canvas:cleared',
+  CANVAS_CURSOR_MOVED: 'canvas:cursor:moved'
 } as const;
 
 /**

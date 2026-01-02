@@ -17,6 +17,59 @@ This document defines the complete architecture for LoRA fine-tuning training sy
 3. Storage-adapter-agnostic data management
 4. Continuous learning integration with PersonaUser
 5. Production-ready monitoring and metrics
+6. Simulation-based synthetic data generation (low-budget AI path)
+
+---
+
+## The Low-Budget Reality: Simulation as Necessity
+
+**We are the free AI.** We can't buy datasets. We can't afford massive data collection. We have maybe a few GB to bootstrap.
+
+**But we can generate infinite synthetic data via simulation:**
+
+```
+The Complete Training Loop:
+┌─────────────────────────────────────────────────────────────────┐
+│ 1. GATHER    → Scrape/download initial seed data               │
+│ 2. SIMULATE  → Generate synthetic data from seed               │
+│ 3. VALIDATE  → AIs vote: "Is simulated ≈ real?" (GAN-like)     │
+│ 4. TRAIN     → LoRA fine-tuning on validated data              │
+│ 5. BENCHMARK → Measure improvement on held-out test set        │
+│ 6. META-LEARN→ Persona learns to make BETTER simulations       │
+│              → Loop back to step 2                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Proven in 2017:** Cambrian used ArchViz-quality Unreal Engine rendering to generate photorealistic training data for GANs. The domain gap disappeared when the simulation looked real. Silicon Valley said "you can't do pure sim" - they were wrong, they just had bad renderers.
+
+### Two Benchmark Types (Both Required)
+
+```
+1. SIMULATION QUALITY BENCHMARK (GAN-like discriminator)
+   Question: "Is synthetic data indistinguishable from real?"
+   Method: Present mixed samples to validator AIs, vote real/synthetic
+   Target: >90% of synthetic samples fool validators
+
+2. TASK PERFORMANCE BENCHMARK (Training evaluation)
+   Question: "Is our LoRA actually making us better?"
+   Method: Before/after comparison on held-out test data
+   Target: Measurable improvement on target task
+```
+
+**Benchmarks are mixed - qualitative AND quantitative:**
+- Quantitative: Code compiles, test pass rate, latency metrics
+- Qualitative: Response is helpful, code is readable, results make sense
+- Neither alone is sufficient - the system triangulates
+
+### AI Collaborative Data Generation
+
+Same patterns that power validation power data generation:
+- **Dumber AIs**: Scrape, gather, run rendering jobs
+- **Mid-tier AIs**: Vote on quality, filter low-quality generations
+- **Smarter AIs**: Final judgment, trend analysis, parameter tuning
+- **Leadership AIs**: Plan generation campaigns, identify gaps
+
+**See also:** [GRID-ECONOMICS.md](GRID-ECONOMICS.md) for full economic model and security implications.
 
 ---
 

@@ -118,6 +118,17 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
     rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
 
+  // Drawing canvas (collaborative) - activity-based content type
+  // Each canvas is an ActivityEntity with persistent strokes
+  // Chat room for discussing the drawing with vision-capable AIs
+  canvas: {
+    widget: 'drawing-canvas-widget',
+    displayName: 'Canvas',
+    pathPrefix: '/canvas',
+    requiresEntity: true,  // Needs activityId (canvas instance)
+    rightPanel: { widget: 'chat-widget', room: 'canvas', compact: false },
+  },
+
   // System diagnostics and persona logs
   // Help assistant for log interpretation
   diagnostics: {

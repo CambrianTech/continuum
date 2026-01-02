@@ -72,8 +72,9 @@ export class GenerateServerCommand extends CommandBase<GenerateParams, GenerateR
         throw new Error('CommandSpec must have a "description" field');
       }
 
-      // Determine root path (3 levels up from this file)
-      const rootPath = path.resolve(__dirname, '../../..');
+      // Use process.cwd() - server is always started from jtag root
+      // This is more robust than fragile __dirname traversal
+      const rootPath = process.cwd();
 
       // Create generator instance
       const generator = new CommandGenerator(rootPath);

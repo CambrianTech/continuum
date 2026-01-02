@@ -44,12 +44,13 @@ export class DataCreateServerCommand extends DataCreateCommand {
       const shouldEmitEvents = metadata?.emitEvents ?? true;
 
       // Create temporary DataDaemon instance with the specific adapter
+      // Pass true for adapterAlreadyInitialized since registry adapters are pre-initialized
       const tempDaemon = new DataDaemon({
         strategy: 'sql',
         backend: 'sqlite',
         namespace: dbHandle,
         options: {}
-      }, adapter);
+      }, adapter, true);
 
       // Use DataDaemon's create() method which handles DataRecord construction
       const operationContext = {

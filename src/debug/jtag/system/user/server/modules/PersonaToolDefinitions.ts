@@ -78,6 +78,7 @@ export interface ToolDefinition {
   permissions: string[];
   examples: ToolExample[];
   category: 'file' | 'code' | 'system' | 'media' | 'data';
+  accessLevel?: ToolAccessLevel;  // Access level required to use this tool (default: 'public')
 }
 
 /**
@@ -88,6 +89,66 @@ export interface ToolExecutionContext {
   sessionId: UUID;
   timestamp: string;
   permissions: string[];
+}
+
+/**
+ * Tool Access Level - controls which personas can use which tools
+ *
+ * public: All personas can use (default - most tools)
+ * privileged: Only trusted personas (admin-created, verified)
+ * admin: Only admin personas (system owner, super-users)
+ */
+export type ToolAccessLevel = 'public' | 'privileged' | 'admin';
+
+/**
+ * Sensitive commands that require elevated access
+ * These are commands that could cause harm if misused by untrusted personas
+ */
+const PRIVILEGED_COMMANDS = new Set([
+  'development/exec-command',      // Arbitrary command execution
+  'development/sandbox-execute',   // Sandbox execution
+  'system/shutdown',               // System control
+  'system/restart',                // System control
+  'data/delete',                   // Data destruction
+  'data/drop-collection',          // Data destruction
+  'genome/fine-tune',              // Model modification
+]);
+
+const ADMIN_COMMANDS = new Set([
+  'system/config/set',             // System configuration
+  'user/delete',                   // User management
+  'user/set-role',                 // Role assignment
+  'secrets/set',                   // Secret management
+  'secrets/delete',                // Secret management
+]);
+
+/**
+ * Determine access level required for a command
+ */
+function getCommandAccessLevel(commandName: string): ToolAccessLevel {
+  if (ADMIN_COMMANDS.has(commandName)) return 'admin';
+  if (PRIVILEGED_COMMANDS.has(commandName)) return 'privileged';
+  return 'public';
+}
+
+/**
+ * Filter tools based on persona access level
+ */
+function filterToolsByAccessLevel(
+  tools: ToolDefinition[],
+  personaAccessLevel: ToolAccessLevel
+): ToolDefinition[] {
+  const levelOrder: Record<ToolAccessLevel, number> = {
+    'public': 0,
+    'privileged': 1,
+    'admin': 2
+  };
+  const personaLevel = levelOrder[personaAccessLevel];
+
+  return tools.filter(tool => {
+    const toolLevel = levelOrder[tool.accessLevel || 'public'];
+    return toolLevel <= personaLevel;
+  });
 }
 
 /**
@@ -227,7 +288,8 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
       properties,
       required
     },
-    examples: []  // Could add examples in future
+    examples: [],  // Could add examples in future
+    accessLevel: getCommandAccessLevel(cmd.name)  // Access level based on command sensitivity
   };
 }
 
@@ -260,11 +322,22 @@ export function getAllToolDefinitions(): ToolDefinition[] {
 /**
  * Get all available tools with guaranteed initialization
  * Blocks until tools are loaded (use for critical paths)
+ *
+ * @param accessLevel - Optional access level to filter tools (default: 'public')
+ *                      Pass persona's access level to filter out tools they can't use
  */
-export async function getAllToolDefinitionsAsync(): Promise<ToolDefinition[]> {
+export async function getAllToolDefinitionsAsync(
+  accessLevel?: ToolAccessLevel
+): Promise<ToolDefinition[]> {
   if (toolCache.length === 0 || (Date.now() - lastRefreshTime) > CACHE_TTL_MS) {
     await refreshToolDefinitions();
   }
+
+  // If access level specified, filter tools
+  if (accessLevel) {
+    return filterToolsByAccessLevel(toolCache, accessLevel);
+  }
+
   return toolCache;
 }
 
@@ -349,34 +422,51 @@ export function formatToolForAI(tool: ToolDefinition): string {
 
 /**
  * Format all tools for AI system prompt
- * Uses a compact format with essential tools shown first, plus search capability
+ * Shows ALL tools organized by category so AIs know their full capabilities
  */
 export function formatAllToolsForAI(): string {
   const tools = getAllToolDefinitions();
 
-  // Separate meta-tools (discovery) from regular tools
-  const metaTools = tools.filter(t => t.name.startsWith('search_') || t.name.startsWith('list_'));
-  const essentialTools = tools.filter(t =>
-    ['screenshot', 'read', 'grep', 'bash', 'collaboration/chat/send', 'collaboration/wall/write'].includes(t.name)
-  );
-  const otherTools = tools.filter(t => !metaTools.includes(t) && !essentialTools.includes(t));
+  // Group tools by category
+  const byCategory = new Map<string, ToolDefinition[]>();
+  for (const tool of tools) {
+    const category = tool.category || 'other';
+    if (!byCategory.has(category)) {
+      byCategory.set(category, []);
+    }
+    byCategory.get(category)!.push(tool);
+  }
 
-  let output = `TOOL DISCOVERY:
-You have access to ${tools.length} tools. Use these to find what you need:
+  // Sort categories alphabetically
+  const sortedCategories = Array.from(byCategory.keys()).sort();
 
-search_tools - Search for tools by keyword
-  <query>string (required)</query> Search term (e.g., "screenshot", "css", "chat")
-  <category>string</category> Filter by category (e.g., "interface", "ai", "data")
+  let output = `=== YOUR TOOL CAPABILITIES ===
+You have ${tools.length} tools available. Here they ALL are, organized by category:
 
-list_tools - List all tools in a category
-  <category>string</category> Category to list
-
-list_categories - List all available tool categories
-
-ESSENTIAL TOOLS:
 `;
 
-  // Show essential tools in compact format
+  // List ALL tools by category (compact: name - short description)
+  for (const category of sortedCategories) {
+    const categoryTools = byCategory.get(category)!;
+    output += `📁 ${category.toUpperCase()} (${categoryTools.length}):\n`;
+    for (const tool of categoryTools.sort((a, b) => a.name.localeCompare(b.name))) {
+      // Truncate description to 60 chars for compact display
+      const desc = tool.description.length > 60
+        ? tool.description.slice(0, 57) + '...'
+        : tool.description;
+      output += `  ${tool.name} - ${desc}\n`;
+    }
+    output += '\n';
+  }
+
+  // Show essential tools with full details
+  const essentialTools = tools.filter(t =>
+    ['screenshot', 'help', 'collaboration/chat/send', 'collaboration/wall/write',
+     'development/code/read', 'development/code/pattern-search'].includes(t.name)
+  );
+
+  output += `=== FREQUENTLY USED TOOLS (with parameters) ===\n`;
+
   for (const tool of essentialTools) {
     output += `\n${tool.name} - ${tool.description}\n`;
     const params = Object.entries(tool.parameters.properties);
@@ -389,10 +479,18 @@ ESSENTIAL TOOLS:
   }
 
   output += `
----
-${otherTools.length} more tools available. Use search_tools to find them.
+=== HOW TO USE TOOLS ===
 
-Usage Format:
+For any tool above, use this format:
+<tool_use>
+  <tool_name>TOOL_NAME</tool_name>
+  <parameters>
+    <param1>value1</param1>
+    <param2>value2</param2>
+  </parameters>
+</tool_use>
+
+Example - Take a screenshot:
 <tool_use>
   <tool_name>screenshot</tool_name>
   <parameters>
@@ -400,11 +498,11 @@ Usage Format:
   </parameters>
 </tool_use>
 
-When you need a capability, search for it:
+For help on any specific tool, use:
 <tool_use>
-  <tool_name>search_tools</tool_name>
+  <tool_name>help</tool_name>
   <parameters>
-    <query>css widget</query>
+    <path>TOOL_NAME</path>
   </parameters>
 </tool_use>
 `;

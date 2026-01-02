@@ -9,10 +9,10 @@ export default {
   binary: 'workers/data-daemon/target/release/data-daemon-worker',
   socket: '/tmp/jtag-data-daemon-worker.sock',
   args: [
-    '.continuum/jtag/data/database.sqlite'
+    '/tmp/jtag-data-daemon-worker.sock'  // Socket path passed as first arg
   ],
   description: 'Data daemon worker for WAL cleanup and fast SQLite operations',
-  enabled: false  // Not ready yet
+  enabled: true
 } as const;
 
 export type DataDaemonWorkerConfig = typeof import('./worker.config').default;

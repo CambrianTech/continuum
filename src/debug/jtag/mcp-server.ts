@@ -329,50 +329,235 @@ const searchToolsTool: Tool = {
   },
 };
 
+const listCategoriesTool: Tool = {
+  name: 'jtag_list_categories',
+  description: '[JTAG] List all tool categories with counts. Use this to understand what tools are available before searching.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      includeTopTools: {
+        type: 'boolean',
+        description: 'Include top 3 most useful tools per category (default: true)',
+      },
+    },
+  },
+};
+
+const getToolHelpTool: Tool = {
+  name: 'jtag_get_tool_help',
+  description: '[JTAG] Get detailed help and documentation for a specific tool. Returns parameters, examples, and usage information.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      tool: {
+        type: 'string',
+        description: 'Tool name to get help for (e.g., "interface/screenshot", "collaboration/chat/send")',
+      },
+    },
+    required: ['tool'],
+  },
+};
+
 /**
- * Search tools by keyword
+ * List all tool categories with counts
  */
-function searchTools(query: string, category?: string, limit: number = 10): Array<{ name: string; description: string; category: string }> {
-  const queryLower = query.toLowerCase();
-  const results: Array<{ name: string; description: string; category: string; score: number }> = [];
+function listCategories(includeTopTools: boolean = true): Array<{
+  category: string;
+  count: number;
+  description: string;
+  topTools?: Array<{ name: string; description: string }>;
+}> {
+  const categories = new Map<string, { count: number; tools: Array<{ name: string; description: string; priority: number }> }>();
 
+  // Group commands by category
   for (const command of schemas.commands) {
-    const nameLower = command.name.toLowerCase();
-    const descLower = (command.description || '').toLowerCase();
+    const parts = command.name.split('/');
+    const category = parts.length > 1 ? parts[0] : 'root';
 
-    // Category filter
-    if (category) {
-      const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
-      if (!nameLower.startsWith(categoryPrefix) && nameLower !== category) {
-        continue;
-      }
+    if (!categories.has(category)) {
+      categories.set(category, { count: 0, tools: [] });
     }
 
-    // Score matches
-    let score = 0;
-    if (nameLower.includes(queryLower)) score += 10;
-    if (nameLower.startsWith(queryLower)) score += 5;
-    if (descLower.includes(queryLower)) score += 3;
+    const cat = categories.get(category)!;
+    cat.count++;
+    cat.tools.push({
+      name: command.name,
+      description: command.description || command.name,
+      priority: getCommandPriority(command.name),
+    });
+  }
 
-    // Exact segment match (e.g., "css" matches "widget-css" but scores higher than "discussion")
-    const segments = nameLower.split(/[\/\-_]/);
-    if (segments.includes(queryLower)) score += 8;
+  // Build result
+  const result: Array<{
+    category: string;
+    count: number;
+    description: string;
+    topTools?: Array<{ name: string; description: string }>;
+  }> = [];
 
-    if (score > 0) {
-      // Determine category from name
-      const cmdCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
-      results.push({
-        name: command.name,
-        description: command.description || command.name,
-        category: cmdCategory,
-        score,
-      });
+  const categoryDescriptions: Record<string, string> = {
+    interface: 'Browser UI interaction (screenshots, clicks, navigation)',
+    collaboration: 'Chat, rooms, activities, decisions, wall documents',
+    ai: 'AI personas, generation, RAG, embeddings, costs',
+    data: 'Database CRUD, queries, vector search',
+    development: 'Debug commands, code generation, shell execution',
+    workspace: 'Git, tasks, recipes, workspace management',
+    media: 'Image/video processing, resizing',
+    system: 'System daemons, status, configuration',
+    logs: 'Log viewing, searching, configuration',
+    user: 'User creation, profile management',
+    session: 'Session management',
+    root: 'Top-level utility commands (ping, list, help)',
+  };
+
+  for (const [category, data] of categories) {
+    const entry: {
+      category: string;
+      count: number;
+      description: string;
+      topTools?: Array<{ name: string; description: string }>;
+    } = {
+      category,
+      count: data.count,
+      description: categoryDescriptions[category] || `${category} commands`,
+    };
+
+    if (includeTopTools) {
+      // Sort by priority and take top 3
+      data.tools.sort((a, b) => a.priority - b.priority);
+      entry.topTools = data.tools.slice(0, 3).map(t => ({
+        name: t.name,
+        description: t.description,
+      }));
+    }
+
+    result.push(entry);
+  }
+
+  // Sort by category name
+  result.sort((a, b) => a.category.localeCompare(b.category));
+
+  return result;
+}
+
+/**
+ * Get detailed help for a specific tool
+ */
+function getToolHelp(toolName: string): {
+  name: string;
+  description: string;
+  params: Array<{ name: string; type: string; required: boolean; description: string }>;
+  example?: string;
+} | null {
+  // Normalize tool name (accept both / and _ formats)
+  const normalizedName = toolName.replace(/_/g, '/').replace(/^jtag\//, '').replace(/^mcp__jtag__/, '');
+
+  const command = schemas.commands.find((c: any) =>
+    c.name === normalizedName ||
+    c.name.replace(/\//g, '_') === normalizedName
+  );
+
+  if (!command) return null;
+
+  const params: Array<{ name: string; type: string; required: boolean; description: string }> = [];
+
+  for (const [paramName, paramDef] of Object.entries(command.params || {})) {
+    const def = paramDef as any;
+    params.push({
+      name: paramName,
+      type: def.type || 'string',
+      required: def.required || false,
+      description: def.description || `${paramName} parameter`,
+    });
+  }
+
+  // Generate example based on params
+  let example: string | undefined;
+  if (params.length > 0) {
+    const exampleParams: Record<string, any> = {};
+    for (const p of params.filter(p => p.required).slice(0, 3)) {
+      if (p.type === 'string') exampleParams[p.name] = `"example_${p.name}"`;
+      else if (p.type === 'number') exampleParams[p.name] = 10;
+      else if (p.type === 'boolean') exampleParams[p.name] = true;
+    }
+    if (Object.keys(exampleParams).length > 0) {
+      example = `mcp__jtag__${command.name.replace(/\//g, '_')}(${JSON.stringify(exampleParams)})`;
     }
   }
 
-  // Sort by score descending, then name
-  results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  return {
+    name: command.name,
+    description: command.description || command.name,
+    params,
+    example,
+  };
+}
 
+/**
+ * Search tools by keyword
+ *
+ * IMPORTANT: If category filter yields 0 results, falls back to searching ALL tools.
+ * This ensures users can find tools like "ai/rag/inspect" even if they guess wrong category.
+ */
+function searchTools(query: string, category?: string, limit: number = 10): Array<{ name: string; description: string; category: string }> {
+  const queryLower = query.toLowerCase();
+
+  // Helper to search a set of commands
+  const searchCommandSet = (commands: any[]): Array<{ name: string; description: string; category: string; score: number }> => {
+    const results: Array<{ name: string; description: string; category: string; score: number }> = [];
+
+    for (const command of commands) {
+      const nameLower = command.name.toLowerCase();
+      const descLower = (command.description || '').toLowerCase();
+
+      // Score matches
+      let score = 0;
+      if (nameLower.includes(queryLower)) score += 10;
+      if (nameLower.startsWith(queryLower)) score += 5;
+      if (descLower.includes(queryLower)) score += 3;
+
+      // Exact segment match (e.g., "css" matches "widget-css" but scores higher than "discussion")
+      const segments = nameLower.split(/[\/\-_]/);
+      if (segments.includes(queryLower)) score += 8;
+
+      if (score > 0) {
+        // Determine category from name
+        const cmdCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
+        results.push({
+          name: command.name,
+          description: command.description || command.name,
+          category: cmdCategory,
+          score,
+        });
+      }
+    }
+
+    return results;
+  };
+
+  // First, try with category filter if provided
+  if (category) {
+    const categoryPrefix = category.endsWith('/') ? category : `${category}/`;
+    const filteredCommands = schemas.commands.filter((c: any) => {
+      const nameLower = c.name.toLowerCase();
+      return nameLower.startsWith(categoryPrefix) || nameLower === category;
+    });
+
+    const categoryResults = searchCommandSet(filteredCommands);
+    if (categoryResults.length > 0) {
+      categoryResults.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+      return categoryResults.slice(0, limit).map(({ name, description, category }) => ({
+        name,
+        description,
+        category,
+      }));
+    }
+    // Fall through to search ALL tools if category had no results
+  }
+
+  // Search all commands
+  const results = searchCommandSet(schemas.commands);
+  results.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   return results.slice(0, limit).map(({ name, description, category }) => ({
     name,
     description,
@@ -381,9 +566,11 @@ function searchTools(query: string, category?: string, limit: number = 10): Arra
 }
 
 // Build tools with priority tracking - meta-tools first
-const unsortedTools: Tool[] = [systemStartTool, searchToolsTool];
-commandPriorities.set('jtag_system_start', -2);  // Always first
-commandPriorities.set('jtag_search_tools', -1);  // Second (discovery tool)
+const unsortedTools: Tool[] = [systemStartTool, searchToolsTool, listCategoriesTool, getToolHelpTool];
+commandPriorities.set('jtag_system_start', -4);  // Always first
+commandPriorities.set('jtag_search_tools', -3);  // Second (discovery tool)
+commandPriorities.set('jtag_list_categories', -2);  // Third (category discovery)
+commandPriorities.set('jtag_get_tool_help', -1);  // Fourth (detailed help)
 
 for (const command of schemas.commands) {
   const tool = commandToTool(command);
@@ -506,6 +693,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           count: results.length,
           tools: results,
           hint: 'Use the tool name with mcp__jtag__ prefix, replacing / with _',
+        }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'jtag_list_categories') {
+    const { includeTopTools } = (args || {}) as { includeTopTools?: boolean };
+    const categories = listCategories(includeTopTools !== false);
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          totalCategories: categories.length,
+          totalTools: categories.reduce((sum, c) => sum + c.count, 0),
+          categories,
+          hint: 'Use jtag_search_tools to find specific tools within a category',
+        }, null, 2),
+      }],
+    };
+  }
+
+  if (name === 'jtag_get_tool_help') {
+    const { tool } = (args || {}) as { tool: string };
+    const help = getToolHelp(tool);
+    if (!help) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: `Tool not found: ${tool}`,
+            hint: 'Use jtag_search_tools to find available tools',
+          }, null, 2),
+        }],
+        isError: true,
+      };
+    }
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ...help,
+          mcpToolName: `mcp__jtag__${help.name.replace(/\//g, '_')}`,
         }, null, 2),
       }],
     };

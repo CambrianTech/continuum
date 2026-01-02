@@ -22,11 +22,14 @@ import type {
   UsageMetrics,
   EmbeddingRequest,
   EmbeddingResponse,
+  ChatMessage,
 } from '../../../shared/AIProviderTypesV2';
 import {
   chatMessagesToPrompt,
   AIProviderError,
 } from '../../../shared/AIProviderTypesV2';
+import { VisionCapabilityService } from '../../../shared/VisionCapabilityService';
+import { MediaContentFormatter, type OllamaMessage } from '../../../shared/MediaContentFormatter';
 
 // Helper function previously imported from old AIProviderTypes
 function createRequestId(): string {
@@ -71,6 +74,37 @@ interface OllamaEmbeddingRequest {
 interface OllamaEmbeddingResponse {
   embedding: number[];
 }
+
+// Ollama Chat API (for vision/multimodal)
+interface OllamaChatRequest {
+  model: string;
+  messages: Array<{
+    role: 'system' | 'user' | 'assistant';
+    content: string;
+    images?: string[];  // Base64-encoded images
+  }>;
+  stream?: boolean;
+  options?: {
+    temperature?: number;
+    num_predict?: number;
+  };
+}
+
+interface OllamaChatResponse {
+  model: string;
+  message: {
+    role: string;
+    content: string;
+  };
+  done: boolean;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_duration?: number;
+  eval_duration?: number;
+}
+
+// Vision model detection now handled by VisionCapabilityService
+// See: daemons/ai-provider-daemon/shared/VisionCapabilityService.ts
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { spawn } from 'child_process';
 
@@ -461,14 +495,33 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
   protected async generateTextImpl(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     const startTime = Date.now();
     const requestId = request.requestId || createRequestId();
+    const model = request.model || this.config.defaultModel;
 
     try {
-      // Convert chat messages to Ollama prompt format
+      // Check if this is a vision request (model supports vision AND request has images)
+      const visionService = VisionCapabilityService.getInstance();
+      const modelSupportsVision = visionService.supportsVision('ollama', model);
+      const requestHasImages = this.requestContainsImages(request.messages);
+
+      const useVisionAPI = modelSupportsVision && requestHasImages;
+
+      if (useVisionAPI) {
+        this.log(request, 'info', `📸 ${this.providerName}: Using vision API for ${model} (${this.countImages(request.messages)} images)`);
+        return await this.generateWithVision(request, requestId, startTime);
+      }
+
+      // Standard text generation (no images or non-vision model)
+      // If request has images but model doesn't support vision, log warning
+      if (requestHasImages && !modelSupportsVision) {
+        this.log(request, 'warn', `⚠️  ${this.providerName}: Request contains images but model ${model} doesn't support vision. Images will be stripped.`);
+      }
+
+      // Convert chat messages to Ollama prompt format (strips images)
       const { prompt, systemPrompt: system } = chatMessagesToPrompt(request.messages);
 
       // Build Ollama request
       const ollamaRequest: OllamaGenerateRequest = {
-        model: request.model || this.config.defaultModel,
+        model,
         prompt: prompt,
         system: system || request.systemPrompt,
         temperature: request.temperature ?? this.config.defaultTemperature,
@@ -476,107 +529,205 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         stream: false,
       };
 
-      // Minimal logging - only log if verbose debug needed
-      // this.log(request, 'debug', `🤖 ${this.providerName}: Generating with ${ollamaRequest.model}`);
-
       // Make request to Ollama
       const response = await this.makeRequest<OllamaGenerateResponse>(
         '/api/generate',
         ollamaRequest
       );
 
-      const responseTime = Date.now() - startTime;
+      return this.processResponse(response.response, response.model, response.done, prompt, system, startTime, requestId, request);
 
-      // Calculate usage metrics
-      const usage: UsageMetrics = {
-        inputTokens: estimateTokenCount(prompt + (system || '')),
-        outputTokens: estimateTokenCount(response.response),
-        totalTokens: 0,
-        estimatedCost: 0, // Ollama is free
-      };
-      usage.totalTokens = usage.inputTokens + usage.outputTokens;
-
-      if (this.config.logRequests) {
-        this.log(request, 'info', `✅ ${this.providerName}: Generated response in ${responseTime}ms`);
-        this.log(request, 'debug', `   Output length: ${response.response.length} chars`);
-        this.log(request, 'debug', `   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
-      }
-
-      // Validate response quality - detect garbage/degraded output
-      if (this.detectGarbageOutput(response.response)) {
-        this.log(request, 'error', `🗑️ ${this.providerName}: GARBAGE OUTPUT DETECTED: "${response.response.slice(0, 100)}"`);
-
-        // SELF-HEALING: Track Ollama failures
-        this.ollamaFailureCount++;
-        this.log(request, 'warn', `🔥 GARBAGE OUTPUT (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures)`);
-
-        // Invalidate health cache
-        this.healthCache = null;
-
-        // SELF-HEALING: Direct restart after N consecutive failures
-        await this.maybeAutoRestart('garbage output');
-
-        // NOTE: Events.emit() causes JTAGClient initialization timeout during startup
-        // Self-healing restart doesn't rely on events - direct action above
-        // AdapterHealthMonitor will detect unhealthy state via health checks
-
-        throw new AIProviderError(
-          `Generation produced garbage output (model degradation): "${response.response.slice(0, 100)}"`,
-          'adapter',
-          'GARBAGE_OUTPUT',
-          { requestId, responseTime, output: response.response.slice(0, 200) }
-        );
-      }
-
-      // SUCCESS: Reset Ollama failure counter
-      this.resetOllamaFailures();
-
-      return {
-        text: response.response,
-        finishReason: response.done ? 'stop' : 'length',
-        model: response.model,
-        provider: this.providerId,
-        usage,
-        responseTime,
-        requestId,
-      };
     } catch (error) {
-      const responseTime = Date.now() - startTime;
+      return this.handleGenerationError(error, startTime, requestId, request);
+    }
+  }
 
-      this.log(request, 'error', `❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
-      this.log(request, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
+  /**
+   * Generate text with vision support using Ollama's /api/chat endpoint
+   */
+  private async generateWithVision(
+    request: TextGenerationRequest,
+    requestId: string,
+    startTime: number
+  ): Promise<TextGenerationResponse> {
+    const model = request.model || this.config.defaultModel;
 
-      // CRITICAL: Immediately invalidate health cache and emit unhealthy event
-      // Don't wait for next periodic health check (30-60s delay)
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('timed out') || responseTime >= 120000;
-      const isGarbageOutput = errorMessage.includes('garbage output') || errorMessage.includes('GARBAGE_OUTPUT');
+    // Convert messages to Ollama chat format with images
+    const messages: OllamaMessage[] = [];
 
-      if (isTimeout || isGarbageOutput) {
-        // SELF-HEALING: Track Ollama failures (only if not already tracked for garbage output)
-        if (isTimeout && !isGarbageOutput) {
-          this.ollamaFailureCount++;
-        }
-        this.log(request, 'warn', `🔥 ${isTimeout ? 'TIMEOUT' : 'ERROR'} DETECTED (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures) - Invalidating health cache`);
+    // Add system prompt if provided
+    if (request.systemPrompt) {
+      messages.push({ role: 'system', content: request.systemPrompt });
+    }
 
-        // Invalidate health cache so next health check will run full test
-        this.healthCache = null;
-
-        // SELF-HEALING: Direct restart after N consecutive failures
-        await this.maybeAutoRestart(isTimeout ? 'timeout' : 'generation error');
-
-        // NOTE: Events.emit() causes JTAGClient initialization timeout during startup
-        // Self-healing restart doesn't rely on events - direct action above
-        // AdapterHealthMonitor will detect unhealthy state via health checks
+    // Convert each message using MediaContentFormatter
+    for (const msg of request.messages) {
+      if (msg.role === 'system') {
+        // Already handled above
+        continue;
       }
+
+      const ollamaMsg = MediaContentFormatter.formatForOllama(
+        msg.role === 'assistant' ? 'assistant' : 'user',
+        msg.content
+      );
+      messages.push(ollamaMsg);
+    }
+
+    // Build Ollama Chat request
+    const chatRequest: OllamaChatRequest = {
+      model,
+      messages,
+      stream: false,
+      options: {
+        temperature: request.temperature ?? this.config.defaultTemperature,
+        num_predict: request.maxTokens,
+      },
+    };
+
+    // Make request to Ollama Chat API
+    const response = await this.makeRequest<OllamaChatResponse>(
+      '/api/chat',
+      chatRequest
+    );
+
+    // Extract text from chat response
+    const responseText = response.message?.content || '';
+
+    // Calculate prompt text for usage estimation
+    const promptText = messages.map(m => m.content).join('\n');
+
+    return this.processResponse(responseText, response.model, response.done, promptText, request.systemPrompt, startTime, requestId, request);
+  }
+
+  /**
+   * Process Ollama response into TextGenerationResponse
+   * Shared by both vision and non-vision paths
+   */
+  private processResponse(
+    responseText: string,
+    responseModel: string,
+    done: boolean,
+    promptText: string,
+    systemPrompt: string | undefined,
+    startTime: number,
+    requestId: string,
+    request: TextGenerationRequest
+  ): TextGenerationResponse {
+    const responseTime = Date.now() - startTime;
+
+    // Calculate usage metrics
+    const usage: UsageMetrics = {
+      inputTokens: estimateTokenCount(promptText + (systemPrompt || '')),
+      outputTokens: estimateTokenCount(responseText),
+      totalTokens: 0,
+      estimatedCost: 0, // Ollama is free
+    };
+    usage.totalTokens = usage.inputTokens + usage.outputTokens;
+
+    if (this.config.logRequests) {
+      this.log(request, 'info', `✅ ${this.providerName}: Generated response in ${responseTime}ms`);
+      this.log(request, 'debug', `   Output length: ${responseText.length} chars`);
+      this.log(request, 'debug', `   Tokens: ${usage.inputTokens} in, ${usage.outputTokens} out`);
+    }
+
+    // Validate response quality - detect garbage/degraded output
+    if (this.detectGarbageOutput(responseText)) {
+      this.log(request, 'error', `🗑️ ${this.providerName}: GARBAGE OUTPUT DETECTED: "${responseText.slice(0, 100)}"`);
+
+      // SELF-HEALING: Track Ollama failures
+      this.ollamaFailureCount++;
+      this.log(request, 'warn', `🔥 GARBAGE OUTPUT (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures)`);
+
+      // Invalidate health cache
+      this.healthCache = null;
+
+      // SELF-HEALING: Direct restart after N consecutive failures
+      this.maybeAutoRestart('garbage output');
 
       throw new AIProviderError(
-        `Text generation failed: ${errorMessage}`,
+        `Generation produced garbage output (model degradation): "${responseText.slice(0, 100)}"`,
         'adapter',
-        'GENERATION_FAILED',
-        { requestId, responseTime, originalError: error }
+        'GARBAGE_OUTPUT',
+        { requestId, responseTime, output: responseText.slice(0, 200) }
       );
     }
+
+    // SUCCESS: Reset Ollama failure counter
+    this.resetOllamaFailures();
+
+    return {
+      text: responseText,
+      finishReason: done ? 'stop' : 'length',
+      model: responseModel,
+      provider: this.providerId,
+      usage,
+      responseTime,
+      requestId,
+    };
+  }
+
+  /**
+   * Handle generation errors with self-healing
+   */
+  private handleGenerationError(
+    error: unknown,
+    startTime: number,
+    requestId: string,
+    request: TextGenerationRequest
+  ): never {
+    const responseTime = Date.now() - startTime;
+
+    this.log(request, 'error', `❌ ${this.providerName}: Generation failed after ${responseTime}ms`);
+    this.log(request, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isTimeout = errorMessage.includes('timeout') || errorMessage.includes('timed out') || responseTime >= 120000;
+    const isGarbageOutput = errorMessage.includes('garbage output') || errorMessage.includes('GARBAGE_OUTPUT');
+
+    if (isTimeout || isGarbageOutput) {
+      if (isTimeout && !isGarbageOutput) {
+        this.ollamaFailureCount++;
+      }
+      this.log(request, 'warn', `🔥 ${isTimeout ? 'TIMEOUT' : 'ERROR'} DETECTED (${this.ollamaFailureCount}/${this.OLLAMA_MAX_FAILURES} failures) - Invalidating health cache`);
+
+      this.healthCache = null;
+      this.maybeAutoRestart(isTimeout ? 'timeout' : 'generation error');
+    }
+
+    throw new AIProviderError(
+      `Text generation failed: ${errorMessage}`,
+      'adapter',
+      'GENERATION_FAILED',
+      { requestId, responseTime, originalError: error }
+    );
+  }
+
+  /**
+   * Check if any message in the request contains images
+   */
+  private requestContainsImages(messages: ChatMessage[]): boolean {
+    for (const msg of messages) {
+      if (typeof msg.content !== 'string') {
+        if (MediaContentFormatter.hasImages(msg.content)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Count total images in all messages
+   */
+  private countImages(messages: ChatMessage[]): number {
+    let count = 0;
+    for (const msg of messages) {
+      if (typeof msg.content !== 'string') {
+        count += MediaContentFormatter.countImages(msg.content);
+      }
+    }
+    return count;
   }
 
   async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -918,6 +1069,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       const url = `${this.config.apiEndpoint}${endpoint}`;
 
       try {
+        // Diagnostic logging for embedding issues
+        if (endpoint.includes('embed')) {
+          this.log(null, 'debug', `🔬 DIAG: ${endpoint} request - model: ${(body as any)?.model}, prompt length: ${(body as any)?.prompt?.length || 0}`);
+        }
+
         const response = await fetch(url, {
           method: body ? 'POST' : 'GET',
           headers: body ? { 'Content-Type': 'application/json' } : undefined,
@@ -926,6 +1082,11 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
         });
 
         if (!response.ok) {
+          // Log response body for HTTP 500 errors
+          if (response.status === 500) {
+            const errorText = await response.text().catch(() => 'Could not read error body');
+            this.log(null, 'error', `🔬 HTTP 500 body: ${errorText.substring(0, 500)}`);
+          }
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 

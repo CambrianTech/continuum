@@ -32,6 +32,7 @@ import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../con
 import { Events } from '../../core/shared/Events';
 import { getContextWindow } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
+import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
 /**
  * Chat-specific RAG builder
@@ -82,6 +83,8 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.loadPersonaIdentity(personaId, contextId, options),
 
       // 2. Load recent conversation history from database
+      // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
+      // Strokes emit system messages to the canvas room, so AIs see them naturally here
       this.loadConversationHistory(contextId, personaId, maxMessages),
 
       // 3. Extract image attachments from messages (for vision models)
@@ -105,6 +108,10 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.loadWidgetContext(options)
     ]);
 
+    // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
+    // If target model can't see images, generate text descriptions
+    const processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
+
     // 2.4. Inject widget context into system prompt if available
     // This enables AI to be aware of what the user is currently viewing
     const finalIdentity = { ...identity };
@@ -113,6 +120,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
     }
+
+    // NOTE: Canvas context is now handled via the "inbox content" pattern
+    // When strokes are added, they emit system messages to the canvas room
+    // AIs see these in their conversation history naturally, no system prompt injection needed
 
     // 2.5. Append current message if provided (for messages not yet persisted)
     // Check for duplicates by comparing content + name of most recent message
@@ -148,14 +159,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       identity: finalIdentity,
       recipeStrategy,
       conversationHistory: finalConversationHistory,
-      artifacts,
+      artifacts: processedArtifacts,
       privateMemories,
       learningMode: learningConfig?.learningMode,
       genomeId: learningConfig?.genomeId,
       participantRole: learningConfig?.participantRole,
       metadata: {
         messageCount: finalConversationHistory.length,
-        artifactCount: artifacts.length,
+        artifactCount: processedArtifacts.length,
         memoryCount: privateMemories.length,
         builtAt: new Date(),
         recipeId: recipeStrategy?.conversationPattern,
@@ -194,7 +205,7 @@ export class ChatRAGBuilder extends RAGBuilder {
           status: getStageStatus(durationMs, 'rag-build'),
           metadata: {
             messageCount: conversationHistory.length,
-            artifactCount: artifacts.length,
+            artifactCount: processedArtifacts.length,
             memoryCount: privateMemories.length
           }
         },
@@ -523,6 +534,117 @@ LIMITS:
 
     // Default to 'file' for other types
     return 'file';
+  }
+
+  /**
+   * Preprocess artifacts for non-vision models ("So the blind can see")
+   *
+   * Philosophy: Visual content should be accessible to ALL personas.
+   * - Vision models: receive raw images (base64)
+   * - Non-vision models: receive text descriptions of images
+   *
+   * Descriptions are cached in artifact.preprocessed - shared across all personas
+   * (personas exist across all tabs, memory is not isolated)
+   */
+  private async preprocessArtifactsForModel(
+    artifacts: RAGArtifact[],
+    options?: RAGBuildOptions
+  ): Promise<RAGArtifact[]> {
+    // If model has vision capability, return artifacts as-is (they can see images)
+    if (options?.modelCapabilities?.supportsImages) {
+      return artifacts;
+    }
+
+    // Preprocess images by default unless we KNOW the model has vision capability
+    // "So the blind can see" - assume models can't see unless told otherwise
+    const hasVisionCapability = options?.modelCapabilities?.supportsImages === true;
+    const shouldPreprocess = options?.preprocessImages ?? !hasVisionCapability;
+
+    if (!shouldPreprocess) {
+      this.log('👁️ ChatRAGBuilder: Model has vision capability, skipping image preprocessing');
+      return artifacts;
+    }
+
+    // Skip if no image artifacts to process
+    const imageArtifacts = artifacts.filter(a => a.type === 'image' && a.base64);
+    if (imageArtifacts.length === 0) {
+      return artifacts;
+    }
+
+    this.log(`👁️ ChatRAGBuilder: Preprocessing ${imageArtifacts.length} image(s) for non-vision model`);
+
+    const visionService = VisionDescriptionService.getInstance();
+
+    // Check if any vision model is available for descriptions
+    if (!visionService.isAvailable()) {
+      this.log('⚠️ ChatRAGBuilder: No vision model available, returning artifacts with content only');
+      return artifacts;
+    }
+
+    const processedArtifacts: RAGArtifact[] = [];
+
+    for (const artifact of artifacts) {
+      // Only process image artifacts that need descriptions
+      if (artifact.type !== 'image' || !artifact.base64) {
+        processedArtifacts.push(artifact);
+        continue;
+      }
+
+      // Check if already preprocessed (cached description)
+      if (artifact.preprocessed?.result) {
+        processedArtifacts.push(artifact);
+        continue;
+      }
+
+      // Check if content already has a description
+      if (artifact.content && artifact.content.length > 10) {
+        // Already has description - use it as preprocessed result
+        processedArtifacts.push({
+          ...artifact,
+          preprocessed: {
+            type: 'image_description',
+            result: artifact.content,
+            confidence: 0.9,  // Human-provided description
+            processingTime: 0,
+            model: 'existing'
+          }
+        });
+        continue;
+      }
+
+      // Generate description using vision model
+      try {
+        const mimeType = (artifact.metadata?.mimeType as string) ?? 'image/png';
+        const description = await visionService.describeBase64(artifact.base64, mimeType, {
+          maxLength: 500,
+          detectText: true,  // OCR any text in images
+          preferredProvider: 'ollama'  // Prefer local (free, private)
+        });
+
+        if (description) {
+          processedArtifacts.push({
+            ...artifact,
+            content: description.description,  // Also set content for convenience
+            preprocessed: {
+              type: 'image_description',
+              result: description.description,
+              confidence: 0.85,
+              processingTime: description.responseTime,
+              model: `${description.provider}/${description.modelId}`
+            }
+          });
+          this.log(`👁️ ChatRAGBuilder: Described image (${description.responseTime}ms) via ${description.modelId}`);
+        } else {
+          // Description failed - return artifact as-is
+          processedArtifacts.push(artifact);
+        }
+      } catch (error) {
+        this.log(`❌ ChatRAGBuilder: Failed to describe image:`, error);
+        processedArtifacts.push(artifact);
+      }
+    }
+
+    return processedArtifacts;
   }
 
   /**

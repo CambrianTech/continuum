@@ -13,7 +13,7 @@
  * - Browser client connected via http://localhost:9003
  */
 
-import { jtag } from '../../../../server-index';
+import { jtag } from '@server/server-index';
 
 console.log('🧪 {{CLASS_NAME}} Command Integration Tests');
 

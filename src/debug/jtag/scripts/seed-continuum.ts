@@ -837,7 +837,20 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom];
+      const canvasRoom = createRoom(
+        ROOM_IDS.CANVAS,
+        'canvas',
+        'Canvas',
+        'Collaborative drawing discussions with AI assistance',
+        "Share drawing tips, get AI feedback on your artwork, and collaborate on visual projects",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["canvas", "drawing", "art", "collaboration", "system"],  // 'system' tag = hidden from rooms list
+        humanUser.id,
+        'canvas'  // recipe: canvas-focused room
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom, canvasRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
@@ -897,7 +910,7 @@ async function seedViaJTAG() {
     if (!needsRooms) {
       // Still ensure system rooms have their default AI assistant
       console.log('🏠 Ensuring system rooms have Helper AI...');
-      const systemRoomUniqueIds = ['settings', 'help', 'theme'];
+      const systemRoomUniqueIds = ['settings', 'help', 'theme', 'canvas'];
       for (const roomUniqueId of systemRoomUniqueIds) {
         try {
           const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
@@ -950,7 +963,7 @@ async function seedViaJTAG() {
     // Ensure system rooms have Helper AI as default assistant
     // This ensures the Settings, Help, and Theme widgets always have AI available
     console.log('🏠 Adding Helper AI to system rooms...');
-    const systemRoomUniqueIds = ['settings', 'help', 'theme'];
+    const systemRoomUniqueIds = ['settings', 'help', 'theme', 'canvas'];
     for (const roomUniqueId of systemRoomUniqueIds) {
       try {
         const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);

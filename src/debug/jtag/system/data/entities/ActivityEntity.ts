@@ -135,6 +135,23 @@ export class ActivityEntity extends BaseEntity {
   recipeId!: string;
 
   /**
+   * Parent activity ID (for hierarchical activities)
+   * null = root activity, otherwise this is a child spawned from parent
+   *
+   * Examples:
+   * - Kitchen Design project (parent) spawns Canvas for layouts (child)
+   * - Research session (parent) spawns Browser tabs (children)
+   *
+   * Hierarchy enables:
+   * - Navigation (breadcrumbs back to parent)
+   * - Context inheritance (child sees parent's context)
+   * - Cleanup (close parent, children optionally close too)
+   * - Permissions (inherit from parent)
+   */
+  @ForeignKeyField({ references: 'activities.id', index: true, nullable: true })
+  parentActivityId?: UUID;
+
+  /**
    * Activity lifecycle status
    */
   @EnumField({ index: true })
@@ -381,6 +398,22 @@ export class ActivityEntity extends BaseEntity {
     this.status = 'archived';
     this.endedAt = this.endedAt || new Date();
     this.lastActivityAt = new Date();
+  }
+
+  // ============ Hierarchy Helpers ============
+
+  /**
+   * Check if this is a root activity (no parent)
+   */
+  isRoot(): boolean {
+    return !this.parentActivityId;
+  }
+
+  /**
+   * Check if this is a child activity (has parent)
+   */
+  isChild(): boolean {
+    return !!this.parentActivityId;
   }
 
   // ============ Pagination Config ============

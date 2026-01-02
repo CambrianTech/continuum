@@ -22,7 +22,7 @@ import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
@@ -39,11 +39,11 @@ import {
 } from '../../../events/shared/AIDecisionEvents';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
-import type { PersonaToolExecutor } from './PersonaToolExecutor';
+import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
-import { getPrimaryAdapter, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
@@ -488,15 +488,17 @@ export class PersonaResponseGenerator {
       // Use adapter-based formatting for harmony with parser
       // CRITICAL: Use async version to ensure tool cache is initialized before injection
       const availableTools = await this.toolRegistry.listToolsForPersonaAsync(this.personaId);
-      if (availableTools.length > 0) {
-        // Convert PersonaToolDefinitions to adapter format (use already-loaded tools from registry)
-        const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-          category: t.category
-        }));
 
+      // Convert PersonaToolDefinitions to adapter format (used for both XML injection and native tools)
+      // Hoisted to outer scope so it's available for native tool_use injection later
+      const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+        category: t.category
+      }));
+
+      if (availableTools.length > 0) {
         // Use primary adapter to format tools (harmonious with parser)
         const adapter = getPrimaryAdapter();
         const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
@@ -727,6 +729,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
       const provider = this.modelConfig.provider || 'ollama';
+
+      // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
+      // This enables tool_use blocks instead of XML parsing for more reliable tool execution
+      if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
+        request.tools = convertToNativeToolSpecs(toolDefinitions);
+        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
+      }
       const isMentioned = originalMessage.content.text.toLowerCase().includes(`@${this.personaName.toLowerCase()}`);
 
       const slotGranted = await InferenceCoordinator.requestSlot(
@@ -763,15 +772,24 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
         // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
+        const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);  // ~4 chars/token
+        const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
+        const cost = this.calculateCost(
+          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.model ?? 'llama3.2:3b',
+          inputTokenEstimate,
+          outputTokenEstimate
+        );
+
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
           this.modelConfig.provider ?? 'ollama',
           this.modelConfig.model ?? 'llama3.2:3b',
           `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
-          messages.reduce((sum, m) => sum + m.content.length, 0),  // Rough token estimate
-          aiResponse.text.length,  // Completion tokens estimate
-          0.0,  // Cost (TODO: calculate based on provider)
+          inputTokenEstimate,
+          outputTokenEstimate,
+          cost,  // Calculated cost based on provider/model pricing
           aiResponse.text.slice(0, 500),  // First 500 chars of response
           generateDuration,
           'success',
@@ -925,8 +943,24 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const MAX_TOOL_ITERATIONS = 3;
 
         while (toolIterations < MAX_TOOL_ITERATIONS) {
-          // Parse tool calls from response using adapter
-          const toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
+          // Check for native tool calls first (from Anthropic, OpenAI JSON tool_use format)
+          // Then fall back to XML parsing for other providers
+          let toolCalls: ExecutorToolCall[];
+
+          if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+            // Convert native format { id, name, input } to executor format { toolName, parameters }
+            // Unsanitize tool names: data__list -> data/list (API requires no slashes, we use double underscores)
+            toolCalls = aiResponse.toolCalls.map((tc: NativeToolCall) => ({
+              toolName: unsanitizeToolName(tc.name),
+              parameters: Object.fromEntries(
+                Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+              ) as Record<string, string>
+            }));
+            this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Using native tool_use format (${toolCalls.length} calls)`);
+          } else {
+            // Fall back to XML parsing for non-native providers
+            toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
+          }
 
           if (toolCalls.length === 0) {
             // No tools found, proceed to post response
@@ -1416,5 +1450,72 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       AIDecisionLogger.logError(this.personaName, 'Redundancy check', error instanceof Error ? error.message : String(error));
       return false; // On error, allow the response (fail open)
     }
+  }
+
+  /**
+   * Calculate API cost based on provider pricing
+   *
+   * Pricing is per 1M tokens (input/output rates differ)
+   * Local models (Ollama) are free
+   */
+  private calculateCost(
+    provider: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number
+  ): number {
+    // Pricing per 1M tokens (as of late 2024)
+    // Format: { input: $/1M tokens, output: $/1M tokens }
+    const pricing: Record<string, { input: number; output: number }> = {
+      // Anthropic
+      'anthropic/claude-3-opus': { input: 15.0, output: 75.0 },
+      'anthropic/claude-3-sonnet': { input: 3.0, output: 15.0 },
+      'anthropic/claude-3-haiku': { input: 0.25, output: 1.25 },
+      'anthropic/claude-3.5-sonnet': { input: 3.0, output: 15.0 },
+
+      // OpenAI
+      'openai/gpt-4o': { input: 5.0, output: 15.0 },
+      'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
+      'openai/gpt-4-turbo': { input: 10.0, output: 30.0 },
+      'openai/gpt-3.5-turbo': { input: 0.5, output: 1.5 },
+
+      // Together AI
+      'together/llama-3': { input: 0.2, output: 0.2 },
+      'together/llama-3.1-70b': { input: 0.88, output: 0.88 },
+      'together/llama-3.1-8b': { input: 0.18, output: 0.18 },
+      'together/mixtral-8x7b': { input: 0.6, output: 0.6 },
+
+      // DeepSeek
+      'deepseek/deepseek-chat': { input: 0.14, output: 0.28 },
+      'deepseek/deepseek-coder': { input: 0.14, output: 0.28 },
+
+      // Groq (free tier, but has rate limits)
+      'groq/llama-3': { input: 0.05, output: 0.08 },
+      'groq/mixtral-8x7b': { input: 0.27, output: 0.27 },
+
+      // Local (Ollama) - FREE
+      'ollama/*': { input: 0, output: 0 }
+    };
+
+    // Try exact match first
+    const key = `${provider}/${model}`;
+    let rates = pricing[key];
+
+    // If no exact match, check for provider/* wildcard (e.g., ollama/*)
+    if (!rates) {
+      const wildcardKey = `${provider}/*`;
+      rates = pricing[wildcardKey];
+    }
+
+    // Default to free (unknown provider, likely local)
+    if (!rates) {
+      rates = { input: 0, output: 0 };
+    }
+
+    // Calculate cost (rates are per 1M tokens)
+    const inputCost = (inputTokens / 1_000_000) * rates.input;
+    const outputCost = (outputTokens / 1_000_000) * rates.output;
+
+    return inputCost + outputCost;
   }
 }

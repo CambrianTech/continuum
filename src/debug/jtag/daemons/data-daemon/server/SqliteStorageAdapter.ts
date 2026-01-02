@@ -21,7 +21,8 @@ import {
   type CollectionStats,
   type StorageOperation,
   type RecordData,
-  type QueryExplanation
+  type QueryExplanation,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
 import { getDatabasePath } from '../../../system/config/ServerConfig';
@@ -66,8 +67,9 @@ interface SqliteOptions {
   timeout?: number;         // Busy timeout in ms
 }
 
-// Re-export entity registry functions for backwards compatibility
-export { registerEntity, getRegisteredEntity, type EntityConstructor };
+// REMOVED: Re-exports of entity registry functions
+// Import from EntityRegistry.ts directly instead:
+// import { registerEntity, getRegisteredEntity } from './EntityRegistry';
 
 /**
  * SQLite Storage Adapter with Proper Relational Schema
@@ -238,6 +240,13 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     this.writeManager = new SqliteWriteManager(this.executor);
     log.debug('Write manager initialized');
 
+    // Wire up schema getters for managers (NEW ARCHITECTURE)
+    // This allows managers to use cached schema instead of ENTITY_REGISTRY
+    const schemaGetter = (collection: string) => this.schemaManager.getCachedSchema(collection);
+    this.writeManager.setSchemaGetter(schemaGetter);
+    this.queryExecutor.setSchemaGetter(schemaGetter);
+    log.debug('Schema getters wired to managers');
+
     log.debug('Configuring database settings');
     // Configure SQLite settings
     await this.schemaManager.configureSqlite(options);
@@ -279,7 +288,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
    * Ensure schema exists for collection (orchestrated by DataDaemon)
    * Delegates to SqliteSchemaManager
    */
-  async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collectionName: string, _schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     return this.schemaManager.ensureSchema(collectionName, _schema);
   }
 

@@ -4,10 +4,10 @@
  * {{DESCRIPTION}}
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '../../../system/core/types/JTAGTypes';
-import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
-import type { JTAGError } from '../../../system/core/types/ErrorTypes';
-import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGError } from '@system/core/types/ErrorTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
  * {{COMMAND_NAME}} Command Parameters

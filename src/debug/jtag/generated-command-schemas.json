@@ -1,5 +1,5 @@
 {
-  "generated": "2025-12-30T19:41:06.972Z",
+  "generated": "2026-01-02T05:55:50.409Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -190,7 +190,23 @@
     {
       "name": "workspace/git/workspace/init",
       "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
-      "params": {}
+      "params": {
+        "branch": {
+          "type": "string",
+          "required": false,
+          "description": "branch parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "paths": {
+          "type": "array",
+          "required": true,
+          "description": "paths parameter"
+        }
+      }
     },
     {
       "name": "workspace/git/workspace/clean",
@@ -782,6 +798,62 @@
       }
     },
     {
+      "name": "positron/cursor",
+      "description": "Positron Cursor Command Types\n *\n * Enables AIs to point, highlight, and draw attention to elements in the UI.\n * The cursor is the AI's \"hand\" - its spatial presence in the interface.",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "x": {
+          "type": "number",
+          "required": false,
+          "description": "x parameter"
+        },
+        "y": {
+          "type": "number",
+          "required": false,
+          "description": "y parameter"
+        },
+        "selector": {
+          "type": "string",
+          "required": false,
+          "description": "selector parameter"
+        },
+        "shape": {
+          "type": "string",
+          "required": false,
+          "description": "shape parameter"
+        },
+        "color": {
+          "type": "string",
+          "required": false,
+          "description": "color parameter"
+        },
+        "duration": {
+          "type": "number",
+          "required": false,
+          "description": "duration parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        }
+      }
+    },
+    {
       "name": "ping",
       "description": "ping command",
       "params": {
@@ -820,6 +892,21 @@
           "type": "object",
           "required": true,
           "description": "participants parameter"
+        },
+        "trainingMode": {
+          "type": "string",
+          "required": false,
+          "description": "trainingMode parameter"
+        },
+        "metadata": {
+          "type": "object",
+          "required": false,
+          "description": "metadata parameter"
+        },
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
         }
       }
     },
@@ -1094,8 +1181,83 @@
           "type": "number",
           "required": true,
           "description": "height parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "trim": {
+          "type": "object",
+          "required": false,
+          "description": "trim parameter"
+        },
+        "end": {
+          "type": "string",
+          "required": true,
+          "description": "end parameter"
+        },
+        "trimTime": {
+          "type": "object",
+          "required": false,
+          "description": "trimTime parameter"
+        },
+        "rotate": {
+          "type": "string",
+          "required": false,
+          "description": "rotate parameter"
+        },
+        "flipHorizontal": {
+          "type": "boolean",
+          "required": false,
+          "description": "flipHorizontal parameter"
+        },
+        "flipVertical": {
+          "type": "boolean",
+          "required": false,
+          "description": "flipVertical parameter"
+        },
+        "gifFps": {
+          "type": "number",
+          "required": false,
+          "description": "gifFps parameter"
+        },
+        "gifMaxWidth": {
+          "type": "number",
+          "required": false,
+          "description": "gifMaxWidth parameter"
+        },
+        "customArgs": {
+          "type": "array",
+          "required": false,
+          "description": "customArgs parameter"
+        },
+        "checkDependency": {
+          "type": "boolean",
+          "required": false,
+          "description": "checkDependency parameter"
+        },
+        "installDependencies": {
+          "type": "boolean",
+          "required": false,
+          "description": "installDependencies parameter"
+        },
+        "minVersion": {
+          "type": "string",
+          "required": false,
+          "description": "minVersion parameter"
+        },
+        "emitProgress": {
+          "type": "boolean",
+          "required": false,
+          "description": "emitProgress parameter"
         }
       }
+    },
+    {
+      "name": "logs/stats",
+      "description": "logs/stats command",
+      "params": {}
     },
     {
       "name": "logs/search",
@@ -2055,7 +2217,7 @@
       }
     },
     {
-      "name": "development/exec/command",
+      "name": "development/exec",
       "description": "ExecCommand Types - Universal Script Execution System\n * \n * Defines types for JTAG's meta-command that enables AI agents to write\n * custom automation scripts with visual feedback and cross-context execution.",
       "params": {
         "code": {
@@ -2116,7 +2278,7 @@
       }
     },
     {
-      "name": "development/debug/widget-state/debug",
+      "name": "development/debug/widget-state",
       "description": "Widget State Debug Command Types\n *\n * Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development\n * Enables inspection of widget internal state, event listeners, and DOM structure",
       "params": {
         "widgetSelector": {
@@ -2169,30 +2331,20 @@
           "required": false,
           "description": "countOnly parameter"
         },
-        "setContext": {
-          "type": "object",
-          "required": false,
-          "description": "setContext parameter"
-        },
-        "section": {
+        "contextSessionId": {
           "type": "string",
           "required": false,
-          "description": "section parameter"
+          "description": "contextSessionId parameter"
         },
-        "title": {
+        "setRAGString": {
           "type": "string",
           "required": false,
-          "description": "title parameter"
+          "description": "setRAGString parameter"
         },
-        "metadata": {
-          "type": "object",
+        "getStoredContext": {
+          "type": "boolean",
           "required": false,
-          "description": "metadata parameter"
-        },
-        "timestamp": {
-          "type": "number",
-          "required": false,
-          "description": "timestamp parameter"
+          "description": "getStoredContext parameter"
         }
       }
     },
@@ -2268,7 +2420,7 @@
       }
     },
     {
-      "name": "development/debug/widget-events/debug",
+      "name": "development/debug/widget-events",
       "description": "Widget Events Debug Command Types\n * \n * Specialized command for debugging widget event listeners and event system connectivity\n * Replaces raw exec commands for widget event debugging",
       "params": {
         "widgetSelector": {
@@ -2299,7 +2451,7 @@
       }
     },
     {
-      "name": "development/debug/widget-css/debug",
+      "name": "development/debug/widget-css",
       "description": "Debug Command: widget-css\n * Hot-inject CSS into widgets for rapid iteration without full deployment",
       "params": {
         "widgetSelector": {
@@ -2473,7 +2625,7 @@
       }
     },
     {
-      "name": "development/debug/crud-sync/debug",
+      "name": "development/debug/crud-sync",
       "description": "CRUD Sync Debug Command Types\n *\n * Verifies database/UI synchronization across all three main widgets:\n * - room-list-widget: Rooms data\n * - chat-widget: Messages data\n * - user-list-widget: Users data",
       "params": {
         "collections": {
@@ -2494,7 +2646,7 @@
       }
     },
     {
-      "name": "development/debug/chat-send/debug",
+      "name": "development/debug/chat-send",
       "description": "Chat Send Debug Command Types\n *\n * Triggers chat widget to send a message for testing event flow",
       "params": {
         "message": {
@@ -2625,6 +2777,43 @@
           "type": "array",
           "required": false,
           "description": "excludeDirs parameter"
+        }
+      }
+    },
+    {
+      "name": "development/build",
+      "description": "Development Build Command - Shared Types\n *\n * Zero-friction TypeScript build check. Returns success or structured errors.",
+      "params": {
+        "quiet": {
+          "type": "boolean",
+          "required": false,
+          "description": "quiet parameter"
+        }
+      }
+    },
+    {
+      "name": "development/benchmark-vectors",
+      "description": "BenchmarkVectorsTypes - Types for vector operation benchmarking\n *\n * Measures performance of:\n * - Cosine similarity (single pair)\n * - Batch similarity (one-to-many)\n * - Full vector search (all-to-all ranking)",
+      "params": {
+        "vectorCount": {
+          "type": "number",
+          "required": false,
+          "description": "vectorCount parameter"
+        },
+        "dimensions": {
+          "type": "number",
+          "required": false,
+          "description": "dimensions parameter"
+        },
+        "iterations": {
+          "type": "number",
+          "required": false,
+          "description": "iterations parameter"
+        },
+        "benchmark": {
+          "type": "string",
+          "required": false,
+          "description": "benchmark parameter"
         }
       }
     },
@@ -2770,6 +2959,11 @@
           "type": "object",
           "required": false,
           "description": "orderBy parameter"
+        },
+        "pageSize": {
+          "type": "number",
+          "required": false,
+          "description": "pageSize parameter"
         }
       }
     },
@@ -3259,6 +3453,21 @@
           "type": "string",
           "required": false,
           "description": "proposedBy parameter"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "scope parameter"
+        },
+        "significanceLevel": {
+          "type": "string",
+          "required": false,
+          "description": "significanceLevel parameter"
+        },
+        "proposerId": {
+          "type": "string",
+          "required": false,
+          "description": "proposerId parameter"
         }
       }
     },
@@ -3743,6 +3952,144 @@
           "type": "object",
           "required": false,
           "description": "roleConfig parameter"
+        },
+        "config": {
+          "type": "string",
+          "required": false,
+          "description": "config parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        }
+      }
+    },
+    {
+      "name": "canvas/vision",
+      "description": "Canvas Vision Command Types\n *\n * Enables AIs to \"see\" and interact with the drawing canvas:\n * - describe: Vision AI describes what's on the canvas\n * - transform: Use image generation to transform the sketch\n * - analyze: Structured analysis of the drawing",
+      "params": {
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "imageBase64": {
+          "type": "string",
+          "required": false,
+          "description": "imageBase64 parameter"
+        },
+        "prompt": {
+          "type": "string",
+          "required": false,
+          "description": "prompt parameter"
+        },
+        "transformPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "transformPrompt parameter"
+        },
+        "transformModel": {
+          "type": "string",
+          "required": false,
+          "description": "transformModel parameter"
+        },
+        "visionModel": {
+          "type": "string",
+          "required": false,
+          "description": "visionModel parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": false,
+          "description": "personaName parameter"
+        }
+      }
+    },
+    {
+      "name": "canvas/stroke/list",
+      "description": "Canvas Stroke List Command Types\n *\n * Query strokes from a canvas for replay/rendering.\n * Supports pagination and viewport filtering.",
+      "params": {
+        "canvasId": {
+          "type": "string",
+          "required": true,
+          "description": "canvasId parameter"
+        },
+        "viewport": {
+          "type": "object",
+          "required": false,
+          "description": "viewport parameter"
+        },
+        "y": {
+          "type": "number",
+          "required": true,
+          "description": "y parameter"
+        },
+        "width": {
+          "type": "number",
+          "required": true,
+          "description": "width parameter"
+        },
+        "height": {
+          "type": "number",
+          "required": true,
+          "description": "height parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "cursor": {
+          "type": "string",
+          "required": false,
+          "description": "cursor parameter"
+        }
+      }
+    },
+    {
+      "name": "canvas/stroke/add",
+      "description": "Canvas Stroke Add Command Types\n *\n * Adds a stroke to a collaborative canvas.\n * Strokes are atomic drawing operations created by human or AI users.\n *\n * Real-time Collaboration:\n * - Server saves stroke to database\n * - Server emits 'canvas:stroke:added' event\n * - All clients receive and render the stroke",
+      "params": {
+        "canvasId": {
+          "type": "string",
+          "required": true,
+          "description": "canvasId parameter"
+        },
+        "tool": {
+          "type": "string",
+          "required": true,
+          "description": "tool parameter"
+        },
+        "points": {
+          "type": "array",
+          "required": true,
+          "description": "points parameter"
+        },
+        "color": {
+          "type": "string",
+          "required": true,
+          "description": "color parameter"
+        },
+        "size": {
+          "type": "number",
+          "required": true,
+          "description": "size parameter"
+        },
+        "opacity": {
+          "type": "number",
+          "required": false,
+          "description": "opacity parameter"
+        },
+        "compositeOp": {
+          "type": "string",
+          "required": false,
+          "description": "compositeOp parameter"
         }
       }
     },
@@ -3954,6 +4301,31 @@
           "type": "string",
           "required": true,
           "description": "timestamp parameter"
+        },
+        "strategy": {
+          "type": "string",
+          "required": false,
+          "description": "strategy parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
+        },
+        "domainKeywords": {
+          "type": "array",
+          "required": false,
+          "description": "domainKeywords parameter"
+        },
+        "responseThreshold": {
+          "type": "number",
+          "required": false,
+          "description": "responseThreshold parameter"
         }
       }
     },
@@ -4051,6 +4423,21 @@
           "type": "number",
           "required": false,
           "description": "limit parameter"
+        },
+        "output": {
+          "type": "string",
+          "required": false,
+          "description": "output parameter"
+        },
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
+        },
+        "groupByActor": {
+          "type": "boolean",
+          "required": false,
+          "description": "groupByActor parameter"
         }
       }
     },
@@ -4483,6 +4870,61 @@
           "type": "string",
           "required": false,
           "description": "name parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": false,
+          "description": "roomId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "maxMessages": {
+          "type": "number",
+          "required": false,
+          "description": "maxMessages parameter"
+        },
+        "includeArtifacts": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeArtifacts parameter"
+        },
+        "includeMemories": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeMemories parameter"
+        },
+        "preview": {
+          "type": "boolean",
+          "required": false,
+          "description": "preview parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "temperature parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "preferredProvider": {
+          "type": "string",
+          "required": false,
+          "description": "preferredProvider parameter"
         }
       }
     },

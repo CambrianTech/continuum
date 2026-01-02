@@ -126,7 +126,13 @@ export const COLLECTIONS = {
   APPROVAL_REQUESTS: 'approval_requests',
   RELEASE_REQUESTS: 'release_requests',
   KICK_VOTES: 'kick_votes',
-  KICK_APPEALS: 'kick_appeals'
+  KICK_APPEALS: 'kick_appeals',
+
+  // Collaborative Canvas System
+  CANVAS_STROKES: 'canvas_strokes',
+
+  // Activity System - collaborative content instances (canvas, browser, games, etc.)
+  ACTIVITIES: 'activities'
 } as const;
 
 
@@ -157,9 +163,9 @@ export type FineTuningProvider = typeof FINE_TUNING_PROVIDERS[number];
 export const MODEL_IDS = {
   /** Anthropic Claude models */
   ANTHROPIC: {
-    SONNET_4_5: 'claude-sonnet-4-5-20250929',       // Current (Sep 2025)
-    OPUS_3: 'claude-3-opus-20240229',
-    HAIKU_3: 'claude-3-haiku-20240307'
+    SONNET_4_5: 'claude-sonnet-4-5-20250929',       // Current Claude Sonnet 4.5 (Sep 2025)
+    OPUS_4: 'claude-opus-4-20250514',               // Claude Opus 4 (May 2025)
+    HAIKU_3_5: 'claude-3-5-haiku-20241022'          // Claude 3.5 Haiku (Oct 2024)
   },
 
   /** OpenAI models */

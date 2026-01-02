@@ -8,7 +8,7 @@
 ///
 /// Uses CommandClient to call TypeScript Commands.execute() for coordinated database access.
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -105,6 +105,7 @@ impl CommandClient {
     }
 
     /// Get row count from collection (proves data command works)
+    #[allow(dead_code)]
     fn get_row_count(&self, collection: &str) -> Result<usize, String> {
         let result = self.execute("data/list", json!({
             "collection": collection,

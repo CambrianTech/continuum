@@ -36,6 +36,8 @@ import { AIProviderError } from '../AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
 import { PricingManager } from '../PricingManager';
 import { PricingFetcher } from '../PricingFetcher';
+import { VisionCapabilityService } from '../VisionCapabilityService';
+import { MediaContentFormatter } from '../MediaContentFormatter';
 
 export interface OpenAICompatibleConfig {
   providerId: string;
@@ -147,8 +149,10 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       const modelInfo = this.config.models?.find(m => m.id === model);
       const contextWindow = modelInfo?.contextWindow || 8192; // Default to conservative 8K
 
-      // Detect if model supports vision/multimodal
-      const supportsVision = modelInfo?.capabilities?.includes('image-analysis') ||
+      // Detect if model supports vision/multimodal using centralized VisionCapabilityService
+      const visionService = VisionCapabilityService.getInstance();
+      const supportsVision = visionService.supportsVision(this.providerId, model) ||
+                           modelInfo?.capabilities?.includes('image-analysis') ||
                            modelInfo?.capabilities?.includes('multimodal') ||
                            this.supportedCapabilities.includes('image-analysis') ||
                            this.supportedCapabilities.includes('multimodal');
@@ -161,16 +165,15 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
         // Multimodal content (ContentPart[])
         if (!supportsVision) {
-          // Non-vision model: Flatten ContentPart[] to plain string (extract text parts only)
-          const textParts = msg.content.filter((part: any) => part.type === 'text');
-          const flattenedContent = textParts.map((part: any) => part.text).join('\n');
+          // Non-vision model: Extract text only using MediaContentFormatter
+          const flattenedContent = MediaContentFormatter.extractTextOnly(msg.content);
           return { role: msg.role, content: flattenedContent, ...(msg.name && { name: msg.name }) };
         }
 
-        // Vision model: Format multimodal content properly
+        // Vision model: Format multimodal content using MediaContentFormatter
         return {
           role: msg.role,
-          content: this.formatMultimodalContent(msg.content),
+          content: MediaContentFormatter.formatForOpenAI(msg.content),
           ...(msg.name && { name: msg.name }),
         };
       });
@@ -483,24 +486,8 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     };
   }
 
-  /**
-   * Format multimodal content for OpenAI API
-   */
-  protected formatMultimodalContent(content: any[]): any {
-    return content.map(part => {
-      if (part.type === 'text') {
-        return { type: 'text', text: part.text };
-      } else if (part.type === 'image') {
-        return {
-          type: 'image_url',
-          image_url: {
-            url: part.image.url || `data:image/jpeg;base64,${part.image.base64}`,
-          },
-        };
-      }
-      return part;
-    });
-  }
+  // Multimodal content formatting now handled by MediaContentFormatter
+  // See: daemons/ai-provider-daemon/shared/MediaContentFormatter.ts
 
   /**
    * Map OpenAI finish reason to our enum

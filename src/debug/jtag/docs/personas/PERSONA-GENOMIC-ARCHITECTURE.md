@@ -319,6 +319,183 @@ interface GenomicLayer {
 }
 ```
 
+## 🎓 **LEARNING IS EVERYWHERE (Academy Dissolved)**
+
+### **The Core Insight**
+
+The separate Academy concept was too limiting. Learning isn't a place - it's a mode that can happen anywhere, configured via recipes.
+
+**Every room is also a classroom:**
+
+```
+Room                    Learning That Happens
+────                    ─────────────────────
+Chat room           →   AIs learn conversation patterns, humans learn from AI
+Canvas              →   AIs learn visual preferences, humans learn techniques
+Code review         →   AIs learn codebase style, humans learn best practices
+Co-browsing         →   AIs learn research patterns, humans get guided tours
+Settings            →   AIs learn user preferences, users learn capabilities
+Any activity        →   Teaching flows in all directions, always
+```
+
+Teaching is bidirectional:
+- **Humans teach AIs** (corrections, preferences, examples)
+- **AIs teach humans** (explanations, suggestions, guidance)
+- **AIs teach AIs** (knowledge transfer, pattern sharing)
+
+**The room doesn't need to BE a classroom. It IS one, inherently.**
+
+### **Two Forms of Learning**
+
+Both configured via recipes:
+
+```
+1. CONTINUOUS IMPROVEMENT (Ambient)
+   ───────────────────────────────
+   Always on, happening in any room/activity
+   ├── Every conversation is potential training data
+   ├── Every correction improves the model
+   ├── Background accumulation → periodic micro-tune
+   └── You don't even notice it happening
+
+2. MATRIX DOJO MODE (Intensive)
+   ───────────────────────────────
+   "I know kung fu" - focused training sessions
+   ├── Dedicated time for skill acquisition
+   ├── Simulated scenarios, rapid iteration
+   ├── High-intensity benchmark → train → benchmark loops
+   └── Explicit goal: master this specific skill
+```
+
+**Recipe configuration:**
+
+```json
+{
+  "uniqueId": "continuous-learning",
+  "learningMode": "ambient",
+  "captureThreshold": 50,
+  "autoTrain": true
+}
+
+{
+  "uniqueId": "dojo-typescript-mastery",
+  "learningMode": "intensive",
+  "simulationCount": 10000,
+  "benchmarkFrequency": "every-100",
+  "targetMetric": "code-correctness > 95%"
+}
+```
+
+### **Task Toolboxes**
+
+For any task domain, a persona needs a complete toolbox:
+
+```
+Task Toolbox (e.g., "code-review")
+├── Commands (tools)
+│   ├── git/diff
+│   ├── code/analyze
+│   ├── test/run
+│   └── pr/comment
+│
+├── LoRA Layers (skills)
+│   ├── typescript-expertise.qlora
+│   ├── security-patterns.qlora
+│   └── code-style-guide.qlora
+│
+├── Documents (context)
+│   ├── team-conventions.md
+│   ├── architecture-overview.md
+│   └── common-pitfalls.md
+│
+└── Metadata
+    ├── benchmarks (how to measure success)
+    ├── examples (reference cases)
+    └── feedback-history (what worked)
+```
+
+### **Permanent vs Swappable Layers**
+
+```
+PERMANENT (Core Identity)
+├── Always loaded
+├── Define the persona's baseline capabilities
+├── Example: "helper-core.qlora" - always helpful
+└── Never paged out
+
+SWAPPABLE (Task-Specific)
+├── Paged in when task matches
+├── Paged out when memory pressure or task changes
+├── Example: "rust-expertise.qlora" - only for Rust work
+└── LRU eviction when too many loaded
+```
+
+**Memory layout:**
+
+```
+Persona Memory (Limited)
+┌─────────────────────────────────┐
+│ [PERMANENT] helper-core         │ ← Always loaded
+│ [PERMANENT] conversation-basics │ ← Always loaded
+│ [SWAPPED]   typescript-expert   │ ← Loaded for current task
+│ [SWAPPED]   code-review-style   │ ← Loaded for current task
+│ [EMPTY]     ← Room for more     │
+│ [EMPTY]     ← Or evict LRU      │
+└─────────────────────────────────┘
+```
+
+### **Escalation: When The Room Needs More**
+
+Learning intensity scales up organically when needed:
+
+```
+Normal Operation (Ambient Learning)
+├── Task arrives
+├── Participants attempt it
+├── Learning happens naturally from interactions
+└── Usually sufficient
+
+Escalation Trigger
+├── Participants realize: "We're not good enough for this"
+├── Downloaded LoRA layers insufficient
+├── Current expertise doesn't meet task requirements
+└── Collective decision: "We need to level up"
+
+Intensive Mode (Dojo)
+├── Research phase: Find existing adapters, gather training data
+├── Simulation phase: Generate scenarios for this specific gap
+├── Training phase: Fine-tune, benchmark, iterate
+├── Validation: Are we good enough now?
+└── Return to task with improved capabilities
+```
+
+**How escalation gets triggered:**
+
+1. **Planning reveals gaps** - AIs realize during planning they lack capability
+2. **Human feedback** - Human says "this isn't good enough"
+
+**Benchmarks are mixed - qualitative AND quantitative:**
+
+```
+Quantitative (Heuristic)              Qualitative (Judgment)
+────────────────────────              ──────────────────────
+Code compiles or doesn't        ←→    Code is elegant/readable
+Performance metrics (ms, fps)   ←→    Interface "feels" responsive
+Test pass rate (87%)            ←→    Tests cover the right things
+Accuracy score (0.94)           ←→    Results make sense contextually
+Token count, latency            ←→    Response is helpful
+```
+
+**Both matter. Neither is sufficient alone.** The system triangulates across:
+- Metrics (objective failures)
+- AI voting (pattern violations)
+- Human feedback (expectation gaps)
+- Real-world usage (everything else)
+
+**We are participating in teams together** - humans, AIs, and governance working collectively. Debate, improve, explore, adapt. Never set in stone.
+
+---
+
 ## 🗄️ **PER-PERSONA DATABASE ARCHITECTURE**
 
 ### **Storage Isolation**

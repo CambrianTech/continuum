@@ -1059,6 +1059,13 @@ grep -r "UserEntity\|ChatMessageEntity" daemons/data-daemon/ | grep -v EntityReg
 ### **[UNIVERSAL-PRIMITIVES.md](src/debug/jtag/docs/UNIVERSAL-PRIMITIVES.md)**
 Commands.execute() and Events.subscribe()/emit() - the two primitives everything is built on.
 
+### **[GENERATOR-OOP-PHILOSOPHY.md](src/debug/jtag/docs/GENERATOR-OOP-PHILOSOPHY.md)** - CORE PHILOSOPHY
+Generators and OOP are intertwined parallel forces:
+- Generators ensure structural correctness at creation time
+- OOP/type system ensures behavioral correctness at runtime
+- AIs should strive to create generators for any repeatable pattern
+- This enables tree-based delegation of ability with compounding capability
+
 ### **PersonaUser Convergence Docs**
 - `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
 - `src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md`

@@ -22,6 +22,7 @@ import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConf
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { RoutingService } from '../../system/routing/RoutingService';
+import { pageState } from '../../system/state/PageStateService';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
@@ -116,25 +117,30 @@ export class MainWidget extends BaseWidget {
     const { type, entityId } = parseContentPath(initialPath);
     console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
 
-    // URL → State → Widget (in that order)
+    // URL → PageState → Widget (in that order)
     // Delay slightly to let the DOM render first
     setTimeout(async () => {
-      // 1. Update state FIRST (so widget can read from it)
+      // 1. Resolve entity for proper display name
+      const resolved = entityId
+        ? await RoutingService.resolve(type, entityId)
+        : undefined;
+
+      // 2. Set page state FIRST (single source of truth for widgets)
+      pageState.setContent(type, entityId, resolved || undefined);
+
+      // 3. Ensure tab exists in UserState
       await this.ensureTabForContent(type, entityId);
 
-      // 2. For chat, resolve and emit event (for other listeners)
-      if (type === 'chat' && entityId) {
-        const resolved = await RoutingService.resolveRoom(entityId);
-        if (resolved) {
-          Events.emit(UI_EVENTS.ROOM_SELECTED, {
-            roomId: resolved.id,
-            roomName: resolved.displayName,
-            uniqueId: resolved.uniqueId
-          });
-        }
+      // 4. For chat, emit ROOM_SELECTED for other listeners
+      if (type === 'chat' && entityId && resolved) {
+        Events.emit(UI_EVENTS.ROOM_SELECTED, {
+          roomId: resolved.id,
+          roomName: resolved.displayName,
+          uniqueId: resolved.uniqueId
+        });
       }
 
-      // 3. THEN create widget (reads from state)
+      // 5. THEN create widget (reads from pageState)
       this.switchContentView(type, entityId);
     }, 100);
   }
@@ -242,7 +248,7 @@ export class MainWidget extends BaseWidget {
    * Handle tab click - switch to that content
    * Uses tab data passed from ContentTabsWidget (no userState lookup needed)
    */
-  private handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): void {
+  private async handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): Promise<void> {
     console.log('🔥 MainWidget.handleTabClick CALLED with:', tabData);
 
     const { tabId, label, entityId, contentType } = tabData;
@@ -287,6 +293,12 @@ export class MainWidget extends BaseWidget {
       this.userState.contentState.currentItemId = tabId;
     }
 
+    // Resolve entity and set page state FIRST
+    const resolved = resolvedEntityId
+      ? await RoutingService.resolve(resolvedContentType, resolvedEntityId)
+      : undefined;
+    pageState.setContent(resolvedContentType, resolvedEntityId, resolved || undefined);
+
     // Update tab highlighting
     this.updateContentTabs();
 
@@ -298,23 +310,11 @@ export class MainWidget extends BaseWidget {
     this.updateUrl(newPath);
 
     // Emit appropriate event based on content type
-    if (resolvedContentType === 'chat' && resolvedEntityId) {
-      // Resolve uniqueId → UUID for consistent room identification
-      RoutingService.resolveRoom(resolvedEntityId).then(resolved => {
-        if (resolved) {
-          Events.emit(UI_EVENTS.ROOM_SELECTED, {
-            roomId: resolved.id,
-            roomName: resolved.displayName || label || 'Chat',
-            uniqueId: resolved.uniqueId  // For URL building
-          });
-        } else {
-          // Fallback to using the identifier as-is
-          Events.emit(UI_EVENTS.ROOM_SELECTED, {
-            roomId: resolvedEntityId,
-            roomName: label || 'Chat',
-            uniqueId: resolvedEntityId
-          });
-        }
+    if (resolvedContentType === 'chat' && resolvedEntityId && resolved) {
+      Events.emit(UI_EVENTS.ROOM_SELECTED, {
+        roomId: resolved.id,
+        roomName: resolved.displayName || label || 'Chat',
+        uniqueId: resolved.uniqueId  // For URL building
       });
     }
 
@@ -491,24 +491,27 @@ export class MainWidget extends BaseWidget {
     // Update current path
     this.currentPath = newPath;
 
-    // Switch content view (same pattern as initial URL routing)
-    this.switchContentView(type, entityId);
+    // 1. Resolve entity for display name
+    const resolved = entityId
+      ? await RoutingService.resolve(type, entityId)
+      : undefined;
 
-    // Ensure a tab exists for this URL
+    // 2. Set page state FIRST (single source of truth)
+    pageState.setContent(type, entityId, resolved || undefined);
+
+    // 3. Ensure a tab exists for this URL
     await this.ensureTabForContent(type, entityId);
 
-    // For chat, resolve uniqueId → UUID and emit ROOM_SELECTED
-    if (type === 'chat' && entityId) {
-      const resolved = await RoutingService.resolveRoom(entityId);
-      if (resolved) {
-        Events.emit(UI_EVENTS.ROOM_SELECTED, {
-          roomId: resolved.id,
-          roomName: resolved.displayName,
-          uniqueId: resolved.uniqueId
-        });
-      } else {
-        Events.emit(UI_EVENTS.ROOM_SELECTED, { roomId: entityId, roomName: '', uniqueId: entityId });
-      }
+    // 4. Switch content view
+    this.switchContentView(type, entityId);
+
+    // 5. For chat, emit ROOM_SELECTED for other listeners
+    if (type === 'chat' && entityId && resolved) {
+      Events.emit(UI_EVENTS.ROOM_SELECTED, {
+        roomId: resolved.id,
+        roomName: resolved.displayName,
+        uniqueId: resolved.uniqueId
+      });
     }
 
     console.log(`🔄 MainPanel: Navigated to ${type}/${entityId || 'default'}`);
@@ -795,6 +798,10 @@ export class MainWidget extends BaseWidget {
       this.userState.contentState.openItems.push(newTab);
       this.userState.contentState.currentItemId = newTabId;
     }
+
+    // Set page state FIRST (single source of truth)
+    // Content types like settings/help/theme don't have entityIds
+    pageState.setContent(contentType, undefined, undefined);
 
     // Update tabs UI
     this.updateContentTabs();

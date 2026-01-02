@@ -44,6 +44,47 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
     return content.text || '';
   }
 
+  /**
+   * Fast text similarity using word n-gram Jaccard coefficient
+   * This is a fast O(n) algorithm that doesn't require embeddings
+   * Returns 0-1 similarity score (1 = identical)
+   */
+  private computeTextSimilarity(text1: string, text2: string): number {
+    // Handle edge cases
+    if (!text1 || !text2) return 0;
+    if (text1 === text2) return 1.0;
+
+    // Tokenize into words and create n-grams (unigrams + bigrams)
+    const tokenize = (text: string): Set<string> => {
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+      const ngrams = new Set<string>();
+
+      // Unigrams
+      for (const word of words) {
+        ngrams.add(word);
+      }
+
+      // Bigrams (pairs of consecutive words)
+      for (let i = 0; i < words.length - 1; i++) {
+        ngrams.add(`${words[i]} ${words[i + 1]}`);
+      }
+
+      return ngrams;
+    };
+
+    const set1 = tokenize(text1);
+    const set2 = tokenize(text2);
+
+    // Jaccard similarity = intersection / union
+    let intersection = 0;
+    for (const gram of set1) {
+      if (set2.has(gram)) intersection++;
+    }
+
+    const union = set1.size + set2.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+  }
+
   async execute(params: AiDetectSemanticLoopParams): Promise<AiDetectSemanticLoopResult> {
     // Validate required parameters
     if (!params.messageText || params.messageText.trim() === '') {
@@ -116,41 +157,56 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
       });
     }
 
-    // Compare input embedding against each recent message
+    // Compare input against each recent message
     const matches: Array<{ messageId: string; similarity: number; timestamp: string; excerpt: string }> = [];
     let maxSimilarity = 0;
+    const inputTextNormalized = params.messageText.toLowerCase().trim();
 
     for (const msg of recentMessages) {
       const msgText = this.getMessageText(msg.content);
       if (!msgText) continue;
 
-      // Try to use stored embedding, otherwise generate on-the-fly
-      let msgEmbedding = msg.embedding;
-      if (!msgEmbedding || msgEmbedding.length === 0) {
-        // Generate embedding for this message (slower but necessary)
-        msgEmbedding = await EmbeddingService.embedText(msgText) || undefined;
-        if (!msgEmbedding) continue;
+      let similarity = 0;
+
+      // Fast path: Check for exact/near-exact match first (very fast, no embeddings needed)
+      const msgTextNormalized = msgText.toLowerCase().trim();
+      const textSimilarity = this.computeTextSimilarity(inputTextNormalized, msgTextNormalized);
+
+      // If texts are very similar (>90% Jaccard), skip embedding check - it's definitely a duplicate
+      if (textSimilarity >= 0.90) {
+        similarity = textSimilarity;
+      } else if (inputEmbedding) {
+        // Semantic path: Use embeddings only if we have input embedding and message has one
+        let msgEmbedding = msg.embedding;
+        if (!msgEmbedding || msgEmbedding.length === 0) {
+          // Skip embedding generation for individual messages - too slow
+          // Fall back to text similarity
+          similarity = textSimilarity;
+        } else {
+          try {
+            similarity = EmbeddingService.cosineSimilarity(inputEmbedding, msgEmbedding);
+          } catch {
+            // Incompatible embeddings - use text similarity
+            similarity = textSimilarity;
+          }
+        }
+      } else {
+        // No input embedding available - use text similarity
+        similarity = textSimilarity;
       }
 
-      try {
-        const similarity = EmbeddingService.cosineSimilarity(inputEmbedding, msgEmbedding);
+      if (similarity >= WARN_THRESHOLD) {
+        const excerpt = msgText.slice(0, 100) + (msgText.length > 100 ? '...' : '');
+        matches.push({
+          messageId: msg.id,
+          similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimals
+          timestamp: msg.timestamp,
+          excerpt
+        });
+      }
 
-        if (similarity >= WARN_THRESHOLD) {
-          const excerpt = msgText.slice(0, 100) + (msgText.length > 100 ? '...' : '');
-          matches.push({
-            messageId: msg.id,
-            similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimals
-            timestamp: msg.timestamp,
-            excerpt
-          });
-        }
-
-        if (similarity > maxSimilarity) {
-          maxSimilarity = similarity;
-        }
-      } catch {
-        // Skip messages with incompatible embeddings (different dimensions)
-        continue;
+      if (similarity > maxSimilarity) {
+        maxSimilarity = similarity;
       }
     }
 

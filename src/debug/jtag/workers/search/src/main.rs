@@ -7,7 +7,8 @@
 
 mod algorithms;
 
-use algorithms::{AlgorithmRegistry, SearchInput, SearchOutput};
+use algorithms::{AlgorithmRegistry, SearchAlgorithm, SearchInput, SearchOutput};
+use algorithms::cosine::{CosineAlgorithm, VectorSearchInput};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -40,6 +41,25 @@ enum Request {
 
     #[serde(rename = "algorithm-params")]
     AlgorithmParams { algorithm: String },
+
+    /// Vector-based semantic search (primary use case for memory recall)
+    #[serde(rename = "vector-search")]
+    VectorSearch {
+        /// Query embedding vector
+        query_vector: Vec<f64>,
+        /// Corpus embedding vectors
+        corpus_vectors: Vec<Vec<f64>>,
+        /// Optional: normalize vectors before comparison
+        #[serde(default = "default_true")]
+        normalize: bool,
+        /// Optional: minimum similarity threshold
+        #[serde(default)]
+        threshold: f64,
+    },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +145,33 @@ impl SearchWorker {
                         }
                     }
                     Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::VectorSearch {
+                query_vector,
+                corpus_vectors,
+                normalize,
+                threshold,
+            } => {
+                // Create cosine algorithm with parameters
+                let mut alg = CosineAlgorithm::default();
+                let _ = alg.set_param("normalize", json!(normalize));
+                let _ = alg.set_param("threshold", json!(threshold));
+
+                // Execute vector search
+                let input = VectorSearchInput {
+                    query_vector,
+                    corpus_vectors,
+                };
+                let output = alg.vector_search(&input);
+
+                Response::Ok {
+                    data: json!({
+                        "algorithm": "cosine",
+                        "scores": output.scores,
+                        "ranked_indices": output.ranked_indices
+                    }),
                 }
             }
         }

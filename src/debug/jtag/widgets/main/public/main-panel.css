@@ -126,11 +126,14 @@
   background: var(--surface-primary, rgba(15, 20, 25, 0.95));
 }
 
-/* Widget containers - let widgets handle their own styling */
-chat-widget {
+/* Widget containers in content-view - all widgets expand to fill available space */
+.content-view > * {
   display: flex;
   flex: 1;
+  width: 100%;
+  height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 

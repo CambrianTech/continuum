@@ -29,9 +29,11 @@ export class WidgetStateBrowserCommand extends CommandBase<WidgetStateDebugParam
     const errors: string[] = [];
 
     try {
-      // If setContext is provided, route to server for RAG context storage
-      if (params.setContext) {
-        logs.push('🧠 Routing setContext to server for RAG storage');
+      // Route context/RAG operations to server for storage
+      // These params require server-side WidgetContextService
+      if (params.setContext || params.setRAGString || params.getStoredContext) {
+        const operation = params.setRAGString ? 'setRAGString' : params.setContext ? 'setContext' : 'getStoredContext';
+        logs.push(`🧠 Routing ${operation} to server for RAG storage`);
         return await this.remoteExecute<WidgetStateDebugParams, WidgetStateDebugResult>(params);
       }
 

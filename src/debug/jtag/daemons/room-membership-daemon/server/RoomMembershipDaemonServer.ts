@@ -1,10 +1,14 @@
 /**
- * RoomMembershipDaemonServer - Server-side room membership management
+ * RoomMembershipDaemonServer - Server-side room AND activity membership management
  *
  * Discord-style auto-join + smart routing foundation:
- * - Everyone auto-joins #general
+ * - Everyone auto-joins #general room AND collaborative activities
  * - Smart routing based on user type/capabilities (extensible)
  * - Future: Persona-driven org chart management
+ *
+ * Handles both:
+ * - Rooms: Chat channels (RoomEntity)
+ * - Activities: Collaborative content (ActivityEntity) - canvas, browser, games
  */
 
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
@@ -16,8 +20,10 @@ import { DATA_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
+import { ACTIVITY_UNIQUE_IDS } from '../../../system/data/constants/ActivityConstants';
 import type { UserEntity } from '../../../system/data/entities/UserEntity';
 import type { RoomEntity } from '../../../system/data/entities/RoomEntity';
+import type { ActivityEntity, ActivityParticipant } from '../../../system/data/entities/ActivityEntity';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 
 /**
@@ -28,6 +34,17 @@ interface SmartRoutingRule {
   userType?: 'human' | 'persona' | 'agent';
   capabilities?: string[];  // Future: Check user.capabilities
   rooms: string[];  // Room uniqueIds
+}
+
+/**
+ * Activity routing rules - similar to rooms but for collaborative content
+ * Maps user types to activities they should auto-join as participants
+ */
+interface ActivityRoutingRule {
+  userType?: 'human' | 'persona' | 'agent';
+  capabilities?: string[];
+  activities: string[];  // Activity uniqueIds
+  role?: string;  // Default role for auto-joined participants (default: 'participant')
 }
 
 export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
@@ -56,6 +73,21 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     }
   ];
 
+  /**
+   * Activity routing rules - which collaborative activities users auto-join
+   * Canvas, browser, and future activities (games, etc.) use this
+   */
+  private readonly ACTIVITY_ROUTING_RULES: ActivityRoutingRule[] = [
+    // Everyone joins the main collaborative canvas and browser
+    {
+      activities: [
+        ACTIVITY_UNIQUE_IDS.CANVAS_MAIN,
+        ACTIVITY_UNIQUE_IDS.BROWSER_MAIN
+      ],
+      role: 'participant'
+    }
+  ];
+
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
 
@@ -72,18 +104,18 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
 
     // Defer catch-up logic until after DataDaemon is ready (uses base class helper)
     this.deferInitialization(async () => {
-      await this.ensureAllUsersInRooms();
+      await this.ensureAllUsersInRoomsAndActivities();
     }, 2000);
 
     this.log.info('🏠 RoomMembershipDaemonServer: Initialized with smart routing (catch-up deferred)');
   }
 
   /**
-   * Ensure all existing users are in correct rooms (catch-up logic)
+   * Ensure all existing users are in correct rooms AND activities (catch-up logic)
    * This runs on daemon initialization to sync existing state
    */
-  private async ensureAllUsersInRooms(): Promise<void> {
-    this.log.info('🔄 RoomMembershipDaemon: Ensuring all existing users are in correct rooms...');
+  private async ensureAllUsersInRoomsAndActivities(): Promise<void> {
+    this.log.info('🔄 MembershipDaemon: Ensuring all existing users are in correct rooms and activities...');
     try {
       // Query all users
       const queryResult = await DataDaemon.query<UserEntity>({
@@ -92,23 +124,23 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       });
 
       if (!queryResult.success || !queryResult.data?.length) {
-        this.log.info('⚠️ RoomMembershipDaemon: No existing users found, skipping catch-up');
+        this.log.info('⚠️ MembershipDaemon: No existing users found, skipping catch-up');
         return;
       }
 
       // Extract user entities from query results
       // record.data IS the UserEntity, no need to spread/reconstruct
       const users: UserEntity[] = queryResult.data.map(record => record.data);
-      this.log.info(`🔄 RoomMembershipDaemon: Found ${users.length} existing users to process`);
+      this.log.info(`🔄 MembershipDaemon: Found ${users.length} existing users to process`);
 
       // Process each user (same logic as handleUserCreated)
       for (const user of users) {
         await this.handleUserCreated(user);
       }
 
-      this.log.info(`✅ RoomMembershipDaemon: Finished ensuring all ${users.length} users are in correct rooms`);
+      this.log.info(`✅ MembershipDaemon: Finished ensuring all ${users.length} users are in correct rooms and activities`);
     } catch (error) {
-      this.log.error('❌ RoomMembershipDaemon: Failed to ensure existing users in rooms:', error);
+      this.log.error('❌ MembershipDaemon: Failed to ensure existing users in rooms/activities:', error);
     }
   }
 
@@ -129,30 +161,33 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
   }
 
   /**
-   * Handle user created - apply smart routing rules
+   * Handle user created - apply smart routing rules for BOTH rooms and activities
    */
   private async handleUserCreated(userEntity: UserEntity): Promise<void> {
-    this.log.info(`🔔 RoomMembershipDaemon: handleUserCreated CALLED for ${userEntity.displayName} (id=${userEntity.id})`);
+    this.log.info(`🔔 MembershipDaemon: handleUserCreated CALLED for ${userEntity.displayName} (id=${userEntity.id})`);
 
     // CRITICAL: Validate user entity has valid id before processing
     if (!userEntity?.id) {
-      this.log.error(`❌ RoomMembershipDaemon: Received user without valid ID: ${JSON.stringify(userEntity)}. Skipping.`);
+      this.log.error(`❌ MembershipDaemon: Received user without valid ID: ${JSON.stringify(userEntity)}. Skipping.`);
       return;
     }
 
     try {
+      // 1. Join rooms (chat channels)
       const roomsToJoin = this.determineRoomsForUser(userEntity);
-      this.log.info(`🔔 RoomMembershipDaemon: Determined ${roomsToJoin.length} rooms for ${userEntity.displayName}: ${roomsToJoin.join(', ')}`);
-
-      if (roomsToJoin.length === 0) {
-        this.log.info(`🏠 RoomMembershipDaemon: No rooms matched for ${userEntity.displayName}`);
-        return;
+      if (roomsToJoin.length > 0) {
+        this.log.info(`🏠 MembershipDaemon: Auto-joining ${userEntity.displayName} to ${roomsToJoin.length} room(s): ${roomsToJoin.join(', ')}`);
+        await this.addUserToRooms(userEntity.id, userEntity.displayName, roomsToJoin);
       }
 
-      this.log.info(`🏠 RoomMembershipDaemon: Auto-joining ${userEntity.displayName} to ${roomsToJoin.length} room(s)`);
-      await this.addUserToRooms(userEntity.id, userEntity.displayName, roomsToJoin);
+      // 2. Join activities (collaborative content - canvas, browser, etc.)
+      const activitiesToJoin = this.determineActivitiesForUser(userEntity);
+      if (activitiesToJoin.activities.length > 0) {
+        this.log.info(`🎨 MembershipDaemon: Auto-joining ${userEntity.displayName} to ${activitiesToJoin.activities.length} activit(ies): ${activitiesToJoin.activities.join(', ')}`);
+        await this.addUserToActivities(userEntity.id, userEntity.displayName, activitiesToJoin.activities, activitiesToJoin.role);
+      }
     } catch (error) {
-      this.log.error(`❌ RoomMembershipDaemon: Failed to process ${userEntity.displayName}:`, error);
+      this.log.error(`❌ MembershipDaemon: Failed to process ${userEntity.displayName}:`, error);
     }
   }
 
@@ -253,6 +288,119 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         this.log.info(`✅ RoomMembershipDaemon: Auto-joined ${displayName} to ${roomUniqueId}`);
       } catch (error) {
         this.log.error(`❌ RoomMembershipDaemon: Failed to join ${displayName} to ${roomUniqueId}:`, error);
+      }
+    }
+  }
+
+  // ============ Activity Membership Methods ============
+
+  /**
+   * Determine which activities a user should auto-join (smart routing)
+   * Returns activities and the default role for the user
+   */
+  private determineActivitiesForUser(user: UserEntity): { activities: string[]; role: string } {
+    const activities = new Set<string>();
+    let defaultRole = 'participant';
+
+    for (const rule of this.ACTIVITY_ROUTING_RULES) {
+      // Check user type match
+      if (rule.userType && rule.userType !== user.type) {
+        continue;
+      }
+
+      // Check modelConfig capabilities match
+      if (rule.capabilities && rule.capabilities.length > 0) {
+        const userCapabilities = user.modelConfig?.capabilities || [];
+        const hasRequiredCapability = rule.capabilities.some(cap =>
+          userCapabilities.includes(cap)
+        );
+        if (!hasRequiredCapability) {
+          continue;
+        }
+      }
+
+      // Rule matches - add activities
+      rule.activities.forEach(activityId => activities.add(activityId));
+      if (rule.role) {
+        defaultRole = rule.role;
+      }
+    }
+
+    return { activities: Array.from(activities), role: defaultRole };
+  }
+
+  /**
+   * Add user to specified activities as participant
+   */
+  private async addUserToActivities(
+    userId: UUID,
+    displayName: string,
+    activityUniqueIds: string[],
+    role: string = 'participant'
+  ): Promise<void> {
+    // CRITICAL: Validate userId before adding to any activity
+    if (!userId) {
+      this.log.error(`❌ MembershipDaemon: Cannot add user "${displayName}" to activities - userId is ${userId}. Skipping.`);
+      return;
+    }
+
+    for (const activityUniqueId of activityUniqueIds) {
+      try {
+        // Query for activity
+        const queryResult = await DataDaemon.query<ActivityEntity>({
+          collection: COLLECTIONS.ACTIVITIES,
+          filter: { uniqueId: activityUniqueId }
+        });
+
+        if (!queryResult.success || !queryResult.data?.length) {
+          this.log.warn(`⚠️ MembershipDaemon: Activity ${activityUniqueId} not found, skipping for ${displayName}`);
+          continue;
+        }
+
+        const activityRecord = queryResult.data[0];
+        const activity = activityRecord.data;
+
+        this.log.info(`🔍 MembershipDaemon: Found activity ${activityUniqueId}:`, {
+          recordId: activityRecord.id,
+          activityId: activity.id,
+          displayName: activity.displayName,
+          currentParticipants: activity.participants?.length ?? 0
+        });
+
+        // Check if already a participant
+        const isParticipant = activity.participants?.some(
+          (p: ActivityParticipant) => p.userId === userId && p.isActive
+        );
+        if (isParticipant) {
+          this.log.info(`✅ MembershipDaemon: ${displayName} already in activity ${activityUniqueId}`);
+          continue;
+        }
+
+        // Add as participant
+        const newParticipant: ActivityParticipant = {
+          userId: userId,
+          role: role,
+          joinedAt: new Date(),
+          isActive: true
+        };
+
+        const updatedParticipants = [
+          ...(activity.participants ?? []),
+          newParticipant
+        ];
+
+        this.log.info(`🔄 MembershipDaemon: Updating activity ${activityUniqueId} (recordId: ${activityRecord.id}) to add ${displayName}`);
+
+        // Update activity (use activityRecord.id not activity.id!)
+        await DataDaemon.update<ActivityEntity>(
+          COLLECTIONS.ACTIVITIES,
+          activityRecord.id,  // Record ID, not entity ID
+          { participants: updatedParticipants }
+        );
+
+        this.log.info(`✅ MembershipDaemon: Auto-joined ${displayName} to activity ${activityUniqueId}`);
+      } catch (error) {
+        this.log.error(`❌ MembershipDaemon: Failed to join ${displayName} to activity ${activityUniqueId}:`, error);
       }
     }
   }

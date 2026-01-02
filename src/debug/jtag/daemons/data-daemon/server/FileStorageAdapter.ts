@@ -21,7 +21,8 @@ import {
   type CollectionStats,
   type StorageOperation,
   type RecordData,
-  type QueryExplanation
+  type QueryExplanation,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
 
 /**
@@ -391,7 +392,7 @@ export class FileStorageAdapter extends DataStorageAdapter {
   /**
    * Ensure schema exists (no-op - file storage is schemaless)
    */
-  async ensureSchema(_collection: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(_collection: string, _schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     return { success: true, data: true };
   }
 

@@ -26,7 +26,8 @@ import {
   type CollectionStats,
   type StorageOperation,
   type RecordData,
-  type QueryExplanation
+  type QueryExplanation,
+  type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
@@ -277,7 +278,7 @@ export class SingleJsonFileAdapter extends DataStorageAdapter {
     return { success: true, data: results };
   }
 
-  async ensureSchema(_collection: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(_collection: string, _schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     return { success: true, data: true };
   }
 

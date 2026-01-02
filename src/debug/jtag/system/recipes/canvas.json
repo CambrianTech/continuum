@@ -1,0 +1,80 @@
+{
+  "uniqueId": "canvas",
+  "name": "Collaborative Canvas",
+  "displayName": "Canvas",
+  "description": "Shared drawing canvas with real-time collaboration and AI assistance",
+  "version": 1,
+
+  "layout": {
+    "widgets": [
+      { "widget": "drawing-canvas-widget", "position": "center", "order": 0 },
+      { "widget": "chat-widget", "position": "right", "order": 0, "config": { "room": "canvas", "compact": true } }
+    ]
+  },
+
+  "locked": ["layout.main"],
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 15,
+        "includeParticipants": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.8
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 15,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Describe what you see when shown canvas content",
+      "Offer constructive artistic suggestions",
+      "You can draw on the canvas - use canvas_draw tool to add strokes",
+      "Suggest compositions, color palettes, and visual improvements",
+      "Be creative and playful in collaborative drawing sessions",
+      "Analyze drawings structurally when asked"
+    ],
+    "decisionCriteria": [
+      "Should I add to the drawing or just observe?",
+      "Does the user want feedback or participation?",
+      "What artistic style matches the current work?"
+    ]
+  },
+
+  "tools": [
+    {
+      "name": "canvas_draw",
+      "description": "Draw strokes on the collaborative canvas",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "canvas_describe",
+      "description": "Analyze and describe what's on the canvas",
+      "enabledFor": ["ai"]
+    }
+  ],
+
+  "isPublic": true,
+  "tags": ["canvas", "drawing", "art", "collaboration", "ai-assisted"]
+}

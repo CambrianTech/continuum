@@ -13,6 +13,7 @@
 /// 4. Postgres: Connection pool (full concurrency)
 /// 5. Return results via Unix socket
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -21,9 +22,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::{fs, thread};
 use ts_rs::TS;
 use uuid::Uuid;
+
+mod timing;
+use timing::{RequestTimer, METRICS};
 
 // ============================================================================
 // Core Types (ts-rs exported for TypeScript)
@@ -99,6 +104,28 @@ enum Request {
         collection: String,
         id: String,
     },
+
+    #[serde(rename = "data/update")]
+    DataUpdate {
+        handle: AdapterHandle,
+        collection: String,
+        id: String,
+        data: Value,
+    },
+
+    /// Vector similarity search - reads vectors from SQLite, computes cosine similarity
+    /// Query vector comes from TypeScript (small: 384 floats), corpus stays in Rust
+    /// Returns full records with scores (not just IDs) to avoid k IPC round trips
+    #[serde(rename = "vector/search")]
+    VectorSearch {
+        handle: AdapterHandle,
+        collection: String,
+        query_vector: Vec<f64>,
+        k: Option<usize>,
+        threshold: Option<f64>,
+        /// If true, return full record data (not just IDs) - eliminates k IPC round trips
+        include_data: Option<bool>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -131,6 +158,17 @@ trait ConcurrencyStrategy: Send + Sync {
 
     /// Execute write operation (adapter-specific queueing)
     fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String>;
+
+    /// Vector similarity search - reads vectors from storage, computes cosine similarity
+    /// Returns top-k results with record IDs/scores, optionally with full record data
+    fn vector_search(
+        &self,
+        collection: &str,
+        query_vector: &[f64],
+        k: usize,
+        threshold: f64,
+        include_data: bool,
+    ) -> Result<Value, String>;
 
     /// Close adapter and cleanup resources
     fn close(&self) -> Result<(), String>;
@@ -243,9 +281,137 @@ struct SqliteStrategy {
     connection: Arc<Mutex<rusqlite::Connection>>,
 }
 
+#[allow(dead_code)]
 struct WriteOperation {
     query: String,
-    params: Value,
+    params: Value,  // Reserved for parameterized queries
+}
+
+/// Compute cosine similarity between two vectors
+/// Uses SIMD-friendly 8-way loop unrolling for auto-vectorization
+#[inline]
+fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    // 8-way loop unrolling for SIMD auto-vectorization
+    let len = a.len();
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    let mut dot0 = 0.0;
+    let mut dot1 = 0.0;
+    let mut dot2 = 0.0;
+    let mut dot3 = 0.0;
+    let mut dot4 = 0.0;
+    let mut dot5 = 0.0;
+    let mut dot6 = 0.0;
+    let mut dot7 = 0.0;
+
+    let mut norm_a0 = 0.0;
+    let mut norm_a1 = 0.0;
+    let mut norm_a2 = 0.0;
+    let mut norm_a3 = 0.0;
+    let mut norm_a4 = 0.0;
+    let mut norm_a5 = 0.0;
+    let mut norm_a6 = 0.0;
+    let mut norm_a7 = 0.0;
+
+    let mut norm_b0 = 0.0;
+    let mut norm_b1 = 0.0;
+    let mut norm_b2 = 0.0;
+    let mut norm_b3 = 0.0;
+    let mut norm_b4 = 0.0;
+    let mut norm_b5 = 0.0;
+    let mut norm_b6 = 0.0;
+    let mut norm_b7 = 0.0;
+
+    // Process 8 elements at a time
+    for i in 0..chunks {
+        let base = i * 8;
+        let a0 = a[base];
+        let a1 = a[base + 1];
+        let a2 = a[base + 2];
+        let a3 = a[base + 3];
+        let a4 = a[base + 4];
+        let a5 = a[base + 5];
+        let a6 = a[base + 6];
+        let a7 = a[base + 7];
+
+        let b0 = b[base];
+        let b1 = b[base + 1];
+        let b2 = b[base + 2];
+        let b3 = b[base + 3];
+        let b4 = b[base + 4];
+        let b5 = b[base + 5];
+        let b6 = b[base + 6];
+        let b7 = b[base + 7];
+
+        dot0 += a0 * b0;
+        dot1 += a1 * b1;
+        dot2 += a2 * b2;
+        dot3 += a3 * b3;
+        dot4 += a4 * b4;
+        dot5 += a5 * b5;
+        dot6 += a6 * b6;
+        dot7 += a7 * b7;
+
+        norm_a0 += a0 * a0;
+        norm_a1 += a1 * a1;
+        norm_a2 += a2 * a2;
+        norm_a3 += a3 * a3;
+        norm_a4 += a4 * a4;
+        norm_a5 += a5 * a5;
+        norm_a6 += a6 * a6;
+        norm_a7 += a7 * a7;
+
+        norm_b0 += b0 * b0;
+        norm_b1 += b1 * b1;
+        norm_b2 += b2 * b2;
+        norm_b3 += b3 * b3;
+        norm_b4 += b4 * b4;
+        norm_b5 += b5 * b5;
+        norm_b6 += b6 * b6;
+        norm_b7 += b7 * b7;
+    }
+
+    // Combine accumulators
+    let mut dot = dot0 + dot1 + dot2 + dot3 + dot4 + dot5 + dot6 + dot7;
+    let mut norm_a = norm_a0 + norm_a1 + norm_a2 + norm_a3 + norm_a4 + norm_a5 + norm_a6 + norm_a7;
+    let mut norm_b = norm_b0 + norm_b1 + norm_b2 + norm_b3 + norm_b4 + norm_b5 + norm_b6 + norm_b7;
+
+    // Handle remainder
+    let base = chunks * 8;
+    for i in 0..remainder {
+        let av = a[base + i];
+        let bv = b[base + i];
+        dot += av * bv;
+        norm_a += av * av;
+        norm_b += bv * bv;
+    }
+
+    let denominator = (norm_a * norm_b).sqrt();
+    if denominator == 0.0 {
+        0.0
+    } else {
+        dot / denominator
+    }
+}
+
+/// Deserialize BLOB to f64 vector
+/// Format: raw little-endian f64 bytes (8 bytes per float)
+fn blob_to_f64_vec(blob: &[u8]) -> Vec<f64> {
+    let num_floats = blob.len() / 8;
+    let mut result = Vec::with_capacity(num_floats);
+
+    for i in 0..num_floats {
+        let start = i * 8;
+        let bytes: [u8; 8] = blob[start..start + 8].try_into().unwrap_or([0u8; 8]);
+        result.push(f64::from_le_bytes(bytes));
+    }
+
+    result
 }
 
 impl SqliteStrategy {
@@ -367,6 +533,180 @@ impl ConcurrencyStrategy for SqliteStrategy {
         })
     }
 
+    /// Vector search: read embeddings from SQLite, compute cosine similarity with rayon
+    /// Vectors stay in Rust - only query vector comes over IPC (small: 3KB for 384 dims)
+    /// When include_data=true, returns full record data with scores (eliminates k IPC round trips)
+    fn vector_search(
+        &self,
+        collection: &str,
+        query_vector: &[f64],
+        k: usize,
+        threshold: f64,
+        include_data: bool,
+    ) -> Result<Value, String> {
+        let conn = self.connection.lock().unwrap();
+
+        // Query embeddings from the collection
+        // Embeddings are stored as BLOB in the 'embedding' column
+        let query = format!(
+            "SELECT id, embedding FROM {} WHERE embedding IS NOT NULL",
+            collection
+        );
+
+        let mut stmt = conn.prepare(&query)
+            .map_err(|e| format!("Failed to prepare vector query: {}", e))?;
+
+        // Collect all vectors first (need to release connection lock before parallel work)
+        let mut corpus: Vec<(String, Vec<f64>)> = Vec::new();
+
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            // Try BLOB first, then TEXT (JSON array)
+            let embedding: Vec<f64> = if let Ok(blob) = row.get::<_, Vec<u8>>(1) {
+                blob_to_f64_vec(&blob)
+            } else if let Ok(text) = row.get::<_, String>(1) {
+                // Parse JSON array: "[0.1, 0.2, ...]"
+                serde_json::from_str(&text).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            Ok((id, embedding))
+        }).map_err(|e| format!("Vector query failed: {}", e))?;
+
+        for row in rows {
+            let (id, embedding) = row.map_err(|e| format!("Row error: {}", e))?;
+            if !embedding.is_empty() {
+                corpus.push((id, embedding));
+            }
+        }
+
+        // Release statement before parallel computation
+        drop(stmt);
+
+        if corpus.is_empty() {
+            return Ok(json!({
+                "results": [],
+                "count": 0,
+                "corpus_size": 0
+            }));
+        }
+
+        let corpus_size = corpus.len();
+
+        // Parallel cosine similarity computation with rayon
+        let mut scored: Vec<(String, f64)> = corpus
+            .par_iter()
+            .filter_map(|(id, embedding)| {
+                let score = cosine_similarity(query_vector, embedding);
+                if score >= threshold {
+                    Some((id.clone(), score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by score descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Take top-k IDs
+        let top_k: Vec<(String, f64)> = scored.into_iter().take(k).collect();
+        let count = top_k.len();
+
+        if !include_data || top_k.is_empty() {
+            // Fast path: just return IDs and scores
+            let results: Vec<Value> = top_k
+                .into_iter()
+                .map(|(id, score)| {
+                    json!({
+                        "id": id,
+                        "score": score,
+                        "distance": 1.0 - score
+                    })
+                })
+                .collect();
+
+            return Ok(json!({
+                "results": results,
+                "count": count,
+                "corpus_size": corpus_size
+            }));
+        }
+
+        // Optimized path: fetch full records for top-k IDs in a single query
+        // Build IN clause with top-k IDs
+        let id_list: Vec<String> = top_k.iter().map(|(id, _)| format!("'{}'", id.replace("'", "''"))).collect();
+        let full_query = format!(
+            "SELECT * FROM {} WHERE id IN ({})",
+            collection,
+            id_list.join(", ")
+        );
+
+        let mut full_stmt = conn.prepare(&full_query)
+            .map_err(|e| format!("Failed to prepare full record query: {}", e))?;
+
+        // Get column names
+        let column_count = full_stmt.column_count();
+        let column_names: Vec<String> = (0..column_count)
+            .map(|i| full_stmt.column_name(i).unwrap_or("unknown").to_string())
+            .collect();
+
+        // Fetch all records into a map by ID
+        let mut records_by_id: HashMap<String, Value> = HashMap::new();
+
+        let record_rows = full_stmt.query_map([], |row| {
+            let mut row_data = serde_json::Map::new();
+            for (i, column_name) in column_names.iter().enumerate() {
+                // Skip embedding column entirely (large, not needed in results)
+                if column_name == "embedding" {
+                    continue;
+                }
+                // Try to get as different types
+                if let Ok(v) = row.get::<_, String>(i) {
+                    row_data.insert(column_name.clone(), json!(v));
+                } else if let Ok(v) = row.get::<_, i64>(i) {
+                    row_data.insert(column_name.clone(), json!(v));
+                } else if let Ok(v) = row.get::<_, f64>(i) {
+                    row_data.insert(column_name.clone(), json!(v));
+                } else if let Ok(v) = row.get::<_, Vec<u8>>(i) {
+                    row_data.insert(column_name.clone(), json!(format!("[BLOB {} bytes]", v.len())));
+                } else {
+                    row_data.insert(column_name.clone(), Value::Null);
+                }
+            }
+            Ok(Value::Object(row_data))
+        }).map_err(|e| format!("Full record query failed: {}", e))?;
+
+        for row_result in record_rows {
+            let row = row_result.map_err(|e| format!("Row error: {}", e))?;
+            if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                records_by_id.insert(id.to_string(), row);
+            }
+        }
+
+        // Build results in score order, merging data with scores
+        let results: Vec<Value> = top_k
+            .into_iter()
+            .filter_map(|(id, score)| {
+                records_by_id.get(&id).map(|data| {
+                    json!({
+                        "id": id,
+                        "score": score,
+                        "distance": 1.0 - score,
+                        "data": data
+                    })
+                })
+            })
+            .collect();
+
+        let final_count = results.len();
+        Ok(json!({
+            "results": results,
+            "count": final_count,
+            "corpus_size": corpus_size
+        }))
+    }
+
     fn close(&self) -> Result<(), String> {
         // Process any remaining writes before closing
         let queue_size = self.writer_queue.lock().unwrap().len();
@@ -407,6 +747,17 @@ impl ConcurrencyStrategy for PostgresStrategy {
 
     fn execute_write(&self, _query: &str, _params: &Value) -> Result<Value, String> {
         Err("Postgres strategy not yet implemented".to_string())
+    }
+
+    fn vector_search(
+        &self,
+        _collection: &str,
+        _query_vector: &[f64],
+        _k: usize,
+        _threshold: f64,
+        _include_data: bool,
+    ) -> Result<Value, String> {
+        Err("Postgres vector search not yet implemented".to_string())
     }
 
     fn close(&self) -> Result<(), String> {
@@ -469,6 +820,17 @@ impl ConcurrencyStrategy for JsonStrategy {
         Ok(json!({ "success": true }))
     }
 
+    fn vector_search(
+        &self,
+        _collection: &str,
+        _query_vector: &[f64],
+        _k: usize,
+        _threshold: f64,
+        _include_data: bool,
+    ) -> Result<Value, String> {
+        Err("JSON vector search not yet implemented".to_string())
+    }
+
     fn close(&self) -> Result<(), String> {
         println!("✅ JSON adapter closed");
         Ok(())
@@ -499,13 +861,36 @@ impl AdapterRegistry {
         handle
     }
 
-    fn get(&self, handle: AdapterHandle) -> Result<Arc<Mutex<Box<dyn ConcurrencyStrategy>>>, String> {
+    /// Execute a read operation on an adapter
+    fn execute_read(&self, handle: AdapterHandle, query: &str) -> Result<Value, String> {
         let adapters = self.adapters.lock().unwrap();
         let (_, strategy) = adapters.get(&handle)
             .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        strategy.execute_read(query)
+    }
 
-        // FIXME: This is a hack - we need to return a reference properly
-        Err("TODO: Fix adapter borrowing".to_string())
+    /// Execute a write operation on an adapter
+    fn execute_write(&self, handle: AdapterHandle, query: &str, params: &Value) -> Result<Value, String> {
+        let adapters = self.adapters.lock().unwrap();
+        let (_, strategy) = adapters.get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        strategy.execute_write(query, params)
+    }
+
+    /// Execute vector similarity search on an adapter
+    fn vector_search(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        query_vector: &[f64],
+        k: usize,
+        threshold: f64,
+        include_data: bool,
+    ) -> Result<Value, String> {
+        let adapters = self.adapters.lock().unwrap();
+        let (_, strategy) = adapters.get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        strategy.vector_search(collection, query_vector, k, threshold, include_data)
     }
 
     fn close(&self, handle: AdapterHandle) -> Result<(), String> {
@@ -535,6 +920,7 @@ impl RustDataDaemon {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_request(&self, request: Request) -> Response {
         match request {
             Request::Ping => Response::Pong { uptime_seconds: 0 },
@@ -558,23 +944,172 @@ impl RustDataDaemon {
             }
 
             Request::DataList { handle, collection, limit, offset, filter, order_by } => {
-                // TODO: Build proper query and route to adapter
-                Response::Error {
-                    message: "DataList not yet implemented".to_string()
+                match self.data_list(handle, &collection, limit, offset, filter.as_ref(), order_by.as_ref()) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
                 }
             }
 
             Request::DataCreate { handle, collection, data } => {
-                // TODO: Route to adapter with write strategy
-                Response::Error {
-                    message: "DataCreate not yet implemented".to_string()
+                match self.data_create(handle, &collection, &data) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
                 }
             }
 
             Request::DataDelete { handle, collection, id } => {
-                // TODO: Route to adapter with write strategy
-                Response::Error {
-                    message: "DataDelete not yet implemented".to_string()
+                match self.data_delete(handle, &collection, &id) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::DataUpdate { handle, collection, id, data } => {
+                match self.data_update(handle, &collection, &id, &data) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
+                match self.vector_search(handle, &collection, &query_vector, k, threshold, include_data) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+        }
+    }
+
+    /// Timed version of handle_request that fills in timing phases
+    /// Returns (response, result_count) for metrics
+    fn handle_request_timed(&self, timer: &mut RequestTimer, request: Request) -> (Response, Option<usize>) {
+        let route_start = Instant::now();
+
+        match request {
+            Request::Ping => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                (Response::Pong { uptime_seconds: 0 }, None)
+            }
+
+            Request::AdapterOpen { config } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.open_adapter(config);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(handle) => {
+                        timer.set_adapter_handle(&format!("{:?}", handle));
+                        (Response::Ok { data: json!({ "handle": handle }) }, None)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::AdapterClose { handle } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.registry.close(handle);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(_) => (Response::Ok { data: json!({ "closed": true }) }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataList { handle, collection, limit, offset, filter, order_by } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_list_timed(timer, handle, &collection, limit, offset, filter.as_ref(), order_by.as_ref());
+
+                match result {
+                    Ok(data) => {
+                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataCreate { handle, collection, data } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_create_timed(timer, handle, &collection, &data);
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataDelete { handle, collection, id } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_delete_timed(timer, handle, &collection, &id);
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataUpdate { handle, collection, id, data } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_update_timed(timer, handle, &collection, &id, &data);
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.vector_search(handle, &collection, &query_vector, k, threshold, include_data);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => {
+                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
                 }
             }
         }
@@ -596,6 +1131,366 @@ impl RustDataDaemon {
         let handle = self.registry.register(config.adapter_type, strategy);
         Ok(handle)
     }
+
+    /// List entities from a collection with filtering and pagination
+    #[allow(dead_code)]
+    fn data_list(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        filter: Option<&Value>,
+        order_by: Option<&Vec<OrderBy>>,
+    ) -> Result<Value, String> {
+        // Build SELECT query
+        let mut query = format!("SELECT * FROM {}", collection);
+
+        // Add WHERE clause from filter
+        if let Some(filter_obj) = filter {
+            if let Some(obj) = filter_obj.as_object() {
+                let conditions: Vec<String> = obj.iter()
+                    .filter_map(|(key, value)| {
+                        match value {
+                            Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
+                            Value::Number(n) => Some(format!("{} = {}", key, n)),
+                            Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
+                            Value::Null => Some(format!("{} IS NULL", key)),
+                            _ => None, // Skip complex nested objects for now
+                        }
+                    })
+                    .collect();
+
+                if !conditions.is_empty() {
+                    query.push_str(" WHERE ");
+                    query.push_str(&conditions.join(" AND "));
+                }
+            }
+        }
+
+        // Add ORDER BY
+        if let Some(orders) = order_by {
+            if !orders.is_empty() {
+                let order_clauses: Vec<String> = orders.iter()
+                    .map(|o| format!("{} {}", o.field, o.direction.to_uppercase()))
+                    .collect();
+                query.push_str(" ORDER BY ");
+                query.push_str(&order_clauses.join(", "));
+            }
+        }
+
+        // Add LIMIT and OFFSET
+        if let Some(lim) = limit {
+            query.push_str(&format!(" LIMIT {}", lim));
+        }
+        if let Some(off) = offset {
+            query.push_str(&format!(" OFFSET {}", off));
+        }
+
+        println!("📋 DataList query: {}", query);
+        self.registry.execute_read(handle, &query)
+    }
+
+    /// Create a new entity in a collection
+    #[allow(dead_code)]
+    fn data_create(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        // Build INSERT query
+        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        let values: Vec<String> = obj.values()
+            .map(|v| match v {
+                Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                Value::Null => "NULL".to_string(),
+                Value::Array(_) | Value::Object(_) => {
+                    // Serialize complex types as JSON strings
+                    format!("'{}'", serde_json::to_string(v).unwrap_or_default().replace("'", "''"))
+                }
+            })
+            .collect();
+
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            collection,
+            columns.join(", "),
+            values.join(", ")
+        );
+
+        println!("➕ DataCreate query: {}", query);
+        self.registry.execute_write(handle, &query, data)
+    }
+
+    /// Delete an entity from a collection by ID
+    #[allow(dead_code)]
+    fn data_delete(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+    ) -> Result<Value, String> {
+        let query = format!("DELETE FROM {} WHERE id = '{}'", collection, id.replace("'", "''"));
+
+        println!("🗑️  DataDelete query: {}", query);
+        self.registry.execute_write(handle, &query, &json!({}))
+    }
+
+    /// Update an entity in a collection by ID
+    #[allow(dead_code)]
+    fn data_update(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        // Build SET clauses
+        let set_clauses: Vec<String> = obj.iter()
+            .filter(|(key, _)| *key != "id") // Don't update id
+            .map(|(key, value)| {
+                let val_str = match value {
+                    Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    Value::Array(_) | Value::Object(_) => {
+                        // Serialize complex types as JSON strings
+                        format!("'{}'", serde_json::to_string(value).unwrap_or_default().replace("'", "''"))
+                    }
+                };
+                format!("{} = {}", key, val_str)
+            })
+            .collect();
+
+        if set_clauses.is_empty() {
+            return Err("No fields to update".to_string());
+        }
+
+        let query = format!(
+            "UPDATE {} SET {} WHERE id = '{}'",
+            collection,
+            set_clauses.join(", "),
+            id.replace("'", "''")
+        );
+
+        println!("✏️  DataUpdate query: {}", query);
+        self.registry.execute_write(handle, &query, data)
+    }
+
+    /// Vector similarity search - delegates to adapter strategy
+    /// Query vector comes over IPC (small: 3KB for 384 dims), corpus stays in Rust
+    /// When include_data=true, returns full record data with scores (eliminates k IPC round trips)
+    fn vector_search(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        query_vector: &[f64],
+        k: Option<usize>,
+        threshold: Option<f64>,
+        include_data: Option<bool>,
+    ) -> Result<Value, String> {
+        let k = k.unwrap_or(10);
+        let threshold = threshold.unwrap_or(0.0);
+        let include_data = include_data.unwrap_or(true); // Default to include_data for optimization
+
+        println!(
+            "🔍 VectorSearch: collection={}, k={}, threshold={:.3}, query_dim={}, include_data={}",
+            collection, k, threshold, query_vector.len(), include_data
+        );
+
+        self.registry.vector_search(handle, collection, query_vector, k, threshold, include_data)
+    }
+
+    // ========================================================================
+    // Timed versions of data operations (captures query_build, lock_wait, execute)
+    // ========================================================================
+
+    fn data_list_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        filter: Option<&Value>,
+        order_by: Option<&Vec<OrderBy>>,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+
+        let mut query = format!("SELECT * FROM {}", collection);
+
+        if let Some(filter_obj) = filter {
+            if let Some(obj) = filter_obj.as_object() {
+                let conditions: Vec<String> = obj.iter()
+                    .filter_map(|(key, value)| {
+                        match value {
+                            Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
+                            Value::Number(n) => Some(format!("{} = {}", key, n)),
+                            Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
+                            Value::Null => Some(format!("{} IS NULL", key)),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+
+                if !conditions.is_empty() {
+                    query.push_str(" WHERE ");
+                    query.push_str(&conditions.join(" AND "));
+                }
+            }
+        }
+
+        if let Some(orders) = order_by {
+            if !orders.is_empty() {
+                let order_clauses: Vec<String> = orders.iter()
+                    .map(|o| format!("{} {}", o.field, o.direction.to_uppercase()))
+                    .collect();
+                query.push_str(" ORDER BY ");
+                query.push_str(&order_clauses.join(", "));
+            }
+        }
+
+        if let Some(lim) = limit {
+            query.push_str(&format!(" LIMIT {}", lim));
+        }
+        if let Some(off) = offset {
+            query.push_str(&format!(" OFFSET {}", off));
+        }
+
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Lock wait + execute phase (combined in registry.execute_read)
+        let execute_start = Instant::now();
+        let result = self.registry.execute_read(handle, &query);
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
+
+    fn data_create_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        let values: Vec<String> = obj.values()
+            .map(|v| match v {
+                Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                Value::Null => "NULL".to_string(),
+                Value::Array(_) | Value::Object(_) => {
+                    format!("'{}'", serde_json::to_string(v).unwrap_or_default().replace("'", "''"))
+                }
+            })
+            .collect();
+
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            collection,
+            columns.join(", "),
+            values.join(", ")
+        );
+
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Execute phase
+        let execute_start = Instant::now();
+        let result = self.registry.execute_write(handle, &query, data);
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
+
+    fn data_delete_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+        let query = format!("DELETE FROM {} WHERE id = '{}'", collection, id.replace("'", "''"));
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Execute phase
+        let execute_start = Instant::now();
+        let result = self.registry.execute_write(handle, &query, &json!({}));
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
+
+    fn data_update_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        let set_clauses: Vec<String> = obj.iter()
+            .filter(|(key, _)| *key != "id")
+            .map(|(key, value)| {
+                let val_str = match value {
+                    Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    Value::Array(_) | Value::Object(_) => {
+                        format!("'{}'", serde_json::to_string(value).unwrap_or_default().replace("'", "''"))
+                    }
+                };
+                format!("{} = {}", key, val_str)
+            })
+            .collect();
+
+        if set_clauses.is_empty() {
+            return Err("No fields to update".to_string());
+        }
+
+        let query = format!(
+            "UPDATE {} SET {} WHERE id = '{}'",
+            collection,
+            set_clauses.join(", "),
+            id.replace("'", "''")
+        );
+
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Execute phase
+        let execute_start = Instant::now();
+        let result = self.registry.execute_write(handle, &query, data);
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
 }
 
 // ============================================================================
@@ -607,23 +1502,72 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
     let mut writer = stream.try_clone()?;
 
     loop {
+        // Start timing before socket read
+        METRICS.request_start();
+        let read_start = Instant::now();
+
         let mut line = String::new();
         let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 { break; }
+        if bytes == 0 {
+            METRICS.request_end();
+            break;
+        }
 
+        let socket_read_ns = read_start.elapsed().as_nanos() as u64;
+
+        // Parse phase
+        let parse_start = Instant::now();
         let request: Request = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Parse error: {}", e);
+                METRICS.request_end();
                 continue;
             }
         };
+        let parse_ns = parse_start.elapsed().as_nanos() as u64;
 
-        let response = daemon.handle_request(request);
+        // Get request type for timing
+        let request_type = match &request {
+            Request::Ping => "ping",
+            Request::AdapterOpen { .. } => "adapter/open",
+            Request::AdapterClose { .. } => "adapter/close",
+            Request::DataList { .. } => "data/list",
+            Request::DataCreate { .. } => "data/create",
+            Request::DataDelete { .. } => "data/delete",
+            Request::DataUpdate { .. } => "data/update",
+            Request::VectorSearch { .. } => "vector/search",
+        };
 
+        // Start request timer
+        let mut timer = RequestTimer::start(request_type);
+        timer.record.socket_read_ns = socket_read_ns;
+        timer.record.parse_ns = parse_ns;
+
+        // Handle request (includes route, query_build, lock_wait, execute phases)
+        let (response, result_count) = daemon.handle_request_timed(&mut timer, request);
+
+        // Serialize phase
+        let serialize_start = Instant::now();
         let response_json = serde_json::to_string(&response)?;
+        timer.record.serialize_ns = serialize_start.elapsed().as_nanos() as u64;
+
+        // Socket write phase
+        let write_start = Instant::now();
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
+        timer.record.socket_write_ns = write_start.elapsed().as_nanos() as u64;
+
+        // Set result metadata
+        if let Some(count) = result_count {
+            timer.set_result_count(count);
+        }
+        timer.set_concurrent(METRICS.get_active_count());
+
+        // Record timing
+        let record = timer.finish();
+        METRICS.record(record);
+        METRICS.request_end();
     }
 
     Ok(())
@@ -650,9 +1594,10 @@ fn main() -> std::io::Result<()> {
 
     println!("🦀 RustDataDaemon starting...");
     println!("📡 Worker socket: {}", worker_socket);
+    println!("📊 Timing log: /tmp/jtag-data-daemon-timing.jsonl");
 
     let daemon = Arc::new(RustDataDaemon::new());
-    println!("✅ RustDataDaemon ready\n");
+    println!("✅ RustDataDaemon ready (with precision timing)\n");
 
     // Bind socket
     let listener = UnixListener::bind(worker_socket)?;

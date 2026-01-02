@@ -15,7 +15,7 @@
 
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import type { EmbeddingModel } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
-import { DEFAULT_EMBEDDING_MODELS } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
+import { DEFAULT_EMBEDDING_MODELS, toNumberArray } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
 import type { IEmbeddable } from '../../data/interfaces/IEmbeddable';
 import { needsEmbedding } from '../../data/interfaces/IEmbeddable';
 import { ISOString } from '../../data/domains/CoreTypes';
@@ -106,7 +106,8 @@ export class EmbeddingService {
       });
 
       if (result.success && result.data) {
-        entity.embedding = result.data.embedding;
+        // Convert to number[] for entity storage (Float32Array used internally for search)
+        entity.embedding = toNumberArray(result.data.embedding);
         entity.embeddedAt = ISOString(new Date().toISOString());
         entity.embeddingModel = model.name;
 
@@ -191,13 +192,20 @@ export class EmbeddingService {
     model: EmbeddingModel = DEFAULT_EMBEDDING_MODEL
   ): Promise<number[] | null> {
     if (!text || text.trim().length === 0) {
+      console.warn('⚠️ EmbeddingService.embedText: Empty text provided');
       return null;
     }
 
     try {
       const result = await DataDaemon.generateEmbedding({ text, model });
-      return result.success && result.data ? result.data.embedding : null;
-    } catch {
+      if (!result.success) {
+        console.warn(`⚠️ EmbeddingService.embedText: DataDaemon.generateEmbedding failed: ${result.error}`);
+      }
+      // Convert to number[] for public API (Float32Array used internally for search)
+      return result.success && result.data ? toNumberArray(result.data.embedding) : null;
+    } catch (error) {
+      // DON'T silently swallow errors - log them for debugging
+      console.error('❌ EmbeddingService.embedText: Exception:', error instanceof Error ? error.message : error);
       return null;
     }
   }

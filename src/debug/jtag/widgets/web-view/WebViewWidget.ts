@@ -60,9 +60,13 @@ export class WebViewWidget extends ReactiveWidget {
     ReactiveWidget.styles,
     css`
       :host {
-        display: block;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
         width: 100%;
         height: 100%;
+        min-height: 0;
+        min-width: 0;
         overflow: hidden;
         user-select: text;
         -webkit-user-select: text;
@@ -71,7 +75,9 @@ export class WebViewWidget extends ReactiveWidget {
       .browser-container {
         display: flex;
         flex-direction: column;
+        flex: 1;
         height: 100%;
+        min-height: 0;
         background: var(--bg-panel, rgba(20, 25, 35, 0.95));
       }
 
@@ -251,6 +257,15 @@ export class WebViewWidget extends ReactiveWidget {
   }
 
   protected onFirstRender(): void {
+    // Register with Positronic state system for RAG context injection
+    this.registerWidgetState({
+      url: '',
+      pageTitle: '',
+      siteName: '',
+      isLoading: false,
+      isServerDisconnected: false
+    });
+
     // Subscribe to connection status to handle server restarts
     this.connectionUnsubscribe = Events.subscribe('connection:status', (status: ConnectionStatus) => {
       this.handleConnectionStatus(status);
@@ -317,12 +332,19 @@ export class WebViewWidget extends ReactiveWidget {
       this.proxyUrl = '';  // This removes the iframe from DOM (overlay shows instead)
       this.isServerDisconnected = true;
 
+      // Update Positronic state
+      this.updateWidgetState({ isServerDisconnected: true });
+
       console.log('❄️ WebViewWidget: Iframe frozen, request flood prevented');
     } else if (status.connected && this.isServerDisconnected) {
       // Server reconnected - restore iframe
       console.log('▶️ WebViewWidget: Server reconnected, restoring iframe');
       this.isServerDisconnected = false;
       this.frozenScreenshot = '';  // Clear frozen state
+
+      // Update Positronic state
+      this.updateWidgetState({ isServerDisconnected: false, isLoading: true });
+
       if (this.savedProxyUrl) {
         this.proxyUrl = this.savedProxyUrl;
         this.savedProxyUrl = '';
@@ -424,7 +446,14 @@ export class WebViewWidget extends ReactiveWidget {
     // Persist for next session
     localStorage.setItem(STORAGE_KEY, actualUrl);
 
-    // Emit updated context
+    // Update Positronic state for RAG context
+    this.updateWidgetState({
+      url: actualUrl,
+      pageTitle: this.pageTitle,
+      siteName: this.siteName
+    });
+
+    // Emit updated context (legacy system)
     this.emitContext(
       {
         widgetType: 'browser',
@@ -566,6 +595,9 @@ export class WebViewWidget extends ReactiveWidget {
     this.loadError = '';
     console.log(`✅ WebViewWidget: iframe loaded for ${this.currentUrl}`);
 
+    // Update Positronic state
+    this.updateWidgetState({ isLoading: false });
+
     // Query the shim for page info to get title
     await this.queryPageInfo();
   }
@@ -607,6 +639,14 @@ export class WebViewWidget extends ReactiveWidget {
         this.pageTitle = result.data.title || '';
         this.siteName = this.extractSiteName(result.data.url || this.currentUrl, result.data.title);
         this.updateTabTitle();
+
+        // Update Positronic state for RAG context
+        this.updateWidgetState({
+          pageTitle: this.pageTitle,
+          siteName: this.siteName
+        });
+
+        // Emit context (legacy system)
         this.emitContext(
           {
             widgetType: 'browser',
@@ -680,10 +720,18 @@ export class WebViewWidget extends ReactiveWidget {
 
     console.log(`🌐 WebViewWidget: Loading ${url} via proxy, urlInput=${this.urlInput}, isLoading=${this.isLoading}`);
 
+    // Update Positronic state for RAG context
+    this.updateWidgetState({
+      url,
+      siteName: this.siteName,
+      isLoading: true,
+      pageTitle: ''  // Will be updated after load
+    });
+
     // Force re-render to show URL in input and loading state
     this.requestUpdate();
 
-    // Emit initial context (will be updated with page title after load)
+    // Emit initial context (legacy system - will be updated with page title after load)
     this.emitContext(
       {
         widgetType: 'browser',

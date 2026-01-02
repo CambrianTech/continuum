@@ -66,7 +66,7 @@ export class AIGenerationEntity extends BaseEntity {
 
   // Result
   @TextField()
-  finishReason!: 'stop' | 'length' | 'error';
+  finishReason!: 'stop' | 'length' | 'error' | 'tool_use';
 
   @BooleanField()
   success!: boolean;
@@ -100,7 +100,7 @@ export class AIGenerationEntity extends BaseEntity {
   static async createFromResponse(
     response: {
       text: string;
-      finishReason: 'stop' | 'length' | 'error';
+      finishReason: 'stop' | 'length' | 'error' | 'tool_use';
       model: string;
       provider: string;
       usage: {

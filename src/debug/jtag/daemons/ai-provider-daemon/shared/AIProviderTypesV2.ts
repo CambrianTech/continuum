@@ -83,6 +83,46 @@ export interface ChatMessage {
 }
 
 // ========================
+// Native Tool Support (for providers like Anthropic that support JSON tools)
+// ========================
+
+/**
+ * Native tool specification for providers with JSON tool support
+ * (Anthropic, OpenAI, etc.)
+ */
+export interface NativeToolSpec {
+  name: string;
+  description: string;
+  input_schema: {
+    type: 'object';
+    properties: Record<string, {
+      type: string;
+      description?: string;
+      enum?: string[];
+    }>;
+    required?: string[];
+  };
+}
+
+/**
+ * Tool call from AI response (when AI wants to use a tool)
+ */
+export interface ToolCall {
+  id: string;         // Unique ID for this tool use (e.g., "toolu_01A...")
+  name: string;       // Tool name
+  input: Record<string, unknown>;  // Tool parameters
+}
+
+/**
+ * Tool result to send back to AI after execution
+ */
+export interface ToolResult {
+  tool_use_id: string;  // Matches ToolCall.id
+  content: string;       // Tool execution result (or error message)
+  is_error?: boolean;    // True if tool execution failed
+}
+
+// ========================
 // Request Types by Capability
 // ========================
 
@@ -97,6 +137,11 @@ export interface TextGenerationRequest {
   topP?: number;
   topK?: number;
   stopSequences?: string[];
+
+  // Native tool support (for Anthropic, OpenAI JSON tools)
+  // When provided, adapter should use native tool calling instead of XML
+  tools?: NativeToolSpec[];
+  tool_choice?: 'auto' | 'any' | 'none' | { name: string };
 
   // Model intelligence level (PersonaUser property)
   // Determines prompt format and capabilities
@@ -195,13 +240,17 @@ export interface EmbeddingRequest {
 
 export interface TextGenerationResponse {
   text: string;
-  finishReason: 'stop' | 'length' | 'error';
+  finishReason: 'stop' | 'length' | 'error' | 'tool_use';
 
   model: string;
   provider: string;
   usage: UsageMetrics;
   responseTime: number;
   requestId: string;
+
+  // Native tool calls (when AI wants to use tools)
+  // Present when finishReason is 'tool_use'
+  toolCalls?: ToolCall[];
 
   error?: string;
 }

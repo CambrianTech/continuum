@@ -221,9 +221,14 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
         return handlerResult as unknown as TResult;
       }
       
-      // Fallback to legacy response structure
+      // Fallback to response structure (remote routing via WebSocket)
       const response = typedResult.response;
       if (response) {
+        // Extract commandResult from response if present (CommandSuccessResponse wrapping)
+        // This happens when response comes from remote CommandDaemon.handleMessage
+        if (typeof response === 'object' && response !== null && 'commandResult' in response) {
+          return (response as { commandResult: unknown }).commandResult as unknown as TResult;
+        }
         return response as unknown as TResult;
       }
     }

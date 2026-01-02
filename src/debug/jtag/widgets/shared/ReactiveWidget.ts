@@ -34,6 +34,8 @@ import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
 import { PositronWidgetState, type InteractionHint } from './services/state/PositronWidgetState';
+import { widgetStateRegistry, type WidgetStateSlice } from '../../system/state/WidgetStateRegistry';
+import type { ReactiveStore } from '../../system/state/ReactiveStore';
 
 // Re-export Lit utilities for subclasses
 export { html, css, type TemplateResult, type CSSResultGroup };
@@ -139,6 +141,12 @@ export abstract class ReactiveWidget extends LitElement {
    */
   private commandCache = new Map<string, CachedValue<unknown>>();
 
+  /**
+   * Widget state store for Positronic state system
+   * Enables automatic RAG context injection
+   */
+  private _widgetStateStore?: ReactiveStore<WidgetStateSlice>;
+
   constructor(config: Partial<ReactiveWidgetConfig> = {}) {
     super();
     this.config = {
@@ -172,6 +180,10 @@ export abstract class ReactiveWidget extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.log('Disconnected from DOM');
+
+    // Clean up widget state registration
+    this.unregisterWidgetState();
+
     this.onDisconnect();
   }
 
@@ -405,6 +417,76 @@ export abstract class ReactiveWidget extends LitElement {
       },
       interaction
     );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // POSITRONIC STATE SYSTEM - Widget state for RAG context
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Register this widget's state with the Positronic state system
+   *
+   * Call this in onFirstRender() or onConnect() to enable:
+   * - RAG context (AI prompts include widget state)
+   * - Other widgets (cross-widget coordination)
+   * - Debug tools (widget-state command)
+   *
+   * @param initialData - Initial state data to register
+   */
+  protected registerWidgetState(initialData: Record<string, unknown> = {}): void {
+    const widgetType = this.config.widgetName
+      .replace(/Widget$/i, '')
+      .toLowerCase()
+      .replace(/([A-Z])/g, '-$1')
+      .replace(/^-/, '');
+
+    this._widgetStateStore = widgetStateRegistry.register(widgetType, initialData);
+    this.log(`Registered with Positronic state system as "${widgetType}"`);
+  }
+
+  /**
+   * Update this widget's state in the Positronic state system
+   *
+   * Call this whenever widget state changes that should be visible to AI.
+   * Changes automatically flow to RAG context builder.
+   *
+   * @param data - Partial state to merge with current
+   */
+  protected updateWidgetState(data: Record<string, unknown>): void {
+    if (!this._widgetStateStore) {
+      console.warn(`⚠️ ${this.config.widgetName}: Cannot update state - not registered. Call registerWidgetState() first.`);
+      return;
+    }
+
+    const current = this._widgetStateStore.get();
+    this._widgetStateStore.set({
+      ...current,
+      data: { ...current.data, ...data },
+      updatedAt: Date.now()
+    });
+  }
+
+  /**
+   * Get this widget's current state from the Positronic state system
+   */
+  protected getWidgetState(): Record<string, unknown> | null {
+    return this._widgetStateStore?.get().data ?? null;
+  }
+
+  /**
+   * Unregister widget state (called automatically on disconnect)
+   */
+  private unregisterWidgetState(): void {
+    if (this._widgetStateStore) {
+      const widgetType = this.config.widgetName
+        .replace(/Widget$/i, '')
+        .toLowerCase()
+        .replace(/([A-Z])/g, '-$1')
+        .replace(/^-/, '');
+      widgetStateRegistry.unregister(widgetType);
+      this._widgetStateStore = undefined;
+      this.log(`Unregistered from Positronic state system`);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

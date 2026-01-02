@@ -875,17 +875,22 @@
   gap: var(--spacing-xs, 4px);
   overflow: hidden;
   box-sizing: border-box;
+  max-height: 70px;  /* Cap container height */
+  align-items: flex-end;  /* Align button with bottom of textarea */
 }
 
 .entity-list-container.compact .message-input {
   padding: var(--spacing-xs, 6px) var(--spacing-sm, 10px);
   font-size: 0.8125rem;
+  height: 32px;  /* Fixed single-line height */
   min-height: 32px;
+  max-height: 60px;  /* Allow slight growth but cap it */
   /* Force input to shrink to make room for button */
   width: 0;  /* Start at 0, let flex: 1 expand it */
   flex: 1 1 0;  /* Grow, shrink, basis 0 */
   overflow: hidden;
   text-overflow: ellipsis;
+  resize: none;  /* Disable manual resize */
 }
 
 .entity-list-container.compact .send-button {

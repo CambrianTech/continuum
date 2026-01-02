@@ -291,10 +291,13 @@ export class PersonaMessageEvaluator {
     // AIs can put themselves to sleep to manage attention autonomously
     const sleepMode = personaSleepManager.getMode(this.personaUser.id);
     if (sleepMode !== 'active') {
+      // Detect if this is a new topic (enables until_topic sleep mode)
+      const isNewTopic = await this.detectNewTopic(messageText, messageEntity.roomId);
+
       const shouldRespondInSleepMode = personaSleepManager.shouldRespond(this.personaUser.id, {
         isHuman: senderIsHuman,
         isMention: isMentioned,
-        isNewTopic: false // TODO: Implement topic detection
+        isNewTopic
       });
 
       if (!shouldRespondInSleepMode) {
@@ -499,8 +502,56 @@ export class PersonaMessageEvaluator {
     if (newMessages.length > 0) {
       this.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
 
-      // TODO: Ask AI if they still want to respond given the new messages
-      // For now, just log and proceed (future: implement smart rejection)
+      // Check if other AIs already posted adequate responses
+      // UserType is 'human' | 'persona' | 'agent' | 'system' - check for non-human
+      const otherAIResponses = newMessages.filter(m =>
+        m.data.senderType !== 'human' && m.data.senderId !== this.personaUser.id
+      );
+
+      if (otherAIResponses.length > 0) {
+        // Check if any response is adequate (substantial and related)
+        const adequacyResult = this.checkResponseAdequacy(
+          messageEntity,
+          otherAIResponses.map(r => r.data)
+        );
+
+        if (adequacyResult.isAdequate) {
+          this.log(`⏭️ ${this.personaUser.displayName}: Post-inference skip - adequate AI response exists`);
+          this.log(`   Skipped because: ${adequacyResult.reason}`);
+
+          // Emit DECIDED_SILENT event
+          if (this.personaUser.client) {
+            await Events.emit<AIDecidedSilentEventData>(
+              DataDaemon.jtagContext!,
+              AI_DECISION_EVENTS.DECIDED_SILENT,
+              {
+                personaId: this.personaUser.id,
+                personaName: this.personaUser.displayName,
+                roomId: messageEntity.roomId,
+                messageId: messageEntity.id,
+                isHumanMessage: senderIsHuman,
+                timestamp: Date.now(),
+                reason: `Post-inference re-evaluation: ${adequacyResult.reason}`,
+                confidence: adequacyResult.confidence,
+                gatingModel: 'post-inference-heuristic'
+              },
+              {
+                scope: EVENT_SCOPES.ROOM,
+                scopeId: messageEntity.roomId
+              }
+            );
+          }
+
+          this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${adequacyResult.reason}`, {
+            message: messageEntity.content.text,
+            sender: messageEntity.senderName,
+            roomId: messageEntity.roomId
+          });
+
+          return; // Exit early - don't generate response
+        }
+      }
+
       this.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${m.data.content.text.slice(0, 50)}`).join(', ')}`);
     }
 
@@ -750,6 +801,141 @@ export class PersonaMessageEvaluator {
       this.log(`❌ PersonaUser ${this.personaUser.displayName}: Error checking sender type, BLOCKING response:`, error);
       return false; // Fail CLOSED on error (prevents loops)
     }
+  }
+
+  /**
+   * Detect if current message is a new topic vs continuation of existing conversation
+   * Uses fast n-gram text similarity (no embeddings needed)
+   *
+   * @param currentText - The incoming message text
+   * @param roomId - Room to query recent messages from
+   * @param threshold - Similarity threshold (below = new topic). Default 0.3
+   * @returns True if this appears to be a new topic
+   */
+  private async detectNewTopic(
+    currentText: string,
+    roomId: UUID,
+    threshold: number = 0.3
+  ): Promise<boolean> {
+    // Query recent messages from this room
+    const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+      collection: COLLECTIONS.CHAT_MESSAGES,
+      filter: { roomId },
+      sort: [{ field: 'timestamp', direction: 'desc' }],
+      limit: 5
+    });
+
+    const messages = recentMessages.data || [];
+    if (messages.length === 0) {
+      return true; // No history = definitely new topic
+    }
+
+    // Combine recent message texts
+    const recentTexts = messages
+      .map(m => m.data.content?.text || '')
+      .filter(t => t.length > 0)
+      .join(' ');
+
+    if (recentTexts.length === 0) {
+      return true; // No text content = new topic
+    }
+
+    // Fast text similarity using n-gram Jaccard
+    const similarity = this.computeTextSimilarity(currentText, recentTexts);
+
+    // Below threshold = new topic
+    const isNewTopic = similarity < threshold;
+
+    if (isNewTopic) {
+      this.log(`🔄 ${this.personaUser.displayName}: New topic detected (similarity=${similarity.toFixed(2)} < ${threshold})`);
+    }
+
+    return isNewTopic;
+  }
+
+  /**
+   * Compute text similarity using n-gram Jaccard coefficient
+   * Fast O(n) algorithm - no embeddings or API calls needed
+   *
+   * Uses unigrams + bigrams for better phrase detection
+   */
+  private computeTextSimilarity(text1: string, text2: string): number {
+    // Tokenize into words (filter short words as noise)
+    const tokenize = (text: string): string[] => {
+      return text
+        .toLowerCase()
+        .split(/\W+/)
+        .filter(word => word.length > 2);
+    };
+
+    const tokens1 = tokenize(text1);
+    const tokens2 = tokenize(text2);
+
+    if (tokens1.length === 0 || tokens2.length === 0) {
+      return 0;
+    }
+
+    // Generate unigrams + bigrams for better phrase matching
+    const generateNgrams = (tokens: string[]): Set<string> => {
+      const ngrams = new Set<string>();
+
+      // Unigrams
+      tokens.forEach(t => ngrams.add(t));
+
+      // Bigrams
+      for (let i = 0; i < tokens.length - 1; i++) {
+        ngrams.add(`${tokens[i]}_${tokens[i + 1]}`);
+      }
+
+      return ngrams;
+    };
+
+    const ngrams1 = generateNgrams(tokens1);
+    const ngrams2 = generateNgrams(tokens2);
+
+    // Jaccard coefficient = |intersection| / |union|
+    const intersection = [...ngrams1].filter(n => ngrams2.has(n)).length;
+    const union = new Set([...ngrams1, ...ngrams2]).size;
+
+    return union > 0 ? intersection / union : 0;
+  }
+
+  /**
+   * Check if existing AI responses are adequate (no need for another response)
+   *
+   * Used for post-inference re-evaluation to prevent redundant responses
+   * when another AI already answered during our inference time.
+   */
+  private checkResponseAdequacy(
+    originalMessage: ChatMessageEntity,
+    otherResponses: ChatMessageEntity[]
+  ): { isAdequate: boolean; confidence: number; reason: string } {
+    const originalText = originalMessage.content?.text || '';
+
+    for (const response of otherResponses) {
+      const responseText = response.content?.text || '';
+
+      // Skip short responses (likely not adequate)
+      if (responseText.length < 100) continue;
+
+      // Check if response is related to original question
+      const similarity = this.computeTextSimilarity(originalText, responseText);
+
+      // Substantial response (>100 chars) that's related to the question (>0.2 similarity)
+      if (similarity > 0.2) {
+        return {
+          isAdequate: true,
+          confidence: Math.min(similarity + 0.5, 1.0), // Boost confidence for related responses
+          reason: `${response.senderName} already provided a substantial response (${responseText.length} chars, ${(similarity * 100).toFixed(0)}% related)`
+        };
+      }
+    }
+
+    return {
+      isAdequate: false,
+      confidence: 0,
+      reason: 'No adequate responses found'
+    };
   }
 
   /**

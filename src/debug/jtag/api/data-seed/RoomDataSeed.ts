@@ -122,6 +122,37 @@ export class RoomDataSeed {
     pantheon.tags = ['sota', 'elite', 'reasoning'];
     rooms.push(pantheon);
 
+    // Canvas room - discussions about collaborative canvas drawings
+    const canvas = new RoomEntity();
+    canvas.uniqueId = ROOM_UNIQUE_IDS.CANVAS;
+    canvas.name = 'canvas';
+    canvas.displayName = 'Canvas';
+    canvas.description = 'Discussion room for collaborative canvas drawings';
+    canvas.topic = 'Art, drawing, vision AI, and creative collaboration';
+    canvas.type = 'public';
+    canvas.status = 'active';
+    canvas.ownerId = humanUserId;
+    canvas.lastMessageAt = now;
+    canvas.recipeId = 'canvas'; // Canvas recipe with vision AI pipeline
+    canvas.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    canvas.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    canvas.members = [
+      { userId: humanUserId, role: 'owner', joinedAt: now }
+    ];
+    canvas.tags = ['canvas', 'art', 'drawing', 'vision'];
+    rooms.push(canvas);
+
     return {
       rooms: rooms as readonly RoomEntity[],
       totalCount: rooms.length,

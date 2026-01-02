@@ -45,6 +45,7 @@ import {
   type VectorSearchCapabilities,
   type VectorEmbedding,
   DEFAULT_EMBEDDING_MODELS,
+  toNumberArray,
   SimilarityMetrics
 } from '../shared/VectorSearchTypes';
 
@@ -158,25 +159,30 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         };
       }
 
-      // 3. Compute similarity scores
-      const similarities: Array<{ id: UUID; score: number; distance: number }> = [];
+      // 3. Compute cosine similarity in-process (faster than IPC to Rust for typical workloads)
+      // V8 is highly optimized and JSON serialization overhead dominates for IPC
+      const queryArr = toNumberArray(queryVector);
 
-      for (const vector of vectors) {
-        const similarity = SimilarityMetrics.cosine(queryVector, vector.embedding);
-        const distance = 1 - similarity;
-
-        if (similarity >= threshold) {
-          similarities.push({
-            id: vector.recordId,
-            score: similarity,
-            distance
-          });
+      const scored: Array<{ idx: number; score: number }> = [];
+      for (let i = 0; i < vectors.length; i++) {
+        const corpusArr = toNumberArray(vectors[i].embedding);
+        const score = SimilarityMetrics.cosine(queryArr, corpusArr);
+        if (score >= threshold) {
+          scored.push({ idx: i, score });
         }
       }
 
-      // 4. Sort by similarity (descending) and take top-k
-      similarities.sort((a, b) => b.score - a.score);
-      const topK = similarities.slice(0, k);
+      // 4. Sort by score descending and take top-k
+      scored.sort((a, b) => b.score - a.score);
+      const topK: Array<{ id: UUID; score: number; distance: number }> = [];
+      for (let i = 0; i < Math.min(k, scored.length); i++) {
+        const { idx, score } = scored[i];
+        topK.push({
+          id: vectors[idx].recordId,
+          score,
+          distance: 1 - score
+        });
+      }
 
       // 5. Fetch actual records (uses existing storage adapter!)
       const results: VectorSearchResult<T>[] = [];

@@ -16,17 +16,20 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-import type { StorageResult } from '../../shared/DataStorageAdapter';
+import type { StorageResult, CollectionSchema, SchemaField, SchemaFieldType } from '../../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../../shared/SqlNamingConverter';
 import type { SqlExecutor } from '../SqlExecutor';
-import {
-  getFieldMetadata,
-  hasFieldMetadata,
-  type FieldMetadata,
-  type FieldType
-} from '../../../../system/data/decorators/FieldDecorators';
-import { ENTITY_REGISTRY, type EntityConstructor } from '../EntityRegistry';
+import type { FieldType, FieldMetadata } from '../../../../system/data/decorators/FieldDecorators';
 import { Logger } from '../../../../system/core/logging/Logger';
+
+/**
+ * Entity constructor type - for migration methods that still need entity class
+ */
+type EntityConstructor = (new (...args: unknown[]) => unknown) & {
+  prototype: {
+    [key: string]: unknown;
+  };
+};
 
 /**
  * SQLite Configuration Options
@@ -48,6 +51,17 @@ interface SqliteOptions {
 export class SqliteSchemaManager {
   private log = Logger.create('SqliteSchemaManager', 'sql');
   private schemaVerified: Set<string> = new Set(); // Cache: only check schema once per process
+  private schemaCache = new Map<string, CollectionSchema>(); // Cache passed schemas
+
+  /**
+   * Get cached schema for a collection
+   *
+   * ARCHITECTURE: Provides schema to other managers (WriteManager, QueryExecutor)
+   * so they don't need to access ENTITY_REGISTRY directly.
+   */
+  getCachedSchema(collection: string): CollectionSchema | undefined {
+    return this.schemaCache.get(collection);
+  }
 
   constructor(
     private db: sqlite3.Database | null,
@@ -178,73 +192,120 @@ export class SqliteSchemaManager {
     }
   }
 
+  // ============================================================================
+  // SCHEMA-BASED TABLE/INDEX GENERATION (New architecture - adapter doesn't know entities)
+  // ============================================================================
+
+  /**
+   * Map SchemaFieldType to SQLite SQL type
+   *
+   * ARCHITECTURE: This is how the adapter translates generic schema types
+   * to its native storage format. No knowledge of entities or decorators.
+   */
+  private mapSchemaFieldTypeToSql(fieldType: SchemaFieldType, maxLength?: number): string {
+    switch (fieldType) {
+      case 'uuid':
+        return 'TEXT';  // SQLite doesn't have native UUID, use TEXT
+      case 'string':
+        return maxLength ? `TEXT` : 'TEXT';  // SQLite doesn't enforce VARCHAR length
+      case 'number':
+        return 'REAL';
+      case 'boolean':
+        return 'INTEGER';  // SQLite uses 0/1 for boolean
+      case 'date':
+        return 'TEXT';  // ISO8601 string format
+      case 'json':
+        return 'TEXT';  // JSON stored as text
+      default:
+        return 'TEXT';
+    }
+  }
+
+  /**
+   * Generate CREATE TABLE SQL from CollectionSchema
+   *
+   * ARCHITECTURE: Adapter generates native SQL from generic schema.
+   * Daemon passed the schema, adapter translates to native format.
+   */
+  private generateCreateTableFromSchema(schema: CollectionSchema): string {
+    const tableName = SqlNamingConverter.toTableName(schema.collection);
+
+    const columns: string[] = [
+      'id TEXT PRIMARY KEY',
+      'created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
+      'updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP',
+      'version INTEGER DEFAULT 1'
+    ];
+
+    for (const field of schema.fields) {
+      // Skip base entity fields (already added above)
+      if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        continue;
+      }
+
+      const columnName = SqlNamingConverter.toSnakeCase(field.name);
+      const sqlType = this.mapSchemaFieldTypeToSql(field.type, field.maxLength);
+      const nullable = field.nullable !== false ? '' : ' NOT NULL';
+      const unique = field.unique ? ' UNIQUE' : '';
+
+      columns.push(`${columnName} ${sqlType}${nullable}${unique}`);
+    }
+
+    return `CREATE TABLE IF NOT EXISTS ${tableName} (${columns.join(', ')})`;
+  }
+
+  /**
+   * Generate CREATE INDEX SQL statements from CollectionSchema
+   *
+   * ARCHITECTURE: Creates indexes for indexed fields and composite indexes.
+   * Uses IF NOT EXISTS for idempotent operations.
+   */
+  private generateCreateIndexFromSchema(schema: CollectionSchema): string[] {
+    const tableName = SqlNamingConverter.toTableName(schema.collection);
+    const indexes: string[] = [];
+
+    // Single-field indexes from field.indexed
+    for (const field of schema.fields) {
+      if (field.indexed) {
+        const columnName = SqlNamingConverter.toSnakeCase(field.name);
+        const indexName = `idx_${tableName}_${columnName}`;
+        indexes.push(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName} (${columnName})`);
+      }
+    }
+
+    // Composite indexes
+    if (schema.indexes) {
+      for (const idx of schema.indexes) {
+        const indexColumns = idx.fields.map(f => SqlNamingConverter.toSnakeCase(f)).join(', ');
+        const uniqueStr = idx.unique ? 'UNIQUE ' : '';
+        indexes.push(`CREATE ${uniqueStr}INDEX IF NOT EXISTS ${idx.name} ON ${tableName} (${indexColumns})`);
+      }
+    }
+
+    return indexes;
+  }
+
   /**
    * Ensure schema exists for collection (orchestrated by DataDaemon)
    *
    * This is the ONLY place where tables are created.
-   * Handles both registered entities (with metadata) and unregistered entities (simple table).
-   * Adapter translates collection → table name and creates snake_case columns.
+   *
+   * ARCHITECTURE: Daemon extracts schema from entity decorators and passes it here.
+   * The adapter doesn't need to know about entities or decorators.
+   * Schema MUST be provided - no fallback to ENTITY_REGISTRY.
    */
-  async ensureSchema(collectionName: string, _schema?: unknown): Promise<StorageResult<boolean>> {
+  async ensureSchema(collectionName: string, schema?: CollectionSchema): Promise<StorageResult<boolean>> {
     try {
       // Fast path: already verified this schema in this process
       if (this.schemaVerified.has(collectionName)) {
         return { success: true, data: true };
       }
 
-      const tableName = SqlNamingConverter.toTableName(collectionName);
-      const tableExists = await this.tableExists(tableName);
-
-      const entityClass = ENTITY_REGISTRY.get(collectionName);
-
-      if (!entityClass || !hasFieldMetadata(entityClass)) {
-        // Collection descriptions (what each collection is used for)
-        const collectionDescriptions: Record<string, string> = {
-          'chat_messages': 'Chat history and conversation messages',
-          'decisions': 'Governance proposals for democratic voting',
-          'rooms': 'Chat channels/rooms for organizing discussions',
-          'users': 'User profiles and identity information',
-          'tasks': 'Task tracking and management',
-          'user_state': 'User session state and preferences'
-        };
-
-        // Get list of available collections from registry
-        const availableCollections = Array.from(ENTITY_REGISTRY.keys()).sort();
-
-        // Simple string similarity check (find collections with similar names)
-        const suggestions = availableCollections.filter(name => {
-          const lowerCollection = collectionName.toLowerCase();
-          const lowerName = name.toLowerCase();
-          // Check if one contains the other, or vice versa
-          return lowerName.includes(lowerCollection) || lowerCollection.includes(lowerName);
-        });
-
-        let errorMessage = `❌ Collection '${collectionName}' is not registered!\n\n`;
-
-        // Add "Did you mean?" suggestion if we found similar names
-        if (suggestions.length > 0) {
-          errorMessage += `💡 Did you mean: ${suggestions.map(s => `'${s}'`).join(', ')}?\n\n`;
-        }
-
-        // List all available collections WITH DESCRIPTIONS
-        errorMessage += `Available collections:\n`;
-        for (const collection of availableCollections) {
-          const description = collectionDescriptions[collection] || 'No description available';
-          errorMessage += `  - ${collection} (${description})\n`;
-        }
-        errorMessage += '\n';
-
-        // Tell them about the README command
-        errorMessage += `📖 To learn how to use governance commands, try:\n`;
-        errorMessage += `   ./jtag readme decision/create\n`;
-        errorMessage += `   ./jtag readme decision/vote\n\n`;
-
-        // Advanced: How to add a new collection (for developers)
-        errorMessage += `🔧 To add a NEW collection (developers only):\n` +
-          `1. Create entity: system/data/entities/${collectionName.charAt(0).toUpperCase() + collectionName.slice(1)}Entity.ts\n` +
-          `2. Extend BaseEntity with @TextField(), @NumberField(), @JsonField() decorators\n` +
-          `3. Register in EntityRegistry.ts\n`;
-
+      // Schema MUST be provided by daemon - no fallback
+      if (!schema) {
+        const errorMessage = `No schema provided for collection "${collectionName}". ` +
+          `DataDaemon must extract schema from entity decorators and pass it to ensureSchema(). ` +
+          `This usually means the entity is not registered in EntityRegistry.ts.`;
         this.log.error(errorMessage);
         return {
           success: false,
@@ -252,45 +313,38 @@ export class SqliteSchemaManager {
         };
       }
 
-      // Only log if STATE CHANGES (table created or columns added)
+      const tableName = SqlNamingConverter.toTableName(collectionName);
+      const tableExists = await this.tableExists(tableName);
+
+      // Cache the schema for later use in queries/writes
+      this.schemaCache.set(collectionName, schema);
+
       let stateChanged = false;
 
       if (tableExists) {
-        // Migrate schema: add missing columns (only logs if columns added)
-        stateChanged = await this.migrateTableSchema(collectionName, tableName, entityClass);
+        // TODO: Implement schema-based migration (add missing columns)
+        // For now, skip migration - table already exists
+        this.log.debug(`Table ${tableName} exists, using existing schema`);
       } else {
-        // Create new table - STATE CHANGE
-        const createTableSql = this.generateCreateTableSql(
-          collectionName,
-          entityClass,
-          SqlNamingConverter.toTableName,
-          SqlNamingConverter.toSnakeCase
-        );
+        // Create new table from schema - STATE CHANGE
+        const createTableSql = this.generateCreateTableFromSchema(schema);
         this.log.info(`CREATE TABLE ${tableName}`);
         await this.executor.runSql(createTableSql);
         stateChanged = true;
       }
 
-      // Create indexes (will skip if they already exist due to IF NOT EXISTS)
-      const indexSqls = this.generateCreateIndexSql(
-        collectionName,
-        entityClass,
-        SqlNamingConverter.toTableName,
-        SqlNamingConverter.toSnakeCase
-      );
+      // Create indexes from schema
+      const indexSqls = this.generateCreateIndexFromSchema(schema);
       for (const indexSql of indexSqls) {
         this.log.debug(`Creating index: ${indexSql}`);
         await this.executor.runSql(indexSql);
       }
 
-      // Only log completion if STATE CHANGED
       if (stateChanged) {
-        this.log.info(`Table ready: ${tableName} (${tableExists ? 'migrated' : 'created'} with ${indexSqls.length} indexes)`);
+        this.log.info(`Table ready: ${tableName} (created with ${indexSqls.length} indexes)`);
       }
 
-      // Mark as verified - don't check again this process
       this.schemaVerified.add(collectionName);
-
       return { success: true, data: true };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -319,63 +373,6 @@ export class SqliteSchemaManager {
   async getTableColumns(tableName: string): Promise<Set<string>> {
     const result = await this.executor.runSql(`PRAGMA table_info(${tableName})`);
     return new Set(result.map((row: { name: string }) => row.name));
-  }
-
-  /**
-   * Migrate table schema by adding missing columns
-   * SQLite only supports adding columns, not modifying or removing them
-   * This runs automatically every time the server starts, ensuring schema stays in sync with entity definitions
-   * @returns true if columns were added, false if schema already up-to-date
-   */
-  async migrateTableSchema(
-    collectionName: string,
-    tableName: string,
-    entityClass: EntityConstructor
-  ): Promise<boolean> {
-    // Get existing columns
-    const existingColumns = await this.getTableColumns(tableName);
-
-    // Get expected columns from entity metadata
-    const fieldMetadata = getFieldMetadata(entityClass);
-    const missingColumns: string[] = [];
-
-    for (const [fieldName, metadata] of fieldMetadata.entries()) {
-      const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-
-      if (!existingColumns.has(columnName)) {
-        missingColumns.push(columnName);
-
-        // Generate ALTER TABLE statement
-        const sqlType = this.mapFieldTypeToSql(metadata.fieldType, metadata.options);
-        const nullable = metadata.options?.nullable !== false;
-        const defaultValue = metadata.options?.default;
-
-        let alterSql = `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${sqlType}`;
-
-        if (!nullable) {
-          // For NOT NULL columns on existing tables, we must provide a default
-          if (defaultValue !== undefined) {
-            alterSql += ` DEFAULT ${this.formatDefaultValue(defaultValue, sqlType)}`;
-          } else {
-            // Provide sensible defaults for required columns
-            alterSql += ` DEFAULT ${this.getDefaultForType(sqlType)}`;
-          }
-          alterSql += ' NOT NULL';
-        }
-
-        this.log.info(`Adding column: ${columnName} (${sqlType}) to ${tableName}`);
-        await this.executor.runSql(alterSql);
-      }
-    }
-
-    // Only log if STATE CHANGED
-    if (missingColumns.length > 0) {
-      this.log.info(`Migrated ${tableName}: added ${missingColumns.length} columns (${missingColumns.join(', ')})`);
-      return true;
-    }
-
-    // Schema already up-to-date - DON'T LOG (reduces spam)
-    return false;
   }
 
   /**
@@ -450,54 +447,6 @@ export class SqliteSchemaManager {
       default:
         return 'NULL';
     }
-  }
-
-  /**
-   * Log what schemas would be generated for all registered entities
-   */
-  async logEntitySchemas(): Promise<void> {
-    this.log.info('Analyzing registered entities...');
-
-    for (const [collectionName, entityClass] of ENTITY_REGISTRY.entries()) {
-      if (!hasFieldMetadata(entityClass)) {
-        this.log.warn(`${collectionName}: No field metadata found`);
-        continue;
-      }
-
-      const tableName = SqlNamingConverter.toTableName(collectionName);
-      this.log.info(`${collectionName} -> ${tableName}:`);
-
-      // Log what CREATE TABLE would look like
-      const createTableSql = this.generateCreateTableSql(
-        collectionName,
-        entityClass,
-        SqlNamingConverter.toTableName,
-        SqlNamingConverter.toSnakeCase
-      );
-      this.log.debug('CREATE TABLE SQL:', createTableSql);
-
-      // Log field metadata
-      const fieldMetadata = getFieldMetadata(entityClass);
-      this.log.debug(`Fields: ${fieldMetadata.size}`);
-      for (const [fieldName, metadata] of fieldMetadata.entries()) {
-        const columnName = SqlNamingConverter.toSnakeCase(fieldName);
-        this.log.debug(`  ${fieldName} -> ${columnName} (${metadata.fieldType}${metadata.options?.index ? ', indexed' : ''})`);
-      }
-
-      // Log indexes
-      const indexSqls = this.generateCreateIndexSql(
-        collectionName,
-        entityClass,
-        SqlNamingConverter.toTableName,
-        SqlNamingConverter.toSnakeCase
-      );
-      if (indexSqls.length > 0) {
-        this.log.debug(`Indexes: ${indexSqls.length}`);
-        indexSqls.forEach(sql => this.log.debug(`  ${sql}`));
-      }
-    }
-
-    this.log.info('Entity schema analysis complete');
   }
 
   /**

@@ -21,11 +21,24 @@ import type {
   StorageAdapterConfig,
   CollectionStats,
   StorageOperation,
-  RecordData
+  RecordData,
+  CollectionSchema,
+  SchemaField,
+  SchemaFieldType,
+  SchemaIndex
 } from './DataStorageAdapter';
 
 // Import entity registry for proper entity instantiation during validation
-import { getRegisteredEntity } from '../server/SqliteStorageAdapter';
+import { getRegisteredEntity, ENTITY_REGISTRY } from '../server/EntityRegistry';
+
+// Import field metadata for schema extraction (daemon extracts, adapter uses)
+import {
+  getFieldMetadata,
+  hasFieldMetadata,
+  getCompositeIndexes,
+  type FieldMetadata,
+  type FieldType
+} from '../../../system/data/decorators/FieldDecorators';
 
 // Import universal events for automatic event emission
 import { Events } from '../../../system/core/shared/Events';
@@ -140,10 +153,22 @@ export class DataDaemon {
     return DataDaemon.sharedInstance.adapter;
   }
 
-  constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter) {
+  /**
+   * Create DataDaemon instance
+   *
+   * @param config - Storage strategy configuration
+   * @param adapter - Storage adapter instance
+   * @param adapterAlreadyInitialized - If true, skip calling adapter.initialize()
+   *        Use this when creating temporary DataDaemon instances with adapters
+   *        that are already initialized (e.g., from DatabaseHandleRegistry)
+   */
+  constructor(config: StorageStrategyConfig, adapter: DataStorageAdapter, adapterAlreadyInitialized: boolean = false) {
     this.config = config;
     this.adapter = adapter;
     this.paginatedQueryManager = new PaginatedQueryManager();
+    // If adapter is already initialized, mark ourselves as initialized too
+    // This prevents re-calling adapter.initialize() with incomplete config
+    this.isInitialized = adapterAlreadyInitialized;
   }
   
   /**
@@ -593,11 +618,84 @@ export class DataDaemon {
   }
 
   /**
+   * Map decorator FieldType to adapter SchemaFieldType
+   *
+   * ARCHITECTURE: This translation happens in the daemon (which knows entities)
+   * so the adapter doesn't need to know about decorator types.
+   */
+  private mapFieldTypeToSchemaType(fieldType: FieldType): SchemaFieldType {
+    switch (fieldType) {
+      case 'primary':
+      case 'foreign_key':
+        return 'uuid';
+      case 'date':
+        return 'date';
+      case 'text':
+      case 'enum':
+        return 'string';
+      case 'json':
+        return 'json';
+      case 'number':
+        return 'number';
+      case 'boolean':
+        return 'boolean';
+      default:
+        return 'string';
+    }
+  }
+
+  /**
+   * Extract CollectionSchema from entity decorators
+   *
+   * ARCHITECTURE: Daemon knows entities and their decorators.
+   * It extracts schema and passes it to the adapter in a generic format.
+   * Adapter doesn't need to know about ENTITY_REGISTRY or decorators.
+   */
+  private extractCollectionSchema(collection: string): CollectionSchema | undefined {
+    const entityClass = ENTITY_REGISTRY.get(collection) as EntityConstructor | undefined;
+    if (!entityClass || !hasFieldMetadata(entityClass)) {
+      // No entity registered or no field metadata - return undefined
+      // Adapter will use fallback behavior for unregistered collections
+      return undefined;
+    }
+
+    // Extract field metadata
+    const fieldMetadata = getFieldMetadata(entityClass);
+    const fields: SchemaField[] = [];
+
+    for (const [fieldName, metadata] of fieldMetadata) {
+      fields.push({
+        name: fieldName,
+        type: this.mapFieldTypeToSchemaType(metadata.fieldType),
+        indexed: metadata.options?.index,
+        unique: metadata.options?.unique,
+        nullable: metadata.options?.nullable,
+        maxLength: metadata.options?.maxLength
+      });
+    }
+
+    // Extract composite indexes
+    const compositeIndexes = getCompositeIndexes(entityClass);
+    const indexes: SchemaIndex[] = compositeIndexes.map(idx => ({
+      name: idx.name,
+      fields: idx.fields,
+      unique: idx.unique
+    }));
+
+    return {
+      collection,
+      fields,
+      indexes: indexes.length > 0 ? indexes : undefined
+    };
+  }
+
+  /**
    * Ensure collection schema exists (orchestrated by daemon, implemented by adapter)
    *
    * This is the SINGLE point where schema creation is orchestrated.
+   * - Extracts schema from entity decorators (daemon's job - knows entities)
    * - Caches which collections are ensured (generic across all adapters)
-   * - Delegates to adapter.ensureSchema() for actual implementation
+   * - Passes schema to adapter.ensureSchema() for implementation
    * - Adapter decides how to create schema (SQL table, Mongo collection, etc.)
    */
   private async ensureSchema(collection: string): Promise<void> {
@@ -606,8 +704,11 @@ export class DataDaemon {
       return; // Already ensured this session
     }
 
-    // Delegate to adapter (adapter knows table names, column names, SQL)
-    const result = await this.adapter.ensureSchema(collection);
+    // Extract schema from entity decorators (daemon knows entities, adapter doesn't)
+    const schema = this.extractCollectionSchema(collection);
+
+    // Delegate to adapter with schema (adapter knows how to implement in native format)
+    const result = await this.adapter.ensureSchema(collection, schema);
     if (!result.success) {
       throw new Error(`Failed to ensure schema for ${collection}: ${result.error}`);
     }

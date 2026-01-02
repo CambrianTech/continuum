@@ -32,10 +32,21 @@ interface StoredContext {
 }
 
 /**
+ * Stored RAG string (pre-formatted context from PositronicRAGContext)
+ */
+interface StoredRAGString {
+  ragString: string;
+  sessionId: string;
+  receivedAt: number;
+  expiresAt: number;
+}
+
+/**
  * WidgetContextService - Singleton service for server-side widget context storage
  */
 class WidgetContextServiceImpl {
   private contexts: Map<string, StoredContext> = new Map();
+  private ragStrings: Map<string, StoredRAGString> = new Map(); // Pre-formatted RAG strings
   private readonly TTL_MS = 30 * 60 * 1000; // 30 minutes
   private cleanupInterval: NodeJS.Timeout | null = null;
   private initialized = false;
@@ -78,6 +89,21 @@ class WidgetContextServiceImpl {
       }
     );
 
+    // Subscribe to pre-formatted RAG strings from PositronicRAGContext
+    Events.subscribe<{ ragString: string; [key: string]: unknown }>(
+      'positron:rag-context-updated',
+      (payload) => {
+        const sessionId = payload[EVENT_METADATA_KEYS.ORIGINAL_CONTEXT] as string | undefined;
+        if (sessionId && payload.ragString) {
+          this.setRAGString(sessionId, payload.ragString);
+          console.log(`🧠 WidgetContextService: Stored RAG string for session ${sessionId.slice(0, 8)} (${payload.ragString.length} chars)`);
+        } else if (payload.ragString) {
+          this.setRAGString('fallback', payload.ragString);
+          console.log('🧠 WidgetContextService: Stored RAG string (no sessionId)');
+        }
+      }
+    );
+
     // Start cleanup interval
     this.cleanupInterval = setInterval(() => this.cleanup(), 5 * 60 * 1000);
 
@@ -95,6 +121,58 @@ class WidgetContextServiceImpl {
       receivedAt: now,
       expiresAt: now + this.TTL_MS
     });
+  }
+
+  /**
+   * Store pre-formatted RAG string for a session
+   * (from new PositronicRAGContext system)
+   */
+  setRAGString(sessionId: string, ragString: string): void {
+    const now = Date.now();
+    console.log(`🧠 WidgetContextService.setRAGString: Storing for session ${sessionId}, size=${this.ragStrings.size} before`);
+    this.ragStrings.set(sessionId, {
+      ragString,
+      sessionId,
+      receivedAt: now,
+      expiresAt: now + this.TTL_MS
+    });
+    console.log(`🧠 WidgetContextService.setRAGString: size=${this.ragStrings.size} after, keys=[${Array.from(this.ragStrings.keys()).join(', ')}]`);
+  }
+
+  /**
+   * Get pre-formatted RAG string for a session
+   */
+  getRAGString(sessionId: string): string | null {
+    const stored = this.ragStrings.get(sessionId);
+    if (!stored) return null;
+
+    // Check expiry
+    if (Date.now() > stored.expiresAt) {
+      this.ragStrings.delete(sessionId);
+      return null;
+    }
+
+    return stored.ragString;
+  }
+
+  /**
+   * Get most recent RAG string (fallback when sessionId unknown)
+   */
+  getMostRecentRAGString(): string | null {
+    let mostRecent: StoredRAGString | null = null;
+    const now = Date.now();
+
+    console.log(`🧠 WidgetContextService.getMostRecentRAGString: checking ${this.ragStrings.size} entries`);
+    for (const stored of this.ragStrings.values()) {
+      console.log(`🧠   - session ${stored.sessionId}: expired=${now > stored.expiresAt}, age=${now - stored.receivedAt}ms`);
+      if (now > stored.expiresAt) continue;
+      if (!mostRecent || stored.receivedAt > mostRecent.receivedAt) {
+        mostRecent = stored;
+      }
+    }
+
+    console.log(`🧠 WidgetContextService.getMostRecentRAGString: found=${!!mostRecent}`);
+    return mostRecent?.ragString ?? null;
   }
 
   /**
@@ -134,8 +212,22 @@ class WidgetContextServiceImpl {
   /**
    * Generate RAG-friendly context string for a session
    * Used by ChatRAGBuilder to inject into AI prompts
+   *
+   * Priority order:
+   * 1. Pre-formatted RAG string (from new PositronicRAGContext system)
+   * 2. Formatted widget context (from old PositronWidgetState system)
    */
   toRAGContext(sessionId?: string): string | null {
+    // Priority 1: Check for new-style pre-formatted RAG strings
+    const ragString = sessionId
+      ? this.getRAGString(sessionId)
+      : this.getMostRecentRAGString();
+
+    if (ragString) {
+      return ragString;
+    }
+
+    // Priority 2: Fall back to old-style widget context
     const context = sessionId
       ? this.getContext(sessionId)
       : this.getMostRecentContext();
@@ -198,21 +290,30 @@ class WidgetContextServiceImpl {
   }
 
   /**
-   * Clean up expired contexts
+   * Clean up expired contexts and RAG strings
    */
   private cleanup(): void {
     const now = Date.now();
-    let cleaned = 0;
+    let cleanedContexts = 0;
+    let cleanedRagStrings = 0;
 
     for (const [sessionId, stored] of this.contexts.entries()) {
       if (now > stored.expiresAt) {
         this.contexts.delete(sessionId);
-        cleaned++;
+        cleanedContexts++;
       }
     }
 
-    if (cleaned > 0) {
-      console.log(`🧠 WidgetContextService: Cleaned up ${cleaned} expired context(s)`);
+    for (const [sessionId, stored] of this.ragStrings.entries()) {
+      if (now > stored.expiresAt) {
+        this.ragStrings.delete(sessionId);
+        cleanedRagStrings++;
+      }
+    }
+
+    const total = cleanedContexts + cleanedRagStrings;
+    if (total > 0) {
+      console.log(`🧠 WidgetContextService: Cleaned up ${cleanedContexts} context(s), ${cleanedRagStrings} RAG string(s)`);
     }
   }
 
@@ -225,15 +326,17 @@ class WidgetContextServiceImpl {
       this.cleanupInterval = null;
     }
     this.contexts.clear();
+    this.ragStrings.clear();
     this.initialized = false;
   }
 
   /**
    * Get stats for debugging
    */
-  getStats(): { activeContexts: number; initialized: boolean } {
+  getStats(): { activeContexts: number; activeRagStrings: number; initialized: boolean } {
     return {
       activeContexts: this.contexts.size,
+      activeRagStrings: this.ragStrings.size,
       initialized: this.initialized
     };
   }

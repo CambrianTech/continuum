@@ -13,6 +13,7 @@ import type { FileLoadParams, FileLoadResult } from '../../commands/file/load/sh
 import type { ContinuumStatus } from '../../commands/continuum/set/shared/ContinuumSetTypes';
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
 import { ThemeRegistry } from '../shared/themes/ThemeTypes';
+import { positronicBridge } from '../../system/state/PositronicBridge';
 
 export class ContinuumWidget extends BaseWidget {
   private currentStatus: ContinuumStatus | null = null;
@@ -58,6 +59,18 @@ export class ContinuumWidget extends BaseWidget {
     Events.subscribe('continuum:status', (status: ContinuumStatus) => {
       this.handleStatusUpdate(status);
     });
+
+    // Initialize Positronic state bridge for AI context awareness
+    // This bridges browser-side state to server RAG context
+    console.log('🌐 ContinuumWidget: About to initialize PositronicBridge...');
+    try {
+      positronicBridge.initialize();
+      // Expose on window for debugging
+      (window as any).positronicBridge = positronicBridge;
+      console.log('🌐 ContinuumWidget: PositronicBridge initialized successfully');
+    } catch (error) {
+      console.error('🌐 ContinuumWidget: PositronicBridge initialization failed:', error);
+    }
 
     console.log('✅ ContinuumWidget: Desktop interface initialized with status listener');
   }
