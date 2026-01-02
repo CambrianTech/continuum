@@ -165,9 +165,9 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       });
 
       this.socket.on('close', () => {
-        console.warn('⚠️  Rust worker connection closed');
+        console.warn('⚠️  Rust worker connection closed, will reconnect on next request');
         this.socket = null;
-        // TODO: Implement reconnection logic
+        this.adapterHandle = null; // Need to reopen adapter after reconnect
       });
 
       // Connection timeout
@@ -210,10 +210,28 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   /**
    * Send command to Rust worker and wait for response
    * Uses Rust's serde tag format: {"command": "name", ...params}
+   * Auto-reconnects if connection was lost
    */
   private async sendCommand<T = any>(command: string, params: Record<string, any> = {}): Promise<RustResponse & { data?: T }> {
+    // Auto-reconnect if socket is closed
     if (!this.socket) {
-      throw new Error('Not connected to Rust worker');
+      console.log('🔄 Reconnecting to Rust worker...');
+      await this.connect();
+
+      // Reopen adapter after reconnect
+      const response = await this.sendCommand<{ handle: string }>('adapter/open', {
+        config: {
+          adapter_type: 'sqlite',
+          connection_string: this.config.dbPath
+        }
+      });
+
+      if (response.status === 'ok' && response.data?.handle) {
+        this.adapterHandle = response.data.handle;
+        console.log(`✅ Reopened SQLite adapter: ${this.config.dbPath} → handle ${this.adapterHandle}`);
+      } else {
+        throw new Error(`Failed to reopen adapter: ${response.message || 'Unknown error'}`);
+      }
     }
 
     const request = {
@@ -235,11 +253,24 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Ensure we're connected and have an adapter handle (auto-reconnect)
+   */
+  private async ensureConnected(): Promise<void> {
+    if (!this.socket || !this.adapterHandle) {
+      // Force reconnect by calling sendCommand with a benign command
+      // The reconnect logic in sendCommand will re-establish connection and adapter
+      await this.sendCommand('ping', {});
+    }
+  }
+
+  /**
    * Create record - delegates to Rust worker
    */
   async create<T extends RecordData>(record: DataRecord<T>): Promise<StorageResult<DataRecord<T>>> {
-    if (!this.adapterHandle) {
-      return { success: false, error: 'Adapter not initialized' };
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
     }
 
     try {
@@ -283,8 +314,10 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    * Read single record by ID - uses query with filter
    */
   async read<T extends RecordData>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
-    if (!this.adapterHandle) {
-      return { success: false, error: 'Adapter not initialized' };
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
     }
 
     try {
@@ -322,8 +355,10 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    * Query records with filters
    */
   async query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>> {
-    if (!this.adapterHandle) {
-      return { success: false, error: 'Adapter not initialized' };
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
     }
 
     try {
@@ -403,8 +438,10 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     data: Partial<T>,
     incrementVersion?: boolean
   ): Promise<StorageResult<DataRecord<T>>> {
-    if (!this.adapterHandle) {
-      return { success: false, error: 'Adapter not initialized' };
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
     }
 
     try {
@@ -451,8 +488,10 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
    * Delete record
    */
   async delete(collection: string, id: UUID): Promise<StorageResult<boolean>> {
-    if (!this.adapterHandle) {
-      return { success: false, error: 'Adapter not initialized' };
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
     }
 
     try {

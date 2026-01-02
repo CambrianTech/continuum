@@ -21,9 +21,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::{fs, thread};
 use ts_rs::TS;
 use uuid::Uuid;
+
+mod timing;
+use timing::{RequestTimer, METRICS};
 
 // ============================================================================
 // Core Types (ts-rs exported for TypeScript)
@@ -551,6 +555,7 @@ impl RustDataDaemon {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_request(&self, request: Request) -> Response {
         match request {
             Request::Ping => Response::Pong { uptime_seconds: 0 },
@@ -603,6 +608,120 @@ impl RustDataDaemon {
         }
     }
 
+    /// Timed version of handle_request that fills in timing phases
+    /// Returns (response, result_count) for metrics
+    fn handle_request_timed(&self, timer: &mut RequestTimer, request: Request) -> (Response, Option<usize>) {
+        let route_start = Instant::now();
+
+        match request {
+            Request::Ping => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                (Response::Pong { uptime_seconds: 0 }, None)
+            }
+
+            Request::AdapterOpen { config } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.open_adapter(config);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(handle) => {
+                        timer.set_adapter_handle(&format!("{:?}", handle));
+                        (Response::Ok { data: json!({ "handle": handle }) }, None)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::AdapterClose { handle } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.registry.close(handle);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(_) => (Response::Ok { data: json!({ "closed": true }) }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataList { handle, collection, limit, offset, filter, order_by } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_list_timed(timer, handle, &collection, limit, offset, filter.as_ref(), order_by.as_ref());
+
+                match result {
+                    Ok(data) => {
+                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataCreate { handle, collection, data } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_create_timed(timer, handle, &collection, &data);
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataDelete { handle, collection, id } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_delete_timed(timer, handle, &collection, &id);
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataUpdate { handle, collection, id, data } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let result = self.data_update_timed(timer, handle, &collection, &id, &data);
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+        }
+    }
+
     fn open_adapter(&self, config: AdapterConfig) -> Result<AdapterHandle, String> {
         let strategy: Box<dyn ConcurrencyStrategy> = match config.adapter_type {
             AdapterType::Sqlite => {
@@ -621,6 +740,7 @@ impl RustDataDaemon {
     }
 
     /// List entities from a collection with filtering and pagination
+    #[allow(dead_code)]
     fn data_list(
         &self,
         handle: AdapterHandle,
@@ -679,6 +799,7 @@ impl RustDataDaemon {
     }
 
     /// Create a new entity in a collection
+    #[allow(dead_code)]
     fn data_create(
         &self,
         handle: AdapterHandle,
@@ -715,6 +836,7 @@ impl RustDataDaemon {
     }
 
     /// Delete an entity from a collection by ID
+    #[allow(dead_code)]
     fn data_delete(
         &self,
         handle: AdapterHandle,
@@ -728,6 +850,7 @@ impl RustDataDaemon {
     }
 
     /// Update an entity in a collection by ID
+    #[allow(dead_code)]
     fn data_update(
         &self,
         handle: AdapterHandle,
@@ -770,6 +893,187 @@ impl RustDataDaemon {
         println!("✏️  DataUpdate query: {}", query);
         self.registry.execute_write(handle, &query, data)
     }
+
+    // ========================================================================
+    // Timed versions of data operations (captures query_build, lock_wait, execute)
+    // ========================================================================
+
+    fn data_list_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        filter: Option<&Value>,
+        order_by: Option<&Vec<OrderBy>>,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+
+        let mut query = format!("SELECT * FROM {}", collection);
+
+        if let Some(filter_obj) = filter {
+            if let Some(obj) = filter_obj.as_object() {
+                let conditions: Vec<String> = obj.iter()
+                    .filter_map(|(key, value)| {
+                        match value {
+                            Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
+                            Value::Number(n) => Some(format!("{} = {}", key, n)),
+                            Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
+                            Value::Null => Some(format!("{} IS NULL", key)),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+
+                if !conditions.is_empty() {
+                    query.push_str(" WHERE ");
+                    query.push_str(&conditions.join(" AND "));
+                }
+            }
+        }
+
+        if let Some(orders) = order_by {
+            if !orders.is_empty() {
+                let order_clauses: Vec<String> = orders.iter()
+                    .map(|o| format!("{} {}", o.field, o.direction.to_uppercase()))
+                    .collect();
+                query.push_str(" ORDER BY ");
+                query.push_str(&order_clauses.join(", "));
+            }
+        }
+
+        if let Some(lim) = limit {
+            query.push_str(&format!(" LIMIT {}", lim));
+        }
+        if let Some(off) = offset {
+            query.push_str(&format!(" OFFSET {}", off));
+        }
+
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Lock wait + execute phase (combined in registry.execute_read)
+        let execute_start = Instant::now();
+        let result = self.registry.execute_read(handle, &query);
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
+
+    fn data_create_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        let values: Vec<String> = obj.values()
+            .map(|v| match v {
+                Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                Value::Null => "NULL".to_string(),
+                Value::Array(_) | Value::Object(_) => {
+                    format!("'{}'", serde_json::to_string(v).unwrap_or_default().replace("'", "''"))
+                }
+            })
+            .collect();
+
+        let query = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            collection,
+            columns.join(", "),
+            values.join(", ")
+        );
+
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Execute phase
+        let execute_start = Instant::now();
+        let result = self.registry.execute_write(handle, &query, data);
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
+
+    fn data_delete_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+        let query = format!("DELETE FROM {} WHERE id = '{}'", collection, id.replace("'", "''"));
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Execute phase
+        let execute_start = Instant::now();
+        let result = self.registry.execute_write(handle, &query, &json!({}));
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
+
+    fn data_update_timed(
+        &self,
+        timer: &mut RequestTimer,
+        handle: AdapterHandle,
+        collection: &str,
+        id: &str,
+        data: &Value,
+    ) -> Result<Value, String> {
+        // Query build phase
+        let query_build_start = Instant::now();
+
+        let obj = data.as_object()
+            .ok_or_else(|| "Data must be an object".to_string())?;
+
+        let set_clauses: Vec<String> = obj.iter()
+            .filter(|(key, _)| *key != "id")
+            .map(|(key, value)| {
+                let val_str = match value {
+                    Value::String(s) => format!("'{}'", s.replace("'", "''")),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
+                    Value::Null => "NULL".to_string(),
+                    Value::Array(_) | Value::Object(_) => {
+                        format!("'{}'", serde_json::to_string(value).unwrap_or_default().replace("'", "''"))
+                    }
+                };
+                format!("{} = {}", key, val_str)
+            })
+            .collect();
+
+        if set_clauses.is_empty() {
+            return Err("No fields to update".to_string());
+        }
+
+        let query = format!(
+            "UPDATE {} SET {} WHERE id = '{}'",
+            collection,
+            set_clauses.join(", "),
+            id.replace("'", "''")
+        );
+
+        timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
+
+        // Execute phase
+        let execute_start = Instant::now();
+        let result = self.registry.execute_write(handle, &query, data);
+        timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+        result
+    }
 }
 
 // ============================================================================
@@ -781,23 +1085,71 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
     let mut writer = stream.try_clone()?;
 
     loop {
+        // Start timing before socket read
+        METRICS.request_start();
+        let read_start = Instant::now();
+
         let mut line = String::new();
         let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 { break; }
+        if bytes == 0 {
+            METRICS.request_end();
+            break;
+        }
 
+        let socket_read_ns = read_start.elapsed().as_nanos() as u64;
+
+        // Parse phase
+        let parse_start = Instant::now();
         let request: Request = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Parse error: {}", e);
+                METRICS.request_end();
                 continue;
             }
         };
+        let parse_ns = parse_start.elapsed().as_nanos() as u64;
 
-        let response = daemon.handle_request(request);
+        // Get request type for timing
+        let request_type = match &request {
+            Request::Ping => "ping",
+            Request::AdapterOpen { .. } => "adapter/open",
+            Request::AdapterClose { .. } => "adapter/close",
+            Request::DataList { .. } => "data/list",
+            Request::DataCreate { .. } => "data/create",
+            Request::DataDelete { .. } => "data/delete",
+            Request::DataUpdate { .. } => "data/update",
+        };
 
+        // Start request timer
+        let mut timer = RequestTimer::start(request_type);
+        timer.record.socket_read_ns = socket_read_ns;
+        timer.record.parse_ns = parse_ns;
+
+        // Handle request (includes route, query_build, lock_wait, execute phases)
+        let (response, result_count) = daemon.handle_request_timed(&mut timer, request);
+
+        // Serialize phase
+        let serialize_start = Instant::now();
         let response_json = serde_json::to_string(&response)?;
+        timer.record.serialize_ns = serialize_start.elapsed().as_nanos() as u64;
+
+        // Socket write phase
+        let write_start = Instant::now();
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;
+        timer.record.socket_write_ns = write_start.elapsed().as_nanos() as u64;
+
+        // Set result metadata
+        if let Some(count) = result_count {
+            timer.set_result_count(count);
+        }
+        timer.set_concurrent(METRICS.get_active_count());
+
+        // Record timing
+        let record = timer.finish();
+        METRICS.record(record);
+        METRICS.request_end();
     }
 
     Ok(())
@@ -824,9 +1176,10 @@ fn main() -> std::io::Result<()> {
 
     println!("🦀 RustDataDaemon starting...");
     println!("📡 Worker socket: {}", worker_socket);
+    println!("📊 Timing log: /tmp/jtag-data-daemon-timing.jsonl");
 
     let daemon = Arc::new(RustDataDaemon::new());
-    println!("✅ RustDataDaemon ready\n");
+    println!("✅ RustDataDaemon ready (with precision timing)\n");
 
     // Bind socket
     let listener = UnixListener::bind(worker_socket)?;
