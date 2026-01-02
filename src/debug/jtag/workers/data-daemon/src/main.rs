@@ -251,9 +251,10 @@ struct SqliteStrategy {
     connection: Arc<Mutex<rusqlite::Connection>>,
 }
 
+#[allow(dead_code)]
 struct WriteOperation {
     query: String,
-    params: Value,
+    params: Value,  // Reserved for parameterized queries
 }
 
 impl SqliteStrategy {

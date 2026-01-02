@@ -38,6 +38,7 @@ pub struct SearchOutput {
 // ============================================================================
 
 /// Core trait - all search algorithms implement this
+#[allow(dead_code)]
 pub trait SearchAlgorithm: Send + Sync {
     /// Algorithm identifier (like cv::Algorithm::getDefaultName)
     fn name(&self) -> &'static str;
