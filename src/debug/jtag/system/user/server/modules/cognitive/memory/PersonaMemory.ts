@@ -17,12 +17,7 @@ import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
 import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
 import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
-
-/**
- * Collection for storing persona RAG contexts
- * Separate from main chat/memory to avoid conflicts
- */
-const PERSONA_RAG_COLLECTION = 'persona_rag_contexts';
+import { PERSONA_RAG_CONTEXTS_COLLECTION } from '../../../../../data/entities/PersonaRAGContextEntity';
 
 /**
  * RAG Context Types - Storage structure for persona conversation context
@@ -88,14 +83,14 @@ export class PersonaMemory {
 
     try {
       // Check if record exists
-      const existing = await DataDaemon.read(PERSONA_RAG_COLLECTION, recordId);
+      const existing = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
 
       if (existing.success && existing.data) {
         // Update existing record (DataDaemon handles updatedAt)
-        await DataDaemon.update(PERSONA_RAG_COLLECTION, recordId, record as any);
+        await DataDaemon.update(PERSONA_RAG_CONTEXTS_COLLECTION, recordId, record as any);
       } else {
         // Create new record
-        await DataDaemon.store(PERSONA_RAG_COLLECTION, record as any);
+        await DataDaemon.store(PERSONA_RAG_CONTEXTS_COLLECTION, record as any);
       }
     } catch (error) {
       this.log(`❌ Failed to store RAG context: ${error}`);
@@ -112,7 +107,7 @@ export class PersonaMemory {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      const result = await DataDaemon.read(PERSONA_RAG_COLLECTION, recordId);
+      const result = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
 
       if (!result.success || !result.data) {
         return null;
@@ -204,7 +199,7 @@ export class PersonaMemory {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      await DataDaemon.remove(PERSONA_RAG_COLLECTION, recordId);
+      await DataDaemon.remove(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
       this.log(`🗑️ Cleared memory for room ${roomId}`);
     } catch (error) {
       this.log(`❌ Failed to clear room memory: ${error}`);

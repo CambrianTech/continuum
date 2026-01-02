@@ -76,6 +76,7 @@ import { DecisionEntity } from '../../../system/data/entities/DecisionEntity';
 import { SystemConfigEntity } from '../../../system/data/entities/SystemConfigEntity';
 import { ActivityEntity } from '../../../system/data/entities/ActivityEntity';
 import { CanvasStrokeEntity } from '../../../system/data/entities/CanvasStrokeEntity';
+import { PersonaRAGContextEntity } from '../../../system/data/entities/PersonaRAGContextEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -125,6 +126,7 @@ export function initializeEntityRegistry(): void {
   new SystemConfigEntity();
   new ActivityEntity();
   new CanvasStrokeEntity();
+  new PersonaRAGContextEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -166,6 +168,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(SystemConfigEntity.collection, SystemConfigEntity);
   registerEntity(ActivityEntity.collection, ActivityEntity);
   registerEntity(CanvasStrokeEntity.collection, CanvasStrokeEntity);
+  registerEntity(PersonaRAGContextEntity.collection, PersonaRAGContextEntity);
 
   log.info('All entities registered');
 }
