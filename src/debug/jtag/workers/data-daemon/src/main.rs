@@ -13,6 +13,7 @@
 /// 4. Postgres: Connection pool (full concurrency)
 /// 5. Return results via Unix socket
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -111,6 +112,17 @@ enum Request {
         id: String,
         data: Value,
     },
+
+    /// Vector similarity search - reads vectors from SQLite, computes cosine similarity
+    /// Query vector comes from TypeScript (small: 384 floats), corpus stays in Rust
+    #[serde(rename = "vector/search")]
+    VectorSearch {
+        handle: AdapterHandle,
+        collection: String,
+        query_vector: Vec<f64>,
+        k: Option<usize>,
+        threshold: Option<f64>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -143,6 +155,16 @@ trait ConcurrencyStrategy: Send + Sync {
 
     /// Execute write operation (adapter-specific queueing)
     fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String>;
+
+    /// Vector similarity search - reads vectors from storage, computes cosine similarity
+    /// Returns top-k results with record IDs and scores
+    fn vector_search(
+        &self,
+        collection: &str,
+        query_vector: &[f64],
+        k: usize,
+        threshold: f64,
+    ) -> Result<Value, String>;
 
     /// Close adapter and cleanup resources
     fn close(&self) -> Result<(), String>;
@@ -259,6 +281,133 @@ struct SqliteStrategy {
 struct WriteOperation {
     query: String,
     params: Value,  // Reserved for parameterized queries
+}
+
+/// Compute cosine similarity between two vectors
+/// Uses SIMD-friendly 8-way loop unrolling for auto-vectorization
+#[inline]
+fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    // 8-way loop unrolling for SIMD auto-vectorization
+    let len = a.len();
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    let mut dot0 = 0.0;
+    let mut dot1 = 0.0;
+    let mut dot2 = 0.0;
+    let mut dot3 = 0.0;
+    let mut dot4 = 0.0;
+    let mut dot5 = 0.0;
+    let mut dot6 = 0.0;
+    let mut dot7 = 0.0;
+
+    let mut norm_a0 = 0.0;
+    let mut norm_a1 = 0.0;
+    let mut norm_a2 = 0.0;
+    let mut norm_a3 = 0.0;
+    let mut norm_a4 = 0.0;
+    let mut norm_a5 = 0.0;
+    let mut norm_a6 = 0.0;
+    let mut norm_a7 = 0.0;
+
+    let mut norm_b0 = 0.0;
+    let mut norm_b1 = 0.0;
+    let mut norm_b2 = 0.0;
+    let mut norm_b3 = 0.0;
+    let mut norm_b4 = 0.0;
+    let mut norm_b5 = 0.0;
+    let mut norm_b6 = 0.0;
+    let mut norm_b7 = 0.0;
+
+    // Process 8 elements at a time
+    for i in 0..chunks {
+        let base = i * 8;
+        let a0 = a[base];
+        let a1 = a[base + 1];
+        let a2 = a[base + 2];
+        let a3 = a[base + 3];
+        let a4 = a[base + 4];
+        let a5 = a[base + 5];
+        let a6 = a[base + 6];
+        let a7 = a[base + 7];
+
+        let b0 = b[base];
+        let b1 = b[base + 1];
+        let b2 = b[base + 2];
+        let b3 = b[base + 3];
+        let b4 = b[base + 4];
+        let b5 = b[base + 5];
+        let b6 = b[base + 6];
+        let b7 = b[base + 7];
+
+        dot0 += a0 * b0;
+        dot1 += a1 * b1;
+        dot2 += a2 * b2;
+        dot3 += a3 * b3;
+        dot4 += a4 * b4;
+        dot5 += a5 * b5;
+        dot6 += a6 * b6;
+        dot7 += a7 * b7;
+
+        norm_a0 += a0 * a0;
+        norm_a1 += a1 * a1;
+        norm_a2 += a2 * a2;
+        norm_a3 += a3 * a3;
+        norm_a4 += a4 * a4;
+        norm_a5 += a5 * a5;
+        norm_a6 += a6 * a6;
+        norm_a7 += a7 * a7;
+
+        norm_b0 += b0 * b0;
+        norm_b1 += b1 * b1;
+        norm_b2 += b2 * b2;
+        norm_b3 += b3 * b3;
+        norm_b4 += b4 * b4;
+        norm_b5 += b5 * b5;
+        norm_b6 += b6 * b6;
+        norm_b7 += b7 * b7;
+    }
+
+    // Combine accumulators
+    let mut dot = dot0 + dot1 + dot2 + dot3 + dot4 + dot5 + dot6 + dot7;
+    let mut norm_a = norm_a0 + norm_a1 + norm_a2 + norm_a3 + norm_a4 + norm_a5 + norm_a6 + norm_a7;
+    let mut norm_b = norm_b0 + norm_b1 + norm_b2 + norm_b3 + norm_b4 + norm_b5 + norm_b6 + norm_b7;
+
+    // Handle remainder
+    let base = chunks * 8;
+    for i in 0..remainder {
+        let av = a[base + i];
+        let bv = b[base + i];
+        dot += av * bv;
+        norm_a += av * av;
+        norm_b += bv * bv;
+    }
+
+    let denominator = (norm_a * norm_b).sqrt();
+    if denominator == 0.0 {
+        0.0
+    } else {
+        dot / denominator
+    }
+}
+
+/// Deserialize BLOB to f64 vector
+/// Format: raw little-endian f64 bytes (8 bytes per float)
+fn blob_to_f64_vec(blob: &[u8]) -> Vec<f64> {
+    let num_floats = blob.len() / 8;
+    let mut result = Vec::with_capacity(num_floats);
+
+    for i in 0..num_floats {
+        let start = i * 8;
+        let bytes: [u8; 8] = blob[start..start + 8].try_into().unwrap_or([0u8; 8]);
+        result.push(f64::from_le_bytes(bytes));
+    }
+
+    result
 }
 
 impl SqliteStrategy {
@@ -380,6 +529,95 @@ impl ConcurrencyStrategy for SqliteStrategy {
         })
     }
 
+    /// Vector search: read embeddings from SQLite, compute cosine similarity with rayon
+    /// Vectors stay in Rust - only query vector comes over IPC (small: 3KB for 384 dims)
+    fn vector_search(
+        &self,
+        collection: &str,
+        query_vector: &[f64],
+        k: usize,
+        threshold: f64,
+    ) -> Result<Value, String> {
+        let conn = self.connection.lock().unwrap();
+
+        // Query embeddings from the collection
+        // Embeddings are stored as BLOB in the 'embedding' column
+        let query = format!(
+            "SELECT id, embedding FROM {} WHERE embedding IS NOT NULL",
+            collection
+        );
+
+        let mut stmt = conn.prepare(&query)
+            .map_err(|e| format!("Failed to prepare vector query: {}", e))?;
+
+        // Collect all vectors first (need to release connection lock before parallel work)
+        let mut corpus: Vec<(String, Vec<f64>)> = Vec::new();
+
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((id, blob))
+        }).map_err(|e| format!("Vector query failed: {}", e))?;
+
+        for row in rows {
+            let (id, blob) = row.map_err(|e| format!("Row error: {}", e))?;
+            let embedding = blob_to_f64_vec(&blob);
+            if !embedding.is_empty() {
+                corpus.push((id, embedding));
+            }
+        }
+
+        // Release connection lock before parallel computation
+        drop(stmt);
+        drop(conn);
+
+        if corpus.is_empty() {
+            return Ok(json!({
+                "results": [],
+                "count": 0,
+                "corpus_size": 0
+            }));
+        }
+
+        let corpus_size = corpus.len();
+
+        // Parallel cosine similarity computation with rayon
+        let mut scored: Vec<(String, f64)> = corpus
+            .par_iter()
+            .filter_map(|(id, embedding)| {
+                let score = cosine_similarity(query_vector, embedding);
+                if score >= threshold {
+                    Some((id.clone(), score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by score descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Take top-k
+        let results: Vec<Value> = scored
+            .into_iter()
+            .take(k)
+            .map(|(id, score)| {
+                json!({
+                    "id": id,
+                    "score": score,
+                    "distance": 1.0 - score
+                })
+            })
+            .collect();
+
+        let count = results.len();
+        Ok(json!({
+            "results": results,
+            "count": count,
+            "corpus_size": corpus_size
+        }))
+    }
+
     fn close(&self) -> Result<(), String> {
         // Process any remaining writes before closing
         let queue_size = self.writer_queue.lock().unwrap().len();
@@ -420,6 +658,16 @@ impl ConcurrencyStrategy for PostgresStrategy {
 
     fn execute_write(&self, _query: &str, _params: &Value) -> Result<Value, String> {
         Err("Postgres strategy not yet implemented".to_string())
+    }
+
+    fn vector_search(
+        &self,
+        _collection: &str,
+        _query_vector: &[f64],
+        _k: usize,
+        _threshold: f64,
+    ) -> Result<Value, String> {
+        Err("Postgres vector search not yet implemented".to_string())
     }
 
     fn close(&self) -> Result<(), String> {
@@ -482,6 +730,16 @@ impl ConcurrencyStrategy for JsonStrategy {
         Ok(json!({ "success": true }))
     }
 
+    fn vector_search(
+        &self,
+        _collection: &str,
+        _query_vector: &[f64],
+        _k: usize,
+        _threshold: f64,
+    ) -> Result<Value, String> {
+        Err("JSON vector search not yet implemented".to_string())
+    }
+
     fn close(&self) -> Result<(), String> {
         println!("✅ JSON adapter closed");
         Ok(())
@@ -526,6 +784,21 @@ impl AdapterRegistry {
         let (_, strategy) = adapters.get(&handle)
             .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
         strategy.execute_write(query, params)
+    }
+
+    /// Execute vector similarity search on an adapter
+    fn vector_search(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        query_vector: &[f64],
+        k: usize,
+        threshold: f64,
+    ) -> Result<Value, String> {
+        let adapters = self.adapters.lock().unwrap();
+        let (_, strategy) = adapters.get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        strategy.vector_search(collection, query_vector, k, threshold)
     }
 
     fn close(&self, handle: AdapterHandle) -> Result<(), String> {
@@ -602,6 +875,13 @@ impl RustDataDaemon {
             Request::DataUpdate { handle, collection, id, data } => {
                 match self.data_update(handle, &collection, &id, &data) {
                     Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::VectorSearch { handle, collection, query_vector, k, threshold } => {
+                match self.vector_search(handle, &collection, &query_vector, k, threshold) {
+                    Ok(data) => Response::Ok { data },
                     Err(e) => Response::Error { message: e },
                 }
             }
@@ -713,6 +993,27 @@ impl RustDataDaemon {
 
                 match result {
                     Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::VectorSearch { handle, collection, query_vector, k, threshold } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.vector_search(handle, &collection, &query_vector, k, threshold);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => {
+                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
                     Err(e) => {
                         timer.set_error(&e);
                         (Response::Error { message: e }, None)
@@ -892,6 +1193,27 @@ impl RustDataDaemon {
 
         println!("✏️  DataUpdate query: {}", query);
         self.registry.execute_write(handle, &query, data)
+    }
+
+    /// Vector similarity search - delegates to adapter strategy
+    /// Query vector comes over IPC (small: 3KB for 384 dims), corpus stays in Rust
+    fn vector_search(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+        query_vector: &[f64],
+        k: Option<usize>,
+        threshold: Option<f64>,
+    ) -> Result<Value, String> {
+        let k = k.unwrap_or(10);
+        let threshold = threshold.unwrap_or(0.0);
+
+        println!(
+            "🔍 VectorSearch: collection={}, k={}, threshold={:.3}, query_dim={}",
+            collection, k, threshold, query_vector.len()
+        );
+
+        self.registry.vector_search(handle, collection, query_vector, k, threshold)
     }
 
     // ========================================================================
@@ -1119,6 +1441,7 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
             Request::DataCreate { .. } => "data/create",
             Request::DataDelete { .. } => "data/delete",
             Request::DataUpdate { .. } => "data/update",
+            Request::VectorSearch { .. } => "vector/search",
         };
 
         // Start request timer

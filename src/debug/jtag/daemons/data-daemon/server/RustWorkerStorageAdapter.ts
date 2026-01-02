@@ -26,11 +26,10 @@ import {
   type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import { SqlNamingConverter } from '../shared/SqlNamingConverter';
-import { SearchWorkerClient } from '../../../workers/search/SearchWorkerClient';
 import {
   type VectorSearchOptions,
   type VectorSearchResponse,
-  type VectorSearchResult,
+  type VectorSearchResult as VectorSearchResultType,
   type VectorEmbedding,
   toNumberArray
 } from '../shared/VectorSearchTypes';
@@ -663,13 +662,18 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
-   * Vector search using Rust search worker for cosine similarity
+   * Vector search using Rust data-daemon worker
+   *
+   * OPTIMIZED: Only the query vector (3KB for 384 dims) is sent to Rust.
+   * Rust reads corpus vectors directly from SQLite (BLOB format) and computes
+   * cosine similarity with rayon parallelism. Only top-k IDs and scores are
+   * returned, then we fetch full records for those IDs.
    *
    * Process:
    * 1. Generate query embedding if text provided (uses EmbeddingService)
-   * 2. Fetch all records with embeddings from collection
-   * 3. Send to Rust search worker for cosine similarity
-   * 4. Return ranked results above threshold
+   * 2. Send query vector to Rust worker's vector/search command
+   * 3. Rust reads vectors from SQLite, computes similarity in parallel
+   * 4. Fetch full records for top-k IDs returned by Rust
    */
   async vectorSearch<T extends RecordData>(
     options: VectorSearchOptions
@@ -701,115 +705,77 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         };
       }
 
-      // 2. Fetch records with embeddings from collection
-      const queryResult = await this.sendCommand<{ items: any[]; count: number }>('data/list', {
+      const k = options.k || 10;
+      const threshold = options.similarityThreshold || 0.0;
+
+      // 2. Send ONLY query vector to Rust worker (small payload: 3KB for 384 dims)
+      // Rust reads corpus vectors directly from SQLite and computes cosine similarity
+      interface RustVectorSearchResponse {
+        results: Array<{ id: string; score: number; distance: number }>;
+        count: number;
+        corpus_size: number;
+      }
+
+      const searchResult = await this.sendCommand<RustVectorSearchResponse>('vector/search', {
         handle: this.adapterHandle,
         collection,
-        filter: options.filter ? this.toSnakeCaseObject(options.filter) : undefined,
-        limit: 1000  // Reasonable upper limit for vector search
+        query_vector: toNumberArray(queryVector),
+        k,
+        threshold
       });
 
-      if (queryResult.status !== 'ok' || !queryResult.data?.items) {
+      if (searchResult.status !== 'ok' || !searchResult.data) {
+        // Fallback message for collections without embeddings
+        if (searchResult.message?.includes('no such column: embedding')) {
+          return {
+            success: true,
+            data: {
+              results: [],
+              totalResults: 0,
+              queryVector,
+              metadata: {
+                collection: options.collection,
+                searchMode: options.hybridMode || 'semantic',
+                embeddingModel: options.embeddingModel?.name || 'unknown',
+                queryTime: Date.now() - startTime
+              }
+            }
+          };
+        }
         return {
           success: false,
-          error: queryResult.message || 'Failed to fetch records for vector search'
+          error: searchResult.message || 'Vector search failed in Rust worker'
         };
       }
 
-      const items = queryResult.data.items;
-      log.debug(`Vector search: fetched ${items.length} items from ${collection}`);
+      const rustResults = searchResult.data.results;
+      const corpusSize = searchResult.data.corpus_size;
+      log.debug(`Vector search: Rust returned ${rustResults.length}/${corpusSize} results`);
 
-      // Filter to items that have embeddings
-      const itemsWithEmbeddings = items.filter((item: any) => {
-        try {
-          // Check for embedding in various formats
-          const rawEmbedding = item.embedding || item.data?.embedding;
-          if (!rawEmbedding) return false;
+      // 3. Fetch full records for top-k IDs
+      // Only fetch records we actually need (much more efficient than fetching all)
+      const results: VectorSearchResultType<T>[] = [];
 
-          // Parse if string, otherwise assume array
-          const embedding = typeof rawEmbedding === 'string' ? JSON.parse(rawEmbedding) : rawEmbedding;
-          return Array.isArray(embedding) && embedding.length > 0;
-        } catch {
-          return false;
-        }
-      });
-      log.debug(`Vector search: ${itemsWithEmbeddings.length}/${items.length} have embeddings`);
+      for (const rustResult of rustResults) {
+        // Fetch full record by ID
+        const recordResult = await this.read<T>(options.collection, rustResult.id as UUID);
 
-      if (itemsWithEmbeddings.length === 0) {
-        // No embeddings - return empty result
-        return {
-          success: true,
-          data: {
-            results: [],
-            totalResults: 0,
-            queryVector,
+        if (recordResult.success && recordResult.data) {
+          results.push({
+            id: rustResult.id as UUID,
+            data: recordResult.data.data,
+            score: rustResult.score,
+            distance: rustResult.distance,
             metadata: {
               collection: options.collection,
-              searchMode: options.hybridMode || 'semantic',
-              embeddingModel: options.embeddingModel?.name || 'unknown',
+              embeddingModel: options.embeddingModel?.name,
               queryTime: Date.now() - startTime
             }
-          }
-        };
+          });
+        }
       }
 
-      // 3. Extract corpus vectors and send to Rust search worker
-      // Convert to number[][] for JSON serialization to Rust worker
-      const corpusVectors: number[][] = itemsWithEmbeddings.map((item: any) => {
-        const rawEmbedding = item.embedding || item.data?.embedding;
-        const parsed = typeof rawEmbedding === 'string' ? JSON.parse(rawEmbedding) : rawEmbedding;
-        return toNumberArray(parsed);  // Ensure number[] for JSON
-      });
-      log.debug(`Vector search: sending ${corpusVectors.length} vectors (${corpusVectors[0]?.length} dims) to Rust worker`);
-
-      const searchClient = SearchWorkerClient.getInstance();
-      const searchResult = await searchClient.vectorSearch({
-        queryVector: toNumberArray(queryVector),  // Convert VectorEmbedding to number[]
-        corpusVectors,
-        normalize: true,
-        threshold: options.similarityThreshold || 0.0
-      });
-
-      // 4. Build ranked results
-      const k = options.k || 10;
-      const results: VectorSearchResult<T>[] = [];
-
-      for (let i = 0; i < Math.min(k, searchResult.rankedIndices.length); i++) {
-        const idx = searchResult.rankedIndices[i];
-        const score = searchResult.scores[idx];
-
-        // Skip below threshold
-        if (score < (options.similarityThreshold || 0)) {
-          continue;
-        }
-
-        const item = itemsWithEmbeddings[idx];
-
-        // Parse data like in query()
-        let entityData: T;
-        if (typeof item.data === 'string') {
-          entityData = JSON.parse(item.data) as T;
-        } else if (item.data && typeof item.data === 'object') {
-          entityData = item.data as T;
-        } else {
-          const { id, created_at, updated_at, version, embedding, ...rest } = item;
-          entityData = this.toCamelCaseObject(rest) as T;
-        }
-
-        results.push({
-          id: item.id,
-          data: entityData,
-          score,
-          distance: 1 - score,  // Convert similarity to distance
-          metadata: {
-            collection: options.collection,
-            embeddingModel: options.embeddingModel?.name,
-            queryTime: Date.now() - startTime
-          }
-        });
-      }
-
-      log.info(`Vector search: ${options.collection} found ${results.length}/${itemsWithEmbeddings.length} (threshold=${options.similarityThreshold || 0})`);
+      log.info(`Vector search: ${options.collection} found ${results.length}/${corpusSize} (threshold=${threshold}, k=${k})`);
 
       return {
         success: true,
