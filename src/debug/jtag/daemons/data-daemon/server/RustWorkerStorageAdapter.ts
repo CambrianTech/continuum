@@ -708,10 +708,11 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       const k = options.k || 10;
       const threshold = options.similarityThreshold || 0.0;
 
-      // 2. Send ONLY query vector to Rust worker (small payload: 3KB for 384 dims)
-      // Rust reads corpus vectors directly from SQLite and computes cosine similarity
+      // 2. Send query vector to Rust worker with include_data=true
+      // Rust reads corpus vectors from SQLite, computes similarity, AND fetches full records
+      // This eliminates k IPC round trips - Rust returns everything in one response
       interface RustVectorSearchResponse {
-        results: Array<{ id: string; score: number; distance: number }>;
+        results: Array<{ id: string; score: number; distance: number; data?: Record<string, any> }>;
         count: number;
         corpus_size: number;
       }
@@ -721,7 +722,8 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         collection,
         query_vector: toNumberArray(queryVector),
         k,
-        threshold
+        threshold,
+        include_data: true  // OPTIMIZATION: Get full records in one Rust query
       });
 
       if (searchResult.status !== 'ok' || !searchResult.data) {
@@ -750,20 +752,25 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
 
       const rustResults = searchResult.data.results;
       const corpusSize = searchResult.data.corpus_size;
-      log.debug(`Vector search: Rust returned ${rustResults.length}/${corpusSize} results`);
+      log.debug(`Vector search: Rust returned ${rustResults.length}/${corpusSize} results with inline data`);
 
-      // 3. Fetch full records for top-k IDs
-      // Only fetch records we actually need (much more efficient than fetching all)
-      const results: VectorSearchResultType<T>[] = [];
+      // 3. Map Rust results directly - no additional IPC round trips needed!
+      // Rust already fetched full records with include_data=true
+      type RustResult = { id: string; score: number; distance: number; data?: Record<string, any> };
+      const results: VectorSearchResultType<T>[] = rustResults
+        .filter((r: RustResult) => r.data) // Only include results that have data
+        .map((rustResult: RustResult) => {
+          // Convert snake_case keys from Rust/SQL to camelCase for TypeScript
+          const entityData = this.toCamelCaseObject(rustResult.data!) as T;
 
-      for (const rustResult of rustResults) {
-        // Fetch full record by ID
-        const recordResult = await this.read<T>(options.collection, rustResult.id as UUID);
+          // Ensure id is present in entity data
+          if (!(entityData as any).id) {
+            (entityData as any).id = rustResult.id;
+          }
 
-        if (recordResult.success && recordResult.data) {
-          results.push({
+          return {
             id: rustResult.id as UUID,
-            data: recordResult.data.data,
+            data: entityData,
             score: rustResult.score,
             distance: rustResult.distance,
             metadata: {
@@ -771,9 +778,8 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
               embeddingModel: options.embeddingModel?.name,
               queryTime: Date.now() - startTime
             }
-          });
-        }
-      }
+          };
+        });
 
       log.info(`Vector search: ${options.collection} found ${results.length}/${corpusSize} (threshold=${threshold}, k=${k})`);
 
