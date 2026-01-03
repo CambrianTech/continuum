@@ -101,11 +101,9 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
     let embeddingsSkipped = 0;
 
     for (const memory of memories) {
-      // Check backpressure before each embedding (background priority)
-      if (!BackpressureService.shouldProceed('background')) {
-        embeddingsSkipped++;
-        continue; // Skip embedding, memory is still stored without it
-      }
+      // NOTE: Rust embeddings are fast (~5ms each) and independent of Ollama queue.
+      // Do NOT apply Ollama-based backpressure here - Rust worker handles its own load.
+      // Backpressure was incorrectly blocking embeddings when Ollama was busy.
 
       try {
         // Generate embedding directly via Rust worker (fast, ~5ms)
@@ -135,7 +133,7 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
     }
 
     if (embeddingsSkipped > 0) {
-      this.log(`🚦 [${context.personaName}] Backpressure: Skipped ${embeddingsSkipped}/${memories.length} embeddings (will retry when idle)`);
+      this.log(`⚠️ [${context.personaName}] Embeddings: Skipped ${embeddingsSkipped}/${memories.length} (Rust worker unavailable)`);
     }
     this.log(`🧠 [${context.personaName}] Embeddings: ${embeddingsGenerated}/${memories.length} generated`);
 

@@ -71,6 +71,10 @@ export class RustEmbeddingClient {
   private _lastAvailabilityCheck: number = 0;
   private static readonly AVAILABILITY_CACHE_MS = 5000; // Cache availability for 5s
 
+  /** Request queue for serializing concurrent requests */
+  private requestQueue: (() => Promise<void>)[] = [];
+  private isProcessingQueue: boolean = false;
+
   private constructor(socketPath: string = DEFAULT_SOCKET_PATH) {
     this.socketPath = socketPath;
   }
@@ -286,30 +290,68 @@ export class RustEmbeddingClient {
 
   /**
    * Send command to Rust worker and wait for response
+   * Uses queue to serialize concurrent requests - prevents socket contention
    */
   private async sendCommand(
     command: string,
     params: Record<string, any>,
     timeout: number = 30000
   ): Promise<RustResponse> {
-    // Connect if needed
-    await this.connect();
+    return new Promise((outerResolve, outerReject) => {
+      // Create the actual work to be queued
+      const doRequest = async (): Promise<void> => {
+        try {
+          // Connect if needed
+          await this.connect();
 
-    const request = {
-      command,
-      ...params
-    };
+          const request = {
+            command,
+            ...params
+          };
 
-    return new Promise((resolve, reject) => {
-      const timeoutHandle = setTimeout(() => {
-        this.pendingResponse = null;
-        reject(new Error(`Request timeout: ${command}`));
-      }, timeout);
+          const result = await new Promise<RustResponse>((resolve, reject) => {
+            const timeoutHandle = setTimeout(() => {
+              this.pendingResponse = null;
+              reject(new Error(`Request timeout: ${command}`));
+            }, timeout);
 
-      this.pendingResponse = { resolve, reject, timeout: timeoutHandle };
+            this.pendingResponse = { resolve, reject, timeout: timeoutHandle };
 
-      // Send newline-delimited JSON
-      this.socket!.write(JSON.stringify(request) + '\n');
+            // Send newline-delimited JSON
+            this.socket!.write(JSON.stringify(request) + '\n');
+          });
+
+          outerResolve(result);
+        } catch (error) {
+          outerReject(error);
+        }
+      };
+
+      // Add to queue
+      this.requestQueue.push(doRequest);
+      this.processQueue();
     });
+  }
+
+  /**
+   * Process queued requests one at a time
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessingQueue) {
+      return; // Already processing
+    }
+
+    this.isProcessingQueue = true;
+
+    try {
+      while (this.requestQueue.length > 0) {
+        const nextRequest = this.requestQueue.shift();
+        if (nextRequest) {
+          await nextRequest();
+        }
+      }
+    } finally {
+      this.isProcessingQueue = false;
+    }
   }
 }
