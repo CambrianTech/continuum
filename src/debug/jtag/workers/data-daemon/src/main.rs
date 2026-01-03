@@ -283,38 +283,42 @@ fn detect_storage_type(path: &Path) -> StorageType {
 }
 
 /// Get optimized SQLite pragmas based on storage type and workload
+///
+/// IMPORTANT: In multi_writer mode, we NEVER set journal_mode or locking_mode.
+/// TypeScript (better-sqlite3) already has the database open, and changing these
+/// pragmas requires exclusive access which would fail with "database is locked".
 fn get_sqlite_pragmas(storage: StorageType, multi_writer: bool) -> String {
-    match storage {
-        StorageType::InternalSSD => {
-            // Fast internal SSD - can use WAL safely
-            if multi_writer {
-                "PRAGMA journal_mode=WAL; \
-                 PRAGMA synchronous=NORMAL; \
-                 PRAGMA temp_store=MEMORY; \
-                 PRAGMA busy_timeout=5000;".to_string()
-            } else {
+    if multi_writer {
+        // Multi-writer mode: Only set pragmas that don't require exclusive access
+        // Skip journal_mode (TypeScript already set it)
+        // Skip locking_mode (would conflict with TypeScript)
+        "PRAGMA synchronous=NORMAL; \
+         PRAGMA temp_store=MEMORY; \
+         PRAGMA busy_timeout=5000;".to_string()
+    } else {
+        // Single-writer mode: Can set everything
+        match storage {
+            StorageType::InternalSSD => {
                 "PRAGMA journal_mode=WAL; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA temp_store=MEMORY; \
                  PRAGMA locking_mode=EXCLUSIVE; \
                  PRAGMA busy_timeout=5000;".to_string()
             }
-        }
-        StorageType::ExternalSSD => {
-            // External SSD - WAL OK but more conservative
-            "PRAGMA journal_mode=WAL; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA wal_autocheckpoint=1000; \
-             PRAGMA temp_store=MEMORY; \
-             PRAGMA busy_timeout=5000;".to_string()
-        }
-        StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
-            // SD card / HDD / Unknown - NO WAL (reliability over concurrency)
-            "PRAGMA journal_mode=DELETE; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA temp_store=MEMORY; \
-             PRAGMA locking_mode=EXCLUSIVE; \
-             PRAGMA busy_timeout=5000;".to_string()
+            StorageType::ExternalSSD => {
+                "PRAGMA journal_mode=WAL; \
+                 PRAGMA synchronous=NORMAL; \
+                 PRAGMA wal_autocheckpoint=1000; \
+                 PRAGMA temp_store=MEMORY; \
+                 PRAGMA busy_timeout=5000;".to_string()
+            }
+            StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
+                "PRAGMA journal_mode=DELETE; \
+                 PRAGMA synchronous=NORMAL; \
+                 PRAGMA temp_store=MEMORY; \
+                 PRAGMA locking_mode=EXCLUSIVE; \
+                 PRAGMA busy_timeout=5000;".to_string()
+            }
         }
     }
 }
@@ -479,29 +483,12 @@ impl SqliteStrategy {
         let conn = rusqlite::Connection::open(&connection_path)
             .map_err(|e| format!("Failed to open SQLite: {}", e))?;
 
-        // If switching FROM WAL to DELETE mode, checkpoint first
-        if has_wal_artifacts && matches!(storage_type, StorageType::SDCard | StorageType::HDD | StorageType::Unknown) {
-            println!("⚠️  Found WAL artifacts, checkpointing before mode switch...");
-
-            // Checkpoint and truncate WAL (force cleanup)
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .map_err(|e| format!("Failed to checkpoint WAL: {}", e))?;
-        }
-
-        // Configure based on detected storage
-        // ALWAYS use multi_writer=true since TypeScript (better-sqlite3) also accesses these databases
+        // Configure with multi_writer=true since TypeScript (better-sqlite3) may have the database open
+        // SKIP journal_mode and locking_mode changes - they require exclusive access
+        // SKIP checkpoint - also requires exclusive access when other connections exist
         let pragmas = get_sqlite_pragmas(storage_type, true);
         conn.execute_batch(&pragmas)
             .map_err(|e| format!("Failed to configure SQLite: {}", e))?;
-
-        // Verify WAL files are gone if we switched to DELETE mode
-        if has_wal_artifacts && matches!(storage_type, StorageType::SDCard | StorageType::HDD | StorageType::Unknown) {
-            if Path::new(&wal_path).exists() || Path::new(&shm_path).exists() {
-                println!("⚠️  Warning: WAL artifacts still present after mode switch");
-            } else {
-                println!("✅ WAL artifacts cleaned up successfully");
-            }
-        }
 
         let mode_desc = match storage_type {
             StorageType::InternalSSD => "WAL mode - internal SSD optimized",
