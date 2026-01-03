@@ -165,6 +165,16 @@ enum Request {
     BlobStats {
         base_path: Option<String>,
     },
+
+    /// Execute a raw SQL query with optional JOIN support
+    /// Returns raw query results - caller does any transformation
+    /// Use for complex queries that would otherwise require multiple IPC round trips
+    #[serde(rename = "data/query")]
+    DataQuery {
+        handle: AdapterHandle,
+        /// Raw SQL query string (SELECT only, no modifications)
+        sql: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -1051,6 +1061,13 @@ impl RustDataDaemon {
                     Err(e) => Response::Error { message: e },
                 }
             }
+
+            Request::DataQuery { handle, sql } => {
+                match self.data_query(handle, &sql) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
         }
     }
 
@@ -1256,6 +1273,26 @@ impl RustDataDaemon {
 
                 match result {
                     Ok(stats) => (Response::Ok { data: stats }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataQuery { handle, sql } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.data_query(handle, &sql);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => {
+                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
                     Err(e) => {
                         timer.set_error(&e);
                         (Response::Error { message: e }, None)
@@ -1832,6 +1869,36 @@ impl RustDataDaemon {
             "basePath": base.to_string_lossy()
         }))
     }
+
+    // ========================================================================
+    // Generic SQL Query (For complex queries with JOINs, etc.)
+    // ========================================================================
+
+    /// Execute a raw SQL SELECT query
+    /// Returns raw results - caller handles any transformation
+    /// Security: Only SELECT queries allowed (checked before execution)
+    fn data_query(
+        &self,
+        handle: AdapterHandle,
+        sql: &str,
+    ) -> Result<Value, String> {
+        // Security check: only allow SELECT queries
+        let sql_upper = sql.trim().to_uppercase();
+        if !sql_upper.starts_with("SELECT") {
+            return Err("Only SELECT queries are allowed via data/query".to_string());
+        }
+
+        // Reject dangerous patterns
+        if sql_upper.contains("DROP ") || sql_upper.contains("DELETE ") ||
+           sql_upper.contains("UPDATE ") || sql_upper.contains("INSERT ") ||
+           sql_upper.contains("ALTER ") || sql_upper.contains("CREATE ") ||
+           sql_upper.contains("; ") {
+            return Err("Query contains disallowed SQL keywords".to_string());
+        }
+
+        println!("📊 DataQuery: {}", sql);
+        self.registry.execute_read(handle, sql)
+    }
 }
 
 // ============================================================================
@@ -1883,6 +1950,7 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
             Request::BlobExists { .. } => "blob/exists",
             Request::BlobDelete { .. } => "blob/delete",
             Request::BlobStats { .. } => "blob/stats",
+            Request::DataQuery { .. } => "data/query",
         };
 
         // Start request timer

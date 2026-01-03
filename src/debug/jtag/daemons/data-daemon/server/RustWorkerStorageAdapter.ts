@@ -16,6 +16,8 @@ import {
   DataStorageAdapter,
   type DataRecord,
   type StorageQuery,
+  type StorageQueryWithJoin,
+  type JoinSpec,
   type StorageResult,
   type StorageAdapterConfig,
   type StorageCapabilities,
@@ -447,6 +449,170 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         }
       };
     } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Query records with JOIN support for loading related data
+   *
+   * Builds a SQL query with JOINs and executes via Rust data/query command.
+   * Joined data is nested under the alias key in each result.
+   *
+   * @param query - Query with join specifications
+   * @returns Records with joined data nested under alias keys
+   */
+  async queryWithJoin<T extends RecordData>(
+    query: StorageQueryWithJoin
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      const primaryTable = SqlNamingConverter.toTableName(query.collection);
+      const primaryAlias = 'p';
+
+      // Build SELECT clause
+      const selectClauses: string[] = [`${primaryAlias}.*`];
+      const joinAliasMap: Map<string, { alias: string; select?: readonly string[] }> = new Map();
+
+      query.joins.forEach((join, index) => {
+        const joinTable = SqlNamingConverter.toTableName(join.collection);
+        const joinAlias = `j${index}`;
+        joinAliasMap.set(join.alias, { alias: joinAlias, select: join.select });
+
+        if (join.select && join.select.length > 0) {
+          // Select specific fields with alias prefix
+          join.select.forEach(field => {
+            const snakeField = SqlNamingConverter.toSnakeCase(field);
+            selectClauses.push(`${joinAlias}.${snakeField} AS ${join.alias}_${snakeField}`);
+          });
+        } else {
+          // Select all fields from joined table (risky - could have name collisions)
+          selectClauses.push(`${joinAlias}.*`);
+        }
+      });
+
+      // Build JOIN clauses
+      const joinClauses: string[] = [];
+      query.joins.forEach((join, index) => {
+        const joinTable = SqlNamingConverter.toTableName(join.collection);
+        const joinAlias = `j${index}`;
+        const joinType = join.type === 'inner' ? 'INNER JOIN' : 'LEFT JOIN';
+        const localField = SqlNamingConverter.toSnakeCase(join.localField);
+        const foreignField = SqlNamingConverter.toSnakeCase(join.foreignField);
+
+        joinClauses.push(
+          `${joinType} ${joinTable} ${joinAlias} ON ${primaryAlias}.${localField} = ${joinAlias}.${foreignField}`
+        );
+      });
+
+      // Build WHERE clause
+      let whereClause = '';
+      if (query.filter && Object.keys(query.filter).length > 0) {
+        const conditions = Object.entries(query.filter).map(([key, value]) => {
+          const snakeKey = SqlNamingConverter.toSnakeCase(key);
+          if (value === null) {
+            return `${primaryAlias}.${snakeKey} IS NULL`;
+          }
+          const escapedValue = typeof value === 'string'
+            ? `'${value.replace(/'/g, "''")}'`
+            : value;
+          return `${primaryAlias}.${snakeKey} = ${escapedValue}`;
+        });
+        whereClause = `WHERE ${conditions.join(' AND ')}`;
+      }
+
+      // Build ORDER BY clause
+      let orderByClause = '';
+      if (query.sort && query.sort.length > 0) {
+        const orderParts = query.sort.map(s => {
+          const snakeField = SqlNamingConverter.toSnakeCase(s.field);
+          return `${primaryAlias}.${snakeField} ${s.direction.toUpperCase()}`;
+        });
+        orderByClause = `ORDER BY ${orderParts.join(', ')}`;
+      }
+
+      // Build LIMIT/OFFSET
+      const limitClause = query.limit ? `LIMIT ${query.limit}` : '';
+      const offsetClause = query.offset ? `OFFSET ${query.offset}` : '';
+
+      // Assemble full SQL
+      const sql = [
+        `SELECT ${selectClauses.join(', ')}`,
+        `FROM ${primaryTable} ${primaryAlias}`,
+        ...joinClauses,
+        whereClause,
+        orderByClause,
+        limitClause,
+        offsetClause
+      ].filter(Boolean).join(' ');
+
+      log.debug(`queryWithJoin SQL: ${sql}`);
+
+      // Execute via Rust data/query
+      const result = await this.rawQuery(sql);
+
+      // Transform results: nest joined data under alias keys
+      const records: DataRecord<T>[] = result.items.map((row: any) => {
+        // Extract primary entity fields (those without alias prefix)
+        const primaryData: Record<string, any> = {};
+        const joinedData: Record<string, Record<string, any>> = {};
+
+        // Initialize nested objects for each join alias
+        for (const join of query.joins) {
+          joinedData[join.alias] = {};
+        }
+
+        for (const [key, value] of Object.entries(row)) {
+          // Check if this is a joined field (has alias_ prefix)
+          let isJoinedField = false;
+          for (const join of query.joins) {
+            if (key.startsWith(`${join.alias}_`)) {
+              const fieldName = key.slice(join.alias.length + 1);
+              const camelField = SqlNamingConverter.toCamelCase(fieldName);
+              joinedData[join.alias][camelField] = value;
+              isJoinedField = true;
+              break;
+            }
+          }
+
+          if (!isJoinedField) {
+            const camelKey = SqlNamingConverter.toCamelCase(key);
+            primaryData[camelKey] = value;
+          }
+        }
+
+        // Merge joined data into primary data
+        const entityData = {
+          ...primaryData,
+          ...joinedData
+        } as T;
+
+        return {
+          id: row.id as UUID,
+          collection: query.collection,
+          data: entityData,
+          metadata: {
+            createdAt: row.created_at || new Date().toISOString(),
+            updatedAt: row.updated_at || new Date().toISOString(),
+            version: row.version || 1
+          }
+        };
+      });
+
+      return {
+        success: true,
+        data: records,
+        metadata: {
+          totalCount: result.count
+        }
+      };
+    } catch (error: any) {
+      log.error(`queryWithJoin failed: ${error.message}`);
       return { success: false, error: error.message };
     }
   }
@@ -974,6 +1140,67 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     }
 
     return null;
+  }
+
+  // =========================================================================
+  // Raw SQL Query - For complex queries with JOINs
+  // =========================================================================
+
+  /**
+   * Execute a raw SQL SELECT query via Rust worker
+   *
+   * Use for complex queries (JOINs, aggregations) that can't be expressed
+   * via the standard query() method. Results are returned as raw rows,
+   * caller is responsible for transformation.
+   *
+   * Security: Only SELECT queries allowed - Rust worker rejects modifications.
+   *
+   * @param sql - Raw SQL query (SELECT only)
+   * @returns Array of row objects with snake_case column names
+   */
+  async rawQuery<T = Record<string, any>>(sql: string): Promise<{
+    items: T[];
+    count: number;
+  }> {
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      throw new Error(`Connection failed: ${error.message}`);
+    }
+
+    const response = await this.sendCommand<{ items: T[]; count: number }>('data/query', {
+      handle: this.adapterHandle,
+      sql
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Raw query failed');
+    }
+
+    return {
+      items: response.data?.items || [],
+      count: response.data?.count || 0
+    };
+  }
+
+  /**
+   * Execute a raw SQL SELECT query and transform results to camelCase
+   *
+   * Same as rawQuery() but converts column names from snake_case to camelCase.
+   *
+   * @param sql - Raw SQL query (SELECT only)
+   * @returns Array of row objects with camelCase keys
+   */
+  async rawQueryCamelCase<T = Record<string, any>>(sql: string): Promise<{
+    items: T[];
+    count: number;
+  }> {
+    const result = await this.rawQuery(sql);
+
+    return {
+      items: result.items.map(row => this.toCamelCaseObject(row as Record<string, any>) as T),
+      count: result.count
+    };
   }
 
   /**

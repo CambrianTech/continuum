@@ -149,6 +149,66 @@ export interface StorageQuery {
 }
 
 /**
+ * Join specification for related data loading
+ *
+ * Example: Load chat messages with sender info
+ * ```typescript
+ * {
+ *   collection: 'users',
+ *   alias: 'sender',
+ *   localField: 'senderId',
+ *   foreignField: 'id',
+ *   type: 'left',
+ *   select: ['displayName', 'userType', 'avatarUrl']
+ * }
+ * ```
+ */
+export interface JoinSpec {
+  /** Collection to join with */
+  readonly collection: string;
+  /** Alias for the joined data in results (e.g., 'sender') */
+  readonly alias: string;
+  /** Field in the primary collection */
+  readonly localField: string;
+  /** Field in the joined collection (usually 'id') */
+  readonly foreignField: string;
+  /** Join type - left returns nulls for non-matches, inner excludes them */
+  readonly type: 'left' | 'inner';
+  /** Fields to select from joined collection (undefined = all fields) */
+  readonly select?: readonly string[];
+}
+
+/**
+ * Query with JOIN support for loading related data
+ *
+ * Eliminates N+1 query patterns by loading related data in a single query.
+ *
+ * Example: Load messages with sender info
+ * ```typescript
+ * const result = await adapter.queryWithJoin({
+ *   collection: 'chatMessages',
+ *   filter: { roomId: 'room-123' },
+ *   joins: [{
+ *     collection: 'users',
+ *     alias: 'sender',
+ *     localField: 'senderId',
+ *     foreignField: 'id',
+ *     type: 'left',
+ *     select: ['displayName', 'userType']
+ *   }],
+ *   sort: [{ field: 'timestamp', direction: 'desc' }],
+ *   limit: 50
+ * });
+ *
+ * // Result: { ...message, sender: { displayName: 'Joel', userType: 'human' } }
+ * ```
+ */
+export interface StorageQueryWithJoin extends StorageQuery {
+  /** Join specifications for related collections */
+  readonly joins: readonly JoinSpec[];
+}
+
+/**
  * Storage Adapter Capabilities
  */
 export interface StorageCapabilities {
@@ -213,6 +273,23 @@ export abstract class DataStorageAdapter {
    * Query records with complex filters
    */
   abstract query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>>;
+
+  /**
+   * Query records with JOIN support for loading related data
+   *
+   * Eliminates N+1 query patterns by loading related data in a single query.
+   * Joined data is nested under the alias key in each result.
+   *
+   * Default implementation throws - adapters that support joins must override.
+   *
+   * @param query - Query with join specifications
+   * @returns Records with joined data nested under alias keys
+   */
+  async queryWithJoin<T extends RecordData>(
+    query: StorageQueryWithJoin
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    throw new Error(`queryWithJoin not supported by ${this.constructor.name}`);
+  }
 
   /**
    * Update an existing record
