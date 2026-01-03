@@ -111,6 +111,8 @@ import { LimbicSystem, type PersonaUserForLimbic } from './modules/being/LimbicS
 import { PrefrontalCortex, type PersonaUserForPrefrontal } from './modules/being/PrefrontalCortex';
 import { MotorCortex, type PersonaUserForMotorCortex } from './modules/being/MotorCortex';
 import { SystemPaths } from '../../core/config/SystemPaths';
+import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
+import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 /**
@@ -174,6 +176,22 @@ export class PersonaUser extends AIUser {
 
   // NEUROANATOMY: Motor cortex (action, execution, output)
   private motorCortex: MotorCortex | null = null;
+
+  // UNIFIED CONSCIOUSNESS: Cross-context awareness layer (no severance!)
+  // Sits ABOVE limbic/prefrontal - provides global timeline, intentions, peripheral awareness
+  private _consciousness: UnifiedConsciousness | null = null;
+
+  // Room name cache for contextName in timeline events
+  private _roomNameCache: Map<UUID, string> = new Map();
+
+  /**
+   * Get unified consciousness for cross-context awareness
+   * Public for RAG sources and cognitive modules
+   */
+  public get consciousness(): UnifiedConsciousness {
+    if (!this._consciousness) throw new Error('Consciousness not initialized');
+    return this._consciousness;
+  }
 
   // NEUROANATOMY: Delegate to limbic for memory/genome/training/hippocampus
   public get memory(): PersonaMemory {
@@ -376,6 +394,23 @@ export class PersonaUser extends AIUser {
       memory: this.memory  // For accessing trained LoRA adapters during inference
     });
 
+    // UNIFIED CONSCIOUSNESS: Cross-context awareness (no severance!)
+    // Sits above limbic/prefrontal, provides global timeline and peripheral awareness
+    this._consciousness = new UnifiedConsciousness(
+      this.id,
+      this.entity.uniqueId,  // e.g., "together" - matches folder name for timeline.json
+      this.displayName,
+      {
+        debug: (msg) => this.log.debug(msg),
+        info: (msg) => this.log.info(msg),
+        warn: (msg) => this.log.warn(msg),
+        error: (msg) => this.log.error(msg)
+      }
+    );
+    // Register with GlobalAwarenessSource so RAG can access consciousness
+    registerConsciousness(this.id, this._consciousness);
+    this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
+
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     // Pass logger for cognition.log
     const cognitionLogger = (message: string, ...args: any[]) => {
@@ -545,6 +580,32 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Override loadMyRooms to also populate room name cache for timeline events
+   */
+  protected override async loadMyRooms(): Promise<void> {
+    await super.loadMyRooms();
+
+    // Also populate room name cache from all rooms
+    try {
+      const roomsResult = await DataDaemon.query<RoomEntity>({
+        collection: COLLECTIONS.ROOMS,
+        filter: {}
+      });
+
+      if (roomsResult.success && roomsResult.data) {
+        for (const roomRecord of roomsResult.data) {
+          const room = roomRecord.data;
+          const roomId = roomRecord.id || room.id;
+          this._roomNameCache.set(roomId, room.name || room.uniqueId || roomId);
+        }
+        this.log.debug(`📚 ${this.displayName}: Cached ${this._roomNameCache.size} room names for timeline events`);
+      }
+    } catch (error) {
+      this.log.warn(`⚠️ ${this.displayName}: Could not cache room names: ${error}`);
+    }
+  }
+
+  /**
    * Auto-join general room if not already a member
    *
    * NOTE: This is a simple add to room.members array, NOT event subscriptions
@@ -645,6 +706,22 @@ export class PersonaUser extends AIUser {
 
     // PHASE 3BIS: Update activity temperature (observation only, doesn't affect decisions yet)
     getChatCoordinator().onHumanMessage(messageEntity.roomId);
+
+    // UNIFIED CONSCIOUSNESS: Record event in global timeline (cross-context awareness)
+    // Fire and forget - don't block message processing
+    if (this._consciousness) {
+      this._consciousness.recordEvent({
+        contextType: 'room',
+        contextId: messageEntity.roomId,
+        contextName: this.getRoomName(messageEntity.roomId), // Use human-readable room name
+        eventType: 'message_received',
+        actorId: messageEntity.senderId,
+        actorName: messageEntity.senderName,
+        content: messageEntity.content?.text || '',
+        importance: 0.5, // Base importance, adjust based on mention/content later
+        topics: this.extractTopics(messageEntity.content?.text || '')
+      }).catch(err => this.log.warn(`Timeline record failed: ${err}`));
+    }
 
     // PHASE 1: Calculate priority and enqueue to inbox
     const priority = calculateMessagePriority(
@@ -761,6 +838,21 @@ export class PersonaUser extends AIUser {
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
   }
 
+  /**
+   * Extract topics from message content for timeline semantic linking
+   *
+   * For true semantics, we rely on embeddings stored in TimelineEventEntity.
+   * This method returns an empty array - semantic relevance comes from
+   * vector similarity search, not keyword matching.
+   *
+   * Future: Could use LLM to extract key concepts, but embeddings are sufficient.
+   */
+  private extractTopics(_text: string): string[] {
+    // Return empty - semantic relevance comes from embeddings on TimelineEventEntity
+    // The timeline uses vector similarity search for cross-context retrieval
+    return [];
+  }
+
   // Tool execution methods delegated to PersonaToolExecutor adapter
 
   /**
@@ -868,6 +960,9 @@ export class PersonaUser extends AIUser {
     const isMember = roomEntity.members.some((m: { userId: UUID }) => m.userId === this.id);
     const wasInRoom = this.myRoomIds.has(roomEntity.id);
 
+    // Always cache room name (even if not changing membership)
+    this._roomNameCache.set(roomEntity.id, roomEntity.name || roomEntity.uniqueId || roomEntity.id);
+
     if (isMember && !wasInRoom) {
       // Added to room - update membership AND subscribe to chat events
       this.myRoomIds.add(roomEntity.id);
@@ -878,6 +973,14 @@ export class PersonaUser extends AIUser {
       this.myRoomIds.delete(roomEntity.id);
       this.log.info(`🚪 ${this.displayName}: Left room ${roomEntity.name} (${roomEntity.id.slice(0,8)})`);
     }
+  }
+
+  /**
+   * Get human-readable room name for timeline events
+   * Falls back to UUID if name not cached
+   */
+  private getRoomName(roomId: UUID): string {
+    return this._roomNameCache.get(roomId) || roomId.slice(0, 8);
   }
 
   /**
@@ -1332,6 +1435,13 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // Unregister consciousness from GlobalAwarenessSource
+    if (this._consciousness) {
+      unregisterConsciousness(this.id);
+      this._consciousness = null;
+      this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness unregistered`);
+    }
+
     // Stop soul systems (hippocampus + memory consolidation)
     await this.limbic!.shutdown();
 

@@ -25,6 +25,7 @@ export { ConversationHistorySource } from './ConversationHistorySource';
 export { SemanticMemorySource } from './SemanticMemorySource';
 export { WidgetContextSource } from './WidgetContextSource';
 export { PersonaIdentitySource } from './PersonaIdentitySource';
+export { GlobalAwarenessSource, registerConsciousness, unregisterConsciousness, getConsciousness } from './GlobalAwarenessSource';
 
 // Re-export types for convenience
 export type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';

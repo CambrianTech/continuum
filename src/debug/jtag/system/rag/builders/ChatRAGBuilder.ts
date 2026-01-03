@@ -41,7 +41,8 @@ import {
   ConversationHistorySource,
   SemanticMemorySource,
   WidgetContextSource,
-  PersonaIdentitySource
+  PersonaIdentitySource,
+  GlobalAwarenessSource
 } from '../sources';
 
 /**
@@ -71,11 +72,12 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.composer = new RAGComposer();
       this.composer.registerAll([
         new PersonaIdentitySource(),     // Priority 95: Who the AI is
+        new GlobalAwarenessSource(),     // Priority 85: Cross-context awareness (no severance!)
         new ConversationHistorySource(), // Priority 80: Chat messages (uses queryWithJoin!)
         new WidgetContextSource(),       // Priority 75: UI state from Positron
         new SemanticMemorySource()       // Priority 60: Long-term memories
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 4 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 5 sources');
     }
     return this.composer;
   }
@@ -89,11 +91,13 @@ export class ChatRAGBuilder extends RAGBuilder {
     conversationHistory: LLMMessage[];
     memories: PersonaMemory[];
     widgetContext: string | null;
+    globalAwareness: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
     let memories: PersonaMemory[] = [];
     let widgetContext: string | null = null;
+    let globalAwareness: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -109,9 +113,13 @@ export class ChatRAGBuilder extends RAGBuilder {
         // Extract the raw context from the formatted section
         widgetContext = section.systemPromptSection;
       }
+      if (section.systemPromptSection && section.sourceName === 'global-awareness') {
+        // Extract cross-context awareness (no severance!)
+        globalAwareness = section.systemPromptSection;
+      }
     }
 
-    return { identity, conversationHistory, memories, widgetContext };
+    return { identity, conversationHistory, memories, widgetContext, globalAwareness };
   }
 
   /**
@@ -141,6 +149,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let recipeStrategy: RecipeStrategy | undefined;
     let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
     let widgetContext: string | null;
+    let globalAwareness: string | null;
 
     if (this.useModularSources) {
       // NEW PATH: Use RAGComposer for modular, parallelized source loading
@@ -173,6 +182,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       conversationHistory = extracted.conversationHistory;
       privateMemories = extracted.memories;
       widgetContext = extracted.widgetContext;
+      globalAwareness = extracted.globalAwareness;
 
       // Still load these via legacy methods (not yet extracted to sources)
       const [extractedArtifacts, extractedRecipeStrategy, extractedLearningConfig] = await Promise.all([
@@ -235,6 +245,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       recipeStrategy = loadedRecipeStrategy;
       learningConfig = loadedLearningConfig;
       widgetContext = loadedWidgetContext;
+      globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -248,6 +259,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = identity.systemPrompt +
         `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
+    }
+
+    // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)
+    // This gives AIs unified knowledge that flows between rooms/contexts
+    if (globalAwareness) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${globalAwareness}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`;
+      this.log('🌐 ChatRAGBuilder: Injected cross-context awareness into system prompt');
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -306,7 +325,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         inputTokenCount: budgetCalculation.inputTokenCount,
 
         // Positron Layer 1: Widget context awareness
-        hasWidgetContext: !!widgetContext
+        hasWidgetContext: !!widgetContext,
+
+        // Cross-context awareness (no severance!)
+        hasGlobalAwareness: !!globalAwareness
       }
     };
 

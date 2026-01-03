@@ -152,6 +152,9 @@ export interface RAGContext {
 
     // Positron Layer 1: Widget context awareness
     hasWidgetContext?: boolean;  // Whether widget context was included in system prompt
+
+    // Cross-context awareness (no severance!)
+    hasGlobalAwareness?: boolean;  // Whether cross-context awareness was included in system prompt
   };
 }
 
