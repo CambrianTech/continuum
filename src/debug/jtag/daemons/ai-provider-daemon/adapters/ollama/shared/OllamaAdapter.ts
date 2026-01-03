@@ -46,8 +46,11 @@ interface OllamaGenerateRequest {
   model: string;
   prompt: string;
   system?: string;
-  temperature?: number;
-  num_predict?: number;
+  options?: {
+    temperature?: number;
+    num_predict?: number;
+    num_ctx?: number;  // Context window size (defaults to 4096 unless specified)
+  };
   stream?: boolean;
 }
 
@@ -87,6 +90,7 @@ interface OllamaChatRequest {
   options?: {
     temperature?: number;
     num_predict?: number;
+    num_ctx?: number;  // Context window size (defaults to 4096 unless specified)
   };
 }
 
@@ -519,13 +523,19 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       // Convert chat messages to Ollama prompt format (strips images)
       const { prompt, systemPrompt: system } = chatMessagesToPrompt(request.messages);
 
-      // Build Ollama request
+      // Query model's actual context window
+      const modelContextWindow = await this.getModelContextWindow(model);
+
+      // Build Ollama request with num_ctx to use full context window
       const ollamaRequest: OllamaGenerateRequest = {
         model,
         prompt: prompt,
         system: system || request.systemPrompt,
-        temperature: request.temperature ?? this.config.defaultTemperature,
-        num_predict: request.maxTokens,
+        options: {
+          temperature: request.temperature ?? this.config.defaultTemperature,
+          num_predict: request.maxTokens,
+          num_ctx: modelContextWindow,  // Use model's full context window
+        },
         stream: false,
       };
 
@@ -574,7 +584,10 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       messages.push(ollamaMsg);
     }
 
-    // Build Ollama Chat request
+    // Query model's actual context window
+    const modelContextWindow = await this.getModelContextWindow(model);
+
+    // Build Ollama Chat request with num_ctx to use full context window
     const chatRequest: OllamaChatRequest = {
       model,
       messages,
@@ -582,6 +595,7 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       options: {
         temperature: request.temperature ?? this.config.defaultTemperature,
         num_predict: request.maxTokens,
+        num_ctx: modelContextWindow,  // Use model's full context window
       },
     };
 
@@ -1034,18 +1048,82 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     }
   }
 
+  /**
+   * Cache for model context windows (queried from /api/show)
+   * Key: model name, Value: context window size
+   */
+  private static modelContextCache: Map<string, number> = new Map();
+
+  /**
+   * Query model info from Ollama /api/show endpoint
+   * Returns the model's context window size
+   *
+   * Note: This returns the model's MAX supported context, but Ollama
+   * defaults to 4096 at runtime unless you pass num_ctx in the request.
+   */
+  async getModelContextWindow(model: string): Promise<number> {
+    // Check cache first
+    const cached = OllamaAdapter.modelContextCache.get(model);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    try {
+      // Query /api/show for model details
+      interface OllamaShowResponse {
+        model_info?: Record<string, unknown>;
+        details?: { parameter_size?: string };
+      }
+
+      const response = await this.makeRequest<OllamaShowResponse>('/api/show', { name: model });
+
+      // Context length is in model_info with architecture-specific keys
+      // e.g., "llama.context_length", "mistral.context_length", etc.
+      let contextLength = 4096; // Default fallback
+
+      if (response.model_info) {
+        // Find any key ending in ".context_length"
+        for (const [key, value] of Object.entries(response.model_info)) {
+          if (key.endsWith('.context_length') && typeof value === 'number') {
+            contextLength = value;
+            break;
+          }
+        }
+      }
+
+      // Cache the result
+      OllamaAdapter.modelContextCache.set(model, contextLength);
+      this.log(null, 'info', `📊 Ollama: ${model} context window = ${contextLength.toLocaleString()} tokens`);
+
+      return contextLength;
+    } catch (error) {
+      // On error, return default and don't cache (will retry next time)
+      this.log(null, 'warn', `⚠️  Could not query context window for ${model}: ${error}`);
+      return 4096;
+    }
+  }
+
   async getAvailableModels(): Promise<import('../../../shared/AIProviderTypesV2').ModelInfo[]> {
     try {
       const response = await this.makeRequest<OllamaListResponse>('/api/tags');
-      return response.models.map(m => ({
-        id: m.name,
-        name: m.name,
-        provider: 'ollama',
-        capabilities: ['text-generation' as const, 'chat' as const],
-        contextWindow: 4096, // Default, Ollama doesn't expose this
-        supportsStreaming: true,
-        supportsFunctions: false
-      }));
+
+      // Query context windows for each model (in parallel)
+      const modelsWithContext = await Promise.all(
+        response.models.map(async m => {
+          const contextWindow = await this.getModelContextWindow(m.name);
+          return {
+            id: m.name,
+            name: m.name,
+            provider: 'ollama',
+            capabilities: ['text-generation' as const, 'chat' as const],
+            contextWindow,
+            supportsStreaming: true,
+            supportsFunctions: false
+          };
+        })
+      );
+
+      return modelsWithContext;
     } catch (error) {
       this.log(null, 'error', `❌ ${this.providerName}: Failed to list models`);
       this.log(null, 'error', `   Error: ${error instanceof Error ? error.message : String(error)}`);

@@ -23,6 +23,7 @@ import { Commands } from '../../../core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
@@ -400,34 +401,11 @@ export class PersonaResponseGenerator {
     const model = this.modelConfig.model;
     const maxTokens = this.modelConfig.maxTokens || 3000;
 
-    // Model context windows (in tokens)
-    const contextWindows: Record<string, number> = {
-      // OpenAI
-      'gpt-4': 8192,
-      'gpt-4-turbo': 128000,
-      'gpt-4o': 128000,
-      'gpt-3.5-turbo': 16385,
-
-      // Anthropic
-      'claude-3-opus': 200000,
-      'claude-3-sonnet': 200000,
-      'claude-3-haiku': 200000,
-      'claude-3-5-sonnet': 200000,
-
-      // Local/Ollama (common models)
-      'llama3.2:3b': 128000,
-      'llama3.1:70b': 128000,
-      'deepseek-coder:6.7b': 16000,
-      'qwen2.5:7b': 128000,
-      'mistral:7b': 32768,
-
-      // External APIs
-      'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
-      'deepseek-chat': 64000
-    };
-
-    // Get context window for this model (default 8K if unknown)
-    const contextWindow = model ? (contextWindows[model] || 8192) : 8192;
+    // Query context window from AICapabilityRegistry (single source of truth)
+    // The registry is populated from provider configs and has accurate data
+    // OllamaAdapter now passes num_ctx to use full context window at runtime
+    const registry = AICapabilityRegistry.getInstance();
+    const contextWindow = model ? registry.getContextWindow(model) : 8192;
 
     // Estimate system prompt tokens (~500 for typical persona prompts)
     const systemPromptTokens = 500;
