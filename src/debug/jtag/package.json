@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6779",
+  "version": "1.0.6782",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -118,6 +118,7 @@
     }
   },
   "scripts": {
+    "setup:rust": "./scripts/setup-rust.sh",
     "worker:build": "jq -c '.workers[] | select(.enabled != false)' workers/workers-config.json | while read -r w; do dir=$(echo $w | jq -r '.binary' | sed 's|/target/.*||'); echo \"Building $(echo $w | jq -r '.name')...\"; (cd $dir && cargo build --release --quiet); done",
     "worker:start": "./workers/start-workers.sh",
     "worker:stop": "./workers/stop-workers.sh",

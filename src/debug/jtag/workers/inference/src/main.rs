@@ -45,6 +45,9 @@ use tokenizers::Tokenizer;
 // Random sampling
 use rand::{Rng, SeedableRng};
 
+// TypeScript type generation
+use ts_rs::TS;
+
 // ============================================================================
 // Shared JTAG Protocol (imported from workers/shared/)
 // ============================================================================
@@ -256,7 +259,9 @@ pub trait TextGenerator: Send + Sync {
 // Data Types
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Model information returned from load/list operations
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub model_id: String,
@@ -266,7 +271,9 @@ pub struct ModelInfo {
     pub loaded_at_seconds_ago: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// LoRA adapter information
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AdapterInfo {
     pub name: String,
@@ -325,7 +332,9 @@ pub struct LoadedAdapter {
     // TODO: Add actual LoRA weight tensors when implementing real inference
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Request for text generation
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export, export_to = "generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateRequest {
     pub model_id: String,
@@ -336,7 +345,9 @@ pub struct GenerateRequest {
     pub adapters: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Response from text generation
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateResponse {
     pub model_id: String,
@@ -890,6 +901,9 @@ enum InferenceCommand {
         adapter_name: String,
     },
 
+    #[serde(rename = "adapters/list")]
+    AdaptersList { model_id: String },
+
     #[serde(rename = "generate")]
     Generate {
         model_id: String,
@@ -970,6 +984,7 @@ impl<P: ModelProvider + AdapterManager + TextGenerator> InferenceWorker<P> {
             InferenceCommand::ModelsList => "models/list",
             InferenceCommand::AdapterLoad { .. } => "adapter/load",
             InferenceCommand::AdapterUnload { .. } => "adapter/unload",
+            InferenceCommand::AdaptersList { .. } => "adapters/list",
             InferenceCommand::Generate { .. } => "generate",
         }
         .to_string()
@@ -1030,6 +1045,27 @@ impl<P: ModelProvider + AdapterManager + TextGenerator> InferenceWorker<P> {
                     "model_id": model_id,
                     "adapter_name": adapter_name,
                     "status": "unloaded"
+                }))
+            }
+
+            InferenceCommand::AdaptersList { model_id } => {
+                let provider = self.provider.lock().map_err(|e| e.to_string())?;
+                let adapters = provider.list_adapters(&model_id);
+
+                // Include detailed info about each adapter
+                let adapter_details: Vec<Value> = adapters
+                    .iter()
+                    .map(|a| json!({
+                        "name": a.name,
+                        "path": a.path,
+                        "status": a.status
+                    }))
+                    .collect();
+
+                Ok(json!({
+                    "model_id": model_id,
+                    "adapters": adapter_details,
+                    "count": adapters.len()
                 }))
             }
 
