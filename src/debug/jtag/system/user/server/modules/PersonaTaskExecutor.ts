@@ -453,9 +453,14 @@ export class PersonaTaskExecutor {
     }
 
     try {
-      // 1. Enable learning mode on the genome
-      await this.memory.genome.enableLearningMode(loraLayer);
-      this.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
+      // 1. Try to enable learning mode on existing adapter (optional for first-time training)
+      const adapterExists = this.memory.genome.hasAdapter(loraLayer);
+      if (adapterExists) {
+        await this.memory.genome.enableLearningMode(loraLayer);
+        this.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
+      } else {
+        this.log(`🧬 ${this.displayName}: First-time training for ${loraLayer} - will create new adapter`);
+      }
 
       // 2. Get training data - prefer pre-collected examples from signal-driven training
       let trainingData: TrainingDataset;
@@ -515,19 +520,28 @@ export class PersonaTaskExecutor {
         batchSize: 4
       };
 
-      // 4. Get the appropriate fine-tuning adapter for this persona's provider
-      const adapter = getFineTuningAdapter(this.provider);
+      // 4. Get the appropriate fine-tuning adapter
+      // PEFT is preferred for local training (ollama, local) as it:
+      // - Supports any HuggingFace model (not just Ollama)
+      // - Enables multi-adapter composition (genome vision)
+      // - Works cross-platform (MPS/CUDA/CPU)
+      // - Doesn't require external binaries (llama.cpp finetune)
+      const localProviders = ['ollama', 'local', 'peft'];
+      const effectiveProvider = localProviders.includes(this.provider.toLowerCase()) ? 'peft' : this.provider;
+      const adapter = getFineTuningAdapter(effectiveProvider);
 
       if (!adapter) {
-        this.log(`⚠️ ${this.displayName}: Provider '${this.provider}' does not support fine-tuning`);
+        this.log(`⚠️ ${this.displayName}: Provider '${effectiveProvider}' (from ${this.provider}) does not support fine-tuning`);
         return `Fine-tuning not supported for provider: ${this.provider}`;
       }
 
-      this.log(`🧬 ${this.displayName}: Starting fine-tuning via ${this.provider} adapter for ${loraLayer}...`);
+      this.log(`🧬 ${this.displayName}: Starting fine-tuning via ${effectiveProvider} adapter for ${loraLayer}...`);
       const result: LoRATrainingResult = await adapter.trainLoRA(trainingRequest);
 
-      // 5. Disable learning mode
-      await this.memory.genome.disableLearningMode(loraLayer);
+      // 5. Disable learning mode if adapter was already loaded
+      if (adapterExists) {
+        await this.memory.genome.disableLearningMode(loraLayer);
+      }
 
       // 6. Register trained adapter with genome if successful
       if (result.success && result.modelPath) {
@@ -548,7 +562,10 @@ export class PersonaTaskExecutor {
         return `Fine-tuning failed for ${loraLayer}: ${result.error}`;
       }
     } catch (error) {
-      await this.memory.genome.disableLearningMode(loraLayer).catch(() => {});
+      // Try to disable learning mode if it was enabled
+      if (this.memory.genome.hasAdapter(loraLayer)) {
+        await this.memory.genome.disableLearningMode(loraLayer).catch(() => {});
+      }
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.log(`❌ ${this.displayName}: Error during fine-tuning: ${errorMsg}`);
       return `Fine-tuning failed: ${errorMsg}`;

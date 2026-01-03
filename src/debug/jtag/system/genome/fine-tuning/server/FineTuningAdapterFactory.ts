@@ -13,13 +13,14 @@
  * - xAI: No fine-tuning (inference only)
  */
 
-import { BaseLoRATrainerServer } from './BaseLoRATrainerServer';
+import { BaseLoRATrainer } from '../shared/BaseLoRATrainer';
 import { OllamaLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/ollama/server/OllamaFineTuningAdapter';
 import { OpenAILoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/openai/server/OpenAIFineTuningAdapter';
 import { TogetherLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/together/server/TogetherFineTuningAdapter';
 import { FireworksLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/fireworks/server/FireworksFineTuningAdapter';
 import { DeepSeekLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/deepseek/server/DeepSeekFineTuningAdapter';
 import { MistralLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/mistral/server/MistralFineTuningAdapter';
+import { PEFTLoRAAdapter } from './adapters/PEFTLoRAAdapter';
 
 /**
  * Provider IDs that support fine-tuning
@@ -30,7 +31,9 @@ export type FineTuningProvider =
   | 'together'
   | 'fireworks'
   | 'deepseek'
-  | 'mistral';
+  | 'mistral'
+  | 'peft'
+  | 'local';
 
 /**
  * Provider IDs that don't support fine-tuning
@@ -48,7 +51,7 @@ export type ProviderType = FineTuningProvider | NoFineTuningProvider | string;
 /**
  * Adapter cache (singleton per provider)
  */
-const adapterCache: Map<string, BaseLoRATrainerServer> = new Map();
+const adapterCache: Map<string, BaseLoRATrainer> = new Map();
 
 /**
  * Get fine-tuning adapter for a provider
@@ -56,13 +59,13 @@ const adapterCache: Map<string, BaseLoRATrainerServer> = new Map();
  * @param provider - Provider ID (ollama, openai, together, etc.)
  * @returns Fine-tuning adapter or null if provider doesn't support fine-tuning
  */
-export function getFineTuningAdapter(provider: ProviderType): BaseLoRATrainerServer | null {
+export function getFineTuningAdapter(provider: ProviderType): BaseLoRATrainer | null {
   // Check cache first
   if (adapterCache.has(provider)) {
     return adapterCache.get(provider)!;
   }
 
-  let adapter: BaseLoRATrainerServer | null = null;
+  let adapter: BaseLoRATrainer | null = null;
 
   switch (provider.toLowerCase()) {
     case 'ollama':
@@ -89,6 +92,12 @@ export function getFineTuningAdapter(provider: ProviderType): BaseLoRATrainerSer
       adapter = new MistralLoRAAdapter();
       break;
 
+    case 'peft':
+    case 'local':
+      // PEFT is the preferred local training method - supports any HuggingFace model
+      adapter = new PEFTLoRAAdapter();
+      break;
+
     // Providers without fine-tuning support
     case 'anthropic':
     case 'groq':
@@ -96,9 +105,9 @@ export function getFineTuningAdapter(provider: ProviderType): BaseLoRATrainerSer
       return null;
 
     default:
-      // Unknown provider - try Ollama as fallback for local models
-      console.warn(`[FineTuningFactory] Unknown provider "${provider}", falling back to Ollama`);
-      adapter = new OllamaLoRAAdapter();
+      // Unknown provider - use PEFT for local training (works with any model)
+      console.warn(`[FineTuningFactory] Unknown provider "${provider}", falling back to PEFT`);
+      adapter = new PEFTLoRAAdapter();
       break;
   }
 
@@ -122,7 +131,7 @@ export function supportsFineTuning(provider: ProviderType): boolean {
  * Get list of providers that support fine-tuning
  */
 export function getFineTuningProviders(): FineTuningProvider[] {
-  return ['ollama', 'openai', 'together', 'fireworks', 'deepseek', 'mistral'];
+  return ['peft', 'ollama', 'openai', 'together', 'fireworks', 'deepseek', 'mistral', 'local'];
 }
 
 /**
