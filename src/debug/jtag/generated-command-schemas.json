@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-03T00:35:35.595Z",
+  "generated": "2026-01-03T00:51:30.218Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2062,6 +2062,37 @@
           "type": "string",
           "required": false,
           "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "development/timing",
+      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl\n * Provides percentile analysis (P50/P95/P99) for performance monitoring.",
+      "params": {
+        "windowMinutes": {
+          "type": "number",
+          "required": false,
+          "description": "windowMinutes parameter"
+        },
+        "requestType": {
+          "type": "string",
+          "required": false,
+          "description": "requestType parameter"
+        },
+        "showBreakdown": {
+          "type": "boolean",
+          "required": false,
+          "description": "showBreakdown parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "clear": {
+          "type": "boolean",
+          "required": false,
+          "description": "clear parameter"
         }
       }
     },

@@ -113,6 +113,7 @@ export const COMMANDS = {
   DEVELOPMENT_SANDBOX_EXECUTE: 'development/sandbox-execute',
   DEVELOPMENT_SCHEMA_GENERATE: 'development/schema/generate',
   DEVELOPMENT_SHELL_EXECUTE: 'development/shell/execute',
+  DEVELOPMENT_TIMING: 'development/timing',
   FILE: 'file',
   FILE_APPEND: 'file/append',
   FILE_LOAD: 'file/load',
