@@ -8,7 +8,17 @@
 /// - No external service dependency
 /// - True parallelism via ONNX Runtime
 ///
-/// Protocol: Unix socket + newline-delimited JSON (same as other workers)
+/// PROTOCOL:
+/// - Requests: JSON (newline-delimited) - for all commands
+/// - Responses:
+///   - Control (ping, model/list, etc.): JSON
+///   - Data (embedding/generate): BINARY - zero serialization overhead
+///
+/// Binary format for embeddings:
+/// ```
+/// | JSON header \n | raw f32 bytes |
+/// | {"type":"binary","length":1536,"dtype":"f32","shape":[384],"batchSize":1} |
+/// ```
 
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use once_cell::sync::OnceCell;
@@ -21,6 +31,88 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{fs, thread};
+
+// ============================================================================
+// Binary Protocol (inline - avoid cargo complexity)
+// ============================================================================
+
+/// Header for binary payload - JSON portion
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinaryHeader {
+    #[serde(rename = "type")]
+    r#type: String,
+    length: usize,
+    dtype: String,
+    shape: Vec<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+}
+
+/// Write embeddings as binary: JSON header + raw f32 bytes
+fn write_binary_embeddings<W: Write>(
+    writer: &mut W,
+    embeddings: &[Vec<f32>],
+    model: &str,
+    duration_ms: u64,
+) -> std::io::Result<()> {
+    if embeddings.is_empty() {
+        // Empty response still uses binary format
+        let header = BinaryHeader {
+            r#type: "binary".to_string(),
+            length: 0,
+            dtype: "f32".to_string(),
+            shape: vec![0],
+            batch_size: Some(0),
+            duration_ms: Some(duration_ms),
+            model: Some(model.to_string()),
+        };
+        let header_json = serde_json::to_string(&header)?;
+        writer.write_all(header_json.as_bytes())?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        return Ok(());
+    }
+
+    let dims = embeddings[0].len();
+    let batch_size = embeddings.len();
+    let total_floats = batch_size * dims;
+
+    // Flatten embeddings into contiguous buffer - SINGLE ALLOCATION
+    let mut flat: Vec<f32> = Vec::with_capacity(total_floats);
+    for emb in embeddings {
+        flat.extend_from_slice(emb);
+    }
+
+    // Reinterpret as bytes - ZERO COPY
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(flat.as_ptr() as *const u8, flat.len() * 4) };
+
+    let header = BinaryHeader {
+        r#type: "binary".to_string(),
+        length: bytes.len(),
+        dtype: "f32".to_string(),
+        shape: vec![dims],
+        batch_size: Some(batch_size),
+        duration_ms: Some(duration_ms),
+        model: Some(model.to_string()),
+    };
+
+    // Write JSON header with newline
+    let header_json = serde_json::to_string(&header)?;
+    writer.write_all(header_json.as_bytes())?;
+    writer.write_all(b"\n")?;
+
+    // Write raw binary payload - NO SERIALIZATION
+    writer.write_all(bytes)?;
+    writer.flush()?;
+
+    Ok(())
+}
 
 // ============================================================================
 // Model Registry - Lazy-loaded models
@@ -215,70 +307,11 @@ fn handle_request(request: Request, start_time: Instant) -> Response {
             }
         }
 
-        Request::Generate { texts, model } => {
-            if texts.is_empty() {
-                return Response::Error {
-                    message: "No texts provided".to_string(),
-                };
-            }
-
-            let gen_start = Instant::now();
-
-            // Get or load model
-            let cache = match get_or_load_model(&model) {
-                Ok(c) => c,
-                Err(e) => return Response::Error { message: e },
-            };
-
-            let models = match cache.lock() {
-                Ok(m) => m,
-                Err(e) => {
-                    return Response::Error {
-                        message: format!("Lock error: {}", e),
-                    }
-                }
-            };
-
-            let embedding_model = match models.get(&model) {
-                Some(m) => m,
-                None => {
-                    return Response::Error {
-                        message: format!("Model not loaded: {}", model),
-                    }
-                }
-            };
-
-            // Generate embeddings
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let embeddings = match embedding_model.embed(text_refs, None) {
-                Ok(e) => e,
-                Err(e) => {
-                    return Response::Error {
-                        message: format!("Embedding generation failed: {}", e),
-                    }
-                }
-            };
-
-            let duration_ms = gen_start.elapsed().as_millis() as u64;
-            let dimensions = embeddings.first().map(|e| e.len()).unwrap_or(0);
-
-            println!(
-                "✨ Generated {} embeddings ({}d) in {}ms",
-                embeddings.len(),
-                dimensions,
-                duration_ms
-            );
-
-            Response::Ok {
-                data: json!({
-                    "embeddings": embeddings,
-                    "model": model,
-                    "dimensions": dimensions,
-                    "count": embeddings.len(),
-                    "durationMs": duration_ms
-                }),
-            }
-        }
+        // Generate is handled separately in handle_generate_binary()
+        // This branch should never be reached
+        Request::Generate { .. } => Response::Error {
+            message: "Generate should use binary path".to_string(),
+        },
 
         Request::ModelLoad { model } => {
             let start = Instant::now();
@@ -350,6 +383,55 @@ fn handle_request(request: Request, start_time: Instant) -> Response {
 }
 
 // ============================================================================
+// Binary Generate Handler (returns binary, not JSON)
+// ============================================================================
+
+/// Handle embedding generation with BINARY response
+/// Returns: Ok(()) on success, Err(error_message) on failure
+fn handle_generate_binary<W: Write>(
+    writer: &mut W,
+    texts: Vec<String>,
+    model: String,
+) -> Result<(), String> {
+    if texts.is_empty() {
+        return Err("No texts provided".to_string());
+    }
+
+    let gen_start = Instant::now();
+
+    // Get or load model
+    let cache = get_or_load_model(&model)?;
+
+    let models = cache
+        .lock()
+        .map_err(|e| format!("Lock error: {}", e))?;
+
+    let embedding_model = models
+        .get(&model)
+        .ok_or_else(|| format!("Model not loaded: {}", model))?;
+
+    // Generate embeddings
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let embeddings = embedding_model
+        .embed(text_refs, None)
+        .map_err(|e| format!("Embedding generation failed: {}", e))?;
+
+    let duration_ms = gen_start.elapsed().as_millis() as u64;
+    let dimensions = embeddings.first().map(|e| e.len()).unwrap_or(0);
+
+    println!(
+        "✨ Generated {} embeddings ({}d) in {}ms [BINARY]",
+        embeddings.len(),
+        dimensions,
+        duration_ms
+    );
+
+    // Write BINARY response - NO JSON SERIALIZATION of embeddings
+    write_binary_embeddings(writer, &embeddings, &model, duration_ms)
+        .map_err(|e| format!("Failed to write binary response: {}", e))
+}
+
+// ============================================================================
 // Connection Handler
 // ============================================================================
 
@@ -378,10 +460,25 @@ fn handle_connection(stream: UnixStream, start_time: Instant) -> std::io::Result
             }
         };
 
-        // Handle request
+        // Handle Generate specially - uses BINARY protocol
+        if let Request::Generate { texts, model } = request {
+            match handle_generate_binary(&mut writer, texts, model) {
+                Ok(()) => continue, // Binary already written
+                Err(e) => {
+                    // Error response is still JSON
+                    let error_response = Response::Error { message: e };
+                    let response_json = serde_json::to_string(&error_response)?;
+                    writeln!(writer, "{}", response_json)?;
+                    writer.flush()?;
+                    continue;
+                }
+            }
+        }
+
+        // Handle other requests with JSON response
         let response = handle_request(request, start_time);
 
-        // Send response
+        // Send JSON response
         let response_json = serde_json::to_string(&response)?;
         writeln!(writer, "{}", response_json)?;
         writer.flush()?;

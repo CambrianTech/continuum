@@ -6,12 +6,31 @@
  *
  * Performance: ~5ms per embedding (vs ~80ms via Ollama HTTP)
  * Batch: 100 texts in ~100ms (vs ~8s via Ollama HTTP)
+ *
+ * PROTOCOL:
+ * - Requests: JSON (newline-delimited)
+ * - Responses:
+ *   - Control (ping, model/list): JSON
+ *   - Data (embedding/generate): BINARY
+ *     - JSON header (newline-terminated): {"type":"binary","length":1536,...}
+ *     - Raw f32 bytes (no serialization overhead)
  */
 
 import * as net from 'net';
 import { Logger } from '../logging/Logger';
 
 const log = Logger.create('RustEmbeddingClient', 'embedding');
+
+/** Binary response header from Rust worker */
+interface BinaryHeader {
+  type: 'binary';
+  length: number;
+  dtype: 'f32' | 'f16' | 'u8' | 'i16';
+  shape: number[];
+  batchSize?: number;
+  durationMs?: number;
+  model?: string;
+}
 
 /** Default socket path for embedding worker */
 const DEFAULT_SOCKET_PATH = '/tmp/jtag-embedding.sock';
@@ -59,11 +78,21 @@ export class RustEmbeddingClient {
 
   private socketPath: string;
   private socket: net.Socket | null = null;
-  private buffer: string = '';
-  private pendingResponse: {
+  private buffer: Buffer = Buffer.alloc(0);
+
+  // Pending response for JSON commands
+  private pendingJsonResponse: {
     resolve: (value: RustResponse) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
+  } | null = null;
+
+  // Pending response for BINARY commands (embeddings)
+  private pendingBinaryResponse: {
+    resolve: (value: number[][]) => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+    header?: BinaryHeader;
   } | null = null;
 
   /** Track availability to avoid repeated connection attempts */
@@ -122,6 +151,8 @@ export class RustEmbeddingClient {
   /**
    * Generate embeddings for texts
    *
+   * Uses BINARY protocol - no JSON serialization of float arrays.
+   *
    * @param texts - Array of texts to embed
    * @param options - Generation options (model, timeout)
    * @returns Array of embeddings (same order as input texts)
@@ -135,19 +166,20 @@ export class RustEmbeddingClient {
     }
 
     const startTime = Date.now();
-    const response = await this.sendCommand('embedding/generate', {
-      texts,
-      model
-    }, timeout);
 
-    if (response.status !== 'ok' || !response.data?.embeddings) {
-      throw new Error(response.message || 'Embedding generation failed');
-    }
+    // Use binary protocol for embeddings
+    const embeddings = await this.sendBinaryCommand(
+      'embedding/generate',
+      { texts, model },
+      timeout
+    );
 
     const duration = Date.now() - startTime;
-    log.debug(`Generated ${texts.length} embeddings in ${duration}ms (${(duration / texts.length).toFixed(1)}ms each)`);
+    log.debug(
+      `Generated ${texts.length} embeddings in ${duration}ms (${(duration / texts.length).toFixed(1)}ms each) [BINARY]`
+    );
 
-    return response.data.embeddings;
+    return embeddings;
   }
 
   /**
@@ -203,10 +235,15 @@ export class RustEmbeddingClient {
       this.socket.destroy();
       this.socket = null;
     }
-    if (this.pendingResponse) {
-      clearTimeout(this.pendingResponse.timeout);
-      this.pendingResponse.reject(new Error('Connection closed'));
-      this.pendingResponse = null;
+    if (this.pendingJsonResponse) {
+      clearTimeout(this.pendingJsonResponse.timeout);
+      this.pendingJsonResponse.reject(new Error('Connection closed'));
+      this.pendingJsonResponse = null;
+    }
+    if (this.pendingBinaryResponse) {
+      clearTimeout(this.pendingBinaryResponse.timeout);
+      this.pendingBinaryResponse.reject(new Error('Connection closed'));
+      this.pendingBinaryResponse = null;
     }
     this._available = null;
   }
@@ -225,7 +262,7 @@ export class RustEmbeddingClient {
 
     return new Promise((resolve, reject) => {
       this.socket = net.createConnection(this.socketPath);
-      this.buffer = '';
+      this.buffer = Buffer.alloc(0);
 
       this.socket.on('connect', () => {
         log.debug(`Connected to Rust embedding worker: ${this.socketPath}`);
@@ -261,63 +298,173 @@ export class RustEmbeddingClient {
   }
 
   /**
-   * Handle incoming data from Rust worker (newline-delimited JSON)
+   * Handle incoming data from Rust worker
+   * Supports both JSON (control) and BINARY (data) protocols
    */
   private handleData(data: Buffer): void {
-    this.buffer += data.toString();
+    // Append to buffer
+    this.buffer = Buffer.concat([this.buffer, data]);
 
-    // Process complete lines
-    const lines = this.buffer.split('\n');
-    this.buffer = lines.pop() || '';
+    // Handle BINARY response (embedding/generate)
+    if (this.pendingBinaryResponse) {
+      this.handleBinaryData();
+      return;
+    }
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
+    // Handle JSON response (control messages)
+    this.handleJsonData();
+  }
 
-      try {
-        const response: RustResponse = JSON.parse(line);
+  /**
+   * Handle JSON response data (control messages)
+   */
+  private handleJsonData(): void {
+    // Find newline
+    const newlineIdx = this.buffer.indexOf(0x0a); // '\n'
+    if (newlineIdx === -1) return;
 
-        if (this.pendingResponse) {
-          clearTimeout(this.pendingResponse.timeout);
-          const pending = this.pendingResponse;
-          this.pendingResponse = null;
-          pending.resolve(response);
-        }
-      } catch (error) {
-        log.error(`Failed to parse response: ${error}`);
+    const line = this.buffer.subarray(0, newlineIdx).toString();
+    this.buffer = this.buffer.subarray(newlineIdx + 1);
+
+    if (!line.trim()) return;
+
+    try {
+      const response: RustResponse = JSON.parse(line);
+
+      if (this.pendingJsonResponse) {
+        clearTimeout(this.pendingJsonResponse.timeout);
+        const pending = this.pendingJsonResponse;
+        this.pendingJsonResponse = null;
+        pending.resolve(response);
       }
+    } catch (error) {
+      log.error(`Failed to parse JSON response: ${error}`);
     }
   }
 
   /**
-   * Send command to Rust worker and wait for response
+   * Handle BINARY response data (embeddings)
+   *
+   * Protocol: JSON header (newline-terminated) + raw f32 bytes
+   */
+  private handleBinaryData(): void {
+    const pending = this.pendingBinaryResponse;
+    if (!pending) return;
+
+    // Step 1: Parse header if not yet done
+    if (!pending.header) {
+      const newlineIdx = this.buffer.indexOf(0x0a);
+      if (newlineIdx === -1) return; // Need more data for header
+
+      const headerStr = this.buffer.subarray(0, newlineIdx).toString();
+      this.buffer = this.buffer.subarray(newlineIdx + 1);
+
+      try {
+        const header = JSON.parse(headerStr);
+
+        // Check for error response (still JSON)
+        if (header.status === 'error') {
+          clearTimeout(pending.timeout);
+          this.pendingBinaryResponse = null;
+          pending.reject(new Error(header.message || 'Embedding generation failed'));
+          return;
+        }
+
+        if (header.type !== 'binary') {
+          clearTimeout(pending.timeout);
+          this.pendingBinaryResponse = null;
+          pending.reject(new Error(`Expected binary header, got: ${header.type}`));
+          return;
+        }
+
+        pending.header = header as BinaryHeader;
+      } catch (error) {
+        clearTimeout(pending.timeout);
+        this.pendingBinaryResponse = null;
+        pending.reject(new Error(`Failed to parse binary header: ${error}`));
+        return;
+      }
+    }
+
+    // Step 2: Wait for complete binary payload
+    const header = pending.header;
+    if (this.buffer.length < header.length) {
+      return; // Need more data
+    }
+
+    // Step 3: Extract binary payload and convert to embeddings
+    const binaryData = this.buffer.subarray(0, header.length);
+    this.buffer = this.buffer.subarray(header.length);
+
+    try {
+      const embeddings = this.parseBinaryEmbeddings(binaryData, header);
+
+      clearTimeout(pending.timeout);
+      this.pendingBinaryResponse = null;
+      pending.resolve(embeddings);
+    } catch (error) {
+      clearTimeout(pending.timeout);
+      this.pendingBinaryResponse = null;
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Parse binary f32 data into embedding arrays
+   *
+   * ZERO-COPY: Uses Buffer's underlying ArrayBuffer directly
+   */
+  private parseBinaryEmbeddings(data: Buffer, header: BinaryHeader): number[][] {
+    const dims = header.shape[0] || 384;
+    const batchSize = header.batchSize || 1;
+
+    if (batchSize === 0 || header.length === 0) {
+      return [];
+    }
+
+    // Create Float32Array view over the buffer
+    // Note: Node Buffer may not be aligned, so we copy to aligned buffer
+    const alignedBuffer = new ArrayBuffer(data.length);
+    const alignedView = new Uint8Array(alignedBuffer);
+    alignedView.set(data);
+
+    const floats = new Float32Array(alignedBuffer);
+
+    // Split into individual embeddings
+    const embeddings: number[][] = [];
+    for (let i = 0; i < batchSize; i++) {
+      const start = i * dims;
+      const end = start + dims;
+      // Slice creates a copy, which is needed since we're returning number[][]
+      embeddings.push(Array.from(floats.subarray(start, end)));
+    }
+
+    return embeddings;
+  }
+
+  /**
+   * Send JSON command to Rust worker and wait for JSON response
    * Uses queue to serialize concurrent requests - prevents socket contention
    */
   private async sendCommand(
     command: string,
-    params: Record<string, any>,
+    params: Record<string, unknown>,
     timeout: number = 30000
   ): Promise<RustResponse> {
     return new Promise((outerResolve, outerReject) => {
-      // Create the actual work to be queued
       const doRequest = async (): Promise<void> => {
         try {
-          // Connect if needed
           await this.connect();
 
-          const request = {
-            command,
-            ...params
-          };
+          const request = { command, ...params };
 
           const result = await new Promise<RustResponse>((resolve, reject) => {
             const timeoutHandle = setTimeout(() => {
-              this.pendingResponse = null;
+              this.pendingJsonResponse = null;
               reject(new Error(`Request timeout: ${command}`));
             }, timeout);
 
-            this.pendingResponse = { resolve, reject, timeout: timeoutHandle };
-
-            // Send newline-delimited JSON
+            this.pendingJsonResponse = { resolve, reject, timeout: timeoutHandle };
             this.socket!.write(JSON.stringify(request) + '\n');
           });
 
@@ -327,7 +474,43 @@ export class RustEmbeddingClient {
         }
       };
 
-      // Add to queue
+      this.requestQueue.push(doRequest);
+      this.processQueue();
+    });
+  }
+
+  /**
+   * Send command expecting BINARY response (embeddings)
+   * Uses queue to serialize concurrent requests
+   */
+  private async sendBinaryCommand(
+    command: string,
+    params: Record<string, unknown>,
+    timeout: number = 30000
+  ): Promise<number[][]> {
+    return new Promise((outerResolve, outerReject) => {
+      const doRequest = async (): Promise<void> => {
+        try {
+          await this.connect();
+
+          const request = { command, ...params };
+
+          const result = await new Promise<number[][]>((resolve, reject) => {
+            const timeoutHandle = setTimeout(() => {
+              this.pendingBinaryResponse = null;
+              reject(new Error(`Request timeout: ${command}`));
+            }, timeout);
+
+            this.pendingBinaryResponse = { resolve, reject, timeout: timeoutHandle };
+            this.socket!.write(JSON.stringify(request) + '\n');
+          });
+
+          outerResolve(result);
+        } catch (error) {
+          outerReject(error);
+        }
+      };
+
       this.requestQueue.push(doRequest);
       this.processQueue();
     });
@@ -338,7 +521,7 @@ export class RustEmbeddingClient {
    */
   private async processQueue(): Promise<void> {
     if (this.isProcessingQueue) {
-      return; // Already processing
+      return;
     }
 
     this.isProcessingQueue = true;
