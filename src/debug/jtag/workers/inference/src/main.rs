@@ -31,13 +31,19 @@ use std::thread;
 use std::time::Instant;
 
 // Candle imports
-use candle_core::Device;
+use candle_core::{DType, Device, Tensor};
+use candle_nn::VarBuilder;
+use candle_transformers::generation::LogitsProcessor;
+use candle_transformers::models::phi::{Config as PhiConfig, Model as PhiModel};
 
 // HuggingFace Hub
 use hf_hub::{api::sync::Api, Repo, RepoType};
 
 // Tokenizers
 use tokenizers::Tokenizer;
+
+// Random sampling
+use rand::{Rng, SeedableRng};
 
 // ============================================================================
 // Shared JTAG Protocol (imported from workers/shared/)
@@ -243,7 +249,7 @@ pub trait AdapterManager: Send + Sync {
 /// Trait for text generation
 pub trait TextGenerator: Send + Sync {
     /// Generate text from a prompt
-    fn generate(&self, request: GenerateRequest) -> ModelResult<GenerateResponse>;
+    fn generate(&mut self, request: GenerateRequest) -> ModelResult<GenerateResponse>;
 }
 
 // ============================================================================
@@ -269,12 +275,47 @@ pub struct AdapterInfo {
     pub status: String,
 }
 
-#[derive(Debug, Clone)]
+/// Supported model architectures
+pub enum ModelArchitecture {
+    Phi(PhiModel),
+    // Future: Llama, Mistral, etc.
+}
+
+// Manual Debug impl since PhiModel doesn't derive Debug
+impl std::fmt::Debug for ModelArchitecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModelArchitecture::Phi(_) => write!(f, "Phi"),
+        }
+    }
+}
+
 pub struct LoadedModel {
     pub model_id: String,
+    pub architecture: ModelArchitecture,
     pub tokenizer: Tokenizer,
+    pub config: ModelConfig,
     pub device: Device,
     pub loaded_at: Instant,
+}
+
+// Manual Debug impl
+impl std::fmt::Debug for LoadedModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedModel")
+            .field("model_id", &self.model_id)
+            .field("architecture", &self.architecture)
+            .field("device", &self.device)
+            .finish()
+    }
+}
+
+/// Model configuration for generation
+#[derive(Debug, Clone)]
+pub struct ModelConfig {
+    pub vocab_size: usize,
+    pub eos_token_id: u32,
+    pub bos_token_id: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -388,6 +429,67 @@ impl HuggingFaceProvider {
     pub fn device_info(&self) -> String {
         format!("{:?}", self.device)
     }
+
+    /// Load Phi model architecture
+    fn load_phi(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<(ModelArchitecture, ModelConfig)> {
+        // Download model weights
+        let weights_path = repo
+            .get("model.safetensors")
+            .or_else(|_| repo.get("pytorch_model.bin"))
+            .map_err(|e| format!("Failed to download model weights: {}", e))?;
+        println!("📂 Weights: {:?}", weights_path);
+
+        // Download config
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| format!("Failed to download config: {}", e))?;
+        println!("📂 Config: {:?}", config_path);
+
+        // Load config
+        let config_str = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        let phi_config: PhiConfig = serde_json::from_str(&config_str)
+            .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+        // Get vocab size from tokenizer (config fields are private)
+        let vocab_size = tokenizer.get_vocab_size(true);
+        // Get EOS token from tokenizer, fallback to common defaults
+        let eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+            .or_else(|| tokenizer.token_to_id("</s>"))
+            .or_else(|| tokenizer.token_to_id("<eos>"))
+            .unwrap_or(50256);
+
+        // Load model weights
+        // Note: Memory-mapping (unsafe) is the canonical way to load large models efficiently:
+        // - Only loads pages that are accessed (lazy loading)
+        // - Uses OS page cache efficiently
+        // - Doesn't duplicate memory (maps file directly to address space)
+        // The safe alternative (from_buffered_safetensors) loads entire file to RAM first.
+        println!("🔧 Loading weights to {:?}...", self.device);
+        let vb = if weights_path.to_string_lossy().ends_with(".safetensors") {
+            // SAFETY: File path is valid and we own the VarBuilder for its lifetime
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &self.device)
+                    .map_err(|e| format!("Failed to load safetensors: {}", e))?
+            }
+        } else {
+            VarBuilder::from_pth(weights_path, DType::F32, &self.device)
+                .map_err(|e| format!("Failed to load pytorch weights: {}", e))?
+        };
+
+        // Create Phi model
+        let model = PhiModel::new(&phi_config, vb)
+            .map_err(|e| format!("Failed to create Phi model: {}", e))?;
+        println!("✅ Phi model loaded: vocab_size={}", vocab_size);
+
+        let config = ModelConfig {
+            vocab_size,
+            eos_token_id,
+            bos_token_id: None,
+        };
+
+        Ok((ModelArchitecture::Phi(model), config))
+    }
 }
 
 impl ModelProvider for HuggingFaceProvider {
@@ -411,7 +513,7 @@ impl ModelProvider for HuggingFaceProvider {
         println!("📥 Loading model: {}", model_id);
         let load_start = Instant::now();
 
-        // Download tokenizer from HuggingFace Hub
+        // Download from HuggingFace Hub
         let api = Api::new().map_err(|e| format!("Failed to create HF API: {}", e))?;
         let repo = api.repo(Repo::with_revision(
             model_id.to_string(),
@@ -419,14 +521,23 @@ impl ModelProvider for HuggingFaceProvider {
             revision.unwrap_or("main").to_string(),
         ));
 
+        // Load tokenizer
         let tokenizer_path = repo
             .get("tokenizer.json")
             .map_err(|e| format!("Failed to download tokenizer: {}", e))?;
-
-        println!("📂 Tokenizer downloaded to: {:?}", tokenizer_path);
-
+        println!("📂 Tokenizer: {:?}", tokenizer_path);
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
+
+        // Determine model architecture and load weights
+        let (architecture, config) = if model_id.to_lowercase().contains("phi") {
+            self.load_phi(&repo, &tokenizer, &model_id)?
+        } else {
+            // Default to Phi architecture for unknown models
+            // TODO: Add detection for Llama, Mistral, etc.
+            println!("⚠️  Unknown architecture, trying Phi format for: {}", model_id);
+            self.load_phi(&repo, &tokenizer, &model_id)?
+        };
 
         let load_time_ms = load_start.elapsed().as_millis() as u64;
 
@@ -434,7 +545,9 @@ impl ModelProvider for HuggingFaceProvider {
             model_id.to_string(),
             LoadedModel {
                 model_id: model_id.to_string(),
+                architecture,
                 tokenizer,
+                config,
                 device: self.device.clone(),
                 loaded_at: Instant::now(),
             },
@@ -580,55 +693,163 @@ impl AdapterManager for HuggingFaceProvider {
 }
 
 impl TextGenerator for HuggingFaceProvider {
-    fn generate(&self, request: GenerateRequest) -> ModelResult<GenerateResponse> {
-        let model = self
+    fn generate(&mut self, request: GenerateRequest) -> ModelResult<GenerateResponse> {
+        let loaded_model = self
             .models
-            .get(&request.model_id)
+            .get_mut(&request.model_id)
             .ok_or_else(|| format!("Model not loaded: {}", request.model_id))?;
 
         let gen_start = Instant::now();
 
         // Tokenize the prompt
-        let encoding = model
+        let encoding = loaded_model
             .tokenizer
             .encode(request.prompt.as_str(), true)
             .map_err(|e| format!("Tokenization failed: {}", e))?;
 
-        let tokens = encoding.get_ids();
-        let prompt_tokens = tokens.len();
+        let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
+        let prompt_len = prompt_tokens.len();
 
         let adapters_used = request.adapters.clone().unwrap_or_default();
 
         if let Ok(mut log) = self.logger.lock() {
             log.info(&format!(
-                "Tokenized prompt: {} tokens, adapters: {:?}",
-                prompt_tokens, adapters_used
+                "Generating: {} prompt tokens, adapters: {:?}",
+                prompt_len, adapters_used
+            ));
+        }
+
+        let max_tokens = request.max_tokens.unwrap_or(256);
+        let temperature = request.temperature.unwrap_or(0.7);
+        let top_p = request.top_p.unwrap_or(0.9);
+
+        // Create logits processor for sampling
+        let mut logits_processor = LogitsProcessor::new(
+            rand::rngs::StdRng::seed_from_u64(42).gen(), // Random seed
+            Some(temperature),
+            Some(top_p),
+        );
+
+        // Extract values we need before borrowing model mutably
+        let device = loaded_model.device.clone();
+        let eos_token_id = loaded_model.config.eos_token_id;
+
+        // Generate tokens autoregressively
+        let generated_tokens = match &mut loaded_model.architecture {
+            ModelArchitecture::Phi(model) => {
+                // Clear KV cache before starting generation
+                model.clear_kv_cache();
+
+                // Preallocate buffers - avoid reallocation during generation
+                let total_capacity = prompt_len + max_tokens;
+                let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
+                all_tokens.extend_from_slice(&prompt_tokens);
+
+                let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
+
+                // Reusable single-token buffer for subsequent forward passes
+                let mut single_token_buf = [0u32; 1];
+
+                for i in 0..max_tokens {
+                    // On first iteration, pass full prompt via slice reference
+                    // On subsequent iterations, pass single token (cache has the rest)
+                    let input = if i == 0 {
+                        Tensor::new(all_tokens.as_slice(), &device)
+                            .map_err(|e| format!("Failed to create prompt tensor: {}", e))?
+                    } else {
+                        // Use fixed buffer - no allocation
+                        single_token_buf[0] = *all_tokens.last().unwrap_or(&0);
+                        Tensor::new(&single_token_buf[..], &device)
+                            .map_err(|e| format!("Failed to create token tensor: {}", e))?
+                    };
+
+                    let input = input.unsqueeze(0)
+                        .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+
+                    // Forward pass
+                    let logits = model
+                        .forward(&input)
+                        .map_err(|e| format!("Forward pass failed: {}", e))?;
+
+                    // Debug: print logits shape on first iteration only
+                    if i == 0 {
+                        println!("🔍 Logits shape: {:?}", logits.shape());
+                    }
+
+                    // Extract last token logits - handle both 2D and 3D shapes
+                    let dims = logits.dims();
+                    let last_logits = match dims.len() {
+                        2 => {
+                            // Shape [batch, vocab] - squeeze batch dim
+                            logits.squeeze(0)
+                                .map_err(|e| format!("Failed to squeeze 2D: {}", e))?
+                        }
+                        3 => {
+                            // Shape [batch, seq, vocab] - get last token
+                            let seq_len = dims[1];
+                            if seq_len == 0 {
+                                return Err("Empty sequence in logits".to_string());
+                            }
+                            logits
+                                .squeeze(0)  // [seq, vocab]
+                                .map_err(|e| format!("Failed to squeeze 3D: {}", e))?
+                                .get(seq_len - 1)  // [vocab]
+                                .map_err(|e| format!("Failed to get last token: {}", e))?
+                        }
+                        _ => return Err(format!("Unexpected logits dims: {:?}", dims)),
+                    };
+
+                    // Sample next token
+                    let next_token = logits_processor
+                        .sample(&last_logits)
+                        .map_err(|e| format!("Sampling failed: {}", e))?;
+
+                    // Check for EOS
+                    if next_token == eos_token_id {
+                        break;
+                    }
+
+                    all_tokens.push(next_token);
+                    gen_tokens.push(next_token);
+                }
+
+                // Move out of Box to return owned Vec
+                *gen_tokens
+            }
+        };
+
+        let gen_time_ms = gen_start.elapsed().as_millis() as u64;
+        let num_generated = generated_tokens.len();
+        let tokens_per_second = if gen_time_ms > 0 {
+            (num_generated as f64 / gen_time_ms as f64) * 1000.0
+        } else {
+            0.0
+        };
+
+        // Decode generated tokens
+        let generated_text = loaded_model
+            .tokenizer
+            .decode(&generated_tokens, true)
+            .map_err(|e| format!("Decoding failed: {}", e))?;
+
+        if let Ok(mut log) = self.logger.lock() {
+            log.info(&format!(
+                "Generated {} tokens in {}ms ({:.1} tok/s)",
+                num_generated, gen_time_ms, tokens_per_second
             ));
         }
         println!(
-            "🔤 Tokenized prompt: {} tokens, adapters: {:?}",
-            prompt_tokens, adapters_used
+            "✨ Generated {} tokens in {}ms ({:.1} tok/s)",
+            num_generated, gen_time_ms, tokens_per_second
         );
-
-        // TODO: Implement actual generation with candle_transformers
-        // For now, return a placeholder response
-        let max_tokens = request.max_tokens.unwrap_or(256);
-        let temperature = request.temperature.unwrap_or(0.7);
-
-        let generated_text = format!(
-            "[Candle inference placeholder - model: {}, prompt_tokens: {}, max_tokens: {}, temp: {}]",
-            request.model_id, prompt_tokens, max_tokens, temperature
-        );
-
-        let gen_time_ms = gen_start.elapsed().as_millis() as u64;
 
         Ok(GenerateResponse {
             model_id: request.model_id,
             text: generated_text,
-            prompt_tokens,
-            generated_tokens: 0, // Placeholder
+            prompt_tokens: prompt_len,
+            generated_tokens: num_generated,
             generation_time_ms: gen_time_ms,
-            tokens_per_second: 0.0, // Placeholder
+            tokens_per_second,
             adapters_used,
         })
     }
@@ -820,7 +1041,7 @@ impl<P: ModelProvider + AdapterManager + TextGenerator> InferenceWorker<P> {
                 top_p,
                 adapters,
             } => {
-                let provider = self.provider.lock().map_err(|e| e.to_string())?;
+                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
                 let response = provider.generate(GenerateRequest {
                     model_id,
                     prompt,

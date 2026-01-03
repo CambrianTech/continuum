@@ -474,10 +474,12 @@ impl SqliteStrategy {
 
         println!("🔍 Detected storage type: {:?} for {}", storage_type, connection_path);
 
-        // Check for WAL artifacts before opening
+        // Check for WAL artifacts before opening (indicates prior WAL mode usage)
         let wal_path = format!("{}-wal", connection_path);
         let shm_path = format!("{}-shm", connection_path);
-        let has_wal_artifacts = Path::new(&wal_path).exists() || Path::new(&shm_path).exists();
+        if Path::new(&wal_path).exists() || Path::new(&shm_path).exists() {
+            println!("⚠️  WAL artifacts exist for {} - prior connection may have crashed", connection_path);
+        }
 
         // Open connection
         let conn = rusqlite::Connection::open(&connection_path)
@@ -941,15 +943,6 @@ impl AdapterRegistry {
 
         println!("📝 Registered new adapter: {} → {:?}", path, handle);
         Ok(handle)
-    }
-
-    fn register(&self, adapter_type: AdapterType, strategy: Arc<dyn ConcurrencyStrategy>) -> AdapterHandle {
-        let handle = AdapterHandle::new();
-        let mut adapters = self.adapters.lock().unwrap();
-        adapters.insert(handle, (adapter_type.clone(), strategy));
-
-        println!("📝 Registered adapter: {:?} with handle {:?}", adapter_type, handle);
-        handle
     }
 
     /// Execute a read operation on an adapter

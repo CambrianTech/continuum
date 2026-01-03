@@ -11,7 +11,7 @@ candle-nn = "0.8"
 candle-transformers = "0.8"
 
 # HuggingFace Hub for model downloads
-hf-hub = "0.3"
+hf-hub = "0.4"
 
 # Fast tokenization
 tokenizers = "0.20"
