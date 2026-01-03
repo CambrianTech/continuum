@@ -16,6 +16,9 @@ safetensors.workspace = true
 # Half-precision floats (f16, bf16)
 half.workspace = true
 
+# Byte slice casting (for safetensors -> tensor conversion)
+bytemuck.workspace = true
+
 # HuggingFace Hub for model downloads
 hf-hub.workspace = true
 

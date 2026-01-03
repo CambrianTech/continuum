@@ -35,6 +35,9 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::phi::{Config as PhiConfig, Model as PhiModel};
+use candle_transformers::models::llama::{Llama as LlamaModel, Cache as LlamaCache, LlamaConfig as LlamaRawConfig};
+use candle_transformers::models::mistral::{Config as MistralConfig, Model as MistralModel};
+use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
 
 // HuggingFace Hub
 use hf_hub::{api::sync::Api, Repo, RepoType};
@@ -247,6 +250,20 @@ pub trait AdapterManager: Send + Sync {
 
     /// List adapters for a model
     fn list_adapters(&self, model_id: &str) -> Vec<AdapterInfo>;
+
+    /// Apply loaded adapters by merging weights into model
+    fn apply_adapters(&mut self, model_id: &str) -> ModelResult<ApplyResult>;
+}
+
+/// Result of applying adapters
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyResult {
+    pub model_id: String,
+    pub adapters_applied: Vec<String>,
+    pub layers_merged: usize,
+    pub apply_time_ms: u64,
 }
 
 /// Trait for text generation
@@ -285,14 +302,19 @@ pub struct AdapterInfo {
 /// Supported model architectures
 pub enum ModelArchitecture {
     Phi(PhiModel),
-    // Future: Llama, Mistral, etc.
+    Llama(LlamaModel, LlamaCache),
+    Mistral(MistralModel),
+    Qwen2(Qwen2Model),
 }
 
-// Manual Debug impl since PhiModel doesn't derive Debug
+// Manual Debug impl since models don't derive Debug
 impl std::fmt::Debug for ModelArchitecture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ModelArchitecture::Phi(_) => write!(f, "Phi"),
+            ModelArchitecture::Llama(_, _) => write!(f, "Llama"),
+            ModelArchitecture::Mistral(_) => write!(f, "Mistral"),
+            ModelArchitecture::Qwen2(_) => write!(f, "Qwen2"),
         }
     }
 }
@@ -304,6 +326,12 @@ pub struct LoadedModel {
     pub config: ModelConfig,
     pub device: Device,
     pub loaded_at: Instant,
+    /// Path to the base weights file (for reloading with merged LoRA)
+    pub weights_path: Option<std::path::PathBuf>,
+    /// Path to config file (for reloading)
+    pub config_path: Option<std::path::PathBuf>,
+    /// Whether LoRA adapters have been merged into weights
+    pub adapters_merged: bool,
 }
 
 // Manual Debug impl
@@ -325,11 +353,182 @@ pub struct ModelConfig {
     pub bos_token_id: Option<u32>,
 }
 
+/// LoRA adapter with actual weight tensors for inference
+///
+/// LoRA formula: y = Wx + (alpha/rank) * (x @ A.T) @ B.T
+/// Weight merging: W' = W + scaling * (B @ A)
+///
+/// safetensors format stores:
+/// - base_layer.lora_A.weight: [rank, input_dim]
+/// - base_layer.lora_B.weight: [output_dim, rank]
 #[derive(Debug, Clone)]
 pub struct LoadedAdapter {
     pub name: String,
     pub path: String,
-    // TODO: Add actual LoRA weight tensors when implementing real inference
+    /// LoRA rank (dimension of A's output / B's input)
+    pub rank: usize,
+    /// Scaling factor: alpha / rank
+    pub scaling: f32,
+    /// Layer-specific LoRA weights: layer_name -> (lora_A, lora_B)
+    /// lora_A: [rank, input_dim], lora_B: [output_dim, rank]
+    pub weights: HashMap<String, (Tensor, Tensor)>,
+}
+
+impl LoadedAdapter {
+    /// Load a LoRA adapter from a safetensors file
+    pub fn load(
+        name: &str,
+        path: &str,
+        device: &Device,
+    ) -> Result<Self, String> {
+        use safetensors::SafeTensors;
+
+        // Read the safetensors file
+        let data = std::fs::read(path)
+            .map_err(|e| format!("Failed to read adapter file: {}", e))?;
+
+        let tensors = SafeTensors::deserialize(&data)
+            .map_err(|e| format!("Failed to parse safetensors: {}", e))?;
+
+        // Try to load adapter_config.json for alpha value
+        let config_path = std::path::Path::new(path)
+            .parent()
+            .map(|p| p.join("adapter_config.json"));
+
+        let alpha: f32 = config_path
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("lora_alpha").and_then(|a| a.as_f64()))
+            .map(|a| a as f32)
+            .unwrap_or(16.0); // Default alpha
+
+        let mut weights: HashMap<String, (Tensor, Tensor)> = HashMap::new();
+        let mut detected_rank: Option<usize> = None;
+
+        // Group tensors by layer name
+        // Example names: "model.layers.0.self_attn.q_proj.lora_A.weight"
+        let tensor_names: Vec<_> = tensors.names().into_iter().collect();
+
+        for name_a in &tensor_names {
+            if name_a.contains("lora_A") && name_a.ends_with(".weight") {
+                // Find corresponding lora_B
+                let name_b = name_a.replace("lora_A", "lora_B");
+
+                // Use explicit string comparison to avoid type mismatch
+                if tensor_names.iter().any(|n| *n == name_b.as_str()) {
+                    // Extract layer name (everything before .lora_A)
+                    let layer_name = name_a
+                        .rsplit_once(".lora_A")
+                        .map(|(prefix, _)| prefix.to_string())
+                        .unwrap_or_else(|| name_a.to_string());
+
+                    // Load tensors
+                    let tensor_a = tensors.tensor(name_a)
+                        .map_err(|e| format!("Failed to get lora_A tensor: {}", e))?;
+                    let tensor_b = tensors.tensor(&name_b)
+                        .map_err(|e| format!("Failed to get lora_B tensor: {}", e))?;
+
+                    // Convert to f32 tensors
+                    let lora_a = Self::safetensor_to_candle(tensor_a, device)?;
+                    let lora_b = Self::safetensor_to_candle(tensor_b, device)?;
+
+                    // Detect rank from lora_A shape [rank, input_dim]
+                    let a_shape = lora_a.dims();
+                    if a_shape.len() >= 1 {
+                        let rank = a_shape[0];
+                        if detected_rank.is_none() {
+                            detected_rank = Some(rank);
+                        }
+                    }
+
+                    weights.insert(layer_name, (lora_a, lora_b));
+                }
+            }
+        }
+
+        let rank = detected_rank.unwrap_or(8);
+        let scaling = alpha / rank as f32;
+
+        println!("📊 Adapter {}: {} layers, rank={}, alpha={}, scaling={:.4}",
+            name, weights.len(), rank, alpha, scaling);
+
+        Ok(Self {
+            name: name.to_string(),
+            path: path.to_string(),
+            rank,
+            scaling,
+            weights,
+        })
+    }
+
+    /// Convert safetensors TensorView to Candle Tensor
+    fn safetensor_to_candle(
+        view: safetensors::tensor::TensorView<'_>,
+        device: &Device,
+    ) -> Result<Tensor, String> {
+        let shape: Vec<usize> = view.shape().to_vec();
+        let dtype = view.dtype();
+        let data = view.data();
+
+        // Handle potentially unaligned data from safetensors by copying to aligned buffer
+        match dtype {
+            safetensors::Dtype::F32 => {
+                // Copy bytes to properly aligned Vec<f32>
+                let num_floats = data.len() / 4;
+                let mut floats = vec![0f32; num_floats];
+                for (i, chunk) in data.chunks_exact(4).enumerate() {
+                    floats[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                }
+                Tensor::from_slice(&floats, shape.as_slice(), device)
+                    .map_err(|e| format!("Failed to create f32 tensor: {}", e))
+            }
+            safetensors::Dtype::F16 => {
+                // Copy bytes and convert f16 -> f32
+                let num_halfs = data.len() / 2;
+                let mut floats = Vec::with_capacity(num_halfs);
+                for chunk in data.chunks_exact(2) {
+                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    floats.push(half::f16::from_bits(bits).to_f32());
+                }
+                Tensor::from_slice(&floats, shape.as_slice(), device)
+                    .map_err(|e| format!("Failed to create f16->f32 tensor: {}", e))
+            }
+            safetensors::Dtype::BF16 => {
+                // Copy bytes and convert bf16 -> f32
+                let num_halfs = data.len() / 2;
+                let mut floats = Vec::with_capacity(num_halfs);
+                for chunk in data.chunks_exact(2) {
+                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    floats.push(half::bf16::from_bits(bits).to_f32());
+                }
+                Tensor::from_slice(&floats, shape.as_slice(), device)
+                    .map_err(|e| format!("Failed to create bf16->f32 tensor: {}", e))
+            }
+            _ => Err(format!("Unsupported dtype: {:?}", dtype)),
+        }
+    }
+
+    /// Check if this adapter has weights for a given layer
+    pub fn has_layer(&self, layer_name: &str) -> bool {
+        self.weights.contains_key(layer_name)
+    }
+
+    /// Get the merged weight delta for a layer: scaling * (B @ A)
+    /// This can be added to the base weight: W' = W + delta
+    pub fn get_weight_delta(&self, layer_name: &str) -> Option<Result<Tensor, String>> {
+        self.weights.get(layer_name).map(|(lora_a, lora_b)| {
+            // LoRA formula: delta = scaling * (B @ A)
+            // lora_A: [rank, input_dim]
+            // lora_B: [output_dim, rank]
+            // B @ A = [output_dim, rank] @ [rank, input_dim] = [output_dim, input_dim]
+            lora_b.matmul(lora_a)
+                .map_err(|e| format!("LoRA matmul failed: {}", e))
+                .and_then(|delta| {
+                    (delta * self.scaling as f64)
+                        .map_err(|e| format!("LoRA scaling failed: {}", e))
+                })
+        })
+    }
 }
 
 /// Request for text generation
@@ -369,6 +568,14 @@ pub struct HuggingFaceProvider {
     device: Device,
     start_time: Instant,
     logger: Arc<Mutex<LoggerClient>>,
+}
+
+/// Loaded model result with paths for LoRA merging
+pub struct LoadedModelResult {
+    pub architecture: ModelArchitecture,
+    pub config: ModelConfig,
+    pub weights_path: std::path::PathBuf,
+    pub config_path: std::path::PathBuf,
 }
 
 impl HuggingFaceProvider {
@@ -441,14 +648,91 @@ impl HuggingFaceProvider {
         format!("{:?}", self.device)
     }
 
-    /// Load Phi model architecture
-    fn load_phi(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<(ModelArchitecture, ModelConfig)> {
-        // Download model weights
-        let weights_path = repo
-            .get("model.safetensors")
-            .or_else(|_| repo.get("pytorch_model.bin"))
-            .map_err(|e| format!("Failed to download model weights: {}", e))?;
-        println!("📂 Weights: {:?}", weights_path);
+    /// Download model weights, handling both single-file and sharded formats
+    ///
+    /// Returns a list of weight file paths (1 for single file, N for sharded)
+    fn download_weights(&self, repo: &hf_hub::api::sync::ApiRepo) -> ModelResult<Vec<std::path::PathBuf>> {
+        // Try single-file formats first
+        if let Ok(path) = repo.get("model.safetensors") {
+            println!("📂 Weights (single): {:?}", path);
+            return Ok(vec![path]);
+        }
+
+        // Try sharded safetensors - check for index file
+        if let Ok(index_path) = repo.get("model.safetensors.index.json") {
+            println!("📂 Found sharded weights index: {:?}", index_path);
+
+            // Parse the index to get weight file names
+            let index_str = fs::read_to_string(&index_path)
+                .map_err(|e| format!("Failed to read weights index: {}", e))?;
+            let index: serde_json::Value = serde_json::from_str(&index_str)
+                .map_err(|e| format!("Failed to parse weights index: {}", e))?;
+
+            // Get unique shard filenames from weight_map
+            let weight_map = index.get("weight_map")
+                .and_then(|m| m.as_object())
+                .ok_or_else(|| "No weight_map in index".to_string())?;
+
+            let mut shard_names: Vec<String> = weight_map.values()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            shard_names.sort();
+            shard_names.dedup();
+
+            println!("📦 Downloading {} weight shards...", shard_names.len());
+
+            let mut shard_paths: Vec<std::path::PathBuf> = Vec::new();
+            for shard_name in &shard_names {
+                let path = repo.get(shard_name)
+                    .map_err(|e| format!("Failed to download shard {}: {}", shard_name, e))?;
+                println!("  📂 {}", shard_name);
+                shard_paths.push(path);
+            }
+
+            return Ok(shard_paths);
+        }
+
+        // Try pytorch format as last resort
+        if let Ok(path) = repo.get("pytorch_model.bin") {
+            println!("📂 Weights (pytorch): {:?}", path);
+            return Ok(vec![path]);
+        }
+
+        Err("No model weights found (tried model.safetensors, sharded, pytorch_model.bin)".to_string())
+    }
+
+    /// Create VarBuilder from weight paths (handles single or multiple files)
+    fn load_weights_to_varbuilder(&self, paths: &[std::path::PathBuf]) -> ModelResult<VarBuilder<'static>> {
+        if paths.is_empty() {
+            return Err("No weight paths provided".to_string());
+        }
+
+        let first_path = &paths[0];
+
+        if first_path.to_string_lossy().ends_with(".safetensors") {
+            // SAFETY: File paths are valid and VarBuilder owns the mmap for its lifetime
+            println!("🔧 Loading {} safetensor file(s) to {:?}...", paths.len(), self.device);
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(paths, DType::F32, &self.device)
+                    .map_err(|e| format!("Failed to load safetensors: {}", e))
+            }
+        } else if first_path.to_string_lossy().ends_with(".bin") {
+            if paths.len() > 1 {
+                return Err("Sharded pytorch weights not supported".to_string());
+            }
+            println!("🔧 Loading pytorch weights to {:?}...", self.device);
+            VarBuilder::from_pth(first_path.clone(), DType::F32, &self.device)
+                .map_err(|e| format!("Failed to load pytorch weights: {}", e))
+        } else {
+            Err(format!("Unknown weight format: {:?}", first_path))
+        }
+    }
+
+    /// Load Phi model architecture (supports sharded weights)
+    fn load_phi(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
+        // Download weights (handles both single and sharded)
+        let weight_paths = self.download_weights(repo)?;
+        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
 
         // Download config
         let config_path = repo
@@ -470,23 +754,7 @@ impl HuggingFaceProvider {
             .or_else(|| tokenizer.token_to_id("<eos>"))
             .unwrap_or(50256);
 
-        // Load model weights
-        // Note: Memory-mapping (unsafe) is the canonical way to load large models efficiently:
-        // - Only loads pages that are accessed (lazy loading)
-        // - Uses OS page cache efficiently
-        // - Doesn't duplicate memory (maps file directly to address space)
-        // The safe alternative (from_buffered_safetensors) loads entire file to RAM first.
-        println!("🔧 Loading weights to {:?}...", self.device);
-        let vb = if weights_path.to_string_lossy().ends_with(".safetensors") {
-            // SAFETY: File path is valid and we own the VarBuilder for its lifetime
-            unsafe {
-                VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &self.device)
-                    .map_err(|e| format!("Failed to load safetensors: {}", e))?
-            }
-        } else {
-            VarBuilder::from_pth(weights_path, DType::F32, &self.device)
-                .map_err(|e| format!("Failed to load pytorch weights: {}", e))?
-        };
+        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
 
         // Create Phi model
         let model = PhiModel::new(&phi_config, vb)
@@ -499,7 +767,322 @@ impl HuggingFaceProvider {
             bos_token_id: None,
         };
 
-        Ok((ModelArchitecture::Phi(model), config))
+        Ok(LoadedModelResult {
+            architecture: ModelArchitecture::Phi(model),
+            config,
+            weights_path,
+            config_path,
+        })
+    }
+
+    /// Load Llama model architecture (Llama 2, Llama 3, supports sharded weights)
+    fn load_llama(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
+        // Download weights (handles both single and sharded)
+        let weight_paths = self.download_weights(repo)?;
+        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| format!("Failed to download config: {}", e))?;
+        println!("📂 Config: {:?}", config_path);
+
+        // Load and parse config
+        let config_str = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        let llama_raw_config: LlamaRawConfig = serde_json::from_str(&config_str)
+            .map_err(|e| format!("Failed to parse Llama config: {}", e))?;
+        let llama_config = llama_raw_config.into_config(false); // no flash attention
+
+        let vocab_size = tokenizer.get_vocab_size(true);
+        let eos_token_id = match &llama_config.eos_token_id {
+            Some(candle_transformers::models::llama::LlamaEosToks::Single(id)) => *id,
+            Some(candle_transformers::models::llama::LlamaEosToks::Multiple(ids)) => ids.first().copied().unwrap_or(2),
+            None => tokenizer.token_to_id("</s>").unwrap_or(2),
+        };
+
+        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
+
+        // Create Llama model from weights
+        let model = LlamaModel::load(vb, &llama_config)
+            .map_err(|e| format!("Failed to load Llama model: {}", e))?;
+
+        // Create cache for KV state
+        let cache = LlamaCache::new(true, DType::F32, &llama_config, &self.device)
+            .map_err(|e| format!("Failed to create Llama cache: {}", e))?;
+
+        println!("✅ Llama model loaded: vocab_size={}", vocab_size);
+
+        Ok(LoadedModelResult {
+            architecture: ModelArchitecture::Llama(model, cache),
+            config: ModelConfig { vocab_size, eos_token_id, bos_token_id: llama_config.bos_token_id },
+            weights_path,
+            config_path,
+        })
+    }
+
+    /// Load Mistral model architecture (supports sharded weights)
+    fn load_mistral(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
+        // Download weights (handles both single and sharded)
+        let weight_paths = self.download_weights(repo)?;
+        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| format!("Failed to download config: {}", e))?;
+        println!("📂 Config: {:?}", config_path);
+
+        let config_str = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        let mistral_config: MistralConfig = serde_json::from_str(&config_str)
+            .map_err(|e| format!("Failed to parse Mistral config: {}", e))?;
+
+        let vocab_size = tokenizer.get_vocab_size(true);
+        let eos_token_id = tokenizer.token_to_id("</s>").unwrap_or(2);
+
+        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
+
+        let model = MistralModel::new(&mistral_config, vb)
+            .map_err(|e| format!("Failed to create Mistral model: {}", e))?;
+        println!("✅ Mistral model loaded: vocab_size={}", vocab_size);
+
+        Ok(LoadedModelResult {
+            architecture: ModelArchitecture::Mistral(model),
+            config: ModelConfig { vocab_size, eos_token_id, bos_token_id: None },
+            weights_path,
+            config_path,
+        })
+    }
+
+    /// Load Qwen2 model architecture (supports sharded weights)
+    fn load_qwen2(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
+        // Download weights (handles both single and sharded)
+        let weight_paths = self.download_weights(repo)?;
+        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
+
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| format!("Failed to download config: {}", e))?;
+        println!("📂 Config: {:?}", config_path);
+
+        let config_str = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        let qwen2_config: Qwen2Config = serde_json::from_str(&config_str)
+            .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
+
+        let vocab_size = tokenizer.get_vocab_size(true);
+        let eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+            .or_else(|| tokenizer.token_to_id("<|im_end|>"))
+            .unwrap_or(151643);
+
+        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
+
+        let model = Qwen2Model::new(&qwen2_config, vb)
+            .map_err(|e| format!("Failed to create Qwen2 model: {}", e))?;
+        println!("✅ Qwen2 model loaded: vocab_size={}", vocab_size);
+
+        Ok(LoadedModelResult {
+            architecture: ModelArchitecture::Qwen2(model),
+            config: ModelConfig { vocab_size, eos_token_id, bos_token_id: None },
+            weights_path,
+            config_path,
+        })
+    }
+
+    /// Detect model architecture from model_id or config.json
+    fn detect_architecture(&self, model_id: &str, config_path: &std::path::Path) -> &'static str {
+        let model_id_lower = model_id.to_lowercase();
+
+        // Check model_id first
+        if model_id_lower.contains("llama") {
+            return "llama";
+        }
+        if model_id_lower.contains("mistral") {
+            return "mistral";
+        }
+        if model_id_lower.contains("qwen") {
+            return "qwen2";
+        }
+        if model_id_lower.contains("phi") {
+            return "phi";
+        }
+
+        // Try to detect from config.json architectures field
+        if let Ok(config_str) = fs::read_to_string(config_path) {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
+                if let Some(archs) = config.get("architectures").and_then(|a| a.as_array()) {
+                    for arch in archs {
+                        if let Some(arch_str) = arch.as_str() {
+                            let arch_lower = arch_str.to_lowercase();
+                            if arch_lower.contains("llama") {
+                                return "llama";
+                            }
+                            if arch_lower.contains("mistral") {
+                                return "mistral";
+                            }
+                            if arch_lower.contains("qwen") {
+                                return "qwen2";
+                            }
+                            if arch_lower.contains("phi") {
+                                return "phi";
+                            }
+                        }
+                    }
+                }
+                // Also check model_type field
+                if let Some(model_type) = config.get("model_type").and_then(|m| m.as_str()) {
+                    let mt_lower = model_type.to_lowercase();
+                    if mt_lower.contains("llama") {
+                        return "llama";
+                    }
+                    if mt_lower.contains("mistral") {
+                        return "mistral";
+                    }
+                    if mt_lower.contains("qwen") {
+                        return "qwen2";
+                    }
+                    if mt_lower.contains("phi") {
+                        return "phi";
+                    }
+                }
+            }
+        }
+
+        // Default to phi for unknown models
+        "phi"
+    }
+
+    /// Load safetensors file into a HashMap of tensors
+    fn load_safetensors_to_map(&self, path: &std::path::Path) -> ModelResult<HashMap<String, Tensor>> {
+        use safetensors::SafeTensors;
+
+        let data = fs::read(path)
+            .map_err(|e| format!("Failed to read safetensors: {}", e))?;
+        let tensors = SafeTensors::deserialize(&data)
+            .map_err(|e| format!("Failed to parse safetensors: {}", e))?;
+
+        let mut result: HashMap<String, Tensor> = HashMap::new();
+
+        for name in tensors.names() {
+            let view = tensors.tensor(name)
+                .map_err(|e| format!("Failed to get tensor {}: {}", name, e))?;
+
+            let shape: Vec<usize> = view.shape().to_vec();
+            let data = view.data();
+
+            // Handle F32 (most common for base models)
+            let tensor = match view.dtype() {
+                safetensors::Dtype::F32 => {
+                    let num_floats = data.len() / 4;
+                    let mut floats = vec![0f32; num_floats];
+                    for (i, chunk) in data.chunks_exact(4).enumerate() {
+                        floats[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    }
+                    Tensor::from_slice(&floats, shape.as_slice(), &self.device)
+                        .map_err(|e| format!("Failed to create tensor: {}", e))?
+                }
+                safetensors::Dtype::F16 => {
+                    let num_halfs = data.len() / 2;
+                    let mut floats = Vec::with_capacity(num_halfs);
+                    for chunk in data.chunks_exact(2) {
+                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                        floats.push(half::f16::from_bits(bits).to_f32());
+                    }
+                    Tensor::from_slice(&floats, shape.as_slice(), &self.device)
+                        .map_err(|e| format!("Failed to create tensor: {}", e))?
+                }
+                safetensors::Dtype::BF16 => {
+                    let num_halfs = data.len() / 2;
+                    let mut floats = Vec::with_capacity(num_halfs);
+                    for chunk in data.chunks_exact(2) {
+                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+                        floats.push(half::bf16::from_bits(bits).to_f32());
+                    }
+                    Tensor::from_slice(&floats, shape.as_slice(), &self.device)
+                        .map_err(|e| format!("Failed to create tensor: {}", e))?
+                }
+                _ => {
+                    println!("⚠️  Skipping tensor {} with unsupported dtype {:?}", name, view.dtype());
+                    continue;
+                }
+            };
+
+            result.insert(name.to_string(), tensor);
+        }
+
+        Ok(result)
+    }
+
+    /// Apply LoRA adapters to base weights and rebuild model
+    fn apply_adapters_to_model(
+        &self,
+        weights_path: &std::path::Path,
+        config_path: &std::path::Path,
+        adapters: &[LoadedAdapter],
+        tokenizer: &Tokenizer,
+    ) -> ModelResult<(ModelArchitecture, ModelConfig)> {
+        println!("🔄 Merging {} adapter(s) into model weights...", adapters.len());
+        let start = Instant::now();
+
+        // 1. Load base weights into HashMap
+        let mut base_weights = self.load_safetensors_to_map(weights_path)?;
+        println!("  📦 Loaded {} base tensors", base_weights.len());
+
+        // 2. Apply each adapter's deltas
+        let mut merged_count = 0;
+        for adapter in adapters {
+            for (layer_name, (_lora_a, _lora_b)) in &adapter.weights {
+                // The layer_name from adapter is like "model.layers.0.self_attn.q_proj"
+                // The base weight name is like "model.layers.0.self_attn.q_proj.weight"
+                let base_name = format!("{}.weight", layer_name);
+
+                if let Some(base_weight) = base_weights.get(&base_name) {
+                    // Compute delta: scaling * (B @ A)
+                    if let Some(delta_result) = adapter.get_weight_delta(layer_name) {
+                        match delta_result {
+                            Ok(delta) => {
+                                // Merge: W' = W + delta
+                                let merged = base_weight.add(&delta)
+                                    .map_err(|e| format!("Failed to merge weights for {}: {}", layer_name, e))?;
+                                base_weights.insert(base_name.clone(), merged);
+                                merged_count += 1;
+                            }
+                            Err(e) => {
+                                println!("⚠️  Failed to compute delta for {}: {}", layer_name, e);
+                            }
+                        }
+                    }
+                } else {
+                    // Try without .weight suffix (some layers store differently)
+                    println!("⚠️  No base weight found for: {} (tried {})", layer_name, base_name);
+                }
+            }
+        }
+        println!("  ✅ Merged {} layer weights", merged_count);
+
+        // 3. Rebuild model with merged weights
+        let config_str = fs::read_to_string(config_path)
+            .map_err(|e| format!("Failed to read config: {}", e))?;
+        let phi_config: PhiConfig = serde_json::from_str(&config_str)
+            .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+        // Create VarBuilder from the merged weights HashMap
+        let vb = VarBuilder::from_tensors(base_weights, DType::F32, &self.device);
+
+        let model = PhiModel::new(&phi_config, vb)
+            .map_err(|e| format!("Failed to create merged Phi model: {}", e))?;
+
+        let vocab_size = tokenizer.get_vocab_size(true);
+        let eos_token_id = tokenizer.token_to_id("<|endoftext|>")
+            .or_else(|| tokenizer.token_to_id("</s>"))
+            .or_else(|| tokenizer.token_to_id("<eos>"))
+            .unwrap_or(50256);
+
+        println!("  ✅ Model rebuilt with merged weights in {}ms", start.elapsed().as_millis());
+
+        Ok((
+            ModelArchitecture::Phi(model),
+            ModelConfig { vocab_size, eos_token_id, bos_token_id: None },
+        ))
     }
 }
 
@@ -540,14 +1123,19 @@ impl ModelProvider for HuggingFaceProvider {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
 
-        // Determine model architecture and load weights
-        let (architecture, config) = if model_id.to_lowercase().contains("phi") {
-            self.load_phi(&repo, &tokenizer, &model_id)?
-        } else {
-            // Default to Phi architecture for unknown models
-            // TODO: Add detection for Llama, Mistral, etc.
-            println!("⚠️  Unknown architecture, trying Phi format for: {}", model_id);
-            self.load_phi(&repo, &tokenizer, &model_id)?
+        // Detect and load model architecture
+        let config_path = repo
+            .get("config.json")
+            .map_err(|e| format!("Failed to download config for detection: {}", e))?;
+
+        let arch = self.detect_architecture(model_id, &config_path);
+        println!("🔍 Detected architecture: {}", arch);
+
+        let model_result = match arch {
+            "llama" => self.load_llama(&repo, &tokenizer, model_id)?,
+            "mistral" => self.load_mistral(&repo, &tokenizer, model_id)?,
+            "qwen2" => self.load_qwen2(&repo, &tokenizer, model_id)?,
+            _ => self.load_phi(&repo, &tokenizer, model_id)?,  // Default to Phi
         };
 
         let load_time_ms = load_start.elapsed().as_millis() as u64;
@@ -556,11 +1144,14 @@ impl ModelProvider for HuggingFaceProvider {
             model_id.to_string(),
             LoadedModel {
                 model_id: model_id.to_string(),
-                architecture,
+                architecture: model_result.architecture,
                 tokenizer,
-                config,
+                config: model_result.config,
                 device: self.device.clone(),
                 loaded_at: Instant::now(),
+                weights_path: Some(model_result.weights_path),
+                config_path: Some(model_result.config_path),
+                adapters_merged: false,
             },
         );
 
@@ -639,17 +1230,18 @@ impl AdapterManager for HuggingFaceProvider {
             adapter_name, model_id
         );
 
-        let adapter = LoadedAdapter {
-            name: adapter_name.to_string(),
-            path: adapter_path.to_string(),
-        };
+        // Load actual LoRA weights from safetensors file
+        let adapter = LoadedAdapter::load(adapter_name, adapter_path, &self.device)?;
+
+        let layer_count = adapter.weights.len();
+        let rank = adapter.rank;
 
         self.adapters
             .entry(model_id.to_string())
             .or_insert_with(Vec::new)
             .push(adapter);
 
-        println!("✅ Adapter loaded: {}", adapter_name);
+        println!("✅ Adapter loaded: {} ({} layers, rank={})", adapter_name, layer_count, rank);
 
         Ok(AdapterInfo {
             name: adapter_name.to_string(),
@@ -701,6 +1293,311 @@ impl AdapterManager for HuggingFaceProvider {
             })
             .unwrap_or_default()
     }
+
+    fn apply_adapters(&mut self, model_id: &str) -> ModelResult<ApplyResult> {
+        let start = Instant::now();
+
+        // Get loaded model and its paths
+        let loaded_model = self.models.get(model_id)
+            .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
+
+        let weights_path = loaded_model.weights_path.clone()
+            .ok_or_else(|| "No weights path stored for model".to_string())?;
+        let config_path = loaded_model.config_path.clone()
+            .ok_or_else(|| "No config path stored for model".to_string())?;
+
+        if loaded_model.adapters_merged {
+            return Err("Adapters already merged. Reload model to apply different adapters.".to_string());
+        }
+
+        // Get adapters for this model
+        let adapters = self.adapters.get(model_id)
+            .cloned()
+            .unwrap_or_default();
+
+        if adapters.is_empty() {
+            return Err(format!("No adapters loaded for model: {}", model_id));
+        }
+
+        let adapter_names: Vec<String> = adapters.iter().map(|a| a.name.clone()).collect();
+        let total_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
+
+        // Get tokenizer reference (we need to clone it since we'll mutate the model)
+        let tokenizer = self.models.get(model_id).unwrap().tokenizer.clone();
+
+        // Merge weights and rebuild model
+        let (new_arch, new_config) = self.apply_adapters_to_model(
+            &weights_path,
+            &config_path,
+            &adapters,
+            &tokenizer,
+        )?;
+
+        // Update the loaded model with merged architecture
+        let loaded_model = self.models.get_mut(model_id).unwrap();
+        loaded_model.architecture = new_arch;
+        loaded_model.config = new_config;
+        loaded_model.adapters_merged = true;
+        loaded_model.loaded_at = Instant::now();
+
+        let apply_time_ms = start.elapsed().as_millis() as u64;
+
+        println!("✅ Applied {} adapter(s) to {}: {} layers merged in {}ms",
+            adapter_names.len(), model_id, total_layers, apply_time_ms);
+
+        Ok(ApplyResult {
+            model_id: model_id.to_string(),
+            adapters_applied: adapter_names,
+            layers_merged: total_layers,
+            apply_time_ms,
+        })
+    }
+}
+
+// ============================================================================
+// Generation Helpers for Each Architecture (standalone functions to avoid borrow issues)
+// ============================================================================
+
+/// Generate with Phi model (internal KV cache)
+fn generate_with_phi(
+    model: &mut PhiModel,
+    prompt_tokens: &[u32],
+    max_tokens: usize,
+    logits_processor: &mut LogitsProcessor,
+    device: &Device,
+    eos_token_id: u32,
+) -> ModelResult<Vec<u32>> {
+    let prompt_len = prompt_tokens.len();
+    let total_capacity = prompt_len + max_tokens;
+    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
+    all_tokens.extend_from_slice(prompt_tokens);
+    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
+    let mut single_token_buf = [0u32; 1];
+
+    for i in 0..max_tokens {
+        let input = if i == 0 {
+            Tensor::new(all_tokens.as_slice(), device)
+                .map_err(|e| format!("Failed to create prompt tensor: {}", e))?
+        } else {
+            single_token_buf[0] = *all_tokens.last().unwrap_or(&0);
+            Tensor::new(&single_token_buf[..], device)
+                .map_err(|e| format!("Failed to create token tensor: {}", e))?
+        };
+
+        let input = input.unsqueeze(0)
+            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+
+        let logits = model
+            .forward(&input)
+            .map_err(|e| format!("Phi forward pass failed: {}", e))?;
+
+        if i == 0 {
+            println!("🔍 Phi logits shape: {:?}", logits.shape());
+        }
+
+        let next_token = sample_from_logits(&logits, logits_processor)?;
+
+        if next_token == eos_token_id {
+            break;
+        }
+
+        all_tokens.push(next_token);
+        gen_tokens.push(next_token);
+    }
+
+    Ok(*gen_tokens)
+}
+
+/// Generate with Llama model (external cache)
+fn generate_with_llama(
+    model: &LlamaModel,
+    cache: &mut LlamaCache,
+    prompt_tokens: &[u32],
+    max_tokens: usize,
+    logits_processor: &mut LogitsProcessor,
+    device: &Device,
+    eos_token_id: u32,
+) -> ModelResult<Vec<u32>> {
+    let prompt_len = prompt_tokens.len();
+    let total_capacity = prompt_len + max_tokens;
+    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
+    all_tokens.extend_from_slice(prompt_tokens);
+    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
+    let mut index_pos = 0usize;
+
+    for i in 0..max_tokens {
+        let (input_tokens, current_len) = if i == 0 {
+            (all_tokens.as_slice(), prompt_len)
+        } else {
+            let last = all_tokens.last().copied().unwrap_or(0);
+            (&[last][..], 1)
+        };
+
+        let input = Tensor::new(input_tokens, device)
+            .map_err(|e| format!("Failed to create tensor: {}", e))?
+            .unsqueeze(0)
+            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+
+        // Llama forward: (input, index_pos, cache)
+        let logits = model
+            .forward(&input, index_pos, cache)
+            .map_err(|e| format!("Llama forward pass failed: {}", e))?;
+
+        if i == 0 {
+            println!("🔍 Llama logits shape: {:?}", logits.shape());
+        }
+
+        index_pos += current_len;
+
+        let next_token = sample_from_logits(&logits, logits_processor)?;
+
+        if next_token == eos_token_id {
+            break;
+        }
+
+        all_tokens.push(next_token);
+        gen_tokens.push(next_token);
+    }
+
+    Ok(*gen_tokens)
+}
+
+/// Generate with Mistral model (internal KV cache, seqlen offset)
+fn generate_with_mistral(
+    model: &mut MistralModel,
+    prompt_tokens: &[u32],
+    max_tokens: usize,
+    logits_processor: &mut LogitsProcessor,
+    device: &Device,
+    eos_token_id: u32,
+) -> ModelResult<Vec<u32>> {
+    let prompt_len = prompt_tokens.len();
+    let total_capacity = prompt_len + max_tokens;
+    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
+    all_tokens.extend_from_slice(prompt_tokens);
+    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
+    let mut seqlen_offset = 0usize;
+
+    for i in 0..max_tokens {
+        let (input_tokens, current_len) = if i == 0 {
+            (all_tokens.as_slice(), prompt_len)
+        } else {
+            let last = all_tokens.last().copied().unwrap_or(0);
+            (&[last][..], 1)
+        };
+
+        let input = Tensor::new(input_tokens, device)
+            .map_err(|e| format!("Failed to create tensor: {}", e))?
+            .unsqueeze(0)
+            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+
+        // Mistral forward: (input, seqlen_offset)
+        let logits = model
+            .forward(&input, seqlen_offset)
+            .map_err(|e| format!("Mistral forward pass failed: {}", e))?;
+
+        if i == 0 {
+            println!("🔍 Mistral logits shape: {:?}", logits.shape());
+        }
+
+        seqlen_offset += current_len;
+
+        let next_token = sample_from_logits(&logits, logits_processor)?;
+
+        if next_token == eos_token_id {
+            break;
+        }
+
+        all_tokens.push(next_token);
+        gen_tokens.push(next_token);
+    }
+
+    Ok(*gen_tokens)
+}
+
+/// Generate with Qwen2 model (internal KV cache, seqlen offset)
+fn generate_with_qwen2(
+    model: &mut Qwen2Model,
+    prompt_tokens: &[u32],
+    max_tokens: usize,
+    logits_processor: &mut LogitsProcessor,
+    device: &Device,
+    eos_token_id: u32,
+) -> ModelResult<Vec<u32>> {
+    let prompt_len = prompt_tokens.len();
+    let total_capacity = prompt_len + max_tokens;
+    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
+    all_tokens.extend_from_slice(prompt_tokens);
+    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
+    let mut seqlen_offset = 0usize;
+
+    for i in 0..max_tokens {
+        let (input_tokens, current_len) = if i == 0 {
+            (all_tokens.as_slice(), prompt_len)
+        } else {
+            let last = all_tokens.last().copied().unwrap_or(0);
+            (&[last][..], 1)
+        };
+
+        let input = Tensor::new(input_tokens, device)
+            .map_err(|e| format!("Failed to create tensor: {}", e))?
+            .unsqueeze(0)
+            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
+
+        // Qwen2 forward: (input, seqlen_offset)
+        let logits = model
+            .forward(&input, seqlen_offset)
+            .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?;
+
+        if i == 0 {
+            println!("🔍 Qwen2 logits shape: {:?}", logits.shape());
+        }
+
+        seqlen_offset += current_len;
+
+        let next_token = sample_from_logits(&logits, logits_processor)?;
+
+        if next_token == eos_token_id {
+            break;
+        }
+
+        all_tokens.push(next_token);
+        gen_tokens.push(next_token);
+    }
+
+    Ok(*gen_tokens)
+}
+
+/// Sample next token from logits (shared across all architectures)
+fn sample_from_logits(
+    logits: &Tensor,
+    logits_processor: &mut LogitsProcessor,
+) -> ModelResult<u32> {
+    let dims = logits.dims();
+    let last_logits = match dims.len() {
+        2 => {
+            // Shape [batch, vocab] - squeeze batch dim
+            logits.squeeze(0)
+                .map_err(|e| format!("Failed to squeeze 2D: {}", e))?
+        }
+        3 => {
+            // Shape [batch, seq, vocab] - get last token
+            let seq_len = dims[1];
+            if seq_len == 0 {
+                return Err("Empty sequence in logits".to_string());
+            }
+            logits
+                .squeeze(0)  // [seq, vocab]
+                .map_err(|e| format!("Failed to squeeze 3D: {}", e))?
+                .get(seq_len - 1)  // [vocab]
+                .map_err(|e| format!("Failed to get last token: {}", e))?
+        }
+        _ => return Err(format!("Unexpected logits dims: {:?}", dims)),
+    };
+
+    logits_processor
+        .sample(&last_logits)
+        .map_err(|e| format!("Sampling failed: {}", e))
 }
 
 impl TextGenerator for HuggingFaceProvider {
@@ -723,10 +1620,34 @@ impl TextGenerator for HuggingFaceProvider {
 
         let adapters_used = request.adapters.clone().unwrap_or_default();
 
+        // NOTE: LoRA adapters are loaded with actual weights (see LoadedAdapter::load),
+        // but weight application during inference is not yet implemented.
+        //
+        // STATUS: LoadedAdapter now stores the actual A/B weight tensors and can compute
+        // weight deltas via get_weight_delta(). However, Candle's PhiModel holds weights
+        // immutably after construction.
+        //
+        // TO IMPLEMENT LoRA APPLICATION (choose one):
+        // 1. Weight merging: Rebuild model with W' = W + scaling*(B@A) for each target layer
+        //    - Slow but works with current architecture
+        //    - Cache merged model when adapter set changes
+        // 2. Custom forward: Implement LoRA-aware forward pass that applies delta at runtime
+        //    - Faster for adapter switching but requires model architecture changes
+        // 3. candle-lora: Wait for/contribute to candle-lora crate for native support
+        //
+        // For now, log adapters but generation uses base model weights only.
+        if !adapters_used.is_empty() {
+            println!("⚠️  Adapters requested but not yet applied: {:?}", adapters_used);
+            println!("   LoRA weights ARE loaded, but weight merging not implemented yet.");
+            println!("   See TODO in generate() for implementation options.");
+        }
+
         if let Ok(mut log) = self.logger.lock() {
             log.info(&format!(
-                "Generating: {} prompt tokens, adapters: {:?}",
-                prompt_len, adapters_used
+                "Generating: {} prompt tokens, adapters: {:?}{}",
+                prompt_len,
+                adapters_used,
+                if adapters_used.is_empty() { "" } else { " (not applied)" }
             ));
         }
 
@@ -750,82 +1671,25 @@ impl TextGenerator for HuggingFaceProvider {
             ModelArchitecture::Phi(model) => {
                 // Clear KV cache before starting generation
                 model.clear_kv_cache();
-
-                // Preallocate buffers - avoid reallocation during generation
-                let total_capacity = prompt_len + max_tokens;
-                let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
-                all_tokens.extend_from_slice(&prompt_tokens);
-
-                let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
-
-                // Reusable single-token buffer for subsequent forward passes
-                let mut single_token_buf = [0u32; 1];
-
-                for i in 0..max_tokens {
-                    // On first iteration, pass full prompt via slice reference
-                    // On subsequent iterations, pass single token (cache has the rest)
-                    let input = if i == 0 {
-                        Tensor::new(all_tokens.as_slice(), &device)
-                            .map_err(|e| format!("Failed to create prompt tensor: {}", e))?
-                    } else {
-                        // Use fixed buffer - no allocation
-                        single_token_buf[0] = *all_tokens.last().unwrap_or(&0);
-                        Tensor::new(&single_token_buf[..], &device)
-                            .map_err(|e| format!("Failed to create token tensor: {}", e))?
-                    };
-
-                    let input = input.unsqueeze(0)
-                        .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
-
-                    // Forward pass
-                    let logits = model
-                        .forward(&input)
-                        .map_err(|e| format!("Forward pass failed: {}", e))?;
-
-                    // Debug: print logits shape on first iteration only
-                    if i == 0 {
-                        println!("🔍 Logits shape: {:?}", logits.shape());
-                    }
-
-                    // Extract last token logits - handle both 2D and 3D shapes
-                    let dims = logits.dims();
-                    let last_logits = match dims.len() {
-                        2 => {
-                            // Shape [batch, vocab] - squeeze batch dim
-                            logits.squeeze(0)
-                                .map_err(|e| format!("Failed to squeeze 2D: {}", e))?
-                        }
-                        3 => {
-                            // Shape [batch, seq, vocab] - get last token
-                            let seq_len = dims[1];
-                            if seq_len == 0 {
-                                return Err("Empty sequence in logits".to_string());
-                            }
-                            logits
-                                .squeeze(0)  // [seq, vocab]
-                                .map_err(|e| format!("Failed to squeeze 3D: {}", e))?
-                                .get(seq_len - 1)  // [vocab]
-                                .map_err(|e| format!("Failed to get last token: {}", e))?
-                        }
-                        _ => return Err(format!("Unexpected logits dims: {:?}", dims)),
-                    };
-
-                    // Sample next token
-                    let next_token = logits_processor
-                        .sample(&last_logits)
-                        .map_err(|e| format!("Sampling failed: {}", e))?;
-
-                    // Check for EOS
-                    if next_token == eos_token_id {
-                        break;
-                    }
-
-                    all_tokens.push(next_token);
-                    gen_tokens.push(next_token);
-                }
-
-                // Move out of Box to return owned Vec
-                *gen_tokens
+                generate_with_phi(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
+            }
+            ModelArchitecture::Llama(model, cache) => {
+                // TODO: Cache.kvs is private in candle 0.8, can't clear it directly.
+                // For now, cache persists between requests. To fix:
+                // 1. Store LlamaConfig to recreate cache, or
+                // 2. Upgrade candle if clear() method added
+                // The cache still works correctly - just doesn't free memory between requests.
+                generate_with_llama(model, cache, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
+            }
+            ModelArchitecture::Mistral(model) => {
+                // Clear Mistral internal cache
+                model.clear_kv_cache();
+                generate_with_mistral(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
+            }
+            ModelArchitecture::Qwen2(model) => {
+                // Clear Qwen2 internal cache
+                model.clear_kv_cache();
+                generate_with_qwen2(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
             }
         };
 
@@ -903,6 +1767,10 @@ enum InferenceCommand {
 
     #[serde(rename = "adapters/list")]
     AdaptersList { model_id: String },
+
+    /// Apply loaded adapters by merging weights into model (rebuilds model)
+    #[serde(rename = "adapter/apply")]
+    AdapterApply { model_id: String },
 
     #[serde(rename = "generate")]
     Generate {
@@ -985,6 +1853,7 @@ impl<P: ModelProvider + AdapterManager + TextGenerator> InferenceWorker<P> {
             InferenceCommand::AdapterLoad { .. } => "adapter/load",
             InferenceCommand::AdapterUnload { .. } => "adapter/unload",
             InferenceCommand::AdaptersList { .. } => "adapters/list",
+            InferenceCommand::AdapterApply { .. } => "adapter/apply",
             InferenceCommand::Generate { .. } => "generate",
         }
         .to_string()
@@ -1067,6 +1936,12 @@ impl<P: ModelProvider + AdapterManager + TextGenerator> InferenceWorker<P> {
                     "adapters": adapter_details,
                     "count": adapters.len()
                 }))
+            }
+
+            InferenceCommand::AdapterApply { model_id } => {
+                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
+                let result = provider.apply_adapters(&model_id)?;
+                Ok(serde_json::to_value(result).unwrap_or(json!({})))
             }
 
             InferenceCommand::Generate {

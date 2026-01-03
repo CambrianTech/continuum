@@ -226,13 +226,22 @@ export class CandleAdapter extends BaseAIProviderAdapter {
    *
    * This is THE genome vision - compose multiple adapters at inference time.
    * Example: Load tone_adapter + reasoning_adapter + expertise_adapter
+   *
+   * The flow is:
+   * 1. Load adapter weights into memory (adapter/load)
+   * 2. Merge weights into model (adapter/apply) - rebuilds model
+   * 3. Generate uses merged weights
+   *
+   * NOTE: Once adapters are applied, you cannot change them without reloading the model.
+   * For multi-adapter composition, load ALL adapters first, then call applySkill once.
    */
   async applySkill(skillImplementation: {
     modelId: string;
     adapterPath: string;
     adapterName: string;
+    applyImmediately?: boolean; // Default true - merge weights right away
   }): Promise<void> {
-    const { modelId, adapterPath, adapterName } = skillImplementation;
+    const { modelId, adapterPath, adapterName, applyImmediately = true } = skillImplementation;
 
     // Ensure model is loaded first
     if (!this.loadedModels.has(modelId)) {
@@ -240,7 +249,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       this.loadedModels.add(modelId);
     }
 
-    // Load the adapter
+    // Load the adapter weights into memory
     await this.client.loadAdapter(modelId, adapterPath, adapterName);
 
     // Track loaded adapter
@@ -248,7 +257,45 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     adapters.push({ modelId, adapterName, adapterPath });
     this.loadedAdapters.set(modelId, adapters);
 
-    this.log(null, 'info', `Applied adapter ${adapterName} to model ${modelId}`);
+    this.log(null, 'info', `Loaded adapter ${adapterName} for model ${modelId}`);
+
+    // Apply adapters (merge weights) if requested
+    if (applyImmediately) {
+      const result = await this.client.applyAdapters(modelId);
+      this.log(null, 'info', `Applied adapters to ${modelId}: ${result.layersMerged} layers merged in ${result.applyTimeMs}ms`);
+    }
+  }
+
+  /**
+   * Load multiple adapters and apply them together
+   *
+   * For multi-adapter composition, use this method to load all adapters first,
+   * then merge them in one step. This is more efficient than applying one at a time.
+   */
+  async applySkills(
+    modelId: string,
+    adapters: Array<{ adapterPath: string; adapterName: string }>
+  ): Promise<void> {
+    // Ensure model is loaded first
+    if (!this.loadedModels.has(modelId)) {
+      await this.client.loadModel(modelId);
+      this.loadedModels.add(modelId);
+    }
+
+    // Load all adapters without applying
+    for (const { adapterPath, adapterName } of adapters) {
+      await this.client.loadAdapter(modelId, adapterPath, adapterName);
+
+      const tracked = this.loadedAdapters.get(modelId) || [];
+      tracked.push({ modelId, adapterName, adapterPath });
+      this.loadedAdapters.set(modelId, tracked);
+
+      this.log(null, 'info', `Loaded adapter ${adapterName} for model ${modelId}`);
+    }
+
+    // Apply all adapters at once (single weight merge)
+    const result = await this.client.applyAdapters(modelId);
+    this.log(null, 'info', `Applied ${adapters.length} adapters to ${modelId}: ${result.layersMerged} layers merged in ${result.applyTimeMs}ms`);
   }
 
   /**

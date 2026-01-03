@@ -63,6 +63,14 @@ export interface AdapterInfo {
   status: string;
 }
 
+/** Result of applying (merging) adapters into model */
+export interface ApplyAdaptersResult {
+  modelId: string;
+  adaptersApplied: string[];
+  layersMerged: number;
+  applyTimeMs: number;
+}
+
 /** Text generation request */
 export interface GenerateRequest {
   modelId: string;
@@ -253,6 +261,25 @@ export class InferenceWorkerClient {
       adapter_name: adapterName
     });
     log.info(`Unloaded adapter: ${adapterName} from ${modelId}`);
+  }
+
+  /**
+   * Apply loaded adapters by merging weights into model
+   *
+   * This performs weight merging: W' = W + scaling * (B @ A) for each layer.
+   * The model is rebuilt with merged weights. After calling this:
+   * - Generate requests will use the merged weights
+   * - Cannot apply different adapters without reloading the model
+   *
+   * @param modelId - Model with loaded adapters to merge
+   */
+  async applyAdapters(modelId: string): Promise<ApplyAdaptersResult> {
+    const response = await this.sendCommand({
+      command: 'adapter/apply',
+      model_id: modelId
+    });
+    log.info(`Applied adapters to ${modelId}: ${response.payload.layersMerged} layers merged`);
+    return response.payload;
   }
 
   // ============================================================================

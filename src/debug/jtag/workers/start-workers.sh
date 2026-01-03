@@ -18,16 +18,10 @@ if ! command -v jq &> /dev/null; then
   exit 1
 fi
 
-# Build all enabled workers
+# Build all workers from workspace (single build for all crates)
 echo -e "${YELLOW}🔨 Building Rust workers...${NC}"
-jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE" | while read -r worker; do
-  name=$(echo "$worker" | jq -r '.name')
-  binary=$(echo "$worker" | jq -r '.binary')
-  build_dir=$(dirname "$binary" | sed 's|/target/.*||')
-
-  echo -e "   Building ${name}-worker..."
-  (cd "$build_dir" && cargo build --release --quiet)
-done
+SCRIPT_DIR="$(dirname "$0")"
+(cd "$SCRIPT_DIR" && cargo build --release --quiet)
 echo -e "${GREEN}✅ Build complete${NC}"
 
 # Setup log directory

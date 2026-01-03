@@ -44,6 +44,9 @@ safetensors = "0.4"
 # Half-precision floats (f16, bf16)
 half = "2.3"
 
+# Byte slice casting (for safetensors -> tensor conversion)
+bytemuck = { version = "1.14", features = ["derive"] }
+
 # HuggingFace Hub for model downloads
 hf-hub = "0.4"
 
