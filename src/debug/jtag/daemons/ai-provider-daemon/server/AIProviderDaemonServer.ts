@@ -101,11 +101,31 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // Register adapters dynamically (server-only code)
     this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
 
+    // Register Candle adapter (native Rust inference, Metal-accelerated)
+    // Higher priority than Ollama when available - no HTTP overhead, multi-adapter LoRA support
+    try {
+      const { InferenceWorkerClient } = await import('../../../system/core/services/InferenceWorkerClient');
+      const candleAvailable = await InferenceWorkerClient.instance.isAvailable();
+
+      if (candleAvailable) {
+        const { CandleAdapter } = await import('../adapters/candle/shared/CandleAdapter');
+        await this.registerAdapter(new CandleAdapter(), {
+          priority: 105, // Higher than Ollama - native Rust is faster
+          enabled: true,
+        });
+        this.log.info('✅ AIProviderDaemonServer: Candle adapter registered (Native Rust inference)');
+      } else {
+        this.log.info('ℹ️  AIProviderDaemonServer: Candle inference worker not available, skipping');
+      }
+    } catch (error) {
+      this.log.debug(`Candle adapter not available: ${error instanceof Error ? error.message : error}`);
+    }
+
     // Register Ollama adapter (local, free, private)
     // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
     const { OllamaAdapter } = await import('../adapters/ollama/shared/OllamaAdapter');
     await this.registerAdapter(new OllamaAdapter({ maxConcurrent: 4 }), {
-      priority: 100, // Highest priority - free and local
+      priority: 100, // Highest priority when Candle not available - free and local
       enabled: true,
     });
 

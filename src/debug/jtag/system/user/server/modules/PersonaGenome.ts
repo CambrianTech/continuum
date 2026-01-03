@@ -315,6 +315,13 @@ export class PersonaGenome {
   }
 
   /**
+   * Check if an adapter exists (active or registered)
+   */
+  hasAdapter(adapterName: string): boolean {
+    return this.activeAdapters.has(adapterName) || this.availableAdapters.has(adapterName);
+  }
+
+  /**
    * Get list of all active adapters
    */
   getActiveAdapters(): LoRAAdapter[] {

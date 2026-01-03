@@ -33,6 +33,16 @@
       "enabled": true
     },
     {
+      "name": "inference",
+      "binary": "workers/inference/target/release/inference-worker",
+      "socket": "/tmp/jtag-inference.sock",
+      "args": [
+        "/tmp/jtag-inference.sock"
+      ],
+      "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
+      "enabled": true
+    },
+    {
       "name": "logger",
       "binary": "workers/logger/target/release/logger-worker",
       "socket": "/tmp/jtag-logger-worker.sock",
