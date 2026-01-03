@@ -49,6 +49,8 @@ import {
   SimilarityMetrics
 } from '../shared/VectorSearchTypes';
 import { RustEmbeddingClient } from '../../../system/core/services/RustEmbeddingClient';
+import { RustVectorSearchClient } from '../../../system/core/services/RustVectorSearchClient';
+import { SqlNamingConverter } from '../shared/SqlNamingConverter';
 
 /**
  * Vector record stored in backend
@@ -105,7 +107,8 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
   /**
    * Perform vector similarity search
    *
-   * Generic implementation using cosine similarity. Works for all backends.
+   * Routes to Rust data-daemon-worker when available (faster - vectors stay in Rust).
+   * Falls back to TypeScript implementation if Rust unavailable.
    */
   async vectorSearch<T extends RecordData>(
     options: VectorSearchOptions
@@ -140,7 +143,56 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         };
       }
 
-      // 2. Fetch all vectors from storage (delegates to backend-specific implementation)
+      // 2. Try Rust worker first (much faster - vectors stay in Rust, minimal IPC)
+      const rustClient = RustVectorSearchClient.instance;
+      if (await rustClient.isAvailable()) {
+        try {
+          // Convert collection name to table name (Rust reads from SQLite directly)
+          const tableName = SqlNamingConverter.toTableName(options.collection);
+          const queryArr = toNumberArray(queryVector);
+
+          const rustResult = await rustClient.search(
+            tableName,
+            queryArr,
+            k,
+            threshold,
+            true  // include_data - returns full records, avoids k IPC round trips
+          );
+
+          // Convert Rust results to our format
+          const results: VectorSearchResult<T>[] = rustResult.results.map(r => ({
+            id: r.id as UUID,
+            data: r.data as T,
+            score: r.score,
+            distance: 1 - r.score,
+            metadata: {
+              collection: options.collection,
+              embeddingModel: options.embeddingModel?.name,
+              queryTime: Date.now() - startTime
+            }
+          }));
+
+          return {
+            success: true,
+            data: {
+              results,
+              totalResults: results.length,
+              queryVector,
+              metadata: {
+                collection: options.collection,
+                searchMode: hybridMode,
+                embeddingModel: options.embeddingModel?.name || DEFAULT_EMBEDDING_MODELS['all-minilm'].name,
+                queryTime: Date.now() - startTime
+              }
+            }
+          };
+        } catch (rustError) {
+          // Log and fall through to TypeScript implementation
+          console.warn(`Rust vector search failed, falling back to TypeScript: ${rustError}`);
+        }
+      }
+
+      // 3. Fallback: Fetch all vectors from storage (TypeScript implementation)
       const vectors = await this.vectorOps.getAllVectors(options.collection);
 
       if (vectors.length === 0) {
@@ -160,8 +212,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         };
       }
 
-      // 3. Compute cosine similarity in-process (faster than IPC to Rust for typical workloads)
-      // V8 is highly optimized and JSON serialization overhead dominates for IPC
+      // 4. Compute cosine similarity in TypeScript
       const queryArr = toNumberArray(queryVector);
 
       const scored: Array<{ idx: number; score: number }> = [];
@@ -173,7 +224,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         }
       }
 
-      // 4. Sort by score descending and take top-k
+      // 5. Sort by score descending and take top-k
       scored.sort((a, b) => b.score - a.score);
       const topK: Array<{ id: UUID; score: number; distance: number }> = [];
       for (let i = 0; i < Math.min(k, scored.length); i++) {
@@ -185,7 +236,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         });
       }
 
-      // 5. Fetch actual records (uses existing storage adapter!)
+      // 6. Fetch actual records (uses existing storage adapter!)
       const results: VectorSearchResult<T>[] = [];
 
       for (const sim of topK) {
@@ -205,7 +256,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         }
       }
 
-      // 6. Apply metadata filters if provided (hybrid search)
+      // 7. Apply metadata filters if provided (hybrid search)
       let filteredResults = results;
       if (options.filter && hybridMode !== 'semantic') {
         // TODO: Implement filter application on results
