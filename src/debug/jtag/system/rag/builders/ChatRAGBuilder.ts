@@ -34,6 +34,16 @@ import { getContextWindow } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
+// RAGSource pattern imports
+import { RAGComposer } from '../shared/RAGComposer';
+import type { RAGSourceContext, RAGCompositionResult, RAGSection } from '../shared/RAGSource';
+import {
+  ConversationHistorySource,
+  SemanticMemorySource,
+  WidgetContextSource,
+  PersonaIdentitySource
+} from '../sources';
+
 /**
  * Chat-specific RAG builder
  * Converts chat room conversations into LLM-ready context
@@ -42,10 +52,66 @@ export class ChatRAGBuilder extends RAGBuilder {
   readonly domain: RAGDomain = 'chat';
   private log: (message: string, ...args: any[]) => void;
 
+  // RAGComposer for modular, parallelized source loading
+  private composer: RAGComposer | null = null;
+  private useModularSources = true;  // Feature flag for gradual migration
+
   constructor(logger?: (message: string, ...args: any[]) => void) {
     super();
     // Default to console.log if no logger provided (for tests)
     this.log = logger || console.log.bind(console);
+  }
+
+  /**
+   * Initialize the RAGComposer with chat-relevant sources
+   * Sources are loaded in parallel for better performance
+   */
+  private getComposer(): RAGComposer {
+    if (!this.composer) {
+      this.composer = new RAGComposer();
+      this.composer.registerAll([
+        new PersonaIdentitySource(),     // Priority 95: Who the AI is
+        new ConversationHistorySource(), // Priority 80: Chat messages (uses queryWithJoin!)
+        new WidgetContextSource(),       // Priority 75: UI state from Positron
+        new SemanticMemorySource()       // Priority 60: Long-term memories
+      ]);
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 4 sources');
+    }
+    return this.composer;
+  }
+
+  /**
+   * Extract loaded data from RAGCompositionResult sections
+   * Maps RAGSection fields to the format expected by buildContext
+   */
+  private extractFromComposition(result: RAGCompositionResult): {
+    identity: PersonaIdentity | null;
+    conversationHistory: LLMMessage[];
+    memories: PersonaMemory[];
+    widgetContext: string | null;
+  } {
+    let identity: PersonaIdentity | null = null;
+    let conversationHistory: LLMMessage[] = [];
+    let memories: PersonaMemory[] = [];
+    let widgetContext: string | null = null;
+
+    for (const section of result.sections) {
+      if (section.identity) {
+        identity = section.identity;
+      }
+      if (section.messages && section.messages.length > 0) {
+        conversationHistory = section.messages;
+      }
+      if (section.memories && section.memories.length > 0) {
+        memories = section.memories;
+      }
+      if (section.systemPromptSection && section.sourceName === 'widget-context') {
+        // Extract the raw context from the formatted section
+        widgetContext = section.systemPromptSection;
+      }
+    }
+
+    return { identity, conversationHistory, memories, widgetContext };
   }
 
   /**
@@ -68,45 +134,108 @@ export class ChatRAGBuilder extends RAGBuilder {
     const includeArtifacts = options?.includeArtifacts ?? true;
     const includeMemories = options?.includeMemories ?? true;
 
-    // PARALLELIZED: All these queries are independent, run them concurrently
-    // This reduces RAG context build time from ~240ms (sequential) to ~40ms (parallel)
-    const [
-      identity,
-      conversationHistory,
-      artifacts,
-      privateMemories,
-      recipeStrategy,
-      learningConfig,
-      widgetContext
-    ] = await Promise.all([
-      // 1. Load persona identity (with room context for system prompt)
-      this.loadPersonaIdentity(personaId, contextId, options),
+    let identity: PersonaIdentity;
+    let conversationHistory: LLMMessage[];
+    let artifacts: RAGArtifact[];
+    let privateMemories: PersonaMemory[];
+    let recipeStrategy: RecipeStrategy | undefined;
+    let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
+    let widgetContext: string | null;
 
-      // 2. Load recent conversation history from database
-      // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
-      // Strokes emit system messages to the canvas room, so AIs see them naturally here
-      this.loadConversationHistory(contextId, personaId, maxMessages),
+    if (this.useModularSources) {
+      // NEW PATH: Use RAGComposer for modular, parallelized source loading
+      // Benefits: queryWithJoin for messages (4.5x faster), testable sources, budget allocation
+      const composer = this.getComposer();
 
-      // 3. Extract image attachments from messages (for vision models)
-      includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
-
-      // 4. Load private memories (semantic recall uses currentMessage for context-aware retrieval)
-      includeMemories ? this.loadPrivateMemories(
+      const sourceContext: RAGSourceContext = {
         personaId,
-        contextId,
-        maxMemories,
-        options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
-      ) : Promise.resolve([]),
+        roomId: contextId,
+        sessionId: options?.sessionId,
+        options: {
+          ...options,
+          maxMessages,
+          maxMemories,
+          includeMemories,
+          currentMessage: options?.currentMessage
+        },
+        totalBudget: 8000  // Default token budget
+      };
 
-      // 5. Load room's recipe strategy (conversation governance rules)
-      this.loadRecipeStrategy(contextId),
+      // Load core sources via composer (parallel)
+      const composition = await composer.compose(sourceContext);
+      const extracted = this.extractFromComposition(composition);
 
-      // 6. Load learning configuration (Phase 2: Per-participant learning mode)
-      this.loadLearningConfig(contextId, personaId),
+      // Use composed data, with fallbacks for missing pieces
+      identity = extracted.identity ?? {
+        name: 'AI Assistant',
+        systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
+      };
+      conversationHistory = extracted.conversationHistory;
+      privateMemories = extracted.memories;
+      widgetContext = extracted.widgetContext;
 
-      // 7. Load widget context for AI awareness (Positron Layer 1)
-      this.loadWidgetContext(options)
-    ]);
+      // Still load these via legacy methods (not yet extracted to sources)
+      const [extractedArtifacts, extractedRecipeStrategy, extractedLearningConfig] = await Promise.all([
+        includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
+        this.loadRecipeStrategy(contextId),
+        this.loadLearningConfig(contextId, personaId)
+      ]);
+      artifacts = extractedArtifacts;
+      recipeStrategy = extractedRecipeStrategy;
+      learningConfig = extractedLearningConfig;
+
+      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms`);
+
+    } else {
+      // LEGACY PATH: Direct parallel loading (fallback)
+      // PARALLELIZED: All these queries are independent, run them concurrently
+      // This reduces RAG context build time from ~240ms (sequential) to ~40ms (parallel)
+      const [
+        loadedIdentity,
+        loadedConversationHistory,
+        loadedArtifacts,
+        loadedPrivateMemories,
+        loadedRecipeStrategy,
+        loadedLearningConfig,
+        loadedWidgetContext
+      ] = await Promise.all([
+        // 1. Load persona identity (with room context for system prompt)
+        this.loadPersonaIdentity(personaId, contextId, options),
+
+        // 2. Load recent conversation history from database
+        // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
+        // Strokes emit system messages to the canvas room, so AIs see them naturally here
+        this.loadConversationHistory(contextId, personaId, maxMessages),
+
+        // 3. Extract image attachments from messages (for vision models)
+        includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
+
+        // 4. Load private memories (semantic recall uses currentMessage for context-aware retrieval)
+        includeMemories ? this.loadPrivateMemories(
+          personaId,
+          contextId,
+          maxMemories,
+          options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
+        ) : Promise.resolve([]),
+
+        // 5. Load room's recipe strategy (conversation governance rules)
+        this.loadRecipeStrategy(contextId),
+
+        // 6. Load learning configuration (Phase 2: Per-participant learning mode)
+        this.loadLearningConfig(contextId, personaId),
+
+        // 7. Load widget context for AI awareness (Positron Layer 1)
+        this.loadWidgetContext(options)
+      ]);
+
+      identity = loadedIdentity;
+      conversationHistory = loadedConversationHistory;
+      artifacts = loadedArtifacts;
+      privateMemories = loadedPrivateMemories;
+      recipeStrategy = loadedRecipeStrategy;
+      learningConfig = loadedLearningConfig;
+      widgetContext = loadedWidgetContext;
+    }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
     // If target model can't see images, generate text descriptions

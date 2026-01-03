@@ -17,6 +17,7 @@ import type {
   DataStorageAdapter,
   DataRecord,
   StorageQuery,
+  StorageQueryWithJoin,
   StorageResult,
   StorageAdapterConfig,
   CollectionStats,
@@ -955,6 +956,39 @@ export class DataDaemon {
     }
 
     return await DataDaemon.sharedInstance.query<T>(query, DataDaemon.context);
+  }
+
+  /**
+   * Query with JOINs for optimal loading - CLEAN INTERFACE
+   *
+   * Uses queryWithJoin for loading related data in a single query (4.5x faster than N+1).
+   *
+   * @example
+   * const messages = await DataDaemon.queryWithJoin<MessageWithSender>({
+   *   collection: 'chat_messages',
+   *   filter: { roomId: 'general' },
+   *   joins: [{
+   *     collection: 'users',
+   *     alias: 'sender',
+   *     localField: 'senderId',
+   *     foreignField: 'id',
+   *     type: 'left',
+   *     select: ['displayName', 'userType']
+   *   }],
+   *   limit: 50
+   * });
+   */
+  static async queryWithJoin<T extends RecordData>(query: StorageQueryWithJoin): Promise<StorageResult<DataRecord<T>[]>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    const adapter = DataDaemon.sharedInstance.adapter;
+    if (!adapter) {
+      throw new Error('DataDaemon adapter not initialized');
+    }
+
+    return await adapter.queryWithJoin<T>(query);
   }
 
   /**
