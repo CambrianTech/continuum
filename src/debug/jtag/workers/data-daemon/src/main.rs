@@ -488,8 +488,9 @@ impl SqliteStrategy {
                 .map_err(|e| format!("Failed to checkpoint WAL: {}", e))?;
         }
 
-        // Configure based on detected storage (assume single-writer for now)
-        let pragmas = get_sqlite_pragmas(storage_type, false);
+        // Configure based on detected storage
+        // ALWAYS use multi_writer=true since TypeScript (better-sqlite3) also accesses these databases
+        let pragmas = get_sqlite_pragmas(storage_type, true);
         conn.execute_batch(&pragmas)
             .map_err(|e| format!("Failed to configure SQLite: {}", e))?;
 
@@ -887,21 +888,75 @@ impl ConcurrencyStrategy for JsonStrategy {
 }
 
 // ============================================================================
-// Adapter Registry
+// Adapter Registry - with path-based caching for concurrent access
 // ============================================================================
 
 struct AdapterRegistry {
-    adapters: Arc<Mutex<HashMap<AdapterHandle, (AdapterType, Box<dyn ConcurrencyStrategy>)>>>,
+    adapters: Arc<Mutex<HashMap<AdapterHandle, (AdapterType, Arc<dyn ConcurrencyStrategy>)>>>,
+    /// Cache: database path → shared adapter (prevents concurrent opens of same DB)
+    path_cache: Arc<Mutex<HashMap<String, Arc<dyn ConcurrencyStrategy>>>>,
+    /// Serializes adapter opening to prevent concurrent SQLite pragma configuration
+    open_lock: Arc<Mutex<()>>,
 }
 
 impl AdapterRegistry {
     fn new() -> Self {
         Self {
             adapters: Arc::new(Mutex::new(HashMap::new())),
+            path_cache: Arc::new(Mutex::new(HashMap::new())),
+            open_lock: Arc::new(Mutex::new(())),
         }
     }
 
-    fn register(&self, adapter_type: AdapterType, strategy: Box<dyn ConcurrencyStrategy>) -> AdapterHandle {
+    /// Register an adapter, reusing cached connection if available
+    fn register_with_cache(&self, adapter_type: AdapterType, path: &str) -> Result<AdapterHandle, String> {
+        // Serialize all opens to prevent concurrent pragma configuration
+        let _open_guard = self.open_lock.lock().unwrap();
+
+        // Check cache first
+        {
+            let cache = self.path_cache.lock().unwrap();
+            if let Some(existing) = cache.get(path) {
+                // Reuse existing adapter
+                let handle = AdapterHandle::new();
+                let mut adapters = self.adapters.lock().unwrap();
+                adapters.insert(handle, (adapter_type.clone(), existing.clone()));
+                println!("♻️  Reusing cached adapter for: {} → {:?}", path, handle);
+                return Ok(handle);
+            }
+        }
+
+        // Create new adapter (still under open_lock)
+        let strategy: Arc<dyn ConcurrencyStrategy> = match adapter_type {
+            AdapterType::Sqlite => {
+                Arc::new(SqliteStrategy::new(path.to_string())?)
+            }
+            AdapterType::Postgres => {
+                Arc::new(PostgresStrategy {})
+            }
+            AdapterType::Json => {
+                Arc::new(JsonStrategy::new(path.to_string())?)
+            }
+        };
+
+        // Cache the new adapter
+        {
+            let mut cache = self.path_cache.lock().unwrap();
+            cache.insert(path.to_string(), strategy.clone());
+        }
+
+        // Register with new handle
+        let handle = AdapterHandle::new();
+        {
+            let mut adapters = self.adapters.lock().unwrap();
+            adapters.insert(handle, (adapter_type.clone(), strategy));
+        }
+
+        println!("📝 Registered new adapter: {} → {:?}", path, handle);
+        Ok(handle)
+    }
+
+    fn register(&self, adapter_type: AdapterType, strategy: Arc<dyn ConcurrencyStrategy>) -> AdapterHandle {
         let handle = AdapterHandle::new();
         let mut adapters = self.adapters.lock().unwrap();
         adapters.insert(handle, (adapter_type.clone(), strategy));
@@ -1303,20 +1358,10 @@ impl RustDataDaemon {
     }
 
     fn open_adapter(&self, config: AdapterConfig) -> Result<AdapterHandle, String> {
-        let strategy: Box<dyn ConcurrencyStrategy> = match config.adapter_type {
-            AdapterType::Sqlite => {
-                Box::new(SqliteStrategy::new(config.connection_string)?)
-            }
-            AdapterType::Postgres => {
-                Box::new(PostgresStrategy {})
-            }
-            AdapterType::Json => {
-                Box::new(JsonStrategy::new(config.connection_string)?)
-            }
-        };
-
-        let handle = self.registry.register(config.adapter_type, strategy);
-        Ok(handle)
+        // Use register_with_cache to:
+        // 1. Serialize all opens (prevents concurrent pragma configuration)
+        // 2. Reuse existing adapters for same database path
+        self.registry.register_with_cache(config.adapter_type, &config.connection_string)
     }
 
     /// List entities from a collection with filtering and pagination
