@@ -97,7 +97,8 @@ export interface VectorStorageOperations {
 export class VectorSearchAdapterBase implements VectorSearchAdapter {
   constructor(
     private readonly storageAdapter: DataStorageAdapter,
-    private readonly vectorOps: VectorStorageOperations
+    private readonly vectorOps: VectorStorageOperations,
+    private readonly dbPath?: string
   ) {}
 
   // ============================================================================
@@ -130,7 +131,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         if (!embeddingResult.success || !embeddingResult.data) {
           return {
             success: false,
-            error: 'Failed to generate embedding for query text'
+            error: embeddingResult.error || 'Failed to generate embedding for query text'
           };
         }
         queryVector = embeddingResult.data.embedding;
@@ -144,6 +145,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
       }
 
       // 2. Try Rust worker first (much faster - vectors stay in Rust, minimal IPC)
+      // Now supports per-database handles via dbPath parameter.
       const rustClient = RustVectorSearchClient.instance;
       if (await rustClient.isAvailable()) {
         try {
@@ -156,7 +158,8 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
             queryArr,
             k,
             threshold,
-            true  // include_data - returns full records, avoids k IPC round trips
+            true,  // include_data - returns full records, avoids k IPC round trips
+            this.dbPath  // Pass database path for per-persona databases
           );
 
           // Convert Rust results to our format

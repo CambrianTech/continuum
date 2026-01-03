@@ -50,8 +50,9 @@ export class RustVectorSearchClient {
   private static _instance: RustVectorSearchClient | null = null;
 
   private socketPath: string;
-  private handle: string | null = null;
-  private dbPath: string;
+  /** Handle cache: dbPath → handle */
+  private handles: Map<string, string> = new Map();
+  private defaultDbPath: string;
 
   /** Track availability to avoid repeated connection attempts */
   private _available: boolean | null = null;
@@ -60,7 +61,7 @@ export class RustVectorSearchClient {
 
   private constructor(socketPath: string = DEFAULT_SOCKET_PATH) {
     this.socketPath = socketPath;
-    this.dbPath = getDatabasePath();
+    this.defaultDbPath = getDatabasePath();
   }
 
   /** Get shared instance */
@@ -102,18 +103,22 @@ export class RustVectorSearchClient {
   }
 
   /**
-   * Open adapter and get handle (cached)
+   * Open adapter and get handle (cached per database path)
+   *
+   * @param dbPath - Database path (defaults to main database)
    */
-  private async ensureHandle(): Promise<string> {
-    if (this.handle) {
-      return this.handle;
+  private async ensureHandle(dbPath?: string): Promise<string> {
+    const actualDbPath = dbPath || this.defaultDbPath;
+    const cached = this.handles.get(actualDbPath);
+    if (cached) {
+      return cached;
     }
 
     const response = await this.sendRequest({
       command: 'adapter/open',
       config: {
         adapter_type: 'sqlite',
-        connection_string: this.dbPath
+        connection_string: actualDbPath
       }
     });
 
@@ -122,8 +127,8 @@ export class RustVectorSearchClient {
     }
 
     const handle = response.data.handle as string;
-    this.handle = handle;
-    log.info(`Opened Rust adapter: ${handle}`);
+    this.handles.set(actualDbPath, handle);
+    log.info(`Opened Rust adapter for ${actualDbPath}: ${handle}`);
     return handle;
   }
 
@@ -135,15 +140,18 @@ export class RustVectorSearchClient {
    * @param k - Number of results (default: 10)
    * @param threshold - Minimum similarity threshold (default: 0.0)
    * @param includeData - Include full record data in results (default: true)
+   * @param dbPath - Database path (defaults to main database)
    */
   async search(
     collection: string,
     queryVector: number[],
     k: number = 10,
     threshold: number = 0.0,
-    includeData: boolean = true
+    includeData: boolean = true,
+    dbPath?: string
   ): Promise<RustVectorSearchResponse> {
-    const handle = await this.ensureHandle();
+    const actualDbPath = dbPath || this.defaultDbPath;
+    const handle = await this.ensureHandle(actualDbPath);
     const startTime = Date.now();
 
     const response = await this.sendRequest({
@@ -160,8 +168,8 @@ export class RustVectorSearchClient {
       // If handle expired, clear it and retry once
       if (response.message?.includes('Adapter not found')) {
         log.warn('Adapter handle expired, reconnecting...');
-        this.handle = null;
-        return this.search(collection, queryVector, k, threshold, includeData);
+        this.handles.delete(actualDbPath);
+        return this.search(collection, queryVector, k, threshold, includeData, dbPath);
       }
       throw new Error(response.message || 'Vector search failed');
     }
@@ -173,21 +181,24 @@ export class RustVectorSearchClient {
   }
 
   /**
-   * Close the adapter handle
+   * Close all adapter handles
    */
   async close(): Promise<void> {
-    if (!this.handle) return;
+    if (this.handles.size === 0) return;
 
-    try {
-      await this.sendRequest({
-        command: 'adapter/close',
-        handle: this.handle
-      });
-    } catch (error) {
-      log.debug(`Failed to close adapter: ${error}`);
+    for (const [dbPath, handle] of this.handles) {
+      try {
+        await this.sendRequest({
+          command: 'adapter/close',
+          handle
+        });
+        log.debug(`Closed adapter for ${dbPath}`);
+      } catch (error) {
+        log.debug(`Failed to close adapter for ${dbPath}: ${error}`);
+      }
     }
 
-    this.handle = null;
+    this.handles.clear();
     this._available = null;
   }
 
