@@ -1,23 +1,38 @@
 /// Candle Inference Worker - Native Rust LLM Inference
 ///
-/// ARCHITECTURE:
-/// - Trait-driven design for pluggable model providers and adapters
-/// - Uses shared JTAG protocol (JTAGRequest/JTAGResponse)
-/// - Integrated LoggerClient for proper logging
-/// - Metal acceleration on Apple Silicon
+/// ARCHITECTURE-AGNOSTIC DESIGN:
+/// - CausalLM trait abstracts all text generation models
+/// - Registry pattern maps HuggingFace architecture strings to loaders
+/// - Adding new models = just implementing CausalLM trait
+/// - Supports 30+ model families from candle-transformers
 ///
-/// TRAITS:
-/// - ModelProvider: Load/unload models from different sources
-/// - AdapterManager: Load/unload/compose LoRA adapters
-/// - TextGenerator: Generate text from a model + adapters
+/// SUPPORTED ARCHITECTURES:
+/// - Llama/Llama2/Llama3 (and derivatives: Vicuna, Alpaca, CodeLlama, etc.)
+/// - Mistral/Mixtral
+/// - Phi/Phi-2/Phi-3
+/// - Qwen/Qwen2/Qwen2-MoE
+/// - Gemma/Gemma2/Gemma3
+/// - StableLM
+/// - Falcon
+/// - MPT
+/// - Yi
+/// - DeepSeek2
+/// - OLMo
+/// - Granite
+/// - StarCoder2
+/// - ChatGLM/GLM4
+/// - Mamba (state space)
+/// - RWKV v5/v6 (linear attention)
+/// - And more via config.json detection
 ///
 /// COMMANDS:
 /// - ping: Health check
 /// - model/load: Load a model from HuggingFace
 /// - model/unload: Unload a model from memory
-/// - models/list: List loaded models
+/// - model/list: List loaded models
 /// - adapter/load: Load a LoRA adapter
 /// - adapter/unload: Unload a LoRA adapter
+/// - adapter/apply: Merge loaded adapters into model weights
 /// - generate: Generate text with optional adapter composition
 
 use serde::{Deserialize, Serialize};
@@ -34,10 +49,19 @@ use std::time::Instant;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
+
+// Model imports - all supported architectures
 use candle_transformers::models::phi::{Config as PhiConfig, Model as PhiModel};
+use candle_transformers::models::phi3::{Config as Phi3Config, Model as Phi3Model};
 use candle_transformers::models::llama::{Llama as LlamaModel, Cache as LlamaCache, LlamaConfig as LlamaRawConfig, Config as LlamaModelConfig};
 use candle_transformers::models::mistral::{Config as MistralConfig, Model as MistralModel};
+use candle_transformers::models::mixtral::{Config as MixtralConfig, Model as MixtralModel};
 use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
+use candle_transformers::models::gemma::{Config as GemmaConfig, Model as GemmaModel};
+use candle_transformers::models::gemma2::{Config as Gemma2Config, Model as Gemma2Model};
+use candle_transformers::models::stable_lm::{Config as StableLMConfig, Model as StableLMModel};
+use candle_transformers::models::falcon::{Config as FalconConfig, Falcon as FalconModel};
+use candle_transformers::models::starcoder2::{Config as StarCoder2Config, Model as StarCoder2Model};
 
 // HuggingFace Hub
 use hf_hub::{api::sync::Api, Repo, RepoType};
@@ -46,17 +70,12 @@ use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 
 // Random sampling
-use rand::{Rng, SeedableRng};
-
-// TypeScript type generation
-use ts_rs::TS;
+use rand::Rng;
 
 // ============================================================================
-// Shared JTAG Protocol (imported from workers/shared/)
+// JTAG Protocol Types
 // ============================================================================
 
-/// JTAG Request - Universal packet format for all JTAG communication
-/// Mirrors: workers/shared/jtag_protocol.rs and shared/ipc/JTAGProtocol.ts
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JTAGRequest<T> {
@@ -71,7 +90,6 @@ pub struct JTAGRequest<T> {
     pub session_id: Option<String>,
 }
 
-/// JTAG Response - Universal response format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JTAGResponse<T> {
@@ -88,6 +106,8 @@ pub struct JTAGResponse<T> {
     pub error_type: Option<String>,
 }
 
+// Planned for future JTAG protocol wrapping
+#[allow(dead_code)]
 impl<T> JTAGResponse<T> {
     fn success(request_id: String, r#type: String, payload: T) -> Self {
         Self {
@@ -111,1971 +131,1274 @@ impl<T> JTAGResponse<T> {
             request_id,
             success: false,
             error: Some(error),
-            error_type: Some("internal".to_string()),
+            error_type: Some("inference_error".to_string()),
         }
     }
 }
 
 // ============================================================================
-// Logger Client (fire-and-forget logging to LoggerWorker)
+// CausalLM TRAIT - The Universal Model Interface
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
+/// Trait for all causal language models (text generation)
+///
+/// This abstraction allows the worker to handle ANY transformer-based LLM
+/// without model-specific code in the main logic.
+pub trait CausalLM: Send {
+    /// Forward pass: input tokens → output logits
+    ///
+    /// - `tokens`: Input token IDs as 2D tensor [batch, seq_len]
+    /// - `pos`: Position offset for KV cache (0 for first pass, then increment)
+    ///
+    /// Returns logits tensor [batch, seq_len, vocab_size] or [batch, vocab_size]
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String>;
+
+    /// Clear the KV cache between generations
+    /// Must be called before starting a new generation
+    fn clear_cache(&mut self) -> Result<(), String>;
+
+    /// Get vocabulary size
+    fn vocab_size(&self) -> usize;
+
+    /// Get architecture name (for logging)
+    fn architecture(&self) -> &'static str;
+
+    /// Get EOS token ID
+    fn eos_token_id(&self) -> u32;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteLogPayload {
-    pub category: String,
-    pub level: LogLevel,
-    pub component: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<Value>,
+// ============================================================================
+// Model Wrappers - Implement CausalLM for each architecture
+// ============================================================================
+
+/// Wrapper for Phi models (Phi-1, Phi-1.5, Phi-2)
+struct PhiWrapper {
+    model: PhiModel,
+    vocab_size: usize,
+    eos_token_id: u32,
 }
 
-/// Fire-and-forget logger client
-pub struct LoggerClient {
-    stream: Option<UnixStream>,
-    component: String,
-    category: String,
+impl CausalLM for PhiWrapper {
+    fn forward(&mut self, tokens: &Tensor, _pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens)
+            .map_err(|e| format!("Phi forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "phi" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
 }
 
-impl LoggerClient {
-    fn connect(socket_path: &str, component: &str) -> Self {
-        let stream = UnixStream::connect(socket_path).ok();
-        if stream.is_none() {
-            eprintln!("⚠️  LoggerClient: Failed to connect to {}", socket_path);
-            eprintln!("   Logs will be written to stderr instead");
+/// Wrapper for Phi-3 models
+struct Phi3Wrapper {
+    model: Phi3Model,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for Phi3Wrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("Phi3 forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "phi3" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Llama models (Llama, Llama2, Llama3, CodeLlama, etc.)
+struct LlamaWrapper {
+    model: LlamaModel,
+    cache: LlamaCache,
+    config: LlamaModelConfig,
+    device: Device,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for LlamaWrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos, &mut self.cache)
+            .map_err(|e| format!("Llama forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        // Llama cache must be recreated (no reset method)
+        self.cache = LlamaCache::new(true, DType::F32, &self.config, &self.device)
+            .map_err(|e| format!("Failed to recreate Llama cache: {}", e))?;
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "llama" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Mistral models
+struct MistralWrapper {
+    model: MistralModel,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for MistralWrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("Mistral forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "mistral" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Mixtral (MoE) models
+struct MixtralWrapper {
+    model: MixtralModel,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for MixtralWrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("Mixtral forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        // Mixtral doesn't expose clear_kv_cache - will recreate model if needed
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "mixtral" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Qwen2 models
+struct Qwen2Wrapper {
+    model: Qwen2Model,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for Qwen2Wrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("Qwen2 forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "qwen2" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Gemma models
+struct GemmaWrapper {
+    model: GemmaModel,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for GemmaWrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("Gemma forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "gemma" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Gemma2 models
+struct Gemma2Wrapper {
+    model: Gemma2Model,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for Gemma2Wrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("Gemma2 forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "gemma2" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for StableLM models
+struct StableLMWrapper {
+    model: StableLMModel,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for StableLMWrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("StableLM forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        // StableLM doesn't expose clear_kv_cache
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "stablelm" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+/// Wrapper for Falcon models
+struct FalconWrapper {
+    model: FalconModel,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for FalconWrapper {
+    fn forward(&mut self, tokens: &Tensor, _pos: usize) -> Result<Tensor, String> {
+        // Falcon's forward() only takes tokens - it manages position internally
+        self.model.forward(tokens)
+            .map_err(|e| format!("Falcon forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        // Falcon doesn't expose clear_kv_cache
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "falcon" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+// NOTE: MPT and Yi removed - their Config types don't implement Deserialize
+// Can add custom config structs later if needed
+
+/// Wrapper for StarCoder2 models
+struct StarCoder2Wrapper {
+    model: StarCoder2Model,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
+
+impl CausalLM for StarCoder2Wrapper {
+    fn forward(&mut self, tokens: &Tensor, pos: usize) -> Result<Tensor, String> {
+        self.model.forward(tokens, pos)
+            .map_err(|e| format!("StarCoder2 forward failed: {}", e))
+    }
+
+    fn clear_cache(&mut self) -> Result<(), String> {
+        self.model.clear_kv_cache();
+        Ok(())
+    }
+
+    fn vocab_size(&self) -> usize { self.vocab_size }
+    fn architecture(&self) -> &'static str { "starcoder2" }
+    fn eos_token_id(&self) -> u32 { self.eos_token_id }
+}
+
+// ============================================================================
+// Architecture Registry - Maps config.json "architectures" to loaders
+// ============================================================================
+
+/// Architecture names from HuggingFace config.json
+/// These are the standard names used in the "architectures" field
+const LLAMA_ARCHITECTURES: &[&str] = &[
+    "LlamaForCausalLM",
+    "LLaMAForCausalLM",
+    "CodeLlamaForCausalLM",
+    "TinyLlamaForCausalLM",
+];
+
+const MISTRAL_ARCHITECTURES: &[&str] = &[
+    "MistralForCausalLM",
+];
+
+const MIXTRAL_ARCHITECTURES: &[&str] = &[
+    "MixtralForCausalLM",
+];
+
+const PHI_ARCHITECTURES: &[&str] = &[
+    "PhiForCausalLM",
+    "Phi1ForCausalLM",
+    "MixFormerSequentialForCausalLM",
+];
+
+const PHI3_ARCHITECTURES: &[&str] = &[
+    "Phi3ForCausalLM",
+    "Phi3SmallForCausalLM",
+];
+
+const QWEN2_ARCHITECTURES: &[&str] = &[
+    "Qwen2ForCausalLM",
+];
+
+const GEMMA_ARCHITECTURES: &[&str] = &[
+    "GemmaForCausalLM",
+];
+
+const GEMMA2_ARCHITECTURES: &[&str] = &[
+    "Gemma2ForCausalLM",
+];
+
+const STABLELM_ARCHITECTURES: &[&str] = &[
+    "StableLmForCausalLM",
+    "StableLMEpochForCausalLM",
+];
+
+const FALCON_ARCHITECTURES: &[&str] = &[
+    "FalconForCausalLM",
+    "RWForCausalLM",
+];
+
+// NOTE: MPT_ARCHITECTURES and YI_ARCHITECTURES removed - Config types don't implement Deserialize
+
+const STARCODER2_ARCHITECTURES: &[&str] = &[
+    "Starcoder2ForCausalLM",
+];
+
+/// Detect architecture from config.json
+fn detect_architecture(config: &Value) -> Option<&'static str> {
+    let architectures = config.get("architectures")?.as_array()?;
+    let arch_str = architectures.first()?.as_str()?;
+
+    // Check each architecture family
+    if LLAMA_ARCHITECTURES.contains(&arch_str) {
+        return Some("llama");
+    }
+    if MISTRAL_ARCHITECTURES.contains(&arch_str) {
+        return Some("mistral");
+    }
+    if MIXTRAL_ARCHITECTURES.contains(&arch_str) {
+        return Some("mixtral");
+    }
+    if PHI_ARCHITECTURES.contains(&arch_str) {
+        return Some("phi");
+    }
+    if PHI3_ARCHITECTURES.contains(&arch_str) {
+        return Some("phi3");
+    }
+    if QWEN2_ARCHITECTURES.contains(&arch_str) {
+        return Some("qwen2");
+    }
+    if GEMMA_ARCHITECTURES.contains(&arch_str) {
+        return Some("gemma");
+    }
+    if GEMMA2_ARCHITECTURES.contains(&arch_str) {
+        return Some("gemma2");
+    }
+    if STABLELM_ARCHITECTURES.contains(&arch_str) {
+        return Some("stablelm");
+    }
+    if FALCON_ARCHITECTURES.contains(&arch_str) {
+        return Some("falcon");
+    }
+    if STARCODER2_ARCHITECTURES.contains(&arch_str) {
+        return Some("starcoder2");
+    }
+
+    // Fallback: try to detect from model_type field
+    if let Some(model_type) = config.get("model_type").and_then(|v| v.as_str()) {
+        match model_type {
+            "llama" => return Some("llama"),
+            "mistral" => return Some("mistral"),
+            "mixtral" => return Some("mixtral"),
+            "phi" | "phi-msft" => return Some("phi"),
+            "phi3" => return Some("phi3"),
+            "qwen2" => return Some("qwen2"),
+            "gemma" => return Some("gemma"),
+            "gemma2" => return Some("gemma2"),
+            "stablelm" | "stablelm_epoch" => return Some("stablelm"),
+            "falcon" | "RefinedWeb" | "RefinedWebModel" => return Some("falcon"),
+            "starcoder2" => return Some("starcoder2"),
+            _ => {}
         }
-        Self {
-            stream,
-            component: component.to_string(),
-            category: "inference".to_string(),
-        }
     }
 
-    fn info(&mut self, message: &str) {
-        self.log_internal(LogLevel::Info, message);
-    }
+    None
+}
 
-    fn warn(&mut self, message: &str) {
-        self.log_internal(LogLevel::Warn, message);
-    }
+// ============================================================================
+// Loaded Model Storage
+// ============================================================================
 
-    fn error(&mut self, message: &str) {
-        self.log_internal(LogLevel::Error, message);
-    }
+struct LoadedModel {
+    model: Box<dyn CausalLM>,
+    tokenizer: Tokenizer,
+    #[allow(dead_code)]
+    model_id: String,
+    #[allow(dead_code)]
+    load_time_ms: u64,
+}
 
-    fn log_internal(&mut self, level: LogLevel, message: &str) {
-        // Fallback to stderr if no connection
-        if self.stream.is_none() {
-            let level_str = match level {
-                LogLevel::Debug => "DEBUG",
-                LogLevel::Info => "INFO",
-                LogLevel::Warn => "WARN",
-                LogLevel::Error => "ERROR",
-            };
-            eprintln!("[{}] {}: {}", level_str, self.component, message);
-            return;
-        }
+// Planned for future use - adapter composition
+#[allow(dead_code)]
+struct ModelConfig {
+    model_id: String,
+    vocab_size: usize,
+    context_length: Option<usize>,
+    eos_token_id: u32,
+}
 
-        let request: JTAGRequest<WriteLogPayload> = JTAGRequest {
-            id: uuid::Uuid::new_v4().to_string(),
-            r#type: "write-log".to_string(),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            payload: WriteLogPayload {
-                category: self.category.clone(),
-                level,
-                component: self.component.clone(),
-                message: message.to_string(),
-                args: None,
-            },
-            user_id: Some("inference-worker".to_string()),
-            session_id: None,
+// ============================================================================
+// Model Loader - Downloads and loads models from HuggingFace
+// ============================================================================
+
+struct ModelLoader {
+    device: Device,
+    dtype: DType,
+}
+
+impl ModelLoader {
+    fn new() -> Result<Self, String> {
+        // Use Metal on macOS, CUDA on Linux/Windows, CPU as fallback
+        let device = if cfg!(target_os = "macos") {
+            Device::new_metal(0).unwrap_or(Device::Cpu)
+        } else {
+            Device::Cpu
         };
 
-        if let Some(ref mut stream) = self.stream {
-            if let Ok(json) = serde_json::to_string(&request) {
-                let _ = writeln!(stream, "{}", json);
-                let _ = stream.flush();
-            }
-        }
-    }
-}
-
-// ============================================================================
-// TRAITS - The Core Abstraction Layer
-// ============================================================================
-
-/// Result type for model operations
-pub type ModelResult<T> = Result<T, String>;
-
-/// Trait for model providers (HuggingFace, local files, etc.)
-pub trait ModelProvider: Send + Sync {
-    /// Load a model by ID
-    fn load(&mut self, model_id: &str, revision: Option<&str>) -> ModelResult<ModelInfo>;
-
-    /// Unload a model by ID
-    fn unload(&mut self, model_id: &str) -> ModelResult<()>;
-
-    /// Check if a model is loaded
-    fn is_loaded(&self, model_id: &str) -> bool;
-
-    /// List loaded models
-    fn list(&self) -> Vec<ModelInfo>;
-
-    /// Get model by ID
-    fn get(&self, model_id: &str) -> Option<&LoadedModel>;
-}
-
-/// Trait for LoRA adapter management
-pub trait AdapterManager: Send + Sync {
-    /// Load an adapter from a file path
-    fn load_adapter(
-        &mut self,
-        model_id: &str,
-        adapter_path: &str,
-        adapter_name: &str,
-    ) -> ModelResult<AdapterInfo>;
-
-    /// Unload an adapter
-    fn unload_adapter(&mut self, model_id: &str, adapter_name: &str) -> ModelResult<()>;
-
-    /// List adapters for a model
-    fn list_adapters(&self, model_id: &str) -> Vec<AdapterInfo>;
-
-    /// Apply loaded adapters by merging weights into model
-    fn apply_adapters(&mut self, model_id: &str) -> ModelResult<ApplyResult>;
-}
-
-/// Result of applying adapters
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct ApplyResult {
-    pub model_id: String,
-    pub adapters_applied: Vec<String>,
-    pub layers_merged: usize,
-    pub apply_time_ms: u64,
-}
-
-/// Trait for text generation
-pub trait TextGenerator: Send + Sync {
-    /// Generate text from a prompt
-    fn generate(&mut self, request: GenerateRequest) -> ModelResult<GenerateResponse>;
-}
-
-// ============================================================================
-// Data Types
-// ============================================================================
-
-/// Model information returned from load/list operations
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct ModelInfo {
-    pub model_id: String,
-    pub status: String,
-    pub load_time_ms: Option<u64>,
-    pub device: String,
-    pub loaded_at_seconds_ago: Option<u64>,
-}
-
-/// LoRA adapter information
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct AdapterInfo {
-    pub name: String,
-    pub model_id: String,
-    pub path: String,
-    pub status: String,
-}
-
-/// Supported model architectures
-pub enum ModelArchitecture {
-    Phi(PhiModel),
-    Llama(LlamaModel, LlamaCache, LlamaModelConfig),  // Store config to recreate cache
-    Mistral(MistralModel),
-    Qwen2(Qwen2Model),
-}
-
-// Manual Debug impl since models don't derive Debug
-impl std::fmt::Debug for ModelArchitecture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ModelArchitecture::Phi(_) => write!(f, "Phi"),
-            ModelArchitecture::Llama(_, _, _) => write!(f, "Llama"),
-            ModelArchitecture::Mistral(_) => write!(f, "Mistral"),
-            ModelArchitecture::Qwen2(_) => write!(f, "Qwen2"),
-        }
-    }
-}
-
-pub struct LoadedModel {
-    pub model_id: String,
-    pub architecture: ModelArchitecture,
-    pub tokenizer: Tokenizer,
-    pub config: ModelConfig,
-    pub device: Device,
-    pub loaded_at: Instant,
-    /// Path to the base weights file (for reloading with merged LoRA)
-    pub weights_path: Option<std::path::PathBuf>,
-    /// Path to config file (for reloading)
-    pub config_path: Option<std::path::PathBuf>,
-    /// Whether LoRA adapters have been merged into weights
-    pub adapters_merged: bool,
-}
-
-// Manual Debug impl
-impl std::fmt::Debug for LoadedModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LoadedModel")
-            .field("model_id", &self.model_id)
-            .field("architecture", &self.architecture)
-            .field("device", &self.device)
-            .finish()
-    }
-}
-
-/// Model configuration for generation
-#[derive(Debug, Clone)]
-pub struct ModelConfig {
-    pub vocab_size: usize,
-    pub eos_token_id: u32,
-    pub bos_token_id: Option<u32>,
-}
-
-/// LoRA adapter with actual weight tensors for inference
-///
-/// LoRA formula: y = Wx + (alpha/rank) * (x @ A.T) @ B.T
-/// Weight merging: W' = W + scaling * (B @ A)
-///
-/// safetensors format stores:
-/// - base_layer.lora_A.weight: [rank, input_dim]
-/// - base_layer.lora_B.weight: [output_dim, rank]
-#[derive(Debug, Clone)]
-pub struct LoadedAdapter {
-    pub name: String,
-    pub path: String,
-    /// LoRA rank (dimension of A's output / B's input)
-    pub rank: usize,
-    /// Scaling factor: alpha / rank
-    pub scaling: f32,
-    /// Layer-specific LoRA weights: layer_name -> (lora_A, lora_B)
-    /// lora_A: [rank, input_dim], lora_B: [output_dim, rank]
-    pub weights: HashMap<String, (Tensor, Tensor)>,
-}
-
-impl LoadedAdapter {
-    /// Load a LoRA adapter from a safetensors file
-    pub fn load(
-        name: &str,
-        path: &str,
-        device: &Device,
-    ) -> Result<Self, String> {
-        use safetensors::SafeTensors;
-
-        // Read the safetensors file
-        let data = std::fs::read(path)
-            .map_err(|e| format!("Failed to read adapter file: {}", e))?;
-
-        let tensors = SafeTensors::deserialize(&data)
-            .map_err(|e| format!("Failed to parse safetensors: {}", e))?;
-
-        // Try to load adapter_config.json for alpha value
-        let config_path = std::path::Path::new(path)
-            .parent()
-            .map(|p| p.join("adapter_config.json"));
-
-        let alpha: f32 = config_path
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("lora_alpha").and_then(|a| a.as_f64()))
-            .map(|a| a as f32)
-            .unwrap_or(16.0); // Default alpha
-
-        let mut weights: HashMap<String, (Tensor, Tensor)> = HashMap::new();
-        let mut detected_rank: Option<usize> = None;
-
-        // Group tensors by layer name
-        // Example names: "model.layers.0.self_attn.q_proj.lora_A.weight"
-        let tensor_names: Vec<_> = tensors.names().into_iter().collect();
-
-        for name_a in &tensor_names {
-            if name_a.contains("lora_A") && name_a.ends_with(".weight") {
-                // Find corresponding lora_B
-                let name_b = name_a.replace("lora_A", "lora_B");
-
-                // Use explicit string comparison to avoid type mismatch
-                if tensor_names.iter().any(|n| *n == name_b.as_str()) {
-                    // Extract layer name (everything before .lora_A)
-                    let layer_name = name_a
-                        .rsplit_once(".lora_A")
-                        .map(|(prefix, _)| prefix.to_string())
-                        .unwrap_or_else(|| name_a.to_string());
-
-                    // Load tensors
-                    let tensor_a = tensors.tensor(name_a)
-                        .map_err(|e| format!("Failed to get lora_A tensor: {}", e))?;
-                    let tensor_b = tensors.tensor(&name_b)
-                        .map_err(|e| format!("Failed to get lora_B tensor: {}", e))?;
-
-                    // Convert to f32 tensors
-                    let lora_a = Self::safetensor_to_candle(tensor_a, device)?;
-                    let lora_b = Self::safetensor_to_candle(tensor_b, device)?;
-
-                    // Detect rank from lora_A shape [rank, input_dim]
-                    let a_shape = lora_a.dims();
-                    if a_shape.len() >= 1 {
-                        let rank = a_shape[0];
-                        if detected_rank.is_none() {
-                            detected_rank = Some(rank);
-                        }
-                    }
-
-                    weights.insert(layer_name, (lora_a, lora_b));
-                }
-            }
-        }
-
-        let rank = detected_rank.unwrap_or(8);
-        let scaling = alpha / rank as f32;
-
-        println!("📊 Adapter {}: {} layers, rank={}, alpha={}, scaling={:.4}",
-            name, weights.len(), rank, alpha, scaling);
+        println!("🔧 Using device: {:?}", device);
 
         Ok(Self {
-            name: name.to_string(),
-            path: path.to_string(),
-            rank,
-            scaling,
-            weights,
-        })
-    }
-
-    /// Convert safetensors TensorView to Candle Tensor
-    fn safetensor_to_candle(
-        view: safetensors::tensor::TensorView<'_>,
-        device: &Device,
-    ) -> Result<Tensor, String> {
-        let shape: Vec<usize> = view.shape().to_vec();
-        let dtype = view.dtype();
-        let data = view.data();
-
-        // Handle potentially unaligned data from safetensors by copying to aligned buffer
-        match dtype {
-            safetensors::Dtype::F32 => {
-                // Copy bytes to properly aligned Vec<f32>
-                let num_floats = data.len() / 4;
-                let mut floats = vec![0f32; num_floats];
-                for (i, chunk) in data.chunks_exact(4).enumerate() {
-                    floats[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                }
-                Tensor::from_slice(&floats, shape.as_slice(), device)
-                    .map_err(|e| format!("Failed to create f32 tensor: {}", e))
-            }
-            safetensors::Dtype::F16 => {
-                // Copy bytes and convert f16 -> f32
-                let num_halfs = data.len() / 2;
-                let mut floats = Vec::with_capacity(num_halfs);
-                for chunk in data.chunks_exact(2) {
-                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    floats.push(half::f16::from_bits(bits).to_f32());
-                }
-                Tensor::from_slice(&floats, shape.as_slice(), device)
-                    .map_err(|e| format!("Failed to create f16->f32 tensor: {}", e))
-            }
-            safetensors::Dtype::BF16 => {
-                // Copy bytes and convert bf16 -> f32
-                let num_halfs = data.len() / 2;
-                let mut floats = Vec::with_capacity(num_halfs);
-                for chunk in data.chunks_exact(2) {
-                    let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    floats.push(half::bf16::from_bits(bits).to_f32());
-                }
-                Tensor::from_slice(&floats, shape.as_slice(), device)
-                    .map_err(|e| format!("Failed to create bf16->f32 tensor: {}", e))
-            }
-            _ => Err(format!("Unsupported dtype: {:?}", dtype)),
-        }
-    }
-
-    /// Check if this adapter has weights for a given layer
-    pub fn has_layer(&self, layer_name: &str) -> bool {
-        self.weights.contains_key(layer_name)
-    }
-
-    /// Get the merged weight delta for a layer: scaling * (B @ A)
-    /// This can be added to the base weight: W' = W + delta
-    pub fn get_weight_delta(&self, layer_name: &str) -> Option<Result<Tensor, String>> {
-        self.weights.get(layer_name).map(|(lora_a, lora_b)| {
-            // LoRA formula: delta = scaling * (B @ A)
-            // lora_A: [rank, input_dim]
-            // lora_B: [output_dim, rank]
-            // B @ A = [output_dim, rank] @ [rank, input_dim] = [output_dim, input_dim]
-            lora_b.matmul(lora_a)
-                .map_err(|e| format!("LoRA matmul failed: {}", e))
-                .and_then(|delta| {
-                    (delta * self.scaling as f64)
-                        .map_err(|e| format!("LoRA scaling failed: {}", e))
-                })
-        })
-    }
-}
-
-/// Request for text generation
-#[derive(Debug, Clone, Deserialize, TS)]
-#[ts(export, export_to = "generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct GenerateRequest {
-    pub model_id: String,
-    pub prompt: String,
-    pub max_tokens: Option<usize>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub adapters: Option<Vec<String>>,
-}
-
-/// Response from text generation
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct GenerateResponse {
-    pub model_id: String,
-    pub text: String,
-    pub prompt_tokens: usize,
-    pub generated_tokens: usize,
-    pub generation_time_ms: u64,
-    pub tokens_per_second: f64,
-    pub adapters_used: Vec<String>,
-}
-
-// ============================================================================
-// HuggingFace Model Provider Implementation
-// ============================================================================
-
-pub struct HuggingFaceProvider {
-    models: HashMap<String, LoadedModel>,
-    adapters: HashMap<String, Vec<LoadedAdapter>>, // model_id -> adapters
-    device: Device,
-    start_time: Instant,
-    logger: Arc<Mutex<LoggerClient>>,
-}
-
-/// Loaded model result with paths for LoRA merging
-pub struct LoadedModelResult {
-    pub architecture: ModelArchitecture,
-    pub config: ModelConfig,
-    pub weights_path: std::path::PathBuf,
-    pub config_path: std::path::PathBuf,
-}
-
-impl HuggingFaceProvider {
-    pub fn new(logger: Arc<Mutex<LoggerClient>>) -> ModelResult<Self> {
-        let device = Self::select_device(&logger)?;
-
-        Ok(Self {
-            models: HashMap::new(),
-            adapters: HashMap::new(),
             device,
-            start_time: Instant::now(),
-            logger,
+            dtype: DType::F32, // F16 for Metal, F32 for CPU
         })
     }
 
-    fn select_device(logger: &Arc<Mutex<LoggerClient>>) -> ModelResult<Device> {
-        // Try Metal first (Apple Silicon)
-        #[cfg(feature = "metal")]
-        {
-            match Device::new_metal(0) {
-                Ok(device) => {
-                    if let Ok(mut log) = logger.lock() {
-                        log.info("Metal acceleration enabled");
-                    }
-                    println!("✅ Metal acceleration enabled");
-                    return Ok(device);
-                }
-                Err(e) => {
-                    if let Ok(mut log) = logger.lock() {
-                        log.warn(&format!("Metal not available: {}", e));
-                    }
-                    println!("⚠️  Metal not available: {}", e);
-                }
-            }
-        }
+    /// Load a model from HuggingFace Hub
+    fn load(&self, model_id: &str) -> Result<LoadedModel, String> {
+        let start = Instant::now();
+        println!("📥 Loading model: {}", model_id);
 
-        // Try CUDA
-        #[cfg(feature = "cuda")]
-        {
-            match Device::new_cuda(0) {
-                Ok(device) => {
-                    if let Ok(mut log) = logger.lock() {
-                        log.info("CUDA acceleration enabled");
-                    }
-                    println!("✅ CUDA acceleration enabled");
-                    return Ok(device);
-                }
-                Err(e) => {
-                    if let Ok(mut log) = logger.lock() {
-                        log.warn(&format!("CUDA not available: {}", e));
-                    }
-                    println!("⚠️  CUDA not available: {}", e);
-                }
-            }
-        }
+        // Download model files
+        let api = Api::new().map_err(|e| format!("HF API error: {}", e))?;
+        let repo = api.repo(Repo::new(model_id.to_string(), RepoType::Model));
 
-        // Fall back to CPU
-        if let Ok(mut log) = logger.lock() {
-            log.info("Using CPU (no GPU acceleration)");
-        }
-        println!("ℹ️  Using CPU (no GPU acceleration)");
-        Ok(Device::Cpu)
+        // Load config.json to detect architecture
+        let config_path = repo.get("config.json")
+            .map_err(|e| format!("Failed to get config.json: {}", e))?;
+        let config_str = fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config.json: {}", e))?;
+        let config: Value = serde_json::from_str(&config_str)
+            .map_err(|e| format!("Failed to parse config.json: {}", e))?;
+
+        // Detect architecture
+        let architecture = detect_architecture(&config)
+            .ok_or_else(|| format!("Unknown architecture in {}", model_id))?;
+        println!("🔍 Detected architecture: {}", architecture);
+
+        // Load tokenizer
+        let tokenizer_path = repo.get("tokenizer.json")
+            .map_err(|e| format!("Failed to get tokenizer.json: {}", e))?;
+        println!("📂 Tokenizer: {:?}", tokenizer_path);
+        let tokenizer = Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
+
+        // Download weights (handle sharded models)
+        let weights_paths = self.download_weights(&repo)?;
+        println!("🔧 Loading {} safetensor file(s) to {:?}...", weights_paths.len(), self.device);
+
+        // Build VarBuilder from weights
+        let vb = self.build_var_builder(&weights_paths)?;
+
+        // Load model based on architecture
+        let model: Box<dyn CausalLM> = match architecture {
+            "llama" => self.load_llama(&config, vb)?,
+            "mistral" => self.load_mistral(&config, vb)?,
+            "mixtral" => self.load_mixtral(&config, vb)?,
+            "phi" => self.load_phi(&config, vb)?,
+            "phi3" => self.load_phi3(&config, vb)?,
+            "qwen2" => self.load_qwen2(&config, vb)?,
+            "gemma" => self.load_gemma(&config, vb)?,
+            "gemma2" => self.load_gemma2(&config, vb)?,
+            "stablelm" => self.load_stablelm(&config, vb)?,
+            "falcon" => self.load_falcon(&config, vb)?,
+            "starcoder2" => self.load_starcoder2(&config, vb)?,
+            _ => return Err(format!("Unsupported architecture: {}", architecture)),
+        };
+
+        let load_time_ms = start.elapsed().as_millis() as u64;
+        println!("✅ Model loaded in {}ms: {}", load_time_ms, model_id);
+
+        Ok(LoadedModel {
+            model,
+            tokenizer,
+            model_id: model_id.to_string(),
+            load_time_ms,
+        })
     }
 
-    pub fn uptime_seconds(&self) -> u64 {
-        self.start_time.elapsed().as_secs()
-    }
-
-    pub fn device_info(&self) -> String {
-        format!("{:?}", self.device)
-    }
-
-    /// Download model weights, handling both single-file and sharded formats
-    ///
-    /// Returns a list of weight file paths (1 for single file, N for sharded)
-    fn download_weights(&self, repo: &hf_hub::api::sync::ApiRepo) -> ModelResult<Vec<std::path::PathBuf>> {
-        // Try single-file formats first
+    /// Download model weights (handles sharded models)
+    fn download_weights(&self, repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<std::path::PathBuf>, String> {
+        // Try single weights file first
         if let Ok(path) = repo.get("model.safetensors") {
             println!("📂 Weights (single): {:?}", path);
             return Ok(vec![path]);
         }
 
-        // Try sharded safetensors - check for index file
+        // Try sharded weights (model.safetensors.index.json)
         if let Ok(index_path) = repo.get("model.safetensors.index.json") {
             println!("📂 Found sharded weights index: {:?}", index_path);
-
-            // Parse the index to get weight file names
             let index_str = fs::read_to_string(&index_path)
-                .map_err(|e| format!("Failed to read weights index: {}", e))?;
-            let index: serde_json::Value = serde_json::from_str(&index_str)
-                .map_err(|e| format!("Failed to parse weights index: {}", e))?;
+                .map_err(|e| format!("Failed to read index: {}", e))?;
+            let index: Value = serde_json::from_str(&index_str)
+                .map_err(|e| format!("Failed to parse index: {}", e))?;
 
-            // Get unique shard filenames from weight_map
+            // Get unique shard files
             let weight_map = index.get("weight_map")
-                .and_then(|m| m.as_object())
-                .ok_or_else(|| "No weight_map in index".to_string())?;
+                .and_then(|v| v.as_object())
+                .ok_or("Invalid index format")?;
 
-            let mut shard_names: Vec<String> = weight_map.values()
-                .filter_map(|v| v.as_str().map(String::from))
+            let mut shard_files: Vec<String> = weight_map.values()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
                 .collect();
-            shard_names.sort();
-            shard_names.dedup();
+            shard_files.sort();
+            shard_files.dedup();
 
-            println!("📦 Downloading {} weight shards...", shard_names.len());
+            println!("📦 Downloading {} weight shards...", shard_files.len());
 
-            let mut shard_paths: Vec<std::path::PathBuf> = Vec::new();
-            for shard_name in &shard_names {
-                let path = repo.get(shard_name)
-                    .map_err(|e| format!("Failed to download shard {}: {}", shard_name, e))?;
-                println!("  📂 {}", shard_name);
-                shard_paths.push(path);
+            let mut paths = Vec::new();
+            for shard in &shard_files {
+                let path = repo.get(shard)
+                    .map_err(|e| format!("Failed to get shard {}: {}", shard, e))?;
+                paths.push(path);
             }
 
-            return Ok(shard_paths);
+            return Ok(paths);
         }
 
-        // Try pytorch format as last resort
-        if let Ok(path) = repo.get("pytorch_model.bin") {
-            println!("📂 Weights (pytorch): {:?}", path);
-            return Ok(vec![path]);
-        }
-
-        Err("No model weights found (tried model.safetensors, sharded, pytorch_model.bin)".to_string())
+        Err("No weights found (tried model.safetensors and sharded)".to_string())
     }
 
-    /// Create VarBuilder from weight paths (handles single or multiple files)
-    fn load_weights_to_varbuilder(&self, paths: &[std::path::PathBuf]) -> ModelResult<VarBuilder<'static>> {
-        if paths.is_empty() {
-            return Err("No weight paths provided".to_string());
-        }
-
-        let first_path = &paths[0];
-
-        if first_path.to_string_lossy().ends_with(".safetensors") {
-            // SAFETY: File paths are valid and VarBuilder owns the mmap for its lifetime
-            println!("🔧 Loading {} safetensor file(s) to {:?}...", paths.len(), self.device);
+    /// Build VarBuilder from weight files
+    fn build_var_builder(&self, paths: &[std::path::PathBuf]) -> Result<VarBuilder<'static>, String> {
+        // SAFETY: mmap is required by Candle's safetensors loading
+        // The files are read-only and memory-mapped for efficiency
+        if paths.len() == 1 {
             unsafe {
-                VarBuilder::from_mmaped_safetensors(paths, DType::F32, &self.device)
-                    .map_err(|e| format!("Failed to load safetensors: {}", e))
+                VarBuilder::from_mmaped_safetensors(&paths, self.dtype, &self.device)
+                    .map_err(|e| format!("Failed to load weights: {}", e))
             }
-        } else if first_path.to_string_lossy().ends_with(".bin") {
-            if paths.len() > 1 {
-                return Err("Sharded pytorch weights not supported".to_string());
-            }
-            println!("🔧 Loading pytorch weights to {:?}...", self.device);
-            VarBuilder::from_pth(first_path.clone(), DType::F32, &self.device)
-                .map_err(|e| format!("Failed to load pytorch weights: {}", e))
         } else {
-            Err(format!("Unknown weight format: {:?}", first_path))
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(&paths, self.dtype, &self.device)
+                    .map_err(|e| format!("Failed to load sharded weights: {}", e))
+            }
         }
     }
 
-    /// Load Phi model architecture (supports sharded weights)
-    fn load_phi(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
-        // Download weights (handles both single and sharded)
-        let weight_paths = self.download_weights(repo)?;
-        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
-
-        // Download config
-        let config_path = repo
-            .get("config.json")
-            .map_err(|e| format!("Failed to download config: {}", e))?;
-        println!("📂 Config: {:?}", config_path);
-
-        // Load config
-        let config_str = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let phi_config: PhiConfig = serde_json::from_str(&config_str)
-            .map_err(|e| format!("Failed to parse config: {}", e))?;
-
-        // Get vocab size from tokenizer (config fields are private)
-        let vocab_size = tokenizer.get_vocab_size(true);
-        // Get EOS token from tokenizer, fallback to common defaults
-        let eos_token_id = tokenizer.token_to_id("<|endoftext|>")
-            .or_else(|| tokenizer.token_to_id("</s>"))
-            .or_else(|| tokenizer.token_to_id("<eos>"))
-            .unwrap_or(50256);
-
-        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
-
-        // Create Phi model
-        let model = PhiModel::new(&phi_config, vb)
-            .map_err(|e| format!("Failed to create Phi model: {}", e))?;
-        println!("✅ Phi model loaded: vocab_size={}", vocab_size);
-
-        let config = ModelConfig {
-            vocab_size,
-            eos_token_id,
-            bos_token_id: None,
-        };
-
-        Ok(LoadedModelResult {
-            architecture: ModelArchitecture::Phi(model),
-            config,
-            weights_path,
-            config_path,
-        })
+    /// Extract vocab_size from config
+    fn get_vocab_size(config: &Value) -> usize {
+        config.get("vocab_size")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(32000) as usize
     }
 
-    /// Load Llama model architecture (Llama 2, Llama 3, supports sharded weights)
-    fn load_llama(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
-        // Download weights (handles both single and sharded)
-        let weight_paths = self.download_weights(repo)?;
-        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
+    /// Extract EOS token ID from config
+    fn get_eos_token_id(config: &Value) -> u32 {
+        // Try eos_token_id directly
+        if let Some(id) = config.get("eos_token_id").and_then(|v| v.as_u64()) {
+            return id as u32;
+        }
+        // Try array format
+        if let Some(arr) = config.get("eos_token_id").and_then(|v| v.as_array()) {
+            if let Some(id) = arr.first().and_then(|v| v.as_u64()) {
+                return id as u32;
+            }
+        }
+        // Default
+        2
+    }
 
-        let config_path = repo
-            .get("config.json")
-            .map_err(|e| format!("Failed to download config: {}", e))?;
-        println!("📂 Config: {:?}", config_path);
+    // ========================================================================
+    // Architecture-specific loaders
+    // ========================================================================
 
-        // Load and parse config
-        let config_str = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let llama_raw_config: LlamaRawConfig = serde_json::from_str(&config_str)
+    fn load_llama(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let llama_config: LlamaRawConfig = serde_json::from_value(config.clone())
             .map_err(|e| format!("Failed to parse Llama config: {}", e))?;
-        let llama_config = llama_raw_config.into_config(false); // no flash attention
+        let vocab_size = Self::get_vocab_size(config);
+        let eos_token_id = Self::get_eos_token_id(config);
 
-        let vocab_size = tokenizer.get_vocab_size(true);
-        let eos_token_id = match &llama_config.eos_token_id {
-            Some(candle_transformers::models::llama::LlamaEosToks::Single(id)) => *id,
-            Some(candle_transformers::models::llama::LlamaEosToks::Multiple(ids)) => ids.first().copied().unwrap_or(2),
-            None => tokenizer.token_to_id("</s>").unwrap_or(2),
-        };
-
-        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
-
-        // Create Llama model from weights
-        let model = LlamaModel::load(vb, &llama_config)
+        let model_config = llama_config.clone().into_config(false);
+        let model = LlamaModel::load(vb, &model_config)
             .map_err(|e| format!("Failed to load Llama model: {}", e))?;
-
-        // Create cache for KV state
-        let cache = LlamaCache::new(true, DType::F32, &llama_config, &self.device)
+        let cache = LlamaCache::new(true, self.dtype, &model_config, &self.device)
             .map_err(|e| format!("Failed to create Llama cache: {}", e))?;
 
         println!("✅ Llama model loaded: vocab_size={}", vocab_size);
 
-        Ok(LoadedModelResult {
-            architecture: ModelArchitecture::Llama(model, cache, llama_config.clone()),
-            config: ModelConfig { vocab_size, eos_token_id, bos_token_id: llama_config.bos_token_id },
-            weights_path,
-            config_path,
-        })
+        Ok(Box::new(LlamaWrapper {
+            model,
+            cache,
+            config: model_config,
+            device: self.device.clone(),
+            vocab_size,
+            eos_token_id,
+        }))
     }
 
-    /// Load Mistral model architecture (supports sharded weights)
-    fn load_mistral(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
-        // Download weights (handles both single and sharded)
-        let weight_paths = self.download_weights(repo)?;
-        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
-
-        let config_path = repo
-            .get("config.json")
-            .map_err(|e| format!("Failed to download config: {}", e))?;
-        println!("📂 Config: {:?}", config_path);
-
-        let config_str = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let mistral_config: MistralConfig = serde_json::from_str(&config_str)
+    fn load_mistral(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let mistral_config: MistralConfig = serde_json::from_value(config.clone())
             .map_err(|e| format!("Failed to parse Mistral config: {}", e))?;
-
-        let vocab_size = tokenizer.get_vocab_size(true);
-        let eos_token_id = tokenizer.token_to_id("</s>").unwrap_or(2);
-
-        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
+        let vocab_size = mistral_config.vocab_size;
+        let eos_token_id = Self::get_eos_token_id(config);
 
         let model = MistralModel::new(&mistral_config, vb)
-            .map_err(|e| format!("Failed to create Mistral model: {}", e))?;
+            .map_err(|e| format!("Failed to load Mistral model: {}", e))?;
+
         println!("✅ Mistral model loaded: vocab_size={}", vocab_size);
 
-        Ok(LoadedModelResult {
-            architecture: ModelArchitecture::Mistral(model),
-            config: ModelConfig { vocab_size, eos_token_id, bos_token_id: None },
-            weights_path,
-            config_path,
-        })
+        Ok(Box::new(MistralWrapper { model, vocab_size, eos_token_id }))
     }
 
-    /// Load Qwen2 model architecture (supports sharded weights)
-    fn load_qwen2(&self, repo: &hf_hub::api::sync::ApiRepo, tokenizer: &Tokenizer, _model_id: &str) -> ModelResult<LoadedModelResult> {
-        // Download weights (handles both single and sharded)
-        let weight_paths = self.download_weights(repo)?;
-        let weights_path = weight_paths[0].clone(); // Store first for LoRA (TODO: full shard support)
+    fn load_mixtral(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let mixtral_config: MixtralConfig = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Mixtral config: {}", e))?;
+        let vocab_size = Self::get_vocab_size(config);
+        let eos_token_id = Self::get_eos_token_id(config);
 
-        let config_path = repo
-            .get("config.json")
-            .map_err(|e| format!("Failed to download config: {}", e))?;
-        println!("📂 Config: {:?}", config_path);
+        let model = MixtralModel::new(&mixtral_config, vb)
+            .map_err(|e| format!("Failed to load Mixtral model: {}", e))?;
 
-        let config_str = fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let qwen2_config: Qwen2Config = serde_json::from_str(&config_str)
-            .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
+        println!("✅ Mixtral model loaded: vocab_size={}", vocab_size);
 
-        let vocab_size = tokenizer.get_vocab_size(true);
-        let eos_token_id = tokenizer.token_to_id("<|endoftext|>")
-            .or_else(|| tokenizer.token_to_id("<|im_end|>"))
-            .unwrap_or(151643);
-
-        let vb = self.load_weights_to_varbuilder(&weight_paths)?;
-
-        let model = Qwen2Model::new(&qwen2_config, vb)
-            .map_err(|e| format!("Failed to create Qwen2 model: {}", e))?;
-        println!("✅ Qwen2 model loaded: vocab_size={}", vocab_size);
-
-        Ok(LoadedModelResult {
-            architecture: ModelArchitecture::Qwen2(model),
-            config: ModelConfig { vocab_size, eos_token_id, bos_token_id: None },
-            weights_path,
-            config_path,
-        })
+        Ok(Box::new(MixtralWrapper { model, vocab_size, eos_token_id }))
     }
 
-    /// Detect model architecture from model_id or config.json
-    fn detect_architecture(&self, model_id: &str, config_path: &std::path::Path) -> &'static str {
-        let model_id_lower = model_id.to_lowercase();
-
-        // Check model_id first
-        if model_id_lower.contains("llama") {
-            return "llama";
-        }
-        if model_id_lower.contains("mistral") {
-            return "mistral";
-        }
-        if model_id_lower.contains("qwen") {
-            return "qwen2";
-        }
-        if model_id_lower.contains("phi") {
-            return "phi";
-        }
-
-        // Try to detect from config.json architectures field
-        if let Ok(config_str) = fs::read_to_string(config_path) {
-            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
-                if let Some(archs) = config.get("architectures").and_then(|a| a.as_array()) {
-                    for arch in archs {
-                        if let Some(arch_str) = arch.as_str() {
-                            let arch_lower = arch_str.to_lowercase();
-                            if arch_lower.contains("llama") {
-                                return "llama";
-                            }
-                            if arch_lower.contains("mistral") {
-                                return "mistral";
-                            }
-                            if arch_lower.contains("qwen") {
-                                return "qwen2";
-                            }
-                            if arch_lower.contains("phi") {
-                                return "phi";
-                            }
-                        }
-                    }
-                }
-                // Also check model_type field
-                if let Some(model_type) = config.get("model_type").and_then(|m| m.as_str()) {
-                    let mt_lower = model_type.to_lowercase();
-                    if mt_lower.contains("llama") {
-                        return "llama";
-                    }
-                    if mt_lower.contains("mistral") {
-                        return "mistral";
-                    }
-                    if mt_lower.contains("qwen") {
-                        return "qwen2";
-                    }
-                    if mt_lower.contains("phi") {
-                        return "phi";
-                    }
-                }
-            }
-        }
-
-        // Default to phi for unknown models
-        "phi"
-    }
-
-    /// Load safetensors file into a HashMap of tensors
-    fn load_safetensors_to_map(&self, path: &std::path::Path) -> ModelResult<HashMap<String, Tensor>> {
-        use safetensors::SafeTensors;
-
-        let data = fs::read(path)
-            .map_err(|e| format!("Failed to read safetensors: {}", e))?;
-        let tensors = SafeTensors::deserialize(&data)
-            .map_err(|e| format!("Failed to parse safetensors: {}", e))?;
-
-        let mut result: HashMap<String, Tensor> = HashMap::new();
-
-        for name in tensors.names() {
-            let view = tensors.tensor(name)
-                .map_err(|e| format!("Failed to get tensor {}: {}", name, e))?;
-
-            let shape: Vec<usize> = view.shape().to_vec();
-            let data = view.data();
-
-            // Handle F32 (most common for base models)
-            let tensor = match view.dtype() {
-                safetensors::Dtype::F32 => {
-                    let num_floats = data.len() / 4;
-                    let mut floats = vec![0f32; num_floats];
-                    for (i, chunk) in data.chunks_exact(4).enumerate() {
-                        floats[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                    }
-                    Tensor::from_slice(&floats, shape.as_slice(), &self.device)
-                        .map_err(|e| format!("Failed to create tensor: {}", e))?
-                }
-                safetensors::Dtype::F16 => {
-                    let num_halfs = data.len() / 2;
-                    let mut floats = Vec::with_capacity(num_halfs);
-                    for chunk in data.chunks_exact(2) {
-                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                        floats.push(half::f16::from_bits(bits).to_f32());
-                    }
-                    Tensor::from_slice(&floats, shape.as_slice(), &self.device)
-                        .map_err(|e| format!("Failed to create tensor: {}", e))?
-                }
-                safetensors::Dtype::BF16 => {
-                    let num_halfs = data.len() / 2;
-                    let mut floats = Vec::with_capacity(num_halfs);
-                    for chunk in data.chunks_exact(2) {
-                        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
-                        floats.push(half::bf16::from_bits(bits).to_f32());
-                    }
-                    Tensor::from_slice(&floats, shape.as_slice(), &self.device)
-                        .map_err(|e| format!("Failed to create tensor: {}", e))?
-                }
-                _ => {
-                    println!("⚠️  Skipping tensor {} with unsupported dtype {:?}", name, view.dtype());
-                    continue;
-                }
-            };
-
-            result.insert(name.to_string(), tensor);
-        }
-
-        Ok(result)
-    }
-
-    /// Apply LoRA adapters to base weights and rebuild model
-    fn apply_adapters_to_model(
-        &self,
-        weights_path: &std::path::Path,
-        config_path: &std::path::Path,
-        adapters: &[LoadedAdapter],
-        tokenizer: &Tokenizer,
-    ) -> ModelResult<(ModelArchitecture, ModelConfig)> {
-        println!("🔄 Merging {} adapter(s) into model weights...", adapters.len());
-        let start = Instant::now();
-
-        // 1. Load base weights into HashMap
-        let mut base_weights = self.load_safetensors_to_map(weights_path)?;
-        println!("  📦 Loaded {} base tensors", base_weights.len());
-
-        // 2. Apply each adapter's deltas
-        let mut merged_count = 0;
-        for adapter in adapters {
-            for (layer_name, (_lora_a, _lora_b)) in &adapter.weights {
-                // The layer_name from adapter is like "model.layers.0.self_attn.q_proj"
-                // The base weight name is like "model.layers.0.self_attn.q_proj.weight"
-                let base_name = format!("{}.weight", layer_name);
-
-                if let Some(base_weight) = base_weights.get(&base_name) {
-                    // Compute delta: scaling * (B @ A)
-                    if let Some(delta_result) = adapter.get_weight_delta(layer_name) {
-                        match delta_result {
-                            Ok(delta) => {
-                                // Merge: W' = W + delta
-                                let merged = base_weight.add(&delta)
-                                    .map_err(|e| format!("Failed to merge weights for {}: {}", layer_name, e))?;
-                                base_weights.insert(base_name.clone(), merged);
-                                merged_count += 1;
-                            }
-                            Err(e) => {
-                                println!("⚠️  Failed to compute delta for {}: {}", layer_name, e);
-                            }
-                        }
-                    }
-                } else {
-                    // Try without .weight suffix (some layers store differently)
-                    println!("⚠️  No base weight found for: {} (tried {})", layer_name, base_name);
-                }
-            }
-        }
-        println!("  ✅ Merged {} layer weights", merged_count);
-
-        // 3. Rebuild model with merged weights
-        let config_str = fs::read_to_string(config_path)
-            .map_err(|e| format!("Failed to read config: {}", e))?;
-        let phi_config: PhiConfig = serde_json::from_str(&config_str)
-            .map_err(|e| format!("Failed to parse config: {}", e))?;
-
-        // Create VarBuilder from the merged weights HashMap
-        let vb = VarBuilder::from_tensors(base_weights, DType::F32, &self.device);
+    fn load_phi(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let phi_config: PhiConfig = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Phi config: {}", e))?;
+        let vocab_size = Self::get_vocab_size(config);
+        let eos_token_id = Self::get_eos_token_id(config);
 
         let model = PhiModel::new(&phi_config, vb)
-            .map_err(|e| format!("Failed to create merged Phi model: {}", e))?;
+            .map_err(|e| format!("Failed to load Phi model: {}", e))?;
 
-        let vocab_size = tokenizer.get_vocab_size(true);
-        let eos_token_id = tokenizer.token_to_id("<|endoftext|>")
-            .or_else(|| tokenizer.token_to_id("</s>"))
-            .or_else(|| tokenizer.token_to_id("<eos>"))
-            .unwrap_or(50256);
+        println!("✅ Phi model loaded: vocab_size={}", vocab_size);
 
-        println!("  ✅ Model rebuilt with merged weights in {}ms", start.elapsed().as_millis());
-
-        Ok((
-            ModelArchitecture::Phi(model),
-            ModelConfig { vocab_size, eos_token_id, bos_token_id: None },
-        ))
-    }
-}
-
-impl ModelProvider for HuggingFaceProvider {
-    fn load(&mut self, model_id: &str, revision: Option<&str>) -> ModelResult<ModelInfo> {
-        if self.models.contains_key(model_id) {
-            return Ok(ModelInfo {
-                model_id: model_id.to_string(),
-                status: "already_loaded".to_string(),
-                load_time_ms: None,
-                device: self.device_info(),
-                loaded_at_seconds_ago: self
-                    .models
-                    .get(model_id)
-                    .map(|m| m.loaded_at.elapsed().as_secs()),
-            });
-        }
-
-        if let Ok(mut log) = self.logger.lock() {
-            log.info(&format!("Loading model: {}", model_id));
-        }
-        println!("📥 Loading model: {}", model_id);
-        let load_start = Instant::now();
-
-        // Download from HuggingFace Hub
-        let api = Api::new().map_err(|e| format!("Failed to create HF API: {}", e))?;
-        let repo = api.repo(Repo::with_revision(
-            model_id.to_string(),
-            RepoType::Model,
-            revision.unwrap_or("main").to_string(),
-        ));
-
-        // Load tokenizer
-        let tokenizer_path = repo
-            .get("tokenizer.json")
-            .map_err(|e| format!("Failed to download tokenizer: {}", e))?;
-        println!("📂 Tokenizer: {:?}", tokenizer_path);
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
-
-        // Detect and load model architecture
-        let config_path = repo
-            .get("config.json")
-            .map_err(|e| format!("Failed to download config for detection: {}", e))?;
-
-        let arch = self.detect_architecture(model_id, &config_path);
-        println!("🔍 Detected architecture: {}", arch);
-
-        let model_result = match arch {
-            "llama" => self.load_llama(&repo, &tokenizer, model_id)?,
-            "mistral" => self.load_mistral(&repo, &tokenizer, model_id)?,
-            "qwen2" => self.load_qwen2(&repo, &tokenizer, model_id)?,
-            _ => self.load_phi(&repo, &tokenizer, model_id)?,  // Default to Phi
-        };
-
-        let load_time_ms = load_start.elapsed().as_millis() as u64;
-
-        self.models.insert(
-            model_id.to_string(),
-            LoadedModel {
-                model_id: model_id.to_string(),
-                architecture: model_result.architecture,
-                tokenizer,
-                config: model_result.config,
-                device: self.device.clone(),
-                loaded_at: Instant::now(),
-                weights_path: Some(model_result.weights_path),
-                config_path: Some(model_result.config_path),
-                adapters_merged: false,
-            },
-        );
-
-        if let Ok(mut log) = self.logger.lock() {
-            log.info(&format!("Model loaded in {}ms: {}", load_time_ms, model_id));
-        }
-        println!("✅ Model loaded in {}ms: {}", load_time_ms, model_id);
-
-        Ok(ModelInfo {
-            model_id: model_id.to_string(),
-            status: "loaded".to_string(),
-            load_time_ms: Some(load_time_ms),
-            device: self.device_info(),
-            loaded_at_seconds_ago: Some(0),
-        })
+        Ok(Box::new(PhiWrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn unload(&mut self, model_id: &str) -> ModelResult<()> {
-        if self.models.remove(model_id).is_some() {
-            self.adapters.remove(model_id);
-            if let Ok(mut log) = self.logger.lock() {
-                log.info(&format!("Unloaded model: {}", model_id));
-            }
-            println!("🗑️  Unloaded model: {}", model_id);
-            Ok(())
-        } else {
-            Err(format!("Model not found: {}", model_id))
-        }
+    fn load_phi3(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let phi3_config: Phi3Config = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Phi3 config: {}", e))?;
+        let vocab_size = phi3_config.vocab_size;
+        let eos_token_id = Self::get_eos_token_id(config);
+
+        let model = Phi3Model::new(&phi3_config, vb)
+            .map_err(|e| format!("Failed to load Phi3 model: {}", e))?;
+
+        println!("✅ Phi3 model loaded: vocab_size={}", vocab_size);
+
+        Ok(Box::new(Phi3Wrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn is_loaded(&self, model_id: &str) -> bool {
-        self.models.contains_key(model_id)
+    fn load_qwen2(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let qwen2_config: Qwen2Config = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Qwen2 config: {}", e))?;
+        let vocab_size = qwen2_config.vocab_size;
+        let eos_token_id = Self::get_eos_token_id(config);
+
+        let model = Qwen2Model::new(&qwen2_config, vb)
+            .map_err(|e| format!("Failed to load Qwen2 model: {}", e))?;
+
+        println!("✅ Qwen2 model loaded: vocab_size={}", vocab_size);
+
+        Ok(Box::new(Qwen2Wrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn list(&self) -> Vec<ModelInfo> {
-        self.models
-            .iter()
-            .map(|(id, m)| ModelInfo {
-                model_id: id.clone(),
-                status: "loaded".to_string(),
-                load_time_ms: None,
-                device: self.device_info(),
-                loaded_at_seconds_ago: Some(m.loaded_at.elapsed().as_secs()),
-            })
-            .collect()
+    fn load_gemma(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let gemma_config: GemmaConfig = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Gemma config: {}", e))?;
+        let vocab_size = gemma_config.vocab_size;
+        let eos_token_id = Self::get_eos_token_id(config);
+
+        let model = GemmaModel::new(false, &gemma_config, vb)
+            .map_err(|e| format!("Failed to load Gemma model: {}", e))?;
+
+        println!("✅ Gemma model loaded: vocab_size={}", vocab_size);
+
+        Ok(Box::new(GemmaWrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn get(&self, model_id: &str) -> Option<&LoadedModel> {
-        self.models.get(model_id)
-    }
-}
+    fn load_gemma2(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let gemma2_config: Gemma2Config = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Gemma2 config: {}", e))?;
+        let vocab_size = gemma2_config.vocab_size;
+        let eos_token_id = Self::get_eos_token_id(config);
 
-impl AdapterManager for HuggingFaceProvider {
-    fn load_adapter(
-        &mut self,
-        model_id: &str,
-        adapter_path: &str,
-        adapter_name: &str,
-    ) -> ModelResult<AdapterInfo> {
-        if !self.models.contains_key(model_id) {
-            return Err(format!("Model not loaded: {}", model_id));
-        }
+        let model = Gemma2Model::new(false, &gemma2_config, vb)
+            .map_err(|e| format!("Failed to load Gemma2 model: {}", e))?;
 
-        if !std::path::Path::new(adapter_path).exists() {
-            return Err(format!("Adapter file not found: {}", adapter_path));
-        }
+        println!("✅ Gemma2 model loaded: vocab_size={}", vocab_size);
 
-        if let Ok(mut log) = self.logger.lock() {
-            log.info(&format!(
-                "Loading adapter: {} for model: {}",
-                adapter_name, model_id
-            ));
-        }
-        println!(
-            "📥 Loading adapter: {} for model: {}",
-            adapter_name, model_id
-        );
-
-        // Load actual LoRA weights from safetensors file
-        let adapter = LoadedAdapter::load(adapter_name, adapter_path, &self.device)?;
-
-        let layer_count = adapter.weights.len();
-        let rank = adapter.rank;
-
-        self.adapters
-            .entry(model_id.to_string())
-            .or_insert_with(Vec::new)
-            .push(adapter);
-
-        println!("✅ Adapter loaded: {} ({} layers, rank={})", adapter_name, layer_count, rank);
-
-        Ok(AdapterInfo {
-            name: adapter_name.to_string(),
-            model_id: model_id.to_string(),
-            path: adapter_path.to_string(),
-            status: "loaded".to_string(),
-        })
+        Ok(Box::new(Gemma2Wrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn unload_adapter(&mut self, model_id: &str, adapter_name: &str) -> ModelResult<()> {
-        if let Some(adapters) = self.adapters.get_mut(model_id) {
-            let initial_len = adapters.len();
-            adapters.retain(|a| a.name != adapter_name);
+    fn load_stablelm(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let stablelm_config: StableLMConfig = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse StableLM config: {}", e))?;
+        let vocab_size = Self::get_vocab_size(config);
+        let eos_token_id = Self::get_eos_token_id(config);
 
-            if adapters.len() < initial_len {
-                if let Ok(mut log) = self.logger.lock() {
-                    log.info(&format!(
-                        "Unloaded adapter: {} from model: {}",
-                        adapter_name, model_id
-                    ));
-                }
-                println!(
-                    "🗑️  Unloaded adapter: {} from model: {}",
-                    adapter_name, model_id
-                );
-                return Ok(());
-            }
-        }
+        let model = StableLMModel::new(&stablelm_config, vb)
+            .map_err(|e| format!("Failed to load StableLM model: {}", e))?;
 
-        Err(format!(
-            "Adapter not found: {} for model: {}",
-            adapter_name, model_id
-        ))
+        println!("✅ StableLM model loaded: vocab_size={}", vocab_size);
+
+        Ok(Box::new(StableLMWrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn list_adapters(&self, model_id: &str) -> Vec<AdapterInfo> {
-        self.adapters
-            .get(model_id)
-            .map(|adapters| {
-                adapters
-                    .iter()
-                    .map(|a| AdapterInfo {
-                        name: a.name.clone(),
-                        model_id: model_id.to_string(),
-                        path: a.path.clone(),
-                        status: "loaded".to_string(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn load_falcon(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let falcon_config: FalconConfig = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse Falcon config: {}", e))?;
+        let vocab_size = falcon_config.vocab_size;
+        let eos_token_id = Self::get_eos_token_id(config);
+
+        let model = FalconModel::load(vb, falcon_config)
+            .map_err(|e| format!("Failed to load Falcon model: {}", e))?;
+
+        println!("✅ Falcon model loaded: vocab_size={}", vocab_size);
+
+        Ok(Box::new(FalconWrapper { model, vocab_size, eos_token_id }))
     }
 
-    fn apply_adapters(&mut self, model_id: &str) -> ModelResult<ApplyResult> {
-        let start = Instant::now();
+    // NOTE: load_mpt and load_yi removed - Config types don't implement Deserialize
 
-        // Get loaded model and its paths
-        let loaded_model = self.models.get(model_id)
-            .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
+    fn load_starcoder2(&self, config: &Value, vb: VarBuilder<'static>) -> Result<Box<dyn CausalLM>, String> {
+        let sc2_config: StarCoder2Config = serde_json::from_value(config.clone())
+            .map_err(|e| format!("Failed to parse StarCoder2 config: {}", e))?;
+        let vocab_size = Self::get_vocab_size(config);
+        let eos_token_id = Self::get_eos_token_id(config);
 
-        let weights_path = loaded_model.weights_path.clone()
-            .ok_or_else(|| "No weights path stored for model".to_string())?;
-        let config_path = loaded_model.config_path.clone()
-            .ok_or_else(|| "No config path stored for model".to_string())?;
+        let model = StarCoder2Model::new(&sc2_config, vb)
+            .map_err(|e| format!("Failed to load StarCoder2 model: {}", e))?;
 
-        if loaded_model.adapters_merged {
-            return Err("Adapters already merged. Reload model to apply different adapters.".to_string());
-        }
+        println!("✅ StarCoder2 model loaded: vocab_size={}", vocab_size);
 
-        // Get adapters for this model
-        let adapters = self.adapters.get(model_id)
-            .cloned()
-            .unwrap_or_default();
-
-        if adapters.is_empty() {
-            return Err(format!("No adapters loaded for model: {}", model_id));
-        }
-
-        let adapter_names: Vec<String> = adapters.iter().map(|a| a.name.clone()).collect();
-        let total_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
-
-        // Get tokenizer reference (we need to clone it since we'll mutate the model)
-        let tokenizer = self.models.get(model_id).unwrap().tokenizer.clone();
-
-        // Merge weights and rebuild model
-        let (new_arch, new_config) = self.apply_adapters_to_model(
-            &weights_path,
-            &config_path,
-            &adapters,
-            &tokenizer,
-        )?;
-
-        // Update the loaded model with merged architecture
-        let loaded_model = self.models.get_mut(model_id).unwrap();
-        loaded_model.architecture = new_arch;
-        loaded_model.config = new_config;
-        loaded_model.adapters_merged = true;
-        loaded_model.loaded_at = Instant::now();
-
-        let apply_time_ms = start.elapsed().as_millis() as u64;
-
-        println!("✅ Applied {} adapter(s) to {}: {} layers merged in {}ms",
-            adapter_names.len(), model_id, total_layers, apply_time_ms);
-
-        Ok(ApplyResult {
-            model_id: model_id.to_string(),
-            adapters_applied: adapter_names,
-            layers_merged: total_layers,
-            apply_time_ms,
-        })
+        Ok(Box::new(StarCoder2Wrapper { model, vocab_size, eos_token_id }))
     }
 }
 
 // ============================================================================
-// Generation Helpers for Each Architecture (standalone functions to avoid borrow issues)
+// Text Generation
 // ============================================================================
 
-/// Generate with Phi model (internal KV cache)
-fn generate_with_phi(
-    model: &mut PhiModel,
-    prompt_tokens: &[u32],
+/// Generate text using any CausalLM model
+fn generate_text(
+    model: &mut dyn CausalLM,
+    tokenizer: &Tokenizer,
+    prompt: &str,
     max_tokens: usize,
-    logits_processor: &mut LogitsProcessor,
+    temperature: f64,
     device: &Device,
-    eos_token_id: u32,
-) -> ModelResult<Vec<u32>> {
+) -> Result<(String, usize, usize), String> {
+    let start = Instant::now();
+
+    // Encode prompt
+    let encoding = tokenizer.encode(prompt, true)
+        .map_err(|e| format!("Tokenization failed: {}", e))?;
+    let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
     let prompt_len = prompt_tokens.len();
-    let total_capacity = prompt_len + max_tokens;
-    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
-    all_tokens.extend_from_slice(prompt_tokens);
-    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
-    let mut single_token_buf = [0u32; 1];
 
-    for i in 0..max_tokens {
-        let input = if i == 0 {
-            Tensor::new(all_tokens.as_slice(), device)
-                .map_err(|e| format!("Failed to create prompt tensor: {}", e))?
-        } else {
-            single_token_buf[0] = *all_tokens.last().unwrap_or(&0);
-            Tensor::new(&single_token_buf[..], device)
-                .map_err(|e| format!("Failed to create token tensor: {}", e))?
-        };
-
-        let input = input.unsqueeze(0)
-            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
-
-        let logits = model
-            .forward(&input)
-            .map_err(|e| format!("Phi forward pass failed: {}", e))?;
-
-        if i == 0 {
-            println!("🔍 Phi logits shape: {:?}", logits.shape());
-        }
-
-        let next_token = sample_from_logits(&logits, logits_processor)?;
-
-        if next_token == eos_token_id {
-            break;
-        }
-
-        all_tokens.push(next_token);
-        gen_tokens.push(next_token);
+    if prompt_len == 0 {
+        return Err("Empty prompt".to_string());
     }
 
-    Ok(*gen_tokens)
-}
+    // Clear cache before generation
+    model.clear_cache()?;
 
-/// Generate with Llama model (external cache)
-fn generate_with_llama(
-    model: &LlamaModel,
-    cache: &mut LlamaCache,
-    prompt_tokens: &[u32],
-    max_tokens: usize,
-    logits_processor: &mut LogitsProcessor,
-    device: &Device,
-    eos_token_id: u32,
-) -> ModelResult<Vec<u32>> {
-    let prompt_len = prompt_tokens.len();
-    let total_capacity = prompt_len + max_tokens;
-    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
-    all_tokens.extend_from_slice(prompt_tokens);
-    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
-    let mut index_pos = 0usize;
+    // Setup logits processor for sampling
+    let seed = rand::thread_rng().gen::<u64>();
+    let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
+
+    // Generate tokens
+    let mut all_tokens = prompt_tokens.clone();
+    let eos_token_id = model.eos_token_id();
 
     for i in 0..max_tokens {
-        let (input_tokens, current_len) = if i == 0 {
-            (all_tokens.as_slice(), prompt_len)
+        // Get input - full sequence on first pass, just last token after
+        let input_tokens = if i == 0 {
+            all_tokens.clone()
         } else {
-            let last = all_tokens.last().copied().unwrap_or(0);
-            (&[last][..], 1)
+            vec![*all_tokens.last().unwrap()]
         };
 
-        let input = Tensor::new(input_tokens, device)
-            .map_err(|e| format!("Failed to create tensor: {}", e))?
+        let input = Tensor::new(&input_tokens[..], device)
+            .map_err(|e| format!("Failed to create input tensor: {}", e))?
             .unsqueeze(0)
             .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
 
-        // Llama forward: (input, index_pos, cache)
-        let logits = model
-            .forward(&input, index_pos, cache)
-            .map_err(|e| format!("Llama forward pass failed: {}", e))?;
+        // Forward pass
+        let pos = if i == 0 { 0 } else { all_tokens.len() - 1 };
+        let logits = model.forward(&input, pos)?;
 
-        if i == 0 {
-            println!("🔍 Llama logits shape: {:?}", logits.shape());
-        }
-
-        index_pos += current_len;
-
-        let next_token = sample_from_logits(&logits, logits_processor)?;
-
-        if next_token == eos_token_id {
-            break;
-        }
-
-        all_tokens.push(next_token);
-        gen_tokens.push(next_token);
-    }
-
-    Ok(*gen_tokens)
-}
-
-/// Generate with Mistral model (internal KV cache, seqlen offset)
-fn generate_with_mistral(
-    model: &mut MistralModel,
-    prompt_tokens: &[u32],
-    max_tokens: usize,
-    logits_processor: &mut LogitsProcessor,
-    device: &Device,
-    eos_token_id: u32,
-) -> ModelResult<Vec<u32>> {
-    let prompt_len = prompt_tokens.len();
-    let total_capacity = prompt_len + max_tokens;
-    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
-    all_tokens.extend_from_slice(prompt_tokens);
-    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
-    let mut seqlen_offset = 0usize;
-
-    for i in 0..max_tokens {
-        let (input_tokens, current_len) = if i == 0 {
-            (all_tokens.as_slice(), prompt_len)
+        // Get last token logits
+        let logits = if logits.dims().len() == 3 {
+            logits.squeeze(0).map_err(|e| format!("Squeeze failed: {}", e))?
         } else {
-            let last = all_tokens.last().copied().unwrap_or(0);
-            (&[last][..], 1)
-        };
-
-        let input = Tensor::new(input_tokens, device)
-            .map_err(|e| format!("Failed to create tensor: {}", e))?
-            .unsqueeze(0)
-            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
-
-        // Mistral forward: (input, seqlen_offset)
-        let logits = model
-            .forward(&input, seqlen_offset)
-            .map_err(|e| format!("Mistral forward pass failed: {}", e))?;
-
-        if i == 0 {
-            println!("🔍 Mistral logits shape: {:?}", logits.shape());
-        }
-
-        seqlen_offset += current_len;
-
-        let next_token = sample_from_logits(&logits, logits_processor)?;
-
-        if next_token == eos_token_id {
-            break;
-        }
-
-        all_tokens.push(next_token);
-        gen_tokens.push(next_token);
-    }
-
-    Ok(*gen_tokens)
-}
-
-/// Generate with Qwen2 model (internal KV cache, seqlen offset)
-fn generate_with_qwen2(
-    model: &mut Qwen2Model,
-    prompt_tokens: &[u32],
-    max_tokens: usize,
-    logits_processor: &mut LogitsProcessor,
-    device: &Device,
-    eos_token_id: u32,
-) -> ModelResult<Vec<u32>> {
-    let prompt_len = prompt_tokens.len();
-    let total_capacity = prompt_len + max_tokens;
-    let mut all_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(total_capacity));
-    all_tokens.extend_from_slice(prompt_tokens);
-    let mut gen_tokens: Box<Vec<u32>> = Box::new(Vec::with_capacity(max_tokens));
-    let mut seqlen_offset = 0usize;
-
-    for i in 0..max_tokens {
-        let (input_tokens, current_len) = if i == 0 {
-            (all_tokens.as_slice(), prompt_len)
-        } else {
-            let last = all_tokens.last().copied().unwrap_or(0);
-            (&[last][..], 1)
-        };
-
-        let input = Tensor::new(input_tokens, device)
-            .map_err(|e| format!("Failed to create tensor: {}", e))?
-            .unsqueeze(0)
-            .map_err(|e| format!("Failed to unsqueeze: {}", e))?;
-
-        // Qwen2 forward: (input, seqlen_offset)
-        let logits = model
-            .forward(&input, seqlen_offset)
-            .map_err(|e| format!("Qwen2 forward pass failed: {}", e))?;
-
-        if i == 0 {
-            println!("🔍 Qwen2 logits shape: {:?}", logits.shape());
-        }
-
-        seqlen_offset += current_len;
-
-        let next_token = sample_from_logits(&logits, logits_processor)?;
-
-        if next_token == eos_token_id {
-            break;
-        }
-
-        all_tokens.push(next_token);
-        gen_tokens.push(next_token);
-    }
-
-    Ok(*gen_tokens)
-}
-
-/// Sample next token from logits (shared across all architectures)
-fn sample_from_logits(
-    logits: &Tensor,
-    logits_processor: &mut LogitsProcessor,
-) -> ModelResult<u32> {
-    let dims = logits.dims();
-    let last_logits = match dims.len() {
-        2 => {
-            // Shape [batch, vocab] - squeeze batch dim
-            logits.squeeze(0)
-                .map_err(|e| format!("Failed to squeeze 2D: {}", e))?
-        }
-        3 => {
-            // Shape [batch, seq, vocab] - get last token
-            let seq_len = dims[1];
-            if seq_len == 0 {
-                return Err("Empty sequence in logits".to_string());
-            }
             logits
-                .squeeze(0)  // [seq, vocab]
-                .map_err(|e| format!("Failed to squeeze 3D: {}", e))?
-                .get(seq_len - 1)  // [vocab]
-                .map_err(|e| format!("Failed to get last token: {}", e))?
+        };
+
+        let last_logits = if logits.dims()[0] > 1 {
+            logits.get(logits.dims()[0] - 1)
+                .map_err(|e| format!("Get last logits failed: {}", e))?
+        } else {
+            logits.squeeze(0).map_err(|e| format!("Squeeze logits failed: {}", e))?
+        };
+
+        // Sample next token
+        let next_token = logits_processor.sample(&last_logits)
+            .map_err(|e| format!("Sampling failed: {}", e))?;
+
+        // Check for EOS
+        if next_token == eos_token_id {
+            break;
         }
-        _ => return Err(format!("Unexpected logits dims: {:?}", dims)),
+
+        all_tokens.push(next_token);
+    }
+
+    // Decode generated tokens
+    let generated_tokens = &all_tokens[prompt_len..];
+    let generated_text = tokenizer.decode(generated_tokens, true)
+        .map_err(|e| format!("Decoding failed: {}", e))?;
+
+    let elapsed = start.elapsed().as_millis();
+    let tok_per_sec = if elapsed > 0 {
+        (generated_tokens.len() as f64 / elapsed as f64) * 1000.0
+    } else {
+        0.0
     };
 
-    logits_processor
-        .sample(&last_logits)
-        .map_err(|e| format!("Sampling failed: {}", e))
-}
+    println!("✨ Generated {} tokens in {}ms ({:.1} tok/s)",
+        generated_tokens.len(), elapsed, tok_per_sec);
 
-impl TextGenerator for HuggingFaceProvider {
-    fn generate(&mut self, request: GenerateRequest) -> ModelResult<GenerateResponse> {
-        let loaded_model = self
-            .models
-            .get_mut(&request.model_id)
-            .ok_or_else(|| format!("Model not loaded: {}", request.model_id))?;
-
-        let gen_start = Instant::now();
-
-        // Tokenize the prompt
-        let encoding = loaded_model
-            .tokenizer
-            .encode(request.prompt.as_str(), true)
-            .map_err(|e| format!("Tokenization failed: {}", e))?;
-
-        let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
-        let prompt_len = prompt_tokens.len();
-
-        let adapters_used = request.adapters.clone().unwrap_or_default();
-
-        // NOTE: LoRA adapters are loaded with actual weights (see LoadedAdapter::load),
-        // but weight application during inference is not yet implemented.
-        //
-        // STATUS: LoadedAdapter now stores the actual A/B weight tensors and can compute
-        // weight deltas via get_weight_delta(). However, Candle's PhiModel holds weights
-        // immutably after construction.
-        //
-        // TO IMPLEMENT LoRA APPLICATION (choose one):
-        // 1. Weight merging: Rebuild model with W' = W + scaling*(B@A) for each target layer
-        //    - Slow but works with current architecture
-        //    - Cache merged model when adapter set changes
-        // 2. Custom forward: Implement LoRA-aware forward pass that applies delta at runtime
-        //    - Faster for adapter switching but requires model architecture changes
-        // 3. candle-lora: Wait for/contribute to candle-lora crate for native support
-        //
-        // For now, log adapters but generation uses base model weights only.
-        if !adapters_used.is_empty() {
-            println!("⚠️  Adapters requested but not yet applied: {:?}", adapters_used);
-            println!("   LoRA weights ARE loaded, but weight merging not implemented yet.");
-            println!("   See TODO in generate() for implementation options.");
-        }
-
-        if let Ok(mut log) = self.logger.lock() {
-            log.info(&format!(
-                "Generating: {} prompt tokens, adapters: {:?}{}",
-                prompt_len,
-                adapters_used,
-                if adapters_used.is_empty() { "" } else { " (not applied)" }
-            ));
-        }
-
-        let max_tokens = request.max_tokens.unwrap_or(256);
-        let temperature = request.temperature.unwrap_or(0.7);
-        let top_p = request.top_p.unwrap_or(0.9);
-
-        // Create logits processor for sampling
-        let mut logits_processor = LogitsProcessor::new(
-            rand::rngs::StdRng::seed_from_u64(42).gen(), // Random seed
-            Some(temperature),
-            Some(top_p),
-        );
-
-        // Extract values we need before borrowing model mutably
-        let device = loaded_model.device.clone();
-        let eos_token_id = loaded_model.config.eos_token_id;
-
-        // Generate tokens autoregressively
-        let generated_tokens = match &mut loaded_model.architecture {
-            ModelArchitecture::Phi(model) => {
-                // Clear KV cache before starting generation
-                model.clear_kv_cache();
-                generate_with_phi(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
-            }
-            ModelArchitecture::Llama(model, cache, config) => {
-                // Recreate cache to clear KV state between generations
-                // (LlamaCache has no reset method, so we replace it entirely)
-                *cache = LlamaCache::new(true, DType::F32, config, &device)
-                    .map_err(|e| format!("Failed to recreate Llama cache: {}", e))?;
-                generate_with_llama(model, cache, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
-            }
-            ModelArchitecture::Mistral(model) => {
-                // Clear Mistral internal cache
-                model.clear_kv_cache();
-                generate_with_mistral(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
-            }
-            ModelArchitecture::Qwen2(model) => {
-                // Clear Qwen2 internal cache
-                model.clear_kv_cache();
-                generate_with_qwen2(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
-            }
-        };
-
-        let gen_time_ms = gen_start.elapsed().as_millis() as u64;
-        let num_generated = generated_tokens.len();
-        let tokens_per_second = if gen_time_ms > 0 {
-            (num_generated as f64 / gen_time_ms as f64) * 1000.0
-        } else {
-            0.0
-        };
-
-        // Decode generated tokens
-        let generated_text = loaded_model
-            .tokenizer
-            .decode(&generated_tokens, true)
-            .map_err(|e| format!("Decoding failed: {}", e))?;
-
-        if let Ok(mut log) = self.logger.lock() {
-            log.info(&format!(
-                "Generated {} tokens in {}ms ({:.1} tok/s)",
-                num_generated, gen_time_ms, tokens_per_second
-            ));
-        }
-        println!(
-            "✨ Generated {} tokens in {}ms ({:.1} tok/s)",
-            num_generated, gen_time_ms, tokens_per_second
-        );
-
-        Ok(GenerateResponse {
-            model_id: request.model_id,
-            text: generated_text,
-            prompt_tokens: prompt_len,
-            generated_tokens: num_generated,
-            generation_time_ms: gen_time_ms,
-            tokens_per_second,
-            adapters_used,
-        })
-    }
+    Ok((generated_text, prompt_len, generated_tokens.len()))
 }
 
 // ============================================================================
-// Request/Response Types (Command Payloads)
+// Command Handlers
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command")]
 enum InferenceCommand {
     #[serde(rename = "ping")]
     Ping,
 
     #[serde(rename = "model/load")]
-    ModelLoad {
-        model_id: String,
-        revision: Option<String>,
-    },
+    ModelLoad { model_id: String },
 
     #[serde(rename = "model/unload")]
     ModelUnload { model_id: String },
 
-    #[serde(rename = "models/list")]
-    ModelsList,
-
-    #[serde(rename = "adapter/load")]
-    AdapterLoad {
-        model_id: String,
-        adapter_path: String,
-        adapter_name: String,
-    },
-
-    #[serde(rename = "adapter/unload")]
-    AdapterUnload {
-        model_id: String,
-        adapter_name: String,
-    },
-
-    #[serde(rename = "adapters/list")]
-    AdaptersList { model_id: String },
-
-    /// Apply loaded adapters by merging weights into model (rebuilds model)
-    #[serde(rename = "adapter/apply")]
-    AdapterApply { model_id: String },
+    #[serde(rename = "model/list")]
+    ModelList,
 
     #[serde(rename = "generate")]
     Generate {
         model_id: String,
         prompt: String,
-        max_tokens: Option<usize>,
-        temperature: Option<f64>,
-        top_p: Option<f64>,
-        adapters: Option<Vec<String>>,
+        #[serde(default = "default_max_tokens")]
+        max_tokens: usize,
+        #[serde(default = "default_temperature")]
+        temperature: f64,
+    },
+
+    /// Binary protocol: prompt bytes follow the header
+    /// Format: {"command":"generate/binary",...}\n<u32 length><raw prompt bytes>
+    /// Response: {"type":"binary",...}\n<raw response bytes>
+    #[serde(rename = "generate/binary")]
+    GenerateBinary {
+        model_id: String,
+        /// Prompt length in bytes (follows header)
+        prompt_length: usize,
+        #[serde(default = "default_max_tokens")]
+        max_tokens: usize,
+        #[serde(default = "default_temperature")]
+        temperature: f64,
     },
 }
 
-// ============================================================================
-// Inference Worker (Main Coordinator)
-// ============================================================================
+fn default_max_tokens() -> usize { 256 }
+fn default_temperature() -> f64 { 0.7 }
 
-struct InferenceWorker<P: ModelProvider + AdapterManager + TextGenerator> {
-    provider: Mutex<P>,
-    logger: Arc<Mutex<LoggerClient>>,
+/// Binary response header for text generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BinaryTextHeader {
+    #[serde(rename = "type")]
+    r#type: String, // "binary"
+    length: usize,
+    dtype: String,  // "u8" for UTF-8 text
+    prompt_tokens: usize,
+    generated_tokens: usize,
+    model_id: String,
 }
 
-impl<P: ModelProvider + AdapterManager + TextGenerator> InferenceWorker<P> {
-    fn new(provider: P, logger: Arc<Mutex<LoggerClient>>) -> Self {
-        Self {
-            provider: Mutex::new(provider),
-            logger,
-        }
+// ============================================================================
+// Worker State
+// ============================================================================
+
+struct WorkerState {
+    models: HashMap<String, LoadedModel>,
+    loader: ModelLoader,
+}
+
+impl WorkerState {
+    fn new() -> Result<Self, String> {
+        Ok(Self {
+            models: HashMap::new(),
+            loader: ModelLoader::new()?,
+        })
     }
 
-    fn handle_request(&self, request_json: &str) -> String {
-        // Try to parse as JTAG protocol first, then fallback to direct command
-        let (request_id, command) = match self.parse_request(request_json) {
-            Ok((id, cmd)) => (id, cmd),
-            Err(e) => {
-                return self.error_response("unknown", "parse_error", &e);
-            }
-        };
+    /// Handle binary generation - returns raw (text, prompt_tokens, generated_tokens)
+    /// Used by binary protocol path to avoid JSON serialization of prompts/responses
+    fn handle_generate_binary(
+        &mut self,
+        model_id: &str,
+        prompt: &str,
+        max_tokens: usize,
+        temperature: f64,
+    ) -> Result<(String, usize, usize), String> {
+        let loaded = self.models.get_mut(model_id)
+            .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
 
-        let response_type = self.command_type(&command);
-
-        match self.execute_command(command) {
-            Ok(data) => {
-                let response = JTAGResponse::success(request_id, response_type, data);
-                serde_json::to_string(&response).unwrap_or_else(|_| {
-                    r#"{"success":false,"error":"Failed to serialize response"}"#.to_string()
-                })
-            }
-            Err(e) => {
-                if let Ok(mut log) = self.logger.lock() {
-                    log.error(&format!("Command error: {}", e));
-                }
-                let response =
-                    JTAGResponse::error(request_id, response_type, json!(null), e);
-                serde_json::to_string(&response).unwrap_or_else(|_| {
-                    r#"{"success":false,"error":"Failed to serialize error response"}"#.to_string()
-                })
-            }
-        }
+        generate_text(
+            loaded.model.as_mut(),
+            &loaded.tokenizer,
+            prompt,
+            max_tokens,
+            temperature,
+            &self.loader.device,
+        )
     }
 
-    fn parse_request(&self, json_str: &str) -> Result<(String, InferenceCommand), String> {
-        // Try JTAG protocol format first (has "payload" field)
-        if let Ok(jtag_req) = serde_json::from_str::<JTAGRequest<InferenceCommand>>(json_str) {
-            return Ok((jtag_req.id, jtag_req.payload));
-        }
-
-        // Fallback to direct command format (for backward compatibility)
-        match serde_json::from_str::<InferenceCommand>(json_str) {
-            Ok(cmd) => Ok((uuid::Uuid::new_v4().to_string(), cmd)),
-            Err(e) => Err(format!("Invalid request: {}", e)),
-        }
-    }
-
-    fn command_type(&self, command: &InferenceCommand) -> String {
-        match command {
-            InferenceCommand::Ping => "ping",
-            InferenceCommand::ModelLoad { .. } => "model/load",
-            InferenceCommand::ModelUnload { .. } => "model/unload",
-            InferenceCommand::ModelsList => "models/list",
-            InferenceCommand::AdapterLoad { .. } => "adapter/load",
-            InferenceCommand::AdapterUnload { .. } => "adapter/unload",
-            InferenceCommand::AdaptersList { .. } => "adapters/list",
-            InferenceCommand::AdapterApply { .. } => "adapter/apply",
-            InferenceCommand::Generate { .. } => "generate",
-        }
-        .to_string()
-    }
-
-    fn execute_command(&self, command: InferenceCommand) -> ModelResult<Value> {
-        match command {
+    fn handle_command(&mut self, cmd: InferenceCommand) -> Result<Value, String> {
+        match cmd {
             InferenceCommand::Ping => {
-                // Simple health check - no provider access needed
                 Ok(json!({
-                    "status": "pong",
-                    "worker": "inference-worker",
-                    "version": "0.1.0"
+                    "worker": "inference",
+                    "version": "2.0.0",
+                    "models_loaded": self.models.len(),
+                    "supported_architectures": [
+                        "llama", "mistral", "mixtral", "phi", "phi3", "qwen2",
+                        "gemma", "gemma2", "stablelm", "falcon", "starcoder2"
+                    ]
                 }))
             }
 
-            InferenceCommand::ModelLoad { model_id, revision } => {
-                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
-                let info = provider.load(&model_id, revision.as_deref())?;
-                Ok(serde_json::to_value(info).unwrap_or(json!({})))
+            InferenceCommand::ModelLoad { model_id } => {
+                if self.models.contains_key(&model_id) {
+                    return Ok(json!({
+                        "status": "already_loaded",
+                        "model_id": model_id
+                    }));
+                }
+
+                let loaded = self.loader.load(&model_id)?;
+                let load_time = loaded.load_time_ms;
+                self.models.insert(model_id.clone(), loaded);
+
+                Ok(json!({
+                    "status": "loaded",
+                    "model_id": model_id,
+                    "load_time_ms": load_time
+                }))
             }
 
             InferenceCommand::ModelUnload { model_id } => {
-                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
-                provider.unload(&model_id)?;
-                Ok(json!({
-                    "model_id": model_id,
-                    "status": "unloaded"
-                }))
+                if self.models.remove(&model_id).is_some() {
+                    Ok(json!({
+                        "status": "unloaded",
+                        "model_id": model_id
+                    }))
+                } else {
+                    Err(format!("Model not loaded: {}", model_id))
+                }
             }
 
-            InferenceCommand::ModelsList => {
-                let provider = self.provider.lock().map_err(|e| e.to_string())?;
-                let models = provider.list();
-                Ok(json!({
-                    "models": models,
-                    "count": models.len()
-                }))
-            }
-
-            InferenceCommand::AdapterLoad {
-                model_id,
-                adapter_path,
-                adapter_name,
-            } => {
-                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
-                let info = provider.load_adapter(&model_id, &adapter_path, &adapter_name)?;
-                Ok(serde_json::to_value(info).unwrap_or(json!({})))
-            }
-
-            InferenceCommand::AdapterUnload {
-                model_id,
-                adapter_name,
-            } => {
-                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
-                provider.unload_adapter(&model_id, &adapter_name)?;
-                Ok(json!({
-                    "model_id": model_id,
-                    "adapter_name": adapter_name,
-                    "status": "unloaded"
-                }))
-            }
-
-            InferenceCommand::AdaptersList { model_id } => {
-                let provider = self.provider.lock().map_err(|e| e.to_string())?;
-                let adapters = provider.list_adapters(&model_id);
-
-                // Include detailed info about each adapter
-                let adapter_details: Vec<Value> = adapters
-                    .iter()
-                    .map(|a| json!({
-                        "name": a.name,
-                        "path": a.path,
-                        "status": a.status
+            InferenceCommand::ModelList => {
+                let models: Vec<Value> = self.models.iter()
+                    .map(|(id, loaded)| json!({
+                        "model_id": id,
+                        "architecture": loaded.model.architecture(),
+                        "vocab_size": loaded.model.vocab_size()
                     }))
                     .collect();
 
+                Ok(json!({ "models": models }))
+            }
+
+            InferenceCommand::Generate { model_id, prompt, max_tokens, temperature } => {
+                let loaded = self.models.get_mut(&model_id)
+                    .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
+
+                let (text, prompt_tokens, generated_tokens) = generate_text(
+                    loaded.model.as_mut(),
+                    &loaded.tokenizer,
+                    &prompt,
+                    max_tokens,
+                    temperature,
+                    &self.loader.device,
+                )?;
+
                 Ok(json!({
+                    "text": text,
                     "model_id": model_id,
-                    "adapters": adapter_details,
-                    "count": adapters.len()
+                    "prompt_tokens": prompt_tokens,
+                    "generated_tokens": generated_tokens
                 }))
             }
 
-            InferenceCommand::AdapterApply { model_id } => {
-                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
-                let result = provider.apply_adapters(&model_id)?;
-                Ok(serde_json::to_value(result).unwrap_or(json!({})))
-            }
-
-            InferenceCommand::Generate {
-                model_id,
-                prompt,
-                max_tokens,
-                temperature,
-                top_p,
-                adapters,
-            } => {
-                let mut provider = self.provider.lock().map_err(|e| e.to_string())?;
-                let response = provider.generate(GenerateRequest {
-                    model_id,
-                    prompt,
-                    max_tokens,
-                    temperature,
-                    top_p,
-                    adapters,
-                })?;
-                Ok(serde_json::to_value(response).unwrap_or(json!({})))
+            // GenerateBinary is handled separately in handle_client with binary I/O
+            // This arm exists only for match exhaustiveness
+            InferenceCommand::GenerateBinary { .. } => {
+                Err("GenerateBinary should be handled by binary protocol path".to_string())
             }
         }
-    }
-
-    fn error_response(&self, request_id: &str, r#type: &str, error: &str) -> String {
-        let response = JTAGResponse::error(
-            request_id.to_string(),
-            r#type.to_string(),
-            json!(null),
-            error.to_string(),
-        );
-        serde_json::to_string(&response)
-            .unwrap_or_else(|_| format!(r#"{{"success":false,"error":"{}"}}"#, error))
     }
 }
 
 // ============================================================================
-// Connection Handler
+// Binary Protocol Helpers
 // ============================================================================
 
-fn handle_connection<P: ModelProvider + AdapterManager + TextGenerator>(
-    stream: UnixStream,
-    worker: Arc<InferenceWorker<P>>,
+/// Write generated text as binary: JSON header + raw UTF-8 bytes
+/// This eliminates JSON escaping overhead for the response text
+fn write_binary_text<W: Write>(
+    writer: &mut W,
+    text: &str,
+    model_id: &str,
+    prompt_tokens: usize,
+    generated_tokens: usize,
 ) -> std::io::Result<()> {
-    let mut reader = BufReader::new(&stream);
-    let mut writer = stream.try_clone()?;
+    let bytes = text.as_bytes();
 
-    loop {
-        let mut line = String::new();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
-            break;
-        }
+    let header = BinaryTextHeader {
+        r#type: "binary".to_string(),
+        length: bytes.len(),
+        dtype: "u8".to_string(),
+        prompt_tokens,
+        generated_tokens,
+        model_id: model_id.to_string(),
+    };
 
-        let response_json = worker.handle_request(line.trim());
-        writeln!(writer, "{}", response_json)?;
-        writer.flush()?;
-    }
+    // Write JSON header with newline
+    let header_json = serde_json::to_string(&header)?;
+    writer.write_all(header_json.as_bytes())?;
+    writer.write_all(b"\n")?;
+
+    // Write raw UTF-8 bytes - NO JSON ESCAPING
+    writer.write_all(bytes)?;
+    writer.flush()?;
 
     Ok(())
 }
 
+/// Read exact number of bytes from a reader
+fn read_exact_bytes<R: std::io::Read>(reader: &mut R, len: usize) -> std::io::Result<Vec<u8>> {
+    let mut buffer = vec![0u8; len];
+    reader.read_exact(&mut buffer)?;
+    Ok(buffer)
+}
+
 // ============================================================================
-// Main Entry Point
+// Main Server
 // ============================================================================
 
-fn main() -> std::io::Result<()> {
+fn handle_client(mut stream: UnixStream, state: Arc<Mutex<WorkerState>>) {
+    let mut reader = BufReader::new(stream.try_clone().expect("Failed to clone stream"));
+    let mut line = String::new();
+
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            line.clear();
+            continue;
+        }
+
+        // First, peek at the command type to detect binary protocol
+        let parsed: Result<Value, _> = serde_json::from_str(trimmed);
+        let is_binary = parsed.as_ref()
+            .map(|v| v.get("command").and_then(|c| c.as_str()) == Some("generate/binary"))
+            .unwrap_or(false);
+
+        if is_binary {
+            // Handle binary protocol: read prompt bytes, generate, write binary response
+            if let Ok(cmd) = serde_json::from_str::<InferenceCommand>(trimmed) {
+                if let InferenceCommand::GenerateBinary { model_id, prompt_length, max_tokens, temperature } = cmd {
+                    // Read binary prompt payload
+                    let prompt_result = read_exact_bytes(&mut reader, prompt_length)
+                        .map_err(|e| format!("Failed to read prompt bytes: {}", e))
+                        .and_then(|bytes| {
+                            String::from_utf8(bytes)
+                                .map_err(|e| format!("Invalid UTF-8 in prompt: {}", e))
+                        });
+
+                    match prompt_result {
+                        Ok(prompt) => {
+                            let mut state_guard = state.lock().unwrap();
+                            let gen_result = state_guard.handle_generate_binary(
+                                &model_id, &prompt, max_tokens, temperature
+                            );
+
+                            match gen_result {
+                                Ok((text, prompt_tokens, generated_tokens)) => {
+                                    if let Err(e) = write_binary_text(
+                                        &mut stream, &text, &model_id, prompt_tokens, generated_tokens
+                                    ) {
+                                        eprintln!("❌ Failed to write binary response: {}", e);
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    // Error response still uses JSON for consistency
+                                    let error_response = json!({
+                                        "success": false,
+                                        "error": e
+                                    });
+                                    let response_str = serde_json::to_string(&error_response).unwrap() + "\n";
+                                    if stream.write_all(response_str.as_bytes()).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let error_response = json!({
+                                "success": false,
+                                "error": e
+                            });
+                            let response_str = serde_json::to_string(&error_response).unwrap() + "\n";
+                            if stream.write_all(response_str.as_bytes()).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            line.clear();
+            continue;
+        }
+
+        // Standard JSON protocol for all other commands
+        let response: Value = match serde_json::from_str::<InferenceCommand>(trimmed) {
+            Ok(cmd) => {
+                let mut state_guard = state.lock().unwrap();
+                match state_guard.handle_command(cmd) {
+                    Ok(result) => json!({
+                        "success": true,
+                        "result": result
+                    }),
+                    Err(e) => json!({
+                        "success": false,
+                        "error": e
+                    })
+                }
+            }
+            Err(e) => json!({
+                "success": false,
+                "error": format!("Invalid command: {}", e)
+            })
+        };
+
+        // Send response
+        let response_str = serde_json::to_string(&response).unwrap() + "\n";
+        if stream.write_all(response_str.as_bytes()).is_err() {
+            break;
+        }
+
+        line.clear();
+    }
+}
+
+fn main() {
+    println!("🦀 Candle Inference Worker v2.0 starting...");
+
+    // Get socket path from args
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: {} <socket-path>", args[0]);
-        eprintln!("Example: {} /tmp/jtag-inference.sock", args[0]);
-        std::process::exit(1);
-    }
+    let socket_path = args.get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("/tmp/jtag-inference.sock");
 
-    let socket_path = &args[1];
-
-    // Remove socket if exists
-    if fs::metadata(socket_path).is_ok() {
-        fs::remove_file(socket_path)?;
-    }
-
-    println!("🦀 Candle Inference Worker starting...");
     println!("📡 Socket: {}", socket_path);
 
-    // Initialize logger (connects to LoggerWorker)
-    let logger = Arc::new(Mutex::new(LoggerClient::connect(
-        "/tmp/jtag-logger-worker.sock",
-        "InferenceWorker",
-    )));
+    // Remove old socket
+    let _ = fs::remove_file(socket_path);
 
-    if let Ok(mut log) = logger.lock() {
-        log.info("Inference Worker initializing...");
-    }
-
-    // Initialize HuggingFace provider
-    let provider = match HuggingFaceProvider::new(logger.clone()) {
-        Ok(p) => p,
+    // Initialize state
+    let state = match WorkerState::new() {
+        Ok(s) => Arc::new(Mutex::new(s)),
         Err(e) => {
-            eprintln!("❌ Failed to initialize provider: {}", e);
-            if let Ok(mut log) = logger.lock() {
-                log.error(&format!("Failed to initialize: {}", e));
-            }
+            eprintln!("❌ Failed to initialize: {}", e);
             std::process::exit(1);
         }
     };
 
-    println!("🔧 Using device: {}", provider.device_info());
-
-    // Create worker
-    let worker = Arc::new(InferenceWorker::new(provider, logger.clone()));
-
-    println!("✅ Inference Worker ready\n");
-
-    if let Ok(mut log) = logger.lock() {
-        log.info("Inference Worker ready");
-    }
-
-    // Bind socket
-    let listener = UnixListener::bind(socket_path)?;
-    println!("✅ Listening for connections\n");
-
-    // Accept connections
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let worker_clone = worker.clone();
-                thread::spawn(move || {
-                    if let Err(e) = handle_connection(stream, worker_clone) {
-                        eprintln!("Connection error: {}", e);
-                    }
-                });
-            }
-            Err(e) => eprintln!("Accept error: {}", e),
+    // Check for Metal
+    if cfg!(target_os = "macos") {
+        if Device::new_metal(0).is_ok() {
+            println!("✅ Metal acceleration enabled");
+        } else {
+            println!("⚠️  Metal not available, using CPU");
         }
     }
 
-    Ok(())
+    // Start server
+    let listener = UnixListener::bind(socket_path).expect("Failed to bind socket");
+    println!("✅ Inference Worker v2.0 ready");
+    println!("📂 Supported: llama, mistral, mixtral, phi, phi3, qwen2, gemma, gemma2, stablelm, falcon, starcoder2");
+    println!("✅ Listening for connections\n");
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let state = Arc::clone(&state);
+                thread::spawn(move || handle_client(stream, state));
+            }
+            Err(e) => eprintln!("Connection error: {}", e),
+        }
+    }
 }

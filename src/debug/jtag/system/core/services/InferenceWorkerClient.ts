@@ -12,7 +12,6 @@
  */
 
 import * as net from 'net';
-import { randomUUID } from 'crypto';
 import { Logger } from '../logging/Logger';
 
 const log = Logger.create('InferenceWorkerClient', 'inference');
@@ -23,28 +22,6 @@ const DEFAULT_SOCKET_PATH = '/tmp/jtag-inference.sock';
 // ============================================================================
 // Types
 // ============================================================================
-
-/** JTAG Request format */
-interface JTAGRequest<T> {
-  id: string;
-  type: string;
-  timestamp: string;
-  payload: T;
-  userId?: string;
-  sessionId?: string;
-}
-
-/** JTAG Response format */
-interface JTAGResponse<T> {
-  id: string;
-  type: string;
-  timestamp: string;
-  payload: T;
-  requestId: string;
-  success: boolean;
-  error?: string;
-  errorType?: string;
-}
 
 /** Model info returned by worker */
 export interface ModelInfo {
@@ -95,7 +72,24 @@ export interface GenerateResponse {
 /** Command payload sent to worker */
 interface InferenceCommand {
   command: string;
-  [key: string]: any;
+  [key: string]: unknown;
+}
+
+/** Worker response format */
+interface WorkerResponse<T> {
+  success: boolean;
+  result?: T;
+  error?: string;
+}
+
+/** Binary response header from generate/binary command */
+interface BinaryTextHeader {
+  type: string;
+  length: number;
+  dtype: string;
+  promptTokens: number;
+  generatedTokens: number;
+  modelId: string;
 }
 
 // ============================================================================
@@ -113,9 +107,10 @@ export class InferenceWorkerClient {
 
   private socketPath: string;
   private socket: net.Socket | null = null;
-  private buffer: string = '';
+  private dataBuffer: Buffer = Buffer.alloc(0);
+  private binaryHeader: BinaryTextHeader | null = null;
   private pendingResponse: {
-    resolve: (value: JTAGResponse<any>) => void;
+    resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
   } | null = null;
@@ -183,9 +178,8 @@ export class InferenceWorkerClient {
   /**
    * Ping the worker to check connectivity
    */
-  async ping(): Promise<{ worker: string; version: string }> {
-    const response = await this.sendCommand({ command: 'ping' });
-    return response.payload;
+  async ping(): Promise<{ worker: string; version: string; modelsLoaded: number }> {
+    return this.sendCommand({ command: 'ping' });
   }
 
   // ============================================================================
@@ -198,13 +192,12 @@ export class InferenceWorkerClient {
    * @param modelId - HuggingFace model ID (e.g., 'gpt2', 'meta-llama/Llama-3.2-3B-Instruct')
    * @param revision - Optional revision/branch (default: 'main')
    */
-  async loadModel(modelId: string, revision?: string): Promise<ModelInfo> {
-    const response = await this.sendCommand({
+  async loadModel(modelId: string, revision?: string): Promise<{ status: string; modelId: string; loadTimeMs?: number }> {
+    return this.sendCommand({
       command: 'model/load',
       model_id: modelId,
       revision
     });
-    return response.payload;
   }
 
   /**
@@ -221,9 +214,8 @@ export class InferenceWorkerClient {
   /**
    * List all loaded models
    */
-  async listModels(): Promise<{ models: ModelInfo[]; count: number }> {
-    const response = await this.sendCommand({ command: 'models/list' });
-    return response.payload;
+  async listModels(): Promise<{ models: Array<{ modelId: string; architecture: string; vocabSize: number }> }> {
+    return this.sendCommand({ command: 'model/list' });
   }
 
   // ============================================================================
@@ -242,13 +234,12 @@ export class InferenceWorkerClient {
     adapterPath: string,
     adapterName: string
   ): Promise<AdapterInfo> {
-    const response = await this.sendCommand({
+    return this.sendCommand({
       command: 'adapter/load',
       model_id: modelId,
       adapter_path: adapterPath,
       adapter_name: adapterName
     });
-    return response.payload;
   }
 
   /**
@@ -274,12 +265,12 @@ export class InferenceWorkerClient {
    * @param modelId - Model with loaded adapters to merge
    */
   async applyAdapters(modelId: string): Promise<ApplyAdaptersResult> {
-    const response = await this.sendCommand({
+    const result: ApplyAdaptersResult = await this.sendCommand({
       command: 'adapter/apply',
       model_id: modelId
     });
-    log.info(`Applied adapters to ${modelId}: ${response.payload.layersMerged} layers merged`);
-    return response.payload;
+    log.info(`Applied adapters to ${modelId}: ${result.layersMerged} layers merged`);
+    return result;
   }
 
   // ============================================================================
@@ -287,27 +278,95 @@ export class InferenceWorkerClient {
   // ============================================================================
 
   /**
-   * Generate text from a prompt
+   * Generate text from a prompt (JSON protocol)
+   *
+   * Note: For prompts with special characters/newlines, use generateBinary() instead
+   * to avoid JSON escaping issues.
    *
    * @param request - Generation request with model, prompt, and options
    */
-  async generate(request: GenerateRequest): Promise<GenerateResponse> {
+  async generate(request: GenerateRequest): Promise<{ text: string; promptTokens: number; generatedTokens: number; modelId: string }> {
     const startTime = Date.now();
 
-    const response = await this.sendCommand({
+    const result = await this.sendCommand<{ text: string; prompt_tokens: number; generated_tokens: number; model_id: string }>({
       command: 'generate',
       model_id: request.modelId,
       prompt: request.prompt,
-      max_tokens: request.maxTokens,
-      temperature: request.temperature,
-      top_p: request.topP,
-      adapters: request.adapters
+      max_tokens: request.maxTokens ?? 256,
+      temperature: request.temperature ?? 0.7,
     });
 
     const duration = Date.now() - startTime;
-    log.debug(`Generated response in ${duration}ms (${response.payload.promptTokens} prompt tokens)`);
+    log.debug(`Generated response in ${duration}ms (${result.prompt_tokens} prompt tokens)`);
 
-    return response.payload;
+    return {
+      text: result.text,
+      promptTokens: result.prompt_tokens,
+      generatedTokens: result.generated_tokens,
+      modelId: result.model_id,
+    };
+  }
+
+  /**
+   * Generate text using binary protocol - avoids JSON escaping issues
+   *
+   * Use this for prompts with:
+   * - Newlines
+   * - Special characters
+   * - Long text
+   * - Multi-turn conversations
+   *
+   * @param modelId - Model to use (must be loaded)
+   * @param prompt - Text prompt (can include newlines, special chars)
+   * @param maxTokens - Maximum tokens to generate (default: 256)
+   * @param temperature - Sampling temperature (default: 0.7)
+   */
+  async generateBinary(
+    modelId: string,
+    prompt: string,
+    maxTokens: number = 256,
+    temperature: number = 0.7
+  ): Promise<{ text: string; promptTokens: number; generatedTokens: number; modelId: string }> {
+    return new Promise((resolve, reject) => {
+      const doRequest = async (): Promise<void> => {
+        try {
+          if (this.socket && this.socket.destroyed) {
+            this.socket = null;
+          }
+          await this.connect();
+
+          const promptBytes = Buffer.from(prompt, 'utf8');
+
+          const header = {
+            command: 'generate/binary',
+            model_id: modelId,
+            prompt_length: promptBytes.length,
+            max_tokens: maxTokens,
+            temperature,
+          };
+
+          const result = await new Promise<{ text: string; promptTokens: number; generatedTokens: number; modelId: string }>((innerResolve, innerReject) => {
+            const timeoutHandle = setTimeout(() => {
+              this.pendingResponse = null;
+              innerReject(new Error(`Binary generate timeout: ${modelId}`));
+            }, 120000); // 2min timeout for generation
+
+            this.pendingResponse = { resolve: innerResolve as (value: unknown) => void, reject: innerReject, timeout: timeoutHandle };
+
+            // Send JSON header + binary prompt
+            this.socket!.write(JSON.stringify(header) + '\n');
+            this.socket!.write(promptBytes);
+          });
+
+          resolve(result);
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+
+      this.requestQueue.push(doRequest);
+      this.processQueue();
+    });
   }
 
   /**
@@ -322,11 +381,8 @@ export class InferenceWorkerClient {
     prompt: string,
     maxTokens: number = 256
   ): Promise<string> {
-    const response = await this.generate({
-      modelId,
-      prompt,
-      maxTokens
-    });
+    // Use binary protocol for safety (handles all prompt types)
+    const response = await this.generateBinary(modelId, prompt, maxTokens);
     return response.text;
   }
 
@@ -361,7 +417,8 @@ export class InferenceWorkerClient {
 
     return new Promise((resolve, reject) => {
       this.socket = net.createConnection(this.socketPath);
-      this.buffer = '';
+      this.dataBuffer = Buffer.alloc(0);
+      this.binaryHeader = null;
 
       this.socket.on('connect', () => {
         log.debug(`Connected to inference worker: ${this.socketPath}`);
@@ -397,39 +454,80 @@ export class InferenceWorkerClient {
   }
 
   private handleData(data: Buffer): void {
-    this.buffer += data.toString();
+    // Use Buffer for binary protocol support
+    this.dataBuffer = Buffer.concat([this.dataBuffer, data]);
 
-    // Process complete lines
-    const lines = this.buffer.split('\n');
-    this.buffer = lines.pop() || '';
+    // Check if we're waiting for binary data
+    if (this.binaryHeader) {
+      if (this.dataBuffer.length >= this.binaryHeader.length) {
+        // Extract binary payload
+        const textBytes = this.dataBuffer.subarray(0, this.binaryHeader.length);
+        this.dataBuffer = this.dataBuffer.subarray(this.binaryHeader.length);
 
-    for (const line of lines) {
-      if (!line.trim()) continue;
-
-      try {
-        const response: JTAGResponse<any> = JSON.parse(line);
+        const text = textBytes.toString('utf8');
+        const header = this.binaryHeader;
+        this.binaryHeader = null;
 
         if (this.pendingResponse) {
           clearTimeout(this.pendingResponse.timeout);
           const pending = this.pendingResponse;
           this.pendingResponse = null;
-
-          if (response.success) {
-            pending.resolve(response);
-          } else {
-            pending.reject(new Error(response.error || 'Unknown worker error'));
-          }
+          pending.resolve({
+            text,
+            promptTokens: header.promptTokens,
+            generatedTokens: header.generatedTokens,
+            modelId: header.modelId,
+          });
         }
-      } catch (error) {
-        log.error(`Failed to parse response: ${error}`);
       }
+      return;
+    }
+
+    // Look for newline to complete JSON header
+    const newlineIdx = this.dataBuffer.indexOf('\n');
+    if (newlineIdx === -1) return;
+
+    const line = this.dataBuffer.subarray(0, newlineIdx).toString();
+    this.dataBuffer = this.dataBuffer.subarray(newlineIdx + 1);
+
+    if (!line.trim()) return;
+
+    try {
+      const parsed = JSON.parse(line);
+
+      // Check if it's a binary response header
+      if (parsed.type === 'binary') {
+        this.binaryHeader = parsed as BinaryTextHeader;
+        // Check if we already have the binary data
+        if (this.dataBuffer.length >= this.binaryHeader.length) {
+          this.handleData(Buffer.alloc(0)); // Re-process with existing data
+        }
+        return;
+      }
+
+      // Regular JSON response
+      const response = parsed as WorkerResponse<unknown>;
+
+      if (this.pendingResponse) {
+        clearTimeout(this.pendingResponse.timeout);
+        const pending = this.pendingResponse;
+        this.pendingResponse = null;
+
+        if (response.success) {
+          pending.resolve(response.result);
+        } else {
+          pending.reject(new Error(response.error || 'Unknown worker error'));
+        }
+      }
+    } catch (error) {
+      log.error(`Failed to parse response: ${error}`);
     }
   }
 
-  private async sendCommand(
+  private async sendCommand<T>(
     command: InferenceCommand,
     timeout: number = 60000 // 60s default for model loading
-  ): Promise<JTAGResponse<any>> {
+  ): Promise<T> {
     return new Promise((outerResolve, outerReject) => {
       const doRequest = async (): Promise<void> => {
         let lastError: Error | null = null;
@@ -445,24 +543,16 @@ export class InferenceWorkerClient {
             await this.connect();
             this.connectionAttempts = 0; // Reset on successful connection
 
-            // Use JTAG protocol format
-            const request: JTAGRequest<InferenceCommand> = {
-              id: randomUUID(),
-              type: command.command,
-              timestamp: new Date().toISOString(),
-              payload: command
-            };
-
-            const result = await new Promise<JTAGResponse<any>>((resolve, reject) => {
+            const result = await new Promise<T>((resolve, reject) => {
               const timeoutHandle = setTimeout(() => {
                 this.pendingResponse = null;
                 reject(new Error(`Request timeout: ${command.command}`));
               }, timeout);
 
-              this.pendingResponse = { resolve, reject, timeout: timeoutHandle };
+              this.pendingResponse = { resolve: resolve as (value: unknown) => void, reject, timeout: timeoutHandle };
 
-              // Send newline-delimited JSON
-              this.socket!.write(JSON.stringify(request) + '\n');
+              // Send simple JSON (no JTAG wrapper - Rust worker expects plain command)
+              this.socket!.write(JSON.stringify(command) + '\n');
             });
 
             outerResolve(result);
