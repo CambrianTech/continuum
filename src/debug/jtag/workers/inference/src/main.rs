@@ -35,7 +35,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::phi::{Config as PhiConfig, Model as PhiModel};
-use candle_transformers::models::llama::{Llama as LlamaModel, Cache as LlamaCache, LlamaConfig as LlamaRawConfig};
+use candle_transformers::models::llama::{Llama as LlamaModel, Cache as LlamaCache, LlamaConfig as LlamaRawConfig, Config as LlamaModelConfig};
 use candle_transformers::models::mistral::{Config as MistralConfig, Model as MistralModel};
 use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
 
@@ -302,7 +302,7 @@ pub struct AdapterInfo {
 /// Supported model architectures
 pub enum ModelArchitecture {
     Phi(PhiModel),
-    Llama(LlamaModel, LlamaCache),
+    Llama(LlamaModel, LlamaCache, LlamaModelConfig),  // Store config to recreate cache
     Mistral(MistralModel),
     Qwen2(Qwen2Model),
 }
@@ -312,7 +312,7 @@ impl std::fmt::Debug for ModelArchitecture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ModelArchitecture::Phi(_) => write!(f, "Phi"),
-            ModelArchitecture::Llama(_, _) => write!(f, "Llama"),
+            ModelArchitecture::Llama(_, _, _) => write!(f, "Llama"),
             ModelArchitecture::Mistral(_) => write!(f, "Mistral"),
             ModelArchitecture::Qwen2(_) => write!(f, "Qwen2"),
         }
@@ -813,7 +813,7 @@ impl HuggingFaceProvider {
         println!("✅ Llama model loaded: vocab_size={}", vocab_size);
 
         Ok(LoadedModelResult {
-            architecture: ModelArchitecture::Llama(model, cache),
+            architecture: ModelArchitecture::Llama(model, cache, llama_config.clone()),
             config: ModelConfig { vocab_size, eos_token_id, bos_token_id: llama_config.bos_token_id },
             weights_path,
             config_path,
@@ -1673,12 +1673,11 @@ impl TextGenerator for HuggingFaceProvider {
                 model.clear_kv_cache();
                 generate_with_phi(model, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
             }
-            ModelArchitecture::Llama(model, cache) => {
-                // TODO: Cache.kvs is private in candle 0.8, can't clear it directly.
-                // For now, cache persists between requests. To fix:
-                // 1. Store LlamaConfig to recreate cache, or
-                // 2. Upgrade candle if clear() method added
-                // The cache still works correctly - just doesn't free memory between requests.
+            ModelArchitecture::Llama(model, cache, config) => {
+                // Recreate cache to clear KV state between generations
+                // (LlamaCache has no reset method, so we replace it entirely)
+                *cache = LlamaCache::new(true, DType::F32, config, &device)
+                    .map_err(|e| format!("Failed to recreate Llama cache: {}", e))?;
                 generate_with_llama(model, cache, &prompt_tokens, max_tokens, &mut logits_processor, &device, eos_token_id)?
             }
             ModelArchitecture::Mistral(model) => {
