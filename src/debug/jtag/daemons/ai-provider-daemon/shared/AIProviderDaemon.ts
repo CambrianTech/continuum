@@ -496,8 +496,26 @@ export class AIProviderDaemon extends DaemonBase {
 
   /**
    * Select best adapter based on preferences and availability
+   *
+   * Implements LOCAL PROVIDER ALIASING for the genome vision:
+   * - When 'ollama' or 'local' is requested, prefer 'candle' if available
+   * - This enables Candle (native Rust) to transparently replace Ollama
+   * - LoRA adapter composition only works with Candle, not Ollama
    */
   private selectAdapter(preferredProvider?: string): AIProviderAdapter | null {
+    // LOCAL PROVIDER ALIASING: 'ollama' or 'local' → 'candle' when available
+    // This is the KEY integration point for the genome vision (LoRA composition)
+    const localProviders = ['ollama', 'local', 'llamacpp'];
+    if (preferredProvider && localProviders.includes(preferredProvider)) {
+      // Try Candle first (supports multi-adapter LoRA composition)
+      const candleReg = this.adapters.get('candle');
+      if (candleReg && candleReg.enabled) {
+        this.log.debug(`🔄 AIProviderDaemon: Routing '${preferredProvider}' → 'candle' (local provider aliasing)`);
+        return candleReg.adapter;
+      }
+      // Fall through to original provider if Candle unavailable
+    }
+
     // If preferred provider specified, try to use it
     if (preferredProvider) {
       const registration = this.adapters.get(preferredProvider);

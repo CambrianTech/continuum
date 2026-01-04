@@ -167,6 +167,16 @@ export class LoRAAdapter {
   }
 
   /**
+   * Set or update the AI provider for this adapter
+   *
+   * Called by PersonaGenome when provider becomes available.
+   * Enables transition from stub mode to real GPU loading.
+   */
+  setAIProvider(provider: AIProviderAdapter): void {
+    this.aiProvider = provider;
+  }
+
+  /**
    * Load adapter weights from disk into GPU memory
    *
    * Phase 6: Provider-agnostic via AIProviderAdapter.applySkill()

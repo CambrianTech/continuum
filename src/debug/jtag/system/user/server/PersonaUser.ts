@@ -543,6 +543,30 @@ export class PersonaUser extends AIUser {
       // Non-fatal: isAvailable() will default to simple worker ready check
     }
 
+    // STEP 1.7: Wire AI provider to genome for real LoRA adapter loading (genome vision)
+    // This enables PersonaGenome.activateSkill() → CandleAdapter.applySkill() → InferenceWorker.loadAdapter()
+    // Without this, adapters run in stub mode (tracking state only, no actual GPU loading)
+    try {
+      // Try to get CandleAdapter (native Rust inference with LoRA support)
+      const candleAdapter = AIProviderDaemon.getAdapter('candle');
+      if (candleAdapter) {
+        this.memory.genome.setAIProvider(candleAdapter);
+        this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
+      } else {
+        // Fall back to Ollama if Candle not available
+        const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
+        if (ollamaAdapter) {
+          this.memory.genome.setAIProvider(ollamaAdapter);
+          this.log.info(`🧬 ${this.displayName}: Genome wired to OllamaAdapter (stub mode - no multi-adapter)`);
+        } else {
+          this.log.warn(`⚠️ ${this.displayName}: No local AI provider available for genome`);
+        }
+      }
+    } catch (error) {
+      this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider:`, error);
+      // Non-fatal: genome will run in stub mode
+    }
+
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
       this.log.debug(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
