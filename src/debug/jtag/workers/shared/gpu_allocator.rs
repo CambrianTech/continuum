@@ -26,6 +26,23 @@ pub struct Allocation {
     pub last_used: Instant,
     /// Priority (higher = less likely to evict)
     pub priority: f32,
+    /// Time to load this allocation (for paging optimization)
+    pub load_time_ms: u64,
+    /// Type of allocation (model, adapter, embedding)
+    pub alloc_type: AllocationType,
+}
+
+/// Type of GPU allocation (for paging strategy)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum AllocationType {
+    /// Base model - expensive to load, keep resident
+    Model,
+    /// LoRA adapter - cheap to load, can page freely
+    Adapter,
+    /// Embedding model - medium cost
+    Embedding,
+    /// Other/unknown
+    Other,
 }
 
 /// GPU memory status
@@ -50,6 +67,10 @@ pub struct AllocationRequest {
     pub owner: String,
     pub size_mb: u64,
     pub priority: f32,
+    /// Time it took to load (for paging optimization)
+    pub load_time_ms: Option<u64>,
+    /// Type of allocation
+    pub alloc_type: Option<AllocationType>,
 }
 
 /// Allocation result
@@ -126,6 +147,8 @@ impl GpuAllocator {
                     size_mb: request.size_mb,
                     last_used: Instant::now(),
                     priority: request.priority,
+                    load_time_ms: request.load_time_ms.unwrap_or(0),
+                    alloc_type: request.alloc_type.unwrap_or(AllocationType::Other),
                 },
             );
             return AllocationResult::Granted;
@@ -156,7 +179,16 @@ impl GpuAllocator {
         allocations.remove(id)
     }
 
-    /// Find eviction candidates using LRU + priority
+    /// Find eviction candidates using LRU + priority + load cost
+    ///
+    /// Eviction score formula (higher = more evictable):
+    /// score = (age_seconds * type_weight) / (priority * 10 * reload_cost_weight)
+    ///
+    /// Where:
+    /// - type_weight: Adapter=2.0, Embedding=1.0, Model=0.5, Other=1.0
+    ///   (prefer evicting adapters - cheap to reload)
+    /// - reload_cost_weight: 1 + (load_time_ms / 1000)
+    ///   (avoid evicting things that took long to load)
     fn find_eviction_candidates(
         &self,
         allocations: &HashMap<String, Allocation>,
@@ -169,10 +201,9 @@ impl GpuAllocator {
             .collect();
 
         // Sort by eviction score (higher = more evictable)
-        // Score = age_seconds / (priority * 10)
         candidates.sort_by(|a, b| {
-            let score_a = a.last_used.elapsed().as_secs_f32() / (a.priority * 10.0);
-            let score_b = b.last_used.elapsed().as_secs_f32() / (b.priority * 10.0);
+            let score_a = Self::calculate_eviction_score(a);
+            let score_b = Self::calculate_eviction_score(b);
             score_b.partial_cmp(&score_a).unwrap()
         });
 
@@ -189,6 +220,26 @@ impl GpuAllocator {
         }
 
         victims
+    }
+
+    /// Calculate eviction score for an allocation
+    /// Higher score = more likely to evict
+    fn calculate_eviction_score(alloc: &Allocation) -> f32 {
+        let age_seconds = alloc.last_used.elapsed().as_secs_f32();
+
+        // Type weight: prefer evicting adapters (cheap to reload)
+        let type_weight = match alloc.alloc_type {
+            AllocationType::Adapter => 2.0,   // Prefer evicting (cheap)
+            AllocationType::Embedding => 1.0, // Neutral
+            AllocationType::Model => 0.3,     // Avoid evicting (expensive)
+            AllocationType::Other => 1.0,     // Neutral
+        };
+
+        // Reload cost weight: avoid evicting things that took long to load
+        let reload_cost_weight = 1.0 + (alloc.load_time_ms as f32 / 1000.0);
+
+        // Score = (age * type_weight) / (priority * 10 * reload_cost)
+        (age_seconds * type_weight) / (alloc.priority * 10.0 * reload_cost_weight)
     }
 
     /// Get current GPU status
@@ -226,6 +277,78 @@ impl GpuAllocator {
             false
         }
     }
+
+    /// Get paging statistics by allocation type
+    pub fn paging_stats(&self) -> PagingStats {
+        let allocations = self.allocations.lock().unwrap();
+
+        let mut stats = PagingStats::default();
+
+        for alloc in allocations.values() {
+            match alloc.alloc_type {
+                AllocationType::Model => {
+                    stats.model_count += 1;
+                    stats.model_mb += alloc.size_mb;
+                    stats.model_load_time_ms += alloc.load_time_ms;
+                }
+                AllocationType::Adapter => {
+                    stats.adapter_count += 1;
+                    stats.adapter_mb += alloc.size_mb;
+                    stats.adapter_load_time_ms += alloc.load_time_ms;
+                }
+                AllocationType::Embedding => {
+                    stats.embedding_count += 1;
+                    stats.embedding_mb += alloc.size_mb;
+                }
+                AllocationType::Other => {
+                    stats.other_count += 1;
+                    stats.other_mb += alloc.size_mb;
+                }
+            }
+        }
+
+        // Calculate average load times
+        if stats.model_count > 0 {
+            stats.avg_model_load_ms = stats.model_load_time_ms / stats.model_count as u64;
+        }
+        if stats.adapter_count > 0 {
+            stats.avg_adapter_load_ms = stats.adapter_load_time_ms / stats.adapter_count as u64;
+        }
+
+        stats
+    }
+}
+
+/// Statistics for paging optimization
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PagingStats {
+    /// Number of base models loaded
+    pub model_count: usize,
+    /// Total MB used by models
+    pub model_mb: u64,
+    /// Total load time for models (ms)
+    pub model_load_time_ms: u64,
+    /// Average model load time (ms)
+    pub avg_model_load_ms: u64,
+
+    /// Number of LoRA adapters loaded
+    pub adapter_count: usize,
+    /// Total MB used by adapters
+    pub adapter_mb: u64,
+    /// Total load time for adapters (ms)
+    pub adapter_load_time_ms: u64,
+    /// Average adapter load time (ms)
+    pub avg_adapter_load_ms: u64,
+
+    /// Number of embedding models loaded
+    pub embedding_count: usize,
+    /// Total MB used by embeddings
+    pub embedding_mb: u64,
+
+    /// Other allocations
+    pub other_count: usize,
+    /// Total MB used by other
+    pub other_mb: u64,
 }
 
 // Global singleton
@@ -254,6 +377,8 @@ mod tests {
             owner: "persona-1".to_string(),
             size_mb: 100,
             priority: 0.5,
+            load_time_ms: Some(500),
+            alloc_type: Some(AllocationType::Adapter),
         });
 
         assert!(matches!(result, AllocationResult::Granted));
@@ -264,37 +389,87 @@ mod tests {
     }
 
     #[test]
-    fn test_eviction_suggestion() {
+    fn test_eviction_prefers_adapters_over_models() {
         let allocator = GpuAllocator::new(200, 0.8);
 
-        // Fill up memory
+        // Load a model (expensive to reload - 7000ms)
         allocator.allocate(AllocationRequest {
-            id: "adapter-1".to_string(),
-            owner: "persona-1".to_string(),
-            size_mb: 100,
-            priority: 0.3,
-        });
-        allocator.allocate(AllocationRequest {
-            id: "adapter-2".to_string(),
+            id: "base-model".to_string(),
             owner: "persona-1".to_string(),
             size_mb: 100,
             priority: 0.5,
+            load_time_ms: Some(7000),
+            alloc_type: Some(AllocationType::Model),
         });
 
-        // Request more than available
+        // Load an adapter (cheap to reload - 200ms)
+        allocator.allocate(AllocationRequest {
+            id: "lora-adapter".to_string(),
+            owner: "persona-1".to_string(),
+            size_mb: 100,
+            priority: 0.5,
+            load_time_ms: Some(200),
+            alloc_type: Some(AllocationType::Adapter),
+        });
+
+        // Request more than available - should suggest evicting adapter, not model
         let result = allocator.allocate(AllocationRequest {
-            id: "adapter-3".to_string(),
+            id: "new-adapter".to_string(),
             owner: "persona-2".to_string(),
             size_mb: 50,
             priority: 0.7,
+            load_time_ms: Some(300),
+            alloc_type: Some(AllocationType::Adapter),
         });
 
         match result {
             AllocationResult::NeedEviction { suggested_victims } => {
-                // Should suggest adapter-1 (lower priority)
-                assert!(suggested_victims.contains(&"adapter-1".to_string()));
+                // Should suggest the adapter (cheap to reload), not the model
+                assert!(suggested_victims.contains(&"lora-adapter".to_string()));
+                assert!(!suggested_victims.contains(&"base-model".to_string()));
             }
             _ => panic!("Expected NeedEviction"),
         }
+    }
+
+    #[test]
+    fn test_paging_stats() {
+        let allocator = GpuAllocator::new(10000, 0.8);
+
+        // Add a model
+        allocator.allocate(AllocationRequest {
+            id: "llama-3b".to_string(),
+            owner: "shared".to_string(),
+            size_mb: 3000,
+            priority: 0.9,
+            load_time_ms: Some(7500),
+            alloc_type: Some(AllocationType::Model),
+        });
+
+        // Add some adapters
+        allocator.allocate(AllocationRequest {
+            id: "code-adapter".to_string(),
+            owner: "persona-1".to_string(),
+            size_mb: 100,
+            priority: 0.5,
+            load_time_ms: Some(200),
+            alloc_type: Some(AllocationType::Adapter),
+        });
+        allocator.allocate(AllocationRequest {
+            id: "chat-adapter".to_string(),
+            owner: "persona-2".to_string(),
+            size_mb: 100,
+            priority: 0.5,
+            load_time_ms: Some(180),
+            alloc_type: Some(AllocationType::Adapter),
+        });
+
+        let stats = allocator.paging_stats();
+        assert_eq!(stats.model_count, 1);
+        assert_eq!(stats.model_mb, 3000);
+        assert_eq!(stats.avg_model_load_ms, 7500);
+        assert_eq!(stats.adapter_count, 2);
+        assert_eq!(stats.adapter_mb, 200);
+        assert_eq!(stats.avg_adapter_load_ms, 190); // (200 + 180) / 2
     }
 }

@@ -52,7 +52,7 @@ use std::time::Instant;
 // GPU Allocator (shared module)
 #[path = "../../shared/gpu_allocator.rs"]
 mod gpu_allocator;
-use gpu_allocator::{get_gpu_allocator, AllocationRequest, AllocationResult};
+use gpu_allocator::{get_gpu_allocator, AllocationRequest, AllocationResult, AllocationType};
 
 // Candle imports
 use candle_core::{DType, Device, Tensor};
@@ -1084,11 +1084,20 @@ enum InferenceCommand {
         size_mb: u64,
         #[serde(default = "default_priority")]
         priority: f32,
+        /// Load time in ms (for paging optimization)
+        load_time_ms: Option<u64>,
+        /// Type: "model", "adapter", "embedding", or "other"
+        #[serde(default)]
+        alloc_type: Option<String>,
     },
 
     /// Release GPU memory allocation
     #[serde(rename = "gpu/release")]
     GpuRelease { id: String },
+
+    /// Get paging statistics by allocation type
+    #[serde(rename = "gpu/paging-stats")]
+    GpuPagingStats,
 
     /// Stress test the allocator with many allocations
     #[serde(rename = "gpu/stress-test")]
@@ -1108,6 +1117,15 @@ fn default_priority() -> f32 { 0.5 }
 fn default_stress_count() -> usize { 100 }
 fn default_stress_min_mb() -> u64 { 10 }
 fn default_stress_max_mb() -> u64 { 500 }
+
+fn parse_alloc_type(s: &Option<String>) -> AllocationType {
+    match s.as_ref().map(|s| s.as_str()) {
+        Some("model") => AllocationType::Model,
+        Some("adapter") => AllocationType::Adapter,
+        Some("embedding") => AllocationType::Embedding,
+        _ => AllocationType::Other,
+    }
+}
 
 fn default_max_tokens() -> usize { 256 }
 fn default_temperature() -> f64 { 0.7 }
@@ -1264,20 +1282,24 @@ impl WorkerState {
                 }))
             }
 
-            InferenceCommand::GpuAllocate { id, owner, size_mb, priority } => {
+            InferenceCommand::GpuAllocate { id, owner, size_mb, priority, load_time_ms, alloc_type } => {
                 let allocator = get_gpu_allocator();
+                let parsed_type = parse_alloc_type(&alloc_type);
                 let result = allocator.allocate(AllocationRequest {
                     id: id.clone(),
                     owner: owner.clone(),
                     size_mb,
                     priority,
+                    load_time_ms,
+                    alloc_type: Some(parsed_type),
                 });
 
                 match result {
                     AllocationResult::Granted => Ok(json!({
                         "status": "granted",
                         "id": id,
-                        "size_mb": size_mb
+                        "size_mb": size_mb,
+                        "alloc_type": format!("{:?}", parsed_type)
                     })),
                     AllocationResult::NeedEviction { suggested_victims } => Ok(json!({
                         "status": "need_eviction",
@@ -1286,6 +1308,12 @@ impl WorkerState {
                     })),
                     AllocationResult::Denied { reason } => Err(reason),
                 }
+            }
+
+            InferenceCommand::GpuPagingStats => {
+                let allocator = get_gpu_allocator();
+                let stats = allocator.paging_stats();
+                Ok(serde_json::to_value(stats).unwrap())
             }
 
             InferenceCommand::GpuRelease { id } => {
@@ -1311,19 +1339,30 @@ impl WorkerState {
                 let mut total_allocated_mb = 0u64;
                 let mut eviction_suggestions: Vec<String> = Vec::new();
 
-                // Create random allocations
+                // Create random allocations (mix of models and adapters)
                 let mut rng = rand::thread_rng();
                 for i in 0..count {
                     let size = rng.gen_range(min_mb..=max_mb);
                     let priority: f32 = rng.gen_range(0.1..0.9);
                     let id = format!("stress-{}", i);
                     let owner = format!("stress-owner-{}", i % 10);
+                    // Mix of types: 20% models, 70% adapters, 10% other
+                    let alloc_type = if i % 10 < 2 {
+                        AllocationType::Model
+                    } else if i % 10 < 9 {
+                        AllocationType::Adapter
+                    } else {
+                        AllocationType::Other
+                    };
+                    let load_time = if alloc_type == AllocationType::Model { 7000 } else { 200 };
 
                     let result = allocator.allocate(AllocationRequest {
                         id,
                         owner,
                         size_mb: size,
                         priority,
+                        load_time_ms: Some(load_time),
+                        alloc_type: Some(alloc_type),
                     });
 
                     match result {
