@@ -119,7 +119,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
   /**
    * Parse models response - override in subclass for provider-specific format
    */
-  protected abstract parseModelsResponse(data: any): import('../AIProviderTypesV2').ModelInfo[];
+  protected abstract parseModelsResponse(data: unknown): import('../AIProviderTypesV2').ModelInfo[];
 
   /**
    * Generate text - override in subclass for provider-specific API

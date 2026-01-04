@@ -26,10 +26,23 @@ export interface PricingCache {
   };
 }
 
+/**
+ * Static pricing configuration structure loaded from JSON
+ */
+export interface StaticPricingConfig {
+  providers: {
+    [provider: string]: {
+      models: {
+        [model: string]: ModelPricing;
+      };
+    };
+  };
+}
+
 export class PricingManager {
   private static instance: PricingManager;
   private cache: PricingCache = {};
-  private staticPricing: any = null;
+  private staticPricing: StaticPricingConfig | null = null;
   private readonly CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
   private log: (message: string) => void = () => {}; // No-op by default
 

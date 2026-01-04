@@ -28,6 +28,16 @@ interface AdapterHealthState {
 }
 
 /**
+ * Event data for adapter health status changes
+ */
+interface AdapterUnhealthyEvent {
+  providerId: string;
+  status: string;
+  message?: string;
+  timestamp: number;
+}
+
+/**
  * AdapterHealthMonitor - Centralized health monitoring for all AI adapters
  *
  * Pattern: Event-driven monitoring instead of setInterval
@@ -73,7 +83,7 @@ export class AdapterHealthMonitor {
     });
 
     // Subscribe to unhealthy adapter events (restart handling)
-    await Events.subscribe('system:adapter:unhealthy', async (data: any) => {
+    await Events.subscribe('system:adapter:unhealthy', async (data: AdapterUnhealthyEvent) => {
       await this.handleUnhealthyAdapter(data.providerId);
     });
 

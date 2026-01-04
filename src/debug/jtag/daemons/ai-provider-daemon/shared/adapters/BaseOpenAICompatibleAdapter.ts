@@ -51,6 +51,80 @@ export interface OpenAICompatibleConfig {
 }
 
 /**
+ * OpenAI-compatible API response types
+ * Used across OpenAI, Together, Groq, Fireworks, etc.
+ */
+export interface OpenAIUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens?: number;
+}
+
+export interface OpenAIModelData {
+  id: string;
+  object?: string;
+  created?: number;
+  owned_by?: string;
+}
+
+export interface OpenAIImageData {
+  url?: string;
+  b64_json?: string;
+  revised_prompt?: string;
+}
+
+export interface OpenAIEmbeddingData {
+  embedding: number[];
+  index: number;
+}
+
+/**
+ * OpenAI chat completion response
+ */
+export interface OpenAIChatCompletionResponse {
+  id: string;
+  object: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: {
+      role: string;
+      content: string;
+    };
+    finish_reason: string;
+  }>;
+  usage?: OpenAIUsage;
+}
+
+/**
+ * OpenAI models list response
+ */
+export interface OpenAIModelsResponse {
+  data: OpenAIModelData[];
+  object: string;
+}
+
+/**
+ * OpenAI image generation response
+ */
+export interface OpenAIImageResponse {
+  created: number;
+  data: OpenAIImageData[];
+  model?: string;
+}
+
+/**
+ * OpenAI embeddings response
+ */
+export interface OpenAIEmbeddingsResponse {
+  data: OpenAIEmbeddingData[];
+  model: string;
+  object: string;
+  usage?: OpenAIUsage;
+}
+
+/**
  * Base adapter for OpenAI-compatible APIs
  * Subclasses only need to provide config and optionally override pricing
  */
@@ -201,7 +275,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       }
 
       // Make API request
-      const response = await this.makeRequest<any>('/v1/chat/completions', {
+      const response = await this.makeRequest<OpenAIChatCompletionResponse>('/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -274,7 +348,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     const model = request.model || 'dall-e-3';
 
     try {
-      const response = await this.makeRequest<any>('/v1/images/generations', {
+      const response = await this.makeRequest<OpenAIImageResponse>('/v1/images/generations', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -293,7 +367,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       const responseTime = Date.now() - startTime;
 
       return {
-        images: response.data.map((img: any) => ({
+        images: response.data.map((img: OpenAIImageData) => ({
           url: img.url,
           base64: img.b64_json,
           revisedPrompt: img.revised_prompt,
@@ -329,7 +403,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     const model = request.model || 'text-embedding-3-small';
 
     try {
-      const response = await this.makeRequest<any>('/v1/embeddings', {
+      const response = await this.makeRequest<OpenAIEmbeddingsResponse>('/v1/embeddings', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -344,7 +418,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       const responseTime = Date.now() - startTime;
 
       return {
-        embeddings: response.data.map((item: any) => item.embedding),
+        embeddings: response.data.map((item: OpenAIEmbeddingData) => item.embedding),
         model: response.model || model,
         provider: this.providerId,
         usage: {
@@ -375,14 +449,14 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
     // Otherwise, try to fetch from API
     try {
-      const response = await this.makeRequest<any>('/v1/models', {
+      const response = await this.makeRequest<OpenAIModelsResponse>('/v1/models', {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${this.config.apiKey}`,
         },
       });
 
-      return response.data.map((model: any) => this.parseModelInfo(model));
+      return response.data.map((model) => this.parseModelInfo(model));
     } catch (error) {
       this.log(null, 'warn', `⚠️  ${this.providerName}: Failed to fetch models:`, error);
       return [];
@@ -397,7 +471,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
 
     try {
       // Try to list models as a health check
-      await this.makeRequest<any>('/v1/models', {
+      await this.makeRequest<OpenAIModelsResponse>('/v1/models', {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${this.config.apiKey}`,
@@ -449,7 +523,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
    * Calculate cost based on usage and model using PricingManager
    * Override in subclass ONLY if provider has special cost calculation needs
    */
-  protected calculateCost(usage: any, model: string): number {
+  protected calculateCost(usage: OpenAIUsage | undefined, model: string): number {
     if (!usage || (!usage.prompt_tokens && !usage.completion_tokens)) {
       return 0;
     }
@@ -474,7 +548,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
    * Parse model info from API response
    * Override in subclass for provider-specific format
    */
-  protected parseModelInfo(modelData: any): ModelInfo {
+  protected parseModelInfo(modelData: OpenAIModelData): ModelInfo {
     return {
       id: modelData.id,
       name: modelData.id,

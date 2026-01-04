@@ -59,7 +59,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
    * Uses Logger.ts for all logging (respects CLEAN mode for fresh logs per session)
    * Respects LoggingConfig for per-persona log filtering
    */
-  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: any[]): void {
+  protected log(request: TextGenerationRequest | null, level: 'info' | 'debug' | 'warn' | 'error', message: string, ...args: unknown[]): void {
     if (request?.personaContext) {
       // Extract uniqueId from logDir path (e.g., ".continuum/personas/helper/..." -> "helper")
       const logDir = request.personaContext.logDir;
