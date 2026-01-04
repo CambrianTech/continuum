@@ -586,6 +586,30 @@ struct ModelConfig {
 }
 
 // ============================================================================
+// LoRA Adapter Storage
+// ============================================================================
+
+/// Loaded LoRA adapter weights
+struct LoadedAdapter {
+    /// Unique adapter ID
+    id: String,
+    /// Path to the safetensors file
+    #[allow(dead_code)]
+    path: String,
+    /// Target model this adapter is for
+    #[allow(dead_code)]
+    target_model: String,
+    /// Loaded weights as tensors (keyed by layer name)
+    weights: HashMap<String, Tensor>,
+    /// Total size in bytes
+    size_bytes: usize,
+    /// Time to load in milliseconds
+    load_time_ms: u64,
+    /// LoRA rank (detected from weights)
+    rank: usize,
+}
+
+// ============================================================================
 // Model Loader - Downloads and loads models from HuggingFace
 // ============================================================================
 
@@ -929,6 +953,91 @@ impl ModelLoader {
 }
 
 // ============================================================================
+// LoRA Adapter Loader
+// ============================================================================
+
+/// Load LoRA adapter weights from a safetensors file
+fn load_adapter(
+    adapter_id: &str,
+    adapter_path: &str,
+    target_model: &str,
+    device: &Device,
+    dtype: DType,
+) -> Result<LoadedAdapter, String> {
+    let start = Instant::now();
+    println!("📥 Loading adapter: {} from {}", adapter_id, adapter_path);
+
+    // Check file exists
+    let path = std::path::Path::new(adapter_path);
+    if !path.exists() {
+        return Err(format!("Adapter file not found: {}", adapter_path));
+    }
+
+    // Load safetensors file
+    // SAFETY: mmap is required by Candle's VarBuilder API. The file is read-only
+    // and we hold the mapping for the lifetime of the adapter.
+    let tensors = unsafe {
+        candle_core::safetensors::MmapedSafetensors::new(adapter_path)
+            .map_err(|e| format!("Failed to mmap safetensors: {}", e))?
+    };
+
+    // Extract all tensors and convert to our device/dtype
+    let mut weights: HashMap<String, Tensor> = HashMap::new();
+    let mut total_bytes = 0usize;
+    let mut detected_rank = 0usize;
+
+    for name in tensors.tensors().iter().map(|(name, _)| name.clone()) {
+        let tensor = tensors.load(&name, device)
+            .map_err(|e| format!("Failed to load tensor {}: {}", name, e))?;
+
+        // Convert to target dtype if needed
+        let tensor = if tensor.dtype() != dtype {
+            tensor.to_dtype(dtype)
+                .map_err(|e| format!("Failed to convert tensor {} dtype: {}", name, e))?
+        } else {
+            tensor
+        };
+
+        // Calculate size
+        let dims = tensor.dims();
+        let elem_size = match dtype {
+            DType::F32 => 4,
+            DType::F16 | DType::BF16 => 2,
+            _ => 4,
+        };
+        let tensor_bytes: usize = dims.iter().product::<usize>() * elem_size;
+        total_bytes += tensor_bytes;
+
+        // Detect LoRA rank from lora_A weights (shape is [rank, hidden_dim])
+        if name.contains("lora_A") && dims.len() == 2 {
+            detected_rank = detected_rank.max(dims[0]);
+        }
+        // Or from lora_B weights (shape is [hidden_dim, rank])
+        if name.contains("lora_B") && dims.len() == 2 {
+            detected_rank = detected_rank.max(dims[1]);
+        }
+
+        weights.insert(name, tensor);
+    }
+
+    let load_time_ms = start.elapsed().as_millis() as u64;
+    let size_mb = total_bytes / (1024 * 1024);
+
+    println!("✅ Adapter loaded: {} tensors, {}MB, rank={}, {}ms",
+        weights.len(), size_mb, detected_rank, load_time_ms);
+
+    Ok(LoadedAdapter {
+        id: adapter_id.to_string(),
+        path: adapter_path.to_string(),
+        target_model: target_model.to_string(),
+        weights,
+        size_bytes: total_bytes,
+        load_time_ms,
+        rank: detected_rank,
+    })
+}
+
+// ============================================================================
 // Text Generation
 // ============================================================================
 
@@ -1044,6 +1153,22 @@ enum InferenceCommand {
     #[serde(rename = "model/list")]
     ModelList,
 
+    // LoRA Adapter Commands
+    #[serde(rename = "adapter/load")]
+    AdapterLoad {
+        adapter_id: String,
+        adapter_path: String,
+        /// Target model this adapter is for (for tracking/validation)
+        #[serde(default)]
+        target_model: Option<String>,
+    },
+
+    #[serde(rename = "adapter/unload")]
+    AdapterUnload { adapter_id: String },
+
+    #[serde(rename = "adapter/list")]
+    AdapterList,
+
     #[serde(rename = "generate")]
     Generate {
         model_id: String,
@@ -1149,6 +1274,7 @@ struct BinaryTextHeader {
 
 struct WorkerState {
     models: HashMap<String, LoadedModel>,
+    adapters: HashMap<String, LoadedAdapter>,
     loader: ModelLoader,
 }
 
@@ -1156,6 +1282,7 @@ impl WorkerState {
     fn new() -> Result<Self, String> {
         Ok(Self {
             models: HashMap::new(),
+            adapters: HashMap::new(),
             loader: ModelLoader::new()?,
         })
     }
@@ -1236,6 +1363,94 @@ impl WorkerState {
                     .collect();
 
                 Ok(json!({ "models": models }))
+            }
+
+            // =========================================================================
+            // LoRA Adapter Handlers
+            // =========================================================================
+
+            InferenceCommand::AdapterLoad { adapter_id, adapter_path, target_model } => {
+                if self.adapters.contains_key(&adapter_id) {
+                    return Ok(json!({
+                        "status": "already_loaded",
+                        "adapter_id": adapter_id
+                    }));
+                }
+
+                let target = target_model.unwrap_or_else(|| "unknown".to_string());
+
+                // Load adapter with timing
+                let adapter = load_adapter(
+                    &adapter_id,
+                    &adapter_path,
+                    &target,
+                    &self.loader.device,
+                    self.loader.dtype,
+                )?;
+
+                let load_time_ms = adapter.load_time_ms;
+                let size_mb = adapter.size_bytes / (1024 * 1024);
+                let rank = adapter.rank;
+                let tensor_count = adapter.weights.len();
+
+                // Register in GPU allocator for paging
+                let allocator = get_gpu_allocator();
+                allocator.allocate(AllocationRequest {
+                    id: adapter_id.clone(),
+                    owner: target.clone(),
+                    size_mb: size_mb as u64,
+                    priority: 0.5, // Adapters have medium priority
+                    load_time_ms: Some(load_time_ms),
+                    alloc_type: Some(AllocationType::Adapter),
+                });
+
+                self.adapters.insert(adapter_id.clone(), adapter);
+
+                Ok(json!({
+                    "status": "loaded",
+                    "adapter_id": adapter_id,
+                    "target_model": target,
+                    "load_time_ms": load_time_ms,
+                    "size_mb": size_mb,
+                    "rank": rank,
+                    "tensor_count": tensor_count
+                }))
+            }
+
+            InferenceCommand::AdapterUnload { adapter_id } => {
+                if let Some(adapter) = self.adapters.remove(&adapter_id) {
+                    // Release from GPU allocator
+                    let allocator = get_gpu_allocator();
+                    allocator.release(&adapter_id);
+
+                    let size_mb = adapter.size_bytes / (1024 * 1024);
+
+                    Ok(json!({
+                        "status": "unloaded",
+                        "adapter_id": adapter_id,
+                        "freed_mb": size_mb
+                    }))
+                } else {
+                    Err(format!("Adapter not loaded: {}", adapter_id))
+                }
+            }
+
+            InferenceCommand::AdapterList => {
+                let adapters: Vec<Value> = self.adapters.iter()
+                    .map(|(id, adapter)| json!({
+                        "adapter_id": id,
+                        "target_model": adapter.target_model,
+                        "size_mb": adapter.size_bytes / (1024 * 1024),
+                        "rank": adapter.rank,
+                        "tensor_count": adapter.weights.len(),
+                        "load_time_ms": adapter.load_time_ms
+                    }))
+                    .collect();
+
+                Ok(json!({
+                    "adapters": adapters,
+                    "count": adapters.len()
+                }))
             }
 
             InferenceCommand::Generate { model_id, prompt, max_tokens, temperature } => {
