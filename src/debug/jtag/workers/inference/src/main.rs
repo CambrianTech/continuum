@@ -34,6 +34,10 @@
 /// - adapter/unload: Unload a LoRA adapter
 /// - adapter/apply: Merge loaded adapters into model weights
 /// - generate: Generate text with optional adapter composition
+/// - gpu/status: Get GPU memory status
+/// - gpu/allocate: Request GPU memory allocation
+/// - gpu/release: Release GPU memory allocation
+/// - gpu/stress-test: Stress test the allocator
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -44,6 +48,11 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+// GPU Allocator (shared module)
+#[path = "../../shared/gpu_allocator.rs"]
+mod gpu_allocator;
+use gpu_allocator::{get_gpu_allocator, AllocationRequest, AllocationResult};
 
 // Candle imports
 use candle_core::{DType, Device, Tensor};
@@ -1058,7 +1067,47 @@ enum InferenceCommand {
         #[serde(default = "default_temperature")]
         temperature: f64,
     },
+
+    // =========================================================================
+    // GPU Memory Management Commands
+    // =========================================================================
+
+    /// Get GPU memory status
+    #[serde(rename = "gpu/status")]
+    GpuStatus,
+
+    /// Request GPU memory allocation
+    #[serde(rename = "gpu/allocate")]
+    GpuAllocate {
+        id: String,
+        owner: String,
+        size_mb: u64,
+        #[serde(default = "default_priority")]
+        priority: f32,
+    },
+
+    /// Release GPU memory allocation
+    #[serde(rename = "gpu/release")]
+    GpuRelease { id: String },
+
+    /// Stress test the allocator with many allocations
+    #[serde(rename = "gpu/stress-test")]
+    GpuStressTest {
+        /// Number of allocations to create
+        #[serde(default = "default_stress_count")]
+        count: usize,
+        /// Size range for each allocation (random between min and max)
+        #[serde(default = "default_stress_min_mb")]
+        min_mb: u64,
+        #[serde(default = "default_stress_max_mb")]
+        max_mb: u64,
+    },
 }
+
+fn default_priority() -> f32 { 0.5 }
+fn default_stress_count() -> usize { 100 }
+fn default_stress_min_mb() -> u64 { 10 }
+fn default_stress_max_mb() -> u64 { 500 }
 
 fn default_max_tokens() -> usize { 256 }
 fn default_temperature() -> f64 { 0.7 }
@@ -1196,6 +1245,126 @@ impl WorkerState {
             // This arm exists only for match exhaustiveness
             InferenceCommand::GenerateBinary { .. } => {
                 Err("GenerateBinary should be handled by binary protocol path".to_string())
+            }
+
+            // =========================================================================
+            // GPU Memory Management Handlers
+            // =========================================================================
+
+            InferenceCommand::GpuStatus => {
+                let allocator = get_gpu_allocator();
+                let status = allocator.status();
+                Ok(json!({
+                    "total_mb": status.total_mb,
+                    "allocated_mb": status.allocated_mb,
+                    "available_mb": status.available_mb,
+                    "pressure": status.pressure,
+                    "allocation_count": status.allocation_count,
+                    "should_evict": allocator.should_evict()
+                }))
+            }
+
+            InferenceCommand::GpuAllocate { id, owner, size_mb, priority } => {
+                let allocator = get_gpu_allocator();
+                let result = allocator.allocate(AllocationRequest {
+                    id: id.clone(),
+                    owner: owner.clone(),
+                    size_mb,
+                    priority,
+                });
+
+                match result {
+                    AllocationResult::Granted => Ok(json!({
+                        "status": "granted",
+                        "id": id,
+                        "size_mb": size_mb
+                    })),
+                    AllocationResult::NeedEviction { suggested_victims } => Ok(json!({
+                        "status": "need_eviction",
+                        "id": id,
+                        "suggested_victims": suggested_victims
+                    })),
+                    AllocationResult::Denied { reason } => Err(reason),
+                }
+            }
+
+            InferenceCommand::GpuRelease { id } => {
+                let allocator = get_gpu_allocator();
+                if let Some(alloc) = allocator.release(&id) {
+                    Ok(json!({
+                        "status": "released",
+                        "id": id,
+                        "freed_mb": alloc.size_mb
+                    }))
+                } else {
+                    Err(format!("Allocation not found: {}", id))
+                }
+            }
+
+            InferenceCommand::GpuStressTest { count, min_mb, max_mb } => {
+                let allocator = get_gpu_allocator();
+                let start = Instant::now();
+
+                let mut granted = 0u64;
+                let mut need_eviction = 0u64;
+                let mut denied = 0u64;
+                let mut total_allocated_mb = 0u64;
+                let mut eviction_suggestions: Vec<String> = Vec::new();
+
+                // Create random allocations
+                let mut rng = rand::thread_rng();
+                for i in 0..count {
+                    let size = rng.gen_range(min_mb..=max_mb);
+                    let priority: f32 = rng.gen_range(0.1..0.9);
+                    let id = format!("stress-{}", i);
+                    let owner = format!("stress-owner-{}", i % 10);
+
+                    let result = allocator.allocate(AllocationRequest {
+                        id,
+                        owner,
+                        size_mb: size,
+                        priority,
+                    });
+
+                    match result {
+                        AllocationResult::Granted => {
+                            granted += 1;
+                            total_allocated_mb += size;
+                        }
+                        AllocationResult::NeedEviction { suggested_victims } => {
+                            need_eviction += 1;
+                            eviction_suggestions.extend(suggested_victims);
+                        }
+                        AllocationResult::Denied { .. } => {
+                            denied += 1;
+                        }
+                    }
+                }
+
+                let elapsed = start.elapsed();
+                let status = allocator.status();
+
+                // Clean up stress test allocations
+                for i in 0..count {
+                    let id = format!("stress-{}", i);
+                    allocator.release(&id);
+                }
+
+                Ok(json!({
+                    "duration_ms": elapsed.as_millis() as u64,
+                    "operations": count,
+                    "granted": granted,
+                    "need_eviction": need_eviction,
+                    "denied": denied,
+                    "peak_allocated_mb": total_allocated_mb,
+                    "eviction_suggestions_count": eviction_suggestions.len(),
+                    "ops_per_second": (count as f64 / elapsed.as_secs_f64()) as u64,
+                    "final_status": {
+                        "total_mb": status.total_mb,
+                        "allocated_mb": status.allocated_mb,
+                        "pressure": status.pressure
+                    }
+                }))
             }
         }
     }
