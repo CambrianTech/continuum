@@ -174,6 +174,27 @@ export interface TextGenerationRequest {
     displayName: string; // e.g., 'Helper AI'
     uniqueId: string;    // e.g., 'helper-ai-12345678'
   };
+
+  /**
+   * Active LoRA adapters to apply during generation (PersonaGenome integration)
+   *
+   * When provided, CandleAdapter will ensure these adapters are loaded and applied
+   * before generation. This enables the "genome vision" - personas can have
+   * skill-specific fine-tuned weights that modify base model behavior.
+   *
+   * Example: persona with typescript-expertise and code-review adapters active
+   * will generate responses using those specialized weights.
+   *
+   * NOTE: Only supported by CandleAdapter. Other adapters will ignore this field.
+   */
+  activeAdapters?: Array<{
+    /** Adapter name (e.g., 'typescript-expertise') */
+    name: string;
+    /** Path to adapter weights */
+    path: string;
+    /** Domain this adapter specializes in */
+    domain: string;
+  }>;
 }
 
 export interface AudioGenerationRequest {
@@ -238,6 +259,35 @@ export interface EmbeddingRequest {
 // Response Types
 // ========================
 
+/**
+ * Routing observability - see exactly what happened during inference
+ * without grep'ing through logs
+ */
+export interface RoutingInfo {
+  /** Which adapter actually handled this request */
+  provider: string;           // 'candle' | 'ollama' | 'anthropic' | 'openai' | etc.
+
+  /** Was this local inference (Candle/Ollama) vs cloud API? */
+  isLocal: boolean;
+
+  /** Why was this adapter selected? */
+  routingReason:
+    | 'explicit_provider'      // preferredProvider was specified
+    | 'provider_aliasing'      // 'ollama' aliased to 'candle'
+    | 'model_detection'        // Model name matched local pattern (DEPRECATED - to be removed)
+    | 'default_priority'       // Selected by priority order
+    | 'fallback';              // Primary failed, used fallback
+
+  /** LoRA adapters that were active during generation */
+  adaptersApplied: string[];   // e.g., ['typescript-expertise', 'code-review']
+
+  /** If model was remapped (e.g., llama3.2:3b → Qwen/Qwen2-1.5B-Instruct) */
+  modelMapped?: string;
+
+  /** Original model requested (before any mapping) */
+  modelRequested?: string;
+}
+
 export interface TextGenerationResponse {
   text: string;
   finishReason: 'stop' | 'length' | 'error' | 'tool_use';
@@ -247,6 +297,19 @@ export interface TextGenerationResponse {
   usage: UsageMetrics;
   responseTime: number;
   requestId: string;
+
+  /**
+   * Routing observability - ALWAYS populated by AIProviderDaemon
+   * Shows exactly how this request was handled:
+   * - Which provider was used and why
+   * - Whether local or cloud
+   * - Which LoRA adapters were applied
+   * - Any model mapping that occurred
+   *
+   * Optional at adapter level (adapter can provide additional info like adaptersApplied),
+   * but AIProviderDaemon ALWAYS ensures this field is populated in the final response.
+   */
+  routing?: RoutingInfo;
 
   // Native tool calls (when AI wants to use tools)
   // Present when finishReason is 'tool_use'

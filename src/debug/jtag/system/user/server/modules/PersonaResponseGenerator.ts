@@ -794,6 +794,16 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
       };
 
+      // GENOME INTEGRATION: Add active LoRA adapters from PersonaGenome
+      // This enables personas to use skill-specific fine-tuned weights during generation
+      if (this.genome) {
+        const activeAdapters = this.genome.getActiveAdaptersForRequest();
+        if (activeAdapters.length > 0) {
+          request.activeAdapters = activeAdapters;
+          this.log(`🧬 ${this.personaName}: [PHASE 3.3] Genome providing ${activeAdapters.length} active adapters: [${activeAdapters.map(a => a.name).join(', ')}]`);
+        }
+      }
+
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
       const provider = this.modelConfig.provider || 'ollama';
@@ -804,7 +814,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         request.tools = convertToNativeToolSpecs(toolDefinitions);
         this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
       }
-      const isMentioned = originalMessage.content.text.toLowerCase().includes(`@${this.personaName.toLowerCase()}`);
+      // Check for mentions by both uniqueId (@helper) and displayName (@Helper AI)
+      const messageText = originalMessage.content.text.toLowerCase();
+      const isMentioned =
+        messageText.includes(`@${this.entity.uniqueId.toLowerCase()}`) ||
+        messageText.includes(`@${this.personaName.toLowerCase()}`);
 
       const slotGranted = await InferenceCoordinator.requestSlot(
         this.personaId,

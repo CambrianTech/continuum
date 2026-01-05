@@ -34,7 +34,14 @@ export class ConversationHistorySource implements RAGSource {
     const startTime = performance.now();
 
     // Calculate max messages based on budget
-    const maxMessages = Math.max(5, Math.floor(allocatedBudget / TOKENS_PER_MESSAGE_ESTIMATE));
+    const budgetBasedLimit = Math.max(5, Math.floor(allocatedBudget / TOKENS_PER_MESSAGE_ESTIMATE));
+
+    // CRITICAL: Respect latency-aware limit from ChatRAGBuilder if provided
+    // This prevents timeout on slow local models by limiting input tokens
+    const optionsLimit = context.options?.maxMessages;
+    const maxMessages = optionsLimit ? Math.min(budgetBasedLimit, optionsLimit) : budgetBasedLimit;
+
+    log.debug(`Message limit: ${maxMessages} (budget=${budgetBasedLimit}, latencyLimit=${optionsLimit ?? 'none'})`);
 
     try {
       type MessageWithSender = ChatMessageEntity & { sender?: { displayName: string; userType: string } };

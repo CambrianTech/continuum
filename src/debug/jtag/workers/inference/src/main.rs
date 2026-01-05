@@ -43,11 +43,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
+// std::io::Write not needed - using async writes only
+use std::sync::Arc;
 use std::time::Instant;
+
+// Tokio async runtime - NON-BLOCKING EVERYTHING
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, AsyncReadExt};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::RwLock;
+
+// Per-model locking uses std::sync::Mutex since we hold it during sync compute
+// (tokio Mutex would require .await which doesn't work in sync generate_text)
+use std::sync::Mutex;
 
 // GPU Allocator (shared module)
 #[path = "../../shared/gpu_allocator.rs"]
@@ -73,7 +80,7 @@ use candle_transformers::models::falcon::{Config as FalconConfig, Falcon as Falc
 use candle_transformers::models::starcoder2::{Config as StarCoder2Config, Model as StarCoder2Model};
 
 // HuggingFace Hub
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType};
 
 // Tokenizers
 use tokenizers::Tokenizer;
@@ -576,6 +583,13 @@ struct LoadedModel {
     load_time_ms: u64,
 }
 
+impl LoadedModel {
+    /// Generate text - wrapper to avoid borrow checker issues
+    fn generate(&mut self, prompt: &str, max_tokens: usize, temperature: f64, device: &Device) -> Result<(String, usize, usize), String> {
+        generate_text(self.model.as_mut(), &self.tokenizer, prompt, max_tokens, temperature, device)
+    }
+}
+
 // Planned for future use - adapter composition
 #[allow(dead_code)]
 struct ModelConfig {
@@ -621,17 +635,26 @@ struct ModelLoader {
 impl ModelLoader {
     fn new() -> Result<Self, String> {
         // Use Metal on macOS, CUDA on Linux/Windows, CPU as fallback
-        let device = if cfg!(target_os = "macos") {
-            Device::new_metal(0).unwrap_or(Device::Cpu)
+        let (device, dtype) = if cfg!(target_os = "macos") {
+            match Device::new_metal(0) {
+                Ok(metal_device) => {
+                    println!("🔧 Metal device detected, using BF16 for optimal performance");
+                    (metal_device, DType::BF16) // BF16 is 2x faster than F32 on Metal
+                }
+                Err(_) => {
+                    println!("⚠️ Metal not available, falling back to CPU with F32");
+                    (Device::Cpu, DType::F32)
+                }
+            }
         } else {
-            Device::Cpu
+            (Device::Cpu, DType::F32)
         };
 
-        println!("🔧 Using device: {:?}", device);
+        println!("🔧 Using device: {:?}, dtype: {:?}", device, dtype);
 
         Ok(Self {
             device,
-            dtype: DType::F32, // F16 for Metal, F32 for CPU
+            dtype,
         })
     }
 
@@ -640,8 +663,10 @@ impl ModelLoader {
         let start = Instant::now();
         println!("📥 Loading model: {}", model_id);
 
-        // Download model files
-        let api = Api::new().map_err(|e| format!("HF API error: {}", e))?;
+        // Download model files (reads HF_TOKEN from env for gated models like meta-llama)
+        let api = hf_hub::api::sync::ApiBuilder::from_env()
+            .build()
+            .map_err(|e| format!("HF API error: {}", e))?;
         let repo = api.repo(Repo::new(model_id.to_string(), RepoType::Model));
 
         // Load config.json to detect architecture
@@ -1153,6 +1178,28 @@ enum InferenceCommand {
     #[serde(rename = "model/list")]
     ModelList,
 
+    // =========================================================================
+    // Handle-based API (NON-BLOCKING) - The Right Way™
+    // =========================================================================
+
+    /// Get or create a handle for a model
+    /// Returns IMMEDIATELY with handle_id, even if model is still loading
+    /// Use handle/status to poll for Ready state
+    #[serde(rename = "model/handle")]
+    ModelHandle { model_id: String },
+
+    /// Get status of a handle
+    #[serde(rename = "handle/status")]
+    HandleStatus { handle_id: String },
+
+    /// List all handles with their status
+    #[serde(rename = "handle/list")]
+    HandleList,
+
+    /// Release a handle (unloads model if no other handles reference it)
+    #[serde(rename = "handle/release")]
+    HandleRelease { handle_id: String },
+
     // LoRA Adapter Commands
     #[serde(rename = "adapter/load")]
     AdapterLoad {
@@ -1269,11 +1316,167 @@ struct BinaryTextHeader {
 }
 
 // ============================================================================
+// Handle System - Non-blocking model access
+// ============================================================================
+
+/// Status of a model handle
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleStatus {
+    /// Model is being loaded (async operation in progress)
+    Loading,
+    /// Model is ready for inference
+    Ready,
+    /// Model failed to load
+    Error,
+    /// Model was unloaded to free memory
+    Unloaded,
+}
+
+/// A handle to a model - the ONLY way to access models
+/// Handles are returned immediately, even if model is still loading
+#[derive(Clone)]
+pub struct ModelHandle {
+    /// Unique handle ID (UUID)
+    pub id: String,
+    /// HuggingFace model ID (e.g., "Qwen/Qwen2-0.5B-Instruct")
+    pub model_id: String,
+    /// Current status
+    pub status: HandleStatus,
+    /// Loaded model (only present when status == Ready)
+    pub model: Option<Arc<Mutex<LoadedModel>>>,
+    /// Estimated memory usage in MB
+    pub memory_mb: u64,
+    /// Last time this handle was used for generation
+    pub last_used: Instant,
+    /// Error message if status == Error
+    pub error: Option<String>,
+    /// Time when loading started
+    pub created_at: Instant,
+}
+
+impl ModelHandle {
+    /// Create a new handle in Loading state
+    fn new_loading(handle_id: String, model_id: String) -> Self {
+        Self {
+            id: handle_id,
+            model_id,
+            status: HandleStatus::Loading,
+            model: None,
+            memory_mb: 0,
+            last_used: Instant::now(),
+            error: None,
+            created_at: Instant::now(),
+        }
+    }
+
+    /// Update handle to Ready state with loaded model
+    fn set_ready(&mut self, model: Arc<Mutex<LoadedModel>>, memory_mb: u64) {
+        self.status = HandleStatus::Ready;
+        self.model = Some(model);
+        self.memory_mb = memory_mb;
+        self.last_used = Instant::now();
+    }
+
+    /// Update handle to Error state
+    fn set_error(&mut self, error: String) {
+        self.status = HandleStatus::Error;
+        self.model = None;
+        self.error = Some(error);
+    }
+
+    /// Touch handle to update last_used time
+    fn touch(&mut self) {
+        self.last_used = Instant::now();
+    }
+
+    /// Serialize to JSON for API responses
+    fn to_json(&self) -> Value {
+        json!({
+            "handle_id": self.id,
+            "model_id": self.model_id,
+            "status": self.status,
+            "memory_mb": self.memory_mb,
+            "last_used_ms": self.last_used.elapsed().as_millis() as u64,
+            "age_ms": self.created_at.elapsed().as_millis() as u64,
+            "error": self.error
+        })
+    }
+}
+
+/// Registry of all model handles - Rust owns the truth
+pub struct HandleRegistry {
+    /// All handles by handle_id
+    handles: HashMap<String, ModelHandle>,
+    /// Reverse lookup: model_id -> handle_id (for reuse)
+    model_to_handle: HashMap<String, String>,
+}
+
+impl HandleRegistry {
+    fn new() -> Self {
+        Self {
+            handles: HashMap::new(),
+            model_to_handle: HashMap::new(),
+        }
+    }
+
+    /// Get existing handle for a model, or None if not found
+    fn get_handle_for_model(&self, model_id: &str) -> Option<&ModelHandle> {
+        self.model_to_handle.get(model_id)
+            .and_then(|handle_id| self.handles.get(handle_id))
+    }
+
+    /// Get handle by ID
+    fn get(&self, handle_id: &str) -> Option<&ModelHandle> {
+        self.handles.get(handle_id)
+    }
+
+    /// Get mutable handle by ID
+    fn get_mut(&mut self, handle_id: &str) -> Option<&mut ModelHandle> {
+        self.handles.get_mut(handle_id)
+    }
+
+    /// Create a new handle for a model (in Loading state)
+    fn create_handle(&mut self, model_id: &str) -> String {
+        let handle_id = uuid::Uuid::new_v4().to_string();
+        let handle = ModelHandle::new_loading(handle_id.clone(), model_id.to_string());
+        self.handles.insert(handle_id.clone(), handle);
+        self.model_to_handle.insert(model_id.to_string(), handle_id.clone());
+        handle_id
+    }
+
+    /// Remove a handle (for unload)
+    fn remove(&mut self, handle_id: &str) -> Option<ModelHandle> {
+        if let Some(handle) = self.handles.remove(handle_id) {
+            self.model_to_handle.remove(&handle.model_id);
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
+    /// List all handles
+    fn list(&self) -> Vec<Value> {
+        self.handles.values()
+            .map(|h| h.to_json())
+            .collect()
+    }
+}
+
+// ============================================================================
 // Worker State
 // ============================================================================
 
+/// WorkerState uses fine-grained locking to prevent blocking:
+/// - handles: HandleRegistry tracks all model handles
+/// - Each model has its own Mutex, so one generate doesn't block others
+/// - The outer HashMap is protected by RwLock for concurrent read access
+/// - ping/list can run while generate is in progress
 struct WorkerState {
-    models: HashMap<String, LoadedModel>,
+    /// Handle registry - the source of truth for all model access
+    handles: HandleRegistry,
+    /// Legacy models map (transitional - will be removed once handle API is complete)
+    models: HashMap<String, Arc<Mutex<LoadedModel>>>,
     adapters: HashMap<String, LoadedAdapter>,
     loader: ModelLoader,
 }
@@ -1281,6 +1484,7 @@ struct WorkerState {
 impl WorkerState {
     fn new() -> Result<Self, String> {
         Ok(Self {
+            handles: HandleRegistry::new(),
             models: HashMap::new(),
             adapters: HashMap::new(),
             loader: ModelLoader::new()?,
@@ -1290,23 +1494,169 @@ impl WorkerState {
     /// Handle binary generation - returns raw (text, prompt_tokens, generated_tokens)
     /// Used by binary protocol path to avoid JSON serialization of prompts/responses
     fn handle_generate_binary(
-        &mut self,
+        &self,
         model_id: &str,
         prompt: &str,
         max_tokens: usize,
         temperature: f64,
     ) -> Result<(String, usize, usize), String> {
-        let loaded = self.models.get_mut(model_id)
+        // Get model Arc and lock only this model (doesn't block other models/operations)
+        let model_arc = self.models.get(model_id)
             .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
+        let mut loaded = model_arc.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
 
-        generate_text(
-            loaded.model.as_mut(),
-            &loaded.tokenizer,
-            prompt,
-            max_tokens,
-            temperature,
-            &self.loader.device,
-        )
+        loaded.generate(prompt, max_tokens, temperature, &self.loader.device)
+    }
+
+    /// Handle read-only commands (ping, list, generate, gpu)
+    /// Takes &self so it can run concurrently with other read operations
+    fn handle_command_readonly(&self, cmd: InferenceCommand) -> Result<Value, String> {
+        match cmd {
+            InferenceCommand::Ping => {
+                Ok(json!({
+                    "worker": "inference",
+                    "version": "3.0.0",
+                    "models_loaded": self.models.len(),
+                    "handles_active": self.handles.handles.len(),
+                    "async": true,
+                    "supported_architectures": [
+                        "llama", "mistral", "mixtral", "phi", "phi3", "qwen2",
+                        "gemma", "gemma2", "stablelm", "falcon", "starcoder2"
+                    ],
+                    "api": ["model/handle", "handle/status", "handle/list", "handle/release", "generate"]
+                }))
+            }
+
+            InferenceCommand::ModelList => {
+                let models: Vec<Value> = self.models.iter()
+                    .filter_map(|(id, model_arc)| {
+                        model_arc.try_lock().ok().map(|loaded| json!({
+                            "model_id": id,
+                            "architecture": loaded.model.architecture(),
+                            "vocab_size": loaded.model.vocab_size()
+                        }))
+                    })
+                    .collect();
+                Ok(json!({ "models": models }))
+            }
+
+            InferenceCommand::AdapterList => {
+                let adapters: Vec<Value> = self.adapters.iter()
+                    .map(|(id, adapter)| json!({
+                        "adapter_id": id,
+                        "target_model": adapter.target_model,
+                        "size_mb": adapter.size_bytes / (1024 * 1024),
+                        "rank": adapter.rank,
+                        "tensor_count": adapter.weights.len(),
+                        "load_time_ms": adapter.load_time_ms
+                    }))
+                    .collect();
+                Ok(json!({ "adapters": adapters, "count": adapters.len() }))
+            }
+
+            // =========================================================================
+            // Handle API - Read Operations
+            // =========================================================================
+
+            InferenceCommand::HandleStatus { handle_id } => {
+                match self.handles.get(&handle_id) {
+                    Some(handle) => Ok(handle.to_json()),
+                    None => Err(format!("Handle not found: {}", handle_id)),
+                }
+            }
+
+            InferenceCommand::HandleList => {
+                let handles = self.handles.list();
+                Ok(json!({
+                    "handles": handles,
+                    "count": handles.len()
+                }))
+            }
+
+            InferenceCommand::Generate { model_id, prompt, max_tokens, temperature } => {
+                let model_arc = self.models.get(&model_id)
+                    .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
+                let mut loaded = model_arc.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+
+                let (text, prompt_tokens, generated_tokens) = loaded.generate(
+                    &prompt, max_tokens, temperature, &self.loader.device
+                )?;
+
+                Ok(json!({
+                    "text": text,
+                    "model_id": model_id,
+                    "prompt_tokens": prompt_tokens,
+                    "generated_tokens": generated_tokens
+                }))
+            }
+
+            InferenceCommand::GpuStatus => {
+                let allocator = get_gpu_allocator();
+                let status = allocator.status();
+                Ok(json!({
+                    "total_mb": status.total_mb,
+                    "allocated_mb": status.allocated_mb,
+                    "available_mb": status.available_mb,
+                    "pressure": status.pressure,
+                    "allocation_count": status.allocation_count,
+                    "should_evict": allocator.should_evict()
+                }))
+            }
+
+            // GPU allocation/release are actually mutations but they use their own internal lock
+            InferenceCommand::GpuAllocate { id, owner, size_mb, priority, load_time_ms, alloc_type } => {
+                let allocator = get_gpu_allocator();
+                let at = alloc_type.and_then(|s| match s.as_str() {
+                    "model" => Some(AllocationType::Model),
+                    "adapter" => Some(AllocationType::Adapter),
+                    "embedding" => Some(AllocationType::Embedding),
+                    _ => Some(AllocationType::Other),
+                });
+                let result = allocator.allocate(AllocationRequest { id, owner, size_mb, priority, load_time_ms, alloc_type: at });
+                match result {
+                    AllocationResult::Granted => Ok(json!({ "status": "granted" })),
+                    AllocationResult::NeedEviction { suggested_victims } => Ok(json!({ "status": "need_eviction", "suggested_victims": suggested_victims })),
+                    AllocationResult::Denied { reason } => Err(reason),
+                }
+            }
+
+            InferenceCommand::GpuRelease { id } => {
+                let allocator = get_gpu_allocator();
+                allocator.release(&id);
+                Ok(json!({ "status": "released", "id": id }))
+            }
+
+            InferenceCommand::GpuStressTest { count, min_mb, max_mb } => {
+                let allocator = get_gpu_allocator();
+                let start = Instant::now();
+                let mut granted = 0u64;
+                let mut need_eviction = 0u64;
+                let mut denied = 0u64;
+                let mut total_allocated_mb = 0u64;
+                let mut rng = rand::thread_rng();
+
+                for i in 0..count {
+                    let size = rng.gen_range(min_mb..=max_mb);
+                    let priority: f32 = rng.gen_range(0.1..0.9);
+                    let id = format!("stress-{}", i);
+                    let alloc_type = if i % 10 < 2 { AllocationType::Model } else { AllocationType::Adapter };
+                    let result = allocator.allocate(AllocationRequest {
+                        id, owner: "stress-test".to_string(), size_mb: size, priority, load_time_ms: None, alloc_type: Some(alloc_type),
+                    });
+                    match result {
+                        AllocationResult::Granted => { granted += 1; total_allocated_mb += size; }
+                        AllocationResult::NeedEviction { .. } => { need_eviction += 1; }
+                        AllocationResult::Denied { .. } => { denied += 1; }
+                    }
+                }
+                // Cleanup
+                for i in 0..count { allocator.release(&format!("stress-{}", i)); }
+                Ok(json!({ "count": count, "granted": granted, "need_eviction": need_eviction, "denied": denied, "total_mb": total_allocated_mb, "elapsed_ms": start.elapsed().as_millis() as u64 }))
+            }
+
+            // These should have been routed to handle_command (write path)
+            cmd => Err(format!("Command {:?} requires write access", cmd)),
+        }
     }
 
     fn handle_command(&mut self, cmd: InferenceCommand) -> Result<Value, String> {
@@ -1314,12 +1664,15 @@ impl WorkerState {
             InferenceCommand::Ping => {
                 Ok(json!({
                     "worker": "inference",
-                    "version": "2.0.0",
+                    "version": "3.0.0",
                     "models_loaded": self.models.len(),
+                    "handles_active": self.handles.handles.len(),
+                    "async": true,
                     "supported_architectures": [
                         "llama", "mistral", "mixtral", "phi", "phi3", "qwen2",
                         "gemma", "gemma2", "stablelm", "falcon", "starcoder2"
-                    ]
+                    ],
+                    "api": ["model/handle", "handle/status", "handle/list", "handle/release", "generate"]
                 }))
             }
 
@@ -1333,7 +1686,8 @@ impl WorkerState {
 
                 let loaded = self.loader.load(&model_id)?;
                 let load_time = loaded.load_time_ms;
-                self.models.insert(model_id.clone(), loaded);
+                // Wrap in Arc<Mutex> for per-model locking
+                self.models.insert(model_id.clone(), Arc::new(Mutex::new(loaded)));
 
                 Ok(json!({
                     "status": "loaded",
@@ -1353,13 +1707,112 @@ impl WorkerState {
                 }
             }
 
+            // =========================================================================
+            // Handle API - Write Operations (NON-BLOCKING)
+            // =========================================================================
+
+            InferenceCommand::ModelHandle { model_id } => {
+                // Check if we already have a handle for this model
+                if let Some(handle) = self.handles.get_handle_for_model(&model_id) {
+                    // Return existing handle immediately
+                    return Ok(json!({
+                        "handle_id": handle.id,
+                        "status": handle.status,
+                        "model_id": model_id,
+                        "existing": true
+                    }));
+                }
+
+                // Create new handle in Loading state - returns IMMEDIATELY
+                let handle_id = self.handles.create_handle(&model_id);
+
+                // NOTE: The model loading happens asynchronously via a separate mechanism
+                // For now, we do synchronous loading (will be improved with proper async loading)
+                // This is still better than the old API because the handle is tracked
+
+                // Attempt to load synchronously for now
+                match self.loader.load(&model_id) {
+                    Ok(loaded) => {
+                        let load_time = loaded.load_time_ms;
+                        let model_arc = Arc::new(Mutex::new(loaded));
+
+                        // Update handle to Ready
+                        if let Some(handle) = self.handles.get_mut(&handle_id) {
+                            // Estimate memory based on model size (~4 bytes per param for small models)
+                            // This is rough - real memory tracking should come from Metal/CUDA APIs
+                            handle.set_ready(model_arc.clone(), 500); // TODO: Get actual memory
+                        }
+
+                        // Also store in legacy models map for backward compatibility
+                        self.models.insert(model_id.clone(), model_arc);
+
+                        Ok(json!({
+                            "handle_id": handle_id,
+                            "status": "ready",
+                            "model_id": model_id,
+                            "load_time_ms": load_time
+                        }))
+                    }
+                    Err(e) => {
+                        // Update handle to Error state
+                        if let Some(handle) = self.handles.get_mut(&handle_id) {
+                            handle.set_error(e.clone());
+                        }
+
+                        Ok(json!({
+                            "handle_id": handle_id,
+                            "status": "error",
+                            "model_id": model_id,
+                            "error": e
+                        }))
+                    }
+                }
+            }
+
+            InferenceCommand::HandleStatus { handle_id } => {
+                // Also available in readonly, but handle it here for completeness
+                match self.handles.get(&handle_id) {
+                    Some(handle) => Ok(handle.to_json()),
+                    None => Err(format!("Handle not found: {}", handle_id)),
+                }
+            }
+
+            InferenceCommand::HandleList => {
+                // Also available in readonly
+                let handles = self.handles.list();
+                Ok(json!({
+                    "handles": handles,
+                    "count": handles.len()
+                }))
+            }
+
+            InferenceCommand::HandleRelease { handle_id } => {
+                match self.handles.remove(&handle_id) {
+                    Some(handle) => {
+                        // Also remove from legacy models map
+                        self.models.remove(&handle.model_id);
+
+                        Ok(json!({
+                            "status": "released",
+                            "handle_id": handle_id,
+                            "model_id": handle.model_id,
+                            "memory_freed_mb": handle.memory_mb
+                        }))
+                    }
+                    None => Err(format!("Handle not found: {}", handle_id)),
+                }
+            }
+
             InferenceCommand::ModelList => {
                 let models: Vec<Value> = self.models.iter()
-                    .map(|(id, loaded)| json!({
-                        "model_id": id,
-                        "architecture": loaded.model.architecture(),
-                        "vocab_size": loaded.model.vocab_size()
-                    }))
+                    .filter_map(|(id, model_arc)| {
+                        // Try to lock briefly - skip if model is busy
+                        model_arc.try_lock().ok().map(|loaded| json!({
+                            "model_id": id,
+                            "architecture": loaded.model.architecture(),
+                            "vocab_size": loaded.model.vocab_size()
+                        }))
+                    })
                     .collect();
 
                 Ok(json!({ "models": models }))
@@ -1454,16 +1907,13 @@ impl WorkerState {
             }
 
             InferenceCommand::Generate { model_id, prompt, max_tokens, temperature } => {
-                let loaded = self.models.get_mut(&model_id)
+                // Per-model lock - only blocks this model, not other models/operations
+                let model_arc = self.models.get(&model_id)
                     .ok_or_else(|| format!("Model not loaded: {}", model_id))?;
+                let mut loaded = model_arc.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
 
-                let (text, prompt_tokens, generated_tokens) = generate_text(
-                    loaded.model.as_mut(),
-                    &loaded.tokenizer,
-                    &prompt,
-                    max_tokens,
-                    temperature,
-                    &self.loader.device,
+                let (text, prompt_tokens, generated_tokens) = loaded.generate(
+                    &prompt, max_tokens, temperature, &self.loader.device
                 )?;
 
                 Ok(json!({
@@ -1544,94 +1994,22 @@ impl WorkerState {
                 }
             }
 
-            InferenceCommand::GpuStressTest { count, min_mb, max_mb } => {
-                let allocator = get_gpu_allocator();
-                let start = Instant::now();
-
-                let mut granted = 0u64;
-                let mut need_eviction = 0u64;
-                let mut denied = 0u64;
-                let mut total_allocated_mb = 0u64;
-                let mut eviction_suggestions: Vec<String> = Vec::new();
-
-                // Create random allocations (mix of models and adapters)
-                let mut rng = rand::thread_rng();
-                for i in 0..count {
-                    let size = rng.gen_range(min_mb..=max_mb);
-                    let priority: f32 = rng.gen_range(0.1..0.9);
-                    let id = format!("stress-{}", i);
-                    let owner = format!("stress-owner-{}", i % 10);
-                    // Mix of types: 20% models, 70% adapters, 10% other
-                    let alloc_type = if i % 10 < 2 {
-                        AllocationType::Model
-                    } else if i % 10 < 9 {
-                        AllocationType::Adapter
-                    } else {
-                        AllocationType::Other
-                    };
-                    let load_time = if alloc_type == AllocationType::Model { 7000 } else { 200 };
-
-                    let result = allocator.allocate(AllocationRequest {
-                        id,
-                        owner,
-                        size_mb: size,
-                        priority,
-                        load_time_ms: Some(load_time),
-                        alloc_type: Some(alloc_type),
-                    });
-
-                    match result {
-                        AllocationResult::Granted => {
-                            granted += 1;
-                            total_allocated_mb += size;
-                        }
-                        AllocationResult::NeedEviction { suggested_victims } => {
-                            need_eviction += 1;
-                            eviction_suggestions.extend(suggested_victims);
-                        }
-                        AllocationResult::Denied { .. } => {
-                            denied += 1;
-                        }
-                    }
-                }
-
-                let elapsed = start.elapsed();
-                let status = allocator.status();
-
-                // Clean up stress test allocations
-                for i in 0..count {
-                    let id = format!("stress-{}", i);
-                    allocator.release(&id);
-                }
-
-                Ok(json!({
-                    "duration_ms": elapsed.as_millis() as u64,
-                    "operations": count,
-                    "granted": granted,
-                    "need_eviction": need_eviction,
-                    "denied": denied,
-                    "peak_allocated_mb": total_allocated_mb,
-                    "eviction_suggestions_count": eviction_suggestions.len(),
-                    "ops_per_second": (count as f64 / elapsed.as_secs_f64()) as u64,
-                    "final_status": {
-                        "total_mb": status.total_mb,
-                        "allocated_mb": status.allocated_mb,
-                        "pressure": status.pressure
-                    }
-                }))
+            // GPU stress test doesn't need write lock since allocator has internal lock
+            InferenceCommand::GpuStressTest { .. } => {
+                Err("GpuStressTest should use handle_command_readonly".to_string())
             }
         }
     }
 }
 
 // ============================================================================
-// Binary Protocol Helpers
+// Binary Protocol Helpers (Async)
 // ============================================================================
 
-/// Write generated text as binary: JSON header + raw UTF-8 bytes
+/// Write generated text as binary: JSON header + raw UTF-8 bytes (async version)
 /// This eliminates JSON escaping overhead for the response text
-fn write_binary_text<W: Write>(
-    writer: &mut W,
+async fn write_binary_text_async(
+    stream: &mut UnixStream,
     text: &str,
     model_id: &str,
     prompt_tokens: usize,
@@ -1650,35 +2028,47 @@ fn write_binary_text<W: Write>(
 
     // Write JSON header with newline
     let header_json = serde_json::to_string(&header)?;
-    writer.write_all(header_json.as_bytes())?;
-    writer.write_all(b"\n")?;
+    stream.write_all(header_json.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
 
     // Write raw UTF-8 bytes - NO JSON ESCAPING
-    writer.write_all(bytes)?;
-    writer.flush()?;
+    stream.write_all(bytes).await?;
+    stream.flush().await?;
 
     Ok(())
 }
 
-/// Read exact number of bytes from a reader
-fn read_exact_bytes<R: std::io::Read>(reader: &mut R, len: usize) -> std::io::Result<Vec<u8>> {
+/// Read exact number of bytes from a reader (async version)
+async fn read_exact_bytes_async(reader: &mut TokioBufReader<tokio::net::unix::OwnedReadHalf>, len: usize) -> std::io::Result<Vec<u8>> {
     let mut buffer = vec![0u8; len];
-    reader.read_exact(&mut buffer)?;
+    reader.read_exact(&mut buffer).await?;
     Ok(buffer)
 }
 
 // ============================================================================
-// Main Server
+// Main Server (Tokio Async - NON-BLOCKING)
 // ============================================================================
 
-fn handle_client(mut stream: UnixStream, state: Arc<Mutex<WorkerState>>) {
-    let mut reader = BufReader::new(stream.try_clone().expect("Failed to clone stream"));
+/// Handle a single client connection asynchronously
+/// This function runs in its own tokio task - doesn't block other connections
+async fn handle_client_async(stream: UnixStream, state: Arc<RwLock<WorkerState>>) {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = TokioBufReader::new(read_half);
     let mut line = String::new();
 
-    while reader.read_line(&mut line).unwrap_or(0) > 0 {
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("❌ Read error: {}", e);
+                break;
+            }
+        }
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            line.clear();
             continue;
         }
 
@@ -1692,8 +2082,8 @@ fn handle_client(mut stream: UnixStream, state: Arc<Mutex<WorkerState>>) {
             // Handle binary protocol: read prompt bytes, generate, write binary response
             if let Ok(cmd) = serde_json::from_str::<InferenceCommand>(trimmed) {
                 if let InferenceCommand::GenerateBinary { model_id, prompt_length, max_tokens, temperature } = cmd {
-                    // Read binary prompt payload
-                    let prompt_result = read_exact_bytes(&mut reader, prompt_length)
+                    // Read binary prompt payload (async)
+                    let prompt_result = read_exact_bytes_async(&mut reader, prompt_length).await
                         .map_err(|e| format!("Failed to read prompt bytes: {}", e))
                         .and_then(|bytes| {
                             String::from_utf8(bytes)
@@ -1702,32 +2092,46 @@ fn handle_client(mut stream: UnixStream, state: Arc<Mutex<WorkerState>>) {
 
                     match prompt_result {
                         Ok(prompt) => {
-                            let mut state_guard = state.lock().unwrap();
-                            let gen_result = state_guard.handle_generate_binary(
-                                &model_id, &prompt, max_tokens, temperature
-                            );
+                            // Spawn blocking task for compute-heavy generation
+                            // This prevents blocking the async runtime
+                            let state_clone = Arc::clone(&state);
+                            let model_id_clone = model_id.clone();
+                            let gen_result = tokio::task::spawn_blocking(move || {
+                                let state_guard = state_clone.blocking_read();
+                                state_guard.handle_generate_binary(
+                                    &model_id_clone, &prompt, max_tokens, temperature
+                                )
+                            }).await.unwrap_or_else(|e| Err(format!("Task panicked: {}", e)));
+
+                            // Reunite for writing (need full stream for binary write)
+                            let mut full_stream = write_half.reunite(reader.into_inner())
+                                .expect("Failed to reunite stream");
 
                             match gen_result {
                                 Ok((text, prompt_tokens, generated_tokens)) => {
-                                    if let Err(e) = write_binary_text(
-                                        &mut stream, &text, &model_id, prompt_tokens, generated_tokens
-                                    ) {
+                                    if let Err(e) = write_binary_text_async(
+                                        &mut full_stream, &text, &model_id, prompt_tokens, generated_tokens
+                                    ).await {
                                         eprintln!("❌ Failed to write binary response: {}", e);
-                                        break;
+                                        return;
                                     }
                                 }
                                 Err(e) => {
-                                    // Error response still uses JSON for consistency
                                     let error_response = json!({
                                         "success": false,
                                         "error": e
                                     });
                                     let response_str = serde_json::to_string(&error_response).unwrap() + "\n";
-                                    if stream.write_all(response_str.as_bytes()).is_err() {
-                                        break;
+                                    if full_stream.write_all(response_str.as_bytes()).await.is_err() {
+                                        return;
                                     }
                                 }
                             }
+
+                            // Split again for continued reading
+                            let (new_read, new_write) = full_stream.into_split();
+                            reader = TokioBufReader::new(new_read);
+                            write_half = new_write;
                         }
                         Err(e) => {
                             let error_response = json!({
@@ -1735,30 +2139,70 @@ fn handle_client(mut stream: UnixStream, state: Arc<Mutex<WorkerState>>) {
                                 "error": e
                             });
                             let response_str = serde_json::to_string(&error_response).unwrap() + "\n";
-                            if stream.write_all(response_str.as_bytes()).is_err() {
+                            if write_half.write_all(response_str.as_bytes()).await.is_err() {
                                 break;
                             }
                         }
                     }
                 }
             }
-            line.clear();
             continue;
         }
 
         // Standard JSON protocol for all other commands
-        let response: Value = match serde_json::from_str::<InferenceCommand>(trimmed) {
+        // CRITICAL: Extract request_id for response correlation
+        let request_id: Option<String> = serde_json::from_str::<Value>(trimmed)
+            .ok()
+            .and_then(|v| v.get("request_id").and_then(|r| r.as_str().map(String::from)));
+
+        let mut response: Value = match serde_json::from_str::<InferenceCommand>(trimmed) {
             Ok(cmd) => {
-                let mut state_guard = state.lock().unwrap();
-                match state_guard.handle_command(cmd) {
-                    Ok(result) => json!({
-                        "success": true,
-                        "result": result
-                    }),
-                    Err(e) => json!({
+                // Determine if this command needs write access to state
+                let needs_write = matches!(cmd,
+                    InferenceCommand::ModelLoad { .. } |
+                    InferenceCommand::ModelUnload { .. } |
+                    InferenceCommand::ModelHandle { .. } |     // Creates/updates handles
+                    InferenceCommand::HandleRelease { .. } |   // Removes handles
+                    InferenceCommand::AdapterLoad { .. } |
+                    InferenceCommand::AdapterUnload { .. }
+                );
+
+                // Check if this is a compute-heavy operation that should be spawned blocking
+                let is_compute_heavy = matches!(cmd, InferenceCommand::Generate { .. });
+
+                if is_compute_heavy {
+                    // Spawn blocking for generation to avoid blocking async runtime
+                    let state_clone = Arc::clone(&state);
+                    tokio::task::spawn_blocking(move || {
+                        let state_guard = state_clone.blocking_read();
+                        match state_guard.handle_command_readonly(cmd) {
+                            Ok(result) => json!({ "success": true, "result": result }),
+                            Err(e) => json!({ "success": false, "error": e })
+                        }
+                    }).await.unwrap_or_else(|e| json!({
                         "success": false,
-                        "error": e
-                    })
+                        "error": format!("Task panicked: {}", e)
+                    }))
+                } else if needs_write {
+                    // Write operations (load/unload) - use spawn_blocking for heavy IO
+                    let state_clone = Arc::clone(&state);
+                    tokio::task::spawn_blocking(move || {
+                        let mut state_guard = state_clone.blocking_write();
+                        match state_guard.handle_command(cmd) {
+                            Ok(result) => json!({ "success": true, "result": result }),
+                            Err(e) => json!({ "success": false, "error": e })
+                        }
+                    }).await.unwrap_or_else(|e| json!({
+                        "success": false,
+                        "error": format!("Task panicked: {}", e)
+                    }))
+                } else {
+                    // Light read operations (ping, list, gpu status) - can run inline
+                    let state_guard = state.read().await;
+                    match state_guard.handle_command_readonly(cmd) {
+                        Ok(result) => json!({ "success": true, "result": result }),
+                        Err(e) => json!({ "success": false, "error": e })
+                    }
                 }
             }
             Err(e) => json!({
@@ -1767,18 +2211,22 @@ fn handle_client(mut stream: UnixStream, state: Arc<Mutex<WorkerState>>) {
             })
         };
 
-        // Send response
-        let response_str = serde_json::to_string(&response).unwrap() + "\n";
-        if stream.write_all(response_str.as_bytes()).is_err() {
-            break;
+        // CRITICAL: Echo back request_id for TypeScript correlation
+        if let Some(req_id) = request_id {
+            response.as_object_mut().unwrap().insert("request_id".to_string(), json!(req_id));
         }
 
-        line.clear();
+        // Send response (async)
+        let response_str = serde_json::to_string(&response).unwrap() + "\n";
+        if write_half.write_all(response_str.as_bytes()).await.is_err() {
+            break;
+        }
     }
 }
 
-fn main() {
-    println!("🦀 Candle Inference Worker v2.0 starting...");
+#[tokio::main]
+async fn main() {
+    println!("🦀 Candle Inference Worker v3.0 (Tokio Async) starting...");
 
     // Get socket path from args
     let args: Vec<String> = std::env::args().collect();
@@ -1791,9 +2239,9 @@ fn main() {
     // Remove old socket
     let _ = fs::remove_file(socket_path);
 
-    // Initialize state
+    // Initialize state with tokio RwLock for async concurrent access
     let state = match WorkerState::new() {
-        Ok(s) => Arc::new(Mutex::new(s)),
+        Ok(s) => Arc::new(RwLock::new(s)),
         Err(e) => {
             eprintln!("❌ Failed to initialize: {}", e);
             std::process::exit(1);
@@ -1809,17 +2257,21 @@ fn main() {
         }
     }
 
-    // Start server
+    // Bind socket (async)
     let listener = UnixListener::bind(socket_path).expect("Failed to bind socket");
-    println!("✅ Inference Worker v2.0 ready");
+    println!("✅ Inference Worker v3.0 ready (Tokio async, non-blocking)");
     println!("📂 Supported: llama, mistral, mixtral, phi, phi3, qwen2, gemma, gemma2, stablelm, falcon, starcoder2");
-    println!("✅ Listening for connections\n");
+    println!("✅ Listening for connections (concurrent, non-blocking)\n");
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
+    // Accept loop - each connection spawns a new async task
+    loop {
+        match listener.accept().await {
+            Ok((stream, _addr)) => {
                 let state = Arc::clone(&state);
-                thread::spawn(move || handle_client(stream, state));
+                // Spawn async task per connection - doesn't block accept loop
+                tokio::spawn(async move {
+                    handle_client_async(stream, state).await;
+                });
             }
             Err(e) => eprintln!("Connection error: {}", e),
         }

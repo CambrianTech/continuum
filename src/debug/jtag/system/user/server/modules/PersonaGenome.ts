@@ -218,7 +218,8 @@ export class PersonaGenome {
 
     // Load adapter - delegates to AIProvider (CandleAdapter → inference-worker)
     // The worker handles actual GPU allocation
-    await adapter.load();
+    // Pass baseModel so CandleAdapter knows which model to attach the adapter to
+    await adapter.load(this.config.baseModel);
 
     // Track logical state
     this.activeAdapters.set(skillName, adapter);
@@ -380,6 +381,25 @@ export class PersonaGenome {
    */
   getActiveAdapters(): LoRAAdapter[] {
     return Array.from(this.activeAdapters.values());
+  }
+
+  /**
+   * Get active adapters in format suitable for TextGenerationRequest
+   *
+   * This is the bridge between PersonaGenome and the AI provider system.
+   * Returns adapter info that CandleAdapter can use to load/apply LoRA weights.
+   */
+  getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string }> {
+    return Array.from(this.activeAdapters.values())
+      .filter(adapter => adapter.isLoaded())  // Only include loaded adapters
+      .map(adapter => {
+        const state = adapter.getState();
+        return {
+          name: state.name,
+          path: state.path,
+          domain: state.domain,
+        };
+      });
   }
 
   /**

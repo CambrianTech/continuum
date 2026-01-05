@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-03T19:13:57.833Z",
+  "generated": "2026-01-05T22:57:06.862Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1741,6 +1741,47 @@
           "type": "string",
           "required": false,
           "description": "text parameter"
+        }
+      }
+    },
+    {
+      "name": "inference/generate",
+      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": true,
+          "description": "prompt parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "temperature parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "adapters": {
+          "type": "array",
+          "required": false,
+          "description": "adapters parameter"
         }
       }
     },

@@ -20,11 +20,12 @@ import type {
   ModelCapability,
   ModelInfo,
   UsageMetrics,
+  RoutingInfo,
 } from '../../../shared/AIProviderTypesV2';
-import {
-  InferenceWorkerClient,
-  type GenerateRequest as CandleGenerateRequest,
-} from '../../../../../system/core/services/InferenceWorkerClient';
+import { InferenceWorkerClient } from '../../../../../system/core/services/InferenceWorkerClient';
+import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
 
 // ============================================================================
 // Types
@@ -39,6 +40,17 @@ interface CandleAdapterConfig {
   timeout?: number;
   /** Max concurrent requests (not currently enforced at adapter level) */
   maxConcurrent?: number;
+  /**
+   * Maximum input tokens before truncation (default: 4000)
+   *
+   * Small models (1.5B params) process ~8-10ms per token. With a 180s timeout:
+   * - 4000 tokens ≈ 35s (safe)
+   * - 10000 tokens ≈ 90s (risky)
+   * - 20000 tokens ≈ 180s (timeout!)
+   *
+   * This limit prevents timeout errors from large RAG contexts.
+   */
+  maxInputTokens?: number;
 }
 
 /** Map of model ID to loaded adapters (for multi-adapter composition) */
@@ -47,6 +59,12 @@ interface LoadedAdapterInfo {
   adapterName: string;
   adapterPath: string;
 }
+
+// ============================================================================
+// Model Name Mapping (Ollama → HuggingFace)
+// ============================================================================
+// Uses LOCAL_MODELS from Constants.ts as SINGLE SOURCE OF TRUTH
+// See system/shared/Constants.ts for the canonical mapping
 
 // ============================================================================
 // Candle Adapter
@@ -64,6 +82,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   private defaultModel: string;
   private loadedModels: Set<string> = new Set();
   private loadedAdapters: Map<string, LoadedAdapterInfo[]> = new Map(); // modelId -> adapters
+  private maxInputTokens: number;
 
   constructor(config: CandleAdapterConfig = {}) {
     super();
@@ -72,8 +91,31 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       ? InferenceWorkerClient.create(config.socketPath)
       : InferenceWorkerClient.instance;
 
-    this.defaultModel = config.defaultModel || 'gpt2'; // Safe default
-    this.baseTimeout = config.timeout || 60000; // 60s for model loading
+    this.defaultModel = config.defaultModel || LOCAL_MODELS.DEFAULT;
+    this.baseTimeout = config.timeout || 180000; // 180s to handle model download + generation
+    this.maxInputTokens = config.maxInputTokens || 4000; // ~35s at 8ms/token
+
+    // Pre-load the default model for faster first request
+    this.preloadDefaultModel();
+  }
+
+  /**
+   * Pre-load the default model to avoid cold-start latency.
+   * Runs async in background - doesn't block constructor.
+   */
+  private async preloadDefaultModel(): Promise<void> {
+    try {
+      const modelId = LOCAL_MODELS.mapToHuggingFace(this.defaultModel);
+      if (!this.loadedModels.has(modelId)) {
+        this.log(null, 'info', `Pre-loading default model: ${modelId}`);
+        await this.client.loadModel(modelId);
+        this.loadedModels.add(modelId);
+        this.log(null, 'info', `Default model pre-loaded: ${modelId}`);
+      }
+    } catch (error) {
+      // Log but don't fail - model will be loaded on first request
+      this.log(null, 'warn', `Failed to pre-load model: ${error instanceof Error ? error.message : error}`);
+    }
   }
 
   // ============================================================================
@@ -86,42 +128,124 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     const startTime = Date.now();
     const requestId = request.requestId || randomUUID();
 
-    // Determine model to use
-    const modelId = request.model || this.defaultModel;
+    this.log(request, 'info', `🔧 TRACE-1: generateTextImpl START (requestId=${requestId.slice(0,8)})`);
 
-    // Ensure model is loaded
-    if (!this.loadedModels.has(modelId)) {
-      this.log(request, 'info', `Loading model: ${modelId}`);
-      try {
-        await this.client.loadModel(modelId);
-        this.loadedModels.add(modelId);
-      } catch (error) {
-        throw new Error(
-          `Failed to load model ${modelId}: ${error instanceof Error ? error.message : error}`
-        );
+    // Determine model to use - map Ollama names to HuggingFace via central config
+    const requestedModel = request.model || this.defaultModel;
+    const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModel);
+
+    // Log mapping if different
+    if (modelId !== requestedModel) {
+      this.log(request, 'info', `Model mapped: ${requestedModel} → ${modelId}`);
+    }
+
+    // Ensure model is loaded (always verify with worker, cache may be stale after restart)
+    const ensureModelLoaded = async (): Promise<void> => {
+      if (!this.loadedModels.has(modelId)) {
+        this.log(request, 'info', `Loading model: ${modelId}`);
+        try {
+          this.log(request, 'info', `🔧 TRACE-1.5a: About to call client.loadModel...`);
+          await this.client.loadModel(modelId);
+          this.log(request, 'info', `🔧 TRACE-1.5b: client.loadModel returned`);
+          this.loadedModels.add(modelId);
+        } catch (error) {
+          this.log(request, 'error', `🔧 TRACE-1.5c: client.loadModel FAILED: ${error instanceof Error ? error.message : error}`);
+          throw new Error(
+            `Failed to load model ${modelId}: ${error instanceof Error ? error.message : error}`
+          );
+        }
+      } else {
+        this.log(request, 'info', `🔧 TRACE-1.5d: Model already in cache, skipping load`);
+      }
+    };
+
+    await ensureModelLoaded();
+    this.log(request, 'info', `🔧 TRACE-2: Model loaded successfully`);
+
+    // GENOME INTEGRATION: Load adapters from request if provided
+    // This enables PersonaGenome to specify which LoRA skills should be active
+    if (request.activeAdapters && request.activeAdapters.length > 0) {
+      this.log(request, 'info', `🧬 TRACE-2.5: Loading ${request.activeAdapters.length} adapters from request`);
+
+      // Check which adapters need to be loaded
+      const currentAdapters = new Set(this.getActiveAdaptersForModel(modelId));
+      const needsReapply = request.activeAdapters.some(a => !currentAdapters.has(a.name));
+
+      if (needsReapply) {
+        // Filter out adapters with non-existent files BEFORE loading
+        // This prevents blocking the inference queue on missing adapter files
+        const adaptersToLoad = request.activeAdapters
+          .filter(a => {
+            const absolutePath = resolve(a.path);
+            if (!existsSync(absolutePath)) {
+              this.log(request, 'warn', `🧬 Skipping adapter ${a.name}: file not found at ${absolutePath}`);
+              return false;
+            }
+            return true;
+          })
+          .map(a => ({
+            adapterPath: a.path,
+            adapterName: a.name,
+          }));
+
+        if (adaptersToLoad.length > 0) {
+          try {
+            await this.applySkills(modelId, adaptersToLoad);
+            this.log(request, 'info', `🧬 TRACE-2.6: Adapters applied: [${adaptersToLoad.map(a => a.adapterName).join(', ')}]`);
+          } catch (error) {
+            // Log but don't fail - generation can proceed without adapters
+            this.log(request, 'warn', `🧬 TRACE-2.6: Failed to apply adapters: ${error instanceof Error ? error.message : error}`);
+          }
+        } else {
+          this.log(request, 'info', `🧬 TRACE-2.5: No adapters to load (all files missing or already loaded)`);
+        }
+      } else {
+        this.log(request, 'info', `🧬 TRACE-2.5: All requested adapters already loaded`);
       }
     }
 
     // Convert messages to prompt string
     // (Candle currently takes raw prompt, not chat format)
-    const prompt = this.formatMessagesAsPrompt(request);
+    let prompt = this.formatMessagesAsPrompt(request);
+    this.log(request, 'info', `🔧 TRACE-3: Prompt formatted (${prompt.length} chars)`);
 
-    // Get active adapters for this model (if any)
+    // CRITICAL: Truncate prompt if too long for fast inference
+    // Small models (1.5B) take ~8-10ms per token; 20k tokens = 180s timeout!
+    const { truncated, estimatedTokens, wasTruncated } = this.truncatePromptIfNeeded(prompt);
+    prompt = truncated;
+
+    if (wasTruncated) {
+      this.log(request, 'warn', `⚠️ Prompt truncated from ${estimatedTokens} to ~${this.maxInputTokens} tokens to prevent timeout`);
+    }
+
+    // Get active adapters for this model (includes any just loaded from request)
     const adapters = this.getActiveAdaptersForModel(modelId);
+    const maxTokens = request.maxTokens || 2048;
+    const temperature = request.temperature || 0.7;
 
-    // Build Candle request
-    const candleRequest: CandleGenerateRequest = {
-      modelId,
-      prompt,
-      maxTokens: request.maxTokens || 2048,
-      temperature: request.temperature || 0.7,
-      topP: request.topP || 0.9,
-      adapters: adapters.length > 0 ? adapters : undefined,
-    };
+    // Generate with retry on "Model not loaded" error (cache may be stale after worker restart)
+    let response;
+    this.log(request, 'info', `🔧 TRACE-4: Calling client.generate (prompt=${prompt.length} chars, maxTokens=${maxTokens}, adapters=[${adapters.join(',')}])`);
+    try {
+      // TypeScript client is thin - just passes request to Rust worker
+      // Rust handles all the heavy ML logic
+      response = await this.client.generate(modelId, prompt, { maxTokens, temperature });
+      this.log(request, 'info', `🔧 TRACE-5: client.generate returned: text=${response.text?.length ?? 0} chars, promptTokens=${response.promptTokens}`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (errorMsg.includes('Model not loaded')) {
+        // Cache was stale - clear it, reload model, and retry
+        this.log(request, 'warn', `Model cache stale, reloading: ${modelId}`);
+        this.loadedModels.delete(modelId);
+        await ensureModelLoaded();
+        response = await this.client.generate(modelId, prompt, { maxTokens, temperature });
+      } else {
+        this.log(request, 'error', `🔧 TRACE-ERROR: client.generate threw: ${errorMsg}`);
+        throw error;
+      }
+    }
 
-    // Generate
-    const response = await this.client.generate(candleRequest);
-
+    this.log(request, 'info', `🔧 TRACE-6: Building response object`);
     const responseTime = Date.now() - startTime;
 
     // Build usage metrics
@@ -133,15 +257,30 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       estimatedCost: 0,
     };
 
-    return {
+    // Build routing info for observability
+    // This tells AIProviderDaemon (and ultimately the caller) exactly what happened
+    const routing: RoutingInfo = {
+      provider: this.providerId,
+      isLocal: true,  // Candle is always local
+      routingReason: 'explicit_provider', // Will be overridden by daemon if different
+      adaptersApplied: adapters,  // Which LoRA adapters were active
+      modelMapped: modelId !== requestedModel ? modelId : undefined,  // Show mapping if different
+      modelRequested: requestedModel,
+    };
+
+    const finalResponse: TextGenerationResponse = {
       text: response.text,
-      finishReason: 'stop', // TODO: Get actual finish reason from worker
+      finishReason: 'stop' as const, // TODO: Get actual finish reason from worker
       model: response.modelId,
       provider: this.providerId,
       usage,
       responseTime,
       requestId,
+      routing,
     };
+
+    this.log(request, 'info', `🔧 TRACE-7: Returning response (text=${finalResponse.text.length} chars, ${responseTime}ms, adapters=[${adapters.join(',')}])`);
+    return finalResponse;
   }
 
   // ============================================================================
@@ -241,16 +380,28 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     adapterName: string;
     applyImmediately?: boolean; // Default true - merge weights right away
   }): Promise<void> {
-    const { modelId, adapterPath, adapterName, applyImmediately = true } = skillImplementation;
+    const { adapterPath, adapterName, applyImmediately = true } = skillImplementation;
+
+    // Map Ollama model name to HuggingFace ID via central config
+    const modelId = LOCAL_MODELS.mapToHuggingFace(skillImplementation.modelId);
+
+    // Defense: Check if adapter file exists before doing anything
+    const absolutePath = resolve(adapterPath);
+    if (!existsSync(absolutePath)) {
+      this.log(null, 'warn', `🧬 applySkill: Skipping ${adapterName} - file not found at ${absolutePath}`);
+      return;
+    }
 
     // Ensure model is loaded first
     if (!this.loadedModels.has(modelId)) {
+      this.log(null, 'info', `🧬 applySkill: Loading model ${modelId} (from ${skillImplementation.modelId})`);
       await this.client.loadModel(modelId);
       this.loadedModels.add(modelId);
     }
 
     // Load the adapter weights into memory
-    await this.client.loadAdapter(modelId, adapterPath, adapterName);
+    // Rust handles all the weight loading and composition
+    await this.client.loadAdapter(adapterName, adapterPath, modelId);
 
     // Track loaded adapter
     const adapters = this.loadedAdapters.get(modelId) || [];
@@ -259,11 +410,8 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.log(null, 'info', `Loaded adapter ${adapterName} for model ${modelId}`);
 
-    // Apply adapters (merge weights) if requested
-    if (applyImmediately) {
-      const result = await this.client.applyAdapters(modelId);
-      this.log(null, 'info', `Applied adapters to ${modelId}: ${result.layersMerged} layers merged in ${result.applyTimeMs}ms`);
-    }
+    // Note: Adapter application/weight merging is now handled by Rust worker
+    // on-the-fly during generation. No need for explicit apply step.
   }
 
   /**
@@ -282,20 +430,34 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       this.loadedModels.add(modelId);
     }
 
-    // Load all adapters without applying
+    // Load all adapters (with file existence check)
+    // Rust handles weight composition during generation
+    let loadedCount = 0;
     for (const { adapterPath, adapterName } of adapters) {
-      await this.client.loadAdapter(modelId, adapterPath, adapterName);
+      // Defense in depth: skip non-existent adapter files
+      const absolutePath = resolve(adapterPath);
+      if (!existsSync(absolutePath)) {
+        this.log(null, 'warn', `🧬 applySkills: Skipping ${adapterName} - file not found at ${absolutePath}`);
+        continue;
+      }
+
+      await this.client.loadAdapter(adapterName, adapterPath, modelId);
 
       const tracked = this.loadedAdapters.get(modelId) || [];
       tracked.push({ modelId, adapterName, adapterPath });
       this.loadedAdapters.set(modelId, tracked);
 
       this.log(null, 'info', `Loaded adapter ${adapterName} for model ${modelId}`);
+      loadedCount++;
     }
 
-    // Apply all adapters at once (single weight merge)
-    const result = await this.client.applyAdapters(modelId);
-    this.log(null, 'info', `Applied ${adapters.length} adapters to ${modelId}: ${result.layersMerged} layers merged in ${result.applyTimeMs}ms`);
+    if (loadedCount > 0) {
+      // Rust worker handles adapter composition on-the-fly during generation
+      // No explicit apply step needed - adapters are applied when generating
+      this.log(null, 'info', `Loaded ${loadedCount} adapters for ${modelId} (will be applied during generation)`);
+    } else {
+      this.log(null, 'info', `No adapters loaded for ${modelId} (all files missing)`);
+    }
   }
 
   /**
@@ -309,7 +471,8 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       throw new Error(`Invalid skillId format: ${skillId}. Expected "modelId:adapterName"`);
     }
 
-    await this.client.unloadAdapter(modelId, adapterName);
+    // Rust worker uses adapterName (adapterId) as the key
+    await this.client.unloadAdapter(adapterName);
 
     // Update tracking
     const adapters = this.loadedAdapters.get(modelId) || [];
@@ -322,6 +485,51 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   // ============================================================================
   // Helper Methods
   // ============================================================================
+
+  /**
+   * Truncate prompt if it exceeds maxInputTokens
+   *
+   * Uses a simple heuristic: ~4 characters per token (typical for English text).
+   * If the prompt is too long, truncates from the MIDDLE to preserve:
+   * - System prompt and early context (beginning)
+   * - Most recent messages and the actual question (end)
+   *
+   * @returns Object with truncated prompt, estimated tokens, and truncation flag
+   */
+  private truncatePromptIfNeeded(prompt: string): {
+    truncated: string;
+    estimatedTokens: number;
+    wasTruncated: boolean;
+  } {
+    // Estimate tokens: ~4 chars per token is typical for English text
+    // This is a rough estimate - actual tokenization varies by model
+    const charsPerToken = 4;
+    const estimatedTokens = Math.ceil(prompt.length / charsPerToken);
+
+    if (estimatedTokens <= this.maxInputTokens) {
+      return { truncated: prompt, estimatedTokens, wasTruncated: false };
+    }
+
+    // Need to truncate - calculate target length
+    const targetChars = this.maxInputTokens * charsPerToken;
+
+    // Strategy: Keep first 30% (system prompt + context) and last 70% (recent messages + question)
+    // This preserves the persona's instructions and the actual query
+    const keepFromStart = Math.floor(targetChars * 0.3);
+    const keepFromEnd = Math.floor(targetChars * 0.7);
+
+    const beginning = prompt.slice(0, keepFromStart);
+    const end = prompt.slice(-keepFromEnd);
+
+    // Join with a clear marker that content was truncated
+    const truncated = beginning + '\n\n[... earlier context truncated for inference speed ...]\n\n' + end;
+
+    return {
+      truncated,
+      estimatedTokens,
+      wasTruncated: true,
+    };
+  }
 
   /**
    * Format chat messages as a prompt string for Candle
@@ -376,7 +584,8 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   /**
    * Preload a model to avoid cold-start latency
    */
-  async preloadModel(modelId: string): Promise<void> {
+  async preloadModel(requestedModelId: string): Promise<void> {
+    const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModelId);
     if (!this.loadedModels.has(modelId)) {
       await this.client.loadModel(modelId);
       this.loadedModels.add(modelId);

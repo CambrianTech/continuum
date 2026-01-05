@@ -38,12 +38,14 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private isPermanentlyDisabled: boolean = false;
   private permanentDisableReason: string = '';
 
-  // Circuit breaker state - mark adapter unhealthy after consecutive failures
+  // Circuit breaker state - DISABLED for now
+  // The shared circuit breaker caused memory-synthesis failures to block chat responses.
+  // TODO: Implement per-operation-type circuit breakers if needed
   private consecutiveFailures: number = 0;
-  private readonly maxConsecutiveFailures: number = 3;
+  private readonly maxConsecutiveFailures: number = 999999; // Effectively disabled
   private circuitBreakerOpen: boolean = false;
   private circuitBreakerResetTime: number = 0;
-  private readonly circuitBreakerCooldown: number = 30000; // 30s cooldown before retry
+  private readonly circuitBreakerCooldown: number = 5000; // Reduced from 30s
 
   // Base layer timeout - adapters get this for FREE (can override in subclass)
   protected baseTimeout: number = 30000; // 30s default, Ollama overrides to 60s
@@ -87,7 +89,10 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
       const logger = this.personaLoggers.get(category)!;
       logger[level](message, ...args);
     } else {
-      // No persona context - write to shared adapter log (system-level, always enabled)
+      // No persona context - check if system-level adapter logging is enabled
+      if (!LoggingConfig.isSystemEnabled('adapters')) {
+        return; // Early exit - system adapter logging disabled
+      }
       const systemLogger = Logger.create('AIProviderAdapter', 'adapters');
       systemLogger[level](message, ...args);
     }

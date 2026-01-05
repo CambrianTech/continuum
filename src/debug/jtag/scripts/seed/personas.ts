@@ -30,10 +30,10 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   { uniqueId: generateUniqueId('Claude'), displayName: 'Claude Code', provider: 'anthropic', type: 'agent' },
   { uniqueId: generateUniqueId('General'), displayName: 'General AI', provider: 'anthropic', type: 'agent' },
 
-  // Local personas (Ollama-based)
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', type: 'persona' },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', type: 'persona' },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', type: 'persona' },
+  // Local personas (Ollama-based - Candle has mutex blocking issue)
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'ollama', type: 'persona' },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'ollama', type: 'persona' },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'ollama', type: 'persona' },
 
   // Cloud provider personas
   { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona' },

@@ -85,6 +85,127 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
 export const DEFAULT_CONTEXT_WINDOW = 8192;
 
 /**
+ * Model inference speeds in tokens per second (TPS)
+ *
+ * These estimates are for INPUT token processing (prompt evaluation).
+ * Used for latency-aware budgeting to prevent timeouts on slow models.
+ *
+ * Categories:
+ * - Cloud APIs: ~1000+ TPS (fast, network-bound)
+ * - Local large models (70B+): ~20-50 TPS
+ * - Local medium models (7-14B): ~50-150 TPS
+ * - Local small models (1-3B): ~100-200 TPS on Apple Silicon
+ *
+ * Conservative estimates - actual speed varies by hardware.
+ */
+export const MODEL_INFERENCE_SPEEDS: Readonly<Record<string, number>> = {
+  // Cloud APIs - fast (network-bound, not compute-bound)
+  'gpt-4': 1000,
+  'gpt-4-turbo': 1000,
+  'gpt-4o': 1000,
+  'gpt-4o-mini': 1000,
+  'claude-3-opus': 1000,
+  'claude-3-sonnet': 1000,
+  'claude-3-haiku': 1000,
+  'claude-3-5-sonnet': 1000,
+  'claude-opus-4': 1000,
+  'gemini-pro': 1000,
+  'gemini-1.5-pro': 1000,
+
+  // Local small models via Candle/Ollama (1-3B params)
+  // ~100-200 TPS on Apple Silicon M1/M2
+  'llama3.2:1b': 200,
+  'llama3.2:3b': 100,  // Conservative for RAG-heavy prompts
+  'qwen2.5:3b': 100,
+  'qwen2:0.5b': 300,
+  'qwen2:1.5b': 150,
+
+  // Local medium models (7-14B params)
+  // ~50-150 TPS on Apple Silicon
+  'llama3.1:8b': 80,
+  'llama3.2': 100,  // Default for llama3.2 family
+  'qwen2.5:7b': 80,
+  'qwen2.5:14b': 50,
+  'mistral:7b': 80,
+
+  // Local large models (30B+ params)
+  // ~20-50 TPS on Apple Silicon
+  'llama3.1:70b': 25,
+  'qwen2.5:32b': 35,
+  'qwen2.5:72b': 20,
+  'mixtral': 40,
+
+  // DeepSeek models
+  'deepseek-coder:6.7b': 80,
+  'deepseek-r1': 50,
+};
+
+/**
+ * Default inference speed for unknown models (conservative)
+ * Assumes local medium model speed
+ */
+export const DEFAULT_INFERENCE_SPEED = 80;
+
+/**
+ * Default target latency in seconds for inference
+ * Used when calculating latency-aware token budgets
+ */
+export const DEFAULT_TARGET_LATENCY_SECONDS = 30;
+
+/**
+ * Get inference speed for a model in tokens per second
+ */
+export function getInferenceSpeed(model: string): number {
+  // Direct match
+  if (MODEL_INFERENCE_SPEEDS[model]) {
+    return MODEL_INFERENCE_SPEEDS[model];
+  }
+
+  // Try without version suffix
+  const baseModel = model.split(':')[0];
+  if (MODEL_INFERENCE_SPEEDS[baseModel]) {
+    return MODEL_INFERENCE_SPEEDS[baseModel];
+  }
+
+  // Try prefix matching
+  for (const [key, value] of Object.entries(MODEL_INFERENCE_SPEEDS)) {
+    if (model.startsWith(key) || key.startsWith(model)) {
+      return value;
+    }
+  }
+
+  return DEFAULT_INFERENCE_SPEED;
+}
+
+/**
+ * Calculate maximum input tokens based on target latency
+ *
+ * Formula: maxInputTokens = targetLatencySeconds × tokensPerSecond
+ *
+ * This is the LATENCY constraint - separate from the context window constraint.
+ * The actual limit is MIN(contextWindow, latencyLimit).
+ *
+ * @param model - Model identifier
+ * @param targetLatencySeconds - Target response time (default: 30s)
+ * @returns Maximum input tokens to stay within latency target
+ */
+export function getLatencyAwareTokenLimit(
+  model: string,
+  targetLatencySeconds: number = DEFAULT_TARGET_LATENCY_SECONDS
+): number {
+  const tokensPerSecond = getInferenceSpeed(model);
+  return Math.floor(targetLatencySeconds * tokensPerSecond);
+}
+
+/**
+ * Check if a model is a slow local model (needs latency-aware budgeting)
+ */
+export function isSlowLocalModel(model: string): boolean {
+  const speed = getInferenceSpeed(model);
+  return speed < 500;  // Below 500 TPS = needs latency awareness
+}
+
+/**
  * Get context window size for a model
  *
  * Supports:

@@ -341,10 +341,15 @@ export class PersonaUser extends AIUser {
       this.logger.enqueueLog('cognition.log', message);
     });
     // Inject queue stats provider for load-aware deduplication (feedback loop)
+    // CRITICAL: Handle case where AIProviderDaemon isn't initialized yet (race condition on startup)
     this.inbox.setQueueStatsProvider(() => {
-      const adapter = AIProviderDaemon.getAdapter('ollama');
-      if (adapter && adapter.getQueueStats) {
-        return adapter.getQueueStats();
+      try {
+        const adapter = AIProviderDaemon.getAdapter('ollama');
+        if (adapter && adapter.getQueueStats) {
+          return adapter.getQueueStats();
+        }
+      } catch {
+        // AIProviderDaemon not initialized yet - return defaults
       }
       return { queueSize: 0, activeRequests: 0, maxConcurrent: 1, load: 0.0 };
     });
@@ -546,26 +551,8 @@ export class PersonaUser extends AIUser {
     // STEP 1.7: Wire AI provider to genome for real LoRA adapter loading (genome vision)
     // This enables PersonaGenome.activateSkill() → CandleAdapter.applySkill() → InferenceWorker.loadAdapter()
     // Without this, adapters run in stub mode (tracking state only, no actual GPU loading)
-    try {
-      // Try to get CandleAdapter (native Rust inference with LoRA support)
-      const candleAdapter = AIProviderDaemon.getAdapter('candle');
-      if (candleAdapter) {
-        this.memory.genome.setAIProvider(candleAdapter);
-        this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
-      } else {
-        // Fall back to Ollama if Candle not available
-        const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
-        if (ollamaAdapter) {
-          this.memory.genome.setAIProvider(ollamaAdapter);
-          this.log.info(`🧬 ${this.displayName}: Genome wired to OllamaAdapter (stub mode - no multi-adapter)`);
-        } else {
-          this.log.warn(`⚠️ ${this.displayName}: No local AI provider available for genome`);
-        }
-      }
-    } catch (error) {
-      this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider:`, error);
-      // Non-fatal: genome will run in stub mode
-    }
+    // NOTE: AIProviderDaemon may not be initialized yet (race condition), so use deferred wiring
+    this.wireGenomeToProvider();
 
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
@@ -626,6 +613,54 @@ export class PersonaUser extends AIUser {
       }
     } catch (error) {
       this.log.warn(`⚠️ ${this.displayName}: Could not cache room names: ${error}`);
+    }
+  }
+
+  /**
+   * Wire genome to AI provider with deferred retry if daemon not ready
+   *
+   * Handles the race condition where PersonaUser.onConnect() may run before
+   * AIProviderDaemon is initialized. Uses retry with backoff to eventually
+   * wire the genome when the daemon becomes available.
+   *
+   * @param retryCount - Number of retries attempted (default 0)
+   * @param maxRetries - Maximum retry attempts (default 5)
+   */
+  private wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): void {
+    // Check if daemon is initialized
+    if (!AIProviderDaemon.isInitialized()) {
+      if (retryCount < maxRetries) {
+        // Schedule retry with exponential backoff (2s, 4s, 8s, 16s, 32s)
+        const delay = Math.pow(2, retryCount + 1) * 1000;
+        this.log.debug(`🧬 ${this.displayName}: AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
+        setTimeout(() => this.wireGenomeToProvider(retryCount + 1, maxRetries), delay);
+      } else {
+        this.log.warn(`⚠️ ${this.displayName}: Genome wiring failed after ${maxRetries} retries - running in stub mode`);
+      }
+      return;
+    }
+
+    // Daemon is ready, wire the genome
+    try {
+      // Try to get CandleAdapter (native Rust inference with LoRA support)
+      const candleAdapter = AIProviderDaemon.getAdapter('candle');
+      if (candleAdapter) {
+        this.memory.genome.setAIProvider(candleAdapter);
+        this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
+      } else {
+        // Fall back to Ollama if Candle not available
+        const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
+        if (ollamaAdapter) {
+          this.memory.genome.setAIProvider(ollamaAdapter);
+          this.log.info(`🧬 ${this.displayName}: Genome wired to OllamaAdapter (stub mode - no multi-adapter)`);
+        } else {
+          this.log.warn(`⚠️ ${this.displayName}: No local AI provider available for genome`);
+        }
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider: ${errorMsg}`);
+      // Non-fatal: genome will run in stub mode
     }
   }
 

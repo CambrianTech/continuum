@@ -40,7 +40,11 @@
         "/tmp/jtag-inference.sock"
       ],
       "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
-      "enabled": true
+      "enabled": true,
+      "preloadModels": [
+        "Qwen/Qwen2-1.5B-Instruct",
+        "Qwen/Qwen2-0.5B-Instruct"
+      ]
     },
     {
       "name": "logger",

@@ -96,8 +96,6 @@ pub fn write_log_message(
     let log_entry = format_log_entry(payload, &timestamp);
     total_bytes += write_entry(&payload.category, &log_entry, file_cache)?;
 
-    println!("📝 LOG: {} → {:?}", log_entry.trim(), log_file_path);
-
     Ok(total_bytes)
 }
 
@@ -207,8 +205,6 @@ fn write_header(
     // Mark header as written
     let mut headers = headers_written.lock().unwrap();
     headers.insert(category.to_string());
-
-    println!("📋 Wrote header for: {} ({})", component, category);
 
     Ok(bytes)
 }

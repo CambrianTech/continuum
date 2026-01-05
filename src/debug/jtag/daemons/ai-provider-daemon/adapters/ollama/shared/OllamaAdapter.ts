@@ -111,6 +111,34 @@ interface OllamaChatResponse {
 // See: daemons/ai-provider-daemon/shared/VisionCapabilityService.ts
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { spawn } from 'child_process';
+import * as os from 'os';
+
+/**
+ * Calculate optimal maxConcurrent based on system resources
+ *
+ * Formula:
+ * - 2 concurrent requests per CPU core (I/O bound, not CPU bound)
+ * - Minimum 4 for basic multi-persona support
+ * - Maximum 16 to prevent overwhelming Ollama's queue
+ * - Can be overridden via config.maxConcurrent
+ */
+function calculateOptimalConcurrency(): number {
+  const cpuCores = os.cpus().length;
+  const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
+
+  // 2 requests per core for I/O bound operations
+  let optimal = cpuCores * 2;
+
+  // Memory constraint: ~2GB per concurrent Ollama request (rough estimate)
+  const memoryBasedLimit = Math.floor(totalMemoryGB / 2);
+  optimal = Math.min(optimal, memoryBasedLimit);
+
+  // Clamp to reasonable bounds
+  const MIN_CONCURRENT = 4;  // Minimum for multi-persona
+  const MAX_CONCURRENT = 16; // Don't overwhelm Ollama
+
+  return Math.max(MIN_CONCURRENT, Math.min(MAX_CONCURRENT, optimal));
+}
 
 /**
  * Request queue for Ollama API
@@ -311,6 +339,9 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
     // Override base class timeout - Ollama needs 60s for large contexts (13k+ tokens)
     this.baseTimeout = 60000;
 
+    // Calculate optimal concurrency from system resources (or use config override)
+    const systemOptimalConcurrency = calculateOptimalConcurrency();
+
     this.config = {
       apiEndpoint: 'http://localhost:11434',
       timeout: 60000, // 60s - increased from 30s to handle large prompts with llama3.2:3b
@@ -319,13 +350,18 @@ export class OllamaAdapter extends BaseAIProviderAdapter {
       defaultModel: 'phi3:mini',
       defaultTemperature: 0.7,
       logRequests: true,
-      maxConcurrent: 12, // Increased from 4 to handle 13 AI personas responding simultaneously
-      ...config,
+      maxConcurrent: systemOptimalConcurrency, // Dynamic based on CPU cores and memory
+      ...config, // User config can override if desired
     };
+
+    // Log detected system resources (goes through LoggingConfig system)
+    const cpuCores = os.cpus().length;
+    const totalMemoryGB = Math.round(os.totalmem() / (1024 * 1024 * 1024));
+    this.log(null, 'info', `🔧 OllamaAdapter: System detected - ${cpuCores} CPU cores, ${totalMemoryGB}GB RAM → maxConcurrent=${this.config.maxConcurrent}`);
 
     // Initialize queue with configured maxConcurrent, logger, and queue timeout handler
     this.requestQueue = new OllamaRequestQueue(
-      this.config.maxConcurrent || 12,
+      this.config.maxConcurrent, // No fallback - config always has value from calculateOptimalConcurrency() or user override
       (msg: string) => this.log(null, 'info', msg),
       async (waitTime: number) => {
         // Queue timeout detected - track consecutive failures and trigger direct restart

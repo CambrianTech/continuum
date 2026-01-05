@@ -30,7 +30,7 @@ import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
-import { getContextWindow } from '../../shared/ModelContextWindows';
+import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
@@ -156,6 +156,16 @@ export class ChatRAGBuilder extends RAGBuilder {
       // Benefits: queryWithJoin for messages (4.5x faster), testable sources, budget allocation
       const composer = this.getComposer();
 
+      // Calculate latency-aware token budget for slow local models
+      // This prevents the composer from over-allocating tokens that would cause timeouts
+      let totalBudget = 8000;  // Default for fast models
+      if (options?.modelId && isSlowLocalModel(options.modelId)) {
+        const latencyLimit = getLatencyAwareTokenLimit(options.modelId);
+        const systemPromptReserve = options?.systemPromptTokens ?? 500;
+        totalBudget = Math.min(totalBudget, latencyLimit - systemPromptReserve);
+        this.log(`📊 ChatRAGBuilder: Latency-aware totalBudget=${totalBudget} for ${options.modelId}`);
+      }
+
       const sourceContext: RAGSourceContext = {
         personaId,
         roomId: contextId,
@@ -167,7 +177,7 @@ export class ChatRAGBuilder extends RAGBuilder {
           includeMemories,
           currentMessage: options?.currentMessage
         },
-        totalBudget: 8000  // Default token budget
+        totalBudget
       };
 
       // Load core sources via composer (parallel)
@@ -1100,8 +1110,25 @@ LIMITS:
     // Get context window from centralized config
     const contextWindow = getContextWindow(modelId);
 
-    // Calculate available tokens for messages
-    const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
+    // LATENCY-AWARE BUDGETING: For slow local models, apply latency constraint
+    // This prevents timeouts from massive prompts (e.g., 20K tokens at 10ms/token = 200s!)
+    const latencyInputLimit = getLatencyAwareTokenLimit(modelId);
+    const isSlowModel = isSlowLocalModel(modelId);
+    const inferenceSpeed = getInferenceSpeed(modelId);
+
+    // Calculate context window constraint (total context - output reservation)
+    const contextWindowBudget = contextWindow - maxTokens - systemPromptTokens;
+
+    // Latency constraint applies to INPUT tokens only (not output)
+    // For slow local models: latencyLimit = 30s × 100 TPS = 3000 input tokens
+    const latencyBudget = latencyInputLimit - systemPromptTokens;
+
+    // Use the MORE RESTRICTIVE limit
+    // For fast cloud APIs: contextWindowBudget is usually the limiter
+    // For slow local models: latencyBudget is usually the limiter
+    const availableForMessages = isSlowModel
+      ? Math.min(contextWindowBudget, latencyBudget)
+      : contextWindowBudget;
 
     // Target 80% of available (20% safety margin)
     const targetTokens = availableForMessages * targetUtilization;
@@ -1112,9 +1139,19 @@ LIMITS:
     // Clamp between 5 and 50
     const clampedMessageCount = Math.max(5, Math.min(50, safeMessageCount));
 
+    // Log with latency info for slow models
+    const latencyInfo = isSlowModel
+      ? `\n  ⚡ LATENCY CONSTRAINT: ${inferenceSpeed} TPS → ${latencyInputLimit} input tokens @ 30s target`
+      : '';
+    const limitingFactor = isSlowModel && latencyBudget < contextWindowBudget
+      ? ' (LIMITED BY LATENCY)'
+      : '';
+
     this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
   Context Window: ${contextWindow} tokens
-  Available for Messages: ${availableForMessages}
+  Context Budget: ${contextWindowBudget} tokens (after output + system reservation)${latencyInfo}
+  Latency Budget: ${latencyBudget} tokens
+  Available for Messages: ${availableForMessages}${limitingFactor}
   Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
 
     return clampedMessageCount;

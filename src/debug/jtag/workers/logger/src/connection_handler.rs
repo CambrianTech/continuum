@@ -14,20 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc;
 
-/// Debug logging to file (temporary - will be removed).
-fn debug_log(msg: &str) {
-    use std::fs::OpenOptions;
-    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let log_msg = format!("[{}] {}\n", timestamp, msg);
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/rust-worker-debug.log")
-    {
-        let _ = file.write_all(log_msg.as_bytes());
-        let _ = file.flush();
-    }
-}
+// Debug logging removed - was creating excessive log noise
 
 /// Handle a single client connection.
 ///
@@ -46,44 +33,26 @@ pub fn handle_client(
     stats: StatsHandle,
     log_tx: mpsc::Sender<WriteLogPayload>,
 ) -> std::io::Result<()> {
-    debug_log("handle_client: START");
-    debug_log("Creating BufReader and cloning stream for writer");
     let mut reader = BufReader::new(&stream);
     let mut writer = stream.try_clone()?;
-    debug_log("Reader/writer created successfully");
 
     // Process messages until client disconnects
     loop {
-        debug_log("Loop iteration: Calling read_line()...");
         let mut line = String::new();
         let bytes_read = reader.read_line(&mut line)?;
-        debug_log(&format!("read_line() returned {} bytes", bytes_read));
 
         if bytes_read == 0 {
-            debug_log("bytes_read == 0, client disconnected (EOF)");
-            println!("📪 Client disconnected (EOF)");
-            break;
+            break; // Client disconnected
         }
 
-        debug_log("About to trim line");
         let line = line.trim();
-        debug_log(&format!("Trimmed line length: {}", line.len()));
-
         if line.is_empty() {
-            debug_log("Line is empty, continuing loop");
             continue;
         }
 
-        debug_log(&format!(
-            "Line content (first 50 chars): {:?}",
-            &line.chars().take(50).collect::<String>()
-        ));
-        println!("📨 Received: {} bytes", line.len());
-
-        // Parse and route message
+        // Parse and route message (only log errors, not every message)
         match parse_message(line) {
             Ok((msg_type, msg_id)) => {
-                println!("✅ Parsed request: type={}, id={}", msg_type, msg_id);
                 handle_message(
                     line,
                     &msg_type,
@@ -97,8 +66,7 @@ pub fn handle_client(
                 )?;
             }
             Err(e) => {
-                eprintln!("❌ Failed to parse request: {}", e);
-                eprintln!("   Raw message: {}", line);
+                eprintln!("❌ Logger: Failed to parse request: {}", e);
                 send_parse_error(line, &mut writer, &e)?;
             }
         }
@@ -190,8 +158,6 @@ fn handle_write_log(
         WriteLogResult { bytes_written: 0 },
     );
     send_response(&response, writer)?;
-
-    println!("✅ Sent response: log queued for processing");
     Ok(())
 }
 
@@ -223,11 +189,6 @@ fn handle_ping(
     };
     let response = JTAGResponse::success(request.id.clone(), request.r#type.clone(), ping_result);
     send_response(&response, writer)?;
-
-    println!(
-        "✅ Sent ping response: uptime={}ms, connections={}, requests={}, categories={}",
-        uptime_ms, connections_total, requests_processed, active_categories
-    );
     Ok(())
 }
 

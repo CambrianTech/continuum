@@ -1,14 +1,13 @@
 /**
- * Inference Worker Client
+ * Inference Worker Client - SIMPLIFIED
  *
- * Communicates with the Rust inference-worker over Unix socket.
- * Uses Candle framework for native LLM inference with multi-adapter LoRA composition.
+ * Thin client for the Rust inference-worker. Rust owns all state:
+ * - Model handles and status
+ * - GPU memory management
+ * - Request concurrency
  *
- * Features:
- * - Model loading from HuggingFace Hub
- * - Multi-adapter LoRA composition (the genome vision)
- * - Metal acceleration on Apple Silicon
- * - JTAG protocol compatible
+ * TypeScript just sends requests and receives responses.
+ * NO queues. NO state tracking. Rust is the source of truth.
  */
 
 import * as net from 'net';
@@ -20,59 +19,57 @@ const log = Logger.create('InferenceWorkerClient', 'inference');
 const DEFAULT_SOCKET_PATH = '/tmp/jtag-inference.sock';
 
 // ============================================================================
-// Types
+// Types - Mirror Rust types
 // ============================================================================
 
-/** Model info returned by worker */
+/** Handle status from Rust */
+export type HandleStatus = 'loading' | 'ready' | 'error' | 'unloaded';
+
+/** Handle info returned by Rust */
+export interface HandleInfo {
+  handleId: string;
+  modelId: string;
+  status: HandleStatus;
+  memoryMb: number;
+  lastUsedMs: number;
+  ageSecs: number;
+  error?: string;
+}
+
+/** Model info from list */
 export interface ModelInfo {
   modelId: string;
-  status: string;
-  loadTimeMs?: number;
-  device: string;
-  loadedAtSecondsAgo?: number;
+  architecture: string;
+  vocabSize: number;
 }
 
-/** Adapter info returned by worker */
+/** Adapter info from list */
 export interface AdapterInfo {
-  name: string;
-  modelId: string;
-  path: string;
-  status: string;
+  adapterId: string;
+  targetModel: string;
+  sizeMb: number;
+  rank: number;
+  tensorCount: number;
+  loadTimeMs: number;
 }
 
-/** Result of applying (merging) adapters into model */
-export interface ApplyAdaptersResult {
-  modelId: string;
-  adaptersApplied: string[];
-  layersMerged: number;
-  applyTimeMs: number;
-}
-
-/** Text generation request */
-export interface GenerateRequest {
-  modelId: string;
-  prompt: string;
-  maxTokens?: number;
-  temperature?: number;
-  topP?: number;
-  adapters?: string[];
-}
-
-/** Text generation response */
-export interface GenerateResponse {
-  modelId: string;
+/** Generation result */
+export interface GenerateResult {
   text: string;
   promptTokens: number;
   generatedTokens: number;
-  generationTimeMs: number;
-  tokensPerSecond: number;
-  adaptersUsed: string[];
+  modelId: string;
 }
 
-/** Command payload sent to worker */
-interface InferenceCommand {
-  command: string;
-  [key: string]: unknown;
+/** Worker ping response */
+export interface PingResponse {
+  worker: string;
+  version: string;
+  modelsLoaded: number;
+  handlesActive: number;
+  async: boolean;
+  supportedArchitectures: string[];
+  api: string[];
 }
 
 /** Worker response format */
@@ -82,7 +79,7 @@ interface WorkerResponse<T> {
   error?: string;
 }
 
-/** Binary response header from generate/binary command */
+/** Binary response header */
 interface BinaryTextHeader {
   type: string;
   length: number;
@@ -93,14 +90,14 @@ interface BinaryTextHeader {
 }
 
 // ============================================================================
-// Client Implementation
+// Client Implementation - THIN, NON-BLOCKING
 // ============================================================================
 
 /**
- * Inference Worker Client - Native Rust LLM inference
+ * Inference Worker Client
  *
- * Singleton pattern for connection reuse across requests.
- * Features auto-reconnect with exponential backoff for reliability.
+ * Thin wrapper around Unix socket to Rust worker.
+ * No local state. No queues. Rust handles everything.
  */
 export class InferenceWorkerClient {
   private static _instance: InferenceWorkerClient | null = null;
@@ -109,29 +106,21 @@ export class InferenceWorkerClient {
   private socket: net.Socket | null = null;
   private dataBuffer: Buffer = Buffer.alloc(0);
   private binaryHeader: BinaryTextHeader | null = null;
-  private pendingResponse: {
+
+  /** Pending requests by ID - allows concurrent requests */
+  private pendingRequests: Map<string, {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
-  } | null = null;
+  }> = new Map();
 
-  /** Track availability to avoid repeated connection attempts */
+  /** Request ID counter */
+  private requestIdCounter = 0;
+
+  /** Cached availability */
   private _available: boolean | null = null;
   private _lastAvailabilityCheck: number = 0;
   private static readonly AVAILABILITY_CACHE_MS = 5000;
-
-  /** Request queue for serializing concurrent requests */
-  private requestQueue: (() => Promise<void>)[] = [];
-  private isProcessingQueue: boolean = false;
-
-  /** Retry configuration for reliability */
-  private static readonly MAX_RETRIES = 3;
-  private static readonly INITIAL_RETRY_DELAY_MS = 100;
-  private static readonly MAX_RETRY_DELAY_MS = 2000;
-
-  /** Connection state tracking */
-  private connectionAttempts: number = 0;
-  private lastConnectionError: string | null = null;
 
   private constructor(socketPath: string = DEFAULT_SOCKET_PATH) {
     this.socketPath = socketPath;
@@ -154,11 +143,7 @@ export class InferenceWorkerClient {
   // Health Check
   // ============================================================================
 
-  /**
-   * Check if Rust inference worker is available
-   *
-   * Uses cached result for 5 seconds to avoid spamming connection attempts.
-   */
+  /** Check if worker is available (cached for 5s) */
   async isAvailable(): Promise<boolean> {
     const now = Date.now();
     if (this._available !== null && (now - this._lastAvailabilityCheck) < InferenceWorkerClient.AVAILABILITY_CACHE_MS) {
@@ -175,102 +160,226 @@ export class InferenceWorkerClient {
     return this._available;
   }
 
-  /**
-   * Ping the worker to check connectivity
-   */
-  async ping(): Promise<{ worker: string; version: string; modelsLoaded: number }> {
-    return this.sendCommand({ command: 'ping' });
+  /** Ping the worker */
+  async ping(): Promise<PingResponse> {
+    const result = await this.sendCommand<{
+      worker: string;
+      version: string;
+      models_loaded: number;
+      handles_active: number;
+      async: boolean;
+      supported_architectures: string[];
+      api: string[];
+    }>({ command: 'ping' });
+
+    return {
+      worker: result.worker,
+      version: result.version,
+      modelsLoaded: result.models_loaded,
+      handlesActive: result.handles_active,
+      async: result.async,
+      supportedArchitectures: result.supported_architectures,
+      api: result.api,
+    };
   }
 
   // ============================================================================
-  // Model Management
+  // Handle API - The Right Way (NON-BLOCKING)
   // ============================================================================
 
   /**
-   * Load a model from HuggingFace Hub
+   * Get or create a handle for a model
    *
-   * @param modelId - HuggingFace model ID (e.g., 'gpt2', 'meta-llama/Llama-3.2-3B-Instruct')
-   * @param revision - Optional revision/branch (default: 'main')
+   * Returns IMMEDIATELY. Model loads async in Rust.
+   * Poll status or wait for ready state before generating.
    */
-  async loadModel(modelId: string, revision?: string): Promise<{ status: string; modelId: string; loadTimeMs?: number }> {
-    return this.sendCommand({
-      command: 'model/load',
+  async getHandle(modelId: string): Promise<HandleInfo> {
+    const result = await this.sendCommand<{
+      handle_id: string;
+      status: HandleStatus;
+      model_id: string;
+      existing?: boolean;
+      load_time_ms?: number;
+      error?: string;
+    }>({
+      command: 'model/handle',
       model_id: modelId,
-      revision
-    });
+    }, 300000); // 5 min for model loading
+
+    return {
+      handleId: result.handle_id,
+      modelId: result.model_id,
+      status: result.status,
+      memoryMb: 0,
+      lastUsedMs: 0,
+      ageSecs: 0,
+      error: result.error,
+    };
   }
 
   /**
-   * Unload a model from memory
+   * Get status of a handle
+   *
+   * Use to poll until handle is ready.
+   */
+  async getHandleStatus(handleId: string): Promise<HandleInfo> {
+    const result = await this.sendCommand<{
+      handle_id: string;
+      model_id: string;
+      status: HandleStatus;
+      memory_mb: number;
+      last_used_ms: number;
+      age_ms: number;
+      error?: string;
+    }>({
+      command: 'handle/status',
+      handle_id: handleId,
+    });
+
+    return {
+      handleId: result.handle_id,
+      modelId: result.model_id,
+      status: result.status,
+      memoryMb: result.memory_mb,
+      lastUsedMs: result.last_used_ms,
+      ageSecs: Math.floor(result.age_ms / 1000),
+      error: result.error,
+    };
+  }
+
+  /**
+   * List all handles
+   */
+  async listHandles(): Promise<HandleInfo[]> {
+    const result = await this.sendCommand<{
+      handles: Array<{
+        handle_id: string;
+        model_id: string;
+        status: HandleStatus;
+        memory_mb: number;
+        last_used_ms: number;
+        age_ms: number;
+        error?: string;
+      }>;
+      count: number;
+    }>({ command: 'handle/list' });
+
+    return result.handles.map(h => ({
+      handleId: h.handle_id,
+      modelId: h.model_id,
+      status: h.status,
+      memoryMb: h.memory_mb,
+      lastUsedMs: h.last_used_ms,
+      ageSecs: Math.floor(h.age_ms / 1000),
+      error: h.error,
+    }));
+  }
+
+  /**
+   * Release a handle (unloads model)
+   */
+  async releaseHandle(handleId: string): Promise<{ modelId: string; memoryFreedMb: number }> {
+    const result = await this.sendCommand<{
+      status: string;
+      handle_id: string;
+      model_id: string;
+      memory_freed_mb: number;
+    }>({
+      command: 'handle/release',
+      handle_id: handleId,
+    });
+
+    return {
+      modelId: result.model_id,
+      memoryFreedMb: result.memory_freed_mb,
+    };
+  }
+
+  /**
+   * Wait for a handle to be ready
+   *
+   * Polls status until ready or error.
+   */
+  async waitForHandle(handleId: string, timeoutMs: number = 300000, pollIntervalMs: number = 500): Promise<HandleInfo> {
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const status = await this.getHandleStatus(handleId);
+
+      if (status.status === 'ready') {
+        return status;
+      }
+
+      if (status.status === 'error') {
+        throw new Error(`Handle ${handleId} failed: ${status.error}`);
+      }
+
+      if (status.status === 'unloaded') {
+        throw new Error(`Handle ${handleId} was unloaded`);
+      }
+
+      // Still loading - wait and poll again
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    throw new Error(`Timeout waiting for handle ${handleId} to be ready`);
+  }
+
+  // ============================================================================
+  // Legacy Model API (backward compatibility)
+  // ============================================================================
+
+  /**
+   * Load a model (legacy API - wraps handle API for backward compatibility)
+   *
+   * Uses model/handle command internally and waits for ready state.
+   */
+  async loadModel(modelId: string): Promise<{ status: string; modelId: string; loadTimeMs?: number }> {
+    const startTime = Date.now();
+
+    // Use handle API - model/handle command
+    const handle = await this.getHandle(modelId);
+
+    // getHandle returns when model is ready (Rust blocks until loaded)
+    return {
+      status: handle.status,
+      modelId: handle.modelId,
+      loadTimeMs: Date.now() - startTime,
+    };
+  }
+
+  /**
+   * Unload a model (legacy - wraps handle API)
+   *
+   * Finds handle for model and releases it.
    */
   async unloadModel(modelId: string): Promise<void> {
-    await this.sendCommand({
-      command: 'model/unload',
-      model_id: modelId
-    });
-    log.info(`Unloaded model: ${modelId}`);
+    // Find handle for this model
+    const handles = await this.listHandles();
+    const handle = handles.find(h => h.modelId === modelId);
+
+    if (handle) {
+      await this.releaseHandle(handle.handleId);
+    }
   }
 
   /**
-   * List all loaded models
-   */
-  async listModels(): Promise<{ models: Array<{ modelId: string; architecture: string; vocabSize: number }> }> {
-    return this.sendCommand({ command: 'model/list' });
-  }
-
-  // ============================================================================
-  // Adapter Management (LoRA)
-  // ============================================================================
-
-  /**
-   * Load a LoRA adapter for a model
+   * List models (legacy - wraps handle API)
    *
-   * @param modelId - Model to attach adapter to (must be loaded)
-   * @param adapterPath - Path to .safetensors adapter file
-   * @param adapterName - Name to identify this adapter
+   * Returns loaded models from active handles.
    */
-  async loadAdapter(
-    modelId: string,
-    adapterPath: string,
-    adapterName: string
-  ): Promise<AdapterInfo> {
-    return this.sendCommand({
-      command: 'adapter/load',
-      model_id: modelId,
-      adapter_path: adapterPath,
-      adapter_name: adapterName
-    });
-  }
+  async listModels(): Promise<{ models: ModelInfo[] }> {
+    const handles = await this.listHandles();
 
-  /**
-   * Unload a LoRA adapter from a model
-   */
-  async unloadAdapter(modelId: string, adapterName: string): Promise<void> {
-    await this.sendCommand({
-      command: 'adapter/unload',
-      model_id: modelId,
-      adapter_name: adapterName
-    });
-    log.info(`Unloaded adapter: ${adapterName} from ${modelId}`);
-  }
-
-  /**
-   * Apply loaded adapters by merging weights into model
-   *
-   * This performs weight merging: W' = W + scaling * (B @ A) for each layer.
-   * The model is rebuilt with merged weights. After calling this:
-   * - Generate requests will use the merged weights
-   * - Cannot apply different adapters without reloading the model
-   *
-   * @param modelId - Model with loaded adapters to merge
-   */
-  async applyAdapters(modelId: string): Promise<ApplyAdaptersResult> {
-    const result: ApplyAdaptersResult = await this.sendCommand({
-      command: 'adapter/apply',
-      model_id: modelId
-    });
-    log.info(`Applied adapters to ${modelId}: ${result.layersMerged} layers merged`);
-    return result;
+    return {
+      models: handles
+        .filter(h => h.status === 'ready')
+        .map(h => ({
+          modelId: h.modelId,
+          architecture: 'unknown',
+          vocabSize: 0,
+        })),
+    };
   }
 
   // ============================================================================
@@ -278,131 +387,203 @@ export class InferenceWorkerClient {
   // ============================================================================
 
   /**
-   * Generate text from a prompt (JSON protocol)
+   * Generate text from a prompt
    *
-   * Note: For prompts with special characters/newlines, use generateBinary() instead
-   * to avoid JSON escaping issues.
-   *
-   * @param request - Generation request with model, prompt, and options
+   * Model must be loaded (via getHandle or loadModel).
    */
-  async generate(request: GenerateRequest): Promise<{ text: string; promptTokens: number; generatedTokens: number; modelId: string }> {
-    const startTime = Date.now();
+  async generate(
+    modelId: string,
+    prompt: string,
+    options: { maxTokens?: number; temperature?: number } = {}
+  ): Promise<GenerateResult> {
+    console.log(`🔧 [InferenceWorkerClient] generate() START: modelId=${modelId}, promptLen=${prompt.length}, maxTokens=${options.maxTokens ?? 256}`);
+    try {
+      const result = await this.sendCommand<{
+        text: string;
+        prompt_tokens: number;
+        generated_tokens: number;
+        model_id: string;
+      }>({
+        command: 'generate',
+        model_id: modelId,
+        prompt,
+        max_tokens: options.maxTokens ?? 256,
+        temperature: options.temperature ?? 0.7,
+      }, 180000); // 3 min timeout for generation
 
-    const result = await this.sendCommand<{ text: string; prompt_tokens: number; generated_tokens: number; model_id: string }>({
-      command: 'generate',
-      model_id: request.modelId,
-      prompt: request.prompt,
-      max_tokens: request.maxTokens ?? 256,
-      temperature: request.temperature ?? 0.7,
-    });
-
-    const duration = Date.now() - startTime;
-    log.debug(`Generated response in ${duration}ms (${result.prompt_tokens} prompt tokens)`);
-
-    return {
-      text: result.text,
-      promptTokens: result.prompt_tokens,
-      generatedTokens: result.generated_tokens,
-      modelId: result.model_id,
-    };
+      console.log(`🔧 [InferenceWorkerClient] generate() GOT RESULT: textLen=${result.text?.length ?? 0}, promptTokens=${result.prompt_tokens}`);
+      return {
+        text: result.text,
+        promptTokens: result.prompt_tokens,
+        generatedTokens: result.generated_tokens,
+        modelId: result.model_id,
+      };
+    } catch (err) {
+      console.error(`🔧 [InferenceWorkerClient] generate() ERROR: ${err}`);
+      throw err;
+    }
   }
 
   /**
-   * Generate text using binary protocol - avoids JSON escaping issues
+   * Generate text using binary protocol
    *
-   * Use this for prompts with:
-   * - Newlines
-   * - Special characters
-   * - Long text
-   * - Multi-turn conversations
-   *
-   * @param modelId - Model to use (must be loaded)
-   * @param prompt - Text prompt (can include newlines, special chars)
-   * @param maxTokens - Maximum tokens to generate (default: 256)
-   * @param temperature - Sampling temperature (default: 0.7)
+   * Use for prompts with newlines/special chars.
    */
   async generateBinary(
     modelId: string,
     prompt: string,
     maxTokens: number = 256,
     temperature: number = 0.7
-  ): Promise<{ text: string; promptTokens: number; generatedTokens: number; modelId: string }> {
-    return new Promise((resolve, reject) => {
-      const doRequest = async (): Promise<void> => {
-        try {
-          if (this.socket && this.socket.destroyed) {
-            this.socket = null;
-          }
-          await this.connect();
+  ): Promise<GenerateResult> {
+    await this.ensureConnected();
 
-          const promptBytes = Buffer.from(prompt, 'utf8');
+    const promptBytes = Buffer.from(prompt, 'utf8');
+    const requestId = `binary-${++this.requestIdCounter}`;
 
-          const header = {
-            command: 'generate/binary',
-            model_id: modelId,
-            prompt_length: promptBytes.length,
-            max_tokens: maxTokens,
-            temperature,
-          };
+    const header = {
+      command: 'generate/binary',
+      model_id: modelId,
+      prompt_length: promptBytes.length,
+      max_tokens: maxTokens,
+      temperature,
+      request_id: requestId,
+    };
 
-          const result = await new Promise<{ text: string; promptTokens: number; generatedTokens: number; modelId: string }>((innerResolve, innerReject) => {
-            const timeoutHandle = setTimeout(() => {
-              this.pendingResponse = null;
-              innerReject(new Error(`Binary generate timeout: ${modelId}`));
-            }, 120000); // 2min timeout for generation
+    return new Promise<GenerateResult>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Binary generate timeout: ${modelId}`));
+      }, 180000);
 
-            this.pendingResponse = { resolve: innerResolve as (value: unknown) => void, reject: innerReject, timeout: timeoutHandle };
+      this.pendingRequests.set(requestId, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timeout: timeoutHandle,
+      });
 
-            // Send JSON header + binary prompt
-            this.socket!.write(JSON.stringify(header) + '\n');
-            this.socket!.write(promptBytes);
-          });
-
-          resolve(result);
-        } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
-      };
-
-      this.requestQueue.push(doRequest);
-      this.processQueue();
+      // Send header + binary prompt
+      this.socket!.write(JSON.stringify(header) + '\n');
+      this.socket!.write(promptBytes);
     });
   }
 
-  /**
-   * Generate text with simplified interface
-   *
-   * @param modelId - Model to use
-   * @param prompt - Text prompt
-   * @param maxTokens - Maximum tokens to generate (default: 256)
-   */
-  async generateText(
-    modelId: string,
-    prompt: string,
-    maxTokens: number = 256
-  ): Promise<string> {
-    // Use binary protocol for safety (handles all prompt types)
-    const response = await this.generateBinary(modelId, prompt, maxTokens);
-    return response.text;
+  // ============================================================================
+  // Adapter Management (LoRA)
+  // ============================================================================
+
+  /** Load a LoRA adapter */
+  async loadAdapter(
+    adapterId: string,
+    adapterPath: string,
+    targetModel?: string
+  ): Promise<AdapterInfo> {
+    const result = await this.sendCommand<{
+      status: string;
+      adapter_id: string;
+      target_model: string;
+      load_time_ms: number;
+      size_mb: number;
+      rank: number;
+      tensor_count: number;
+    }>({
+      command: 'adapter/load',
+      adapter_id: adapterId,
+      adapter_path: adapterPath,
+      target_model: targetModel,
+    });
+
+    return {
+      adapterId: result.adapter_id,
+      targetModel: result.target_model,
+      sizeMb: result.size_mb,
+      rank: result.rank,
+      tensorCount: result.tensor_count,
+      loadTimeMs: result.load_time_ms,
+    };
+  }
+
+  /** Unload an adapter */
+  async unloadAdapter(adapterId: string): Promise<void> {
+    await this.sendCommand({
+      command: 'adapter/unload',
+      adapter_id: adapterId,
+    });
+  }
+
+  /** List adapters */
+  async listAdapters(): Promise<AdapterInfo[]> {
+    const result = await this.sendCommand<{
+      adapters: Array<{
+        adapter_id: string;
+        target_model: string;
+        size_mb: number;
+        rank: number;
+        tensor_count: number;
+        load_time_ms: number;
+      }>;
+      count: number;
+    }>({ command: 'adapter/list' });
+
+    return result.adapters.map(a => ({
+      adapterId: a.adapter_id,
+      targetModel: a.target_model,
+      sizeMb: a.size_mb,
+      rank: a.rank,
+      tensorCount: a.tensor_count,
+      loadTimeMs: a.load_time_ms,
+    }));
+  }
+
+  // ============================================================================
+  // GPU Management
+  // ============================================================================
+
+  /** Get GPU status */
+  async getGpuStatus(): Promise<{
+    totalMb: number;
+    allocatedMb: number;
+    availableMb: number;
+    pressure: number;
+    allocationCount: number;
+    shouldEvict: boolean;
+  }> {
+    const result = await this.sendCommand<{
+      total_mb: number;
+      allocated_mb: number;
+      available_mb: number;
+      pressure: number;
+      allocation_count: number;
+      should_evict: boolean;
+    }>({ command: 'gpu/status' });
+
+    return {
+      totalMb: result.total_mb,
+      allocatedMb: result.allocated_mb,
+      availableMb: result.available_mb,
+      pressure: result.pressure,
+      allocationCount: result.allocation_count,
+      shouldEvict: result.should_evict,
+    };
   }
 
   // ============================================================================
   // Connection Management
   // ============================================================================
 
-  /**
-   * Close the connection
-   */
+  /** Close connection */
   close(): void {
     if (this.socket) {
       this.socket.destroy();
       this.socket = null;
     }
-    if (this.pendingResponse) {
-      clearTimeout(this.pendingResponse.timeout);
-      this.pendingResponse.reject(new Error('Connection closed'));
-      this.pendingResponse = null;
+
+    // Reject all pending requests
+    for (const [id, pending] of this.pendingRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('Connection closed'));
+      this.pendingRequests.delete(id);
     }
+
     this._available = null;
   }
 
@@ -410,9 +591,9 @@ export class InferenceWorkerClient {
   // Private Methods
   // ============================================================================
 
-  private async connect(): Promise<void> {
+  private async ensureConnected(): Promise<void> {
     if (this.socket && !this.socket.destroyed) {
-      return; // Already connected
+      return;
     }
 
     return new Promise((resolve, reject) => {
@@ -420,28 +601,6 @@ export class InferenceWorkerClient {
       this.dataBuffer = Buffer.alloc(0);
       this.binaryHeader = null;
 
-      this.socket.on('connect', () => {
-        log.debug(`Connected to inference worker: ${this.socketPath}`);
-        resolve();
-      });
-
-      this.socket.on('data', (data) => {
-        this.handleData(data);
-      });
-
-      this.socket.on('error', (error) => {
-        log.debug(`Socket error: ${error.message}`);
-        this._available = false;
-        reject(error);
-      });
-
-      this.socket.on('close', () => {
-        log.debug('Socket closed');
-        this.socket = null;
-        this._available = null;
-      });
-
-      // Connection timeout
       const timeout = setTimeout(() => {
         if (this.socket && this.socket.connecting) {
           this.socket.destroy();
@@ -449,18 +608,47 @@ export class InferenceWorkerClient {
         }
       }, 5000);
 
-      this.socket.once('connect', () => clearTimeout(timeout));
+      this.socket.on('connect', () => {
+        clearTimeout(timeout);
+        log.debug(`Connected to inference worker: ${this.socketPath}`);
+        resolve();
+      });
+
+      this.socket.on('data', (data) => {
+        log.debug(`Received ${data.length} bytes from worker`);
+        this.handleData(data);
+      });
+
+      this.socket.on('error', (error) => {
+        log.debug(`Socket error: ${error.message}`);
+        this._available = false;
+        this.rejectAllPending(`Socket error: ${error.message}`);
+        reject(error);
+      });
+
+      this.socket.on('close', () => {
+        log.debug('Socket closed');
+        this.socket = null;
+        this._available = null;
+        this.rejectAllPending('Socket closed unexpectedly');
+      });
     });
   }
 
+  private rejectAllPending(message: string): void {
+    for (const [id, pending] of this.pendingRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error(message));
+      this.pendingRequests.delete(id);
+    }
+  }
+
   private handleData(data: Buffer): void {
-    // Use Buffer for binary protocol support
     this.dataBuffer = Buffer.concat([this.dataBuffer, data]);
 
-    // Check if we're waiting for binary data
+    // Check for binary data
     if (this.binaryHeader) {
       if (this.dataBuffer.length >= this.binaryHeader.length) {
-        // Extract binary payload
         const textBytes = this.dataBuffer.subarray(0, this.binaryHeader.length);
         this.dataBuffer = this.dataBuffer.subarray(this.binaryHeader.length);
 
@@ -468,150 +656,133 @@ export class InferenceWorkerClient {
         const header = this.binaryHeader;
         this.binaryHeader = null;
 
-        if (this.pendingResponse) {
-          clearTimeout(this.pendingResponse.timeout);
-          const pending = this.pendingResponse;
-          this.pendingResponse = null;
-          pending.resolve({
-            text,
-            promptTokens: header.promptTokens,
-            generatedTokens: header.generatedTokens,
-            modelId: header.modelId,
-          });
+        // Find and resolve the binary request
+        for (const [id, pending] of this.pendingRequests) {
+          if (id.startsWith('binary-')) {
+            clearTimeout(pending.timeout);
+            this.pendingRequests.delete(id);
+            pending.resolve({
+              text,
+              promptTokens: header.promptTokens,
+              generatedTokens: header.generatedTokens,
+              modelId: header.modelId,
+            } as GenerateResult);
+            break;
+          }
         }
       }
       return;
     }
 
-    // Look for newline to complete JSON header
-    const newlineIdx = this.dataBuffer.indexOf('\n');
-    if (newlineIdx === -1) return;
+    // Look for newline to complete JSON response
+    while (true) {
+      const newlineIdx = this.dataBuffer.indexOf('\n');
+      if (newlineIdx === -1) break;
 
-    const line = this.dataBuffer.subarray(0, newlineIdx).toString();
-    this.dataBuffer = this.dataBuffer.subarray(newlineIdx + 1);
+      const line = this.dataBuffer.subarray(0, newlineIdx).toString();
+      this.dataBuffer = this.dataBuffer.subarray(newlineIdx + 1);
 
-    if (!line.trim()) return;
+      if (!line.trim()) continue;
 
-    try {
-      const parsed = JSON.parse(line);
+      try {
+        const parsed = JSON.parse(line);
 
-      // Check if it's a binary response header
-      if (parsed.type === 'binary') {
-        this.binaryHeader = parsed as BinaryTextHeader;
-        // Check if we already have the binary data
-        if (this.dataBuffer.length >= this.binaryHeader.length) {
-          this.handleData(Buffer.alloc(0)); // Re-process with existing data
+        // Binary response header
+        if (parsed.type === 'binary') {
+          this.binaryHeader = parsed as BinaryTextHeader;
+          if (this.dataBuffer.length >= this.binaryHeader.length) {
+            this.handleData(Buffer.alloc(0));
+          }
+          continue;
         }
-        return;
-      }
 
-      // Regular JSON response
-      const response = parsed as WorkerResponse<unknown>;
+        // Regular JSON response - match by request_id for proper correlation
+        const response = parsed as WorkerResponse<unknown> & { request_id?: string };
+        const requestId = response.request_id;
+        console.log(`🔧 [InferenceWorkerClient] handleData: Got response, request_id=${requestId}, success=${response.success}, pending=${this.pendingRequests.size}`);
 
-      if (this.pendingResponse) {
-        clearTimeout(this.pendingResponse.timeout);
-        const pending = this.pendingResponse;
-        this.pendingResponse = null;
+        if (requestId && this.pendingRequests.has(requestId)) {
+          // Proper correlation by request_id
+          const pending = this.pendingRequests.get(requestId)!;
+          clearTimeout(pending.timeout);
+          this.pendingRequests.delete(requestId);
 
-        if (response.success) {
-          pending.resolve(response.result);
+          if (response.success) {
+            pending.resolve(response.result);
+          } else {
+            pending.reject(new Error(response.error || 'Unknown worker error'));
+          }
         } else {
-          pending.reject(new Error(response.error || 'Unknown worker error'));
+          // Fallback: resolve first pending non-binary request (legacy)
+          for (const [id, pending] of this.pendingRequests) {
+            if (!id.startsWith('binary-')) {
+              clearTimeout(pending.timeout);
+              this.pendingRequests.delete(id);
+
+              if (response.success) {
+                pending.resolve(response.result);
+              } else {
+                pending.reject(new Error(response.error || 'Unknown worker error'));
+              }
+              break;
+            }
+          }
         }
+      } catch (error) {
+        log.error(`Failed to parse response: ${error}`);
       }
-    } catch (error) {
-      log.error(`Failed to parse response: ${error}`);
     }
   }
 
   private async sendCommand<T>(
-    command: InferenceCommand,
-    timeout: number = 60000 // 60s default for model loading
+    command: Record<string, unknown>,
+    timeout: number = 60000
   ): Promise<T> {
-    return new Promise((outerResolve, outerReject) => {
-      const doRequest = async (): Promise<void> => {
-        let lastError: Error | null = null;
+    await this.ensureConnected();
 
-        // Retry loop with exponential backoff
-        for (let attempt = 0; attempt < InferenceWorkerClient.MAX_RETRIES; attempt++) {
-          try {
-            // If connection was lost, close and reconnect
-            if (this.socket && this.socket.destroyed) {
-              this.socket = null;
-            }
+    const requestId = `req-${++this.requestIdCounter}`;
 
-            await this.connect();
-            this.connectionAttempts = 0; // Reset on successful connection
+    return new Promise<T>((resolve, reject) => {
+      const timeoutHandle = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Request timeout: ${command.command}`));
+      }, timeout);
 
-            const result = await new Promise<T>((resolve, reject) => {
-              const timeoutHandle = setTimeout(() => {
-                this.pendingResponse = null;
-                reject(new Error(`Request timeout: ${command.command}`));
-              }, timeout);
+      this.pendingRequests.set(requestId, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+        timeout: timeoutHandle,
+      });
 
-              this.pendingResponse = { resolve: resolve as (value: unknown) => void, reject, timeout: timeoutHandle };
+      // CRITICAL: Include request_id so Rust can echo it back for correlation
+      const commandWithId = { ...command, request_id: requestId };
+      const data = JSON.stringify(commandWithId) + '\n';
 
-              // Send simple JSON (no JTAG wrapper - Rust worker expects plain command)
-              this.socket!.write(JSON.stringify(command) + '\n');
-            });
+      // Check socket state before writing
+      if (!this.socket || this.socket.destroyed || !this.socket.writable) {
+        clearTimeout(timeoutHandle);
+        this.pendingRequests.delete(requestId);
+        reject(new Error(`Socket not writable: destroyed=${this.socket?.destroyed}, writable=${this.socket?.writable}`));
+        return;
+      }
 
-            outerResolve(result);
-            return; // Success - exit retry loop
-
-          } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-            this.lastConnectionError = lastError.message;
-
-            // Don't retry on timeout (likely model issue, not connection issue)
-            if (lastError.message.includes('timeout')) {
-              break;
-            }
-
-            // Close broken connection for reconnect
-            if (this.socket) {
-              this.socket.destroy();
-              this.socket = null;
-            }
-
-            // Calculate delay with exponential backoff
-            const delay = Math.min(
-              InferenceWorkerClient.INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt),
-              InferenceWorkerClient.MAX_RETRY_DELAY_MS
-            );
-
-            if (attempt < InferenceWorkerClient.MAX_RETRIES - 1) {
-              log.debug(`Retry ${attempt + 1}/${InferenceWorkerClient.MAX_RETRIES} in ${delay}ms: ${lastError.message}`);
-              await new Promise(resolve => setTimeout(resolve, delay));
-            }
-          }
+      // Write with error handling
+      const written = this.socket.write(data, (err) => {
+        if (err) {
+          log.error(`Socket write error: ${err.message}`);
+          clearTimeout(timeoutHandle);
+          this.pendingRequests.delete(requestId);
+          reject(new Error(`Socket write failed: ${err.message}`));
         }
+      });
 
-        // All retries exhausted
-        outerReject(lastError || new Error('Unknown error'));
-      };
-
-      // Add to queue
-      this.requestQueue.push(doRequest);
-      this.processQueue();
+      if (!written) {
+        // Buffer is full - wait for drain, but don't fail yet
+        log.debug(`Socket buffer full, waiting for drain (requestId=${requestId})`);
+      }
     });
   }
-
-  private async processQueue(): Promise<void> {
-    if (this.isProcessingQueue) {
-      return;
-    }
-
-    this.isProcessingQueue = true;
-
-    try {
-      while (this.requestQueue.length > 0) {
-        const nextRequest = this.requestQueue.shift();
-        if (nextRequest) {
-          await nextRequest();
-        }
-      }
-    } finally {
-      this.isProcessingQueue = false;
-    }
-  }
 }
+
+// Re-export for backward compatibility
+export { InferenceWorkerClient as default };

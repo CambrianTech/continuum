@@ -130,6 +130,7 @@ export const COMMANDS = {
   GENOME_PAGING_STATS: 'genome/paging-stats',
   GENOME_PAGING_UNREGISTER: 'genome/paging-unregister',
   HELP: 'help',
+  INFERENCE_GENERATE: 'inference/generate',
   INTERFACE_CLICK: 'interface/click',
   INTERFACE_GET_TEXT: 'interface/get-text',
   INTERFACE_NAVIGATE: 'interface/navigate',

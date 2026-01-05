@@ -67,6 +67,11 @@ const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimits> = {
     maxConcurrent: 10,
     staggerDelayMs: 200,
     cooldownMs: 300
+  },
+  'candle': {
+    maxConcurrent: 4,      // Rust worker can handle concurrent requests with RwLock
+    staggerDelayMs: 100,   // Minimal stagger
+    cooldownMs: 200        // Minimal cooldown
   }
 };
 

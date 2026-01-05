@@ -11,6 +11,8 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
 
 /**
  * LoRA adapter state
@@ -182,8 +184,11 @@ export class LoRAAdapter {
    * Phase 6: Provider-agnostic via AIProviderAdapter.applySkill()
    * - If aiProvider supports applySkill, delegate to it
    * - Otherwise, just track state (stub for providers without skill support)
+   *
+   * @param modelId - HuggingFace model ID to attach adapter to (e.g., 'Qwen/Qwen2-1.5B-Instruct')
+   *                  Required for CandleAdapter, optional for stub mode
    */
-  async load(): Promise<void> {
+  async load(modelId?: string): Promise<void> {
     if (this.state.loaded) {
       this.log(`🧬 LoRAAdapter: ${this.state.name} already loaded`);
       // Update LRU timestamp even if already loaded (fixes LRU eviction bug)
@@ -191,15 +196,27 @@ export class LoRAAdapter {
       return;
     }
 
+    // Check if adapter file exists before attempting to load
+    // This gracefully handles missing adapter files (stub adapters, planned adapters, etc.)
+    const absolutePath = resolve(this.state.path);
+    if (!existsSync(absolutePath)) {
+      this.log(`⚠️ LoRAAdapter: ${this.state.name} file not found at ${absolutePath} - skipping (stub mode)`);
+      // Mark as "loaded" in stub mode so we don't keep retrying
+      this.state.loaded = true;
+      this.state.lastUsed = Date.now();
+      return;
+    }
+
     this.log(`📥 LoRAAdapter: Loading ${this.state.name} from ${this.state.path}...`);
 
     // Delegate to AI provider if available and supports skill management
     if (this.aiProvider?.applySkill) {
+      // CandleAdapter expects: { modelId, adapterPath, adapterName, applyImmediately }
       await this.aiProvider.applySkill({
-        skillId: this.state.id,
-        skillName: this.state.name,
-        skillPath: this.state.path,
-        domain: this.state.domain,
+        modelId: modelId || 'default',  // CandleAdapter will map to HuggingFace ID
+        adapterPath: this.state.path,
+        adapterName: this.state.name,
+        applyImmediately: true,  // Merge weights immediately
       });
     }
     // Otherwise, just track state (stub mode for providers without skill support)

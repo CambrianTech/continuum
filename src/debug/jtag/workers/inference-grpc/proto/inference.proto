@@ -1,0 +1,37 @@
+syntax = "proto3";
+package inference;
+
+service Inference {
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc Generate(GenerateRequest) returns (stream GenerateResponse);
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string message = 1;
+  int64 timestamp = 2;
+}
+
+message GenerateRequest {
+  string prompt = 1;
+  int32 max_tokens = 2;
+}
+
+message GenerateResponse {
+  oneof response {
+    Progress progress = 1;
+    Complete complete = 2;
+  }
+}
+
+message Progress {
+  int32 tokens_generated = 1;
+  int32 tokens_total = 2;
+}
+
+message Complete {
+  string text = 1;
+  int32 tokens = 2;
+  int32 duration_ms = 3;
+}

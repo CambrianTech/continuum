@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/inference/generate",
+  "version": "1.0.0",
+  "description": "Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+  "main": "server/InferenceGenerateServerCommand.ts",
+  "types": "shared/InferenceGenerateTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/InferenceGenerateIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "inference/generate"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

@@ -12,6 +12,7 @@ members = [
     "data-daemon",
     "embedding",
     "inference",
+    "inference-grpc",
     "logger",
     "search",
     "training",
@@ -33,6 +34,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# gRPC
+tonic = "0.11"
+prost = "0.12"
+tokio-stream = "0.1"
 
 # Timing and UUIDs (for JTAG protocol)
 chrono = "0.4"

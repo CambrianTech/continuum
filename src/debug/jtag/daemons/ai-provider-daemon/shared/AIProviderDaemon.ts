@@ -36,8 +36,18 @@ import type {
   EmbeddingResponse,
   HealthStatus,
   ProviderRegistration,
+  RoutingInfo,
 } from './AIProviderTypesV2';
 import { AIProviderError, chatMessagesToPrompt } from './AIProviderTypesV2';
+
+/**
+ * Internal type for adapter selection result - carries routing metadata
+ */
+interface AdapterSelection {
+  adapter: AIProviderAdapter;
+  routingReason: RoutingInfo['routingReason'];
+  isLocal: boolean;
+}
 import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEntity';
 import { Commands } from '../../../system/core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
@@ -119,6 +129,11 @@ export class AIProviderDaemon extends DaemonBase {
   /**
    * Generate text using AI provider
    * Routes through ProcessPool if available (server-side), otherwise uses adapter directly (browser/fallback)
+   *
+   * OBSERVABILITY: Response always includes `routing` field showing:
+   * - Which provider was used and why
+   * - Whether local or cloud inference
+   * - Which LoRA adapters were applied (if any)
    */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
 
@@ -130,9 +145,9 @@ export class AIProviderDaemon extends DaemonBase {
       );
     }
 
-    // Select provider
-    const adapter = this.selectAdapter(request.preferredProvider);
-    if (!adapter) {
+    // Select provider (considers both preferredProvider AND model name)
+    const selection = this.selectAdapter(request.preferredProvider, request.model);
+    if (!selection) {
       throw new AIProviderError(
         'No suitable AI provider available',
         'daemon',
@@ -140,6 +155,17 @@ export class AIProviderDaemon extends DaemonBase {
         { preferredProvider: request.preferredProvider }
       );
     }
+
+    const { adapter, routingReason, isLocal } = selection;
+
+    // Build base routing info (will be enhanced by adapter response)
+    const baseRouting: RoutingInfo = {
+      provider: adapter.providerId,
+      isLocal,
+      routingReason,
+      adaptersApplied: [],  // Will be populated by CandleAdapter
+      modelRequested: request.model,
+    };
 
     // Check if ProcessPool is available (server-side only)
     const processPool = this.getProcessPoolInstance() as any;
@@ -163,7 +189,7 @@ export class AIProviderDaemon extends DaemonBase {
 
         const responseTime = Date.now() - startTime;
 
-        // Return formatted response
+        // Return formatted response with routing info
         return {
           text: output,
           finishReason: 'stop',
@@ -177,6 +203,7 @@ export class AIProviderDaemon extends DaemonBase {
           },
           responseTime,
           requestId: request.requestId || `req-${Date.now()}`,
+          routing: baseRouting,
         };
       } catch (error) {
         this.log.error(`❌ AIProviderDaemon: ProcessPool inference failed, falling back to direct adapter call`);
@@ -198,11 +225,30 @@ export class AIProviderDaemon extends DaemonBase {
     try {
       const response = await adapter.generateText(request);
 
+      // Merge adapter's routing info with our base routing
+      // Adapter may have additional info (e.g., CandleAdapter has adaptersApplied, modelMapped)
+      // Safe spread handles adapters that don't return routing yet
+      const adapterRouting = response.routing || {};
+      const finalResponse: TextGenerationResponse = {
+        ...response,
+        routing: {
+          ...baseRouting,
+          ...adapterRouting,  // Adapter can override/add fields (e.g., adaptersApplied, modelMapped)
+          // But we always preserve our routing reason (daemon knows best why it selected this adapter)
+          routingReason,
+          isLocal,
+        },
+      };
+
       // Log successful generation to database for cost tracking
       // This is the SINGLE source of truth - only daemon logs, not individual adapters
-      await this.logGeneration(response, request);
+      await this.logGeneration(finalResponse, request);
 
-      return response;
+      // Log routing info for observability (routing is guaranteed to exist since we just built it)
+      const r = finalResponse.routing!;
+      this.log.info(`✅ AIProviderDaemon: Generation complete. Routing: provider=${r.provider}, isLocal=${r.isLocal}, reason=${r.routingReason}, adapters=[${r.adaptersApplied.join(',')}]`);
+
+      return finalResponse;
     } catch (error) {
       this.log.error(`❌ AIProviderDaemon: Text generation failed with ${adapter.providerId}`);
 
@@ -356,8 +402,8 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     // Select provider
-    const adapter = this.selectAdapter(request.preferredProvider);
-    if (!adapter) {
+    const selection = this.selectAdapter(request.preferredProvider);
+    if (!selection) {
       throw new AIProviderError(
         'No suitable AI provider available',
         'daemon',
@@ -365,6 +411,8 @@ export class AIProviderDaemon extends DaemonBase {
         { preferredProvider: request.preferredProvider }
       );
     }
+
+    const { adapter } = selection;
 
     // Check if adapter supports embeddings
     if (!adapter.createEmbedding) {
@@ -497,39 +545,117 @@ export class AIProviderDaemon extends DaemonBase {
   /**
    * Select best adapter based on preferences and availability
    *
-   * Implements LOCAL PROVIDER ALIASING for the genome vision:
-   * - When 'ollama' or 'local' is requested, prefer 'candle' if available
+   * Implements LOCAL MODEL ROUTING for the genome vision:
+   * - When preferredProvider is 'ollama', 'local', etc., route to Candle
+   * - When model name looks local AND no preferredProvider, route to Candle
    * - This enables Candle (native Rust) to transparently replace Ollama
    * - LoRA adapter composition only works with Candle, not Ollama
+   *
+   * IMPORTANT: Candle is ONLY used for local inference.
+   * Cloud providers use their own adapters. This prevents queue bottlenecks.
+   *
+   * ROUTING PRIORITY (in order):
+   * 1. Explicit preferredProvider (if specified and available)
+   * 2. Local provider aliasing (ollama/local → candle)
+   * 3. Default by priority (highest priority enabled adapter)
+   *
+   * @returns AdapterSelection with routing metadata for observability
    */
-  private selectAdapter(preferredProvider?: string): AIProviderAdapter | null {
-    // LOCAL PROVIDER ALIASING: 'ollama' or 'local' → 'candle' when available
-    // This is the KEY integration point for the genome vision (LoRA composition)
-    const localProviders = ['ollama', 'local', 'llamacpp'];
-    if (preferredProvider && localProviders.includes(preferredProvider)) {
-      // Try Candle first (supports multi-adapter LoRA composition)
-      const candleReg = this.adapters.get('candle');
-      if (candleReg && candleReg.enabled) {
-        this.log.debug(`🔄 AIProviderDaemon: Routing '${preferredProvider}' → 'candle' (local provider aliasing)`);
-        return candleReg.adapter;
-      }
-      // Fall through to original provider if Candle unavailable
-    }
-
-    // If preferred provider specified, try to use it
+  private selectAdapter(preferredProvider?: string, model?: string): AdapterSelection | null {
+    // 1. EXPLICIT PROVIDER: Honor preferredProvider first (most specific)
+    // This MUST be checked BEFORE model detection to avoid routing Groq's
+    // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (preferredProvider) {
+      // LOCAL PROVIDER ALIASING: Route local providers to Candle for speed
+      // Candle (Rust) is 10-100x faster than Ollama for the same models
+      const localProviders = ['ollama', 'local', 'llamacpp'];
+      if (localProviders.includes(preferredProvider)) {
+        const candleReg = this.adapters.get('candle');
+        if (candleReg && candleReg.enabled) {
+          this.log.info(`🔄 AIProviderDaemon: Routing '${preferredProvider}' → 'candle' (provider_aliasing)`);
+          return {
+            adapter: candleReg.adapter,
+            routingReason: 'provider_aliasing',
+            isLocal: true,
+          };
+        }
+      }
+
+      // Try to use the explicit provider
       const registration = this.adapters.get(preferredProvider);
       if (registration && registration.enabled) {
-        return registration.adapter;
+        const isLocal = ['candle', 'ollama', 'local', 'llamacpp'].includes(preferredProvider);
+        this.log.info(`🎯 AIProviderDaemon: Using explicit provider '${preferredProvider}' (explicit_provider)`);
+        return {
+          adapter: registration.adapter,
+          routingReason: 'explicit_provider',
+          isLocal,
+        };
+      }
+
+      // preferredProvider specified but not available - log warning
+      this.log.warn(`⚠️ AIProviderDaemon: Preferred provider '${preferredProvider}' not available, falling back`);
+    }
+
+    // 2. LOCAL MODEL DETECTION: Route local models to Candle when NO preferredProvider
+    // This catches cases like SignalDetector using 'llama3.2:1b' without specifying provider
+    // ONLY runs when preferredProvider is NOT specified to avoid misrouting API models
+    if (!preferredProvider && model && this.isLocalModel(model)) {
+      const candleReg = this.adapters.get('candle');
+      if (candleReg && candleReg.enabled) {
+        this.log.info(`🔄 AIProviderDaemon: Routing model '${model}' → 'candle' (model_detection, no preferredProvider)`);
+        return {
+          adapter: candleReg.adapter,
+          routingReason: 'model_detection',
+          isLocal: true,
+        };
       }
     }
 
-    // Otherwise, select highest priority enabled adapter
+    // 3. DEFAULT: Select highest priority enabled adapter EXCLUDING Candle
+    // Candle is only for local inference - don't use as catch-all default
+    // This prevents queue bottlenecks when many personas share one local model
     const registrations = Array.from(this.adapters.values())
-      .filter(reg => reg.enabled)
+      .filter(reg => reg.enabled && reg.providerId !== 'candle')
       .sort((a, b) => b.priority - a.priority);
 
-    return registrations.length > 0 ? registrations[0].adapter : null;
+    if (registrations.length > 0) {
+      const selected = registrations[0];
+      this.log.info(`📊 AIProviderDaemon: Using default provider '${selected.providerId}' (default_priority, priority=${selected.priority})`);
+      return {
+        adapter: selected.adapter,
+        routingReason: 'default_priority',
+        isLocal: false,  // Cloud providers are default
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if a model name indicates a local model that should use Candle
+   * Examples: llama3.2:1b, qwen2:1.5b, phi3:mini, mistral:7b
+   */
+  private isLocalModel(model: string): boolean {
+    const localModelPrefixes = [
+      'llama',      // Meta's LLaMA models
+      'qwen',       // Alibaba's Qwen models
+      'phi',        // Microsoft's Phi models
+      'mistral',    // Mistral AI models
+      'codellama',  // Code-focused LLaMA
+      'gemma',      // Google's Gemma models
+      'tinyllama',  // TinyLlama
+      'orca',       // Orca models
+      'vicuna',     // Vicuna models
+      'wizardlm',   // WizardLM
+      'neural-chat',// Intel Neural Chat
+      'stablelm',   // Stability AI LM
+      'yi',         // 01.AI Yi models
+      'deepseek-coder', // DeepSeek local coder (not the API)
+    ];
+
+    const modelLower = model.toLowerCase();
+    return localModelPrefixes.some(prefix => modelLower.startsWith(prefix));
   }
 
   /**
@@ -638,6 +764,14 @@ export class AIProviderDaemon extends DaemonBase {
    */
   static initialize(instance: AIProviderDaemon): void {
     AIProviderDaemon.sharedInstance = instance;
+  }
+
+  /**
+   * Check if AIProviderDaemon has been initialized
+   * Useful for components that need to wait for daemon readiness
+   */
+  static isInitialized(): boolean {
+    return AIProviderDaemon.sharedInstance !== undefined;
   }
 
   /**
