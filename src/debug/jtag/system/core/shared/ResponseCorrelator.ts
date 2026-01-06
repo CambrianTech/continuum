@@ -55,7 +55,7 @@ export class ResponseCorrelator {
   resolveRequest(correlationId: UUID, response: JTAGResponsePayload): boolean {
     const pending = this.pendingRequests.get(correlationId);
     if (!pending) {
-      console.warn(`⚠️ ResponseCorrelator: No pending request for ${correlationId}`);
+      // Expected when response arrives after timeout - not an error
       return false;
     }
 
@@ -79,7 +79,7 @@ export class ResponseCorrelator {
     this.pendingRequests.delete(correlationId);
     pending.reject(error);
     
-    console.log(`❌ ResponseCorrelator: Rejected request ${correlationId}`);
+    // Silently reject - caller will handle error
     return true;
   }
 

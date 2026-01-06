@@ -843,6 +843,19 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       let aiResponse: TextGenerationResponse;
       const generateStartTime = Date.now();
       try {
+        // Wait for AIProviderDaemon to initialize (max 30 seconds)
+        // This handles race condition where PersonaUser tries to respond before daemon is ready
+        const MAX_WAIT_MS = 30000;
+        const POLL_INTERVAL_MS = 100;
+        let waitedMs = 0;
+        while (!AIProviderDaemon.isInitialized() && waitedMs < MAX_WAIT_MS) {
+          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+          waitedMs += POLL_INTERVAL_MS;
+        }
+        if (!AIProviderDaemon.isInitialized()) {
+          throw new Error(`AIProviderDaemon not initialized after ${MAX_WAIT_MS}ms`);
+        }
+
         aiResponse = await Promise.race([
           AIProviderDaemon.generateText(request),
           timeoutPromise

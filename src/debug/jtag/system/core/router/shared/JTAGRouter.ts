@@ -409,15 +409,16 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       return { success: true, resolved: true, response };
 
     } catch (error) {
-      // Don't spam console when WebSocket is disconnected - this is expected
-      const isDisconnectedError = error instanceof Error && (
+      // Don't spam console for expected errors - caller handles these
+      const isExpectedError = error instanceof Error && (
         error.message.includes('WebSocket not ready') ||
         error.message.includes('WebSocket not connected') ||
         error.message.includes('WebSocket disconnected') ||
-        error.message.includes('Connection lost')
+        error.message.includes('Connection lost') ||
+        error.message.includes('Request timeout')
       );
 
-      if (!isDisconnectedError) {
+      if (!isExpectedError) {
         console.error(`❌ ${this.toString()}: Request failed:`, error);
       }
       throw error;
@@ -574,7 +575,7 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
     if (resolved) {
       return { success: true, resolved: true };
     } else {
-      console.warn(`⚠️ ${this.toString()}: No pending request found for ${message.correlationId}`);
+      // Expected when response arrives after timeout
       return { success: false, error: 'No pending request found' };
     }
   }

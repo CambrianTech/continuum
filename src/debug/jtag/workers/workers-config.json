@@ -40,11 +40,19 @@
         "/tmp/jtag-inference.sock"
       ],
       "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
-      "enabled": true,
+      "enabled": false,
       "preloadModels": [
         "Qwen/Qwen2-1.5B-Instruct",
         "Qwen/Qwen2-0.5B-Instruct"
       ]
+    },
+    {
+      "name": "inference-grpc",
+      "binary": "workers/target/release/inference-grpc",
+      "type": "tcp",
+      "port": 50051,
+      "description": "gRPC inference server with Candle LLM backend. Replaces Unix socket worker.",
+      "enabled": true
     },
     {
       "name": "logger",

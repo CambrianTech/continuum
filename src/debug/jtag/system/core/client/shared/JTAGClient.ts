@@ -304,12 +304,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     if (isJTAGResponseMessage(message)) {
       // console.log(`🔗 JTAGClient: Processing response for correlation ${message.correlationId}`);
 
-      const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
-      if (resolved) {
-        // console.log(`✅ JTAGClient: Completed correlation ${message.correlationId}`);
-      } else {
-        console.warn(`⚠️ JTAGClient: No pending request for correlation ${message.correlationId}`);
-      }
+      this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
       
       // Return acknowledgment for transport protocol
       const response: BaseResponsePayload = {

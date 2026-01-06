@@ -66,64 +66,83 @@ declare -a WORKER_NAMES=()
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
   binary=$(echo "$worker" | jq -r '.binary')
-  socket=$(echo "$worker" | jq -r '.socket')
+  socket=$(echo "$worker" | jq -r '.socket // empty')
+  port=$(echo "$worker" | jq -r '.port // empty')
+  worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   description=$(echo "$worker" | jq -r '.description')
 
   # Get args array (may be empty)
   args=$(echo "$worker" | jq -r '.args[]?' || echo "")
 
-  echo -e "${YELLOW}🚀 Starting ${name}-worker...${NC}"
+  echo -e "${YELLOW}🚀 Starting ${name}...${NC}"
   echo -e "   ${description}"
 
-  # Build command with socket first, then args
-  # Use nohup to prevent SIGHUP on shell exit
-  if [ -z "$args" ]; then
-    nohup "$binary" "$socket" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
-  else
-    # Convert newline-separated args to array
-    arg_array=()
-    while IFS= read -r arg; do
-      arg_array+=("$arg")
-    done <<< "$args"
-    nohup "$binary" "$socket" "${arg_array[@]}" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
-  fi
+  if [ "$worker_type" = "tcp" ]; then
+    # TCP worker (e.g., gRPC server) - no socket argument
+    nohup "$binary" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+    WORKER_PID=$!
+    disown $WORKER_PID
 
-  WORKER_PID=$!
-  disown $WORKER_PID  # Fully detach from shell
-
-  # Wait for socket to be created with increased timeout for macOS
-  # macOS can be slow with filesystem operations, especially on external drives
-  for i in {1..20}; do
-    if [ -S "$socket" ]; then
-      echo -e "${GREEN}✅ ${name}-worker started (PID: $WORKER_PID)${NC}"
-      break
-    fi
-    if [ $i -eq 20 ]; then
-      echo -e "${RED}❌ ${name}-worker failed to start (socket not created after 10s)${NC}"
-      echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/rust-worker.log${NC}"
-      exit 1
-    fi
-    sleep 0.5
-  done
-
-  # Preload models for inference worker (if configured)
-  preload_models=$(echo "$worker" | jq -r '.preloadModels[]?' 2>/dev/null || echo "")
-  if [ -n "$preload_models" ] && [ "$name" = "inference" ]; then
-    echo -e "${YELLOW}📦 Preloading models for ${name}-worker...${NC}"
-    while IFS= read -r model_id; do
-      if [ -n "$model_id" ]; then
-        echo -e "   Loading: $model_id (may take 10-60s for first download)..."
-        # Send model/load command with timeout
-        # Use timeout command to limit wait time (5 min max for first-time HF downloads)
-        response=$(echo "{\"command\":\"model/load\",\"request_id\":\"preload\",\"model_id\":\"$model_id\"}" | timeout 300 nc -U "$socket" 2>&1)
-        if echo "$response" | grep -q '"success":true'; then
-          load_time=$(echo "$response" | grep -o '"load_time_ms":[0-9]*' | grep -o '[0-9]*' || echo "?")
-          echo -e "   ${GREEN}✅ Loaded $model_id (${load_time}ms)${NC}"
-        else
-          echo -e "   ${YELLOW}⚠️ Failed to load $model_id: $(echo "$response" | head -c 200)${NC}"
-        fi
+    # Wait for TCP port to be listening
+    for i in {1..40}; do
+      if lsof -i :$port -sTCP:LISTEN > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ ${name} started (PID: $WORKER_PID, port: $port)${NC}"
+        break
       fi
-    done <<< "$preload_models"
+      if [ $i -eq 40 ]; then
+        echo -e "${RED}❌ ${name} failed to start (port $port not listening after 20s)${NC}"
+        echo -e "${YELLOW}💡 Try: tail -50 .continuum/jtag/logs/system/rust-worker.log${NC}"
+        # Don't exit - let other workers start
+      fi
+      sleep 0.5
+    done
+  else
+    # Unix socket worker (original behavior)
+    if [ -z "$args" ]; then
+      nohup "$binary" "$socket" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+    else
+      # Convert newline-separated args to array
+      arg_array=()
+      while IFS= read -r arg; do
+        arg_array+=("$arg")
+      done <<< "$args"
+      nohup "$binary" "$socket" "${arg_array[@]}" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+    fi
+
+    WORKER_PID=$!
+    disown $WORKER_PID  # Fully detach from shell
+
+    # Wait for socket to be created with increased timeout for macOS
+    for i in {1..20}; do
+      if [ -S "$socket" ]; then
+        echo -e "${GREEN}✅ ${name} started (PID: $WORKER_PID)${NC}"
+        break
+      fi
+      if [ $i -eq 20 ]; then
+        echo -e "${RED}❌ ${name} failed to start (socket not created after 10s)${NC}"
+        echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/rust-worker.log${NC}"
+        exit 1
+      fi
+      sleep 0.5
+    done
+
+    # Preload models for inference worker (if configured)
+    preload_models=$(echo "$worker" | jq -r '.preloadModels[]?' 2>/dev/null || echo "")
+    if [ -n "$preload_models" ] && [ "$name" = "inference" ]; then
+      echo -e "${YELLOW}📦 Preloading models for ${name}...${NC}"
+      while IFS= read -r model_id; do
+        if [ -n "$model_id" ]; then
+          echo -e "   Loading: $model_id (may take 10-60s for first download)..."
+          response=$(echo "{\"command\":\"model/load\",\"request_id\":\"preload\",\"model_id\":\"$model_id\"}" | timeout 300 nc -U "$socket" 2>&1)
+          if echo "$response" | grep -q '"success":true'; then
+            load_time=$(echo "$response" | grep -o '"load_time_ms":[0-9]*' | grep -o '[0-9]*' || echo "?")
+            echo -e "   ${GREEN}✅ Loaded $model_id (${load_time}ms)${NC}"
+          else
+            echo -e "   ${YELLOW}⚠️ Failed to load $model_id: $(echo "$response" | head -c 200)${NC}"
+          fi
+        fi
+      done <<< "$preload_models"
+    fi
   fi
 done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")
 
@@ -133,9 +152,19 @@ ALL_RUNNING=true
 
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
-  if ! pgrep -f "${name}-worker" > /dev/null; then
-    echo -e "${RED}❌ ${name}-worker not running${NC}"
-    ALL_RUNNING=false
+  worker_type=$(echo "$worker" | jq -r '.type // "socket"')
+  port=$(echo "$worker" | jq -r '.port // empty')
+
+  if [ "$worker_type" = "tcp" ]; then
+    if ! lsof -i :$port -sTCP:LISTEN > /dev/null 2>&1; then
+      echo -e "${RED}❌ ${name} not running (port $port not listening)${NC}"
+      ALL_RUNNING=false
+    fi
+  else
+    if ! pgrep -f "${name}" > /dev/null; then
+      echo -e "${RED}❌ ${name} not running${NC}"
+      ALL_RUNNING=false
+    fi
   fi
 done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")
 
@@ -145,9 +174,17 @@ if [ "$ALL_RUNNING" = true ]; then
   # Show status
   while read -r worker; do
     name=$(echo "$worker" | jq -r '.name')
-    socket=$(echo "$worker" | jq -r '.socket')
-    pid=$(pgrep -f "${name}-worker" | head -1)
-    echo -e "   ${name}-worker: PID $pid ($socket)"
+    socket=$(echo "$worker" | jq -r '.socket // empty')
+    port=$(echo "$worker" | jq -r '.port // empty')
+    worker_type=$(echo "$worker" | jq -r '.type // "socket"')
+
+    if [ "$worker_type" = "tcp" ]; then
+      pid=$(lsof -i :$port -sTCP:LISTEN -t 2>/dev/null | head -1)
+      echo -e "   ${name}: PID $pid (port $port)"
+    else
+      pid=$(pgrep -f "${name}" | head -1)
+      echo -e "   ${name}: PID $pid ($socket)"
+    fi
   done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")
   exit 0
 else

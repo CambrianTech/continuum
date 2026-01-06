@@ -14,8 +14,10 @@ message PingResponse {
 }
 
 message GenerateRequest {
-  string prompt = 1;
-  int32 max_tokens = 2;
+  string model_id = 1;  // Model to use (e.g., "Qwen/Qwen2-1.5B-Instruct")
+  string prompt = 2;
+  int32 max_tokens = 3;
+  double temperature = 4;
 }
 
 message GenerateResponse {

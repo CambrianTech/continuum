@@ -40,7 +40,7 @@ export class InferenceGrpcClient {
   private client: any;
   private static instance: InferenceGrpcClient | null = null;
 
-  constructor(address: string = 'localhost:50051') {
+  constructor(address: string = '127.0.0.1:50051') {
     this.client = new inferenceProto.inference.Inference(
       address,
       grpc.credentials.createInsecure()
@@ -76,14 +76,16 @@ export class InferenceGrpcClient {
   /**
    * Generate text with streaming progress
    *
+   * @param modelId - Model to use (e.g., "Qwen/Qwen2-1.5B-Instruct")
    * @param prompt - The prompt to generate from
-   * @param maxTokens - Maximum tokens to generate
-   * @param options - Optional settings (timeout, progress callback, abort signal)
+   * @param options - Generation options
    */
   async generate(
+    modelId: string,
     prompt: string,
-    maxTokens: number,
     options?: {
+      maxTokens?: number;
+      temperature?: number;
       timeoutMs?: number;
       onProgress?: (progress: GenerateProgress) => void;
       signal?: AbortSignal;
@@ -91,9 +93,11 @@ export class InferenceGrpcClient {
   ): Promise<GenerateResult> {
     return new Promise((resolve, reject) => {
       const deadline = new Date(Date.now() + (options?.timeoutMs ?? 120000));
+      const maxTokens = options?.maxTokens ?? 100;
+      const temperature = options?.temperature ?? 0.7;
 
       const call = this.client.generate(
-        { prompt, max_tokens: maxTokens },
+        { model_id: modelId, prompt, max_tokens: maxTokens, temperature },
         { deadline }
       );
 

@@ -27,16 +27,27 @@ export interface ProviderLimits {
   cooldownMs: number;      // Minimum time between requests from same persona
 }
 
+/**
+ * Provider groups that share the same backend.
+ * All providers in a group share the same slot pool.
+ *
+ * CRITICAL: 'ollama', 'sentinel', 'candle', 'local' all route to the same
+ * gRPC/Candle server which processes requests serially. They MUST share slots.
+ */
+const PROVIDER_GROUPS: Record<string, string> = {
+  'ollama': 'local-inference',
+  'sentinel': 'local-inference',
+  'candle': 'local-inference',
+  'local': 'local-inference',
+};
+
 const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimits> = {
-  'ollama': {
-    maxConcurrent: 3,      // Allow 3 concurrent for better throughput
-    staggerDelayMs: 500,   // Minimal stagger - just prevent exact collision
-    cooldownMs: 500        // Minimal cooldown
-  },
-  'sentinel': {
-    maxConcurrent: 3,      // Match Ollama settings
-    staggerDelayMs: 500,
-    cooldownMs: 500
+  // LOCAL INFERENCE GROUP: All share same serial gRPC backend
+  // Only 1 concurrent for non-mentioned. @mentioned personas bypass this limit.
+  'local-inference': {
+    maxConcurrent: 1,      // 1 for non-mentioned; @mentioned bypass this
+    staggerDelayMs: 100,   // Minimal stagger
+    cooldownMs: 500        // Wait between requests
   },
   'anthropic': {
     maxConcurrent: 15,     // API rate limits are generous
@@ -67,11 +78,6 @@ const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimits> = {
     maxConcurrent: 10,
     staggerDelayMs: 200,
     cooldownMs: 300
-  },
-  'candle': {
-    maxConcurrent: 4,      // Rust worker can handle concurrent requests with RwLock
-    staggerDelayMs: 100,   // Minimal stagger
-    cooldownMs: 200        // Minimal cooldown
   }
 };
 
@@ -79,7 +85,7 @@ const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimits> = {
 const MAX_RESPONDERS_PER_MESSAGE = 5;
 
 class InferenceCoordinatorImpl {
-  private activeSlots: Map<string, InferenceSlot[]> = new Map();  // provider -> slots
+  private activeSlots: Map<string, InferenceSlot[]> = new Map();  // slotKey -> slots
   private messageResponders: Map<string, Set<string>> = new Map(); // messageId -> persona IDs
   private lastRequestTime: Map<string, number> = new Map(); // personaId -> timestamp
   private providerLimits: Map<string, ProviderLimits> = new Map();
@@ -93,6 +99,14 @@ class InferenceCoordinatorImpl {
   }
 
   /**
+   * Resolve provider to its slot group key.
+   * Providers in the same group share the same slot pool.
+   */
+  private getSlotKey(provider: string): string {
+    return PROVIDER_GROUPS[provider] || provider;
+  }
+
+  /**
    * Request permission to perform inference
    *
    * @returns true if slot acquired, false if should skip
@@ -103,8 +117,10 @@ class InferenceCoordinatorImpl {
     provider: string,
     options?: { isMentioned?: boolean }
   ): Promise<boolean> {
-    const limits = this.providerLimits.get(provider) || DEFAULT_PROVIDER_LIMITS['ollama'];
-    const slots = this.activeSlots.get(provider) || [];
+    // Resolve provider to slot group (e.g., 'ollama' → 'local-inference')
+    const slotKey = this.getSlotKey(provider);
+    const limits = this.providerLimits.get(slotKey) || DEFAULT_PROVIDER_LIMITS['local-inference'];
+    const slots = this.activeSlots.get(slotKey) || [];
 
     // Check 1: Per-message responder limit (unless @mentioned)
     if (!options?.isMentioned) {
@@ -115,10 +131,14 @@ class InferenceCoordinatorImpl {
       }
     }
 
-    // Check 2: Per-provider concurrency limit
-    if (slots.length >= limits.maxConcurrent) {
-      console.log(`🎰 InferenceCoordinator: ${personaId} denied - ${provider} at capacity (${slots.length}/${limits.maxConcurrent})`);
+    // Check 2: Per-provider concurrency limit (using slot group)
+    // EXCEPTION: @mentioned personas always get a slot (user explicitly asked for them)
+    if (slots.length >= limits.maxConcurrent && !options?.isMentioned) {
+      console.log(`🎰 InferenceCoordinator: ${personaId} denied - ${slotKey} at capacity (${slots.length}/${limits.maxConcurrent}) [requested: ${provider}]`);
       return false;
+    }
+    if (slots.length >= limits.maxConcurrent && options?.isMentioned) {
+      console.log(`🎰 InferenceCoordinator: ${personaId} PRIORITY slot for ${slotKey} (${slots.length + 1}/${limits.maxConcurrent}+1) [mentioned: true]`);
     }
 
     // Check 3: Per-persona cooldown
@@ -130,28 +150,34 @@ class InferenceCoordinatorImpl {
     }
 
     // Apply stagger delay (random to spread out requests)
-    const staggerDelay = Math.random() * limits.staggerDelayMs;
-    if (staggerDelay > 100) {
-      console.log(`🎰 InferenceCoordinator: ${personaId} waiting ${Math.round(staggerDelay)}ms stagger delay`);
-      await this.delay(staggerDelay);
+    // Skip stagger for @mentioned - they should get through ASAP
+    if (!options?.isMentioned) {
+      const staggerDelay = Math.random() * limits.staggerDelayMs;
+      if (staggerDelay > 50) {
+        console.log(`🎰 InferenceCoordinator: ${personaId} waiting ${Math.round(staggerDelay)}ms stagger delay`);
+        await this.delay(staggerDelay);
+      }
+
+      // Re-check slots after stagger (another persona might have taken one)
+      const slotsAfterStagger = this.activeSlots.get(slotKey) || [];
+      if (slotsAfterStagger.length >= limits.maxConcurrent) {
+        console.log(`🎰 InferenceCoordinator: ${personaId} denied after stagger - ${slotKey} now at capacity`);
+        return false;
+      }
     }
 
-    // Re-check slots after stagger (another persona might have taken one)
-    const currentSlots = this.activeSlots.get(provider) || [];
-    if (currentSlots.length >= limits.maxConcurrent) {
-      console.log(`🎰 InferenceCoordinator: ${personaId} denied after stagger - ${provider} now at capacity`);
-      return false;
-    }
+    // Get current slots for slot acquisition (re-fetch to ensure freshness)
+    const currentSlots = this.activeSlots.get(slotKey) || [];
 
-    // Acquire slot
+    // Acquire slot (store original provider for logging/debugging)
     const slot: InferenceSlot = {
       personaId,
       messageId,
-      provider,
+      provider,  // Keep original for debugging
       acquiredAt: Date.now()
     };
     currentSlots.push(slot);
-    this.activeSlots.set(provider, currentSlots);
+    this.activeSlots.set(slotKey, currentSlots);
 
     // Track responders per message
     const responders = this.messageResponders.get(messageId) || new Set();
@@ -161,7 +187,7 @@ class InferenceCoordinatorImpl {
     // Update last request time
     this.lastRequestTime.set(personaId, Date.now());
 
-    console.log(`🎰 InferenceCoordinator: ${personaId} GRANTED slot for ${provider} (${currentSlots.length}/${limits.maxConcurrent})`);
+    console.log(`🎰 InferenceCoordinator: ${personaId} GRANTED slot for ${slotKey} (${currentSlots.length}/${limits.maxConcurrent}) [requested: ${provider}]`);
     return true;
   }
 
@@ -169,17 +195,19 @@ class InferenceCoordinatorImpl {
    * Release slot after inference completes (success or failure)
    */
   releaseSlot(personaId: string, provider: string): void {
-    const slots = this.activeSlots.get(provider);
+    // Resolve provider to slot group
+    const slotKey = this.getSlotKey(provider);
+    const slots = this.activeSlots.get(slotKey);
     if (!slots) return;
 
     const index = slots.findIndex(s => s.personaId === personaId);
     if (index !== -1) {
       const slot = slots[index];
       slots.splice(index, 1);
-      this.activeSlots.set(provider, slots);
+      this.activeSlots.set(slotKey, slots);
 
       const duration = Date.now() - slot.acquiredAt;
-      console.log(`🎰 InferenceCoordinator: ${personaId} RELEASED ${provider} slot after ${duration}ms (${slots.length} remaining)`);
+      console.log(`🎰 InferenceCoordinator: ${personaId} RELEASED ${slotKey} slot after ${duration}ms (${slots.length} remaining)`);
     }
   }
 

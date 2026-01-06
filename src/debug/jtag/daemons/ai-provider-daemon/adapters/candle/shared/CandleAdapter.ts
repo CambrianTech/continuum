@@ -22,7 +22,7 @@ import type {
   UsageMetrics,
   RoutingInfo,
 } from '../../../shared/AIProviderTypesV2';
-import { InferenceWorkerClient } from '../../../../../system/core/services/InferenceWorkerClient';
+import { InferenceGrpcClient } from '../../../../../system/core/services/InferenceGrpcClient';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
@@ -78,7 +78,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     'chat',
   ];
 
-  private client: InferenceWorkerClient;
+  private client: InferenceGrpcClient;
   private defaultModel: string;
   private loadedModels: Set<string> = new Set();
   private loadedAdapters: Map<string, LoadedAdapterInfo[]> = new Map(); // modelId -> adapters
@@ -87,36 +87,17 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   constructor(config: CandleAdapterConfig = {}) {
     super();
 
-    this.client = config.socketPath
-      ? InferenceWorkerClient.create(config.socketPath)
-      : InferenceWorkerClient.instance;
+    // Use gRPC client (replaces Unix socket)
+    this.client = InferenceGrpcClient.sharedInstance();
 
     this.defaultModel = config.defaultModel || LOCAL_MODELS.DEFAULT;
     this.baseTimeout = config.timeout || 180000; // 180s to handle model download + generation
     this.maxInputTokens = config.maxInputTokens || 4000; // ~35s at 8ms/token
 
-    // Pre-load the default model for faster first request
-    this.preloadDefaultModel();
+    // Note: Model is pre-loaded by gRPC server at startup
   }
 
-  /**
-   * Pre-load the default model to avoid cold-start latency.
-   * Runs async in background - doesn't block constructor.
-   */
-  private async preloadDefaultModel(): Promise<void> {
-    try {
-      const modelId = LOCAL_MODELS.mapToHuggingFace(this.defaultModel);
-      if (!this.loadedModels.has(modelId)) {
-        this.log(null, 'info', `Pre-loading default model: ${modelId}`);
-        await this.client.loadModel(modelId);
-        this.loadedModels.add(modelId);
-        this.log(null, 'info', `Default model pre-loaded: ${modelId}`);
-      }
-    } catch (error) {
-      // Log but don't fail - model will be loaded on first request
-      this.log(null, 'warn', `Failed to pre-load model: ${error instanceof Error ? error.message : error}`);
-    }
-  }
+  // Note: Model is pre-loaded by gRPC server at startup, not by TypeScript
 
   // ============================================================================
   // Core Text Generation
@@ -139,24 +120,10 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       this.log(request, 'info', `Model mapped: ${requestedModel} → ${modelId}`);
     }
 
-    // Ensure model is loaded (always verify with worker, cache may be stale after restart)
+    // Model is pre-loaded by gRPC server at startup
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const ensureModelLoaded = async (): Promise<void> => {
-      if (!this.loadedModels.has(modelId)) {
-        this.log(request, 'info', `Loading model: ${modelId}`);
-        try {
-          this.log(request, 'info', `🔧 TRACE-1.5a: About to call client.loadModel...`);
-          await this.client.loadModel(modelId);
-          this.log(request, 'info', `🔧 TRACE-1.5b: client.loadModel returned`);
-          this.loadedModels.add(modelId);
-        } catch (error) {
-          this.log(request, 'error', `🔧 TRACE-1.5c: client.loadModel FAILED: ${error instanceof Error ? error.message : error}`);
-          throw new Error(
-            `Failed to load model ${modelId}: ${error instanceof Error ? error.message : error}`
-          );
-        }
-      } else {
-        this.log(request, 'info', `🔧 TRACE-1.5d: Model already in cache, skipping load`);
-      }
+      // No-op: gRPC server preloads model
     };
 
     await ensureModelLoaded();
@@ -223,36 +190,30 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     const maxTokens = request.maxTokens || 2048;
     const temperature = request.temperature || 0.7;
 
-    // Generate with retry on "Model not loaded" error (cache may be stale after worker restart)
-    let response;
-    this.log(request, 'info', `🔧 TRACE-4: Calling client.generate (prompt=${prompt.length} chars, maxTokens=${maxTokens}, adapters=[${adapters.join(',')}])`);
+    // Generate via gRPC
+    let grpcResponse;
+    this.log(request, 'info', `🔧 TRACE-4: Calling gRPC generate (prompt=${prompt.length} chars, maxTokens=${maxTokens}, adapters=[${adapters.join(',')}])`);
     try {
-      // TypeScript client is thin - just passes request to Rust worker
-      // Rust handles all the heavy ML logic
-      response = await this.client.generate(modelId, prompt, { maxTokens, temperature });
-      this.log(request, 'info', `🔧 TRACE-5: client.generate returned: text=${response.text?.length ?? 0} chars, promptTokens=${response.promptTokens}`);
+      // gRPC client handles all transport - Rust does the heavy ML logic
+      grpcResponse = await this.client.generate(modelId, prompt, { maxTokens, temperature });
+      this.log(request, 'info', `🔧 TRACE-5: gRPC generate returned: text=${grpcResponse.text?.length ?? 0} chars, tokens=${grpcResponse.tokens}`);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      if (errorMsg.includes('Model not loaded')) {
-        // Cache was stale - clear it, reload model, and retry
-        this.log(request, 'warn', `Model cache stale, reloading: ${modelId}`);
-        this.loadedModels.delete(modelId);
-        await ensureModelLoaded();
-        response = await this.client.generate(modelId, prompt, { maxTokens, temperature });
-      } else {
-        this.log(request, 'error', `🔧 TRACE-ERROR: client.generate threw: ${errorMsg}`);
-        throw error;
-      }
+      this.log(request, 'error', `🔧 TRACE-ERROR: gRPC generate threw: ${errorMsg}`);
+      throw error;
     }
 
     this.log(request, 'info', `🔧 TRACE-6: Building response object`);
     const responseTime = Date.now() - startTime;
 
+    // Estimate input tokens from prompt length (rough: 4 chars per token)
+    const estimatedInputTokens = Math.ceil(prompt.length / 4);
+
     // Build usage metrics
     const usage: UsageMetrics = {
-      inputTokens: response.promptTokens,
-      outputTokens: response.generatedTokens,
-      totalTokens: response.promptTokens + response.generatedTokens,
+      inputTokens: estimatedInputTokens,
+      outputTokens: grpcResponse.tokens,
+      totalTokens: estimatedInputTokens + grpcResponse.tokens,
       // Local inference is free
       estimatedCost: 0,
     };
@@ -269,9 +230,9 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     };
 
     const finalResponse: TextGenerationResponse = {
-      text: response.text,
+      text: grpcResponse.text,
       finishReason: 'stop' as const, // TODO: Get actual finish reason from worker
-      model: response.modelId,
+      model: modelId,
       provider: this.providerId,
       usage,
       responseTime,
@@ -288,42 +249,23 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   // ============================================================================
 
   async getAvailableModels(): Promise<ModelInfo[]> {
-    try {
-      const { models } = await this.client.listModels();
-
-      return models.map((m) => ({
-        id: m.modelId,
-        name: m.modelId,
-        provider: this.providerId,
-        capabilities: ['text-generation', 'chat'] as ModelCapability[],
-        contextWindow: 4096, // TODO: Get from model config
-        maxOutputTokens: 2048,
-        supportsStreaming: false, // TODO: Add streaming support
-        supportsFunctions: false, // TODO: Add function calling
-      }));
-    } catch (error) {
-      // Worker not available - return empty list
-      return [];
-    }
+    // Return the preloaded model (gRPC server only supports one model currently)
+    return [{
+      id: LOCAL_MODELS.DEFAULT,
+      name: LOCAL_MODELS.DEFAULT,
+      provider: this.providerId,
+      capabilities: ['text-generation', 'chat'] as ModelCapability[],
+      contextWindow: 4096,
+      maxOutputTokens: 2048,
+      supportsStreaming: false,
+      supportsFunctions: false,
+    }];
   }
 
   async healthCheck(): Promise<HealthStatus> {
     const startTime = Date.now();
 
     try {
-      const available = await this.client.isAvailable();
-
-      if (!available) {
-        return {
-          status: 'unhealthy',
-          apiAvailable: false,
-          responseTime: Date.now() - startTime,
-          errorRate: 1.0,
-          lastChecked: Date.now(),
-          message: 'Inference worker not available',
-        };
-      }
-
       const pingResult = await this.client.ping();
 
       return {
@@ -332,7 +274,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
         responseTime: Date.now() - startTime,
         errorRate: 0,
         lastChecked: Date.now(),
-        message: `Worker: ${pingResult.worker} v${pingResult.version}`,
+        message: pingResult.message,
       };
     } catch (error) {
       return {
@@ -347,139 +289,67 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   }
 
   protected async restartProvider(): Promise<void> {
-    // Close connection and let it reconnect on next request
+    // Close connection - will reconnect on next request
     this.client.close();
     this.loadedModels.clear();
     this.loadedAdapters.clear();
-
-    // TODO: Could spawn the inference worker process if it's not running
-    // For now, just reset state and hope the worker recovers
   }
 
   // ============================================================================
-  // Skill/Adapter Management (LoRA)
+  // Skill/Adapter Management (LoRA) - STUBBED
+  // TODO: Re-implement when gRPC server supports LoRA
   // ============================================================================
 
   /**
    * Apply a LoRA skill/adapter to a model
-   *
-   * This is THE genome vision - compose multiple adapters at inference time.
-   * Example: Load tone_adapter + reasoning_adapter + expertise_adapter
-   *
-   * The flow is:
-   * 1. Load adapter weights into memory (adapter/load)
-   * 2. Merge weights into model (adapter/apply) - rebuilds model
-   * 3. Generate uses merged weights
-   *
-   * NOTE: Once adapters are applied, you cannot change them without reloading the model.
-   * For multi-adapter composition, load ALL adapters first, then call applySkill once.
+   * STUBBED: gRPC server doesn't support LoRA yet
    */
   async applySkill(skillImplementation: {
     modelId: string;
     adapterPath: string;
     adapterName: string;
-    applyImmediately?: boolean; // Default true - merge weights right away
+    applyImmediately?: boolean;
   }): Promise<void> {
-    const { adapterPath, adapterName, applyImmediately = true } = skillImplementation;
-
-    // Map Ollama model name to HuggingFace ID via central config
+    this.log(null, 'warn', `🧬 applySkill: LoRA not yet supported in gRPC server (adapter: ${skillImplementation.adapterName})`);
+    // Track for future use
     const modelId = LOCAL_MODELS.mapToHuggingFace(skillImplementation.modelId);
-
-    // Defense: Check if adapter file exists before doing anything
-    const absolutePath = resolve(adapterPath);
-    if (!existsSync(absolutePath)) {
-      this.log(null, 'warn', `🧬 applySkill: Skipping ${adapterName} - file not found at ${absolutePath}`);
-      return;
-    }
-
-    // Ensure model is loaded first
-    if (!this.loadedModels.has(modelId)) {
-      this.log(null, 'info', `🧬 applySkill: Loading model ${modelId} (from ${skillImplementation.modelId})`);
-      await this.client.loadModel(modelId);
-      this.loadedModels.add(modelId);
-    }
-
-    // Load the adapter weights into memory
-    // Rust handles all the weight loading and composition
-    await this.client.loadAdapter(adapterName, adapterPath, modelId);
-
-    // Track loaded adapter
     const adapters = this.loadedAdapters.get(modelId) || [];
-    adapters.push({ modelId, adapterName, adapterPath });
+    adapters.push({
+      modelId,
+      adapterName: skillImplementation.adapterName,
+      adapterPath: skillImplementation.adapterPath
+    });
     this.loadedAdapters.set(modelId, adapters);
-
-    this.log(null, 'info', `Loaded adapter ${adapterName} for model ${modelId}`);
-
-    // Note: Adapter application/weight merging is now handled by Rust worker
-    // on-the-fly during generation. No need for explicit apply step.
   }
 
   /**
-   * Load multiple adapters and apply them together
-   *
-   * For multi-adapter composition, use this method to load all adapters first,
-   * then merge them in one step. This is more efficient than applying one at a time.
+   * Load multiple adapters
+   * STUBBED: gRPC server doesn't support LoRA yet
    */
   async applySkills(
     modelId: string,
     adapters: Array<{ adapterPath: string; adapterName: string }>
   ): Promise<void> {
-    // Ensure model is loaded first
-    if (!this.loadedModels.has(modelId)) {
-      await this.client.loadModel(modelId);
-      this.loadedModels.add(modelId);
+    this.log(null, 'warn', `🧬 applySkills: LoRA not yet supported in gRPC server (${adapters.length} adapters)`);
+    // Track for future use
+    const tracked = this.loadedAdapters.get(modelId) || [];
+    for (const adapter of adapters) {
+      tracked.push({ modelId, ...adapter });
     }
-
-    // Load all adapters (with file existence check)
-    // Rust handles weight composition during generation
-    let loadedCount = 0;
-    for (const { adapterPath, adapterName } of adapters) {
-      // Defense in depth: skip non-existent adapter files
-      const absolutePath = resolve(adapterPath);
-      if (!existsSync(absolutePath)) {
-        this.log(null, 'warn', `🧬 applySkills: Skipping ${adapterName} - file not found at ${absolutePath}`);
-        continue;
-      }
-
-      await this.client.loadAdapter(adapterName, adapterPath, modelId);
-
-      const tracked = this.loadedAdapters.get(modelId) || [];
-      tracked.push({ modelId, adapterName, adapterPath });
-      this.loadedAdapters.set(modelId, tracked);
-
-      this.log(null, 'info', `Loaded adapter ${adapterName} for model ${modelId}`);
-      loadedCount++;
-    }
-
-    if (loadedCount > 0) {
-      // Rust worker handles adapter composition on-the-fly during generation
-      // No explicit apply step needed - adapters are applied when generating
-      this.log(null, 'info', `Loaded ${loadedCount} adapters for ${modelId} (will be applied during generation)`);
-    } else {
-      this.log(null, 'info', `No adapters loaded for ${modelId} (all files missing)`);
-    }
+    this.loadedAdapters.set(modelId, tracked);
   }
 
   /**
-   * Remove a LoRA skill/adapter from a model
+   * Remove a LoRA skill/adapter
+   * STUBBED: gRPC server doesn't support LoRA yet
    */
   async removeSkill(skillId: string): Promise<void> {
-    // skillId format: "modelId:adapterName"
     const [modelId, adapterName] = skillId.split(':');
-
-    if (!modelId || !adapterName) {
-      throw new Error(`Invalid skillId format: ${skillId}. Expected "modelId:adapterName"`);
-    }
-
-    // Rust worker uses adapterName (adapterId) as the key
-    await this.client.unloadAdapter(adapterName);
-
+    this.log(null, 'warn', `🧬 removeSkill: LoRA not yet supported in gRPC server (adapter: ${adapterName})`);
     // Update tracking
     const adapters = this.loadedAdapters.get(modelId) || [];
     const filtered = adapters.filter((a) => a.adapterName !== adapterName);
     this.loadedAdapters.set(modelId, filtered);
-
-    this.log(null, 'info', `Removed adapter ${adapterName} from model ${modelId}`);
   }
 
   // ============================================================================
@@ -583,23 +453,21 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
   /**
    * Preload a model to avoid cold-start latency
+   * STUBBED: gRPC server preloads model at startup
    */
   async preloadModel(requestedModelId: string): Promise<void> {
     const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModelId);
-    if (!this.loadedModels.has(modelId)) {
-      await this.client.loadModel(modelId);
-      this.loadedModels.add(modelId);
-    }
+    this.log(null, 'info', `preloadModel: Model ${modelId} is preloaded by gRPC server`);
+    this.loadedModels.add(modelId);
   }
 
   /**
    * Unload a model to free memory
+   * STUBBED: gRPC server manages model lifecycle
    */
   async unloadModel(modelId: string): Promise<void> {
-    if (this.loadedModels.has(modelId)) {
-      await this.client.unloadModel(modelId);
-      this.loadedModels.delete(modelId);
-      this.loadedAdapters.delete(modelId);
-    }
+    this.log(null, 'warn', `unloadModel: Model lifecycle managed by gRPC server`);
+    this.loadedModels.delete(modelId);
+    this.loadedAdapters.delete(modelId);
   }
 }
