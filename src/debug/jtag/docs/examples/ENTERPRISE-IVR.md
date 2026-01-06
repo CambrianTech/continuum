@@ -499,8 +499,265 @@ services:
 
 ---
 
+---
+
+## Persona as Employee
+
+The persona isn't a static bot - it's an **employee that self-improves** and works alongside humans.
+
+### Continuous Learning
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    TRAINING SOURCES (always learning)                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  HISTORICAL                                                          │
+│  └── 5 years of past IVR calls → initial training                   │
+│                                                                      │
+│  LIVE                                                                │
+│  └── Every new call → continuous fine-tuning                        │
+│                                                                      │
+│  FEEDBACK                                                            │
+│  ├── Customer: "Was this helpful?" ratings                          │
+│  ├── Human manager: corrections, coaching                           │
+│  └── Supervisor persona: real-time guidance                         │
+│                                                                      │
+│  COACHING SESSIONS                                                   │
+│  └── Video room training (human teaches persona face-to-face)       │
+│                                                                      │
+│  Result: Gets better every day, like any employee                   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Real-Time Monitoring
+
+Watch personas work, just like any employee:
+
+```typescript
+// All calls are rooms - observable in real-time
+const callRoom = await Commands.execute('room/create', {
+  type: 'voice',
+  participants: [
+    { type: 'human', role: 'customer', phone: incomingCall.from },
+    { type: 'persona', role: 'agent', id: 'brand-x-receptionist' }
+  ],
+  observers: [
+    { type: 'persona', role: 'supervisor', id: 'support-supervisor' },
+    { type: 'human', role: 'manager', id: 'sarah' }
+  ]
+});
+
+// Manager can watch any call live
+// Same UI as watching any chat room
+```
+
+### Intervention Capabilities
+
+```typescript
+// Side-channel: DM the persona during a call
+await Commands.execute('collaboration/chat/send', {
+  room: callRoom.sideChannel,
+  from: 'manager-sarah',
+  to: 'brand-x-receptionist',
+  message: "Customer is a VIP. Offer free shipping."
+});
+
+// Whisper: Only persona hears (like call center whisper)
+await Commands.execute('call/whisper', {
+  room: callRoom.id,
+  message: "Wrap up soon, next caller waiting 3 min"
+});
+
+// Takeover: Human joins or takes over
+await Commands.execute('call/intervene', {
+  room: callRoom.id,
+  action: 'join',      // Join as second agent
+  // action: 'takeover' // Replace persona entirely
+});
+```
+
+### Supervision Hierarchy
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    AI + HUMAN MANAGEMENT                             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│   Human Manager (Sarah) ◉                                            │
+│        │                                                             │
+│        ├── Can watch any call                                        │
+│        ├── Can intervene anytime                                     │
+│        ├── Reviews escalations                                       │
+│        │                                                             │
+│        └── Supervisor Persona 🤖                                     │
+│               │                                                      │
+│               ├── Monitors all active calls                          │
+│               ├── DMs frontline personas with guidance               │
+│               ├── Escalates to human when needed                     │
+│               ├── Asks questions, provides coaching                  │
+│               │                                                      │
+│               ├── Frontline Persona 🤖 ← Customer call               │
+│               ├── Frontline Persona 🤖 ← Customer call               │
+│               └── Frontline Persona 🤖 ← Customer call               │
+│                                                                      │
+│   Supervisor persona = force multiplier for human managers           │
+│   One human can effectively manage 100+ AI agents                    │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Training from Everything
+
+```typescript
+// Every interaction becomes training data
+Events.subscribe('call:ended', async (call) => {
+  await Commands.execute('training/ingest', {
+    personaId: call.agentId,
+    data: {
+      transcript: call.transcript,
+      outcome: call.resolution,           // resolved, escalated, abandoned
+      customerFeedback: call.rating,      // 1-5 stars
+      supervisorNotes: call.sideChannel,  // Corrections given
+      interventions: call.interventions,  // When humans stepped in
+      duration: call.duration,
+      sentiment: call.sentimentScore
+    },
+
+    // Only learn from good outcomes
+    filter: {
+      minRating: 4,
+      resolution: 'first-call',
+      noEscalation: true
+    }
+  });
+});
+
+// Periodic fine-tuning from accumulated data
+await Commands.execute('genome/retrain', {
+  personaId: 'brand-x-receptionist',
+  schedule: 'weekly',
+  minSamples: 100
+});
+```
+
+---
+
+## External Integrations
+
+Personas integrate into existing workflows:
+
+### Slack Integration
+
+```typescript
+// Persona joins Slack workspace
+await Commands.execute('integration/slack/join', {
+  personaId: 'brand-x-receptionist',
+  workspace: 'brand-x.slack.com',
+  channels: ['#support-alerts', '#escalations']
+});
+
+// Persona posts updates
+await Commands.execute('integration/slack/post', {
+  channel: '#support-alerts',
+  from: 'brand-x-receptionist',
+  message: "🔴 High call volume - 12 in queue, avg wait 4 min"
+});
+
+// Persona can be DM'd by human staff
+// Same conversation model as internal chat
+```
+
+### Other Outputs
+
+```typescript
+// Email
+await Commands.execute('integration/email/send', {
+  from: 'support@brand-x.com',  // Persona's email
+  to: customer.email,
+  subject: 'Your appointment confirmation',
+  body: generatedConfirmation
+});
+
+// SMS
+await Commands.execute('integration/sms/send', {
+  from: persona.phoneNumber,
+  to: customer.phone,
+  message: "Reminder: Your appointment is tomorrow at 2pm"
+});
+
+// CRM updates
+await Commands.execute('integration/hubspot/update', {
+  contactId: customer.hubspotId,
+  fields: {
+    lastContact: new Date(),
+    notes: callSummary,
+    nextAction: scheduledFollowup
+  }
+});
+
+// Calendar
+await Commands.execute('integration/calendar/book', {
+  calendar: business.calendarId,
+  event: {
+    title: `${customer.name} - ${service}`,
+    time: selectedSlot,
+    attendees: [customer.email]
+  }
+});
+```
+
+### The Ecosystem
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PERSONA IN THE ECOSYSTEM                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│                         ┌─────────────┐                              │
+│                         │   PERSONA   │                              │
+│                         │  (employee) │                              │
+│                         └──────┬──────┘                              │
+│                                │                                     │
+│         ┌──────────┬──────────┼──────────┬──────────┐               │
+│         ▼          ▼          ▼          ▼          ▼               │
+│    ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐          │
+│    │ Phone  │ │ Slack  │ │ Email  │ │  CRM   │ │Calendar│          │
+│    │(Twilio)│ │        │ │        │ │(HubSpot│ │(Google)│          │
+│    └────────┘ └────────┘ └────────┘ └────────┘ └────────┘          │
+│                                                                      │
+│    ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐          │
+│    │ SMS    │ │ Teams  │ │ Zendesk│ │  Jira  │ │ Custom │          │
+│    │        │ │        │ │        │ │        │ │  API   │          │
+│    └────────┘ └────────┘ └────────┘ └────────┘ └────────┘          │
+│                                                                      │
+│    The persona works WHERE your team works.                         │
+│    Not a separate system - a teammate.                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Summary
+
+The power here:
+
+1. **Self-improving employee** - Gets better from every interaction
+2. **Real-time monitoring** - Watch calls like any chat room
+3. **Intervention** - Humans can step in anytime
+4. **AI supervision** - Supervisor personas multiply human managers
+5. **Ecosystem integration** - Slack, email, CRM, calendar - works where teams work
+6. **Continuous training** - Customer feedback, coaching, corrections all feed back
+
+Not a chatbot. A teammate.
+
+---
+
 ## See Also
 
+- [BRAIN-HUD-DESIGN.md](../BRAIN-HUD-DESIGN.md) - Cognitive system visualization
 - [CONTINUUM-VISION.md](../CONTINUUM-VISION.md) - The ecosystem architecture
 - [CONTINUUM-BUSINESS-MODEL.md](../CONTINUUM-BUSINESS-MODEL.md) - How to make money
 - [POSITRON-ARCHITECTURE.md](../POSITRON-ARCHITECTURE.md) - The UI framework

@@ -1,0 +1,57 @@
+[package]
+name = "inference-worker"
+version.workspace = true
+edition.workspace = true
+description = "Candle-based LLM inference worker with multi-adapter LoRA composition"
+
+[dependencies]
+# Candle ML framework (from workspace)
+candle-core.workspace = true
+candle-nn.workspace = true
+candle-transformers.workspace = true
+
+# Safetensors for loading adapter weights
+safetensors.workspace = true
+
+# Half-precision floats (f16, bf16)
+half.workspace = true
+
+# Byte slice casting (for safetensors -> tensor conversion)
+bytemuck.workspace = true
+
+# HuggingFace Hub for model downloads
+hf-hub.workspace = true
+
+# Fast tokenization
+tokenizers.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Async runtime (for socket handling)
+tokio.workspace = true
+
+# Timing, UUIDs, and logging (required for JTAG protocol)
+chrono.workspace = true
+uuid.workspace = true
+
+# Thread-safe primitives
+lazy_static.workspace = true
+once_cell.workspace = true
+
+# Random number generation (for sampling)
+rand.workspace = true
+
+# TypeScript type generation
+ts-rs.workspace = true
+
+[features]
+default = ["metal"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+
+[[bin]]
+name = "inference-worker"
+path = "src/main.rs"

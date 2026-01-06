@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/adapter/adopt",
+  "version": "1.0.0",
+  "description": "Add an adapter to a persona's genome, making it a permanent trait",
+  "main": "server/AdapterAdoptServerCommand.ts",
+  "types": "shared/AdapterAdoptTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AdapterAdoptIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "adapter/adopt"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

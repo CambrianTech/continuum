@@ -95,17 +95,17 @@ export class ProgressCalculator {
   }
 
   // Get all milestones from config
-  private getAllMilestones(): SystemMilestone[] {
+  private getAllMilestones(): readonly SystemMilestone[] {
     return [
       ...(this.config.core || []),
       ...(this.config.performance || []),
       ...(this.config.integration || []),
       ...(this.config.custom || [])
-    ];
+    ] as const;
   }
 
   // Get milestones by category
-  getMilestonesByCategory(category: keyof MilestoneConfig): SystemMilestone[] {
+  getMilestonesByCategory(category: keyof MilestoneConfig): readonly SystemMilestone[] {
     return this.config[category] || [];
   }
 

@@ -20,15 +20,19 @@
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { LoRAAdapter, type LoRAAdapterState } from './LoRAAdapter';
 import { randomUUID } from 'crypto';
+import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 /**
  * Genome configuration
+ *
+ * NOTE: GPU memory management is handled by the Rust inference-worker.
+ * PersonaGenome just tracks logical state - the worker owns actual GPU allocation.
  */
 export interface PersonaGenomeConfig {
   /** Base model name (e.g., 'deepseek-coder-v2', 'llama-3') */
   baseModel: string;
 
-  /** Maximum GPU memory for adapters in MB */
+  /** Soft memory budget hint in MB (worker may override based on actual GPU) */
   memoryBudgetMB: number;
 
   /** Path to LoRA adapters directory on disk */
@@ -41,6 +45,7 @@ export interface PersonaGenomeConfig {
     path: string;
     sizeMB: number;
     priority?: number;
+    ollamaModelName?: string;
   }>;
 }
 
@@ -89,6 +94,13 @@ export class PersonaGenome {
   /** Logger function */
   private log: (message: string) => void;
 
+  /**
+   * AI Provider adapter for actual skill loading (CandleAdapter, OllamaAdapter, etc.)
+   * When set, LoRAAdapter.load() will call aiProvider.applySkill() for real adapter loading.
+   * Without this, adapters run in stub mode (just tracking state, no real GPU loading).
+   */
+  private aiProvider: AIProviderAdapter | null = null;
+
   constructor(config: PersonaGenomeConfig, logger?: (message: string) => void) {
     this.log = logger || console.log.bind(console);
     this.config = config;
@@ -104,7 +116,47 @@ export class PersonaGenome {
   }
 
   /**
+   * Set the AI provider for real adapter loading
+   *
+   * This enables the genome vision - when set to CandleAdapter:
+   * - LoRAAdapter.load() → CandleAdapter.applySkill() → InferenceWorker.loadAdapter()
+   * - Multi-adapter composition at inference time
+   * - Real GPU memory management
+   *
+   * Call this after construction when AIProviderDaemon is ready.
+   * Updates all registered adapters to use this provider.
+   */
+  setAIProvider(provider: AIProviderAdapter): void {
+    this.aiProvider = provider;
+    this.log(`🧬 PersonaGenome: AI provider set to ${provider.providerId} (skill loading enabled)`);
+
+    // Update all existing adapters to use this provider
+    // This enables real loading for adapters registered before provider was set
+    for (const [name, adapter] of this.availableAdapters.entries()) {
+      adapter.setAIProvider(provider);
+    }
+    for (const [name, adapter] of this.activeAdapters.entries()) {
+      adapter.setAIProvider(provider);
+    }
+
+    const totalAdapters = this.availableAdapters.size + this.activeAdapters.size;
+    if (totalAdapters > 0) {
+      this.log(`🧬 PersonaGenome: Updated ${totalAdapters} existing adapters with ${provider.providerId}`);
+    }
+  }
+
+  /**
+   * Get the current AI provider (for testing/debugging)
+   */
+  getAIProvider(): AIProviderAdapter | null {
+    return this.aiProvider;
+  }
+
+  /**
    * Register a new adapter (adds to available pool, doesn't load)
+   *
+   * If aiProvider is set, the adapter will be able to do real GPU loading.
+   * Otherwise, it operates in stub mode (tracking state only).
    */
   registerAdapter(config: {
     name: string;
@@ -112,6 +164,7 @@ export class PersonaGenome {
     path: string;
     sizeMB: number;
     priority?: number;
+    ollamaModelName?: string;
   }): void {
     const adapter = new LoRAAdapter({
       id: randomUUID() as UUID,
@@ -120,12 +173,16 @@ export class PersonaGenome {
       path: config.path,
       sizeMB: config.sizeMB,
       priority: config.priority,
+      ollamaModelName: config.ollamaModelName,
+      aiProvider: this.aiProvider ?? undefined, // Pass provider for real loading
       logger: this.log
     });
 
     this.availableAdapters.set(config.name, adapter);
 
-    this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB)`);
+    const modelInfo = config.ollamaModelName ? `, ollama=${config.ollamaModelName}` : '';
+    const providerInfo = this.aiProvider ? ` [${this.aiProvider.providerId}]` : ' [stub mode]';
+    this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB${modelInfo})${providerInfo}`);
   }
 
   /**
@@ -134,7 +191,8 @@ export class PersonaGenome {
    * If already loaded: Just switch to it and update lastUsed
    * If not loaded: Load from disk (evicting LRU adapters if needed)
    *
-   * This is the KEY method that implements virtual memory paging
+   * NOTE: Actual GPU allocation is handled by the Rust inference-worker.
+   * This method just tracks logical state and delegates to the worker via AIProvider.
    */
   async activateSkill(skillName: string): Promise<void> {
     // Already active? Just mark as used
@@ -142,34 +200,31 @@ export class PersonaGenome {
       const adapter = this.activeAdapters.get(skillName)!;
       adapter.markUsed();
       this.currentAdapter = adapter;
-      // this.log(`🧬 PersonaGenome: Skill ${skillName} already active (cache hit)`);
       return;
     }
 
     // Check if adapter is registered
     const adapter = this.availableAdapters.get(skillName);
     if (!adapter) {
-      // this.log(`⚠️ PersonaGenome: Skill ${skillName} not registered - cannot activate`);
       return;
     }
 
-    // this.log(`🧬 PersonaGenome: Activating skill ${skillName} (cache miss - paging in)...`);
-
-    // Check if we need to evict adapters to make space
     const adapterSize = adapter.getSize();
+
+    // Evict if we're over our soft budget hint
     while (this.memoryUsedMB + adapterSize > this.config.memoryBudgetMB) {
       await this.evictLRU();
     }
 
-    // Load adapter from disk
-    await adapter.load();
+    // Load adapter - delegates to AIProvider (CandleAdapter → inference-worker)
+    // The worker handles actual GPU allocation
+    // Pass baseModel so CandleAdapter knows which model to attach the adapter to
+    await adapter.load(this.config.baseModel);
 
-    // Move from available to active
+    // Track logical state
     this.activeAdapters.set(skillName, adapter);
     this.memoryUsedMB += adapterSize;
     this.currentAdapter = adapter;
-
-    // this.log(`✅ PersonaGenome: Skill ${skillName} activated (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }
 
   /**
@@ -205,14 +260,18 @@ export class PersonaGenome {
       return;
     }
 
-    this.log(`📤 PersonaGenome: Evicting ${victimName} (score=${maxScore.toFixed(2)}) to free ${victim.getSize()}MB...`);
+    const freedMB = victim.getSize();
+    this.log(`📤 PersonaGenome: Evicting ${victimName} (score=${maxScore.toFixed(2)}) to free ${freedMB}MB...`);
 
     // Unload adapter
     await victim.unload();
 
     // Move from active back to available
     this.activeAdapters.delete(victimName);
-    this.memoryUsedMB -= victim.getSize();
+    this.memoryUsedMB -= freedMB;
+
+    // NOTE: GPU memory is managed by the Rust gpu_allocator module
+    // PersonaGenome just tracks logical state here
 
     this.log(`✅ PersonaGenome: Evicted ${victimName} (memory: ${this.memoryUsedMB}/${this.config.memoryBudgetMB}MB)`);
   }
@@ -291,10 +350,56 @@ export class PersonaGenome {
   }
 
   /**
+   * Get adapter by trait name (domain)
+   *
+   * Checks both active and available adapters.
+   * Prefers active adapters since they're already loaded.
+   */
+  getAdapterByTrait(traitName: string): LoRAAdapter | null {
+    // Check active adapters first (already loaded, faster)
+    if (this.activeAdapters.has(traitName)) {
+      return this.activeAdapters.get(traitName)!;
+    }
+
+    // Check available adapters (registered but not loaded)
+    if (this.availableAdapters.has(traitName)) {
+      return this.availableAdapters.get(traitName)!;
+    }
+
+    return null;
+  }
+
+  /**
+   * Check if an adapter exists (active or registered)
+   */
+  hasAdapter(adapterName: string): boolean {
+    return this.activeAdapters.has(adapterName) || this.availableAdapters.has(adapterName);
+  }
+
+  /**
    * Get list of all active adapters
    */
   getActiveAdapters(): LoRAAdapter[] {
     return Array.from(this.activeAdapters.values());
+  }
+
+  /**
+   * Get active adapters in format suitable for TextGenerationRequest
+   *
+   * This is the bridge between PersonaGenome and the AI provider system.
+   * Returns adapter info that CandleAdapter can use to load/apply LoRA weights.
+   */
+  getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string }> {
+    return Array.from(this.activeAdapters.values())
+      .filter(adapter => adapter.isLoaded())  // Only include loaded adapters
+      .map(adapter => {
+        const state = adapter.getState();
+        return {
+          name: state.name,
+          path: state.path,
+          domain: state.domain,
+        };
+      });
   }
 
   /**

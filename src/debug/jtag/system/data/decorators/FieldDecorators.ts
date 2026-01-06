@@ -5,7 +5,7 @@
  * Adapters iterate over decorator metadata to implement storage
  */
 
-export type FieldType = 'primary' | 'foreign_key' | 'date' | 'enum' | 'text' | 'json' | 'number' | 'boolean';
+export type FieldType = 'primary' | 'foreign_key' | 'date' | 'enum' | 'text' | 'json' | 'blob' | 'number' | 'boolean';
 
 /**
  * Text length constants
@@ -40,6 +40,18 @@ export interface FieldMetadata {
     maxLength?: number;
     description?: boolean;      // Mark this field as the entity's description (for data/list summaries)
     summary?: boolean;          // Mark field for inclusion in data/list results (default: false)
+    /**
+     * For JSON fields: automatically store as blob if size exceeds threshold (bytes)
+     * Default: undefined (no blob storage)
+     * Recommended: 4096 (4KB) for large JSON objects like RAG context
+     */
+    blobThreshold?: number;
+    /**
+     * Field to store blob reference when data is externalized
+     * Must be a companion TextField on the same entity
+     * Example: ragContext + ragContextRef pair
+     */
+    blobRefField?: string;
   };
 }
 
@@ -257,8 +269,25 @@ export function TextField(options?: { maxLength?: number; index?: boolean; nulla
 
 /**
  * JSON field for complex objects
+ *
+ * Supports automatic blob storage for large objects:
+ * @example
+ * ```typescript
+ * // Auto-externalize JSON > 4KB to blob storage
+ * @JsonField({ nullable: true, blobThreshold: 4096, blobRefField: 'ragContextRef' })
+ * ragContext?: RAGContext;
+ *
+ * @TextField({ nullable: true })
+ * ragContextRef?: string;  // Stores blob hash when externalized
+ * ```
  */
-export function JsonField(options?: { nullable?: boolean }) {
+export function JsonField(options?: {
+  nullable?: boolean;
+  /** Auto-externalize to blob storage if size exceeds threshold (bytes) */
+  blobThreshold?: number;
+  /** Companion field to store blob hash reference */
+  blobRefField?: string;
+}) {
   return function (target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {
@@ -266,6 +295,36 @@ export function JsonField(options?: { nullable?: boolean }) {
         fieldName,
         fieldType: 'json',
         options: { nullable: false, ...options }
+      });
+    });
+  };
+}
+
+/**
+ * Blob field for large binary or JSON data stored externally
+ *
+ * Data is automatically:
+ * - Compressed with gzip
+ * - Stored content-addressably (SHA256 hash)
+ * - Deduplicated (same content = same blob)
+ *
+ * The field stores the blob hash reference, not the actual data.
+ * Use BlobStorage.retrieve(hash) to fetch the data.
+ *
+ * @example
+ * ```typescript
+ * @BlobField()
+ * largeDataRef?: string;  // Stores "sha256:abc123..."
+ * ```
+ */
+export function BlobField(options?: { nullable?: boolean }) {
+  return function (target: undefined, context: ClassFieldDecoratorContext) {
+    const fieldName = String(context.name);
+    context.addInitializer(function(this: unknown) {
+      addFieldMetadata((this as ConstructorInstance).constructor, fieldName, {
+        fieldName,
+        fieldType: 'blob',
+        options: { nullable: true, ...options }  // Usually nullable since data may be inline
       });
     });
   };

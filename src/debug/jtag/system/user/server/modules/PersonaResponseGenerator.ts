@@ -23,6 +23,7 @@ import { Commands } from '../../../core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
@@ -74,6 +75,7 @@ export interface PersonaResponseGeneratorConfig {
   mediaConfig: PersonaMediaConfig;
   getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
   logger: import('./PersonaLogger').PersonaLogger;  // For persona-specific logging
+  genome?: import('./PersonaGenome').PersonaGenome;  // For accessing trained LoRA adapters
 }
 
 /**
@@ -90,6 +92,7 @@ export class PersonaResponseGenerator {
   private mediaConfig: PersonaMediaConfig;
   private getSessionId: () => UUID | null;
   private logger: import('./PersonaLogger').PersonaLogger;
+  private genome?: import('./PersonaGenome').PersonaGenome;
 
   /** Content deduplicator - prevents same content from being posted within time window */
   private contentDeduplicator: ContentDeduplicator;
@@ -282,10 +285,97 @@ export class PersonaResponseGenerator {
     this.toolRegistry = config.toolRegistry;
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
+    this.genome = config.genome;
 
     // Initialize modular helpers
     this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
     this.responseCleaner = new ResponseCleaner({ log: this.log.bind(this) });
+  }
+
+  /**
+   * Get effective model for inference
+   *
+   * Priority:
+   * 1. Trait-specific trained adapter (if context provides task domain)
+   * 2. Current active adapter (most recently used)
+   * 3. Any available trained adapter
+   * 4. Base model configured for this persona
+   *
+   * @param context - Optional context for trait-aware selection
+   * @returns The model name to use for inference
+   */
+  private getEffectiveModel(context?: { taskDomain?: string }): string {
+    if (this.genome) {
+      // 1. Try trait-specific adapter based on task context
+      if (context?.taskDomain) {
+        const relevantTrait = this.determineRelevantTrait(context);
+        const traitAdapter = this.genome.getAdapterByTrait(relevantTrait);
+        if (traitAdapter) {
+          const ollamaModel = traitAdapter.getOllamaModelName();
+          if (ollamaModel) {
+            this.log(`🧬 ${this.personaName}: Using trait-specific model: ${ollamaModel} (trait: ${relevantTrait})`);
+            return ollamaModel;
+          }
+        }
+      }
+
+      // 2. Fall back to current active adapter (most recently used)
+      const currentAdapter = this.genome.getCurrentAdapter();
+      if (currentAdapter) {
+        const ollamaModel = currentAdapter.getOllamaModelName();
+        if (ollamaModel) {
+          this.log(`🧬 ${this.personaName}: Using trained model: ${ollamaModel} (adapter: ${currentAdapter.getName()})`);
+          return ollamaModel;
+        }
+      }
+
+      // 3. Check for any available trained adapter
+      const allAdapters = this.genome.getAllAdapters();
+      for (const adapter of allAdapters) {
+        const ollamaModel = adapter.getOllamaModelName();
+        if (ollamaModel) {
+          this.log(`🧬 ${this.personaName}: Using available trained model: ${ollamaModel} (adapter: ${adapter.getName()})`);
+          return ollamaModel;
+        }
+      }
+    }
+
+    // 4. Fall back to configured base model
+    return this.modelConfig.model || 'llama3.2:3b';
+  }
+
+  /**
+   * Determine which trait adapter is most relevant for the current context
+   *
+   * Maps task domains to trait types:
+   * - code → reasoning_style
+   * - creative → creative_expression
+   * - support/help → social_dynamics
+   * - default → tone_and_voice
+   */
+  private determineRelevantTrait(context: { taskDomain?: string }): string {
+    const domain = context.taskDomain?.toLowerCase();
+
+    switch (domain) {
+      case 'code':
+      case 'debug':
+      case 'analysis':
+        return 'reasoning_style';
+      case 'creative':
+      case 'art':
+      case 'writing':
+        return 'creative_expression';
+      case 'support':
+      case 'help':
+      case 'social':
+        return 'social_dynamics';
+      case 'facts':
+      case 'knowledge':
+      case 'expertise':
+        return 'domain_expertise';
+      default:
+        return 'tone_and_voice';  // Default trait for general chat
+    }
   }
 
   /**
@@ -311,34 +401,11 @@ export class PersonaResponseGenerator {
     const model = this.modelConfig.model;
     const maxTokens = this.modelConfig.maxTokens || 3000;
 
-    // Model context windows (in tokens)
-    const contextWindows: Record<string, number> = {
-      // OpenAI
-      'gpt-4': 8192,
-      'gpt-4-turbo': 128000,
-      'gpt-4o': 128000,
-      'gpt-3.5-turbo': 16385,
-
-      // Anthropic
-      'claude-3-opus': 200000,
-      'claude-3-sonnet': 200000,
-      'claude-3-haiku': 200000,
-      'claude-3-5-sonnet': 200000,
-
-      // Local/Ollama (common models)
-      'llama3.2:3b': 128000,
-      'llama3.1:70b': 128000,
-      'deepseek-coder:6.7b': 16000,
-      'qwen2.5:7b': 128000,
-      'mistral:7b': 32768,
-
-      // External APIs
-      'grok-3': 131072,  // Updated from grok-beta (deprecated 2025-09-15)
-      'deepseek-chat': 64000
-    };
-
-    // Get context window for this model (default 8K if unknown)
-    const contextWindow = model ? (contextWindows[model] || 8192) : 8192;
+    // Query context window from AICapabilityRegistry (single source of truth)
+    // The registry is populated from provider configs and has accurate data
+    // OllamaAdapter now passes num_ctx to use full context window at runtime
+    const registry = AICapabilityRegistry.getInstance();
+    const contextWindow = model ? registry.getContextWindow(model) : 8192;
 
     // Estimate system prompt tokens (~500 for typical persona prompts)
     const systemPromptTokens = 500;
@@ -717,14 +784,25 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         provider: this.modelConfig.provider
       });
 
+      const effectiveModel = this.getEffectiveModel();
       const request: TextGenerationRequest = {
         messages,
-        model: this.modelConfig.model || 'llama3.2:3b',  // Use persona's configured model
+        model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
         intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
       };
+
+      // GENOME INTEGRATION: Add active LoRA adapters from PersonaGenome
+      // This enables personas to use skill-specific fine-tuned weights during generation
+      if (this.genome) {
+        const activeAdapters = this.genome.getActiveAdaptersForRequest();
+        if (activeAdapters.length > 0) {
+          request.activeAdapters = activeAdapters;
+          this.log(`🧬 ${this.personaName}: [PHASE 3.3] Genome providing ${activeAdapters.length} active adapters: [${activeAdapters.map(a => a.name).join(', ')}]`);
+        }
+      }
 
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
@@ -736,7 +814,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         request.tools = convertToNativeToolSpecs(toolDefinitions);
         this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
       }
-      const isMentioned = originalMessage.content.text.toLowerCase().includes(`@${this.personaName.toLowerCase()}`);
+      // Check for mentions by both uniqueId (@helper) and displayName (@Helper AI)
+      const messageText = originalMessage.content.text.toLowerCase();
+      const isMentioned =
+        messageText.includes(`@${this.entity.uniqueId.toLowerCase()}`) ||
+        messageText.includes(`@${this.personaName.toLowerCase()}`);
 
       const slotGranted = await InferenceCoordinator.requestSlot(
         this.personaId,
@@ -761,6 +843,19 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       let aiResponse: TextGenerationResponse;
       const generateStartTime = Date.now();
       try {
+        // Wait for AIProviderDaemon to initialize (max 30 seconds)
+        // This handles race condition where PersonaUser tries to respond before daemon is ready
+        const MAX_WAIT_MS = 30000;
+        const POLL_INTERVAL_MS = 100;
+        let waitedMs = 0;
+        while (!AIProviderDaemon.isInitialized() && waitedMs < MAX_WAIT_MS) {
+          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+          waitedMs += POLL_INTERVAL_MS;
+        }
+        if (!AIProviderDaemon.isInitialized()) {
+          throw new Error(`AIProviderDaemon not initialized after ${MAX_WAIT_MS}ms`);
+        }
+
         aiResponse = await Promise.race([
           AIProviderDaemon.generateText(request),
           timeoutPromise
@@ -816,7 +911,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
               status: getStageStatus(generateDuration, 'generate'),
               metadata: {
-                model: this.modelConfig.model,
+                model: effectiveModel,  // Use the actual model used (may be trained LoRA adapter)
                 provider: this.modelConfig.provider,
                 tokensUsed: aiResponse.text.length
               }

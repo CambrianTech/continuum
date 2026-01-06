@@ -14,6 +14,7 @@ import { LongTermMemoryStore, type LongTermMemoryEntry } from './LongTermMemoryS
 import { InboxObserver } from './InboxObserver';
 import { WorkingMemoryObserver } from './WorkingMemoryObserver';
 import type { PersonaInbox, QueueItem } from '../../PersonaInbox';
+import { RustEmbeddingClient } from '../../../../../core/services/RustEmbeddingClient';
 
 type LogFn = (message: string) => void;
 
@@ -488,39 +489,24 @@ export class MemoryConsolidationWorker {
   }
 
   /**
-   * Generate embedding for text
-   * TODO: Replace with actual embedding service (Ollama, OpenAI, etc.)
+   * Generate embedding for text using Rust embedding worker
+   * Uses fastembed ONNX for fast local embeddings (~5ms each)
    */
   private async embed(text: string): Promise<number[]> {
-    // Placeholder: Simple hash-based pseudo-embedding
-    // In production, use actual embedding model
-    const hash = this.simpleHash(text);
-    const dim = 128; // Embedding dimension
-    const embedding: number[] = [];
+    const client = RustEmbeddingClient.instance;
 
-    for (let i = 0; i < dim; i++) {
-      const seed = hash + i;
-      embedding.push(Math.sin(seed) * Math.cos(seed * 2));
+    // Check if Rust worker is available
+    if (!await client.isAvailable()) {
+      this.log('WARN: Rust embedding worker not available, returning zero vector');
+      return new Array(384).fill(0);  // Return 384d zero vector as fallback
     }
 
-    // Normalize
-    const magnitude = Math.sqrt(
-      embedding.reduce((sum, val) => sum + val * val, 0)
-    );
-    return embedding.map(v => v / magnitude);
-  }
-
-  /**
-   * Simple hash function for pseudo-embeddings
-   */
-  private simpleHash(str: string): number {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash; // Convert to 32-bit integer
+    try {
+      return await client.embed(text);
+    } catch (error) {
+      this.log(`ERROR: Embedding failed: ${error}`);
+      return new Array(384).fill(0);
     }
-    return hash;
   }
 
   /**

@@ -190,7 +190,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   // TODO: Remove discoveredCommands - redundant with CommandsInterface (ISSUE 2)
   protected discoveredCommands: Map<string, CommandSignature> = new Map();
   protected systemInstance?: JTAGSystem;
-  protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(30000);
+  protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(60000); // 60s for AI/inference commands
   
   // Connection Broker for intelligent connection management
   protected connectionBroker?: IConnectionBroker;
@@ -304,12 +304,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     if (isJTAGResponseMessage(message)) {
       // console.log(`🔗 JTAGClient: Processing response for correlation ${message.correlationId}`);
 
-      const resolved = this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
-      if (resolved) {
-        // console.log(`✅ JTAGClient: Completed correlation ${message.correlationId}`);
-      } else {
-        console.warn(`⚠️ JTAGClient: No pending request for correlation ${message.correlationId}`);
-      }
+      this.responseCorrelator.resolveRequest(message.correlationId, message.payload);
       
       // Return acknowledgment for transport protocol
       const response: BaseResponsePayload = {
@@ -1114,7 +1109,8 @@ export class RemoteConnection implements JTAGConnection {
     }
 
     // Wait for correlated response using the shared correlation interface
-    const response = await this.correlator.waitForResponse(correlationId, 30000);
+    // 60s timeout for AI/inference commands that may take longer
+    const response = await this.correlator.waitForResponse(correlationId, 60000);
     return response;
   }
 

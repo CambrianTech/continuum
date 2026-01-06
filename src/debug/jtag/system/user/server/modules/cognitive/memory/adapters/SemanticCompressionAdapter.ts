@@ -19,7 +19,8 @@ import { MemoryType } from '../../../MemoryTypes';
 import { generateUUID } from '../../../../../../core/types/CrossPlatformUUID';
 import { ISOString } from '../../../../../../data/domains/CoreTypes';
 import type { PersonaUser } from '../../../../PersonaUser';
-import { EmbeddingService } from '../../../../../../core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../../../../core/services/RustEmbeddingClient';
+import { BackpressureService } from '../../../../../../core/services/BackpressureService';
 
 /**
  * Group of related thoughts for synthesis
@@ -56,12 +57,23 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
 
     this.log(`🧠 [${context.personaName}] SemanticCompression: ${thoughts.length} thoughts → ${groups.length} groups`);
 
-    // Synthesize each group via LLM
+    // Synthesize each group via LLM (with backpressure awareness)
     const memories: MemoryEntity[] = [];
     let synthesisCount = 0;
+    let skippedDueToLoad = 0;
     const errors: Array<{ domain: string; error: string }> = [];
 
     for (const group of groups) {
+      // BACKPRESSURE: Check system load before expensive LLM synthesis
+      // Memory synthesis is low priority - defer when system is loaded
+      if (!BackpressureService.shouldProceed('low')) {
+        skippedDueToLoad++;
+        // Use fallback (no LLM call) when under load
+        const fallback = this.createFallbackMemory(group, context);
+        memories.push(fallback);
+        continue;
+      }
+
       try {
         const synthesis = await this.synthesizeGroup(group, context);
         memories.push(synthesis);
@@ -79,26 +91,39 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
       }
     }
 
+    if (skippedDueToLoad > 0) {
+      this.log(`🚦 [${context.personaName}] Backpressure: Skipped ${skippedDueToLoad}/${groups.length} LLM syntheses (system load=${BackpressureService.getLoad().toFixed(2)})`);
+    }
+
     // Phase 2: Generate embeddings for all memories (semantic cognition)
+    // BACKPRESSURE: Embeddings are background priority - only generate when system is idle
     let embeddingsGenerated = 0;
+    let embeddingsSkipped = 0;
+
     for (const memory of memories) {
+      // NOTE: Rust embeddings are fast (~5ms each) and independent of Ollama queue.
+      // Do NOT apply Ollama-based backpressure here - Rust worker handles its own load.
+      // Backpressure was incorrectly blocking embeddings when Ollama was busy.
+
       try {
-        // Create IEmbeddable wrapper for the memory
-        const embeddableMemory = {
-          ...memory,
-          getEmbeddableContent: () => memory.content
-        };
+        // Generate embedding directly via Rust worker (fast, ~5ms)
+        const client = RustEmbeddingClient.instance;
+        if (!await client.isAvailable()) {
+          this.log(`[Embedding] Rust worker not available, skipping memory ${memory.id}`);
+          embeddingsSkipped++;
+          continue;
+        }
 
-        // Generate embedding via EmbeddingService
-        await EmbeddingService.embedIfNeeded(embeddableMemory, {
-          log: (msg: string) => this.log(`[Embedding] ${msg}`)
-        });
+        const content = memory.content;
+        if (!content || !content.trim()) {
+          continue;
+        }
 
-        // Copy embedding data back to memory
-        if (embeddableMemory.embedding) {
-          memory.embedding = embeddableMemory.embedding;
-          memory.embeddedAt = embeddableMemory.embeddedAt;
-          memory.embeddingModel = embeddableMemory.embeddingModel;
+        const embedding = await client.embed(content);
+        if (embedding) {
+          memory.embedding = embedding;
+          memory.embeddedAt = new Date().toISOString() as ISOString;
+          memory.embeddingModel = 'fastembed-onnx';
           embeddingsGenerated++;
         }
       } catch (error) {
@@ -107,6 +132,9 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
       }
     }
 
+    if (embeddingsSkipped > 0) {
+      this.log(`⚠️ [${context.personaName}] Embeddings: Skipped ${embeddingsSkipped}/${memories.length} (Rust worker unavailable)`);
+    }
     this.log(`🧠 [${context.personaName}] Embeddings: ${embeddingsGenerated}/${memories.length} generated`);
 
     return {
@@ -115,6 +143,8 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
         synthesisCount,
         groupsCreated: groups.length,
         embeddingsGenerated,
+        skippedDueToLoad,      // LLM syntheses skipped due to backpressure
+        embeddingsSkipped,     // Embeddings skipped due to backpressure
         errors: errors.length > 0 ? errors : undefined
       }
     };

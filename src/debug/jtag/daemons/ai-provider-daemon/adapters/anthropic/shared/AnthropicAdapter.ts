@@ -34,6 +34,16 @@ import { MODEL_IDS } from '../../../../../system/shared/Constants';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import { MediaContentFormatter } from '../../../shared/MediaContentFormatter';
 
+/**
+ * Anthropic API usage response structure
+ */
+interface AnthropicUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
 export class AnthropicAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'anthropic';
   readonly providerName = 'Anthropic';
@@ -278,7 +288,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
   // Helper methods
 
-  private calculateCost(usage: any, model: string): number {
+  private calculateCost(usage: AnthropicUsage | undefined, model: string): number {
     if (!usage) return 0;
 
     const models = {

@@ -21,7 +21,7 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
 
   async execute(params: RAGInspectParams): Promise<RAGInspectResult> {
     try {
-      console.log(`📚 RAG Inspect: Building context for persona ${params.personaId.slice(0, 8)} in context ${params.contextId.slice(0, 8)}`);
+      console.log(`📚 RAG Inspect: Building context for persona ${params.personaId?.slice(0, 8) ?? 'unknown'} in context ${params.contextId?.slice(0, 8) ?? 'default'}`);
 
       // Build RAG context using ChatRAGBuilder
       const ragBuilder = new ChatRAGBuilder();

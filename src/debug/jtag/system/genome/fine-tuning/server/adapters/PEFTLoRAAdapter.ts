@@ -40,6 +40,48 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   readonly providerId = 'peft';
 
   /**
+   * Ollama → HuggingFace model name mapping
+   *
+   * Maps common Ollama model names to their HuggingFace equivalents.
+   * PEFT trains on HuggingFace models, but personas may use Ollama names.
+   */
+  private static readonly OLLAMA_TO_HF: Record<string, string> = {
+    // Llama 3.2 variants
+    'llama3.2:3b': 'meta-llama/Llama-3.2-3B-Instruct',
+    'llama3.2:1b': 'meta-llama/Llama-3.2-1B-Instruct',
+    'llama3.2': 'meta-llama/Llama-3.2-3B-Instruct',
+    // Llama 3.1 variants
+    'llama3.1:8b': 'meta-llama/Llama-3.1-8B-Instruct',
+    'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
+    'llama3.1': 'meta-llama/Llama-3.1-8B-Instruct',
+    // Phi variants
+    'phi3:mini': 'microsoft/Phi-3-mini-4k-instruct',
+    'phi3': 'microsoft/Phi-3-mini-4k-instruct',
+    'phi-2': 'microsoft/phi-2',
+    // Mistral variants
+    'mistral:7b': 'mistralai/Mistral-7B-Instruct-v0.2',
+    'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
+    // Qwen variants
+    'qwen2.5:7b': 'Qwen/Qwen2.5-7B-Instruct',
+    'qwen2.5:3b': 'Qwen/Qwen2.5-3B-Instruct',
+    'qwen2.5': 'Qwen/Qwen2.5-7B-Instruct',
+    // Small models for testing
+    'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
+    'smollm2:135m': 'HuggingFaceTB/SmolLM2-135M-Instruct',
+    'smollm2:360m': 'HuggingFaceTB/SmolLM2-360M-Instruct',
+    'smollm2:1.7b': 'HuggingFaceTB/SmolLM2-1.7B-Instruct',
+  };
+
+  /**
+   * Map Ollama model name to HuggingFace model name
+   * If no mapping exists, returns the original (might be a HF name already)
+   */
+  private mapModelName(ollamaName: string): string {
+    const normalized = ollamaName.toLowerCase().trim();
+    return PEFTLoRAAdapter.OLLAMA_TO_HF[normalized] || ollamaName;
+  }
+
+  /**
    * Check if PEFT adapter supports fine-tuning
    *
    * Verifies Python environment is bootstrapped and training script exists
@@ -96,14 +138,9 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       estimatedTrainingTime: 25, // 25ms per example per epoch (GPU estimate)
 
       // Model support (PEFT supports any HuggingFace transformers model)
-      // Listed models are verified to work on M1 MacBook Air (8GB RAM)
-      supportedBaseModels: [
-        'TinyLlama/TinyLlama-1.1B-Chat-v1.0',  // 1.1B - Perfect for M1 testing
-        'microsoft/phi-2',                       // 2.7B - Fast, quality
-        'meta-llama/Llama-2-7b-chat-hf',        // 7B - Requires auth
-        'mistralai/Mistral-7B-v0.1',            // 7B - Open, no auth
-        'HuggingFaceH4/zephyr-7b-beta'          // 7B - Instruct-tuned
-      ],
+      // Includes both Ollama names and their HuggingFace equivalents
+      // Validation is disabled - any transformers model works
+      supportedBaseModels: undefined, // Accept any model - PEFT supports all transformers models
 
       // Requirements
       requiresGPU: true,
@@ -125,14 +162,21 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
 
     const startTime = Date.now();
 
+    // Map Ollama model name to HuggingFace (PEFT requires HF model names)
+    const hfModelName = this.mapModelName(request.baseModel);
+    const wasRemapped = hfModelName !== request.baseModel;
+
     console.log('🧬 Starting PEFT LoRA training...');
-    console.log(`   Model: ${request.baseModel}`);
+    console.log(`   Model: ${request.baseModel}${wasRemapped ? ` → ${hfModelName}` : ''}`);
     console.log(`   Examples: ${request.dataset.examples.length}`);
     console.log(`   Epochs: ${request.epochs}`);
 
-    // 1. Create config JSON (using base class helper)
+    // Update request with HuggingFace model name
+    const mappedRequest = { ...request, baseModel: hfModelName };
+
+    // 1. Create config JSON (using base class helper with mapped model)
     const capabilities = this.getFineTuningCapabilities();
-    const configPath = await this.createConfigFile(request, capabilities);
+    const configPath = await this.createConfigFile(mappedRequest, capabilities);
 
     // 2. Export dataset to JSONL (using base class helper)
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);

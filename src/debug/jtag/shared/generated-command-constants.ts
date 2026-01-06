@@ -23,6 +23,9 @@
  */
 
 export const COMMANDS = {
+  ADAPTER_ADOPT: 'adapter/adopt',
+  ADAPTER_SEARCH: 'adapter/search',
+  ADAPTER_TRY: 'adapter/try',
   AI_ADAPTER_TEST: 'ai/adapter/test',
   AI_BAG_OF_WORDS: 'ai/bag-of-words',
   AI_COST: 'ai/cost',
@@ -72,6 +75,7 @@ export const COMMANDS = {
   COLLABORATION_DECISION_RANK: 'collaboration/decision/rank',
   COLLABORATION_DECISION_VIEW: 'collaboration/decision/view',
   COLLABORATION_DECISION_VOTE: 'collaboration/decision/vote',
+  COLLABORATION_DM: 'collaboration/dm',
   COLLABORATION_WALL: 'collaboration/wall',
   COMMS_TEST: 'comms-test',
   CONTINUUM_EMOTION: 'continuum/emotion',
@@ -113,6 +117,7 @@ export const COMMANDS = {
   DEVELOPMENT_SANDBOX_EXECUTE: 'development/sandbox-execute',
   DEVELOPMENT_SCHEMA_GENERATE: 'development/schema/generate',
   DEVELOPMENT_SHELL_EXECUTE: 'development/shell/execute',
+  DEVELOPMENT_TIMING: 'development/timing',
   FILE: 'file',
   FILE_APPEND: 'file/append',
   FILE_LOAD: 'file/load',
@@ -129,6 +134,7 @@ export const COMMANDS = {
   GENOME_PAGING_STATS: 'genome/paging-stats',
   GENOME_PAGING_UNREGISTER: 'genome/paging-unregister',
   HELP: 'help',
+  INFERENCE_GENERATE: 'inference/generate',
   INTERFACE_CLICK: 'interface/click',
   INTERFACE_GET_TEXT: 'interface/get-text',
   INTERFACE_NAVIGATE: 'interface/navigate',
@@ -147,6 +153,7 @@ export const COMMANDS = {
   LOGS_STATS: 'logs/stats',
   MEDIA_PROCESS: 'media/process',
   MEDIA_RESIZE: 'media/resize',
+  PERSONA_GENOME: 'persona/genome',
   PERSONA_LEARNING_CAPTURE_FEEDBACK: 'persona/learning/capture-feedback',
   PERSONA_LEARNING_CAPTURE_INTERACTION: 'persona/learning/capture-interaction',
   PERSONA_LEARNING_MULTI_AGENT_LEARN: 'persona/learning/multi-agent-learn',

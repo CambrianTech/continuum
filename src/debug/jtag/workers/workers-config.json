@@ -2,7 +2,7 @@
   "workers": [
     {
       "name": "archive",
-      "binary": "workers/archive/target/release/archive-worker",
+      "binary": "workers/target/release/archive-worker",
       "socket": "/tmp/jtag-archive-worker.sock",
       "args": [
         "/tmp/jtag-command-router.sock",
@@ -14,7 +14,7 @@
     },
     {
       "name": "data-daemon",
-      "binary": "workers/data-daemon/target/release/data-daemon-worker",
+      "binary": "workers/target/release/data-daemon-worker",
       "socket": "/tmp/jtag-data-daemon-worker.sock",
       "args": [
         "/tmp/jtag-data-daemon-worker.sock"
@@ -23,18 +23,50 @@
       "enabled": true
     },
     {
+      "name": "embedding",
+      "binary": "workers/target/release/embedding-worker",
+      "socket": "/tmp/jtag-embedding.sock",
+      "args": [
+        "/tmp/jtag-embedding.sock"
+      ],
+      "description": "Native embedding generation via fastembed (ONNX). ~5ms vs ~80ms Ollama HTTP.",
+      "enabled": true
+    },
+    {
+      "name": "inference",
+      "binary": "workers/target/release/inference-worker",
+      "socket": "/tmp/jtag-inference.sock",
+      "args": [
+        "/tmp/jtag-inference.sock"
+      ],
+      "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
+      "enabled": false,
+      "preloadModels": [
+        "Qwen/Qwen2-1.5B-Instruct",
+        "Qwen/Qwen2-0.5B-Instruct"
+      ]
+    },
+    {
+      "name": "inference-grpc",
+      "binary": "workers/target/release/inference-grpc",
+      "type": "tcp",
+      "port": 50051,
+      "description": "gRPC inference server with Candle LLM backend. Replaces Unix socket worker.",
+      "enabled": true
+    },
+    {
       "name": "logger",
-      "binary": "workers/logger/target/release/logger-worker",
+      "binary": "workers/target/release/logger-worker",
       "socket": "/tmp/jtag-logger-worker.sock",
       "description": "High-performance logging worker for file I/O",
       "enabled": true
     },
     {
       "name": "search",
-      "binary": "workers/search/target/release/search-worker",
+      "binary": "workers/target/release/search-worker",
       "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
-      "description": "Search algorithms (BoW, BM25, Cosine vector similarity) off main thread via Unix socket",
+      "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
       "enabled": true
     }
   ],

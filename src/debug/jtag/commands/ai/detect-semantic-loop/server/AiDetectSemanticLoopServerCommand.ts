@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import { ValidationError } from '../../../../system/core/types/ErrorTypes';
 import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../shared/AiDetectSemanticLoopTypes';
 import { createAiDetectSemanticLoopResultFromParams } from '../shared/AiDetectSemanticLoopTypes';
-import { EmbeddingService } from '../../../../system/core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../../system/core/services/RustEmbeddingClient';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
@@ -26,8 +26,8 @@ interface RawChatMessage {
 }
 
 // Thresholds for recommendations
-const WARN_THRESHOLD = 0.75;   // Above this: WARN
-const BLOCK_THRESHOLD = 0.85;  // Above this: BLOCK
+const WARN_THRESHOLD = 0.80;   // Above this: WARN (raised from 0.75)
+const BLOCK_THRESHOLD = 0.95;  // Above this: BLOCK (raised from 0.85 - more lenient)
 
 export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSemanticLoopParams, AiDetectSemanticLoopResult> {
 
@@ -42,6 +42,28 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
     if (!content) return '';
     if (typeof content === 'string') return content;
     return content.text || '';
+  }
+
+  /**
+   * Compute cosine similarity between two embedding vectors
+   */
+  private cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length) {
+      throw new Error(`Embedding dimension mismatch: ${a.length} vs ${b.length}`);
+    }
+
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+
+    for (let i = 0; i < a.length; i++) {
+      dotProduct += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+
+    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+    return denominator === 0 ? 0 : dotProduct / denominator;
   }
 
   /**
@@ -106,9 +128,9 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
     const similarityThreshold = params.similarityThreshold ?? 0.85;
     const timeWindowMinutes = params.timeWindowMinutes ?? 10;
 
-    // Generate embedding for the input message
-    const inputEmbedding = await EmbeddingService.embedText(params.messageText);
-    if (!inputEmbedding) {
+    // Generate embedding for the input message via Rust worker (fast, ~5ms)
+    const client = RustEmbeddingClient.instance;
+    if (!await client.isAvailable()) {
       // Can't check similarity without embedding - allow the message
       return createAiDetectSemanticLoopResultFromParams(params, {
         success: true,
@@ -116,7 +138,21 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
         maxSimilarity: 0,
         matches: [],
         recommendation: 'ALLOW',
-        explanation: 'Could not generate embedding for message - allowing by default'
+        explanation: 'Rust embedding worker not available - allowing by default'
+      });
+    }
+
+    let inputEmbedding: number[];
+    try {
+      inputEmbedding = await client.embed(params.messageText);
+    } catch (error: any) {
+      return createAiDetectSemanticLoopResultFromParams(params, {
+        success: true,
+        isLoop: false,
+        maxSimilarity: 0,
+        matches: [],
+        recommendation: 'ALLOW',
+        explanation: `Could not generate embedding: ${error.message} - allowing by default`
       });
     }
 
@@ -184,7 +220,7 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
           similarity = textSimilarity;
         } else {
           try {
-            similarity = EmbeddingService.cosineSimilarity(inputEmbedding, msgEmbedding);
+            similarity = this.cosineSimilarity(inputEmbedding, msgEmbedding);
           } catch {
             // Incompatible embeddings - use text similarity
             similarity = textSimilarity;

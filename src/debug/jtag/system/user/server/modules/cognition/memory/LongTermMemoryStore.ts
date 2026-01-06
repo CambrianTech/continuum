@@ -8,6 +8,7 @@
 
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import * as fs from 'fs';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 type LogFn = (message: string) => void;
@@ -58,11 +59,15 @@ export class LongTermMemoryStore {
       'memory.json' // TODO: Change to memory.sqlite
     );
 
-    // Ensure directory exists
+    // Directory creation happens lazily in ensureDirectoryExists()
+  }
+
+  /**
+   * Ensure directory exists before write (async - called before persist)
+   */
+  private async ensureDirectoryExists(): Promise<void> {
     const dir = path.dirname(this.storePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    await fsPromises.mkdir(dir, { recursive: true });
   }
 
   /**
@@ -189,14 +194,15 @@ export class LongTermMemoryStore {
   // ==================== Private Methods ====================
 
   /**
-   * Ensure memories are loaded from disk
+   * Ensure memories are loaded from disk (async - non-blocking)
    */
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
 
     try {
-      if (fs.existsSync(this.storePath)) {
-        const data = fs.readFileSync(this.storePath, 'utf-8');
+      const exists = await fsPromises.access(this.storePath).then(() => true).catch(() => false);
+      if (exists) {
+        const data = await fsPromises.readFile(this.storePath, 'utf-8');
         this.memories = JSON.parse(data);
         this.log(
           `📖 Loaded ${this.memories.length} memories for ${this.personaId}`
@@ -211,12 +217,13 @@ export class LongTermMemoryStore {
   }
 
   /**
-   * Persist memories to disk
+   * Persist memories to disk (async - non-blocking)
    */
   private async persist(): Promise<void> {
     try {
+      await this.ensureDirectoryExists();
       const data = JSON.stringify(this.memories, null, 2);
-      fs.writeFileSync(this.storePath, data, 'utf-8');
+      await fsPromises.writeFile(this.storePath, data, 'utf-8');
     } catch (error) {
       this.log(`❌ Error persisting memories: ${error}`);
     }

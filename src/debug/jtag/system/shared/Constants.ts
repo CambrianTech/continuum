@@ -209,7 +209,7 @@ export const MODEL_IDS = {
     GROK_4: 'grok-4'
   },
 
-  /** Ollama local models */
+  /** Ollama local models (legacy - use LOCAL_MODELS for new code) */
   OLLAMA: {
     LLAMA_3_2_3B: 'llama3.2:3b',
     LLAMA_3_1_8B: 'llama3.1:8b'
@@ -219,6 +219,106 @@ export const MODEL_IDS = {
   SENTINEL: {
     GPT2: 'gpt2',
     DISTILGPT2: 'distilgpt2'
+  }
+} as const;
+
+/**
+ * LOCAL_MODELS - SINGLE SOURCE OF TRUTH for local inference
+ *
+ * ⚠️ CRITICAL: This is the canonical model configuration for Candle/local inference
+ * ⚠️ All model mappings, preloads, and defaults come from here
+ * ⚠️ CandleAdapter reads from here - DO NOT duplicate mappings elsewhere
+ *
+ * Why this exists:
+ * - Ollama uses names like 'llama3.2:3b'
+ * - Candle needs HuggingFace IDs like 'Qwen/Qwen2-1.5B-Instruct'
+ * - Having one central mapping prevents configuration nightmares
+ *
+ * Note: Using Qwen models as defaults because Meta's Llama requires HuggingFace access approval
+ * To use real Llama: accept license at https://huggingface.co/meta-llama
+ */
+export const LOCAL_MODELS = {
+  /** Default models for inference worker to preload at startup */
+  PRELOAD: [
+    'Qwen/Qwen2-1.5B-Instruct',  // Main local model (used by llama3.2:3b personas)
+    'Qwen/Qwen2-0.5B-Instruct',  // Fast model for gating/classification
+  ],
+
+  /** Default model for local inference */
+  DEFAULT: 'Qwen/Qwen2-1.5B-Instruct',
+
+  /** Fast model for gating/classification tasks */
+  GATING: 'Qwen/Qwen2-0.5B-Instruct',
+
+  /** Map Ollama-style model names → HuggingFace model IDs */
+  OLLAMA_TO_HUGGINGFACE: {
+    // Llama 3.2 family → Qwen fallback (Llama requires HF approval)
+    'llama3.2:3b': 'Qwen/Qwen2-1.5B-Instruct',
+    'llama3.2:1b': 'Qwen/Qwen2-0.5B-Instruct',
+    'llama3.2-3b': 'Qwen/Qwen2-1.5B-Instruct',
+    'llama3.2-1b': 'Qwen/Qwen2-0.5B-Instruct',
+
+    // Llama 3.1 family (requires HF approval)
+    'llama3.1:8b': 'meta-llama/Llama-3.1-8B-Instruct',
+    'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
+
+    // Phi family (Microsoft, no approval needed)
+    'phi3:mini': 'microsoft/Phi-3-mini-4k-instruct',
+    'phi3:small': 'microsoft/Phi-3-small-8k-instruct',
+    'phi3:medium': 'microsoft/Phi-3-medium-4k-instruct',
+    'phi:2': 'microsoft/phi-2',
+    'phi3': 'microsoft/Phi-3-mini-4k-instruct',
+
+    // Mistral family (no approval needed)
+    'mistral:7b': 'mistralai/Mistral-7B-Instruct-v0.2',
+    'mistral:7b-v0.3': 'mistralai/Mistral-7B-Instruct-v0.3',
+    'mixtral:8x7b': 'mistralai/Mixtral-8x7B-Instruct-v0.1',
+    'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
+
+    // Qwen family (no approval needed - recommended!)
+    'qwen2:0.5b': 'Qwen/Qwen2-0.5B-Instruct',
+    'qwen2:1.5b': 'Qwen/Qwen2-1.5B-Instruct',
+    'qwen2:7b': 'Qwen/Qwen2-7B-Instruct',
+    'qwen2.5:7b': 'Qwen/Qwen2.5-7B-Instruct',
+    'qwen2.5:3b': 'Qwen/Qwen2.5-3B-Instruct',
+    'qwen2': 'Qwen/Qwen2-0.5B-Instruct',
+
+    // Gemma family (Google, no approval needed)
+    'gemma:2b': 'google/gemma-2b-it',
+    'gemma:7b': 'google/gemma-7b-it',
+    'gemma2:2b': 'google/gemma-2-2b-it',
+    'gemma2:9b': 'google/gemma-2-9b-it',
+
+    // StarCoder family
+    'starcoder2:3b': 'bigcode/starcoder2-3b',
+    'starcoder2:7b': 'bigcode/starcoder2-7b',
+
+    // TinyLlama (good for testing)
+    'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
+    'tinyllama:1.1b': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
+  } as const,
+
+  /**
+   * Map a model name to HuggingFace ID
+   * Returns original if not found (might already be a HuggingFace ID)
+   */
+  mapToHuggingFace(modelName: string): string {
+    const normalized = modelName.toLowerCase().trim();
+    const mapping = LOCAL_MODELS.OLLAMA_TO_HUGGINGFACE as Record<string, string>;
+
+    // Direct lookup
+    if (mapping[normalized]) {
+      return mapping[normalized];
+    }
+
+    // Try without version suffix (e.g., 'llama3.2:3b-instruct' -> 'llama3.2:3b')
+    const withoutSuffix = normalized.replace(/-instruct.*$|-chat.*$|-q\d+.*$/i, '');
+    if (mapping[withoutSuffix]) {
+      return mapping[withoutSuffix];
+    }
+
+    // Not found - assume it's already a HuggingFace ID
+    return modelName;
   }
 } as const;
 

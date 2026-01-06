@@ -282,6 +282,30 @@ export class AICapabilityRegistry {
   }
 
   /**
+   * Get model info by model name (searches all providers)
+   * Returns undefined if model not found
+   */
+  getModelInfo(modelName: string): ModelCapabilityInfo | undefined {
+    for (const [_providerId, provider] of this.providers) {
+      const model = provider.models.find(m =>
+        m.modelId === modelName || modelName.includes(m.modelId)
+      );
+      if (model) {
+        return model;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Get context window for a model (returns default 8192 if not found)
+   */
+  getContextWindow(modelName: string): number {
+    const model = this.getModelInfo(modelName);
+    return model?.contextWindow ?? 8192;
+  }
+
+  /**
    * Clear query cache (called when providers are registered)
    */
   private clearCache(): void {

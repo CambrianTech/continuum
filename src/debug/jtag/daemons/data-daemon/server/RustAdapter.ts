@@ -82,7 +82,7 @@ export class RustAdapter extends DataStorageAdapter {
 
       // Open database handle
       const openResult = await this.workerClient.openDatabase({
-        filename: (config.options?.filename as string) || '/Users/joel/.continuum/data/database.sqlite',
+        filename: (config.options?.filename as string) || `${process.env.HOME}/.continuum/data/database.sqlite`,
         adapterType: 'sqlite',
         storageType: (config.options?.storageType as 'auto-detect' | undefined) || 'auto-detect'
       });

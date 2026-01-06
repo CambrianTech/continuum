@@ -111,6 +111,8 @@ import { LimbicSystem, type PersonaUserForLimbic } from './modules/being/LimbicS
 import { PrefrontalCortex, type PersonaUserForPrefrontal } from './modules/being/PrefrontalCortex';
 import { MotorCortex, type PersonaUserForMotorCortex } from './modules/being/MotorCortex';
 import { SystemPaths } from '../../core/config/SystemPaths';
+import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
+import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 /**
@@ -174,6 +176,22 @@ export class PersonaUser extends AIUser {
 
   // NEUROANATOMY: Motor cortex (action, execution, output)
   private motorCortex: MotorCortex | null = null;
+
+  // UNIFIED CONSCIOUSNESS: Cross-context awareness layer (no severance!)
+  // Sits ABOVE limbic/prefrontal - provides global timeline, intentions, peripheral awareness
+  private _consciousness: UnifiedConsciousness | null = null;
+
+  // Room name cache for contextName in timeline events
+  private _roomNameCache: Map<UUID, string> = new Map();
+
+  /**
+   * Get unified consciousness for cross-context awareness
+   * Public for RAG sources and cognitive modules
+   */
+  public get consciousness(): UnifiedConsciousness {
+    if (!this._consciousness) throw new Error('Consciousness not initialized');
+    return this._consciousness;
+  }
 
   // NEUROANATOMY: Delegate to limbic for memory/genome/training/hippocampus
   public get memory(): PersonaMemory {
@@ -323,10 +341,15 @@ export class PersonaUser extends AIUser {
       this.logger.enqueueLog('cognition.log', message);
     });
     // Inject queue stats provider for load-aware deduplication (feedback loop)
+    // CRITICAL: Handle case where AIProviderDaemon isn't initialized yet (race condition on startup)
     this.inbox.setQueueStatsProvider(() => {
-      const adapter = AIProviderDaemon.getAdapter('ollama');
-      if (adapter && adapter.getQueueStats) {
-        return adapter.getQueueStats();
+      try {
+        const adapter = AIProviderDaemon.getAdapter('ollama');
+        if (adapter && adapter.getQueueStats) {
+          return adapter.getQueueStats();
+        }
+      } catch {
+        // AIProviderDaemon not initialized yet - return defaults
       }
       return { queueSize: 0, activeRequests: 0, maxConcurrent: 1, load: 0.0 };
     });
@@ -372,8 +395,26 @@ export class PersonaUser extends AIUser {
       mediaConfig: this.mediaConfig,
       getSessionId: () => this.sessionId,
       homeDirectory: this.homeDirectory,
-      logger: this.logger
+      logger: this.logger,
+      memory: this.memory  // For accessing trained LoRA adapters during inference
     });
+
+    // UNIFIED CONSCIOUSNESS: Cross-context awareness (no severance!)
+    // Sits above limbic/prefrontal, provides global timeline and peripheral awareness
+    this._consciousness = new UnifiedConsciousness(
+      this.id,
+      this.entity.uniqueId,  // e.g., "together" - matches folder name for timeline.json
+      this.displayName,
+      {
+        debug: (msg) => this.log.debug(msg),
+        info: (msg) => this.log.info(msg),
+        warn: (msg) => this.log.warn(msg),
+        error: (msg) => this.log.error(msg)
+      }
+    );
+    // Register with GlobalAwarenessSource so RAG can access consciousness
+    registerConsciousness(this.id, this._consciousness);
+    this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
 
     // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
     // Pass logger for cognition.log
@@ -384,7 +425,15 @@ export class PersonaUser extends AIUser {
     this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
 
     // Task execution module (delegated for modularity, uses this.memory getter)
-    this.taskExecutor = new PersonaTaskExecutor(this.id, this.displayName, this.memory, this.personaState, cognitionLogger);
+    // Pass provider so fine-tuning uses the correct adapter (Ollama, OpenAI, Together, etc.)
+    this.taskExecutor = new PersonaTaskExecutor(
+      this.id,
+      this.displayName,
+      this.memory,
+      this.personaState,
+      this.modelConfig.provider || 'ollama',
+      cognitionLogger
+    );
 
     // CNS: Central Nervous System orchestrator (capability-based)
     // Note: mind/soul/body are non-null at this point (initialized above)
@@ -499,6 +548,12 @@ export class PersonaUser extends AIUser {
       // Non-fatal: isAvailable() will default to simple worker ready check
     }
 
+    // STEP 1.7: Wire AI provider to genome for real LoRA adapter loading (genome vision)
+    // This enables PersonaGenome.activateSkill() → CandleAdapter.applySkill() → InferenceWorker.loadAdapter()
+    // Without this, adapters run in stub mode (tracking state only, no actual GPU loading)
+    // NOTE: AIProviderDaemon may not be initialized yet (race condition), so use deferred wiring
+    this.wireGenomeToProvider();
+
     // STEP 2: Subscribe to room-specific chat events (only if client available)
     if (this.client && !this.eventsSubscribed) {
       this.log.debug(`🔧 ${this.displayName}: About to subscribe to ${this.myRoomIds.size} room(s), eventsSubscribed=${this.eventsSubscribed}`);
@@ -533,6 +588,84 @@ export class PersonaUser extends AIUser {
 
     // Start soul memory consolidation (Hippocampus subprocess via soul interface)
     await this.limbic!.startMemoryConsolidation();
+
+    // GENOME INTEGRATION: Load adapters from database into PersonaGenome
+    // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)
+    await this.limbic!.loadGenomeFromDatabase();
+  }
+
+  /**
+   * Override loadMyRooms to also populate room name cache for timeline events
+   */
+  protected override async loadMyRooms(): Promise<void> {
+    await super.loadMyRooms();
+
+    // Also populate room name cache from all rooms
+    try {
+      const roomsResult = await DataDaemon.query<RoomEntity>({
+        collection: COLLECTIONS.ROOMS,
+        filter: {}
+      });
+
+      if (roomsResult.success && roomsResult.data) {
+        for (const roomRecord of roomsResult.data) {
+          const room = roomRecord.data;
+          const roomId = roomRecord.id || room.id;
+          this._roomNameCache.set(roomId, room.name || room.uniqueId || roomId);
+        }
+        this.log.debug(`📚 ${this.displayName}: Cached ${this._roomNameCache.size} room names for timeline events`);
+      }
+    } catch (error) {
+      this.log.warn(`⚠️ ${this.displayName}: Could not cache room names: ${error}`);
+    }
+  }
+
+  /**
+   * Wire genome to AI provider with deferred retry if daemon not ready
+   *
+   * Handles the race condition where PersonaUser.onConnect() may run before
+   * AIProviderDaemon is initialized. Uses retry with backoff to eventually
+   * wire the genome when the daemon becomes available.
+   *
+   * @param retryCount - Number of retries attempted (default 0)
+   * @param maxRetries - Maximum retry attempts (default 5)
+   */
+  private wireGenomeToProvider(retryCount: number = 0, maxRetries: number = 5): void {
+    // Check if daemon is initialized
+    if (!AIProviderDaemon.isInitialized()) {
+      if (retryCount < maxRetries) {
+        // Schedule retry with exponential backoff (2s, 4s, 8s, 16s, 32s)
+        const delay = Math.pow(2, retryCount + 1) * 1000;
+        this.log.debug(`🧬 ${this.displayName}: AIProviderDaemon not ready, retry ${retryCount + 1}/${maxRetries} in ${delay}ms`);
+        setTimeout(() => this.wireGenomeToProvider(retryCount + 1, maxRetries), delay);
+      } else {
+        this.log.warn(`⚠️ ${this.displayName}: Genome wiring failed after ${maxRetries} retries - running in stub mode`);
+      }
+      return;
+    }
+
+    // Daemon is ready, wire the genome
+    try {
+      // Try to get CandleAdapter (native Rust inference with LoRA support)
+      const candleAdapter = AIProviderDaemon.getAdapter('candle');
+      if (candleAdapter) {
+        this.memory.genome.setAIProvider(candleAdapter);
+        this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
+      } else {
+        // Fall back to Ollama if Candle not available
+        const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
+        if (ollamaAdapter) {
+          this.memory.genome.setAIProvider(ollamaAdapter);
+          this.log.info(`🧬 ${this.displayName}: Genome wired to OllamaAdapter (stub mode - no multi-adapter)`);
+        } else {
+          this.log.warn(`⚠️ ${this.displayName}: No local AI provider available for genome`);
+        }
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log.warn(`⚠️ ${this.displayName}: Could not wire genome to AI provider: ${errorMsg}`);
+      // Non-fatal: genome will run in stub mode
+    }
   }
 
   /**
@@ -637,6 +770,22 @@ export class PersonaUser extends AIUser {
     // PHASE 3BIS: Update activity temperature (observation only, doesn't affect decisions yet)
     getChatCoordinator().onHumanMessage(messageEntity.roomId);
 
+    // UNIFIED CONSCIOUSNESS: Record event in global timeline (cross-context awareness)
+    // Fire and forget - don't block message processing
+    if (this._consciousness) {
+      this._consciousness.recordEvent({
+        contextType: 'room',
+        contextId: messageEntity.roomId,
+        contextName: this.getRoomName(messageEntity.roomId), // Use human-readable room name
+        eventType: 'message_received',
+        actorId: messageEntity.senderId,
+        actorName: messageEntity.senderName,
+        content: messageEntity.content?.text || '',
+        importance: 0.5, // Base importance, adjust based on mention/content later
+        topics: this.extractTopics(messageEntity.content?.text || '')
+      }).catch(err => this.log.warn(`Timeline record failed: ${err}`));
+    }
+
     // PHASE 1: Calculate priority and enqueue to inbox
     const priority = calculateMessagePriority(
       {
@@ -660,6 +809,7 @@ export class PersonaUser extends AIUser {
       content: messageEntity.content?.text || '',
       senderId: messageEntity.senderId,
       senderName: messageEntity.senderName,
+      senderType: messageEntity.senderType as 'human' | 'persona' | 'agent' | 'system',
       timestamp: this.timestampToNumber(messageEntity.timestamp),
       priority
     };
@@ -749,6 +899,21 @@ export class PersonaUser extends AIUser {
       return Date.now(); // Use current time if timestamp missing
     }
     return timestamp instanceof Date ? timestamp.getTime() : timestamp;
+  }
+
+  /**
+   * Extract topics from message content for timeline semantic linking
+   *
+   * For true semantics, we rely on embeddings stored in TimelineEventEntity.
+   * This method returns an empty array - semantic relevance comes from
+   * vector similarity search, not keyword matching.
+   *
+   * Future: Could use LLM to extract key concepts, but embeddings are sufficient.
+   */
+  private extractTopics(_text: string): string[] {
+    // Return empty - semantic relevance comes from embeddings on TimelineEventEntity
+    // The timeline uses vector similarity search for cross-context retrieval
+    return [];
   }
 
   // Tool execution methods delegated to PersonaToolExecutor adapter
@@ -858,6 +1023,9 @@ export class PersonaUser extends AIUser {
     const isMember = roomEntity.members.some((m: { userId: UUID }) => m.userId === this.id);
     const wasInRoom = this.myRoomIds.has(roomEntity.id);
 
+    // Always cache room name (even if not changing membership)
+    this._roomNameCache.set(roomEntity.id, roomEntity.name || roomEntity.uniqueId || roomEntity.id);
+
     if (isMember && !wasInRoom) {
       // Added to room - update membership AND subscribe to chat events
       this.myRoomIds.add(roomEntity.id);
@@ -868,6 +1036,14 @@ export class PersonaUser extends AIUser {
       this.myRoomIds.delete(roomEntity.id);
       this.log.info(`🚪 ${this.displayName}: Left room ${roomEntity.name} (${roomEntity.id.slice(0,8)})`);
     }
+  }
+
+  /**
+   * Get human-readable room name for timeline events
+   * Falls back to UUID if name not cached
+   */
+  private getRoomName(roomId: UUID): string {
+    return this._roomNameCache.get(roomId) || roomId.slice(0, 8);
   }
 
   /**
@@ -1322,6 +1498,13 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // Unregister consciousness from GlobalAwarenessSource
+    if (this._consciousness) {
+      unregisterConsciousness(this.id);
+      this._consciousness = null;
+      this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness unregistered`);
+    }
+
     // Stop soul systems (hippocampus + memory consolidation)
     await this.limbic!.shutdown();
 

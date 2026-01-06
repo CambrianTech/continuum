@@ -206,7 +206,8 @@ export interface DecisionForReport {
   reasoning?: string;
   responseContent?: string;
   modelUsed?: string;
-  ragContext: {
+  /** RAG context stored inline (for small contexts) */
+  ragContext?: {
     identity: {
       systemPrompt: string;
       bio: string;
@@ -222,6 +223,8 @@ export interface DecisionForReport {
       contextWindow: number;
     };
   };
+  /** Reference to RAG context in blob storage (for large contexts) */
+  ragContextRef?: string;
   coordinationSnapshot: {
     phase?: 'gathering' | 'deciding' | 'closed';
     availableSlots?: number;

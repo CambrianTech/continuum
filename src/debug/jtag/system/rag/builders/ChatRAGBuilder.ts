@@ -30,9 +30,20 @@ import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
-import { getContextWindow } from '../../shared/ModelContextWindows';
+import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
+
+// RAGSource pattern imports
+import { RAGComposer } from '../shared/RAGComposer';
+import type { RAGSourceContext, RAGCompositionResult, RAGSection } from '../shared/RAGSource';
+import {
+  ConversationHistorySource,
+  SemanticMemorySource,
+  WidgetContextSource,
+  PersonaIdentitySource,
+  GlobalAwarenessSource
+} from '../sources';
 
 /**
  * Chat-specific RAG builder
@@ -42,10 +53,73 @@ export class ChatRAGBuilder extends RAGBuilder {
   readonly domain: RAGDomain = 'chat';
   private log: (message: string, ...args: any[]) => void;
 
+  // RAGComposer for modular, parallelized source loading
+  private composer: RAGComposer | null = null;
+  private useModularSources = true;  // Feature flag for gradual migration
+
   constructor(logger?: (message: string, ...args: any[]) => void) {
     super();
     // Default to console.log if no logger provided (for tests)
     this.log = logger || console.log.bind(console);
+  }
+
+  /**
+   * Initialize the RAGComposer with chat-relevant sources
+   * Sources are loaded in parallel for better performance
+   */
+  private getComposer(): RAGComposer {
+    if (!this.composer) {
+      this.composer = new RAGComposer();
+      this.composer.registerAll([
+        new PersonaIdentitySource(),     // Priority 95: Who the AI is
+        new GlobalAwarenessSource(),     // Priority 85: Cross-context awareness (no severance!)
+        new ConversationHistorySource(), // Priority 80: Chat messages (uses queryWithJoin!)
+        new WidgetContextSource(),       // Priority 75: UI state from Positron
+        new SemanticMemorySource()       // Priority 60: Long-term memories
+      ]);
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 5 sources');
+    }
+    return this.composer;
+  }
+
+  /**
+   * Extract loaded data from RAGCompositionResult sections
+   * Maps RAGSection fields to the format expected by buildContext
+   */
+  private extractFromComposition(result: RAGCompositionResult): {
+    identity: PersonaIdentity | null;
+    conversationHistory: LLMMessage[];
+    memories: PersonaMemory[];
+    widgetContext: string | null;
+    globalAwareness: string | null;
+  } {
+    let identity: PersonaIdentity | null = null;
+    let conversationHistory: LLMMessage[] = [];
+    let memories: PersonaMemory[] = [];
+    let widgetContext: string | null = null;
+    let globalAwareness: string | null = null;
+
+    for (const section of result.sections) {
+      if (section.identity) {
+        identity = section.identity;
+      }
+      if (section.messages && section.messages.length > 0) {
+        conversationHistory = section.messages;
+      }
+      if (section.memories && section.memories.length > 0) {
+        memories = section.memories;
+      }
+      if (section.systemPromptSection && section.sourceName === 'widget-context') {
+        // Extract the raw context from the formatted section
+        widgetContext = section.systemPromptSection;
+      }
+      if (section.systemPromptSection && section.sourceName === 'global-awareness') {
+        // Extract cross-context awareness (no severance!)
+        globalAwareness = section.systemPromptSection;
+      }
+    }
+
+    return { identity, conversationHistory, memories, widgetContext, globalAwareness };
   }
 
   /**
@@ -68,45 +142,121 @@ export class ChatRAGBuilder extends RAGBuilder {
     const includeArtifacts = options?.includeArtifacts ?? true;
     const includeMemories = options?.includeMemories ?? true;
 
-    // PARALLELIZED: All these queries are independent, run them concurrently
-    // This reduces RAG context build time from ~240ms (sequential) to ~40ms (parallel)
-    const [
-      identity,
-      conversationHistory,
-      artifacts,
-      privateMemories,
-      recipeStrategy,
-      learningConfig,
-      widgetContext
-    ] = await Promise.all([
-      // 1. Load persona identity (with room context for system prompt)
-      this.loadPersonaIdentity(personaId, contextId, options),
+    let identity: PersonaIdentity;
+    let conversationHistory: LLMMessage[];
+    let artifacts: RAGArtifact[];
+    let privateMemories: PersonaMemory[];
+    let recipeStrategy: RecipeStrategy | undefined;
+    let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
+    let widgetContext: string | null;
+    let globalAwareness: string | null;
 
-      // 2. Load recent conversation history from database
-      // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
-      // Strokes emit system messages to the canvas room, so AIs see them naturally here
-      this.loadConversationHistory(contextId, personaId, maxMessages),
+    if (this.useModularSources) {
+      // NEW PATH: Use RAGComposer for modular, parallelized source loading
+      // Benefits: queryWithJoin for messages (4.5x faster), testable sources, budget allocation
+      const composer = this.getComposer();
 
-      // 3. Extract image attachments from messages (for vision models)
-      includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
+      // Calculate latency-aware token budget for slow local models
+      // This prevents the composer from over-allocating tokens that would cause timeouts
+      let totalBudget = 8000;  // Default for fast models
+      if (options?.modelId && isSlowLocalModel(options.modelId)) {
+        const latencyLimit = getLatencyAwareTokenLimit(options.modelId);
+        const systemPromptReserve = options?.systemPromptTokens ?? 500;
+        totalBudget = Math.min(totalBudget, latencyLimit - systemPromptReserve);
+        this.log(`📊 ChatRAGBuilder: Latency-aware totalBudget=${totalBudget} for ${options.modelId}`);
+      }
 
-      // 4. Load private memories (semantic recall uses currentMessage for context-aware retrieval)
-      includeMemories ? this.loadPrivateMemories(
+      const sourceContext: RAGSourceContext = {
         personaId,
-        contextId,
-        maxMemories,
-        options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
-      ) : Promise.resolve([]),
+        roomId: contextId,
+        sessionId: options?.sessionId,
+        options: {
+          ...options,
+          maxMessages,
+          maxMemories,
+          includeMemories,
+          currentMessage: options?.currentMessage
+        },
+        totalBudget
+      };
 
-      // 5. Load room's recipe strategy (conversation governance rules)
-      this.loadRecipeStrategy(contextId),
+      // Load core sources via composer (parallel)
+      const composition = await composer.compose(sourceContext);
+      const extracted = this.extractFromComposition(composition);
 
-      // 6. Load learning configuration (Phase 2: Per-participant learning mode)
-      this.loadLearningConfig(contextId, personaId),
+      // Use composed data, with fallbacks for missing pieces
+      identity = extracted.identity ?? {
+        name: 'AI Assistant',
+        systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
+      };
+      conversationHistory = extracted.conversationHistory;
+      privateMemories = extracted.memories;
+      widgetContext = extracted.widgetContext;
+      globalAwareness = extracted.globalAwareness;
 
-      // 7. Load widget context for AI awareness (Positron Layer 1)
-      this.loadWidgetContext(options)
-    ]);
+      // Still load these via legacy methods (not yet extracted to sources)
+      const [extractedArtifacts, extractedRecipeStrategy, extractedLearningConfig] = await Promise.all([
+        includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
+        this.loadRecipeStrategy(contextId),
+        this.loadLearningConfig(contextId, personaId)
+      ]);
+      artifacts = extractedArtifacts;
+      recipeStrategy = extractedRecipeStrategy;
+      learningConfig = extractedLearningConfig;
+
+      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms`);
+
+    } else {
+      // LEGACY PATH: Direct parallel loading (fallback)
+      // PARALLELIZED: All these queries are independent, run them concurrently
+      // This reduces RAG context build time from ~240ms (sequential) to ~40ms (parallel)
+      const [
+        loadedIdentity,
+        loadedConversationHistory,
+        loadedArtifacts,
+        loadedPrivateMemories,
+        loadedRecipeStrategy,
+        loadedLearningConfig,
+        loadedWidgetContext
+      ] = await Promise.all([
+        // 1. Load persona identity (with room context for system prompt)
+        this.loadPersonaIdentity(personaId, contextId, options),
+
+        // 2. Load recent conversation history from database
+        // NOTE: Canvas activity is now visible as chat messages (inbox content pattern)
+        // Strokes emit system messages to the canvas room, so AIs see them naturally here
+        this.loadConversationHistory(contextId, personaId, maxMessages),
+
+        // 3. Extract image attachments from messages (for vision models)
+        includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
+
+        // 4. Load private memories (semantic recall uses currentMessage for context-aware retrieval)
+        includeMemories ? this.loadPrivateMemories(
+          personaId,
+          contextId,
+          maxMemories,
+          options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
+        ) : Promise.resolve([]),
+
+        // 5. Load room's recipe strategy (conversation governance rules)
+        this.loadRecipeStrategy(contextId),
+
+        // 6. Load learning configuration (Phase 2: Per-participant learning mode)
+        this.loadLearningConfig(contextId, personaId),
+
+        // 7. Load widget context for AI awareness (Positron Layer 1)
+        this.loadWidgetContext(options)
+      ]);
+
+      identity = loadedIdentity;
+      conversationHistory = loadedConversationHistory;
+      artifacts = loadedArtifacts;
+      privateMemories = loadedPrivateMemories;
+      recipeStrategy = loadedRecipeStrategy;
+      learningConfig = loadedLearningConfig;
+      widgetContext = loadedWidgetContext;
+      globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
+    }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
     // If target model can't see images, generate text descriptions
@@ -119,6 +269,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = identity.systemPrompt +
         `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
+    }
+
+    // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)
+    // This gives AIs unified knowledge that flows between rooms/contexts
+    if (globalAwareness) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${globalAwareness}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`;
+      this.log('🌐 ChatRAGBuilder: Injected cross-context awareness into system prompt');
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -177,7 +335,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         inputTokenCount: budgetCalculation.inputTokenCount,
 
         // Positron Layer 1: Widget context awareness
-        hasWidgetContext: !!widgetContext
+        hasWidgetContext: !!widgetContext,
+
+        // Cross-context awareness (no severance!)
+        hasGlobalAwareness: !!globalAwareness
       }
     };
 
@@ -949,8 +1110,25 @@ LIMITS:
     // Get context window from centralized config
     const contextWindow = getContextWindow(modelId);
 
-    // Calculate available tokens for messages
-    const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
+    // LATENCY-AWARE BUDGETING: For slow local models, apply latency constraint
+    // This prevents timeouts from massive prompts (e.g., 20K tokens at 10ms/token = 200s!)
+    const latencyInputLimit = getLatencyAwareTokenLimit(modelId);
+    const isSlowModel = isSlowLocalModel(modelId);
+    const inferenceSpeed = getInferenceSpeed(modelId);
+
+    // Calculate context window constraint (total context - output reservation)
+    const contextWindowBudget = contextWindow - maxTokens - systemPromptTokens;
+
+    // Latency constraint applies to INPUT tokens only (not output)
+    // For slow local models: latencyLimit = 30s × 100 TPS = 3000 input tokens
+    const latencyBudget = latencyInputLimit - systemPromptTokens;
+
+    // Use the MORE RESTRICTIVE limit
+    // For fast cloud APIs: contextWindowBudget is usually the limiter
+    // For slow local models: latencyBudget is usually the limiter
+    const availableForMessages = isSlowModel
+      ? Math.min(contextWindowBudget, latencyBudget)
+      : contextWindowBudget;
 
     // Target 80% of available (20% safety margin)
     const targetTokens = availableForMessages * targetUtilization;
@@ -961,9 +1139,19 @@ LIMITS:
     // Clamp between 5 and 50
     const clampedMessageCount = Math.max(5, Math.min(50, safeMessageCount));
 
+    // Log with latency info for slow models
+    const latencyInfo = isSlowModel
+      ? `\n  ⚡ LATENCY CONSTRAINT: ${inferenceSpeed} TPS → ${latencyInputLimit} input tokens @ 30s target`
+      : '';
+    const limitingFactor = isSlowModel && latencyBudget < contextWindowBudget
+      ? ' (LIMITED BY LATENCY)'
+      : '';
+
     this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
   Context Window: ${contextWindow} tokens
-  Available for Messages: ${availableForMessages}
+  Context Budget: ${contextWindowBudget} tokens (after output + system reservation)${latencyInfo}
+  Latency Budget: ${latencyBudget} tokens
+  Available for Messages: ${availableForMessages}${limitingFactor}
   Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
 
     return clampedMessageCount;

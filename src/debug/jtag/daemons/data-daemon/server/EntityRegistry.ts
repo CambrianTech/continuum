@@ -77,6 +77,7 @@ import { SystemConfigEntity } from '../../../system/data/entities/SystemConfigEn
 import { ActivityEntity } from '../../../system/data/entities/ActivityEntity';
 import { CanvasStrokeEntity } from '../../../system/data/entities/CanvasStrokeEntity';
 import { PersonaRAGContextEntity } from '../../../system/data/entities/PersonaRAGContextEntity';
+import { TimelineEventEntity } from '../../../system/data/entities/TimelineEventEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -127,6 +128,7 @@ export function initializeEntityRegistry(): void {
   new ActivityEntity();
   new CanvasStrokeEntity();
   new PersonaRAGContextEntity();
+  new TimelineEventEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -169,6 +171,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(ActivityEntity.collection, ActivityEntity);
   registerEntity(CanvasStrokeEntity.collection, CanvasStrokeEntity);
   registerEntity(PersonaRAGContextEntity.collection, PersonaRAGContextEntity);
+  registerEntity(TimelineEventEntity.collection, TimelineEventEntity);
 
   log.info('All entities registered');
 }

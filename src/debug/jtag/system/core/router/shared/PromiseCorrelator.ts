@@ -100,7 +100,7 @@ export class PromiseCorrelator implements IPromiseCorrelator {
     } catch (error) {
       // Clean up on error
       this.pendingRequests.delete(message.correlationId);
-      console.error(`❌ PromiseCorrelator: Request failed:`, error);
+      // Caller handles errors - no need to double-log
       throw error;
     }
   }
@@ -114,13 +114,8 @@ export class PromiseCorrelator implements IPromiseCorrelator {
       return false;
     }
 
-    console.log(`📨 PromiseCorrelator: Received response for ${response.correlationId}`);
-
     // Check if we have a pending request for this correlation
     const pendingRequest = this.pendingRequests.get(response.correlationId);
-    if (!pendingRequest) {
-      console.warn(`⚠️ PromiseCorrelator: No pending request found for ${response.correlationId}`);
-    }
 
     // Resolve the correlated promise
     const resolved = this.responseCorrelator.resolveRequest(response.correlationId, response.payload);

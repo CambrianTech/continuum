@@ -17,6 +17,7 @@ import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIP
 import type { TextGenerationRequest, TextGenerationResponse } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RAGContext } from '../../rag/shared/RAGTypes';
 import { AIDecisionLogger } from './AIDecisionLogger';
+import { InferenceCoordinator } from '../../coordination/server/InferenceCoordinator';
 
 /**
  * AI Gating Decision - Result of "should I respond?" evaluation
@@ -98,15 +99,43 @@ export class AIDecisionService {
 
   /**
    * Evaluate whether AI should respond to a message (gating)
+   *
+   * COORDINATION: Requests inference slot before calling AI to prevent flooding
+   * the serial gRPC server with simultaneous requests from all personas.
    */
   static async evaluateGating(
     context: AIDecisionContext,
     options: {
       model?: string;
       temperature?: number;
+      isMentioned?: boolean;  // @mentioned personas bypass slot limits
+      messageId?: string;     // For slot tracking
     } = {}
   ): Promise<AIGatingDecision> {
-    const model = options.model ?? 'llama3.2:1b';
+    // Use Groq for gating - it's fast (<1s) and frees local inference for actual responses
+    // Local inference takes ~10s per request, causing queue buildup when multiple personas gate
+    const model = options.model ?? 'llama-3.1-8b-instant';
+    const provider = 'groq';
+
+    // Request inference slot to prevent thundering herd
+    const messageId = options.messageId ?? context.triggerMessage?.id ?? 'gating-' + Date.now();
+    const slotGranted = await InferenceCoordinator.requestSlot(
+      context.personaId,
+      messageId,
+      provider,
+      { isMentioned: options.isMentioned }
+    );
+
+    if (!slotGranted) {
+      // Slot denied - return "don't respond" to prevent flooding
+      return {
+        shouldRespond: false,
+        confidence: 0.0,
+        reason: 'Inference slot denied (coordinator rate limiting)',
+        model,
+        timestamp: Date.now()
+      };
+    }
 
     try {
       // Build gating prompt
@@ -121,10 +150,13 @@ export class AIDecisionService {
         model,
         temperature: options.temperature ?? 0.3,
         maxTokens: 200,
-        preferredProvider: 'ollama'
+        preferredProvider: 'groq'
       };
 
       const response = await AIProviderDaemon.generateText(request);
+
+      // Release slot after successful generation
+      InferenceCoordinator.releaseSlot(context.personaId, provider);
 
       // Parse response
       const parsed = this.parseGatingResponse(response.text);
@@ -164,6 +196,9 @@ export class AIDecisionService {
       return decision;
 
     } catch (error) {
+      // Release slot on error
+      InferenceCoordinator.releaseSlot(context.personaId, provider);
+
       const errorMessage = error instanceof Error ? error.message : String(error);
       AIDecisionLogger.logError(context.personaName, 'Gating evaluation', errorMessage);
 
@@ -180,21 +215,48 @@ export class AIDecisionService {
 
   /**
    * Check if AI response is redundant
+   *
+   * COORDINATION: Requests inference slot before calling AI to prevent flooding
+   * the serial gRPC server with simultaneous requests from all personas.
    */
   static async checkRedundancy(
     generatedText: string,
     context: AIDecisionContext,
     options: {
       model?: string;
+      messageId?: string;  // For slot tracking
     } = {}
   ): Promise<AIRedundancyCheck> {
-    const model = options.model ?? 'llama3.2:3b';
+    // Use Groq for redundancy check - fast and frees local inference for actual responses
+    const model = options.model ?? 'llama-3.1-8b-instant';
+    const provider = 'groq';
+
+    // Request inference slot to prevent thundering herd
+    const messageId = options.messageId ?? context.triggerMessage?.id ?? 'redundancy-' + Date.now();
+    const slotGranted = await InferenceCoordinator.requestSlot(
+      context.personaId,
+      messageId,
+      provider
+    );
+
+    if (!slotGranted) {
+      // Slot denied - return "not redundant" to allow response through
+      // (fail open to preserve autonomy)
+      return {
+        isRedundant: false,
+        reason: 'Inference slot denied (coordinator rate limiting)',
+        model,
+        timestamp: Date.now()
+      };
+    }
 
     try {
       // Get recent conversation (questions + answers)
       const recentConversation = context.ragContext.conversationHistory.slice(-10);
 
       if (recentConversation.length === 0) {
+        // Release slot before early return
+        InferenceCoordinator.releaseSlot(context.personaId, provider);
         return {
           isRedundant: false,
           reason: 'No conversation history',
@@ -247,10 +309,13 @@ ${generatedText}
         model,
         temperature: 0.1,
         maxTokens: 100,
-        preferredProvider: 'ollama'
+        preferredProvider: 'groq'
       };
 
       const response = await AIProviderDaemon.generateText(request);
+
+      // Release slot after successful generation
+      InferenceCoordinator.releaseSlot(context.personaId, provider);
 
       // Parse JSON response
       const jsonMatch = response.text.match(/\{[\s\S]*\}/);
@@ -283,6 +348,9 @@ ${generatedText}
       return result;
 
     } catch (error) {
+      // Release slot on error
+      InferenceCoordinator.releaseSlot(context.personaId, provider);
+
       AIDecisionLogger.logError(context.personaName, 'Redundancy check', error instanceof Error ? error.message : String(error));
 
       // Fail open - allow response on error
@@ -297,6 +365,9 @@ ${generatedText}
 
   /**
    * Generate AI response text
+   *
+   * COORDINATION: Requests inference slot before calling AI to prevent flooding
+   * the serial gRPC server with simultaneous requests from all personas.
    */
   static async generateResponse(
     context: AIDecisionContext,
@@ -305,11 +376,28 @@ ${generatedText}
       temperature?: number;
       maxTokens?: number;
       timeoutMs?: number;
+      isMentioned?: boolean;  // @mentioned personas bypass slot limits
+      messageId?: string;     // For slot tracking
     } = {}
   ): Promise<AIGenerationResult> {
     const startTime = Date.now();
     const model = options.model ?? 'llama3.2:3b';
     const timeoutMs = options.timeoutMs ?? 45000;
+    const provider = 'ollama';  // Response generation uses local inference
+
+    // Request inference slot to prevent thundering herd
+    const messageId = options.messageId ?? context.triggerMessage?.id ?? 'generate-' + Date.now();
+    const slotGranted = await InferenceCoordinator.requestSlot(
+      context.personaId,
+      messageId,
+      provider,
+      { isMentioned: options.isMentioned }
+    );
+
+    if (!slotGranted) {
+      // Slot denied - throw error to let caller handle
+      throw new Error('Inference slot denied (coordinator rate limiting)');
+    }
 
     try {
       // Build message array from RAG context
@@ -333,6 +421,9 @@ ${generatedText}
         timeoutPromise
       ]);
 
+      // Release slot after successful generation
+      InferenceCoordinator.releaseSlot(context.personaId, provider);
+
       const responseTime = Date.now() - startTime;
 
       return {
@@ -348,6 +439,9 @@ ${generatedText}
       };
 
     } catch (error) {
+      // Release slot on error
+      InferenceCoordinator.releaseSlot(context.personaId, provider);
+
       const errorMessage = error instanceof Error ? error.message : String(error);
       AIDecisionLogger.logError(context.personaName, 'Response generation', errorMessage);
       throw error;

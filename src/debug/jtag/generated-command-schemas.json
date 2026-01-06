@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-02T05:55:50.409Z",
+  "generated": "2026-01-06T22:05:05.706Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1043,6 +1043,17 @@
       }
     },
     {
+      "name": "persona/genome",
+      "description": "Persona Genome Command - Shared Types\n *\n * Get persona genome information including base model, layers, and traits",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "media/resize",
       "description": "Media Resize Command Types\n *\n * Image resizing via sharp library with model-aware dimension calculation.\n * Enables PersonaUsers to receive appropriately-sized images based on their\n * model's context window capacity.",
       "params": {
@@ -1745,6 +1756,47 @@
       }
     },
     {
+      "name": "inference/generate",
+      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": true,
+          "description": "prompt parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "temperature parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "adapters": {
+          "type": "array",
+          "required": false,
+          "description": "adapters parameter"
+        }
+      }
+    },
+    {
       "name": "help",
       "description": "Help Command - Shared Types\n *\n * Discover and display help documentation from command READMEs, auto-generating templates for gaps",
       "params": {
@@ -2062,6 +2114,37 @@
           "type": "string",
           "required": false,
           "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "development/timing",
+      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl\n * Provides percentile analysis (P50/P95/P99) for performance monitoring.",
+      "params": {
+        "windowMinutes": {
+          "type": "number",
+          "required": false,
+          "description": "windowMinutes parameter"
+        },
+        "requestType": {
+          "type": "string",
+          "required": false,
+          "description": "requestType parameter"
+        },
+        "showBreakdown": {
+          "type": "boolean",
+          "required": false,
+          "description": "showBreakdown parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "clear": {
+          "type": "boolean",
+          "required": false,
+          "description": "clear parameter"
         }
       }
     },
@@ -3364,6 +3447,22 @@
           "type": "string",
           "required": false,
           "description": "to parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/dm",
+      "description": "DM Command Types\n * Get or create a private room with specific participants\n *\n * Set theory: {A, B} == {B, A} - participant order doesn't matter\n * Works with any number of participants (2+ for group DM)",
+      "params": {
+        "participants": {
+          "type": "array",
+          "required": true,
+          "description": "participants parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
         }
       }
     },
@@ -5192,6 +5291,89 @@
           "type": "boolean",
           "required": false,
           "description": "all parameter"
+        }
+      }
+    },
+    {
+      "name": "adapter/try",
+      "description": "Adapter Try Command - Shared Types\n *\n * Temporarily load a LoRA adapter and run A/B comparison test",
+      "params": {
+        "adapterId": {
+          "type": "string",
+          "required": true,
+          "description": "adapterId parameter"
+        },
+        "testPrompt": {
+          "type": "string",
+          "required": true,
+          "description": "testPrompt parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        }
+      }
+    },
+    {
+      "name": "adapter/search",
+      "description": "Adapter Search Command - Shared Types\n *\n * Search for LoRA adapters across registries (HuggingFace, local, mesh)",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "source": {
+          "type": "string",
+          "required": false,
+          "description": "source parameter"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "description": "sort parameter"
+        }
+      }
+    },
+    {
+      "name": "adapter/adopt",
+      "description": "Adapter Adopt Command - Shared Types\n *\n * Add an adapter to a persona's genome, making it a permanent trait",
+      "params": {
+        "adapterId": {
+          "type": "string",
+          "required": true,
+          "description": "adapterId parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": false,
+          "description": "traitType parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     }

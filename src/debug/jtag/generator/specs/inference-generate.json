@@ -1,0 +1,113 @@
+{
+  "name": "inference/generate",
+  "description": "Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+  "params": [
+    {
+      "name": "prompt",
+      "type": "string",
+      "optional": false,
+      "description": "The prompt text to generate from"
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "optional": true,
+      "description": "Model to use (e.g., 'llama3.2:3b', 'Qwen/Qwen2-1.5B-Instruct'). Defaults to LOCAL_MODELS.DEFAULT"
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "optional": true,
+      "description": "Preferred provider: 'candle' | 'ollama' | 'anthropic' | 'openai' | 'groq' | 'together' | 'fireworks'. Auto-routes if not specified"
+    },
+    {
+      "name": "maxTokens",
+      "type": "number",
+      "optional": true,
+      "description": "Maximum tokens to generate (default: 2048)"
+    },
+    {
+      "name": "temperature",
+      "type": "number",
+      "optional": true,
+      "description": "Sampling temperature 0.0-2.0 (default: 0.7)"
+    },
+    {
+      "name": "systemPrompt",
+      "type": "string",
+      "optional": true,
+      "description": "System prompt to prepend"
+    },
+    {
+      "name": "adapters",
+      "type": "string[]",
+      "optional": true,
+      "description": "LoRA adapter names to apply (local inference only). Skips missing adapters gracefully"
+    }
+  ],
+  "results": [
+    {
+      "name": "text",
+      "type": "string",
+      "description": "Generated text"
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "description": "Actual model used (may differ from requested if mapped)"
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "description": "Provider that handled the request"
+    },
+    {
+      "name": "isLocal",
+      "type": "boolean",
+      "description": "Whether inference was local (Candle/Ollama) or cloud"
+    },
+    {
+      "name": "adaptersApplied",
+      "type": "string[]",
+      "description": "LoRA adapters that were actually applied"
+    },
+    {
+      "name": "inputTokens",
+      "type": "number",
+      "description": "Number of input tokens processed"
+    },
+    {
+      "name": "outputTokens",
+      "type": "number",
+      "description": "Number of tokens generated"
+    },
+    {
+      "name": "responseTimeMs",
+      "type": "number",
+      "description": "Total response time in milliseconds"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Simple local generation",
+      "command": "./jtag inference/generate --prompt=\"Say hello\"",
+      "expectedResult": "{ text: \"Hello! How can I help?\", provider: \"candle\", isLocal: true }"
+    },
+    {
+      "description": "Specify model and max tokens",
+      "command": "./jtag inference/generate --prompt=\"Explain recursion\" --model=\"llama3.2:3b\" --maxTokens=500",
+      "expectedResult": "{ text: \"Recursion is...\", model: \"Qwen/Qwen2-1.5B-Instruct\" }"
+    },
+    {
+      "description": "Use cloud provider",
+      "command": "./jtag inference/generate --prompt=\"Write a haiku\" --provider=\"anthropic\"",
+      "expectedResult": "{ text: \"...\", provider: \"anthropic\", isLocal: false }"
+    },
+    {
+      "description": "Apply LoRA adapters",
+      "command": "./jtag inference/generate --prompt=\"Review this code\" --adapters='[\"typescript-expertise\"]'",
+      "expectedResult": "{ adaptersApplied: [\"typescript-expertise\"] }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -28,7 +28,7 @@ import type {
   TrainingStatus
 } from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -215,7 +215,22 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
       const savedPath = await this.saveAdapter(request, outputDir);
       this.log('debug', `   Adapter saved: ${savedPath}`);
 
-      // 7. Clean up temp files
+      // 7. Register with Ollama as a new model for inference
+      let ollamaModelName: string | undefined;
+      try {
+        ollamaModelName = await this.registerWithOllama(
+          request.personaName,
+          request.traitType,
+          savedPath,
+          request.baseModel ?? 'llama3.2:3b'
+        );
+      } catch (regError) {
+        // Registration failed but training succeeded - log but don't fail
+        this.log('warn', `   Ollama registration failed, adapter saved but not registered for inference`);
+        this.log('warn', `   Error: ${regError instanceof Error ? regError.message : String(regError)}`);
+      }
+
+      // 8. Clean up temp files
       await this.cleanupTempFiles(datasetPath);
 
       const trainingTime = Date.now() - startTime;
@@ -223,6 +238,7 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
       return {
         success: true,
         modelPath: savedPath,
+        ollamaModelName, // NEW: The registered model name for inference
         metrics: {
           trainingTime,
           finalLoss: metrics.finalLoss,
@@ -448,6 +464,86 @@ export class OllamaLoRAAdapter extends BaseLoRATrainerServer {
     await fs.promises.copyFile(sourcePath, destPath);
 
     return destPath;
+  }
+
+  /**
+   * Register trained adapter with Ollama as a new model
+   *
+   * Creates a new Ollama model that uses the trained adapter:
+   * 1. Generate versioned model name (e.g., helper-ai-chat-v1234567890)
+   * 2. Create Modelfile with FROM base + ADAPTER path
+   * 3. Run `ollama create` to register the model
+   *
+   * After registration, the model can be used directly in inference:
+   *   ollama run helper-ai-chat-v1234567890 "Hello"
+   *
+   * @param personaName - Persona name for model naming
+   * @param traitType - Domain/trait for model naming
+   * @param adapterPath - Path to the trained .bin adapter file
+   * @param baseModel - Base model to extend (e.g., 'llama3.2:3b')
+   * @returns The registered Ollama model name
+   * @protected
+   */
+  protected async registerWithOllama(
+    personaName: string,
+    traitType: string,
+    adapterPath: string,
+    baseModel: string
+  ): Promise<string> {
+    // 1. Generate versioned model name
+    const sanitizedName = personaName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const sanitizedTrait = traitType.toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const version = Date.now();
+    const modelName = `${sanitizedName}-${sanitizedTrait}-v${version}`;
+
+    this.log('info', `   Registering with Ollama as: ${modelName}`);
+
+    // 2. Convert adapter to absolute path
+    const absoluteAdapterPath = path.isAbsolute(adapterPath)
+      ? adapterPath
+      : path.resolve(process.cwd(), adapterPath);
+
+    // 3. Verify adapter file exists
+    if (!fs.existsSync(absoluteAdapterPath)) {
+      throw new Error(`Adapter file not found: ${absoluteAdapterPath}`);
+    }
+
+    // 4. Create Modelfile
+    const modelfileContent = `FROM ${baseModel}\nADAPTER ${absoluteAdapterPath}\n`;
+    const modelfilePath = path.join(os.tmpdir(), `Modelfile-${modelName}`);
+    await fs.promises.writeFile(modelfilePath, modelfileContent, 'utf-8');
+
+    this.log('debug', `   Modelfile: ${modelfilePath}`);
+    this.log('debug', `   Content:\n${modelfileContent}`);
+
+    // 5. Register with Ollama (ollama create)
+    try {
+      execSync(`ollama create ${modelName} -f ${modelfilePath}`, {
+        timeout: 120000, // 2 minute timeout
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      this.log('info', `   ✅ Registered Ollama model: ${modelName}`);
+
+      // 6. Clean up Modelfile
+      try {
+        await fs.promises.unlink(modelfilePath);
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      return modelName;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log('error', `   ❌ Failed to register with Ollama: ${errorMsg}`);
+
+      // Check if it's a format issue (llama.cpp .bin vs Ollama .gguf)
+      if (errorMsg.includes('invalid') || errorMsg.includes('format')) {
+        this.log('warn', `   Note: Ollama may require .gguf format. The .bin adapter may need conversion.`);
+      }
+
+      throw new Error(`Failed to register Ollama model: ${errorMsg}`);
+    }
   }
 
   /**

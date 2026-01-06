@@ -101,11 +101,27 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // Register adapters dynamically (server-only code)
     this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
 
+    // Register Candle gRPC adapter (native Rust inference via gRPC)
+    // Higher priority than Ollama when available - proper RPC, cancellation, no stuck requests
+    try {
+      const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
+      const adapter = new CandleGrpcAdapter();
+      await adapter.initialize();
+      await this.registerAdapter(adapter, {
+        priority: 105, // Higher than Ollama - native Rust is faster
+        enabled: true,
+      });
+      this.log.info('✅ AIProviderDaemonServer: Candle gRPC adapter registered (Native Rust inference)');
+    } catch (error) {
+      this.log.warn(`Candle gRPC adapter not available: ${error instanceof Error ? error.message : error}`);
+      // Fall through to Ollama
+    }
+
     // Register Ollama adapter (local, free, private)
-    // maxConcurrent=4 allows multiple AI personas (Helper, Teacher, CodeReview) to generate simultaneously
+    // maxConcurrent calculated dynamically based on CPU cores and memory
     const { OllamaAdapter } = await import('../adapters/ollama/shared/OllamaAdapter');
-    await this.registerAdapter(new OllamaAdapter({ maxConcurrent: 4 }), {
-      priority: 100, // Highest priority - free and local
+    await this.registerAdapter(new OllamaAdapter(), { // Let OllamaAdapter auto-detect optimal concurrency
+      priority: 100, // Highest priority when Candle not available - free and local
       enabled: true,
     });
 

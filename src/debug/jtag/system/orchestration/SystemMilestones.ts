@@ -51,13 +51,14 @@ export const SYSTEM_MILESTONES = {
  * 
  * SIMPLIFIED for initial implementation - minimal viable dependencies
  */
-export const MILESTONE_DEPENDENCIES = {
-  // Simplified: Skip complex build pipeline for now
-  [SYSTEM_MILESTONES.BUILD_TYPESCRIPT_COMPLETE]: [],
-  [SYSTEM_MILESTONES.BUILD_STRUCTURE_COMPLETE]: [],
-  [SYSTEM_MILESTONES.BUILD_COMPLETE]: [],
-  
-  // Simplified: Skip complex deployment pipeline
+export const MILESTONE_DEPENDENCIES: Record<SystemMilestone, readonly SystemMilestone[]> = {
+  // Build Phase - simplified for initial implementation
+  [SYSTEM_MILESTONES.BUILD_START]: [],
+  [SYSTEM_MILESTONES.BUILD_TYPESCRIPT_COMPLETE]: [SYSTEM_MILESTONES.BUILD_START],
+  [SYSTEM_MILESTONES.BUILD_STRUCTURE_COMPLETE]: [SYSTEM_MILESTONES.BUILD_START],
+  [SYSTEM_MILESTONES.BUILD_COMPLETE]: [SYSTEM_MILESTONES.BUILD_START],
+
+  // Deployment Phase - simplified
   [SYSTEM_MILESTONES.DEPLOY_START]: [],
   [SYSTEM_MILESTONES.DEPLOY_PORTS_ALLOCATED]: [],
   [SYSTEM_MILESTONES.DEPLOY_FILES_COMPLETE]: [],
@@ -81,7 +82,7 @@ export const MILESTONE_DEPENDENCIES = {
   
   [SYSTEM_MILESTONES.SYSTEM_HEALTHY]: [SYSTEM_MILESTONES.SERVER_READY],
   [SYSTEM_MILESTONES.SYSTEM_READY]: [SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.BROWSER_READY]
-} as const;
+};
 
 /**
  * Entry point milestone requirements - what each entry point needs
@@ -102,7 +103,7 @@ export const ENTRY_POINT_REQUIREMENTS = {
  * Milestone event data structure
  */
 export interface MilestoneEvent {
-  readonly milestone: keyof typeof SYSTEM_MILESTONES;
+  readonly milestone: SystemMilestone;
   readonly timestamp: number;
   readonly success: boolean;
   readonly error?: string;
@@ -250,8 +251,12 @@ export const MILESTONE_COMPLETION_CRITERIA = {
 
 /**
  * Type definitions
+ *
+ * SystemMilestone is the VALUE type (e.g., 'build_start', 'server_ready')
+ * SystemMilestoneKey is the KEY type (e.g., 'BUILD_START', 'SERVER_READY')
  */
-export type SystemMilestone = keyof typeof SYSTEM_MILESTONES;
+export type SystemMilestoneKey = keyof typeof SYSTEM_MILESTONES;
+export type SystemMilestone = typeof SYSTEM_MILESTONES[SystemMilestoneKey];
 export type EntryPointType = keyof typeof ENTRY_POINT_REQUIREMENTS;
 
 /**

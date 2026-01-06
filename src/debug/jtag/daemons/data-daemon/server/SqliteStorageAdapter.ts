@@ -78,6 +78,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
   private db: sqlite3.Database | null = null;
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
+  private dbPath: string = '';
 
   // Extracted utility classes (Phase 1 refactoring)
   private executor!: SqliteRawExecutor;
@@ -120,12 +121,12 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
 
     // Use explicit filename from options, or fall back to default database path
     // This allows multi-database support (training DBs, etc.) while maintaining backward compatibility
-    const dbPath = options.filename || getDatabasePath();
-    console.log(`🗄️ SqliteStorageAdapter: options.filename=${options.filename}, fallback=${getDatabasePath()}, using=${dbPath}`);
-    log.info(`Using database path: ${dbPath}`);
+    this.dbPath = options.filename || getDatabasePath();
+    console.log(`🗄️ SqliteStorageAdapter: options.filename=${options.filename}, fallback=${getDatabasePath()}, using=${this.dbPath}`);
+    log.info(`Using database path: ${this.dbPath}`);
 
     // Ensure directory exists with proper permissions
-    const dbDir = path.dirname(dbPath);
+    const dbDir = path.dirname(this.dbPath);
     // CRITICAL: Save and set umask to ensure permissions stick
     const oldUmask = process.umask(0o000);
     log.debug(`Saved umask ${oldUmask.toString(8)}, set to 0o000 for permission control`);
@@ -153,7 +154,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       // Check if database file exists before connection
       let dbFileExists = false;
       try {
-        const stats = await fs.stat(dbPath);
+        const stats = await fs.stat(this.dbPath);
         log.debug(`Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
         dbFileExists = true;
       } catch (error) {
@@ -164,19 +165,19 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       // This allows us to set permissions/clear xattr before SQLite touches it
       if (!dbFileExists) {
         log.debug('Creating empty database file');
-        await fs.writeFile(dbPath, '', { mode: 0o666 });
+        await fs.writeFile(this.dbPath, '', { mode: 0o666 });
         log.debug('Empty file created with mode 0o666');
       }
 
       log.debug('Setting file permissions to 0o666');
-      await fs.chmod(dbPath, 0o666);
+      await fs.chmod(this.dbPath, 0o666);
       log.debug('File permissions set successfully');
 
       // Clear extended attributes on macOS BEFORE opening connection (prevents SQLITE_READONLY errors)
       if (process.platform === 'darwin') {
         try {
           log.debug('Clearing macOS extended attributes');
-          await execAsync(`xattr -c "${dbPath}"`);
+          await execAsync(`xattr -c "${this.dbPath}"`);
           log.debug('Extended attributes cleared');
         } catch (error) {
           // This is non-fatal, just log it
@@ -196,7 +197,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
       const mode = sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE;
       log.debug(`Connection mode flags: ${mode}`);
 
-      this.db = new sqlite3.Database(dbPath, mode, (err) => {
+      this.db = new sqlite3.Database(this.dbPath, mode, (err) => {
         if (err) {
           log.error('Failed to open database:', err);
           log.error('Error details:', err.message, (err as any).code || 'NO_CODE');
@@ -255,7 +256,7 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     // This handles cases where filesystem doesn't properly support Unix permissions
     try {
       log.debug('Re-applying file permissions (exFAT workaround)');
-      await fs.chmod(dbPath, 0o666);
+      await fs.chmod(this.dbPath, 0o666);
       log.debug('Post-connection permissions applied');
     } catch (error) {
       log.debug('Could not re-apply permissions (non-fatal):', error);
@@ -276,7 +277,8 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     log.debug('Initializing vector search manager');
     this.vectorSearchManager = new SqliteVectorSearchManager(
       this.executor,
-      this  // DataStorageAdapter for CRUD operations
+      this,  // DataStorageAdapter for CRUD operations
+      this.dbPath  // Pass database path for Rust worker routing
     );
     log.debug('Vector search manager initialized');
 

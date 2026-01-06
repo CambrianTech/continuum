@@ -33,6 +33,7 @@ export interface InboxMessage extends BaseQueueItem {
   content: string;           // Message text
   senderId: UUID;            // Who sent it
   senderName: string;        // Sender display name
+  senderType: 'human' | 'persona' | 'agent' | 'system';  // Sender user type
   mentions?: boolean;        // True if persona mentioned by name
 }
 

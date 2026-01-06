@@ -260,46 +260,57 @@ export class DecisionReportFormatter {
     }
     lines.push('');
 
-    // RAG context
-    if (verbose) {
-      lines.push('**RAG Context (COMPLETE - EXACTLY what AI saw)**:');
+    // RAG context - may be inline or in blob storage
+    if (!decision.ragContext && decision.ragContextRef) {
+      // RAG context is in blob storage (large context)
+      lines.push('**RAG Context**: Stored in blob storage');
+      lines.push(`- Reference: \`${decision.ragContextRef}\``);
+      lines.push('- (Use CoordinationDecisionLogger.retrieveRAGContext() to fetch)');
       lines.push('');
-
-      // FULL system prompt - this is critical
-      lines.push('**System Prompt** (complete):');
-      lines.push('```');
-      lines.push(decision.ragContext.identity.systemPrompt);
-      lines.push('```');
-      lines.push('');
-
-      lines.push('**Identity**:');
-      lines.push(`- Role: ${decision.ragContext.identity.role}`);
-      lines.push(`- Bio: ${decision.ragContext.identity.bio || ''}`);
-      lines.push('');
-
-      // FULL conversation history - every single message
-      lines.push(`**Conversation History** (ALL ${decision.ragContext.conversationHistory.length} messages):`);
-      lines.push('');
-      for (const msg of decision.ragContext.conversationHistory) {
-        const time = new Date(msg.timestamp).toISOString();
-        lines.push(`---`);
-        lines.push(`**[${time}] ${msg.role.toUpperCase()}**:`);
+    } else if (decision.ragContext) {
+      if (verbose) {
+        lines.push('**RAG Context (COMPLETE - EXACTLY what AI saw)**:');
         lines.push('');
-        lines.push(msg.content);  // FULL content, no truncation
+
+        // FULL system prompt - this is critical
+        lines.push('**System Prompt** (complete):');
+        lines.push('```');
+        lines.push(decision.ragContext.identity.systemPrompt);
+        lines.push('```');
+        lines.push('');
+
+        lines.push('**Identity**:');
+        lines.push(`- Role: ${decision.ragContext.identity.role}`);
+        lines.push(`- Bio: ${decision.ragContext.identity.bio || ''}`);
+        lines.push('');
+
+        // FULL conversation history - every single message
+        lines.push(`**Conversation History** (ALL ${decision.ragContext.conversationHistory.length} messages):`);
+        lines.push('');
+        for (const msg of decision.ragContext.conversationHistory) {
+          const time = new Date(msg.timestamp).toISOString();
+          lines.push(`---`);
+          lines.push(`**[${time}] ${msg.role.toUpperCase()}**:`);
+          lines.push('');
+          lines.push(msg.content);  // FULL content, no truncation
+          lines.push('');
+        }
+
+        lines.push(`**Context Metadata**:`);
+        lines.push(`- Token Count: ${decision.ragContext.metadata.tokenCount}`);
+        lines.push(`- Context Window: ${decision.ragContext.metadata.contextWindow}`);
+        lines.push(`- Total Messages: ${decision.ragContext.conversationHistory.length}`);
+        lines.push('');
+      } else {
+        lines.push('**RAG Context Summary**:');
+        lines.push('');
+        lines.push(`- Role: ${decision.ragContext.identity.role}`);
+        lines.push(`- Messages in Context: ${decision.ragContext.conversationHistory.length}`);
+        lines.push(`- Token Count: ~${decision.ragContext.metadata.tokenCount}`);
         lines.push('');
       }
-
-      lines.push(`**Context Metadata**:`);
-      lines.push(`- Token Count: ${decision.ragContext.metadata.tokenCount}`);
-      lines.push(`- Context Window: ${decision.ragContext.metadata.contextWindow}`);
-      lines.push(`- Total Messages: ${decision.ragContext.conversationHistory.length}`);
-      lines.push('');
     } else {
-      lines.push('**RAG Context Summary**:');
-      lines.push('');
-      lines.push(`- Role: ${decision.ragContext.identity.role}`);
-      lines.push(`- Messages in Context: ${decision.ragContext.conversationHistory.length}`);
-      lines.push(`- Token Count: ~${decision.ragContext.metadata.tokenCount}`);
+      lines.push('**RAG Context**: Not available');
       lines.push('');
     }
 

@@ -69,8 +69,34 @@ export class LLMAdapter implements IDecisionAdapter {
         }
       };
 
-      // Use configured gating model (defaults to llama3.2:3b)
-      const gatingModel = context.gatingModel ?? 'llama3.2:3b';
+      // Map gating model mode to actual model name
+      // 'deterministic' = skip LLM, use simple heuristics
+      // 'small' = fast model (llama3.2:1b)
+      // 'full' = accurate model (llama3.2:3b)
+      const gatingModelMap: Record<string, string | null> = {
+        'deterministic': null,     // Skip LLM gating
+        'small': 'llama3.2:1b',    // Fast (~150-200ms)
+        'full': 'llama3.2:3b'      // Accurate (~400-500ms)
+      };
+
+      // Default to 'deterministic' to avoid queue contention with main generation
+      // LLM gating requires inference which blocks the single-threaded worker
+      // ThermalAdapter + FastPathAdapter provide good enough heuristic gating
+      const gatingModelKey = context.gatingModel ?? 'deterministic';
+      const gatingModel = gatingModelMap[gatingModelKey] ?? gatingModelKey; // If not in map, use as literal model name
+
+      // If gatingModel is null (deterministic mode), skip LLM and use heuristics
+      if (gatingModel === null) {
+        // Deterministic mode: simple bag-of-words / keyword matching
+        // For now, default to low-confidence "should respond" if recent conversation exists
+        const hasRecentActivity = recentHistory.length > 0;
+        return {
+          shouldRespond: hasRecentActivity,
+          confidence: 0.4, // Low confidence - let other factors decide
+          reason: 'Deterministic mode: simple heuristic based on recent activity',
+          model: 'deterministic'
+        };
+      }
 
       // Call AIDecisionService for gating decision
       const result = await AIDecisionService.evaluateGating(aiContext, {

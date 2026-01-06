@@ -36,7 +36,7 @@ Continuum integrates with multiple AI providers. Add your API keys to enable eac
 | **Fireworks AI** | `FIREWORKS_API_KEY` | Fast inference, fine-tuning | Pay per token |
 | **Groq** | `GROQ_API_KEY` | Ultra-fast inference (LPU) | Pay per token |
 | **Mistral AI** | `MISTRAL_API_KEY` | Mistral models | Pay per token |
-| **HuggingFace** | `HUGGINGFACE_API_KEY` | Model hub, inference API | Free tier + paid |
+| **HuggingFace** | `HF_TOKEN` | Model hub, inference API | Free tier + paid |
 | **Ollama** | (local) | Local models, free, private | Free (your hardware) |
 
 ### Example Configuration
@@ -54,7 +54,7 @@ FIREWORKS_API_KEY=xxxxx
 FIREWORKS_ACCOUNT_ID=xxxxx
 GROQ_API_KEY=gsk_xxxxx
 MISTRAL_API_KEY=xxxxx
-HUGGINGFACE_API_KEY=hf_xxxxx
+HF_TOKEN=hf_xxxxx
 ```
 
 ### Provider Capabilities

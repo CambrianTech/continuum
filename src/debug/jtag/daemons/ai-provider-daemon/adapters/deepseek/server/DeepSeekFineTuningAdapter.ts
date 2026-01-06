@@ -15,14 +15,11 @@
  * SERVER-ONLY: Uses Node.js for HTTP requests and file system
  */
 
-import { BaseLoRATrainer } from '../../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
-import { TrainingDatasetBuilder } from '../../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
+import { BaseLoRATrainerServer } from '../../../../../system/genome/fine-tuning/server/BaseLoRATrainerServer';
 import type {
   LoRATrainingRequest,
-  LoRATrainingResult,
   FineTuningCapabilities,
   FineTuningStrategy,
-  TrainingDataset,
   TrainingStatus
 } from '../../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
@@ -38,7 +35,7 @@ import { FormData } from 'formdata-node';
  * Current Status: MVP stub (interface only)
  * Full Implementation: Phase 7.1+
  */
-export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
+export class DeepSeekLoRAAdapter extends BaseLoRATrainerServer {
   readonly providerId = 'deepseek';
   private readonly config: DeepSeekBaseConfig;
 
@@ -114,90 +111,117 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
   }
 
   /**
-   * Train LoRA adapter
+   * Start training (async pattern primitive)
    *
-   * Phase 7.1: Upload dataset to DeepSeek API and monitor training job
-   *
-   * @param request Training configuration
-   * @returns Training result with model ID
+   * Uploads dataset, creates job, returns handle immediately.
+   * NO BLOCKING - returns in seconds!
    */
-  async trainLoRA(request: LoRATrainingRequest): Promise<LoRATrainingResult> {
-    // Validate request first
-    this.validateRequest(request);
-
+  protected async _startTraining(
+    request: LoRATrainingRequest
+  ): Promise<import('../../../../../system/genome/fine-tuning/shared/FineTuningTypes').TrainingHandle> {
     // Check API key
     const apiKey = this.config.apiKey;
     if (!apiKey) {
-      return {
-        success: false,
-        error: 'DEEPSEEK_API_KEY not configured. Please add it to ~/.continuum/config.env'
-      };
+      throw new Error('DEEPSEEK_API_KEY not configured. Please add it to ~/.continuum/config.env');
     }
 
-    this.log('info', '🚀 DeepSeek: Starting cloud-based LoRA training...');
-    const startTime = Date.now();
+    this.log('info', '🚀 DeepSeek: Starting async training job...');
 
-    try {
-      // 1. Export dataset to JSONL
-      this.log('info', '   Exporting dataset to JSONL...');
-      const datasetPath = await this.exportDatasetToJSONL(request.dataset);
-      this.log('debug', `   Dataset exported: ${datasetPath}`);
+    // 1. Export dataset to JSONL
+    this.log('info', '   Exporting dataset to JSONL...');
+    const datasetPath = path.join(os.tmpdir(), `deepseek-training-${Date.now()}.jsonl`);
+    await this.exportDatasetToJSONL(request.dataset, datasetPath);
 
-      // 2. Upload dataset to DeepSeek
-      this.log('info', '   Uploading dataset to DeepSeek API...');
-      const datasetId = await this.uploadDataset(datasetPath, apiKey);
-      this.log('debug', `   Dataset uploaded: ${datasetId}`);
+    // 2. Upload dataset to DeepSeek
+    this.log('info', '   Uploading dataset to DeepSeek API...');
+    const fileId = await this.uploadDataset(datasetPath, apiKey);
 
-      // 3. Create fine-tuning job
-      this.log('info', '   Creating fine-tuning job...');
-      const jobId = await this.createFineTuningJob(request, datasetId, apiKey);
-      this.log('debug', `   Job created: ${jobId}`);
+    // 3. Create fine-tuning job
+    this.log('info', '   Creating fine-tuning job...');
+    const jobId = await this.createFineTuningJob(request, fileId, apiKey);
 
-      // 4. Monitor job progress
-      this.log('info', '   Monitoring training progress...');
-      const metrics = await this.monitorTrainingJob(jobId, apiKey);
-      this.log('info', '   Training complete!');
+    // 4. Clean up temp file
+    await this.cleanupTempFiles(datasetPath);
 
-      // 5. Get trained model ID
-      const modelId = await this.getTrainedModelId(jobId, apiKey);
-      this.log('debug', `   Model ID: ${modelId}`);
-
-      // 6. Save adapter metadata
-      const metadataPath = await this.saveAdapterMetadata(request, modelId, metrics);
-      this.log('debug', `   Metadata saved: ${metadataPath}`);
-
-      // 7. Clean up temp files
-      await this.cleanupTempFiles(datasetPath);
-
-      const trainingTime = Date.now() - startTime;
-
-      return {
-        success: true,
-        modelId,
-        modelPath: metadataPath,
-        metrics: {
-          trainingTime,
-          finalLoss: metrics.finalLoss,
-          examplesProcessed: request.dataset.examples.length,
-          epochs: request.epochs ?? 3
-        }
-      };
-
-    } catch (error) {
-      this.log('error', `❌ DeepSeek training failed: ${error instanceof Error ? error.message : String(error)}`);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
+    // Return handle for async monitoring
+    return {
+      jobId,
+      fileId,
+      metadata: {
+        baseModel: request.baseModel,
+        personaId: request.personaId,
+        personaName: request.personaName,
+        traitType: request.traitType
+      }
+    };
   }
 
   /**
-   * Check training status - NOT IMPLEMENTED YET
-   * TODO: Implement async handle pattern for this adapter
+   * Query training status (async pattern primitive)
+   *
+   * Polls DeepSeek API for job status.
+   * FAST - returns immediately!
    */
-  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
-    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
+  protected async _queryStatus(
+    _sessionId: UUID,
+    providerJobId: string,
+    _metadata: Record<string, unknown>
+  ): Promise<TrainingStatus> {
+    const apiKey = this.config.apiKey;
+    if (!apiKey) {
+      return { status: 'failed', error: 'DEEPSEEK_API_KEY not configured' };
+    }
+
+    try {
+      const response = await globalThis.fetch(
+        `${this.config.baseUrl}/v1/fine_tuning/jobs/${providerJobId}`,
+        { headers: { 'Authorization': `Bearer ${apiKey}` } }
+      );
+
+      if (!response.ok) {
+        return { status: 'failed', error: `API error: ${response.status}` };
+      }
+
+      const job = await response.json() as {
+        status: string;
+        fine_tuned_model?: string;
+        result_files?: Array<{ metrics?: { final_loss?: number } }>;
+        error?: { message?: string };
+      };
+
+      // Map DeepSeek status to our status
+      switch (job.status) {
+        case 'succeeded':
+          return {
+            status: 'completed',
+            modelId: job.fine_tuned_model,
+            metadata: {
+              finalLoss: job.result_files?.[0]?.metrics?.final_loss
+            }
+          };
+
+        case 'failed':
+        case 'cancelled':
+          return {
+            status: 'failed',
+            error: job.error?.message ?? `Training ${job.status}`
+          };
+
+        case 'running':
+        case 'validating_files':
+        case 'queued':
+        default:
+          return {
+            status: 'running',
+            progress: job.status === 'running' ? 50 : 10  // Rough progress estimate
+          };
+      }
+    } catch (error) {
+      return {
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   /**
@@ -248,17 +272,6 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
   }
 
   // ==================== IMPLEMENTATION (Phase 7.1) ====================
-
-  /**
-   * Export dataset to JSONL file
-   * @private
-   */
-  protected async exportDatasetToJSONL(dataset: TrainingDataset): Promise<string> {
-    const tempPath = path.join(os.tmpdir(), `deepseek-training-${Date.now()}.jsonl`);
-    const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
-    await fs.promises.writeFile(tempPath, jsonl, 'utf-8');
-    return tempPath;
-  }
 
   /**
    * Upload dataset to DeepSeek API
@@ -326,99 +339,6 @@ export class DeepSeekLoRAAdapter extends BaseLoRATrainer {
 
     const data = await response.json() as { id: string };
     return data.id; // Job ID
-  }
-
-  /**
-   * Monitor training job until complete
-   * @private
-   */
-  private async monitorTrainingJob(jobId: string, apiKey: string): Promise<{ finalLoss: number }> {
-    // Poll job status every 10 seconds
-    let attempts = 0;
-    const maxAttempts = 360; // 1 hour max (10s * 360 = 3600s)
-
-    while (attempts < maxAttempts) {
-      const response = await globalThis.fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to check job status: ${response.status}`);
-      }
-
-      const job = await response.json() as {
-        status: string;
-        result_files?: Array<{ metrics?: { final_loss?: number } }>;
-        error?: { message?: string };
-      };
-
-      if (job.status === 'succeeded') {
-        return {
-          finalLoss: job.result_files?.[0]?.metrics?.final_loss ?? 0.5
-        };
-      } else if (job.status === 'failed' || job.status === 'cancelled') {
-        throw new Error(`Training ${job.status}: ${job.error?.message ?? 'Unknown error'}`);
-      }
-
-      // Log progress
-      this.log('debug', `   Status: ${job.status} (attempt ${attempts + 1}/${maxAttempts})`);
-
-      // Wait 10 seconds before next poll
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      attempts++;
-    }
-
-    throw new Error('Training timeout: exceeded 1 hour');
-  }
-
-  /**
-   * Get trained model ID
-   * @private
-   */
-  private async getTrainedModelId(jobId: string, apiKey: string): Promise<string> {
-    const response = await globalThis.fetch(`${this.config.baseUrl}/v1/fine_tuning/jobs/${jobId}`, {
-      headers: { 'Authorization': `Bearer ${apiKey}` }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to get model ID: ${response.status}`);
-    }
-
-    const job = await response.json() as { fine_tuned_model: string };
-    return job.fine_tuned_model; // Model ID for inference
-  }
-
-  /**
-   * Save adapter metadata
-   * @private
-   */
-  private async saveAdapterMetadata(
-    request: LoRATrainingRequest,
-    modelId: string,
-    metrics: { finalLoss: number }
-  ): Promise<string> {
-    const metadataPath = path.join(
-      '.continuum/genome/adapters',
-      `${request.baseModel ?? 'deepseek-chat'}-${request.traitType}-${Date.now()}.json`
-    );
-
-    await fs.promises.mkdir(path.dirname(metadataPath), { recursive: true });
-
-    await fs.promises.writeFile(
-      metadataPath,
-      JSON.stringify({
-        provider: 'deepseek',
-        modelId,
-        baseModel: request.baseModel,
-        traitType: request.traitType,
-        personaId: request.personaId,
-        personaName: request.personaName,
-        metrics,
-        createdAt: Date.now()
-      }, null, 2)
-    );
-
-    return metadataPath;
   }
 
   /**

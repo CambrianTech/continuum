@@ -126,6 +126,55 @@ enum Request {
         /// If true, return full record data (not just IDs) - eliminates k IPC round trips
         include_data: Option<bool>,
     },
+
+    /// Store JSON data in content-addressable blob storage
+    /// Returns sha256 hash for retrieval
+    #[serde(rename = "blob/store")]
+    BlobStore {
+        /// JSON data to store (will be compressed)
+        data: Value,
+        /// Base path for blob storage (default: ~/.continuum/blobs)
+        base_path: Option<String>,
+    },
+
+    /// Retrieve JSON data from blob storage by hash
+    #[serde(rename = "blob/retrieve")]
+    BlobRetrieve {
+        /// SHA256 hash (format: "sha256:abc123...")
+        hash: String,
+        /// Base path for blob storage
+        base_path: Option<String>,
+    },
+
+    /// Check if blob exists
+    #[serde(rename = "blob/exists")]
+    BlobExists {
+        hash: String,
+        base_path: Option<String>,
+    },
+
+    /// Delete blob by hash
+    #[serde(rename = "blob/delete")]
+    BlobDelete {
+        hash: String,
+        base_path: Option<String>,
+    },
+
+    /// Get blob storage statistics
+    #[serde(rename = "blob/stats")]
+    BlobStats {
+        base_path: Option<String>,
+    },
+
+    /// Execute a raw SQL query with optional JOIN support
+    /// Returns raw query results - caller does any transformation
+    /// Use for complex queries that would otherwise require multiple IPC round trips
+    #[serde(rename = "data/query")]
+    DataQuery {
+        handle: AdapterHandle,
+        /// Raw SQL query string (SELECT only, no modifications)
+        sql: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -234,38 +283,42 @@ fn detect_storage_type(path: &Path) -> StorageType {
 }
 
 /// Get optimized SQLite pragmas based on storage type and workload
+///
+/// IMPORTANT: In multi_writer mode, we NEVER set journal_mode or locking_mode.
+/// TypeScript (better-sqlite3) already has the database open, and changing these
+/// pragmas requires exclusive access which would fail with "database is locked".
 fn get_sqlite_pragmas(storage: StorageType, multi_writer: bool) -> String {
-    match storage {
-        StorageType::InternalSSD => {
-            // Fast internal SSD - can use WAL safely
-            if multi_writer {
-                "PRAGMA journal_mode=WAL; \
-                 PRAGMA synchronous=NORMAL; \
-                 PRAGMA temp_store=MEMORY; \
-                 PRAGMA busy_timeout=5000;".to_string()
-            } else {
+    if multi_writer {
+        // Multi-writer mode: Only set pragmas that don't require exclusive access
+        // Skip journal_mode (TypeScript already set it)
+        // Skip locking_mode (would conflict with TypeScript)
+        "PRAGMA synchronous=NORMAL; \
+         PRAGMA temp_store=MEMORY; \
+         PRAGMA busy_timeout=5000;".to_string()
+    } else {
+        // Single-writer mode: Can set everything
+        match storage {
+            StorageType::InternalSSD => {
                 "PRAGMA journal_mode=WAL; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA temp_store=MEMORY; \
                  PRAGMA locking_mode=EXCLUSIVE; \
                  PRAGMA busy_timeout=5000;".to_string()
             }
-        }
-        StorageType::ExternalSSD => {
-            // External SSD - WAL OK but more conservative
-            "PRAGMA journal_mode=WAL; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA wal_autocheckpoint=1000; \
-             PRAGMA temp_store=MEMORY; \
-             PRAGMA busy_timeout=5000;".to_string()
-        }
-        StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
-            // SD card / HDD / Unknown - NO WAL (reliability over concurrency)
-            "PRAGMA journal_mode=DELETE; \
-             PRAGMA synchronous=NORMAL; \
-             PRAGMA temp_store=MEMORY; \
-             PRAGMA locking_mode=EXCLUSIVE; \
-             PRAGMA busy_timeout=5000;".to_string()
+            StorageType::ExternalSSD => {
+                "PRAGMA journal_mode=WAL; \
+                 PRAGMA synchronous=NORMAL; \
+                 PRAGMA wal_autocheckpoint=1000; \
+                 PRAGMA temp_store=MEMORY; \
+                 PRAGMA busy_timeout=5000;".to_string()
+            }
+            StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
+                "PRAGMA journal_mode=DELETE; \
+                 PRAGMA synchronous=NORMAL; \
+                 PRAGMA temp_store=MEMORY; \
+                 PRAGMA locking_mode=EXCLUSIVE; \
+                 PRAGMA busy_timeout=5000;".to_string()
+            }
         }
     }
 }
@@ -421,37 +474,23 @@ impl SqliteStrategy {
 
         println!("🔍 Detected storage type: {:?} for {}", storage_type, connection_path);
 
-        // Check for WAL artifacts before opening
+        // Check for WAL artifacts before opening (indicates prior WAL mode usage)
         let wal_path = format!("{}-wal", connection_path);
         let shm_path = format!("{}-shm", connection_path);
-        let has_wal_artifacts = Path::new(&wal_path).exists() || Path::new(&shm_path).exists();
+        if Path::new(&wal_path).exists() || Path::new(&shm_path).exists() {
+            println!("⚠️  WAL artifacts exist for {} - prior connection may have crashed", connection_path);
+        }
 
         // Open connection
         let conn = rusqlite::Connection::open(&connection_path)
             .map_err(|e| format!("Failed to open SQLite: {}", e))?;
 
-        // If switching FROM WAL to DELETE mode, checkpoint first
-        if has_wal_artifacts && matches!(storage_type, StorageType::SDCard | StorageType::HDD | StorageType::Unknown) {
-            println!("⚠️  Found WAL artifacts, checkpointing before mode switch...");
-
-            // Checkpoint and truncate WAL (force cleanup)
-            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .map_err(|e| format!("Failed to checkpoint WAL: {}", e))?;
-        }
-
-        // Configure based on detected storage (assume single-writer for now)
-        let pragmas = get_sqlite_pragmas(storage_type, false);
+        // Configure with multi_writer=true since TypeScript (better-sqlite3) may have the database open
+        // SKIP journal_mode and locking_mode changes - they require exclusive access
+        // SKIP checkpoint - also requires exclusive access when other connections exist
+        let pragmas = get_sqlite_pragmas(storage_type, true);
         conn.execute_batch(&pragmas)
             .map_err(|e| format!("Failed to configure SQLite: {}", e))?;
-
-        // Verify WAL files are gone if we switched to DELETE mode
-        if has_wal_artifacts && matches!(storage_type, StorageType::SDCard | StorageType::HDD | StorageType::Unknown) {
-            if Path::new(&wal_path).exists() || Path::new(&shm_path).exists() {
-                println!("⚠️  Warning: WAL artifacts still present after mode switch");
-            } else {
-                println!("✅ WAL artifacts cleaned up successfully");
-            }
-        }
 
         let mode_desc = match storage_type {
             StorageType::InternalSSD => "WAL mode - internal SSD optimized",
@@ -838,27 +877,72 @@ impl ConcurrencyStrategy for JsonStrategy {
 }
 
 // ============================================================================
-// Adapter Registry
+// Adapter Registry - with path-based caching for concurrent access
 // ============================================================================
 
 struct AdapterRegistry {
-    adapters: Arc<Mutex<HashMap<AdapterHandle, (AdapterType, Box<dyn ConcurrencyStrategy>)>>>,
+    adapters: Arc<Mutex<HashMap<AdapterHandle, (AdapterType, Arc<dyn ConcurrencyStrategy>)>>>,
+    /// Cache: database path → shared adapter (prevents concurrent opens of same DB)
+    path_cache: Arc<Mutex<HashMap<String, Arc<dyn ConcurrencyStrategy>>>>,
+    /// Serializes adapter opening to prevent concurrent SQLite pragma configuration
+    open_lock: Arc<Mutex<()>>,
 }
 
 impl AdapterRegistry {
     fn new() -> Self {
         Self {
             adapters: Arc::new(Mutex::new(HashMap::new())),
+            path_cache: Arc::new(Mutex::new(HashMap::new())),
+            open_lock: Arc::new(Mutex::new(())),
         }
     }
 
-    fn register(&self, adapter_type: AdapterType, strategy: Box<dyn ConcurrencyStrategy>) -> AdapterHandle {
-        let handle = AdapterHandle::new();
-        let mut adapters = self.adapters.lock().unwrap();
-        adapters.insert(handle, (adapter_type.clone(), strategy));
+    /// Register an adapter, reusing cached connection if available
+    fn register_with_cache(&self, adapter_type: AdapterType, path: &str) -> Result<AdapterHandle, String> {
+        // Serialize all opens to prevent concurrent pragma configuration
+        let _open_guard = self.open_lock.lock().unwrap();
 
-        println!("📝 Registered adapter: {:?} with handle {:?}", adapter_type, handle);
-        handle
+        // Check cache first
+        {
+            let cache = self.path_cache.lock().unwrap();
+            if let Some(existing) = cache.get(path) {
+                // Reuse existing adapter
+                let handle = AdapterHandle::new();
+                let mut adapters = self.adapters.lock().unwrap();
+                adapters.insert(handle, (adapter_type.clone(), existing.clone()));
+                println!("♻️  Reusing cached adapter for: {} → {:?}", path, handle);
+                return Ok(handle);
+            }
+        }
+
+        // Create new adapter (still under open_lock)
+        let strategy: Arc<dyn ConcurrencyStrategy> = match adapter_type {
+            AdapterType::Sqlite => {
+                Arc::new(SqliteStrategy::new(path.to_string())?)
+            }
+            AdapterType::Postgres => {
+                Arc::new(PostgresStrategy {})
+            }
+            AdapterType::Json => {
+                Arc::new(JsonStrategy::new(path.to_string())?)
+            }
+        };
+
+        // Cache the new adapter
+        {
+            let mut cache = self.path_cache.lock().unwrap();
+            cache.insert(path.to_string(), strategy.clone());
+        }
+
+        // Register with new handle
+        let handle = AdapterHandle::new();
+        {
+            let mut adapters = self.adapters.lock().unwrap();
+            adapters.insert(handle, (adapter_type.clone(), strategy));
+        }
+
+        println!("📝 Registered new adapter: {} → {:?}", path, handle);
+        Ok(handle)
     }
 
     /// Execute a read operation on an adapter
@@ -973,6 +1057,48 @@ impl RustDataDaemon {
 
             Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
                 match self.vector_search(handle, &collection, &query_vector, k, threshold, include_data) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobStore { data, base_path } => {
+                match self.blob_store(&data, base_path.as_deref()) {
+                    Ok(result) => Response::Ok { data: result },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobRetrieve { hash, base_path } => {
+                match self.blob_retrieve(&hash, base_path.as_deref()) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobExists { hash, base_path } => {
+                match self.blob_exists(&hash, base_path.as_deref()) {
+                    Ok(exists) => Response::Ok { data: json!({ "exists": exists }) },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobDelete { hash, base_path } => {
+                match self.blob_delete(&hash, base_path.as_deref()) {
+                    Ok(deleted) => Response::Ok { data: json!({ "deleted": deleted }) },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::BlobStats { base_path } => {
+                match self.blob_stats(base_path.as_deref()) {
+                    Ok(stats) => Response::Ok { data: stats },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::DataQuery { handle, sql } => {
+                match self.data_query(handle, &sql) {
                     Ok(data) => Response::Ok { data },
                     Err(e) => Response::Error { message: e },
                 }
@@ -1112,24 +1238,110 @@ impl RustDataDaemon {
                     }
                 }
             }
+
+            // Blob operations (no adapter handle needed, file-based)
+            Request::BlobStore { data, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_store(&data, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobRetrieve { hash, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_retrieve(&hash, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, Some(1)),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobExists { hash, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_exists(&hash, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(exists) => (Response::Ok { data: json!({ "exists": exists }) }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobDelete { hash, base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_delete(&hash, base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(deleted) => (Response::Ok { data: json!({ "deleted": deleted }) }, Some(if deleted { 1 } else { 0 })),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::BlobStats { base_path } => {
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+                let execute_start = Instant::now();
+                let result = self.blob_stats(base_path.as_deref());
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(stats) => (Response::Ok { data: stats }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataQuery { handle, sql } => {
+                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.data_query(handle, &sql);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => {
+                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
         }
     }
 
     fn open_adapter(&self, config: AdapterConfig) -> Result<AdapterHandle, String> {
-        let strategy: Box<dyn ConcurrencyStrategy> = match config.adapter_type {
-            AdapterType::Sqlite => {
-                Box::new(SqliteStrategy::new(config.connection_string)?)
-            }
-            AdapterType::Postgres => {
-                Box::new(PostgresStrategy {})
-            }
-            AdapterType::Json => {
-                Box::new(JsonStrategy::new(config.connection_string)?)
-            }
-        };
-
-        let handle = self.registry.register(config.adapter_type, strategy);
-        Ok(handle)
+        // Use register_with_cache to:
+        // 1. Serialize all opens (prevents concurrent pragma configuration)
+        // 2. Reuse existing adapters for same database path
+        self.registry.register_with_cache(config.adapter_type, &config.connection_string)
     }
 
     /// List entities from a collection with filtering and pagination
@@ -1491,6 +1703,227 @@ impl RustDataDaemon {
 
         result
     }
+
+    // ========================================================================
+    // Blob Storage Methods (Content-addressable file storage)
+    // ========================================================================
+
+    /// Get default blob base path relative to home directory
+    fn get_blob_base_path(&self, custom_path: Option<&str>) -> PathBuf {
+        if let Some(path) = custom_path {
+            PathBuf::from(path)
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            PathBuf::from(home).join(".continuum/blobs")
+        }
+    }
+
+    /// Get blob file path from hash (sharded by first 2 chars)
+    fn get_blob_path(&self, base: &Path, hash: &str) -> PathBuf {
+        // Remove "sha256:" prefix if present
+        let hex = hash.strip_prefix("sha256:").unwrap_or(hash);
+        let shard = &hex[..2.min(hex.len())];
+        let filename = &hex[2.min(hex.len())..];
+        base.join(shard).join(format!("{}.blob", filename))
+    }
+
+    /// Store JSON data as compressed blob, return content hash
+    fn blob_store(&self, data: &Value, base_path: Option<&str>) -> Result<Value, String> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use sha2::{Sha256, Digest};
+        use std::io::Write as IoWrite;
+
+        let base = self.get_blob_base_path(base_path);
+
+        // Serialize to JSON
+        let json = serde_json::to_string(data)
+            .map_err(|e| format!("JSON serialize failed: {}", e))?;
+        let original_size = json.len();
+
+        // Compute SHA256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(json.as_bytes());
+        let hash_bytes = hasher.finalize();
+        let hash = format!("sha256:{:x}", hash_bytes);
+
+        // Get file path
+        let file_path = self.get_blob_path(&base, &hash);
+
+        // Check if already exists (deduplication)
+        if file_path.exists() {
+            let metadata = fs::metadata(&file_path)
+                .map_err(|e| format!("Failed to stat blob: {}", e))?;
+            return Ok(json!({
+                "hash": hash,
+                "size": original_size,
+                "compressedSize": metadata.len(),
+                "deduplicated": true,
+                "storedAt": format!("{:?}", metadata.modified().ok())
+            }));
+        }
+
+        // Ensure directory exists
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create blob dir: {}", e))?;
+        }
+
+        // Compress with gzip
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(json.as_bytes())
+            .map_err(|e| format!("Compression failed: {}", e))?;
+        let compressed = encoder.finish()
+            .map_err(|e| format!("Compression finish failed: {}", e))?;
+        let compressed_size = compressed.len();
+
+        // Write atomically (write to temp, then rename)
+        let temp_path = file_path.with_extension("tmp");
+        fs::write(&temp_path, &compressed)
+            .map_err(|e| format!("Failed to write temp blob: {}", e))?;
+        fs::rename(&temp_path, &file_path)
+            .map_err(|e| format!("Failed to rename blob: {}", e))?;
+
+        Ok(json!({
+            "hash": hash,
+            "size": original_size,
+            "compressedSize": compressed_size,
+            "deduplicated": false,
+            "storedAt": chrono::Utc::now().to_rfc3339()
+        }))
+    }
+
+    /// Retrieve JSON data from blob by hash
+    fn blob_retrieve(&self, hash: &str, base_path: Option<&str>) -> Result<Value, String> {
+        use flate2::read::GzDecoder;
+        use std::io::Read as IoRead;
+
+        let base = self.get_blob_base_path(base_path);
+        let file_path = self.get_blob_path(&base, hash);
+
+        if !file_path.exists() {
+            return Err(format!("Blob not found: {}", hash));
+        }
+
+        // Read compressed data
+        let compressed = fs::read(&file_path)
+            .map_err(|e| format!("Failed to read blob: {}", e))?;
+
+        // Decompress
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut json_str = String::new();
+        decoder.read_to_string(&mut json_str)
+            .map_err(|e| format!("Decompression failed: {}", e))?;
+
+        // Parse JSON
+        let data: Value = serde_json::from_str(&json_str)
+            .map_err(|e| format!("JSON parse failed: {}", e))?;
+
+        Ok(data)
+    }
+
+    /// Check if blob exists
+    fn blob_exists(&self, hash: &str, base_path: Option<&str>) -> Result<bool, String> {
+        let base = self.get_blob_base_path(base_path);
+        let file_path = self.get_blob_path(&base, hash);
+        Ok(file_path.exists())
+    }
+
+    /// Delete blob by hash
+    fn blob_delete(&self, hash: &str, base_path: Option<&str>) -> Result<bool, String> {
+        let base = self.get_blob_base_path(base_path);
+        let file_path = self.get_blob_path(&base, hash);
+
+        if !file_path.exists() {
+            return Ok(false);
+        }
+
+        fs::remove_file(&file_path)
+            .map_err(|e| format!("Failed to delete blob: {}", e))?;
+        Ok(true)
+    }
+
+    /// Get blob storage statistics
+    fn blob_stats(&self, base_path: Option<&str>) -> Result<Value, String> {
+        let base = self.get_blob_base_path(base_path);
+
+        if !base.exists() {
+            return Ok(json!({
+                "totalBlobs": 0,
+                "totalCompressedBytes": 0,
+                "shardCount": 0
+            }));
+        }
+
+        let mut total_blobs = 0u64;
+        let mut total_bytes = 0u64;
+        let mut shard_count = 0u64;
+
+        // Walk shard directories
+        let entries = fs::read_dir(&base)
+            .map_err(|e| format!("Failed to read blob dir: {}", e))?;
+
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                shard_count += 1;
+
+                let files = fs::read_dir(&path)
+                    .map_err(|e| format!("Failed to read shard dir: {}", e))?;
+
+                for file in files {
+                    let file = file.map_err(|e| format!("File entry error: {}", e))?;
+                    let file_path = file.path();
+
+                    if file_path.extension().map_or(false, |e| e == "blob") {
+                        total_blobs += 1;
+                        if let Ok(metadata) = fs::metadata(&file_path) {
+                            total_bytes += metadata.len();
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(json!({
+            "totalBlobs": total_blobs,
+            "totalCompressedBytes": total_bytes,
+            "shardCount": shard_count,
+            "basePath": base.to_string_lossy()
+        }))
+    }
+
+    // ========================================================================
+    // Generic SQL Query (For complex queries with JOINs, etc.)
+    // ========================================================================
+
+    /// Execute a raw SQL SELECT query
+    /// Returns raw results - caller handles any transformation
+    /// Security: Only SELECT queries allowed (checked before execution)
+    fn data_query(
+        &self,
+        handle: AdapterHandle,
+        sql: &str,
+    ) -> Result<Value, String> {
+        // Security check: only allow SELECT queries
+        let sql_upper = sql.trim().to_uppercase();
+        if !sql_upper.starts_with("SELECT") {
+            return Err("Only SELECT queries are allowed via data/query".to_string());
+        }
+
+        // Reject dangerous patterns
+        if sql_upper.contains("DROP ") || sql_upper.contains("DELETE ") ||
+           sql_upper.contains("UPDATE ") || sql_upper.contains("INSERT ") ||
+           sql_upper.contains("ALTER ") || sql_upper.contains("CREATE ") ||
+           sql_upper.contains("; ") {
+            return Err("Query contains disallowed SQL keywords".to_string());
+        }
+
+        println!("📊 DataQuery: {}", sql);
+        self.registry.execute_read(handle, sql)
+    }
 }
 
 // ============================================================================
@@ -1537,6 +1970,12 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
             Request::DataDelete { .. } => "data/delete",
             Request::DataUpdate { .. } => "data/update",
             Request::VectorSearch { .. } => "vector/search",
+            Request::BlobStore { .. } => "blob/store",
+            Request::BlobRetrieve { .. } => "blob/retrieve",
+            Request::BlobExists { .. } => "blob/exists",
+            Request::BlobDelete { .. } => "blob/delete",
+            Request::BlobStats { .. } => "blob/stats",
+            Request::DataQuery { .. } => "data/query",
         };
 
         // Start request timer

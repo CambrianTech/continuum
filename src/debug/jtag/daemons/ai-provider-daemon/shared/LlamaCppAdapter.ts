@@ -59,7 +59,7 @@ function resolveOllamaModelPath(modelName: string): string | null {
 
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-    const modelLayer = manifest.layers?.find((layer: any) => 
+    const modelLayer = manifest.layers?.find((layer: { mediaType?: string; digest?: string }) =>
       layer.mediaType === 'application/vnd.ollama.image.model'
     );
 

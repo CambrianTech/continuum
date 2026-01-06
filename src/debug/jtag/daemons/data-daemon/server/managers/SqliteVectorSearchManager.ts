@@ -41,7 +41,8 @@ export class SqliteVectorSearchManager implements VectorSearchAdapter {
 
   constructor(
     private executor: SqlExecutor,
-    private storageAdapter: DataStorageAdapter
+    private storageAdapter: DataStorageAdapter,
+    private dbPath?: string
   ) {
     // Initialize VectorSearchAdapterBase with composition pattern
     const vectorOps: VectorStorageOperations = {
@@ -51,7 +52,8 @@ export class SqliteVectorSearchManager implements VectorSearchAdapter {
       getVectorCount: (collection) => this.countVectorsInSQLite(collection)
     };
 
-    this.vectorSearchBase = new VectorSearchAdapterBase(storageAdapter, vectorOps);
+    // Pass dbPath to VectorSearchAdapterBase so Rust worker uses correct database
+    this.vectorSearchBase = new VectorSearchAdapterBase(storageAdapter, vectorOps, dbPath);
   }
 
   // ============================================================================

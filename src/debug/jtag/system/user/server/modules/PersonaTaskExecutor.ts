@@ -12,9 +12,17 @@ import type { InboxTask } from './PersonaInbox';
 import type { TaskEntity, TaskStatus } from '../../../data/entities/TaskEntity';
 import type { PersonaStateManager } from './PersonaState';
 import type { PersonaMemory } from './cognitive/memory/PersonaMemory';
-import { EmbeddingService } from '../../../core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../core/services/RustEmbeddingClient';
 import { MemoryEntity, MemoryType } from '../../../data/entities/MemoryEntity';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import { getFineTuningAdapter, supportsFineTuning } from '../../../genome/fine-tuning/server/FineTuningAdapterFactory';
+import type {
+  TrainingDataset,
+  TrainingExample,
+  LoRATrainingRequest,
+  LoRATrainingResult
+} from '../../../genome/fine-tuning/shared/FineTuningTypes';
+import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 
 /**
  * PersonaTaskExecutor - Executes various task types for autonomous PersonaUsers
@@ -33,6 +41,7 @@ export class PersonaTaskExecutor {
     private readonly displayName: string,
     private readonly memory: PersonaMemory,
     private readonly personaState: PersonaStateManager,
+    private readonly provider: string = 'ollama',
     logger?: (message: string) => void
   ) {
     this.log = logger || console.log.bind(console);
@@ -161,11 +170,16 @@ export class PersonaTaskExecutor {
       const text = msg.content?.text || '';
       if (!text.trim()) continue;
 
-      // Generate embedding for semantic search
+      // Generate embedding for semantic search via Rust worker (fast, ~5ms)
       let embedding: number[] | null = null;
       try {
-        embedding = await EmbeddingService.embedText(text);
-        if (embedding) embeddingsGenerated++;
+        const client = RustEmbeddingClient.instance;
+        if (await client.isAvailable()) {
+          embedding = await client.embed(text);
+          if (embedding) embeddingsGenerated++;
+        } else {
+          this.log(`⚠️ ${this.displayName}: Rust embedding worker not available`);
+        }
       } catch (error) {
         this.log(`⚠️ ${this.displayName}: Embedding generation failed for message: ${error}`);
       }
@@ -422,40 +436,237 @@ export class PersonaTaskExecutor {
   }
 
   /**
-   * PHASE 5: Fine-tune LoRA task
-   * Trains a LoRA adapter on recent failure examples to improve performance
+   * Fine-tune LoRA adapter using recent chat interactions
+   *
+   * Collects training examples from this persona's successful responses,
+   * trains a LoRA adapter via llama.cpp, and registers it with the genome.
+   *
+   * @param task - Inbox task with metadata.loraLayer specifying adapter name
    */
   private async executeFineTuneLora(task: InboxTask): Promise<string> {
     this.log(`🧬 ${this.displayName}: Fine-tuning LoRA adapter...`);
 
-    // Type-safe metadata validation (no type assertions)
+    // Validate metadata
     const loraLayer = task.metadata?.loraLayer;
     if (typeof loraLayer !== 'string') {
       return 'Missing or invalid LoRA layer in metadata';
     }
 
-    // PHASE 6: Enable learning mode on the genome
     try {
-      await this.memory.genome.enableLearningMode(loraLayer);
-      this.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
+      // 1. Try to enable learning mode on existing adapter (optional for first-time training)
+      const adapterExists = this.memory.genome.hasAdapter(loraLayer);
+      if (adapterExists) {
+        await this.memory.genome.enableLearningMode(loraLayer);
+        this.log(`🧬 ${this.displayName}: Enabled learning mode for ${loraLayer} adapter`);
+      } else {
+        this.log(`🧬 ${this.displayName}: First-time training for ${loraLayer} - will create new adapter`);
+      }
 
-      // TODO (Phase 7): Implement actual fine-tuning logic
-      // - Collect training examples from recent failures
-      // - Format as LoRA training data
-      // - Call Ollama fine-tuning API
-      // - Save updated weights to disk
+      // 2. Get training data - prefer pre-collected examples from signal-driven training
+      let trainingData: TrainingDataset;
+      const preCollectedExamples = task.metadata?.trainingData as Array<{ prompt: string; completion: string; isPositive: boolean }> | undefined;
 
-      // For now, just simulate training duration
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (preCollectedExamples && Array.isArray(preCollectedExamples) && preCollectedExamples.length > 0) {
+        // Signal-driven training: convert pre-collected examples to TrainingDataset format
+        this.log(`🧬 ${this.displayName}: Using ${preCollectedExamples.length} pre-collected signal-driven examples`);
 
-      // Disable learning mode after training
-      await this.memory.genome.disableLearningMode(loraLayer);
-      this.log(`🧬 ${this.displayName}: Disabled learning mode for ${loraLayer} adapter`);
+        trainingData = {
+          examples: preCollectedExamples.map(ex => ({
+            messages: [
+              // For positive examples: system context + user prompt + original AI response
+              // For negative examples: system context + user prompt + corrected response
+              { role: 'user' as const, content: ex.prompt },
+              { role: 'assistant' as const, content: ex.completion }
+            ],
+            metadata: {
+              timestamp: Date.now(),
+              confidence: ex.isPositive ? 0.9 : 0.7  // Higher confidence for positive reinforcement
+            }
+          })),
+          metadata: {
+            personaId: this.personaId,
+            personaName: this.displayName,
+            traitType: loraLayer as TraitType,
+            createdAt: Date.now(),
+            source: 'corrections',  // Signal-driven examples are corrections/approvals
+            totalExamples: preCollectedExamples.length
+          }
+        };
+      } else {
+        // Legacy path: collect training examples from recent chat interactions
+        trainingData = await this.collectTrainingExamples(loraLayer);
+      }
 
-      return `Fine-tuning complete for ${loraLayer} adapter (Phase 6 stub - actual training in Phase 7)`;
+      if (trainingData.examples.length === 0) {
+        await this.memory.genome.disableLearningMode(loraLayer);
+        return `No training examples found for ${loraLayer} - skipping fine-tuning`;
+      }
+
+      this.log(`🧬 ${this.displayName}: Collected ${trainingData.examples.length} training examples`);
+
+      // 3. Build training request
+      const baseModel = this.memory.genome.getState().baseModel || 'llama3.2:3b';
+      const trainingRequest: LoRATrainingRequest = {
+        personaId: this.personaId,
+        personaName: this.displayName,
+        traitType: loraLayer as TraitType,
+        baseModel,
+        dataset: trainingData,
+        // LoRA hyperparameters (sensible defaults)
+        rank: 16,
+        alpha: 32,
+        epochs: 3,
+        learningRate: 0.0001,
+        batchSize: 4
+      };
+
+      // 4. Get the appropriate fine-tuning adapter
+      // PEFT is preferred for local training (ollama, local) as it:
+      // - Supports any HuggingFace model (not just Ollama)
+      // - Enables multi-adapter composition (genome vision)
+      // - Works cross-platform (MPS/CUDA/CPU)
+      // - Doesn't require external binaries (llama.cpp finetune)
+      const localProviders = ['ollama', 'local', 'peft'];
+      const effectiveProvider = localProviders.includes(this.provider.toLowerCase()) ? 'peft' : this.provider;
+      const adapter = getFineTuningAdapter(effectiveProvider);
+
+      if (!adapter) {
+        this.log(`⚠️ ${this.displayName}: Provider '${effectiveProvider}' (from ${this.provider}) does not support fine-tuning`);
+        return `Fine-tuning not supported for provider: ${this.provider}`;
+      }
+
+      this.log(`🧬 ${this.displayName}: Starting fine-tuning via ${effectiveProvider} adapter for ${loraLayer}...`);
+      const result: LoRATrainingResult = await adapter.trainLoRA(trainingRequest);
+
+      // 5. Disable learning mode if adapter was already loaded
+      if (adapterExists) {
+        await this.memory.genome.disableLearningMode(loraLayer);
+      }
+
+      // 6. Register trained adapter with genome if successful
+      if (result.success && result.modelPath) {
+        this.memory.genome.registerAdapter({
+          name: loraLayer,
+          domain: loraLayer,
+          path: result.modelPath,
+          sizeMB: 50, // Estimate - actual size varies
+          priority: 0.5,
+          ollamaModelName: result.ollamaModelName // NEW: Registered Ollama model for inference
+        });
+
+        const modelInfo = result.ollamaModelName ? ` → Ollama model: ${result.ollamaModelName}` : '';
+        this.log(`✅ ${this.displayName}: LoRA training complete! Adapter saved: ${result.modelPath}${modelInfo}`);
+        return `Fine-tuning complete for ${loraLayer}: ${result.metrics?.examplesProcessed || 0} examples, loss=${result.metrics?.finalLoss?.toFixed(4) || 'N/A'}${modelInfo}`;
+      } else {
+        this.log(`❌ ${this.displayName}: LoRA training failed: ${result.error}`);
+        return `Fine-tuning failed for ${loraLayer}: ${result.error}`;
+      }
     } catch (error) {
-      this.log(`❌ ${this.displayName}: Error during fine-tuning: ${error}`);
-      return `Fine-tuning failed: ${error}`;
+      // Try to disable learning mode if it was enabled
+      if (this.memory.genome.hasAdapter(loraLayer)) {
+        await this.memory.genome.disableLearningMode(loraLayer).catch(() => {});
+      }
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log(`❌ ${this.displayName}: Error during fine-tuning: ${errorMsg}`);
+      return `Fine-tuning failed: ${errorMsg}`;
     }
+  }
+
+  /**
+   * Collect training examples from recent chat interactions
+   *
+   * Queries chat messages where this persona responded and converts them
+   * to training format (system/user/assistant message sequences).
+   */
+  private async collectTrainingExamples(domain: string): Promise<TrainingDataset> {
+    const examples: TrainingExample[] = [];
+
+    // Query recent messages in the last 24 hours
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const messagesResult = await DataDaemon.query<ChatMessageEntity>({
+      collection: COLLECTIONS.CHAT_MESSAGES,
+      filter: {
+        senderId: this.personaId,
+        createdAt: { $gte: oneDayAgo }
+      },
+      sort: [{ field: 'createdAt', direction: 'desc' }],
+      limit: 100
+    });
+
+    const myMessages = messagesResult.data || [];
+    this.log(`🧬 ${this.displayName}: Found ${myMessages.length} recent messages from this persona`);
+
+    // Group messages by room and find preceding user messages
+    for (const record of myMessages) {
+      const myResponse = record.data;
+      const responseText = typeof myResponse.content === 'string'
+        ? myResponse.content
+        : myResponse.content?.text || '';
+
+      if (!responseText || responseText.length < 20) {
+        continue; // Skip very short responses
+      }
+
+      // Find the message this was responding to
+      const precedingResult = await DataDaemon.query<ChatMessageEntity>({
+        collection: COLLECTIONS.CHAT_MESSAGES,
+        filter: {
+          roomId: myResponse.roomId,
+          createdAt: { $lt: myResponse.createdAt }
+        },
+        sort: [{ field: 'createdAt', direction: 'desc' }],
+        limit: 1
+      });
+
+      const precedingMsg = precedingResult.data?.[0]?.data;
+      if (!precedingMsg) {
+        continue; // No preceding message found
+      }
+
+      const userText = typeof precedingMsg.content === 'string'
+        ? precedingMsg.content
+        : precedingMsg.content?.text || '';
+
+      if (!userText || userText.length < 5) {
+        continue; // Skip if user message too short
+      }
+
+      // Create training example: user message -> assistant response
+      const example: TrainingExample = {
+        messages: [
+          {
+            role: 'system',
+            content: `You are ${this.displayName}, a helpful AI assistant.`
+          },
+          {
+            role: 'user',
+            content: userText
+          },
+          {
+            role: 'assistant',
+            content: responseText
+          }
+        ],
+        metadata: {
+          timestamp: myResponse.createdAt ? new Date(myResponse.createdAt).getTime() : Date.now(),
+          roomId: myResponse.roomId
+        }
+      };
+
+      examples.push(example);
+    }
+
+    return {
+      examples,
+      metadata: {
+        personaId: this.personaId,
+        personaName: this.displayName,
+        traitType: domain as TraitType,
+        createdAt: Date.now(),
+        source: 'conversations',
+        totalExamples: examples.length
+      }
+    };
   }
 }

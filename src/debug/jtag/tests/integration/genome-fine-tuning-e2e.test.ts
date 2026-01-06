@@ -11,7 +11,7 @@
  * PREREQUISITES:
  * 1. Run `npm start` and wait for server to be ready
  * 2. Ensure API keys are configured in ~/.continuum/config.env
- * 3. Dataset must exist at /Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl
+ * 3. Dataset must exist (set FINE_TUNING_DATASET_PATH env var or use default)
  *
  * TEST FLOW:
  * 1. Submit training jobs for ALL providers using genome/job-create command
@@ -37,8 +37,9 @@ import type { JobConfiguration } from '../../daemons/data-daemon/shared/entities
 import type { GenomeJobCreateResult } from '../../commands/genome/job-create/shared/GenomeJobCreateTypes';
 import type { GenomeJobStatusResult } from '../../commands/genome/job-status/shared/GenomeJobStatusTypes';
 
-// Test configuration
-const DATASET_PATH = '/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl';
+// Test configuration - use env var or default to relative path
+const DATASET_PATH = process.env.FINE_TUNING_DATASET_PATH ||
+  join(__dirname, '../../.continuum/datasets/fine-tuning-test.jsonl');
 const JOBS_DIR = join(__dirname, '../../.continuum');
 const JOBS_FILE = join(JOBS_DIR, 'test-jobs.json');
 const TEST_PERSONA_ID = '00000000-0000-0000-0000-000000000001'; // Use a real persona from seeded data

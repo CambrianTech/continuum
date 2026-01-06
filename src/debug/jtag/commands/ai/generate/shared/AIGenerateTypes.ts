@@ -38,7 +38,9 @@ export interface AIGenerateParams extends CommandParams {
   maxTokens?: number;
 
   // Provider selection
-  preferredProvider?: 'ollama' | 'openai' | 'anthropic';
+  // 'local' and 'candle' route to native Rust inference (Candle)
+  // 'ollama' aliases to Candle for backward compatibility
+  preferredProvider?: 'ollama' | 'openai' | 'anthropic' | 'local' | 'candle' | 'groq' | 'deepseek';
 }
 
 // AI Generate Result

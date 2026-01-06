@@ -18,6 +18,7 @@ import type { PersonaUser } from '../../../PersonaUser';
 import type { WorkingMemoryEntry } from './InMemoryCognitionStorage';
 import { LongTermMemoryStore, type LongTermMemoryEntry } from './LongTermMemoryStore';
 import type { QueueItem } from '../../PersonaInbox';
+import { RustEmbeddingClient } from '../../../../../core/services/RustEmbeddingClient';
 
 export interface ConsolidationOptions {
   minSimilarity?: number;
@@ -335,28 +336,19 @@ export class MemoryConsolidationSubprocess extends PersonaContinuousSubprocess {
   }
 
   private async embed(text: string): Promise<number[]> {
-    // TODO: Replace with actual embedding service
-    const hash = this.simpleHash(text);
-    const dim = 128;
-    const embedding: number[] = [];
+    const client = RustEmbeddingClient.instance;
 
-    for (let i = 0; i < dim; i++) {
-      const seed = hash + i;
-      embedding.push(Math.sin(seed) * Math.cos(seed * 2));
+    // Check if Rust worker is available
+    if (!await client.isAvailable()) {
+      this.log('WARN: Rust embedding worker not available, returning zero vector');
+      return new Array(384).fill(0);
     }
 
-    // Normalize
-    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    return embedding.map(v => v / magnitude);
-  }
-
-  private simpleHash(str: string): number {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash;
+    try {
+      return await client.embed(text);
+    } catch (error) {
+      this.log(`ERROR: Embedding failed: ${error}`);
+      return new Array(384).fill(0);
     }
-    return hash;
   }
 }

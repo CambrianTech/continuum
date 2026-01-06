@@ -1,17 +1,22 @@
 /**
  * Provider End-to-End Testing
- * 
+ *
  * Tests BOTH inference and fine-tuning for each provider
  * Clean modular design - each provider is independent
  */
 
 import { execSync } from 'child_process';
+import { join } from 'path';
+
+// Dataset path from environment variable or default relative path
+const FINE_TUNING_DATASET_PATH = process.env.FINE_TUNING_DATASET_PATH ||
+  join(__dirname, '../../.continuum/datasets/fine-tuning-test.jsonl');
 
 // Utility to run jtag commands and parse JSON output
 function runJtagCommand(command: string): { success: boolean; data: any } {
   try {
     const output = execSync(command, {
-      cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag',
+      cwd: process.cwd(),
       encoding: 'utf-8',
       stdio: 'pipe'
     });
@@ -57,7 +62,7 @@ const openaiTests: ProviderTest = {
     console.log('  Testing OpenAI fine-tuning...');
     const userId = getUserId();
     const result = runJtagCommand(
-      `./jtag genome/train --provider=openai --datasetPath=/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
+      `./jtag genome/train --provider=openai --datasetPath=${FINE_TUNING_DATASET_PATH} --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
     );
     
     return result.success && result.data.success === true;
@@ -78,7 +83,7 @@ const deepseekTests: ProviderTest = {
     console.log('  Testing DeepSeek fine-tuning...');
     const userId = getUserId();
     const result = runJtagCommand(
-      `./jtag genome/train --provider=deepseek --datasetPath=/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
+      `./jtag genome/train --provider=deepseek --datasetPath=${FINE_TUNING_DATASET_PATH} --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
     );
     
     return result.success && result.data.success === true;
@@ -99,7 +104,7 @@ const fireworksTests: ProviderTest = {
     console.log('  Testing Fireworks fine-tuning...');
     const userId = getUserId();
     const result = runJtagCommand(
-      `./jtag genome/train --provider=fireworks --datasetPath=/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
+      `./jtag genome/train --provider=fireworks --datasetPath=${FINE_TUNING_DATASET_PATH} --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
     );
     
     return result.success && result.data.success === true;
@@ -120,7 +125,7 @@ const togetherTests: ProviderTest = {
     console.log('  Testing Together fine-tuning...');
     const userId = getUserId();
     const result = runJtagCommand(
-      `./jtag genome/train --provider=together --datasetPath=/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
+      `./jtag genome/train --provider=together --datasetPath=${FINE_TUNING_DATASET_PATH} --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
     );
     
     return result.success && result.data.success === true;
@@ -141,7 +146,7 @@ const mistralTests: ProviderTest = {
     console.log('  Testing Mistral fine-tuning...');
     const userId = getUserId();
     const result = runJtagCommand(
-      `./jtag genome/train --provider=mistral --datasetPath=/Volumes/FlashGordon/cambrian/datasets/prepared/fine-tuning-test.jsonl --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
+      `./jtag genome/train --provider=mistral --datasetPath=${FINE_TUNING_DATASET_PATH} --personaId=${userId} --dryRun=true --epochs=1 --batchSize=1`
     );
     
     return result.success && result.data.success === true;

@@ -31,6 +31,10 @@ export class MainWidget extends BaseWidget {
   private currentContent: ContentInfo | null = null;
   private contentStateAdapter: PositronContentStateAdapter;
 
+  // Guard against infinite re-render loops
+  private currentViewType: string | null = null;
+  private currentViewEntityId: string | undefined = undefined;
+
   constructor() {
     super({
       widgetName: 'MainWidget',
@@ -327,8 +331,18 @@ export class MainWidget extends BaseWidget {
    * Emits RIGHT_PANEL_CONFIGURE to update right panel based on content type's layout
    */
   private switchContentView(contentType: string, entityId?: string): void {
+    // GUARD: Prevent infinite re-render loops by checking if already showing this content
+    if (this.currentViewType === contentType && this.currentViewEntityId === entityId) {
+      console.log(`🔄 MainPanel: Already showing ${contentType}/${entityId || 'default'}, skipping re-render`);
+      return;
+    }
+
     const contentView = this.shadowRoot?.querySelector('.content-view');
     if (!contentView) return;
+
+    // Track what we're rendering to prevent loops
+    this.currentViewType = contentType;
+    this.currentViewEntityId = entityId;
 
     const widgetTag = getWidgetForType(contentType);
 
@@ -639,7 +653,7 @@ export class MainWidget extends BaseWidget {
 
     // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup
     // RoomListWidget emits this and it definitely works (sidebar highlights change)
-    Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string; uniqueId?: string }) => {
+    Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (data: { roomId: string; roomName: string; uniqueId?: string }) => {
       console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
 
       // Only switch to chat if we're currently viewing chat content
@@ -655,6 +669,11 @@ export class MainWidget extends BaseWidget {
       const urlIdentifier = data.uniqueId || data.roomId;
       const newPath = buildContentPath('chat', urlIdentifier);
       this.updateUrl(newPath);
+
+      // CRITICAL: Set pageState BEFORE creating widget - ChatWidget reads from pageState
+      // Resolve entity for proper display name
+      const resolved = await RoutingService.resolve('chat', urlIdentifier);
+      pageState.setContent('chat', urlIdentifier, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
 
       // Switch to the selected chat room (use uniqueId for content view)
       this.switchContentView('chat', urlIdentifier);

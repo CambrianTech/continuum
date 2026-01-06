@@ -16,6 +16,8 @@ import {
   DataStorageAdapter,
   type DataRecord,
   type StorageQuery,
+  type StorageQueryWithJoin,
+  type JoinSpec,
   type StorageResult,
   type StorageAdapterConfig,
   type StorageCapabilities,
@@ -33,7 +35,7 @@ import {
   type VectorEmbedding,
   toNumberArray
 } from '../shared/VectorSearchTypes';
-import { EmbeddingService } from '../../../system/core/services/EmbeddingService';
+import { RustEmbeddingClient } from '../../../system/core/services/RustEmbeddingClient';
 import { Logger } from '../../../system/core/logging/Logger';
 
 const log = Logger.create('RustWorkerStorageAdapter', 'data');
@@ -130,7 +132,7 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
     this.config = {
       socketPath: options.socketPath,
       dbPath: options.dbPath,
-      timeout: options.timeout || 30000
+      timeout: options.timeout || 60000  // 60s - needed for large vector searches (3K+ vectors)
     };
 
     await this.connect();
@@ -452,6 +454,170 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
   }
 
   /**
+   * Query records with JOIN support for loading related data
+   *
+   * Builds a SQL query with JOINs and executes via Rust data/query command.
+   * Joined data is nested under the alias key in each result.
+   *
+   * @param query - Query with join specifications
+   * @returns Records with joined data nested under alias keys
+   */
+  async queryWithJoin<T extends RecordData>(
+    query: StorageQueryWithJoin
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      return { success: false, error: `Connection failed: ${error.message}` };
+    }
+
+    try {
+      const primaryTable = SqlNamingConverter.toTableName(query.collection);
+      const primaryAlias = 'p';
+
+      // Build SELECT clause
+      const selectClauses: string[] = [`${primaryAlias}.*`];
+      const joinAliasMap: Map<string, { alias: string; select?: readonly string[] }> = new Map();
+
+      query.joins.forEach((join, index) => {
+        const joinTable = SqlNamingConverter.toTableName(join.collection);
+        const joinAlias = `j${index}`;
+        joinAliasMap.set(join.alias, { alias: joinAlias, select: join.select });
+
+        if (join.select && join.select.length > 0) {
+          // Select specific fields with alias prefix
+          join.select.forEach(field => {
+            const snakeField = SqlNamingConverter.toSnakeCase(field);
+            selectClauses.push(`${joinAlias}.${snakeField} AS ${join.alias}_${snakeField}`);
+          });
+        } else {
+          // Select all fields from joined table (risky - could have name collisions)
+          selectClauses.push(`${joinAlias}.*`);
+        }
+      });
+
+      // Build JOIN clauses
+      const joinClauses: string[] = [];
+      query.joins.forEach((join, index) => {
+        const joinTable = SqlNamingConverter.toTableName(join.collection);
+        const joinAlias = `j${index}`;
+        const joinType = join.type === 'inner' ? 'INNER JOIN' : 'LEFT JOIN';
+        const localField = SqlNamingConverter.toSnakeCase(join.localField);
+        const foreignField = SqlNamingConverter.toSnakeCase(join.foreignField);
+
+        joinClauses.push(
+          `${joinType} ${joinTable} ${joinAlias} ON ${primaryAlias}.${localField} = ${joinAlias}.${foreignField}`
+        );
+      });
+
+      // Build WHERE clause
+      let whereClause = '';
+      if (query.filter && Object.keys(query.filter).length > 0) {
+        const conditions = Object.entries(query.filter).map(([key, value]) => {
+          const snakeKey = SqlNamingConverter.toSnakeCase(key);
+          if (value === null) {
+            return `${primaryAlias}.${snakeKey} IS NULL`;
+          }
+          const escapedValue = typeof value === 'string'
+            ? `'${value.replace(/'/g, "''")}'`
+            : value;
+          return `${primaryAlias}.${snakeKey} = ${escapedValue}`;
+        });
+        whereClause = `WHERE ${conditions.join(' AND ')}`;
+      }
+
+      // Build ORDER BY clause
+      let orderByClause = '';
+      if (query.sort && query.sort.length > 0) {
+        const orderParts = query.sort.map(s => {
+          const snakeField = SqlNamingConverter.toSnakeCase(s.field);
+          return `${primaryAlias}.${snakeField} ${s.direction.toUpperCase()}`;
+        });
+        orderByClause = `ORDER BY ${orderParts.join(', ')}`;
+      }
+
+      // Build LIMIT/OFFSET
+      const limitClause = query.limit ? `LIMIT ${query.limit}` : '';
+      const offsetClause = query.offset ? `OFFSET ${query.offset}` : '';
+
+      // Assemble full SQL
+      const sql = [
+        `SELECT ${selectClauses.join(', ')}`,
+        `FROM ${primaryTable} ${primaryAlias}`,
+        ...joinClauses,
+        whereClause,
+        orderByClause,
+        limitClause,
+        offsetClause
+      ].filter(Boolean).join(' ');
+
+      log.debug(`queryWithJoin SQL: ${sql}`);
+
+      // Execute via Rust data/query
+      const result = await this.rawQuery(sql);
+
+      // Transform results: nest joined data under alias keys
+      const records: DataRecord<T>[] = result.items.map((row: any) => {
+        // Extract primary entity fields (those without alias prefix)
+        const primaryData: Record<string, any> = {};
+        const joinedData: Record<string, Record<string, any>> = {};
+
+        // Initialize nested objects for each join alias
+        for (const join of query.joins) {
+          joinedData[join.alias] = {};
+        }
+
+        for (const [key, value] of Object.entries(row)) {
+          // Check if this is a joined field (has alias_ prefix)
+          let isJoinedField = false;
+          for (const join of query.joins) {
+            if (key.startsWith(`${join.alias}_`)) {
+              const fieldName = key.slice(join.alias.length + 1);
+              const camelField = SqlNamingConverter.toCamelCase(fieldName);
+              joinedData[join.alias][camelField] = value;
+              isJoinedField = true;
+              break;
+            }
+          }
+
+          if (!isJoinedField) {
+            const camelKey = SqlNamingConverter.toCamelCase(key);
+            primaryData[camelKey] = value;
+          }
+        }
+
+        // Merge joined data into primary data
+        const entityData = {
+          ...primaryData,
+          ...joinedData
+        } as T;
+
+        return {
+          id: row.id as UUID,
+          collection: query.collection,
+          data: entityData,
+          metadata: {
+            createdAt: row.created_at || new Date().toISOString(),
+            updatedAt: row.updated_at || new Date().toISOString(),
+            version: row.version || 1
+          }
+        };
+      });
+
+      return {
+        success: true,
+        data: records,
+        metadata: {
+          totalCount: result.count
+        }
+      };
+    } catch (error: any) {
+      log.error(`queryWithJoin failed: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Update record - delegates to Rust worker
    */
   async update<T extends RecordData>(
@@ -689,15 +855,22 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       if (options.queryVector) {
         queryVector = options.queryVector;
       } else if (options.queryText) {
-        // Generate embedding via EmbeddingService
-        const embedding = await EmbeddingService.embedText(options.queryText);
-        if (!embedding) {
+        // Generate embedding directly via Rust worker (fast, ~5ms)
+        const client = RustEmbeddingClient.instance;
+        if (!await client.isAvailable()) {
           return {
             success: false,
-            error: 'Failed to generate query embedding'
+            error: 'Rust embedding worker not available'
           };
         }
-        queryVector = embedding;
+        try {
+          queryVector = await client.embed(options.queryText);
+        } catch (error: any) {
+          return {
+            success: false,
+            error: `Failed to generate query embedding: ${error.message}`
+          };
+        }
       } else {
         return {
           success: false,
@@ -708,10 +881,11 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
       const k = options.k || 10;
       const threshold = options.similarityThreshold || 0.0;
 
-      // 2. Send ONLY query vector to Rust worker (small payload: 3KB for 384 dims)
-      // Rust reads corpus vectors directly from SQLite and computes cosine similarity
+      // 2. Send query vector to Rust worker with include_data=true
+      // Rust reads corpus vectors from SQLite, computes similarity, AND fetches full records
+      // This eliminates k IPC round trips - Rust returns everything in one response
       interface RustVectorSearchResponse {
-        results: Array<{ id: string; score: number; distance: number }>;
+        results: Array<{ id: string; score: number; distance: number; data?: Record<string, any> }>;
         count: number;
         corpus_size: number;
       }
@@ -721,7 +895,8 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         collection,
         query_vector: toNumberArray(queryVector),
         k,
-        threshold
+        threshold,
+        include_data: true  // OPTIMIZATION: Get full records in one Rust query
       });
 
       if (searchResult.status !== 'ok' || !searchResult.data) {
@@ -750,20 +925,25 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
 
       const rustResults = searchResult.data.results;
       const corpusSize = searchResult.data.corpus_size;
-      log.debug(`Vector search: Rust returned ${rustResults.length}/${corpusSize} results`);
+      log.debug(`Vector search: Rust returned ${rustResults.length}/${corpusSize} results with inline data`);
 
-      // 3. Fetch full records for top-k IDs
-      // Only fetch records we actually need (much more efficient than fetching all)
-      const results: VectorSearchResultType<T>[] = [];
+      // 3. Map Rust results directly - no additional IPC round trips needed!
+      // Rust already fetched full records with include_data=true
+      type RustResult = { id: string; score: number; distance: number; data?: Record<string, any> };
+      const results: VectorSearchResultType<T>[] = rustResults
+        .filter((r: RustResult) => r.data) // Only include results that have data
+        .map((rustResult: RustResult) => {
+          // Convert snake_case keys from Rust/SQL to camelCase for TypeScript
+          const entityData = this.toCamelCaseObject(rustResult.data!) as T;
 
-      for (const rustResult of rustResults) {
-        // Fetch full record by ID
-        const recordResult = await this.read<T>(options.collection, rustResult.id as UUID);
+          // Ensure id is present in entity data
+          if (!(entityData as any).id) {
+            (entityData as any).id = rustResult.id;
+          }
 
-        if (recordResult.success && recordResult.data) {
-          results.push({
+          return {
             id: rustResult.id as UUID,
-            data: recordResult.data.data,
+            data: entityData,
             score: rustResult.score,
             distance: rustResult.distance,
             metadata: {
@@ -771,9 +951,8 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
               embeddingModel: options.embeddingModel?.name,
               queryTime: Date.now() - startTime
             }
-          });
-        }
-      }
+          };
+        });
 
       log.info(`Vector search: ${options.collection} found ${results.length}/${corpusSize} (threshold=${threshold}, k=${k})`);
 
@@ -798,6 +977,230 @@ export class RustWorkerStorageAdapter extends DataStorageAdapter {
         error: `Vector search failed: ${error.message}`
       };
     }
+  }
+
+  // =========================================================================
+  // Blob Storage Methods - Content-addressable storage through Rust worker
+  // =========================================================================
+
+  /**
+   * Store JSON data as compressed blob in content-addressable storage
+   * @param data - JSON-serializable data to store
+   * @param basePath - Optional custom blob storage path
+   * @returns Blob reference with hash, size, compression info
+   */
+  async blobStore<T>(data: T, basePath?: string): Promise<{
+    hash: string;
+    size: number;
+    compressedSize: number;
+    deduplicated: boolean;
+    storedAt: string;
+  }> {
+    const response = await this.sendCommand<{
+      hash: string;
+      size: number;
+      compressedSize: number;
+      deduplicated: boolean;
+      storedAt: string;
+    }>('blob/store', {
+      data,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok' || !response.data) {
+      throw new Error(response.message || 'Blob store failed');
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Retrieve JSON data from blob by hash
+   * @param hash - Blob hash (sha256:...)
+   * @param basePath - Optional custom blob storage path
+   * @returns Original JSON data
+   */
+  async blobRetrieve<T>(hash: string, basePath?: string): Promise<T> {
+    const response = await this.sendCommand<T>('blob/retrieve', {
+      hash,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Blob retrieve failed');
+    }
+
+    return response.data as T;
+  }
+
+  /**
+   * Check if blob exists
+   * @param hash - Blob hash (sha256:...)
+   * @param basePath - Optional custom blob storage path
+   */
+  async blobExists(hash: string, basePath?: string): Promise<boolean> {
+    const response = await this.sendCommand<{ exists: boolean }>('blob/exists', {
+      hash,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Blob exists check failed');
+    }
+
+    return response.data?.exists ?? false;
+  }
+
+  /**
+   * Delete blob by hash
+   * @param hash - Blob hash (sha256:...)
+   * @param basePath - Optional custom blob storage path
+   * @returns true if deleted, false if not found
+   */
+  async blobDelete(hash: string, basePath?: string): Promise<boolean> {
+    const response = await this.sendCommand<{ deleted: boolean }>('blob/delete', {
+      hash,
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Blob delete failed');
+    }
+
+    return response.data?.deleted ?? false;
+  }
+
+  /**
+   * Get blob storage statistics
+   * @param basePath - Optional custom blob storage path
+   */
+  async blobStats(basePath?: string): Promise<{
+    totalBlobs: number;
+    totalCompressedBytes: number;
+    shardCount: number;
+    basePath: string;
+  }> {
+    const response = await this.sendCommand<{
+      totalBlobs: number;
+      totalCompressedBytes: number;
+      shardCount: number;
+      basePath: string;
+    }>('blob/stats', {
+      base_path: basePath
+    });
+
+    if (response.status !== 'ok' || !response.data) {
+      throw new Error(response.message || 'Blob stats failed');
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Store data as blob only if it exceeds threshold
+   * @param data - Data to store
+   * @param threshold - Size threshold in bytes (default: 4096)
+   * @returns Either inline data or blob reference
+   */
+  async blobStoreIfLarge<T>(
+    data: T,
+    threshold: number = 4096
+  ): Promise<{ isBlob: true; hash: string; size: number; compressedSize: number } | { isBlob: false; data: T }> {
+    const json = JSON.stringify(data);
+    const size = Buffer.byteLength(json, 'utf8');
+
+    if (size < threshold) {
+      return { isBlob: false, data };
+    }
+
+    const result = await this.blobStore(data);
+    return {
+      isBlob: true,
+      hash: result.hash,
+      size: result.size,
+      compressedSize: result.compressedSize
+    };
+  }
+
+  /**
+   * Retrieve data that may be inline or in blob storage
+   * @param inlineData - Data if stored inline
+   * @param blobRef - Blob hash if stored externally
+   */
+  async blobRetrieveOrInline<T>(
+    inlineData: T | null | undefined,
+    blobRef: string | null | undefined
+  ): Promise<T | null> {
+    if (inlineData) {
+      return inlineData;
+    }
+
+    if (blobRef) {
+      return await this.blobRetrieve<T>(blobRef);
+    }
+
+    return null;
+  }
+
+  // =========================================================================
+  // Raw SQL Query - For complex queries with JOINs
+  // =========================================================================
+
+  /**
+   * Execute a raw SQL SELECT query via Rust worker
+   *
+   * Use for complex queries (JOINs, aggregations) that can't be expressed
+   * via the standard query() method. Results are returned as raw rows,
+   * caller is responsible for transformation.
+   *
+   * Security: Only SELECT queries allowed - Rust worker rejects modifications.
+   *
+   * @param sql - Raw SQL query (SELECT only)
+   * @returns Array of row objects with snake_case column names
+   */
+  async rawQuery<T = Record<string, any>>(sql: string): Promise<{
+    items: T[];
+    count: number;
+  }> {
+    try {
+      await this.ensureConnected();
+    } catch (error: any) {
+      throw new Error(`Connection failed: ${error.message}`);
+    }
+
+    const response = await this.sendCommand<{ items: T[]; count: number }>('data/query', {
+      handle: this.adapterHandle,
+      sql
+    });
+
+    if (response.status !== 'ok') {
+      throw new Error(response.message || 'Raw query failed');
+    }
+
+    return {
+      items: response.data?.items || [],
+      count: response.data?.count || 0
+    };
+  }
+
+  /**
+   * Execute a raw SQL SELECT query and transform results to camelCase
+   *
+   * Same as rawQuery() but converts column names from snake_case to camelCase.
+   *
+   * @param sql - Raw SQL query (SELECT only)
+   * @returns Array of row objects with camelCase keys
+   */
+  async rawQueryCamelCase<T = Record<string, any>>(sql: string): Promise<{
+    items: T[];
+    count: number;
+  }> {
+    const result = await this.rawQuery(sql);
+
+    return {
+      items: result.items.map(row => this.toCamelCaseObject(row as Record<string, any>) as T),
+      count: result.count
+    };
   }
 
   /**

@@ -369,10 +369,23 @@ export class CoordinationDecisionEntity extends BaseEntity {
 
   /**
    * Complete RAG context - EXACTLY what the LLM saw
-   * Stored as full RAGContext object for perfect replay
+   * Stored inline for small contexts (<4KB) or null if stored in blob storage
+   *
+   * Access pattern:
+   * - If ragContext is set, use it directly
+   * - If ragContextRef is set, retrieve from BlobStorage
    */
-  @JsonField()
-  ragContext!: RAGContext;
+  @JsonField({ nullable: true })
+  ragContext?: RAGContext;
+
+  /**
+   * Reference to RAG context in blob storage (sha256:hex hash)
+   * Used for large contexts (>4KB) to avoid bloating SQLite
+   *
+   * When set, ragContext should be null and data is in BlobStorage
+   */
+  @TextField({ nullable: true })
+  ragContextRef?: string;
 
   /**
    * Domain-specific visual context
@@ -442,15 +455,22 @@ export class CoordinationDecisionEntity extends BaseEntity {
       return { success: false, error: 'domain is required' };
     }
 
-    // Context validation
-    if (!this.ragContext) {
-      return { success: false, error: 'ragContext is required' };
+    // Context validation - need either inline ragContext OR blob reference
+    if (!this.ragContext && !this.ragContextRef) {
+      return { success: false, error: 'ragContext or ragContextRef is required' };
     }
-    if (!this.ragContext.identity?.systemPrompt) {
-      return { success: false, error: 'ragContext.identity.systemPrompt is required' };
+    // If inline ragContext is present, validate its structure
+    if (this.ragContext) {
+      if (!this.ragContext.identity?.systemPrompt) {
+        return { success: false, error: 'ragContext.identity.systemPrompt is required' };
+      }
+      if (!this.ragContext.conversationHistory) {
+        return { success: false, error: 'ragContext.conversationHistory is required' };
+      }
     }
-    if (!this.ragContext.conversationHistory) {
-      return { success: false, error: 'ragContext.conversationHistory is required' };
+    // If using blob reference, validate hash format
+    if (this.ragContextRef && !this.ragContextRef.startsWith('sha256:')) {
+      return { success: false, error: 'ragContextRef must be a valid sha256: hash' };
     }
 
     // Coordination validation
