@@ -13,7 +13,6 @@
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { DmParams, DmResult } from './DmTypes';
 import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
-import crypto from 'crypto';
 
 export abstract class DmCommand extends CommandBase<DmParams, DmResult> {
 
@@ -23,7 +22,7 @@ export abstract class DmCommand extends CommandBase<DmParams, DmResult> {
 
   /**
    * Generate deterministic DM room uniqueId from participant set
-   * Uses sorted IDs and hashes for consistent, URL-safe result
+   * Uses sorted IDs for consistent result (cross-platform, no crypto needed)
    *
    * Set theory: {A, B} == {B, A} - order doesn't matter
    */
@@ -31,15 +30,13 @@ export abstract class DmCommand extends CommandBase<DmParams, DmResult> {
     // Sort for determinism (set equality)
     const sorted = [...participantIds].sort();
 
-    // Hash the sorted list for a clean, fixed-length ID
-    const hash = crypto.createHash('sha256')
-      .update(sorted.join(':'))
-      .digest('hex')
-      .slice(0, 12);
+    // Simple deterministic hash using last 6 chars of each ID
+    // Works in both browser and Node.js
+    const shortIds = sorted.map(id => id.slice(-6)).join('-');
 
     // Prefix with participant count for readability
     const prefix = participantIds.length === 2 ? 'dm' : `dm${participantIds.length}`;
-    return `${prefix}-${hash}`;
+    return `${prefix}-${shortIds}`;
   }
 
   /**
