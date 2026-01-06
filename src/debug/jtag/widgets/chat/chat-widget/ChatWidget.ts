@@ -44,6 +44,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private positronUnsubscribe?: () => void; // Cleanup for Positron subscription
   private positronUpdateDebounce?: number; // Debounce for Positron state updates
 
+  // === REACT-LIKE VISIBILITY STATE ===
+  // Track whether this widget is the currently active/visible content
+  private _isActiveContent: boolean = false; // Whether this is the currently visible chat tab
+  private _isPinnedWidget: boolean = false; // Whether pinned to specific room via attribute
+  private _eventUnsubscribers: Array<() => void> = []; // For cleanup on disconnect
+
   constructor() {
     super({
       widgetId: 'chat-widget',
@@ -105,6 +111,77 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (container) {
       container.classList.toggle('compact', this._compact);
     }
+  }
+
+  // === REACT-LIKE VISIBILITY TRACKING ===
+
+  /**
+   * Whether this widget is the currently active/visible chat content.
+   * Use this to skip expensive operations when the widget is in background.
+   */
+  get isActiveContent(): boolean {
+    return this._isActiveContent;
+  }
+
+  /**
+   * Update active content state.
+   * Called when pageState changes or content:switched fires.
+   */
+  private setActiveContent(isActive: boolean, reason: string): void {
+    if (this._isActiveContent === isActive) return;
+
+    this._isActiveContent = isActive;
+    console.log(`📨 ChatWidget: ${isActive ? 'ACTIVATED' : 'DEACTIVATED'} (${reason})`);
+
+    if (isActive) {
+      // When activated, ensure UI is up-to-date
+      this.updateHeader();
+    }
+  }
+
+  /**
+   * Check if this widget should react to content/room events.
+   * Pinned widgets (with room attribute) only respond to their specific room.
+   * Non-pinned widgets respond to all content switching events.
+   */
+  private shouldReactToContentEvents(): boolean {
+    // Pinned widgets ignore global content events - they're locked to one room
+    return !this._isPinnedWidget;
+  }
+
+  /**
+   * Subscribe to an event and track for cleanup.
+   * Use this instead of Events.subscribe() directly to prevent memory leaks.
+   * Captures the unsubscribe function returned by Events.subscribe().
+   */
+  private subscribeWithCleanup(eventName: string, handler: (data: any) => void): void {
+    const unsubscribe = Events.subscribe(eventName, handler);
+    if (unsubscribe && typeof unsubscribe === 'function') {
+      this._eventUnsubscribers.push(unsubscribe);
+    }
+  }
+
+  /**
+   * Consolidated room switching logic - single source of truth for room changes.
+   * Called by all room-related events (ROOM_SELECTED, content:opened, content:switched).
+   */
+  private async handleRoomSwitch(roomIdOrUniqueId: string, roomName?: string, source?: string): Promise<void> {
+    // Skip if pinned widget (handled elsewhere)
+    if (this._isPinnedWidget) {
+      console.log(`📨 ChatWidget: Ignoring ${source || 'room switch'} - pinned widget`);
+      return;
+    }
+
+    // Skip if already on this room (compare both ID and uniqueId)
+    if (roomIdOrUniqueId === this.currentRoomId) {
+      console.log(`📨 ChatWidget: Already on room ${roomIdOrUniqueId}, skipping`);
+      return;
+    }
+
+    console.log(`🏠 ChatWidget: Switching to room "${roomName || roomIdOrUniqueId}" (${source || 'direct'})`);
+
+    // Use the full switchToRoom method for proper resolution
+    await this.switchToRoom(roomIdOrUniqueId);
   }
 
   private async switchToRoom(roomIdOrName: string): Promise<void> {
@@ -363,255 +440,169 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // IMPORTANT: Call parent to setup ChatMessage event subscriptions for real-time updates
     await super.onWidgetInitialize();
 
-    console.log(`📨 ChatWidget: Enabled ChatMessage event subscriptions for real-time updates`);
+    console.log(`📨 ChatWidget: Initializing with React-like visibility tracking...`);
 
-    // Determine which room to load, in order of precedence:
-    // 1. room attribute (for pinned widgets like right panel)
-    // 2. pageState (set by MainWidget before creating widget - SINGLE SOURCE OF TRUTH)
-    // 3. entity-id attribute (legacy fallback)
-    // 4. UserState.contentState (legacy fallback)
-    // 5. Default to General
+    // === STEP 1: Determine widget mode (pinned vs. dynamic) ===
     const roomAttr = this.getAttribute('room');
+    this._isPinnedWidget = !!roomAttr;
 
-    if (roomAttr) {
-      // Pinned widget (e.g., right panel) - ignore page state
-      console.log(`📨 ChatWidget: Pinned to room "${roomAttr}" via attribute`);
+    if (this._isPinnedWidget && roomAttr) {
+      // Pinned widget (e.g., right panel) - load specific room, ignore events
+      console.log(`📨 ChatWidget: PINNED to room "${roomAttr}" - will ignore content events`);
       await this.switchToRoom(roomAttr);
-    } else if (this.pageState?.contentType === 'chat' && this.pageState.entityId) {
-      // PageState is the single source of truth (set by MainWidget before creating widget)
-      console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
-      await this.switchToRoom(this.pageState.entityId);
+      this._isActiveContent = true; // Pinned widgets are always "active"
     } else {
-      // Legacy fallbacks
-      const entityIdAttr = this.getAttribute('entity-id') || this.getAttribute('data-entity-id');
-      if (entityIdAttr) {
-        console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
-        await this.switchToRoom(entityIdAttr);
-      } else {
-        // Load from UserState as last resort
-        await this.loadCurrentRoomFromUserState();
-      }
+      // Dynamic widget - use pageState as single source of truth
+      await this.initializeDynamicWidget();
     }
 
-    // Load initial room data
+    // === STEP 2: Load initial room data ===
     if (this.currentRoomId) {
       await this.loadRoomData(this.currentRoomId);
       this.updateHeader();
     }
 
-    // Listen for room selection events (only if NOT pinned to a specific room via attribute)
-    // RightPanelWidget uses room="help" to pin the chat, which should ignore ROOM_SELECTED
-    Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (eventData: { roomId: string; roomName: string }) => {
-      // Skip if this widget has a fixed room via attribute (e.g., right panel assistant)
-      if (this.getAttribute('room')) {
-        console.log(`📨 ChatWidget: Ignoring ROOM_SELECTED - pinned to room "${this.getAttribute('room')}"`);
-        return;
-      }
+    // === STEP 3: Setup event subscriptions (with cleanup tracking) ===
+    this.setupContentEventSubscriptions();
+    this.setupAIEventSubscriptions();
+    this.setupLearningEventSubscriptions();
 
-      console.log(`🏠 ChatWidget: Room selected "${eventData.roomName}" (${eventData.roomId})`);
-      this.currentRoomId = eventData.roomId as UUID;
-      this.currentRoomName = eventData.roomName;
+    // === STEP 4: Subscribe to page state changes (React-like pattern) ===
+    if (!this._isPinnedWidget) {
+      this.subscribeToPageState((newState) => {
+        const isNowActive = newState?.contentType === 'chat';
+        this.setActiveContent(isNowActive, 'pageState change');
 
-      // Reset counters for new room
-      this.totalMessageCount = 0;
-      this.loadedMessageCount = 0;
-
-      // Clear AI status indicators for previous room
-      this.aiStatusIndicator.clearAll();
-
-      // Update header immediately to show new room name (count will be 0 initially)
-      this.updateHeader();
-
-      // Load room data and members, then refresh messages asynchronously
-      Promise.all([
-        this.loadRoomData(this.currentRoomId),
-        this.scroller?.refresh()
-      ]).then(() => {
-        // Update header again with correct message count after refresh completes
-        this.updateHeader();
+        // If chat became active and room changed, switch to it
+        if (isNowActive && newState?.entityId && newState.entityId !== this.currentRoomId) {
+          this.handleRoomSwitch(newState.entityId, newState.resolved?.displayName, 'pageState');
+        }
       });
-    });
-
-    // Listen for content:opened events (from content/open command or tab switching)
-    // This handles when user opens a chat room via command or clicks a tab
-    Events.subscribe('content:opened', async (eventData: { contentType: string; entityId: string; title: string }) => {
-      // Skip if this widget has a fixed room via attribute (e.g., right panel assistant)
-      if (this.getAttribute('room')) {
-        return;  // Silent skip - already logged at ROOM_SELECTED
-      }
-
-      // Only handle chat content types
-      if (eventData.contentType !== 'chat' || !eventData.entityId) {
-        console.log(`📨 ChatWidget: Ignoring content:opened for ${eventData.contentType}`);
-        return;
-      }
-
-      // Skip if already on this room
-      if (eventData.entityId === this.currentRoomId) {
-        console.log(`📨 ChatWidget: Already on room ${eventData.title}, skipping`);
-        return;
-      }
-
-      console.log(`🏠 ChatWidget: Content opened - switching to "${eventData.title}" (${eventData.entityId})`);
-      this.currentRoomId = eventData.entityId as UUID;
-      this.currentRoomName = eventData.title || 'Chat';
-
-      // Reset counters for new room
-      this.totalMessageCount = 0;
-      this.loadedMessageCount = 0;
-
-      // Clear AI status indicators for previous room
-      this.aiStatusIndicator.clearAll();
-
-      // Update header immediately to show new room name
-      this.updateHeader();
-
-      // Load room data and refresh messages
-      Promise.all([
-        this.loadRoomData(this.currentRoomId),
-        this.scroller?.refresh()
-      ]).then(() => {
-        this.updateHeader();
-      });
-    });
-
-    // Listen for content:switched events (from state/content/switch command or tab clicks)
-    // Event includes full details: contentType, entityId, title
-    Events.subscribe('content:switched', async (eventData: {
-      contentItemId: string;
-      userId: string;
-      currentItemId: string;
-      contentType?: string;
-      entityId?: string;
-      title?: string;
-    }) => {
-      // Skip if this widget has a fixed room via attribute (e.g., right panel assistant)
-      if (this.getAttribute('room')) {
-        return;  // Silent skip - already logged at ROOM_SELECTED
-      }
-
-      // Only handle chat content types
-      if (eventData.contentType !== 'chat' || !eventData.entityId) {
-        console.log(`📨 ChatWidget: Ignoring content:switched - not a chat (type=${eventData.contentType})`);
-        return;
-      }
-
-      // Skip if already on this room
-      if (eventData.entityId === this.currentRoomId) {
-        console.log(`📨 ChatWidget: Already on room ${eventData.title}, skipping`);
-        return;
-      }
-
-      console.log(`🏠 ChatWidget: Content switched - switching to "${eventData.title}" (${eventData.entityId})`);
-      this.currentRoomId = eventData.entityId as UUID;
-      this.currentRoomName = eventData.title || 'Chat';
-
-      // Reset counters for new room
-      this.totalMessageCount = 0;
-      this.loadedMessageCount = 0;
-
-      // Clear AI status indicators for previous room
-      this.aiStatusIndicator.clearAll();
-
-      // Update header immediately to show new room name
-      this.updateHeader();
-
-      // Load room data and refresh messages
-      Promise.all([
-        this.loadRoomData(this.currentRoomId),
-        this.scroller?.refresh()
-      ]).then(() => {
-        this.updateHeader();
-      });
-    });
-
-    // Subscribe to AI decision events for real-time thinking/responding indicators
-    // Note: We subscribe globally and filter by room ID in handlers
-    //console.log(`🤖 ChatWidget: Subscribing to AI decision events`);
-
-    Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.aiStatusIndicator.onEvaluating(data);
-        this.updateHeader(); // Update emoji indicators in header
-      }
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.aiStatusIndicator.onDecidedRespond(data);
-        this.updateHeader(); // Update emoji indicators in header
-      }
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.aiStatusIndicator.onDecidedSilent(data);
-        this.updateHeader(); // Update emoji indicators in header
-      }
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.aiStatusIndicator.onGenerating(data);
-        this.updateHeader(); // Update emoji indicators in header
-      }
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.aiStatusIndicator.onCheckingRedundancy(data);
-        this.updateHeader(); // Update emoji indicators in header
-      }
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: any) => {
-      console.log(`🔧 ChatWidget: Received POSTED event for ${data.personaName}, roomId: ${data.roomId}, currentRoomId: ${this.currentRoomId}`);
-      if (data.roomId === this.currentRoomId) {
-        console.log(`✅ ChatWidget: Room matches, calling aiStatusIndicator.onPosted`);
-        this.aiStatusIndicator.onPosted(data);
-        this.updateHeader(); // Update emoji indicators in header
-      } else {
-        console.log(`⚠️ ChatWidget: Room doesn't match, ignoring POSTED event`);
-      }
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: any) => {
-      if (data.roomId === this.currentRoomId) {
-        this.aiStatusIndicator.onError(data);
-        this.updateHeader(); // Update emoji indicators in header
-      }
-    });
-
-    console.log(`✅ ChatWidget: AI decision event subscriptions active`);
-
-    // Subscribe to AI learning events for visual learning indicators
-    console.log(`🧬 ChatWidget: Subscribing to AI learning events`);
-
-    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: any) => {
-      this.addLearningBorder(data.personaName);
-    });
-
-    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_COMPLETE, (data: any) => {
-      this.removeLearningBorder();
-    });
-
-    Events.subscribe(AI_LEARNING_EVENTS.TRAINING_ERROR, (data: any) => {
-      this.removeLearningBorder();
-    });
-
-    console.log(`✅ ChatWidget: Learning event subscriptions active`);
-
-    // EntityScrollerWidget automatically handles ChatMessage events via createEntityCrudHandler
-    // No manual subscription needed - filtering happens in shouldAddEntity()
+    }
 
     // 🧠 REACTIVE WIDGET PATTERN: Subscribe to UserProfileWidget events
-    // When UserProfileWidget emits status:changed, we update our member display
     this.positronUnsubscribe = PositronWidgetState.subscribeToWidget('profile', 'status:changed', (data) => {
       this.handleProfileStatusChange(data as { userId: string; status: string; displayName: string });
     });
-    console.log(`✅ ChatWidget: Subscribed to profile:status:changed events`);
 
-    console.log(`✅ ChatWidget: Initialized with room selection, AI status indicators, and automatic CRUD events`);
+    console.log(`✅ ChatWidget: Initialized (pinned=${this._isPinnedWidget}, active=${this._isActiveContent})`);
+  }
+
+  /**
+   * Initialize a dynamic (non-pinned) widget from pageState or fallbacks
+   */
+  private async initializeDynamicWidget(): Promise<void> {
+    // Determine initial room from multiple sources (priority order):
+    // 1. pageState (SINGLE SOURCE OF TRUTH - set by MainWidget before creating widget)
+    // 2. entity-id attribute (legacy fallback)
+    // 3. UserState.contentState (legacy fallback)
+    // 4. Default to General
+
+    if (this.pageState?.contentType === 'chat' && this.pageState.entityId) {
+      console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
+      await this.switchToRoom(this.pageState.entityId);
+      this._isActiveContent = true;
+    } else {
+      const entityIdAttr = this.getAttribute('entity-id') || this.getAttribute('data-entity-id');
+      if (entityIdAttr) {
+        console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
+        await this.switchToRoom(entityIdAttr);
+        this._isActiveContent = true;
+      } else {
+        await this.loadCurrentRoomFromUserState();
+        // Assume active if we loaded from user state
+        this._isActiveContent = true;
+      }
+    }
+  }
+
+  /**
+   * Setup content-related event subscriptions (ROOM_SELECTED, content:opened, content:switched)
+   * CONSOLIDATED: All three events now use the same handleRoomSwitch method
+   */
+  private setupContentEventSubscriptions(): void {
+    // Skip all content events for pinned widgets
+    if (this._isPinnedWidget) {
+      console.log(`📨 ChatWidget: Skipping content event subscriptions (pinned widget)`);
+      return;
+    }
+
+    // ROOM_SELECTED - from sidebar clicks
+    this.subscribeWithCleanup(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
+      this.handleRoomSwitch(data.roomId, data.roomName, 'ROOM_SELECTED');
+    });
+
+    // content:opened - from content/open command
+    this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId: string; title: string }) => {
+      if (data.contentType === 'chat' && data.entityId) {
+        this.setActiveContent(true, 'content:opened');
+        this.handleRoomSwitch(data.entityId, data.title, 'content:opened');
+      }
+    });
+
+    // content:switched - from tab clicks
+    this.subscribeWithCleanup('content:switched', (data: { contentType?: string; entityId?: string; title?: string }) => {
+      if (data.contentType === 'chat' && data.entityId) {
+        this.setActiveContent(true, 'content:switched');
+        this.handleRoomSwitch(data.entityId, data.title, 'content:switched');
+      } else if (data.contentType && data.contentType !== 'chat') {
+        // User switched to non-chat content - we're no longer active
+        this.setActiveContent(false, `switched to ${data.contentType}`);
+      }
+    });
+
+    console.log(`📨 ChatWidget: Content event subscriptions active (with cleanup tracking)`);
+  }
+
+  /**
+   * Setup AI decision event subscriptions (thinking, generating, posted, etc.)
+   */
+  private setupAIEventSubscriptions(): void {
+    const aiEventHandler = (event: string, handler: (data: any) => void) => {
+      this.subscribeWithCleanup(event, (data: any) => {
+        // Only process events for current room
+        if (data.roomId === this.currentRoomId) {
+          handler(data);
+          this.updateHeader();
+        }
+      });
+    };
+
+    aiEventHandler(AI_DECISION_EVENTS.EVALUATING, (data) => this.aiStatusIndicator.onEvaluating(data));
+    aiEventHandler(AI_DECISION_EVENTS.DECIDED_RESPOND, (data) => this.aiStatusIndicator.onDecidedRespond(data));
+    aiEventHandler(AI_DECISION_EVENTS.DECIDED_SILENT, (data) => this.aiStatusIndicator.onDecidedSilent(data));
+    aiEventHandler(AI_DECISION_EVENTS.GENERATING, (data) => this.aiStatusIndicator.onGenerating(data));
+    aiEventHandler(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data) => this.aiStatusIndicator.onCheckingRedundancy(data));
+    aiEventHandler(AI_DECISION_EVENTS.ERROR, (data) => this.aiStatusIndicator.onError(data));
+
+    // POSTED event needs extra logging for debugging
+    this.subscribeWithCleanup(AI_DECISION_EVENTS.POSTED, (data: any) => {
+      if (data.roomId === this.currentRoomId) {
+        this.aiStatusIndicator.onPosted(data);
+        this.updateHeader();
+      }
+    });
+
+    console.log(`📨 ChatWidget: AI decision event subscriptions active`);
+  }
+
+  /**
+   * Setup AI learning event subscriptions (training indicators)
+   */
+  private setupLearningEventSubscriptions(): void {
+    this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: any) => {
+      this.addLearningBorder(data.personaName);
+    });
+
+    this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_COMPLETE, () => {
+      this.removeLearningBorder();
+    });
+
+    this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_ERROR, () => {
+      this.removeLearningBorder();
+    });
+
+    console.log(`📨 ChatWidget: Learning event subscriptions active`);
   }
 
   /**
@@ -651,13 +642,25 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Cleanup when widget is disconnected from DOM
+   * CRITICAL: Must clean up all event subscriptions to prevent memory leaks
    */
   async disconnectedCallback(): Promise<void> {
+    console.log(`🧹 ChatWidget: Cleaning up (${this._eventUnsubscribers.length} event subscriptions)...`);
+
+    // Clean up ALL tracked event subscriptions (React-like cleanup pattern)
+    for (const unsubscribe of this._eventUnsubscribers) {
+      try {
+        unsubscribe();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    this._eventUnsubscribers = [];
+
     // Clean up Positron subscription
     if (this.positronUnsubscribe) {
       this.positronUnsubscribe();
       this.positronUnsubscribe = undefined;
-      console.log(`🧠 ChatWidget: Positron subscription cleaned up`);
     }
 
     // Clear any pending debounce
@@ -666,8 +669,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.positronUpdateDebounce = undefined;
     }
 
+    // Clear any pending header update
+    if (this.headerUpdateTimeout) {
+      clearTimeout(this.headerUpdateTimeout);
+      this.headerUpdateTimeout = undefined;
+    }
+
+    // Reset visibility state
+    this._isActiveContent = false;
+
     // Call parent cleanup
     await super.disconnectedCallback();
+
+    console.log(`✅ ChatWidget: Cleanup complete`);
   }
 
   /**
