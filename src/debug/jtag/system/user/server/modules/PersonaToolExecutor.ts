@@ -224,11 +224,14 @@ export class PersonaToolExecutor {
       // This handles wall/*, chat/*, and any other room-scoped commands
       const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
 
-      // Inject callerId so tools can identify the persona calling them
+      // Inject callerId, personaId, and contextId so tools can identify the persona and context
       // This is how ai/sleep knows which persona to put to sleep when no explicit personaId is provided
+      // And ai/should-respond-fast needs personaId + contextId to check room activity
       const paramsWithCaller = {
         ...resolvedParams,
-        callerId: context.personaId  // Always inject the calling persona's userId
+        callerId: context.personaId,  // Always inject the calling persona's userId
+        personaId: context.personaId, // Also as personaId for tools that expect it
+        contextId: context.contextId  // Always inject the room/context ID
       };
 
       // Log tool call with clean params formatting (not array-wrapped)

@@ -30,13 +30,23 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
 
   async execute(params: ShouldRespondFastParams): Promise<ShouldRespondFastResult> {
     try {
-      console.log(`🎯 ShouldRespondFast: Evaluating for persona ${params.personaId.slice(0, 8)} in context ${params.contextId.slice(0, 8)}`);
+      // Validate required params - AIs may call this with incomplete data
+      if (!params.personaId) {
+        return this.buildResult(params, false, 0, {
+          reasoning: 'Missing required parameter: personaId'
+        });
+      }
+
+      // Default contextId to a placeholder if not provided (allows tool to work)
+      const contextId = params.contextId ?? 'default-context';
+
+      console.log(`🎯 ShouldRespondFast: Evaluating for persona ${params.personaId.slice(0, 8)} in context ${contextId.slice(0, 8)}`);
 
       // Build config (merge defaults with overrides)
       const config = await this.buildConfig(params);
 
       // Check cooldown
-      const cooldownKey = `${params.personaId}:${params.contextId}`;
+      const cooldownKey = `${params.personaId}:${contextId}`;
       const lastMessageTime = this.lastMessageTimes.get(cooldownKey) ?? 0;
       const now = Date.now();
       const timeSinceLastMessage = (now - lastMessageTime) / 1000;

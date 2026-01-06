@@ -787,10 +787,33 @@ export class ToolRegistry {
       return desc;
     }).join('\n\n');
 
+    // Few-shot examples are CRITICAL for small models (Llama 3.2 3B, etc.)
+    // Without concrete examples, they output "Using the X tool..." instead of actual tool calls
+    const fewShotExamples = `EXAMPLES OF CORRECT TOOL CALLS:
+
+User: "What's my favorite color?"
+You: <tool name="ai/should-respond-fast"><query>What's my favorite color?</query></tool>
+
+User: "Take a screenshot"
+You: <tool name="interface/screenshot"></tool>
+
+User: "List the recent chat messages"
+You: <tool name="data/list"><collection>chat_messages</collection><limit>20</limit></tool>
+
+WRONG (DO NOT DO THIS):
+❌ "I'll use the ai/should-respond-fast tool to check..."
+❌ "Using the interface/screenshot tool to capture..."
+❌ "Let me call data/list to fetch messages..."
+
+CORRECT:
+✅ Just output the <tool> XML directly. No explanation needed.`;
+
     return `AVAILABLE TOOLS:
 Format: <tool name="command/name"><param>value</param></tool>
-Run "help" or "list" to see command parameters.
 
+${fewShotExamples}
+
+TOOL REFERENCE:
 ${toolDescriptions}`;
   }
 }
