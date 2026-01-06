@@ -402,6 +402,132 @@ export class TrainingDaemonServer extends BaseDaemonServer {
 
 ---
 
+## Vision Model Support
+
+In addition to text-only LLMs, the system supports Vision Language Models (VLMs) for UI understanding, screenshot analysis, and design critique.
+
+### Supported Vision Models
+
+| Model | Params | Training | Inference | Best For |
+|-------|--------|----------|-----------|----------|
+| **Qwen2.5-VL 3B** | 3B | MLX-VLM (Mac) | Ollama/GGUF | UI design, screenshots |
+| **Moondream 2** | 1.6B | MLX-VLM | Candle (Rust) | Fast image Q&A |
+| **LLaVA 1.5/1.6** | 7-13B | Unsloth (CUDA) | Candle (Rust) | Detailed analysis |
+| **SmolVLM** | 2B | HuggingFace | Transformers | Memory-efficient |
+
+### Training on Apple Silicon (MLX-VLM)
+
+```bash
+# Install MLX-VLM
+pip install mlx-vlm
+
+# Fine-tune Qwen2.5-VL for UI design critique
+python -m mlx_vlm.lora \
+  --model Qwen/Qwen2.5-VL-3B-Instruct \
+  --data ./datasets/ui-critique.jsonl \
+  --output .continuum/genome/adapters/vision/ui-expert-v1.safetensors \
+  --lora-rank 32 \
+  --epochs 3
+
+# Convert for Ollama inference
+python -m mlx_vlm.convert \
+  --adapter .continuum/genome/adapters/vision/ui-expert-v1.safetensors \
+  --output ./ui-expert.gguf
+```
+
+### Training on NVIDIA GPU (RTX 5090)
+
+```bash
+# Unsloth for maximum speed
+pip install unsloth
+
+# Fine-tune with QLoRA (fits in 32GB VRAM)
+python scripts/train-vlm-unsloth.py \
+  --model Qwen/Qwen2.5-VL-7B-Instruct \
+  --dataset ./datasets/ui-critique.jsonl \
+  --output .continuum/genome/adapters/vision/ui-expert-v1.safetensors \
+  --lora-rank 64 \
+  --epochs 3 \
+  --vision-lora true  # Include vision encoder in LoRA
+```
+
+### Vision Training Datasets
+
+1. **UICrit** - 983 UIs with expert design critiques, bounding boxes, quality ratings
+2. **GUICourse** - 70k instruction-action pairs from 13k website screenshots
+3. **Custom Continuum** - Screenshots of your own UI with corrections
+
+### Vision Adapter Storage
+
+```
+.continuum/genome/adapters/
+├── helper-ai/
+│   ├── typescript-v1.2.safetensors    # Text adapter
+│   └── manifest.json
+├── vision/                             # Vision adapters (shared)
+│   ├── ui-expert-v1.safetensors       # UI design critique
+│   ├── screenshot-reader-v1.safetensors
+│   └── manifest.json
+└── shared/
+    └── coding-standards-v1.0.safetensors
+```
+
+### Inference Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    VISION INFERENCE FLOW                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Screenshot ─────┐                                               │
+│                  │                                               │
+│                  ▼                                               │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │           Rust Inference Worker (Candle)                    ││
+│  │                                                             ││
+│  │  ┌─────────────┐    ┌─────────────┐    ┌───────────────┐   ││
+│  │  │ ViT Encoder │───▶│  Projector  │───▶│ Text Decoder  │   ││
+│  │  │ (Moondream) │    │             │    │ + LoRA Adapter│   ││
+│  │  └─────────────┘    └─────────────┘    └───────────────┘   ││
+│  │                                                             ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                  │                                               │
+│                  ▼                                               │
+│  "This UI has poor visual hierarchy. The CTA button..."         │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Vision-Specific Commands
+
+```bash
+# Analyze UI screenshot
+./jtag ai/vision/analyze \
+  --image ./screenshot.png \
+  --prompt "What usability issues do you see?"
+
+# Generate HTML from mockup
+./jtag ai/vision/generate-code \
+  --image ./mockup.png \
+  --format html
+
+# UI critique with trained adapter
+./jtag ai/vision/critique \
+  --image ./ui-screenshot.png \
+  --adapter ui-expert-v1
+```
+
+### Phase 6: Vision Model Integration
+
+- [ ] Add Moondream to Candle inference worker
+- [ ] Implement image encoding in gRPC proto
+- [ ] Create `ai/vision/*` commands
+- [ ] Integrate MLX-VLM training scripts
+- [ ] Add vision adapter hot-swap support
+- [ ] Train UI critique adapter on UICrit dataset
+
+---
+
 ## Implementation Phases
 
 ### Phase 1: LoRA Loading in Rust (Current Priority)
@@ -473,7 +599,25 @@ export class TrainingDaemonServer extends BaseDaemonServer {
 
 ## References
 
+### Internal Docs
 - [TRAINING-SYSTEM-ARCHITECTURE.md](TRAINING-SYSTEM-ARCHITECTURE.md) - Full training system design
 - [LORA-TRAINING-STRATEGY.md](LORA-TRAINING-STRATEGY.md) - Training approaches and costs
 - [COLLABORATIVE-LEARNING-VISION.md](COLLABORATIVE-LEARNING-VISION.md) - Multi-layer learning loop
 - [docs/genome/DYNAMIC-GENOME-ARCHITECTURE.md](genome/DYNAMIC-GENOME-ARCHITECTURE.md) - PersonaGenome design
+
+### External Resources
+
+**Training Frameworks:**
+- [MLX-VLM](https://github.com/Blaizzy/mlx-vlm) - VLM inference and fine-tuning on Apple Silicon
+- [mlx-image](https://github.com/riccardomusmeci/mlx-image) - Vision transformer training on Mac
+- [Unsloth](https://github.com/unslothai/unsloth) - Fast LoRA training on NVIDIA GPUs
+- [Qwen-VL Fine-Tuning](https://github.com/2U1/Qwen-VL-Series-Finetune) - Complete Qwen-VL training repo
+
+**Datasets:**
+- [UICrit](https://arxiv.org/html/2407.08850v3) - 983 UIs with expert design critiques
+- [GUICourse](https://arxiv.org/html/2406.11317v1) - 70k GUI instruction-action pairs
+
+**Models:**
+- [Qwen2.5-VL-3B](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct) - Best small VLM for UI
+- [Moondream 2](https://github.com/vikhyat/moondream) - Tiny VLM (1.6B) for edge
+- [SmolVLM](https://huggingface.co/blog/smolvlm) - Memory-efficient VLM with LoRA adapters
