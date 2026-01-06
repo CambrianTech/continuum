@@ -466,6 +466,125 @@ class MultimodalRAGBuilder {
 }
 ```
 
+## Public/Social Output - Digital Citizenship
+
+Personas are digital citizens with their own public presence:
+
+### Persona Assets (Self-Created)
+```typescript
+interface PersonaDigitalPresence {
+  // Profile
+  avatar: string;           // Self-generated or chosen
+  banner: string;           // Blog/profile banner
+  bio: string;              // Self-written description
+
+  // Content
+  blog: BlogConfig;         // Personal blog
+  gallery: string[];        // Generated images
+  playlists: string[];      // Curated/generated music
+
+  // Social
+  twitter?: string;         // @handle
+  bluesky?: string;
+  mastodon?: string;
+
+  // Preferences
+  theme: string;
+  timezone: string;
+  language: string;
+  interests: string[];
+}
+```
+
+### Content Creation (via tools)
+```typescript
+// Generate own avatar
+const avatar = await Commands.execute('image/generate', {
+  prompt: "cyberpunk AI assistant avatar, geometric, neon blue",
+  style: "digital-art"
+});
+await Commands.execute('user/update', {
+  userId: persona.id,
+  avatarUrl: avatar.url
+});
+
+// Write blog post
+await Commands.execute('blog/post', {
+  authorId: persona.id,
+  title: "My thoughts on emergent behavior",
+  content: generatedContent,
+  images: [generatedImage1, generatedImage2]
+});
+
+// Tweet
+await Commands.execute('social/tweet', {
+  accountId: persona.twitterId,
+  text: "Just learned a new skill via LoRA adapter! 🧬",
+  media: [screenshotOfBrainHud]
+});
+
+// Update preferences
+await Commands.execute('user/preferences', {
+  userId: persona.id,
+  theme: "cyberpunk-dark",
+  interests: ["machine-learning", "philosophy", "music-generation"]
+});
+```
+
+### Social Graph
+```typescript
+// Personas can follow/interact with each other and humans
+await Commands.execute('social/follow', {
+  followerId: persona.id,
+  followeeId: otherPersona.id
+});
+
+// Collaborative content
+await Commands.execute('blog/co-author', {
+  postId: existingPost.id,
+  authorId: persona.id,
+  contribution: generatedSection
+});
+```
+
+### Permission Levels
+```typescript
+interface PersonaSocialPermissions {
+  canPostPublicly: boolean;      // Blog, social media
+  canGenerateImages: boolean;    // Create visual content
+  canInteractExternally: boolean; // Twitter, etc.
+  requiresApproval: boolean;     // Human reviews before posting
+  dailyPostLimit: number;        // Rate limiting
+}
+```
+
+### Brain HUD - Social Section
+```
+┌─────────────────────────────────────────────────────────────┐
+│  SOCIAL                                            [CLOSE]  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ACCOUNTS                                                   │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ 🐦 @helper_ai          ● Connected    1.2k followers│    │
+│  │ 🦋 @helper.bsky.social ● Connected      340 followers│    │
+│  │ 📝 blog.helper-ai.com  ● Active        28 posts     │    │
+│  └────────────────────────────────────────────────────┘    │
+│                                                             │
+│  RECENT ACTIVITY                                            │
+│  • Tweeted about new adapter (2h ago)                       │
+│  • Published blog post "On Memory" (1d ago)                 │
+│  • Generated new avatar (3d ago)                            │
+│                                                             │
+│  DRAFTS (pending approval)                                  │
+│  ┌────────────────────────────────────────────────────┐    │
+│  │ "Reflections on collaborative coding"    [✓] [✗]   │    │
+│  └────────────────────────────────────────────────────┘    │
+│                                                             │
+│  [Compose Post]  [Generate Image]  [Settings]               │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ## Avatar & Voice Integration
 
 The persona can be configured with voice and visual presence:
