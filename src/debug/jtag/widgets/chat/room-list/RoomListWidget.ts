@@ -208,21 +208,16 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
 
     // Emit room selection IMMEDIATELY so ChatWidget switches fast
     // Include uniqueId for human-readable URL building
+    // NOTE: MainWidget handles view switching via ROOM_SELECTED
+    // NOTE: Tab creation happens via collaboration/content/open command below
+    // DO NOT emit content:opened here - the command will emit it with proper contentItemId
     Events.emit(UI_EVENTS.ROOM_SELECTED, {
       roomId,
       roomName,
       uniqueId: roomEntity.uniqueId || roomEntity.name || roomId  // Prefer uniqueId for URLs
     });
 
-    // Emit content:opened for MainWidget tab update (optimistic)
-    // Use uniqueId for human-readable URLs
-    Events.emit('content:opened', {
-      contentType: 'chat',
-      entityId: roomEntity.uniqueId || roomId,  // Use uniqueId for content state
-      title: roomName
-    });
-
-    // Persist to server in BACKGROUND (don't block UI)
+    // Persist to server in BACKGROUND - command emits content:opened with proper data
     const userId = this.userState?.userId;
     if (userId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
