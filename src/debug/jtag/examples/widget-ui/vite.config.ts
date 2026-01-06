@@ -2,27 +2,29 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 
 /**
- * Vite Configuration for Widget UI
+ * Vite Configuration for Widget UI - REPLACES esbuild
  *
- * This runs alongside the existing esbuild setup during migration:
- * - npm run dev:vite - Vite dev server with HMR
- * - npm run build    - Still uses esbuild (production)
+ * This is the main browser bundler for the Positron widget system.
+ * It handles:
+ * - TypeScript compilation
+ * - SCSS → CSS compilation (native, no separate compile-sass.ts needed)
+ * - Bundle optimization
+ * - Source maps
  *
- * Incremental migration:
- * 1. Widgets in src/components/ use Vite patterns (signals, reactive)
- * 2. Widgets in widgets/ use legacy patterns
- * 3. Both work together during transition
+ * Usage:
+ *   npm run build:browser   → Production build (dist/index.js)
+ *   npm run dev:vite        → Dev server with HMR (port 9100)
  */
 export default defineConfig({
   root: '.',
   base: '/',
 
-  // Development server configuration
+  // Development server (optional - main app still uses port 9000)
   server: {
-    port: 9100,  // Different port from existing 9000
+    port: 9100,
     open: false,
     cors: true,
-    // Proxy API requests to the existing JTAG server
+    // Proxy WebSocket to main JTAG server
     proxy: {
       '/ws': {
         target: 'ws://localhost:9001',
@@ -31,37 +33,66 @@ export default defineConfig({
     }
   },
 
-  // Build configuration
+  // Build configuration - matches esbuild output
   build: {
-    outDir: 'dist-vite',
+    outDir: 'dist',
+    emptyOutDir: true,
+    sourcemap: true,
+    minify: false, // Match esbuild settings
+    target: 'es2020',
+
+    // Library mode for browser bundle
     lib: {
-      entry: resolve(__dirname, 'src/vite-entry.ts'),
-      name: 'ContinuumWidgets',
+      entry: resolve(__dirname, 'src/index.ts'),
       formats: ['es'],
-      fileName: 'widgets'
+      fileName: () => 'index.js' // Match esbuild output name
     },
+
     rollupOptions: {
-      // External dependencies that shouldn't be bundled
-      external: [],
       output: {
-        // Preserve module structure for tree-shaking
-        preserveModules: false
+        // Single bundle (no code splitting)
+        inlineDynamicImports: true,
+        // Ensure CSS is extracted
+        assetFileNames: '[name][extname]'
       }
     }
   },
 
-  // Resolve configuration
-  resolve: {
-    alias: {
-      '@widgets': resolve(__dirname, '../../widgets'),
-      '@system': resolve(__dirname, '../../system'),
-      '@shared': resolve(__dirname, '../../shared')
+  // CSS/SCSS handling - replaces compile-sass.ts for widgets
+  css: {
+    preprocessorOptions: {
+      scss: {
+        // Add shared SCSS variables/mixins path
+        includePaths: [
+          resolve(__dirname, '../../widgets/shared/styles')
+        ]
+      }
     }
   },
 
-  // Enable TypeScript decorators and other features
+  // Path resolution - matches existing esbuild aliases
+  resolve: {
+    alias: {
+      // Main JTAG package alias (browser build)
+      '@continuum/jtag': resolve(__dirname, '../../browser-index.ts'),
+
+      // Widget system aliases
+      '@widgets': resolve(__dirname, '../../widgets'),
+      '@system': resolve(__dirname, '../../system'),
+      '@shared': resolve(__dirname, '../../shared'),
+      '@commands': resolve(__dirname, '../../commands'),
+      '@daemons': resolve(__dirname, '../../daemons')
+    }
+  },
+
+  // TypeScript handling
   esbuild: {
     target: 'es2020',
     keepNames: true
+  },
+
+  // Define process.env for browser compatibility
+  define: {
+    'process.env.NODE_ENV': JSON.stringify('production')
   }
 });

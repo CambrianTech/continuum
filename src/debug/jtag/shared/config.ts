@@ -19,7 +19,7 @@ export const ACTIVE_EXAMPLE = 'widget-ui';
 
 export const EXAMPLE_CONFIG = {
   name: '@continuum/jtag-widget-ui',
-  description: 'JTAG Widget UI - Standalone Widget Development Environment',
+  description: 'JTAG Widget UI - Positron Widget System (Vite + Signals)',
   ports: {
     http_server: 9000,
     websocket_server: 9001
