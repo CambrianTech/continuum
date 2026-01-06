@@ -669,6 +669,142 @@ When ready for 3D:
 - Camera orbit on drag
 - VR-ready for future headset support
 
+## Real-World Example: Enterprise IVR
+
+The Brain HUD architecture maps directly to real products. See [ENTERPRISE-IVR.md](./examples/ENTERPRISE-IVR.md) for the full business case.
+
+### IVR as Brain Regions
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  DENTAL OFFICE AI RECEPTIONIST                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  SENSORY CORTEX (Inputs)          MOTOR CORTEX (Outputs)                   │
+│  ┌─────────────────────┐          ┌─────────────────────┐                  │
+│  │ 👂 Phone Audio      │          │ 🗣️ Voice Response   │                  │
+│  │    ↓                │          │    ↑                │                  │
+│  │ STT (Whisper)       │          │ TTS (ElevenLabs)    │                  │
+│  │    ↓                │          │    ↑                │                  │
+│  │ "I need to          │          │ "I see your appt    │                  │
+│  │  reschedule"        │          │  is Thursday..."    │                  │
+│  └─────────────────────┘          └─────────────────────┘                  │
+│            │                                ↑                               │
+│            └──────────────┬─────────────────┘                               │
+│                           ▼                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         🧠 COGNITION                                 │   │
+│  │                                                                      │   │
+│  │  GENOME: dental-receptionist-lora (trained on their call history)   │   │
+│  │  HIPPOCAMPUS: Patient records, services, hours, FAQs                │   │
+│  │  PREFRONTAL: Current conversation state, decision log               │   │
+│  │  LIMBIC: Customer sentiment (frustrated → escalate)                 │   │
+│  │                                                                      │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                           │                                                 │
+│                           ▼                                                 │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                    MOTOR CORTEX (Actions/Tools)                      │   │
+│  │                                                                      │   │
+│  │  📅 Book appointment (Google Calendar)                              │   │
+│  │  👤 Lookup patient (CRM)                                            │   │
+│  │  📱 Send SMS confirmation (Twilio)                                  │   │
+│  │  📞 Transfer to human (on-call dentist)                             │   │
+│  │  📝 Create voicemail (after hours)                                  │   │
+│  │                                                                      │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  CNS: Latency 180ms (voice-critical) │ Twilio ● Connected │ GPU ● Ready   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### IVR Brain Region Mapping
+
+| Region | IVR Function | Implementation |
+|--------|--------------|----------------|
+| **Sensory** | Hear caller | STT (Whisper/Deepgram) → text |
+| **Motor (Voice)** | Speak response | Text → TTS (ElevenLabs) → audio |
+| **Motor (Actions)** | Book, lookup, transfer | Tool calls to calendar/CRM/phone |
+| **Hippocampus** | Know the business | RAG over FAQs, services, hours |
+| **Genome** | Sound like THEIR brand | LoRA trained on their call transcripts |
+| **Prefrontal** | Track conversation | State machine, decision logging |
+| **Limbic** | Detect frustration | Sentiment → escalation trigger |
+| **CNS** | Fast response | <200ms latency for natural conversation |
+
+### LoRA Training for Brand Voice
+
+```typescript
+// Each business gets a persona fine-tuned on THEIR voice
+const brandPersona = await Commands.execute('genome/train', {
+  baseModel: 'llama-3.2-3b',
+  trainingData: {
+    source: 'call-transcripts',
+    bucket: 'gs://brand-x/recordings/',
+    filter: {
+      satisfaction: '>= 4',      // Learn from good calls
+      resolution: 'first-call',  // Quick resolutions
+      noEscalation: true         // Handled without human
+    }
+  },
+  output: {
+    adapterId: 'brand-x-receptionist',
+    adapterType: 'lora',
+    rank: 32
+  }
+});
+
+// Result: AI sounds like Brand X's best human rep
+// Not generic. Their terminology. Their tone. Their brand.
+```
+
+### Voice Pipeline
+
+```
+Phone Call → Twilio → WebSocket → Continuum
+                                      │
+                ┌─────────────────────┼─────────────────────┐
+                │                     │                     │
+                ▼                     ▼                     ▼
+         ┌──────────┐          ┌──────────┐          ┌──────────┐
+         │   STT    │          │   LLM    │          │   TTS    │
+         │ (Whisper)│    →     │ + LoRA   │    →     │(ElevenLabs)
+         │          │          │          │          │          │
+         └──────────┘          └──────────┘          └──────────┘
+         Audio → Text          Think + Act          Text → Audio
+                                    │
+                                    ▼
+                              ┌──────────┐
+                              │  Tools   │
+                              │ Calendar │
+                              │   CRM    │
+                              │   SMS    │
+                              └──────────┘
+```
+
+### Business Admin Dashboard (Brain HUD)
+
+The Brain HUD IS the admin interface for each business:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SMILE DENTAL - AI RECEPTIONIST                    [Settings]  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  TODAY'S CALLS                                                  │
+│  ████████████████████░░░░░░  127 / 150 calls handled           │
+│  ✅ 98% resolved without human │ ⚠️ 3 escalated               │
+│                                                                 │
+│  BRAIN STATUS                                                   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐          │
+│  │ MEMORY   │ │ GENOME   │ │ VOICE    │ │ ACTIONS  │          │
+│  │ 1.2k FAQ │ │ v2.3     │ │ "Sarah"  │ │ 4 active │          │
+│  │ 847 pts  │ │ trained  │ │ ElevenLab│ │ Calendar │          │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘          │
+│                                                                 │
+│  [📞 Test Call]  [🎯 Train More]  [📊 Analytics]              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ## Implementation Path
 
 1. **Phase 1**: Refactor existing BrainWidget to unified HUD layout
