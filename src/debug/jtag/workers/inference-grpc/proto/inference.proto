@@ -17,6 +17,7 @@ service Inference {
   rpc LoadAdapter(LoadAdapterRequest) returns (LoadAdapterResponse);
   rpc UnloadAdapter(UnloadAdapterRequest) returns (UnloadAdapterResponse);
   rpc ListAdapters(ListAdaptersRequest) returns (ListAdaptersResponse);
+  rpc DownloadAdapter(DownloadAdapterRequest) returns (DownloadAdapterResponse);
 
   // Genome (multi-adapter stacking)
   rpc ApplyGenome(ApplyGenomeRequest) returns (ApplyGenomeResponse);
@@ -119,6 +120,31 @@ message ListAdaptersRequest {}
 
 message ListAdaptersResponse {
   repeated AdapterInfo adapters = 1;
+}
+
+// Download adapter from HuggingFace Hub
+message DownloadAdapterRequest {
+  string repo_id = 1;       // HuggingFace repo ID (e.g., "username/adapter-name")
+  string adapter_id = 2;    // Local ID to use for this adapter (defaults to repo_id)
+  string revision = 3;      // Optional: branch/revision (default: "main")
+  double scale = 4;         // LoRA scale factor (default: from adapter_config.json)
+}
+
+message DownloadAdapterResponse {
+  bool success = 1;
+  string error = 2;
+  int64 download_time_ms = 3;
+  string adapter_id = 4;        // The adapter_id assigned
+  string local_path = 5;        // Local cache path
+  AdapterMetadata metadata = 6; // Parsed adapter_config.json
+}
+
+message AdapterMetadata {
+  string base_model = 1;        // Base model this adapter was trained on
+  int32 rank = 2;               // LoRA rank (r)
+  int32 alpha = 3;              // LoRA alpha
+  repeated string target_modules = 4;  // Target modules
+  string peft_type = 5;         // PEFT type (should be "LORA")
 }
 
 message AdapterInfo {

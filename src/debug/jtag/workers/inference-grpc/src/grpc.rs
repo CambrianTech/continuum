@@ -19,11 +19,13 @@ use crate::inference::{
     ListModelsRequest, ListModelsResponse, ModelInfo,
     LoadAdapterRequest, LoadAdapterResponse, UnloadAdapterRequest, UnloadAdapterResponse,
     ListAdaptersRequest, ListAdaptersResponse, AdapterInfo,
+    DownloadAdapterRequest, DownloadAdapterResponse, AdapterMetadata,
     ApplyGenomeRequest, ApplyGenomeResponse,
     StatusRequest, StatusResponse,
 };
 use crate::model::{ModelState, load_model_by_id, generate_text, rebuild_with_lora_from_paths, rebuild_with_stacked_lora, GenomeAdapter};
 use crate::lora::{self, LoadedAdapter};
+use crate::adapter_registry;
 
 /// Server statistics tracking
 pub struct ServerStats {
@@ -394,6 +396,156 @@ impl Inference for InferenceService {
         }).collect();
 
         Ok(Response::new(ListAdaptersResponse { adapters: adapter_list }))
+    }
+
+    async fn download_adapter(
+        &self,
+        request: Request<DownloadAdapterRequest>,
+    ) -> Result<Response<DownloadAdapterResponse>, Status> {
+        let req = request.into_inner();
+        let repo_id = req.repo_id;
+        let adapter_id = if req.adapter_id.is_empty() { repo_id.clone() } else { req.adapter_id };
+        let revision = if req.revision.is_empty() { None } else { Some(req.revision.as_str()) };
+        let scale_override = if req.scale > 0.0 { Some(req.scale) } else { None };
+
+        info!("📥 DownloadAdapter from HuggingFace: {}", repo_id);
+        let start = Instant::now();
+
+        // Check model is loaded (we'll need device/dtype for weight parsing)
+        {
+            let state = self.state.read().await;
+            if state.is_none() {
+                return Ok(Response::new(DownloadAdapterResponse {
+                    success: false,
+                    error: "No model loaded - load a model first".to_string(),
+                    download_time_ms: 0,
+                    adapter_id: String::new(),
+                    local_path: String::new(),
+                    metadata: None,
+                }));
+            }
+        }
+
+        // Download from HuggingFace Hub
+        let repo_id_clone = repo_id.clone();
+        let revision_owned = revision.map(|s| s.to_string());
+        let result = tokio::task::spawn_blocking(move || {
+            adapter_registry::download_adapter(&repo_id_clone, revision_owned.as_deref())
+        }).await;
+
+        match result {
+            Ok(Ok(downloaded)) => {
+                // Calculate scale: override > config-based > 1.0
+                let config_scale = downloaded.config.lora_alpha as f64 / downloaded.config.r.max(1) as f64;
+                let final_scale = scale_override.unwrap_or(config_scale);
+                let weights_path_str = downloaded.weights_path.to_string_lossy().to_string();
+
+                // Now load the weights (requires device/dtype from model)
+                let state = self.state.read().await;
+                let (device, dtype) = match state.as_ref() {
+                    Some(model_state) => (model_state.device.clone(), model_state.dtype),
+                    None => {
+                        return Ok(Response::new(DownloadAdapterResponse {
+                            success: false,
+                            error: "Downloaded but model unloaded before weight parsing".to_string(),
+                            download_time_ms: start.elapsed().as_millis() as i64,
+                            adapter_id: String::new(),
+                            local_path: weights_path_str,
+                            metadata: None,
+                        }));
+                    }
+                };
+                drop(state);
+
+                // Parse weights in blocking task
+                let path_clone = weights_path_str.clone();
+                let weights_result = tokio::task::spawn_blocking(move || {
+                    lora::load_lora_adapter(&path_clone, &device, dtype, final_scale)
+                }).await;
+
+                match weights_result {
+                    Ok(Ok(weights)) => {
+                        let download_time_ms = start.elapsed().as_millis() as i64;
+
+                        // Create adapter entry with parsed weights
+                        let mut adapter = LoadedAdapter::new(
+                            adapter_id.clone(),
+                            weights_path_str.clone(),
+                            final_scale,
+                        );
+                        adapter.weights = Some(weights);
+                        adapter.active = true;
+
+                        let mut adapters = self.adapters.write().await;
+                        adapters.push(adapter);
+
+                        let metadata = AdapterMetadata {
+                            base_model: downloaded.config.base_model_name_or_path,
+                            rank: downloaded.config.r as i32,
+                            alpha: downloaded.config.lora_alpha as i32,
+                            target_modules: downloaded.config.target_modules,
+                            peft_type: downloaded.config.peft_type,
+                        };
+
+                        info!("✅ Downloaded and loaded adapter: {} (r={}, α={}, scale={:.2}) in {}ms",
+                              adapter_id, metadata.rank, metadata.alpha, final_scale, download_time_ms);
+
+                        Ok(Response::new(DownloadAdapterResponse {
+                            success: true,
+                            error: String::new(),
+                            download_time_ms,
+                            adapter_id,
+                            local_path: weights_path_str,
+                            metadata: Some(metadata),
+                        }))
+                    }
+                    Ok(Err(e)) => {
+                        info!("❌ Failed to parse adapter weights: {}", e);
+                        Ok(Response::new(DownloadAdapterResponse {
+                            success: false,
+                            error: format!("Downloaded but failed to parse weights: {}", e),
+                            download_time_ms: start.elapsed().as_millis() as i64,
+                            adapter_id: String::new(),
+                            local_path: weights_path_str,
+                            metadata: None,
+                        }))
+                    }
+                    Err(e) => {
+                        info!("❌ Weight parsing task failed: {}", e);
+                        Ok(Response::new(DownloadAdapterResponse {
+                            success: false,
+                            error: format!("Task join error: {}", e),
+                            download_time_ms: start.elapsed().as_millis() as i64,
+                            adapter_id: String::new(),
+                            local_path: weights_path_str,
+                            metadata: None,
+                        }))
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                info!("❌ Failed to download adapter: {}", e);
+                Ok(Response::new(DownloadAdapterResponse {
+                    success: false,
+                    error: e.to_string(),
+                    download_time_ms: 0,
+                    adapter_id: String::new(),
+                    local_path: String::new(),
+                    metadata: None,
+                }))
+            }
+            Err(e) => {
+                info!("❌ Download task failed: {}", e);
+                Ok(Response::new(DownloadAdapterResponse {
+                    success: false,
+                    error: format!("Task join error: {}", e),
+                    download_time_ms: 0,
+                    adapter_id: String::new(),
+                    local_path: String::new(),
+                    metadata: None,
+                }))
+            }
+        }
     }
 
     // ========================================================================

@@ -11,6 +11,7 @@ use log::info;
 mod lora;
 mod model;
 mod grpc;
+mod adapter_registry;
 
 pub mod inference {
     tonic::include_proto!("inference");

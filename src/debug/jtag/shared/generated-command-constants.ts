@@ -23,6 +23,7 @@
  */
 
 export const COMMANDS = {
+  ADAPTER_SEARCH: 'adapter/search',
   AI_ADAPTER_TEST: 'ai/adapter/test',
   AI_BAG_OF_WORDS: 'ai/bag-of-words',
   AI_COST: 'ai/cost',

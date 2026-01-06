@@ -33,6 +33,7 @@ serde_json.workspace = true
 once_cell.workspace = true
 rand.workspace = true
 half = "2.4"
+dirs = "5.0"
 
 # Logging
 log = "0.4"

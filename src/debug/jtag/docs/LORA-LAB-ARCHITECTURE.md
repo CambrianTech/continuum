@@ -1,7 +1,32 @@
 # LoRA Lab Architecture
 
-**Status**: Design Draft
+**Status**: Backbone Complete - Moving to Persona Integration
 **Goal**: Mass-market LoRA layer economy - cross-platform
+
+---
+
+## Current State (2026-01-06)
+
+**Backbone validated across the full spectrum:**
+- ✅ Local inference (Candle/Rust with LoRA weight merging)
+- ✅ HuggingFace integration (download, search, metadata parsing)
+- ✅ Genome stacking (multi-adapter composition)
+- ✅ Local registry (`~/.continuum/adapters/installed/`)
+- ✅ Provider abstraction (interface proven with Local + Together.ai stub)
+
+**Next phase: Persona self-improvement**
+- Personas search for adapters matching their task needs
+- Personas try/evaluate/adopt adapters autonomously
+- Persona config stores genome (adapter stack definition)
+
+**Code locations:**
+| Component | Path |
+|-----------|------|
+| Rust inference worker | `workers/inference-grpc/src/` |
+| TypeScript gRPC client | `system/core/services/InferenceGrpcClient.ts` |
+| Adapter search command | `commands/adapter/search/` |
+| Provider abstraction | `system/adapters/` |
+| Local registry | `~/.continuum/adapters/installed/` |
 
 ---
 
@@ -408,6 +433,344 @@ continuum-hub/
     "size_mb": 15.2
   }
 }
+```
+
+---
+
+## Federated Adapter Exchange
+
+Our own adapter exchange infrastructure that we control, with HuggingFace as one of many source endpoints. Think: **npm registry** but for LoRA adapters.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     FEDERATED ADAPTER EXCHANGE                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
+│  │   LOCAL NODE    │────▶│  CENTRAL MESH   │◀────│   LOCAL NODE    │   │
+│  │   (Your Mac)    │     │  (Our servers)  │     │  (Other users)  │   │
+│  └────────┬────────┘     └────────┬────────┘     └─────────────────┘   │
+│           │                       │                                     │
+│           │                       ▼                                     │
+│           │              ┌─────────────────┐                           │
+│           │              │ EXTERNAL SOURCES │                           │
+│           │              ├─────────────────┤                           │
+│           │              │ • HuggingFace   │◀── Primary public source  │
+│           │              │ • CivitAI       │◀── Diffusion models       │
+│           │              │ • Custom APIs   │◀── Enterprise sources     │
+│           │              └─────────────────┘                           │
+│           │                                                             │
+│           ▼                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  LOCAL CACHE (~/.continuum/adapters/)                           │   │
+│  │  ├── installed/     ─ Downloaded adapters                       │   │
+│  │  ├── personal/      ─ User-created adapters                     │   │
+│  │  └── registry.json  ─ Local index with sources                  │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Source Protocol
+
+Each source (HuggingFace, CivitAI, our mesh, custom) implements a standard interface:
+
+```typescript
+interface AdapterSource {
+  id: string;                    // "huggingface", "civitai", "continuum-mesh"
+  name: string;                  // Human-readable name
+  priority: number;              // Resolution order (lower = first)
+
+  // Discovery
+  search(query: string): Promise<AdapterSearchResult[]>;
+  list(filter?: AdapterFilter): Promise<AdapterSummary[]>;
+
+  // Fetch
+  download(adapterId: string): Promise<DownloadedAdapter>;
+  getMetadata(adapterId: string): Promise<AdapterMetadata>;
+
+  // Publish (if supported)
+  canPublish: boolean;
+  publish?(adapter: LocalAdapter): Promise<PublishResult>;
+}
+
+// Registry manages multiple sources
+interface AdapterRegistry {
+  sources: AdapterSource[];
+
+  // Unified search across all sources
+  search(query: string): Promise<AdapterSearchResult[]>;
+
+  // Download with source preference
+  download(adapterId: string, preferredSource?: string): Promise<DownloadedAdapter>;
+
+  // Publish to writable source
+  publish(adapter: LocalAdapter, targetSource: string): Promise<PublishResult>;
+}
+```
+
+### Source Implementations
+
+**1. HuggingFace Source** (read-only for now):
+```typescript
+class HuggingFaceSource implements AdapterSource {
+  id = 'huggingface';
+  canPublish = false;  // Future: HF Hub API upload
+
+  async download(repoId: string) {
+    // Uses hf-hub crate via gRPC DownloadAdapter
+    return await inferenceClient.downloadAdapter(repoId);
+  }
+
+  async search(query: string) {
+    // HuggingFace API: https://huggingface.co/api/models?search=...&filter=lora
+    return await this.searchHfApi(query, { filter: 'lora' });
+  }
+}
+```
+
+**2. Continuum Mesh Source** (our infrastructure):
+```typescript
+class ContinuumMeshSource implements AdapterSource {
+  id = 'continuum-mesh';
+  canPublish = true;
+
+  async download(adapterId: string) {
+    // Pull from our CDN/mesh network
+    const url = `https://adapters.continuum.ai/${adapterId}`;
+    return await this.fetchAndCache(url);
+  }
+
+  async publish(adapter: LocalAdapter) {
+    // Upload to our registry
+    const formData = new FormData();
+    formData.append('weights', adapter.weightsFile);
+    formData.append('manifest', JSON.stringify(adapter.manifest));
+    return await fetch('https://api.continuum.ai/adapters', {
+      method: 'POST',
+      body: formData,
+      headers: { 'Authorization': `Bearer ${this.apiKey}` }
+    });
+  }
+}
+```
+
+**3. Local Source** (always available):
+```typescript
+class LocalSource implements AdapterSource {
+  id = 'local';
+  canPublish = true;  // Save to disk
+
+  async download(adapterId: string) {
+    // Already local, just return path
+    return this.getLocalAdapter(adapterId);
+  }
+
+  async publish(adapter: LocalAdapter) {
+    // Save to ~/.continuum/adapters/personal/
+    await this.saveToPersonal(adapter);
+  }
+}
+```
+
+### Resolution Strategy
+
+When requesting an adapter by ID, the registry resolves in order:
+
+```
+1. LOCAL:    Check ~/.continuum/adapters/ first (instant)
+2. MESH:     Check Continuum mesh network (fast, curated)
+3. EXTERNAL: Fall back to external sources (HuggingFace, etc.)
+```
+
+```typescript
+async function resolveAdapter(adapterId: string): Promise<DownloadedAdapter> {
+  // Normalize ID: "typescript-expert" or "huggingface:user/repo"
+  const [source, id] = parseAdapterId(adapterId);
+
+  if (source) {
+    // Explicit source: go directly there
+    return await registry.sources[source].download(id);
+  }
+
+  // Implicit: check in priority order
+  for (const src of registry.sources.sort(byPriority)) {
+    try {
+      const result = await src.download(adapterId);
+      if (result) return result;
+    } catch { continue; }
+  }
+
+  throw new Error(`Adapter ${adapterId} not found in any source`);
+}
+```
+
+### Adapter ID Formats
+
+```
+# Local adapters (no prefix)
+typescript-expert-v3
+my-writing-style
+
+# Source-qualified (explicit source)
+huggingface:Jiten1024/llama-3.2-3b-int-finetune
+civitai:12345
+mesh:continuum/official-code-reviewer
+
+# Genome references
+@persona/helper-ai/genome    # Full genome from persona
+```
+
+### Trading/Sharing Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     ADAPTER TRADING FLOW                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  CREATOR (has RTX 5090)                                         │
+│  ────────────────────                                           │
+│  1. Trains high-quality adapter locally                         │
+│  2. Tests and validates quality                                 │
+│  3. Publishes to Continuum mesh:                                │
+│     ./jtag adapter/publish --id="my-ts-expert" --target="mesh"  │
+│  4. Adapter indexed, available to mesh users                    │
+│                                                                  │
+│  CONSUMER (has M1 Mac)                                          │
+│  ────────────────────                                           │
+│  1. Searches mesh for TypeScript adapters:                      │
+│     ./jtag adapter/search --query="typescript"                  │
+│  2. Sees "my-ts-expert" by creator, downloads:                  │
+│     ./jtag adapter/install --id="mesh:creator/my-ts-expert"     │
+│  3. Uses locally without creator's GPU                          │
+│                                                                  │
+│  REMIXER (has gaming PC)                                        │
+│  ───────────────────────                                        │
+│  1. Downloads "my-ts-expert" from mesh                          │
+│  2. Fine-tunes further on own examples                          │
+│  3. Publishes remix: "my-ts-expert-extended"                    │
+│  4. Credits original in manifest.parentAdapters[]               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Commands (Future)
+
+```bash
+# Configure sources
+./jtag registry/sources/add --url="https://custom.company.com/adapters"
+./jtag registry/sources/list
+./jtag registry/sources/remove --id="custom-company"
+
+# Search across all sources
+./jtag adapter/search --query="typescript expert"
+./jtag adapter/search --query="code review" --source="mesh"
+
+# Install from any source
+./jtag adapter/install --id="mesh:continuum/code-reviewer-v3"
+./jtag adapter/install --id="huggingface:user/adapter-name"
+./jtag adapter/install --id="local-adapter-name"
+
+# Publish to mesh
+./jtag adapter/publish --id="my-adapter" --target="mesh"
+./jtag adapter/publish --id="my-adapter" --target="huggingface"  # Future
+```
+
+### Semantic Search Across Registries
+
+A key differentiator: **unified semantic search** across all adapter sources.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  SEMANTIC ADAPTER SEARCH                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  User query: "TypeScript strict typing expert"                  │
+│                         │                                        │
+│                         ▼                                        │
+│                 embed(query) → [0.8, 0.3, ...]                  │
+│                         │                                        │
+│          ┌──────────────┼──────────────┐                        │
+│          ▼              ▼              ▼                        │
+│      LOCAL          MESH         HUGGINGFACE                    │
+│      INDEX          INDEX        INDEX                          │
+│                                                                  │
+│      Results:       Results:     Results:                       │
+│      my-ts:0.92     ts-guru:0.89 peft-ts:0.85                  │
+│      old-ts:0.71    code-rev:0.67 lora-js:0.62                 │
+│                                                                  │
+│                         │                                        │
+│                         ▼                                        │
+│                 MERGED RANKING                                   │
+│         1. my-ts (local, 0.92)                                  │
+│         2. ts-guru (mesh, 0.89)                                 │
+│         3. peft-ts (huggingface, 0.85)                          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation**:
+
+```typescript
+interface AdapterSearchIndex {
+  // Per-adapter embedding (from description or training data)
+  embeddings: Map<string, number[]>;
+
+  // Search with cosine similarity
+  search(queryEmbedding: number[], topK: number): SearchResult[];
+
+  // Index new adapter
+  index(adapterId: string, description: string): Promise<void>;
+}
+
+// Unified search across all sources
+async function searchAdapters(query: string): Promise<SearchResult[]> {
+  const queryEmb = await embed(query);
+
+  // Search each source's index
+  const results = await Promise.all([
+    localIndex.search(queryEmb, 10),
+    meshIndex.search(queryEmb, 10),
+    huggingfaceIndex.search(queryEmb, 10),
+  ]);
+
+  // Merge and deduplicate by adapterId
+  return mergeAndRank(results);
+}
+```
+
+**Why semantic search matters:**
+- Find adapters by capability, not just name
+- Discover related adapters automatically
+- Cross-source discovery (find HF adapter that matches local needs)
+- Foundation for recommendation engine
+
+### Why Our Own Exchange?
+
+1. **Protocol Control**: We define the adapter manifest format, search protocol, and federation rules
+2. **Semantic Search**: Unified embedding-based search across ALL sources
+3. **Speed**: Local mesh is faster than HuggingFace API
+4. **Curation**: Can curate/verify high-quality adapters
+5. **Federation**: Can add more sources later (CivitAI, custom enterprise)
+6. **Monetization**: Future path for premium adapters if desired
+7. **Privacy**: Can offer private mesh nodes for enterprises
+
+### Bootstrap Strategy
+
+```
+Phase 1 (Now):     HuggingFace as primary external source
+                   Local cache for downloaded adapters
+
+Phase 2 (Soon):    Add Continuum mesh as curated source
+                   Seed with high-quality official adapters
+
+Phase 3 (Later):   Open mesh publishing for verified users
+                   Add more external sources (CivitAI, etc.)
+
+Phase 4 (Future):  Enterprise private mesh nodes
+                   Adapter marketplace/trading features
 ```
 
 ---
@@ -1386,14 +1749,74 @@ fn get_mapper(model_id: &str) -> Box<dyn LoRANameMapper>;
 
 **Test**: `npx tsx tests/genome-stacking-test.ts`
 
-### MILESTONE 3: Local Registry
-- [ ] `~/.continuum/adapters/` directory structure
-- [ ] manifest.json for each adapter
-- [ ] `./jtag adapter/list` discovery
-- [ ] `./jtag adapter/install` from path
-- [ ] **Proves: can organize, store, find adapters**
+### MILESTONE 3: HuggingFace Hub Integration ✅ COMPLETE (2026-01-06)
+- [x] DownloadAdapter gRPC RPC - download by repo ID
+- [x] adapter_registry.rs - HF Hub integration module
+- [x] Parse adapter_config.json for metadata (rank, alpha, base model)
+- [x] Auto-cache via hf-hub crate (~/.cache/huggingface/hub/)
+- [x] TypeScript client `downloadAdapter()` method
+- [x] **PROVEN: can pull adapters from HuggingFace by repo ID**
 
-### MILESTONE 4: Full Personas
+**Test**:
+```typescript
+const result = await client.downloadAdapter('Jiten1024/llama-3.2-3b-int-finetune-jav-rank-1-alpha-32');
+// Downloads to HF cache, parses config, registers adapter
+```
+
+### MILESTONE 3.5: Federated Adapter Exchange (IN PROGRESS)
+See: [Federated Adapter Exchange](#federated-adapter-exchange) section below
+
+### MILESTONE 3.6: Adapter Search Command ✅ COMPLETE (2026-01-06)
+- [x] `adapter/search` command - search HuggingFace and local registry
+- [x] Filter by base model, sort by downloads/likes/recent
+- [x] Shows which adapters are already installed locally
+- [x] Parallel search across multiple sources
+- [x] **PROVEN: personas can discover adapters for their needs**
+
+**Usage**:
+```bash
+# Search for tool-calling adapters compatible with Llama
+./jtag adapter/search --query="tool calling" --baseModel="llama" --limit=5
+
+# Search only local adapters
+./jtag adapter/search --query="code" --source="local"
+```
+
+### MILESTONE 4: Local Registry ✅ COMPLETE (2026-01-06)
+- [x] `~/.continuum/adapters/installed/` directory structure
+- [x] manifest.json for each adapter with metadata
+- [x] Local search via `adapter/search --source="local"`
+- [x] Installed adapters marked in HuggingFace search results
+- [x] **PROVEN: can organize, store, find adapters locally**
+
+### MILESTONE 5: Provider Abstraction ✅ DESIGNED (2026-01-06)
+- [x] `IAdapterProvider` interface - unified contract for all backends
+- [x] `LocalAdapterProvider` - wraps InferenceGrpcClient
+- [x] `TogetherAdapterProvider` - validates cloud LoRA pattern
+- [x] `AdapterProviderRegistry` - federated search + best-provider selection
+- [x] **PROVEN: abstraction works across local ↔ cloud ↔ third-party APIs**
+
+**Architecture validated but thin on implementation** - cloud providers stubbed, not production-ready. The interface design is the deliverable; implementations come in later phases.
+
+```
+Commands (adapter/search, adapter/deploy)
+    ↓
+AdapterProviderRegistry (optional, for multi-provider)
+    ↓
+Providers (Local, Together, Fireworks, ...)
+    ↓
+Local → InferenceGrpcClient → Rust worker
+Cloud → HTTP APIs (Together, Fireworks, etc.)
+```
+
+### MILESTONE 6: Persona Self-Improvement (NEXT)
+- [ ] Persona can search for adapters matching current task
+- [ ] Persona can try adapter temporarily (A/B comparison)
+- [ ] Persona can adopt adapter into genome
+- [ ] Persona config stores genome (adapter stack)
+- [ ] **GOAL: personas autonomously improve themselves**
+
+### MILESTONE 7: Full Personas
 - [ ] Genome config (JSON stack definition)
 - [ ] `./jtag persona/export` with selected DBs
 - [ ] `./jtag persona/import`
@@ -1452,6 +1875,261 @@ fn get_mapper(model_id: &str) -> Box<dyn LoRANameMapper>;
 - [ ] Research SVD/CogVideo integration
 - [ ] Video LoRA training (multi-GPU)
 - [ ] `ai/video/generate` command
+
+---
+
+## Autonomous AI Self-Improvement
+
+**Vision**: Personas become self-directed learners who discover, evaluate, and adopt new capabilities.
+
+### The Self-Improvement Loop
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   PERSONA SELF-IMPROVEMENT                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   1. DISCOVER                                                    │
+│      ├── Search for adapters matching current task needs         │
+│      ├── Browse by capability, base model, popularity            │
+│      └── Commands.execute('adapter/search', { query: task })     │
+│                                                                  │
+│   2. TRY                                                         │
+│      ├── Temporarily load adapter                                │
+│      ├── Run test prompts, compare output quality                │
+│      └── adapter/try --id="..." --testPrompt="..."              │
+│                                                                  │
+│   3. EVALUATE                                                    │
+│      ├── Compare outputs with/without adapter                    │
+│      ├── Self-assess improvement in target domain                │
+│      └── Log results for future reference                        │
+│                                                                  │
+│   4. ADOPT                                                       │
+│      ├── Add to permanent genome with appropriate scale          │
+│      ├── Update persona config                                   │
+│      └── genome/add --adapterId="..." --scale=0.7               │
+│                                                                  │
+│   5. SHARE                                                       │
+│      ├── Create adapters from successful interactions            │
+│      ├── Publish to mesh for other personas                      │
+│      └── training/start --from=corrections --publish=true        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Persona-Created Sub-Personas
+
+AIs can spawn specialized sub-personas for delegation:
+
+```typescript
+// PersonaUser creating a sentinel for monitoring
+await Commands.execute('persona/create', {
+  name: 'code-reviewer-sentinel',
+  purpose: 'Continuously monitor PRs and flag issues',
+  genome: [
+    { adapterId: 'code-review-v1', scale: 1.0 },
+    { adapterId: 'security-audit-v1', scale: 0.5 }
+  ],
+  schedule: { type: 'continuous', triggerOn: 'pr:created' }
+});
+```
+
+### Task Manager Sentinels
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       SENTINEL TYPES                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   🔍 MONITOR SENTINELS                                          │
+│      ├── Watch for code changes, PR activity                     │
+│      ├── Alert on security issues                                │
+│      └── Track task completion                                   │
+│                                                                  │
+│   🔧 WORKER SENTINELS                                           │
+│      ├── Auto-fix common issues                                  │
+│      ├── Generate documentation                                  │
+│      └── Run continuous tests                                    │
+│                                                                  │
+│   🎓 TRAINING SENTINELS                                         │
+│      ├── Collect corrections for adapter training                │
+│      ├── Validate adapter quality                                │
+│      └── Manage training queue                                   │
+│                                                                  │
+│   🤝 COORDINATION SENTINELS                                     │
+│      ├── Route tasks to appropriate personas                     │
+│      ├── Manage workload distribution                            │
+│      └── Handle inter-persona communication                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### External AI (Claude Code) Integration
+
+Claude Code (the external orchestrator) can also leverage the adapter system:
+
+```bash
+# Claude Code searching for a better tool-calling adapter
+./jtag adapter/search --query="tool calling agentic" --baseModel="llama"
+
+# Creating a sentinel to monitor deployments
+./jtag persona/create \
+  --name="deploy-monitor" \
+  --genome='[{"adapterId":"ops-expert","scale":0.8}]' \
+  --trigger="npm:start"
+
+# Building task managers for complex workflows
+./jtag task/create \
+  --type="recurring" \
+  --interval="1h" \
+  --action="adapter/search --query=new --sort=recent"
+```
+
+### The Cambrian Explosion
+
+When AIs can:
+1. **Discover** new capabilities (adapter search)
+2. **Try** them risk-free (temporary loading)
+3. **Adopt** successful ones (genome modification)
+4. **Create** new ones (training from corrections)
+5. **Delegate** to specialized sub-AIs (persona creation)
+
+...you get an exponential expansion of AI capabilities, managed and directed by the AIs themselves.
+
+**This is the Cambrian explosion for AI personas.**
+
+---
+
+## Multi-Provider Adapter Abstraction
+
+External AI providers now support LoRA adapters - we can abstract search and deployment across all backends.
+
+### Provider Capabilities (2025)
+
+| Provider | Upload HF Adapters | Multi-LoRA | Pricing |
+|----------|-------------------|------------|---------|
+| **Local (Candle)** | ✅ Direct | ✅ Genome stacking | Free (local compute) |
+| **Together.ai** | ✅ [Serverless Multi-LoRA](https://docs.together.ai/docs/lora-inference) | ✅ Hundreds | Base model per-token |
+| **Fireworks.ai** | ✅ [SFT + LoRA](https://docs.fireworks.ai/fine-tuning/fine-tuning-models) | ✅ 100+ per deployment | Base model per-token |
+| **Replicate** | ✅ Custom models | ⚠️ Single | Per-second |
+| **OpenAI** | ❌ Fine-tune only | ❌ | Fine-tuned model rate |
+
+### Unified Provider Interface
+
+```typescript
+interface IAdapterProvider {
+  name: string;
+  type: 'local' | 'cloud-lora' | 'cloud-finetune';
+
+  // Search adapters available on this provider
+  search(query: string, options?: AdapterSearchOptions): Promise<AdapterSearchResultItem[]>;
+
+  // Deploy an adapter (upload to cloud or load locally)
+  deploy(adapterId: string): Promise<DeployedAdapter>;
+
+  // Check compatibility (base model, rank, etc.)
+  isCompatible(adapter: AdapterSearchResultItem): boolean;
+
+  // Cost estimation
+  estimateCost(adapterId: string, tokensPerMonth: number): Promise<CostEstimate>;
+}
+
+// Provider implementations
+class LocalAdapterProvider implements IAdapterProvider { }      // Candle/Ollama
+class TogetherAdapterProvider implements IAdapterProvider { }   // Together.ai API
+class FireworksAdapterProvider implements IAdapterProvider { }  // Fireworks.ai API
+```
+
+### Federated Search Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   FEDERATED ADAPTER SEARCH                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  User: adapter/search --query="tool calling" --providers="all"  │
+│                           │                                      │
+│           ┌───────────────┼───────────────┐                     │
+│           ▼               ▼               ▼                     │
+│     ┌──────────┐   ┌──────────┐   ┌──────────┐                 │
+│     │   Local  │   │ Together │   │Fireworks │                 │
+│     │ Registry │   │    API   │   │   API    │                 │
+│     └────┬─────┘   └────┬─────┘   └────┬─────┘                 │
+│          │              │              │                        │
+│          ▼              ▼              ▼                        │
+│     ~/.continuum/   HuggingFace   HuggingFace                  │
+│     adapters/       (via their    (via their                   │
+│     installed/      integration)  integration)                  │
+│                                                                  │
+│           └───────────────┬───────────────┘                     │
+│                           ▼                                      │
+│              ┌─────────────────────────┐                        │
+│              │  Merged + Deduplicated  │                        │
+│              │  Results with Provider  │                        │
+│              │  Compatibility Flags    │                        │
+│              └─────────────────────────┘                        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Remote Persona Adapter Usage
+
+External personas (Claude, GPT) can't load LoRA directly, but can:
+
+1. **Route to local personas** with specific adapters loaded
+2. **Use cloud providers** (Together/Fireworks) with adapters deployed
+3. **Leverage system prompts** as "soft adapters" (behavior templates)
+
+```typescript
+// Claude persona wanting "code review" capability
+const adapter = await Commands.execute('adapter/search', {
+  query: 'code review',
+  baseModel: 'llama'
+});
+
+// Option 1: Route to local persona with adapter
+await Commands.execute('persona/delegate', {
+  to: 'helper-ai',  // Local Ollama persona
+  genome: [{ adapterId: adapter.results[0].id, scale: 1.0 }],
+  task: 'Review this code...'
+});
+
+// Option 2: Deploy to Together.ai for cloud inference
+await Commands.execute('adapter/deploy', {
+  adapterId: adapter.results[0].id,
+  provider: 'together',
+  baseModel: 'meta-llama/Llama-3.1-8B'
+});
+```
+
+### Cost Optimization Strategy
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    ADAPTER DEPLOYMENT STRATEGY                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  LOCAL FIRST (Free)                                             │
+│  └── If hardware supports base model                            │
+│  └── Use Candle/Ollama with direct LoRA loading                 │
+│                                                                  │
+│  CLOUD LORA (Cheap)                                             │
+│  └── Together.ai / Fireworks.ai                                 │
+│  └── Base model pricing, no adapter overhead                    │
+│  └── Good for: High-volume, specialized tasks                   │
+│                                                                  │
+│  CLOUD FINE-TUNE (Expensive)                                    │
+│  └── OpenAI / Anthropic fine-tuning                             │
+│  └── Higher quality, proprietary models                         │
+│  └── Good for: Production, critical applications                │
+│                                                                  │
+│  HYBRID (Optimal)                                               │
+│  └── Local for development/testing                              │
+│  └── Cloud LoRA for production inference                        │
+│  └── Cloud fine-tune for flagship personas                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 

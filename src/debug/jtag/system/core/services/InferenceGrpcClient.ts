@@ -50,6 +50,23 @@ export interface AdapterInfo {
   active: boolean;
 }
 
+export interface AdapterMetadata {
+  baseModel: string;
+  rank: number;
+  alpha: number;
+  targetModules: string[];
+  peftType: string;
+}
+
+export interface DownloadAdapterResult {
+  success: boolean;
+  error?: string;
+  downloadTimeMs: number;
+  adapterId: string;
+  localPath: string;
+  metadata?: AdapterMetadata;
+}
+
 export interface ServerStatus {
   healthy: boolean;
   currentModel: string;
@@ -307,6 +324,59 @@ export class InferenceGrpcClient {
           })));
         }
       });
+    });
+  }
+
+  /**
+   * Download a LoRA adapter from HuggingFace Hub
+   *
+   * Downloads the adapter to the local HF cache (~/.cache/huggingface/hub/),
+   * parses adapter_config.json for metadata, and registers it for use.
+   *
+   * @param repoId - HuggingFace repo ID (e.g., "username/adapter-name")
+   * @param options - Download options
+   * @param options.adapterId - Local ID to use (defaults to repoId)
+   * @param options.revision - Branch/revision to download (default: "main")
+   * @param options.scale - Override scale factor (default: from adapter_config.json)
+   */
+  async downloadAdapter(
+    repoId: string,
+    options?: { adapterId?: string; revision?: string; scale?: number }
+  ): Promise<DownloadAdapterResult> {
+    return new Promise((resolve, reject) => {
+      const deadline = new Date(Date.now() + 600000); // 10 minutes for download
+      this.client.downloadAdapter(
+        {
+          repo_id: repoId,
+          adapter_id: options?.adapterId ?? '',
+          revision: options?.revision ?? '',
+          scale: options?.scale ?? 0,
+        },
+        { deadline },
+        (err: Error | null, response: any) => {
+          if (err) {
+            reject(err);
+          } else {
+            const result: DownloadAdapterResult = {
+              success: response.success,
+              error: response.error || undefined,
+              downloadTimeMs: Number(response.download_time_ms),
+              adapterId: response.adapter_id,
+              localPath: response.local_path,
+            };
+            if (response.metadata) {
+              result.metadata = {
+                baseModel: response.metadata.base_model,
+                rank: response.metadata.rank,
+                alpha: response.metadata.alpha,
+                targetModules: response.metadata.target_modules || [],
+                peftType: response.metadata.peft_type,
+              };
+            }
+            resolve(result);
+          }
+        }
+      );
     });
   }
 

@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-06T06:02:39.066Z",
+  "generated": "2026-01-06T07:55:27.290Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5264,6 +5264,37 @@
           "type": "boolean",
           "required": false,
           "description": "all parameter"
+        }
+      }
+    },
+    {
+      "name": "adapter/search",
+      "description": "Adapter Search Command - Shared Types\n *\n * Search for LoRA adapters across registries (HuggingFace, local, mesh)",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "source": {
+          "type": "string",
+          "required": false,
+          "description": "source parameter"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "description": "sort parameter"
         }
       }
     }
