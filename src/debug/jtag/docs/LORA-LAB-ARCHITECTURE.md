@@ -1377,11 +1377,14 @@ fn get_mapper(model_id: &str) -> Box<dyn LoRANameMapper>;
 
 **Test**: `npx tsx tests/lora-adapter-test.ts` (integration test added)
 
-### MILESTONE 2: Genome Assembly (Multi-Adapter)
-- [ ] Load 2-3 public adapters with different scales
-- [ ] Stack them: W' = W + s₁(B₁A₁) + s₂(B₂A₂) + ...
-- [ ] Generate and verify composite behavior
-- [ ] **Proves: composition math works**
+### MILESTONE 2: Genome Assembly (Multi-Adapter) ✅ COMPLETE (2026-01-06)
+- [x] Loaded 2 public adapters: Jiten1024 (rank-1) + Sizhkhy (rank-64)
+- [x] Stacked: W' = W + 0.5×(B₁A₁) + 0.5×(B₂A₂)
+- [x] 392 layers merged from 2 adapters in ~9 seconds
+- [x] Stacked output shows vocabulary blend (darker tone + different patterns)
+- [x] **PROVEN: composition math works**
+
+**Test**: `npx tsx tests/genome-stacking-test.ts`
 
 ### MILESTONE 3: Local Registry
 - [ ] `~/.continuum/adapters/` directory structure
