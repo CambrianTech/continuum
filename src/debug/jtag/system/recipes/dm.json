@@ -1,0 +1,84 @@
+{
+  "uniqueId": "dm",
+  "name": "Direct Message",
+  "displayName": "DM",
+  "description": "Private one-on-one conversation between two participants",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "locked": ["layout.main"],
+
+  "room": {
+    "type": "direct",
+    "maxParticipants": 2,
+    "privacy": {
+      "isPublic": false,
+      "requiresInvite": true,
+      "allowGuestAccess": false,
+      "searchable": false
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 30,
+        "includeParticipants": true,
+        "includeRoomStrategy": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "dm-focused"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 30,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": true
+    },
+    "roomMetadata": false
+  },
+
+  "strategy": {
+    "conversationPattern": "one-on-one",
+    "responseRules": [
+      "This is a private conversation between two participants",
+      "Always respond when addressed - no gating needed",
+      "Be conversational and direct",
+      "Remember context from earlier in the conversation"
+    ],
+    "decisionCriteria": [
+      "Am I the AI participant in this DM?",
+      "Has the human sent a message that needs response?"
+    ]
+  },
+
+  "isPublic": false,
+  "tags": ["dm", "private", "one-on-one"]
+}

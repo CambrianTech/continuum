@@ -75,6 +75,7 @@ export const COMMANDS = {
   COLLABORATION_DECISION_RANK: 'collaboration/decision/rank',
   COLLABORATION_DECISION_VIEW: 'collaboration/decision/view',
   COLLABORATION_DECISION_VOTE: 'collaboration/decision/vote',
+  COLLABORATION_DM: 'collaboration/dm',
   COLLABORATION_WALL: 'collaboration/wall',
   COMMS_TEST: 'comms-test',
   CONTINUUM_EMOTION: 'continuum/emotion',

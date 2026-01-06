@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-06T09:44:48.958Z",
+  "generated": "2026-01-06T19:44:14.671Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3447,6 +3447,22 @@
           "type": "string",
           "required": false,
           "description": "to parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/dm",
+      "description": "DM Command Types\n * Get or create a private room with specific participants\n *\n * Set theory: {A, B} == {B, A} - participant order doesn't matter\n * Works with any number of participants (2+ for group DM)",
+      "params": {
+        "participants": {
+          "type": "array",
+          "required": true,
+          "description": "participants parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
         }
       }
     },
