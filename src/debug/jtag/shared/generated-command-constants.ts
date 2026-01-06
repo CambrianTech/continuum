@@ -23,7 +23,9 @@
  */
 
 export const COMMANDS = {
+  ADAPTER_ADOPT: 'adapter/adopt',
   ADAPTER_SEARCH: 'adapter/search',
+  ADAPTER_TRY: 'adapter/try',
   AI_ADAPTER_TEST: 'ai/adapter/test',
   AI_BAG_OF_WORDS: 'ai/bag-of-words',
   AI_COST: 'ai/cost',
@@ -150,6 +152,7 @@ export const COMMANDS = {
   LOGS_STATS: 'logs/stats',
   MEDIA_PROCESS: 'media/process',
   MEDIA_RESIZE: 'media/resize',
+  PERSONA_GENOME: 'persona/genome',
   PERSONA_LEARNING_CAPTURE_FEEDBACK: 'persona/learning/capture-feedback',
   PERSONA_LEARNING_CAPTURE_INTERACTION: 'persona/learning/capture-interaction',
   PERSONA_LEARNING_MULTI_AGENT_LEARN: 'persona/learning/multi-agent-learn',

@@ -18,11 +18,14 @@ import { TrainingDataAccumulator } from '../TrainingDataAccumulator';
 import { PersonaTrainingManager } from '../PersonaTrainingManager';
 import { Hippocampus } from '../cognitive/memory/Hippocampus';
 import type { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
+import type { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
 import { SubsystemLogger } from './logging/SubsystemLogger';
 import type { UserEntity } from '../../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { UserStateEntity } from '../../../../data/entities/UserStateEntity';
+import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -64,9 +67,13 @@ export class LimbicSystem {
   private readonly personaId: UUID;
   private readonly displayName: string;
 
+  // Client getter for database access
+  private readonly getClient: () => JTAGClient | undefined;
+
   constructor(personaUser: PersonaUserForLimbic) {
     this.personaId = personaUser.id;
     this.displayName = personaUser.displayName;
+    this.getClient = () => personaUser.client;
 
     // Initialize logger first
     this.logger = new SubsystemLogger('limbic', personaUser.id, personaUser.entity.uniqueId, {
@@ -154,6 +161,84 @@ export class LimbicSystem {
   }
 
   // ===== PUBLIC INTERFACE =====
+
+  /**
+   * Load genome layers from database into PersonaGenome
+   *
+   * This bridges the database (GenomeEntity + GenomeLayerEntity) with the runtime
+   * (PersonaGenome) by loading each layer reference and registering it as an adapter.
+   *
+   * Should be called during PersonaUser startup after construction.
+   */
+  async loadGenomeFromDatabase(): Promise<void> {
+    this.logger.info('Loading genome from database...');
+
+    // Get genome entity
+    const genome = await this.genomeManager.getGenome();
+    if (!genome) {
+      this.logger.info('No genome assigned to persona');
+      return;
+    }
+
+    const client = this.getClient();
+    if (!client) {
+      this.logger.warn('Cannot load genome layers - no client');
+      return;
+    }
+
+    this.logger.info(`Genome found: ${genome.name} with ${genome.layers.length} layers`);
+
+    // Load each layer and register as adapter
+    let loadedCount = 0;
+    for (const layerRef of genome.layers) {
+      if (!layerRef.enabled) {
+        this.logger.info(`Skipping disabled layer: ${layerRef.layerId}`);
+        continue;
+      }
+
+      try {
+        // Load layer entity from database
+        const layerResult = await client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeLayerEntity>>(
+          DATA_COMMANDS.READ,
+          {
+            collection: 'genome_layers',
+            id: layerRef.layerId,
+            context: client.context,
+            sessionId: client.sessionId,
+            backend: 'server'
+          }
+        );
+
+        if (!layerResult.success || !layerResult.found || !layerResult.data) {
+          this.logger.warn(`Layer ${layerRef.layerId} not found in database`);
+          continue;
+        }
+
+        const layer = layerResult.data;
+
+        // Register adapter in PersonaGenome
+        this.memory.genome.registerAdapter({
+          name: layer.name,
+          domain: layer.traitType || layerRef.traitType,
+          path: layer.modelPath,
+          sizeMB: layer.sizeMB || 10,
+          priority: layerRef.weight,
+        });
+
+        // Activate the adapter immediately so it's available for inference
+        // This moves it from availableAdapters to activeAdapters
+        await this.memory.genome.activateSkill(layer.name);
+
+        this.logger.info(`Registered and activated adapter: ${layer.name} (${layer.traitType}, path=${layer.modelPath})`);
+        loadedCount++;
+
+      } catch (error) {
+        this.logger.error(`Failed to load layer ${layerRef.layerId}: ${error}`);
+      }
+    }
+
+    this.logger.info(`Loaded and activated ${loadedCount}/${genome.layers.length} genome layers from database`);
+  }
 
   /**
    * Get genome for this persona

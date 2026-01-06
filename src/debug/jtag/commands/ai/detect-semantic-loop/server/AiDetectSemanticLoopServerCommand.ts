@@ -26,8 +26,8 @@ interface RawChatMessage {
 }
 
 // Thresholds for recommendations
-const WARN_THRESHOLD = 0.75;   // Above this: WARN
-const BLOCK_THRESHOLD = 0.85;  // Above this: BLOCK
+const WARN_THRESHOLD = 0.80;   // Above this: WARN (raised from 0.75)
+const BLOCK_THRESHOLD = 0.95;  // Above this: BLOCK (raised from 0.85 - more lenient)
 
 export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSemanticLoopParams, AiDetectSemanticLoopResult> {
 

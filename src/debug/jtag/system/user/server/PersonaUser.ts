@@ -588,6 +588,10 @@ export class PersonaUser extends AIUser {
 
     // Start soul memory consolidation (Hippocampus subprocess via soul interface)
     await this.limbic!.startMemoryConsolidation();
+
+    // GENOME INTEGRATION: Load adapters from database into PersonaGenome
+    // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)
+    await this.limbic!.loadGenomeFromDatabase();
   }
 
   /**

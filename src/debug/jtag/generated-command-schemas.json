@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-06T07:55:27.290Z",
+  "generated": "2026-01-06T09:44:48.958Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1039,6 +1039,17 @@
           "type": "string",
           "required": false,
           "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/genome",
+      "description": "Persona Genome Command - Shared Types\n *\n * Get persona genome information including base model, layers, and traits",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     },
@@ -5268,6 +5279,32 @@
       }
     },
     {
+      "name": "adapter/try",
+      "description": "Adapter Try Command - Shared Types\n *\n * Temporarily load a LoRA adapter and run A/B comparison test",
+      "params": {
+        "adapterId": {
+          "type": "string",
+          "required": true,
+          "description": "adapterId parameter"
+        },
+        "testPrompt": {
+          "type": "string",
+          "required": true,
+          "description": "testPrompt parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        }
+      }
+    },
+    {
       "name": "adapter/search",
       "description": "Adapter Search Command - Shared Types\n *\n * Search for LoRA adapters across registries (HuggingFace, local, mesh)",
       "params": {
@@ -5295,6 +5332,32 @@
           "type": "string",
           "required": false,
           "description": "sort parameter"
+        }
+      }
+    },
+    {
+      "name": "adapter/adopt",
+      "description": "Adapter Adopt Command - Shared Types\n *\n * Add an adapter to a persona's genome, making it a permanent trait",
+      "params": {
+        "adapterId": {
+          "type": "string",
+          "required": true,
+          "description": "adapterId parameter"
+        },
+        "scale": {
+          "type": "number",
+          "required": false,
+          "description": "scale parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": false,
+          "description": "traitType parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     }
