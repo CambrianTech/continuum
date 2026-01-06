@@ -5,18 +5,23 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "npm run build && npm run dev",
-    "clean:dist": "rm -rf dist/ 2>/dev/null || true",
+    "clean:dist": "rm -rf dist/ dist-vite/ 2>/dev/null || true",
     "clean:ports": "npx tsx ../../scripts/cleanup-dynamic-ports.ts",
     "clean:modules": "rm -rf node_modules/@continuum 2>/dev/null || true",
     "clean:all": "npm run clean:ports && npm run clean:dist && npm run clean:modules",
     "build": "npm run build:server && npm run build:browser",
     "build:server": "npx tsc src/minimal-server.ts --outDir dist --rootDir src --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --esModuleInterop",
     "build:browser": "node build-browser.js",
+    "build:vite": "vite build",
     "version:bump": "npm version patch --no-git-tag-version",
-    "dev": "npx tsx src/minimal-server.ts"
+    "dev": "npx tsx src/minimal-server.ts",
+    "dev:vite": "vite --port 9100",
+    "preview:vite": "vite preview --port 9100"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../.."
+    "@continuum/jtag": "file:../..",
+    "@preact/signals-core": "^1.12.1",
+    "vite": "^7.3.0"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",
