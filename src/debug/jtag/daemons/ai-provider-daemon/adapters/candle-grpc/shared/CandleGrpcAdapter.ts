@@ -26,10 +26,12 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   private client: InferenceGrpcClient;
 
   // Serial execution: only one request at a time
-  // The Rust gRPC server is single-threaded, so queuing requests just causes timeouts
+  // The Rust gRPC server is single-threaded, so we must wait for each request to complete
   private inFlight: boolean = false;
   private queueDepth: number = 0;
-  private static readonly MAX_QUEUE_DEPTH = 3; // Reject if more than 3 waiting
+  // Increased timeout: local inference takes ~15s per request
+  // With queue depth of 3, worst case wait is ~60s (acceptable for local inference)
+  private static readonly MAX_WAIT_TIME_MS = 90000; // 90 seconds max wait
 
   constructor() {
     super();
@@ -103,22 +105,20 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     const startTime = Date.now();
     const requestId = request.requestId || randomUUID();
 
-    // SERIAL EXECUTION GUARD: Reject if queue is too deep
-    // The gRPC server is single-threaded, so deep queues just cause timeouts
-    if (this.queueDepth >= CandleGrpcAdapter.MAX_QUEUE_DEPTH) {
-      throw new Error(`CandleGrpcAdapter: Queue full (${this.queueDepth} waiting). Try again later.`);
+    // Track queue depth for logging
+    this.queueDepth++;
+    if (this.queueDepth > 1) {
+      console.log(`[CandleGrpcAdapter] Queue depth: ${this.queueDepth} (waiting for in-flight request)`);
     }
 
-    // Track queue depth for rejection decisions
-    this.queueDepth++;
-
     // Wait for current request to finish (simple serial lock)
+    // Local inference takes ~15s per request, so we wait patiently
     while (this.inFlight) {
       await new Promise(resolve => setTimeout(resolve, 100));
       // Check if we've been waiting too long
-      if (Date.now() - startTime > 30000) {
+      if (Date.now() - startTime > CandleGrpcAdapter.MAX_WAIT_TIME_MS) {
         this.queueDepth--;
-        throw new Error('CandleGrpcAdapter: Timeout waiting for slot (30s)');
+        throw new Error(`CandleGrpcAdapter: Timeout waiting for slot (${CandleGrpcAdapter.MAX_WAIT_TIME_MS / 1000}s)`);
       }
     }
 
@@ -127,9 +127,9 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
 
     try {
       // Convert messages to prompt and truncate to prevent OOM
-      // Qwen2-1.5B has 32K context but we limit to 8K chars (~2K tokens) for memory safety
+      // Llama 3.2 3B has 128K context but we limit to 8K chars (~2K tokens) for memory safety
       const MAX_PROMPT_CHARS = 8000;
-      let prompt = this.formatMessagesAsPrompt(request);
+      let prompt = this.formatMessagesAsLlama32(request);
       if (prompt.length > MAX_PROMPT_CHARS) {
         console.log(`[CandleGrpcAdapter] Truncating prompt from ${prompt.length} to ${MAX_PROMPT_CHARS} chars`);
         prompt = prompt.slice(-MAX_PROMPT_CHARS); // Keep the most recent context
@@ -141,9 +141,8 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       const maxTokens = Math.min(requestedTokens, 150);
 
       // SINGLE MODEL ROUTING: All requests go to the loaded model
-      // The gRPC server only has one model loaded (Qwen2-1.5B-Instruct)
-      // So we route everything to it regardless of what model was requested
-      const modelId = 'Qwen/Qwen2-1.5B-Instruct';
+      // The gRPC server loads Llama-3.2-3B-Instruct
+      const modelId = 'Llama-3.2-3B-Instruct';
 
       console.log(`[CandleGrpcAdapter] Generate: model=${modelId}, prompt=${prompt.length} chars, maxTokens=${maxTokens}, queue=${this.queueDepth}`);
 
@@ -190,16 +189,33 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   }
 
   /**
-   * Format chat messages as a single prompt string
+   * Format chat messages using Llama 3.2 chat template
+   *
+   * Llama 3.2 uses special tokens:
+   * - <|begin_of_text|> at the start
+   * - <|start_header_id|>role<|end_header_id|> before each message
+   * - <|eot_id|> at the end of each message
+   *
+   * Example:
+   * <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+   * You are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>
+   * What is 2+2?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
    */
-  private formatMessagesAsPrompt(request: TextGenerationRequest): string {
+  private formatMessagesAsLlama32(request: TextGenerationRequest): string {
     if (!request.messages || request.messages.length === 0) {
       return '';
     }
 
-    // Simple format: role: content
-    return request.messages
-      .map((m) => `${m.role}: ${m.content}`)
-      .join('\n');
+    const parts: string[] = ['<|begin_of_text|>'];
+
+    for (const msg of request.messages) {
+      const role = msg.role === 'assistant' ? 'assistant' : msg.role === 'system' ? 'system' : 'user';
+      parts.push(`<|start_header_id|>${role}<|end_header_id|>\n\n${msg.content}<|eot_id|>`);
+    }
+
+    // Add the assistant header to prompt the model to generate
+    parts.push('<|start_header_id|>assistant<|end_header_id|>\n\n');
+
+    return parts.join('');
   }
 }

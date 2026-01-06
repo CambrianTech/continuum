@@ -1,8 +1,8 @@
 /**
  * Inference gRPC Server with Candle LLM Backend
  *
- * Real model inference replacing the hardcoded responses.
- * Loads Qwen2-1.5B on startup, generates text via gRPC streaming.
+ * Real model inference with Llama 3.2 3B for quality matching Ollama.
+ * Loads model on startup, generates text via gRPC streaming.
  */
 
 use std::sync::Arc;
@@ -15,8 +15,7 @@ use log::{info, debug};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::qwen2::{Config as QwenConfig, ModelForCausalLM as QwenModel};
-use serde::Deserialize;
+use candle_transformers::models::llama::{LlamaConfig, Config as LlamaModelConfig, Llama, Cache, LlamaEosToks};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 use rand::Rng;
@@ -30,36 +29,37 @@ use inference::{
     generate_response, Complete, GenerateRequest, GenerateResponse, PingRequest, PingResponse,
 };
 
-// Config wrapper for parsing eos_token_id from generation_config.json
-#[derive(Debug, Deserialize)]
-struct GenerationConfig {
-    eos_token_id: serde_json::Value, // Can be single int or array
-}
-
-fn parse_eos_token_id(value: &serde_json::Value) -> u32 {
-    match value {
-        serde_json::Value::Number(n) => n.as_u64().unwrap_or(151645) as u32,
-        serde_json::Value::Array(arr) => arr.first()
-            .and_then(|v| v.as_u64())
-            .unwrap_or(151645) as u32,
-        _ => 151645 // Default Qwen2 EOS
-    }
-}
-
 // ============================================================================
 // Model State
 // ============================================================================
 
 struct ModelState {
-    model: QwenModel,
+    model: Llama,
+    cache: Cache,
     tokenizer: Tokenizer,
     device: Device,
-    eos_token_id: u32,
+    eos_token_ids: Vec<u32>,
+    dtype: DType,
+    config: LlamaModelConfig,
 }
 
 impl ModelState {
-    fn new(model: QwenModel, tokenizer: Tokenizer, device: Device, eos_token_id: u32) -> Self {
-        Self { model, tokenizer, device, eos_token_id }
+    fn new(
+        model: Llama,
+        cache: Cache,
+        tokenizer: Tokenizer,
+        device: Device,
+        eos_token_ids: Vec<u32>,
+        dtype: DType,
+        config: LlamaModelConfig,
+    ) -> Self {
+        Self { model, cache, tokenizer, device, eos_token_ids, dtype, config }
+    }
+
+    fn clear_cache(&mut self) {
+        // Recreate cache to clear KV state
+        self.cache = Cache::new(true, self.dtype, &self.config, &self.device)
+            .expect("Failed to recreate cache");
     }
 }
 
@@ -86,9 +86,9 @@ fn generate_text(
     }
 
     // Clear KV cache
-    state.model.clear_kv_cache();
+    state.clear_cache();
 
-    // Setup logits processor for sampling (same as working inference worker)
+    // Setup logits processor for sampling
     let seed = rand::thread_rng().gen::<u64>();
     let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
 
@@ -108,9 +108,9 @@ fn generate_text(
             .unsqueeze(0)
             .map_err(|e| format!("Unsqueeze failed: {}", e))?;
 
-        // Forward pass
+        // Forward pass with cache - Llama uses external cache
         let pos = if i == 0 { 0 } else { all_tokens.len() - 1 };
-        let logits = state.model.forward(&input, pos)
+        let logits = state.model.forward(&input, pos, &mut state.cache)
             .map_err(|e| format!("Forward pass failed: {}", e))?;
 
         // Debug: log raw logits shape
@@ -118,43 +118,45 @@ fn generate_text(
             debug!("Raw logits shape: {:?}", logits.dims());
         }
 
-        // Get last token logits - shape is [batch, seq, vocab]
-        let logits_2d = logits.squeeze(0)
-            .map_err(|e| format!("Squeeze batch failed: {}", e))?;
-
-        if i == 0 {
-            debug!("After squeeze: {:?}", logits_2d.dims());
-        }
-
-        // Get last sequence position (match existing worker logic)
-        let last_logits = if logits_2d.dims()[0] > 1 {
-            logits_2d.get(logits_2d.dims()[0] - 1)
-                .map_err(|e| format!("Get last logits failed: {}", e))?
+        // Llama forward already returns [batch, vocab] for last position
+        // But let's handle both cases safely
+        let last_logits = if logits.dims().len() == 2 {
+            // Shape is [batch, vocab] - squeeze batch
+            logits.squeeze(0)
+                .map_err(|e| format!("Squeeze batch failed: {}", e))?
+        } else if logits.dims().len() == 3 {
+            // Shape is [batch, seq, vocab] - get last token
+            let logits_2d = logits.squeeze(0)
+                .map_err(|e| format!("Squeeze batch failed: {}", e))?;
+            if logits_2d.dims()[0] > 1 {
+                logits_2d.get(logits_2d.dims()[0] - 1)
+                    .map_err(|e| format!("Get last logits failed: {}", e))?
+            } else {
+                logits_2d.squeeze(0)
+                    .map_err(|e| format!("Squeeze seq failed: {}", e))?
+            }
         } else {
-            logits_2d.squeeze(0).map_err(|e| format!("Squeeze logits failed: {}", e))?
+            return Err(format!("Unexpected logits shape: {:?}", logits.dims()));
         };
 
         // Debug: log logits info on first token
         if i == 0 {
             debug!("Logits shape: {:?}, dtype: {:?}", last_logits.dims(), last_logits.dtype());
-            // Inspect actual logits values
-            if let Ok(logits_f32) = last_logits.to_dtype(DType::F32) {
-                if let Ok(logits_vec) = logits_f32.to_vec1::<f32>() {
-                    let min = logits_vec.iter().cloned().fold(f32::INFINITY, f32::min);
-                    let max = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let has_nan = logits_vec.iter().any(|x| x.is_nan());
-                    let has_inf = logits_vec.iter().any(|x| x.is_infinite());
-                    debug!("Logits stats: min={:.4}, max={:.4}, has_nan={}, has_inf={}", min, max, has_nan, has_inf);
-                }
+            if let Ok(logits_vec) = last_logits.to_vec1::<f32>() {
+                let min = logits_vec.iter().cloned().fold(f32::INFINITY, f32::min);
+                let max = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let has_nan = logits_vec.iter().any(|x| x.is_nan());
+                let has_inf = logits_vec.iter().any(|x| x.is_infinite());
+                debug!("Logits stats: min={:.4}, max={:.4}, has_nan={}, has_inf={}", min, max, has_nan, has_inf);
             }
         }
 
-        // Sample next token using LogitsProcessor (F16 works directly)
+        // Sample next token
         let next_token = logits_processor.sample(&last_logits)
             .map_err(|e| format!("Sampling failed: {}", e))?;
 
-        // Check for EOS
-        if next_token == state.eos_token_id {
+        // Check for EOS (Llama can have multiple EOS tokens)
+        if state.eos_token_ids.contains(&next_token) {
             break;
         }
 
@@ -220,8 +222,22 @@ fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<std::path::
     Err("No weights found (tried model.safetensors and sharded index)".to_string())
 }
 
+/// Parse EOS token IDs from Llama config
+fn parse_eos_tokens(eos: &Option<LlamaEosToks>) -> Vec<u32> {
+    match eos {
+        Some(LlamaEosToks::Single(id)) => vec![*id],
+        Some(LlamaEosToks::Multiple(ids)) => ids.clone(),
+        None => vec![128001, 128009], // Default Llama 3 EOS tokens
+    }
+}
+
 fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
-    info!(" Loading Qwen2-1.5B-Instruct...");
+    // Use Meta-Llama-3.2-3B-Instruct (gated model - requires HF_TOKEN)
+    // Fall back to unsloth/Llama-3.2-3B-Instruct if auth fails
+    let model_id = std::env::var("INFERENCE_MODEL_ID")
+        .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
+
+    info!(" Loading {}...", model_id);
     let start = Instant::now();
 
     // Use Metal on macOS, CPU otherwise
@@ -236,10 +252,9 @@ fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> 
     info!(" Using device: {:?}", device);
 
     // Download model from HuggingFace Hub
-    let model_id = "Qwen/Qwen2-1.5B-Instruct";
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
-        model_id.to_string(),
+        model_id.clone(),
         RepoType::Model,
         "main".to_string(),
     ));
@@ -252,25 +267,23 @@ fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> 
     let weight_paths = download_weights(&repo)
         .map_err(|e| format!("Failed to download weights: {}", e))?;
 
-    // Load config
+    // Load config - Llama uses LlamaConfig which converts to Config
     let config_str = std::fs::read_to_string(&config_path)?;
-    let config: QwenConfig = serde_json::from_str(&config_str)?;
-    info!(" Config: vocab_size={}, hidden_size={}", config.vocab_size, config.hidden_size);
+    let llama_config: LlamaConfig = serde_json::from_str(&config_str)?;
+    info!(" Config: vocab_size={}, hidden_size={}, layers={}",
+        llama_config.vocab_size, llama_config.hidden_size, llama_config.num_hidden_layers);
+
+    // Convert to model config (no flash attention on Metal)
+    let use_flash_attn = false;
+    let config = llama_config.into_config(use_flash_attn);
+
+    // Get EOS token IDs
+    let eos_token_ids = parse_eos_tokens(&config.eos_token_id);
+    info!(" EOS token IDs: {:?}", eos_token_ids);
 
     // Load tokenizer
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
-
-    // Get EOS token ID from generation_config.json or use default
-    let eos_token_id = match repo.get("generation_config.json") {
-        Ok(gen_config_path) => {
-            let gen_config_str = std::fs::read_to_string(&gen_config_path)?;
-            let gen_config: GenerationConfig = serde_json::from_str(&gen_config_str)?;
-            parse_eos_token_id(&gen_config.eos_token_id)
-        }
-        Err(_) => 151645 // Default Qwen2 EOS
-    };
-    info!(" Using EOS token ID: {}", eos_token_id);
 
     // Determine dtype based on device (BF16 for Metal, F32 for CPU)
     let dtype = match &device {
@@ -285,12 +298,16 @@ fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> 
         VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)?
     };
 
-    let model = QwenModel::new(&config, vb)?;
+    // Load Llama model
+    let model = Llama::load(vb, &config)?;
+
+    // Create cache for KV storage
+    let cache = Cache::new(true, dtype, &config, &device)?;
 
     let duration = start.elapsed();
     info!(" Model loaded in {:?}", duration);
 
-    Ok(ModelState::new(model, tokenizer, device, eos_token_id))
+    Ok(ModelState::new(model, cache, tokenizer, device, eos_token_ids, dtype, config))
 }
 
 // ============================================================================
@@ -409,8 +426,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "127.0.0.1:50051".parse()?;
 
+    let model_id = std::env::var("INFERENCE_MODEL_ID")
+        .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
+
     info!("===========================================");
-    info!("  Inference gRPC Server (Candle Backend)");
+    info!("  Inference gRPC Server (Candle + Llama)");
+    info!("  Model: {}", model_id);
     info!("  Listening on: {}", addr);
     info!("===========================================");
 
