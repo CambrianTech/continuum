@@ -231,23 +231,32 @@ export abstract class BaseUser {
   }
 
   /**
-   * Subscribe to room update events to handle dynamic membership changes
+   * Subscribe to room update AND create events to handle dynamic membership changes
    * All user types need to track when they're added/removed from rooms
+   *
+   * CRITICAL: Must subscribe to BOTH events:
+   * - data:rooms:updated - When existing room members change
+   * - data:rooms:created - When NEW room is created with persona as member (e.g., DM)
    */
   protected subscribeToRoomUpdates(handler: (room: RoomEntity) => Promise<void>): void {
-    const eventName = DataEventNames.updated(COLLECTIONS.ROOMS);
-
     if (!this.client) {
       // ❌ FAIL FAST: No client = broken user, crash instead of creating zombie
       throw new Error(`${this.constructor.name} ${this.displayName}: Cannot subscribe to room updates - no client available. User is broken and must be discarded.`);
     }
 
-    // ✅ Use Events.subscribe (works anywhere via sharedInstance)
-    // Pass this.id as subscriberId to enable deduplication (prevents duplicate subscriptions)
-    Events.subscribe(eventName, async (roomData: RoomEntity) => {
+    // ✅ Subscribe to room UPDATED events (existing rooms with member changes)
+    const updatedEventName = DataEventNames.updated(COLLECTIONS.ROOMS);
+    Events.subscribe(updatedEventName, async (roomData: RoomEntity) => {
       await handler(roomData);
-    }, undefined, this.id);
-    this.log.info(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room updates via Events.subscribe`);
+    }, undefined, `${this.id}_room_updated`);
+
+    // ✅ Subscribe to room CREATED events (new rooms with persona as member, e.g., DM)
+    const createdEventName = DataEventNames.created(COLLECTIONS.ROOMS);
+    Events.subscribe(createdEventName, async (roomData: RoomEntity) => {
+      await handler(roomData);
+    }, undefined, `${this.id}_room_created`);
+
+    this.log.info(`📢 ${this.constructor.name} ${this.displayName}: Subscribed to room created+updated events`);
   }
 
   /**
