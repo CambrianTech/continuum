@@ -288,6 +288,103 @@ Examples:
 }
 
 /**
+ * Adapter for Markdown/Backtick format that local models (llama, etc.) often produce
+ * Format: `tool: name` `param=value` `param2=value2`
+ *
+ * Examples:
+ * - `tool: collaboration/dm` `participants=helper`
+ * - `tool: read` `filepath=/path/to/file`
+ */
+export class MarkdownToolAdapter extends ToolFormatAdapter {
+  readonly formatName = 'markdown-backtick';
+
+  formatToolsForPrompt(tools: ToolDefinition[]): string {
+    // This adapter is for parsing, not prompting - use Anthropic format for prompts
+    return '';
+  }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => {
+      if (r.success && r.content) {
+        return `Tool '${r.toolName}' completed: ${r.content}`;
+      } else {
+        return `Tool '${r.toolName}' failed: ${r.error || 'Unknown error'}`;
+      }
+    }).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+
+    // Match patterns like: `tool: name` followed by optional params `key=value`
+    // Strategy: Find all `tool: X` occurrences and capture until end of line or next tool
+    const lines = text.split('\n');
+    let currentMatch = '';
+    let startIndex = 0;
+    let charOffset = 0;
+
+    for (const line of lines) {
+      const toolMatch = line.match(/`tool:\s*[^`]+`/i);
+
+      if (toolMatch) {
+        // Save previous match if exists
+        if (currentMatch) {
+          matches.push({
+            fullMatch: currentMatch.trim(),
+            startIndex,
+            endIndex: charOffset
+          });
+        }
+        // Start new match
+        currentMatch = line;
+        startIndex = charOffset + (toolMatch.index || 0);
+      } else if (currentMatch && line.includes('`') && line.includes('=')) {
+        // Continue current match with param line
+        currentMatch += ' ' + line;
+      }
+
+      charOffset += line.length + 1; // +1 for newline
+    }
+
+    // Don't forget last match
+    if (currentMatch) {
+      matches.push({
+        fullMatch: currentMatch.trim(),
+        startIndex,
+        endIndex: charOffset
+      });
+    }
+
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    // Extract tool name from first backtick section
+    const toolNameMatch = match.fullMatch.match(/`tool:\s*([^`]+)`/i);
+    if (!toolNameMatch) {
+      return null;
+    }
+
+    const toolName = toolNameMatch[1].trim();
+    const parameters: Record<string, string> = {};
+
+    // Extract all param=value pairs from subsequent backtick sections
+    const paramRegex = /`([^`=]+)=([^`]*)`/g;
+    let paramMatch: RegExpExecArray | null;
+
+    while ((paramMatch = paramRegex.exec(match.fullMatch)) !== null) {
+      const paramName = paramMatch[1].trim();
+      const paramValue = paramMatch[2].trim();
+      if (paramName && paramName !== 'tool') {
+        parameters[paramName] = paramValue;
+      }
+    }
+
+    return { toolName, parameters };
+  }
+}
+
+/**
  * Registry of all supported tool format adapters
  * Add new adapters here to support additional formats
  *
@@ -296,8 +393,8 @@ Examples:
 export function getToolFormatAdapters(): ToolFormatAdapter[] {
   return [
     new AnthropicStyleToolAdapter(),  // Primary/default format
-    new OldStyleToolAdapter()          // Legacy support
-    // Add new adapters here for future formats
+    new MarkdownToolAdapter(),         // Local model backtick format
+    new OldStyleToolAdapter()          // Legacy XML support
   ];
 }
 

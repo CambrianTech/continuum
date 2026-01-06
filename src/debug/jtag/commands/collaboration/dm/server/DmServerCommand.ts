@@ -80,8 +80,35 @@ export class DmServerCommand extends DmCommand {
 
   /**
    * Resolve caller identity (who's initiating the DM)
+   *
+   * Priority:
+   * 1. params.callerId - Persona tool execution context
+   * 2. params.personaId - Alternative persona context
+   * 3. UserIdentityResolver - Human/CLI context fallback
    */
   private async resolveCallerIdentity(params: DmParams): Promise<{ id: UUID; entity: UserEntity }> {
+    // Priority 1: Use callerId from persona tool context
+    const callerIdFromParams = (params as any).callerId || (params as any).personaId;
+
+    if (callerIdFromParams) {
+      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+        DATA_COMMANDS.LIST,
+        {
+          collection: UserEntity.collection,
+          filter: { id: callerIdFromParams },
+          limit: 1,
+          context: params.context,
+          sessionId: params.sessionId
+        }
+      );
+
+      if (result.success && result.items && result.items.length > 0) {
+        const user = result.items[0];
+        return { id: user.id, entity: user };
+      }
+    }
+
+    // Priority 2: Fall back to UserIdentityResolver (human/CLI context)
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
