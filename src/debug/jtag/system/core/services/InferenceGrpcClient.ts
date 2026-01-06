@@ -311,6 +311,47 @@ export class InferenceGrpcClient {
   }
 
   // ========================================================================
+  // Genome (Multi-Adapter Stacking)
+  // ========================================================================
+
+  /**
+   * Apply a genome (stack multiple adapters with scales)
+   *
+   * Formula: W' = W + Σ(scale_i × B_i @ A_i)
+   *
+   * @param adapters - Array of {adapterId, scale} pairs
+   */
+  async applyGenome(adapters: Array<{ adapterId: string; scale: number }>): Promise<{
+    success: boolean;
+    error?: string;
+    applyTimeMs: number;
+    adaptersApplied: number;
+    layersMerged: number;
+  }> {
+    return new Promise((resolve, reject) => {
+      const deadline = new Date(Date.now() + 300000); // 5 minutes for genome rebuild
+      const entries = adapters.map(a => ({
+        adapter_id: a.adapterId,
+        scale: a.scale,
+      }));
+
+      this.client.applyGenome({ adapters: entries }, { deadline }, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            success: response.success,
+            error: response.error || undefined,
+            applyTimeMs: Number(response.apply_time_ms),
+            adaptersApplied: response.adapters_applied,
+            layersMerged: response.layers_merged,
+          });
+        }
+      });
+    });
+  }
+
+  // ========================================================================
   // Server Status
   // ========================================================================
 

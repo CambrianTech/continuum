@@ -369,3 +369,128 @@ pub fn rebuild_with_lora_from_paths(
 
     Ok(model)
 }
+
+/// Adapter entry for genome stacking
+pub struct GenomeAdapter {
+    pub adapter_id: String,
+    pub weights: HashMap<String, LoRAWeights>,
+    pub scale: f64,
+}
+
+/// Rebuild model with multiple stacked LoRA adapters (genome)
+///
+/// Applies formula: W' = W + Σ(scale_i × B_i @ A_i)
+/// Each adapter's weights are added to the base with its own scale factor.
+pub fn rebuild_with_stacked_lora(
+    weight_paths: &[std::path::PathBuf],
+    device: &Device,
+    dtype: DType,
+    config: &LlamaModelConfig,
+    adapters: &[GenomeAdapter],
+) -> Result<Llama, Box<dyn std::error::Error + Send + Sync>> {
+    use safetensors::SafeTensors;
+
+    let total_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
+    info!("🧬 Rebuilding model with {} adapters ({} total LoRA layers)", adapters.len(), total_layers);
+    let start = Instant::now();
+
+    // Load all base weights into memory
+    let mut all_tensors: HashMap<String, Tensor> = HashMap::new();
+
+    for path in weight_paths {
+        let data = std::fs::read(path)?;
+        let tensors = SafeTensors::deserialize(&data)?;
+
+        for (name, tensor_view) in tensors.tensors() {
+            let shape: Vec<usize> = tensor_view.shape().to_vec();
+            let st_dtype = tensor_view.dtype();
+
+            let tensor = match st_dtype {
+                safetensors::Dtype::F32 => {
+                    let data: Vec<f32> = tensor_view.data().chunks(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
+                    Tensor::from_vec(data, shape.as_slice(), device)?
+                }
+                safetensors::Dtype::F16 => {
+                    let data: Vec<half::f16> = tensor_view.data().chunks(2)
+                        .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
+                        .collect();
+                    let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
+                    Tensor::from_vec(f32_data, shape.as_slice(), device)?
+                }
+                safetensors::Dtype::BF16 => {
+                    let data: Vec<half::bf16> = tensor_view.data().chunks(2)
+                        .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
+                        .collect();
+                    let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
+                    Tensor::from_vec(f32_data, shape.as_slice(), device)?
+                }
+                _ => continue,
+            };
+
+            let tensor = if tensor.dtype() != dtype {
+                tensor.to_dtype(dtype)?
+            } else {
+                tensor
+            };
+
+            all_tensors.insert(name.to_string(), tensor);
+        }
+    }
+
+    info!("  Loaded {} base tensors", all_tensors.len());
+
+    // Apply LoRA deltas from ALL adapters: W' = W + Σ(scale_i × B_i @ A_i)
+    let mut merged_count = 0;
+    let mut failed_count = 0;
+
+    for adapter in adapters {
+        info!("  Applying adapter '{}' (scale={}, {} layers)",
+              adapter.adapter_id, adapter.scale, adapter.weights.len());
+
+        for (lora_name, lora) in &adapter.weights {
+            let model_name = map_lora_name_to_model_name(lora_name);
+
+            if let Some(base_weight) = all_tensors.get(&model_name) {
+                // Apply with adapter's scale (lora already has internal scale, multiply)
+                let effective_scale = lora.scale * adapter.scale;
+                let scaled_lora = LoRAWeights {
+                    lora_a: lora.lora_a.clone(),
+                    lora_b: lora.lora_b.clone(),
+                    scale: effective_scale,
+                };
+
+                match merge_lora_weight(base_weight, &scaled_lora) {
+                    Ok(merged) => {
+                        all_tensors.insert(model_name.clone(), merged);
+                        merged_count += 1;
+                    }
+                    Err(e) => {
+                        debug!("  ⚠ Failed to merge {}: {}", lora_name, e);
+                        failed_count += 1;
+                    }
+                }
+            } else {
+                failed_count += 1;
+            }
+        }
+    }
+
+    if failed_count > 0 {
+        info!("  ⚠ {} LoRA layers failed to merge", failed_count);
+    }
+
+    info!("  Merged {} LoRA layers from {} adapters", merged_count, adapters.len());
+
+    // Build VarBuilder from merged tensors
+    let vb = VarBuilder::from_tensors(all_tensors, dtype, device);
+
+    // Rebuild model
+    let model = Llama::load(vb, config)?;
+
+    let duration = start.elapsed();
+    info!("✅ Genome applied in {:?}", duration);
+
+    Ok(model)
+}

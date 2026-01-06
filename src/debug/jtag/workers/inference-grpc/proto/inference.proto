@@ -18,6 +18,9 @@ service Inference {
   rpc UnloadAdapter(UnloadAdapterRequest) returns (UnloadAdapterResponse);
   rpc ListAdapters(ListAdaptersRequest) returns (ListAdaptersResponse);
 
+  // Genome (multi-adapter stacking)
+  rpc ApplyGenome(ApplyGenomeRequest) returns (ApplyGenomeResponse);
+
   // Server status
   rpc Status(StatusRequest) returns (StatusResponse);
 }
@@ -123,6 +126,24 @@ message AdapterInfo {
   string path = 2;
   double scale = 3;
   bool active = 4;
+}
+
+// Genome (multi-adapter stacking) messages
+message GenomeAdapterEntry {
+  string adapter_id = 1;  // ID of a loaded adapter
+  double scale = 2;       // Scale factor for this adapter (0.0-1.0 typical)
+}
+
+message ApplyGenomeRequest {
+  repeated GenomeAdapterEntry adapters = 1;  // List of adapters with scales
+}
+
+message ApplyGenomeResponse {
+  bool success = 1;
+  string error = 2;
+  int64 apply_time_ms = 3;
+  int32 adapters_applied = 4;
+  int32 layers_merged = 5;
 }
 
 // Server status messages
