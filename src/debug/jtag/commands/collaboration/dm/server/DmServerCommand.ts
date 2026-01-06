@@ -40,8 +40,8 @@ export class DmServerCommand extends DmCommand {
     // 5. Generate deterministic uniqueId from sorted set
     const uniqueId = this.generateDmUniqueId(allParticipantIds);
 
-    // 6. Try to find existing room
-    const existingRoom = await this.findRoomByUniqueId(uniqueId, params);
+    // 6. Try to find existing room (by uniqueId or member set)
+    const existingRoom = await this.findExistingDmRoom(uniqueId, allParticipantIds, params);
     if (existingRoom) {
       return transformPayload(params, {
         success: true,
@@ -156,10 +156,19 @@ export class DmServerCommand extends DmCommand {
   }
 
   /**
-   * Find existing room by uniqueId
+   * Find existing DM room by uniqueId OR by exact member set
+   *
+   * Two-phase lookup:
+   * 1. Try uniqueId (fast, deterministic)
+   * 2. Fall back to member matching (handles UUID changes after reseed)
    */
-  private async findRoomByUniqueId(uniqueId: string, params: DmParams): Promise<RoomEntity | null> {
-    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+  private async findExistingDmRoom(
+    uniqueId: string,
+    participantIds: UUID[],
+    params: DmParams
+  ): Promise<RoomEntity | null> {
+    // Phase 1: Try by uniqueId (fast path)
+    const byUniqueId = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
@@ -170,8 +179,44 @@ export class DmServerCommand extends DmCommand {
       }
     );
 
-    if (result.success && result.items && result.items.length > 0) {
-      return result.items[0];
+    if (byUniqueId.success && byUniqueId.items && byUniqueId.items.length > 0) {
+      return byUniqueId.items[0];
+    }
+
+    // Phase 2: Search direct/private rooms and match by member set
+    // This handles cases where user UUIDs changed (e.g., after reseed)
+    const directRooms = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+      DATA_COMMANDS.LIST,
+      {
+        collection: RoomEntity.collection,
+        filter: { type: participantIds.length === 2 ? 'direct' : 'private' },
+        limit: 100,
+        context: params.context,
+        sessionId: params.sessionId
+      }
+    );
+
+    if (directRooms.success && directRooms.items) {
+      const sortedParticipants = [...participantIds].sort();
+
+      for (const room of directRooms.items) {
+        if (!room.members || room.members.length !== participantIds.length) continue;
+
+        const roomMemberIds = room.members.map(m => m.userId).sort();
+        const isMatch = sortedParticipants.every((id, i) => id === roomMemberIds[i]);
+
+        if (isMatch) {
+          // Found matching room - update its uniqueId to current format for future lookups
+          await Commands.execute('data/update', {
+            collection: RoomEntity.collection,
+            id: room.id,
+            data: { uniqueId },
+            context: params.context,
+            sessionId: params.sessionId
+          });
+          return room;
+        }
+      }
     }
 
     return null;
