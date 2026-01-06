@@ -99,8 +99,8 @@ GROQ_API_KEY=
 # Mistral AI
 MISTRAL_API_KEY=
 
-# HuggingFace
-HUGGINGFACE_API_KEY=
+# HuggingFace - https://huggingface.co/settings/tokens
+HF_TOKEN=
 
 # ============================================
 # DATABASE PATHS
@@ -129,6 +129,18 @@ HUGGINGFACE_API_KEY=
 # Sentinel-AI Path - Path to Sentinel AI system (if installed)
 # Uncomment to enable Sentinel AI integration
 #SENTINEL_PATH=/path/to/sentinel-ai
+
+# ============================================
+# LOCAL INFERENCE
+# ============================================
+
+# Inference Mode - Controls local model loading strategy
+# Values: auto, quantized, bf16
+# - auto: BF16 (full LoRA support), fallback to quantized if needed
+# - quantized: Force Q4_K_M quantized (~2GB, 2s load, NO LoRA support)
+# - bf16: Force full-precision BF16 (~6GB, 14s load, full LoRA)
+# Default: auto (BF16 for LoRA support)
+INFERENCE_MODE=auto
 
 # ============================================
 # FEATURE FLAGS

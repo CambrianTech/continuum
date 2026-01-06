@@ -193,13 +193,34 @@ pub fn load_model_by_id(model_id: &str) -> Result<ModelState, Box<dyn std::error
     info!("📥 Loading {}...", model_id);
     let start = Instant::now();
 
-    #[cfg(feature = "metal")]
-    let device = Device::new_metal(0).unwrap_or_else(|_| {
-        info!("  Metal not available, falling back to CPU");
+    // Device selection: CUDA > Metal > CPU
+    let device = select_best_device();
+
+    fn select_best_device() -> Device {
+        // Try CUDA first (RTX 5090, etc.)
+        #[cfg(feature = "cuda")]
+        {
+            if let Ok(device) = Device::new_cuda(0) {
+                info!("  Using CUDA device");
+                return device;
+            }
+            info!("  CUDA not available");
+        }
+
+        // Try Metal (macOS)
+        #[cfg(feature = "metal")]
+        {
+            if let Ok(device) = Device::new_metal(0) {
+                info!("  Using Metal device");
+                return device;
+            }
+            info!("  Metal not available");
+        }
+
+        // Fall back to CPU
+        info!("  Using CPU (no GPU acceleration)");
         Device::Cpu
-    });
-    #[cfg(not(feature = "metal"))]
-    let device = Device::Cpu;
+    }
 
     info!("  Device: {:?}", device);
 

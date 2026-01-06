@@ -21,7 +21,8 @@ members = [
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
 # Candle ML framework (pin version for consistency)
-candle-core = "0.8"
+# accelerate = Apple's Accelerate framework for faster BLAS on macOS
+candle-core = { version = "0.8", features = ["accelerate"] }
 candle-nn = "0.8"
 candle-transformers = "0.8"
 

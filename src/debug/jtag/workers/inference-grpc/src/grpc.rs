@@ -24,6 +24,7 @@ use crate::inference::{
     StatusRequest, StatusResponse,
 };
 use crate::model::{ModelState, load_model_by_id, generate_text, rebuild_with_lora_from_paths, rebuild_with_stacked_lora, GenomeAdapter};
+use crate::quantized_model::{QuantizedModelState, generate_text_quantized};
 use crate::lora::{self, LoadedAdapter};
 use crate::adapter_registry;
 
@@ -43,19 +44,40 @@ impl ServerStats {
 }
 
 /// Main gRPC service struct
+/// Supports both full-precision (BF16) and quantized (GGUF Q4) models
 pub struct InferenceService {
+    /// Full-precision model state (BF16)
     pub state: Arc<RwLock<Option<ModelState>>>,
+    /// Quantized model state (GGUF Q4_K_M)
+    pub quantized_state: Arc<RwLock<Option<QuantizedModelState>>>,
     pub stats: Arc<ServerStats>,
     pub adapters: Arc<RwLock<Vec<LoadedAdapter>>>,
 }
 
 impl InferenceService {
+    /// Create service with full-precision model only
     pub fn new(state: Option<ModelState>) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
+            quantized_state: Arc::new(RwLock::new(None)),
             stats: Arc::new(ServerStats::new()),
             adapters: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    /// Create service with either full-precision or quantized model
+    pub fn new_with_quantized(state: Option<ModelState>, quantized: Option<QuantizedModelState>) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(state)),
+            quantized_state: Arc::new(RwLock::new(quantized)),
+            stats: Arc::new(ServerStats::new()),
+            adapters: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Check if we're in quantized mode
+    pub async fn is_quantized(&self) -> bool {
+        self.quantized_state.read().await.is_some()
     }
 }
 
@@ -86,11 +108,15 @@ impl Inference for InferenceService {
         let max_tokens = req.max_tokens.max(10) as usize;
         let temperature = if req.temperature > 0.0 { req.temperature } else { 0.7 };
 
-        info!("🔮 Generate: model={}, prompt={} chars, max_tokens={}, temp={:.2}",
-            model_id, prompt.len(), max_tokens, temperature);
+        // Check if we're using quantized model
+        let is_quantized = self.quantized_state.read().await.is_some();
+
+        info!("🔮 Generate: model={}, prompt={} chars, max_tokens={}, temp={:.2}, quantized={}",
+            model_id, prompt.len(), max_tokens, temperature, is_quantized);
 
         let (tx, rx) = mpsc::channel(32);
         let state_arc = self.state.clone();
+        let quantized_arc = self.quantized_state.clone();
         let stats = self.stats.clone();
 
         stats.requests_pending.fetch_add(1, Ordering::SeqCst);
@@ -98,19 +124,26 @@ impl Inference for InferenceService {
         tokio::spawn(async move {
             let start = Instant::now();
 
-            // Get exclusive access to model
-            let mut state_guard = state_arc.write().await;
-
-            let result = match state_guard.as_mut() {
-                Some(model_state) => {
-                    generate_text(model_state, &prompt, max_tokens, temperature)
+            // Try quantized model first, fall back to full precision
+            let result = if is_quantized {
+                let mut q_guard = quantized_arc.write().await;
+                match q_guard.as_mut() {
+                    Some(q_state) => {
+                        generate_text_quantized(q_state, &prompt, max_tokens, temperature)
+                    }
+                    None => Err("Quantized model not available".to_string())
                 }
-                None => {
-                    Err("Model not loaded".to_string())
+            } else {
+                let mut state_guard = state_arc.write().await;
+                match state_guard.as_mut() {
+                    Some(model_state) => {
+                        generate_text(model_state, &prompt, max_tokens, temperature)
+                    }
+                    None => {
+                        Err("Model not loaded".to_string())
+                    }
                 }
             };
-
-            drop(state_guard);
 
             let duration = start.elapsed().as_millis() as i32;
 
@@ -260,6 +293,45 @@ impl Inference for InferenceService {
 
         info!("📦 LoadAdapter: {} from {} (scale={}, merge={})", adapter_id, adapter_path, scale, merge);
         let start = Instant::now();
+
+        // Auto-switch from quantized to BF16 if LoRA requested
+        if self.is_quantized().await {
+            info!("🔄 LoRA requested in quantized mode - auto-switching to BF16...");
+
+            // Unload quantized model
+            {
+                let mut q_state = self.quantized_state.write().await;
+                *q_state = None;
+            }
+
+            // Load BF16 model
+            let load_result = tokio::task::spawn_blocking(|| {
+                crate::model::load_default_model()
+            }).await;
+
+            match load_result {
+                Ok(Ok(new_state)) => {
+                    let mut state = self.state.write().await;
+                    *state = Some(new_state);
+                    info!("✅ Switched to BF16 mode for LoRA support");
+                }
+                Ok(Err(e)) => {
+                    info!("❌ Failed to switch to BF16: {}", e);
+                    return Ok(Response::new(LoadAdapterResponse {
+                        success: false,
+                        error: format!("Failed to switch to BF16 mode: {}", e),
+                        load_time_ms: 0,
+                    }));
+                }
+                Err(e) => {
+                    return Ok(Response::new(LoadAdapterResponse {
+                        success: false,
+                        error: format!("Mode switch task failed: {}", e),
+                        load_time_ms: 0,
+                    }));
+                }
+            }
+        }
 
         // Get device and dtype from current model
         let state = self.state.read().await;
@@ -411,6 +483,45 @@ impl Inference for InferenceService {
         info!("📥 DownloadAdapter from HuggingFace: {}", repo_id);
         let start = Instant::now();
 
+        // Auto-switch from quantized to BF16 if needed
+        if self.is_quantized().await {
+            info!("🔄 LoRA requested in quantized mode - auto-switching to BF16...");
+            {
+                let mut q_state = self.quantized_state.write().await;
+                *q_state = None;
+            }
+            let load_result = tokio::task::spawn_blocking(|| {
+                crate::model::load_default_model()
+            }).await;
+            match load_result {
+                Ok(Ok(new_state)) => {
+                    let mut state = self.state.write().await;
+                    *state = Some(new_state);
+                    info!("✅ Switched to BF16 mode for LoRA support");
+                }
+                Ok(Err(e)) => {
+                    return Ok(Response::new(DownloadAdapterResponse {
+                        success: false,
+                        error: format!("Failed to switch to BF16 mode: {}", e),
+                        download_time_ms: 0,
+                        adapter_id: String::new(),
+                        local_path: String::new(),
+                        metadata: None,
+                    }));
+                }
+                Err(e) => {
+                    return Ok(Response::new(DownloadAdapterResponse {
+                        success: false,
+                        error: format!("Mode switch task failed: {}", e),
+                        download_time_ms: 0,
+                        adapter_id: String::new(),
+                        local_path: String::new(),
+                        metadata: None,
+                    }));
+                }
+            }
+        }
+
         // Check model is loaded (we'll need device/dtype for weight parsing)
         {
             let state = self.state.read().await;
@@ -561,6 +672,43 @@ impl Inference for InferenceService {
 
         info!("🧬 ApplyGenome: {} adapters", adapter_entries.len());
         let start = Instant::now();
+
+        // Auto-switch from quantized to BF16 if needed
+        if self.is_quantized().await {
+            info!("🔄 Genome requested in quantized mode - auto-switching to BF16...");
+            {
+                let mut q_state = self.quantized_state.write().await;
+                *q_state = None;
+            }
+            let load_result = tokio::task::spawn_blocking(|| {
+                crate::model::load_default_model()
+            }).await;
+            match load_result {
+                Ok(Ok(new_state)) => {
+                    let mut state = self.state.write().await;
+                    *state = Some(new_state);
+                    info!("✅ Switched to BF16 mode for genome support");
+                }
+                Ok(Err(e)) => {
+                    return Ok(Response::new(ApplyGenomeResponse {
+                        success: false,
+                        error: format!("Failed to switch to BF16 mode: {}", e),
+                        apply_time_ms: 0,
+                        adapters_applied: 0,
+                        layers_merged: 0,
+                    }));
+                }
+                Err(e) => {
+                    return Ok(Response::new(ApplyGenomeResponse {
+                        success: false,
+                        error: format!("Mode switch task failed: {}", e),
+                        apply_time_ms: 0,
+                        adapters_applied: 0,
+                        layers_merged: 0,
+                    }));
+                }
+            }
+        }
 
         if adapter_entries.is_empty() {
             return Ok(Response::new(ApplyGenomeResponse {
