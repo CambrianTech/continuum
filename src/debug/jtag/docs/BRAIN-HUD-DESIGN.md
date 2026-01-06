@@ -10,7 +10,8 @@ One sci-fi brain visualization that serves as the complete interface to a person
 |--------|--------|------|----------|
 | **Hippocampus** | Memory | Semantic memories, RAG vectors, recall stats | `memory/stats`, `memory/search` |
 | **Genome** | Adapters | LoRA stack, scales, base model, GPU usage | `genome/status`, `adapter/search`, `adapter/adopt` |
-| **Motor Cortex** | Tools | Available actions, usage frequency, permissions | `tools/list`, `tools/usage` |
+| **Motor Cortex** | Outputs | Actions, speech, video, game controls | `tools/list`, `audio/tts`, `video/generate` |
+| **Sensory Cortex** | Inputs | Vision, audio, text understanding | `vision/describe`, `audio/transcribe` |
 | **Prefrontal** | Logs | Activity stream, decisions, thought process | `logs/recent`, `logs/search` |
 | **Limbic** | State | Energy, mood, attention, adaptive cadence | `persona/state` |
 | **CNS** | Performance | Inference latency, connections, throughput | `inference/status`, `ping` |
@@ -40,15 +41,19 @@ One sci-fi brain visualization that serves as the complete interface to a person
 │                         │                    │         │ Mood: calm  │    │
 │  ┌─────────────┐        │                    │         └─────────────┘    │
 │  │MOTOR CORTEX │        │                    │                             │
-│  │  [TOOLS]    │────────○                    ○─────────┌─────────────┐    │
-│  │  ▪▪▪ ▪▪▪   │                                        │     CNS     │    │
-│  │  12 ACTIVE  │                                        │   [PERF]    │    │
-│  └─────────────┘                                        │  45 tok/s   │    │
-│                                                         │  12ms ping  │    │
-│                                                         └─────────────┘    │
+│  │ [OUTPUTS]   │────────○                    ○─────────┌─────────────┐    │
+│  │ 🗣️🎵🎬🎮   │                                        │   SENSORY   │    │
+│  │  5 ENABLED  │                                        │  [INPUTS]   │    │
+│  └─────────────┘                                        │ 👁️ 👂 📖    │    │
+│                                                         │  3 ACTIVE   │    │
+│                         ┌─────────────┐                 └─────────────┘    │
+│                         │     CNS     │                                    │
+│                         │   [PERF]    │                                    │
+│                         │  45 tok/s   │                                    │
+│                         └─────────────┘                                    │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  GPU ████████░░░░ 5.2/8GB   MEM 2.9MB   TOOLS 12   ADAPTERS 2   CONN 5     │
+│  GPU ████████░░░░ 5.2/8GB   MEM 2.9MB   OUT 5   IN 3   ADAPTERS 2   PERF ●│
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,7 +63,8 @@ One sci-fi brain visualization that serves as the complete interface to a person
 Expands region to detail view (slides out or modal):
 - **Hippocampus** → Memory browser, search, stats
 - **Genome** → Adapter manager, search HuggingFace, adjust scales
-- **Motor Cortex** → Tool list, usage stats, permissions
+- **Motor Cortex** → Output modalities (speech, video, game), enable/disable
+- **Sensory Cortex** → Input sources (vision, audio), configure
 - **Prefrontal** → Log viewer, filter by type
 - **Limbic** → State history, mood graph
 - **CNS** → Performance metrics, connection status
@@ -296,6 +302,168 @@ class BrainHudWidget extends BaseWidget {
 │     ╰───────────────────────────────╯                      │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
+```
+
+## Motor Cortex - Outputs
+
+The persona can produce multiple output modalities:
+
+```typescript
+// Text (default)
+await Commands.execute('collaboration/chat/send', { message, room });
+
+// Speech
+await Commands.execute('audio/tts', { text, voice, speed });
+
+// Singing / Music
+await Commands.execute('audio/generate', {
+  prompt: "upbeat electronic intro",
+  style: "synthwave",
+  durationSec: 30
+});
+
+// Video generation
+await Commands.execute('video/generate', {
+  prompt: "walking through a forest",
+  durationSec: 5,
+  style: "cinematic"
+});
+
+// Game actions
+await Commands.execute('game/action', {
+  gameId: "minecraft",
+  action: "move_forward",
+  params: { duration: 2 }
+});
+
+// Tool execution (meta - any registered tool)
+await Commands.execute(toolName, params);
+```
+
+### Output Modality Registry
+```typescript
+interface OutputModality {
+  name: string;
+  type: 'text' | 'audio' | 'video' | 'action';
+  command: string;
+  enabled: boolean;
+  adapter?: string;  // LoRA for this modality
+}
+
+// Persona's available outputs
+const motorCortex: OutputModality[] = [
+  { name: 'chat', type: 'text', command: 'collaboration/chat/send', enabled: true },
+  { name: 'speech', type: 'audio', command: 'audio/tts', enabled: true },
+  { name: 'singing', type: 'audio', command: 'audio/generate', enabled: false },
+  { name: 'video', type: 'video', command: 'video/generate', enabled: false },
+  { name: 'game', type: 'action', command: 'game/action', enabled: true },
+];
+```
+
+## Sensory Cortex - Inputs
+
+The persona can perceive multiple input modalities (converted to text/embeddings):
+
+```typescript
+// Vision - see images
+const description = await Commands.execute('vision/describe', {
+  imagePath: '/tmp/screenshot.png',
+  prompt: "What's happening in this image?"
+});
+// Returns: "A code editor showing TypeScript with a syntax error on line 42"
+
+// Vision - see video
+const summary = await Commands.execute('vision/describe-video', {
+  videoPath: '/tmp/clip.mp4',
+  prompt: "Summarize what happens"
+});
+
+// Audio - transcribe speech
+const transcript = await Commands.execute('audio/transcribe', {
+  audioPath: '/tmp/voice.wav'
+});
+// Returns: { text: "Hey can you help me with this bug?", language: "en" }
+
+// Audio - describe sounds
+const sounds = await Commands.execute('audio/describe', {
+  audioPath: '/tmp/ambient.wav'
+});
+// Returns: "Birds chirping, distant traffic, typing on keyboard"
+
+// Screen - see what user sees
+const screen = await Commands.execute('interface/screenshot', {});
+const context = await Commands.execute('vision/describe', {
+  imagePath: screen.filepath,
+  prompt: "What is the user working on?"
+});
+
+// Game state - perceive game world
+const gameState = await Commands.execute('game/observe', {
+  gameId: "minecraft"
+});
+// Returns: { position, inventory, nearbyEntities, ... }
+```
+
+### Input → Text Pipeline
+```typescript
+// All inputs funnel through conversion to text/embeddings
+class SensoryCortex {
+  async perceive(input: SensoryInput): Promise<string> {
+    switch (input.type) {
+      case 'image':
+        return await this.vision.describe(input.data);
+      case 'audio':
+        return await this.audio.transcribe(input.data);
+      case 'video':
+        return await this.vision.describeVideo(input.data);
+      case 'game':
+        return JSON.stringify(await this.game.observe(input.gameId));
+      case 'text':
+        return input.data;  // Already text
+    }
+  }
+}
+```
+
+### Multimodal Context Building
+```typescript
+// RAG builder incorporates all sensory inputs
+class MultimodalRAGBuilder {
+  async buildContext(persona: PersonaUser): Promise<string> {
+    const parts: string[] = [];
+
+    // What the persona "sees"
+    if (persona.config.visionEnabled) {
+      const screen = await Commands.execute('interface/screenshot', {});
+      const visual = await Commands.execute('vision/describe', {
+        imagePath: screen.filepath
+      });
+      parts.push(`[VISION] Current screen: ${visual}`);
+    }
+
+    // What the persona "hears"
+    if (persona.config.audioEnabled && this.hasRecentAudio()) {
+      const audio = await Commands.execute('audio/transcribe', {
+        audioPath: this.recentAudioPath
+      });
+      parts.push(`[AUDIO] User said: ${audio.text}`);
+    }
+
+    // Game state
+    if (persona.config.gameId) {
+      const state = await Commands.execute('game/observe', {
+        gameId: persona.config.gameId
+      });
+      parts.push(`[GAME] ${JSON.stringify(state)}`);
+    }
+
+    // Memory recall
+    const memories = await this.recallRelevantMemories(parts.join('\n'));
+    parts.push(`[MEMORY] ${memories}`);
+
+    return parts.join('\n\n');
+  }
+}
 ```
 
 ## Avatar & Voice Integration
