@@ -298,6 +298,81 @@ class BrainHudWidget extends BaseWidget {
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Avatar & Voice Integration
+
+The persona can be configured with voice and visual presence:
+
+### Voice (TTS)
+```typescript
+// Persona speaks responses aloud
+Events.subscribe('persona:response', async (data) => {
+  if (persona.config.voiceEnabled) {
+    await Commands.execute('audio/tts', {
+      text: data.message,
+      voice: persona.config.voiceId,  // e.g., 'alloy', 'nova', custom clone
+      speed: 1.0
+    });
+  }
+});
+```
+
+Voice options:
+- **Cloud TTS**: OpenAI, ElevenLabs, Azure
+- **Local TTS**: Coqui, Piper, XTTS
+- **Voice cloning**: Custom voice from samples
+
+### Video Avatar
+```typescript
+// Avatar reacts to persona state
+Events.subscribe('persona:state:changed', (state) => {
+  avatar.setExpression(state.mood);      // happy, focused, thinking
+  avatar.setActivity(state.activity);    // speaking, listening, idle
+});
+
+Events.subscribe('persona:speaking', (data) => {
+  avatar.lipSync(data.audio);            // Sync mouth to speech
+});
+```
+
+Avatar options:
+- **Static**: Profile image with status indicators
+- **Animated 2D**: Live2D style, sprite animations
+- **Video**: Real-time diffusion (future)
+- **3D**: Three.js rigged character
+
+### Layout with Avatar
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  ┌─────────────┐                                                │
+│  │             │   HELPER AI                    ● ONLINE        │
+│  │   AVATAR    │   "I found 3 relevant memories..."             │
+│  │             │   🔊 ━━━━━━●━━━━━                              │
+│  └─────────────┘                                                │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐ │
+│  │                        🧠 BRAIN                            │ │
+│  │  [Hippocampus] [Genome] [Motor] [Prefrontal] [Limbic] [CNS]│ │
+│  └───────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Persona Config
+```typescript
+interface PersonaPresenceConfig {
+  // Voice
+  voiceEnabled: boolean;
+  voiceProvider: 'openai' | 'elevenlabs' | 'local' | 'custom';
+  voiceId: string;
+  voiceSpeed: number;
+
+  // Avatar
+  avatarType: 'static' | 'animated' | 'video' | '3d';
+  avatarUrl: string;
+  avatarExpressions: Map<Mood, string>;  // mood → asset
+  lipSyncEnabled: boolean;
+}
+```
+
 ## Future: Three.js 3D Version
 
 When ready for 3D:
