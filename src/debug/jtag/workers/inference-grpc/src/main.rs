@@ -27,7 +27,13 @@ pub mod inference {
 use inference::inference_server::{Inference, InferenceServer};
 use inference::{
     generate_response, Complete, GenerateRequest, GenerateResponse, PingRequest, PingResponse,
+    LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse,
+    ListModelsRequest, ListModelsResponse, ModelInfo,
+    LoadAdapterRequest, LoadAdapterResponse, UnloadAdapterRequest, UnloadAdapterResponse,
+    ListAdaptersRequest, ListAdaptersResponse, AdapterInfo,
+    StatusRequest, StatusResponse,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
 // Model State
@@ -41,6 +47,31 @@ struct ModelState {
     eos_token_ids: Vec<u32>,
     dtype: DType,
     config: LlamaModelConfig,
+    model_id: String,
+}
+
+// Server statistics for Status RPC
+struct ServerStats {
+    requests_completed: AtomicU64,
+    requests_pending: AtomicU64,
+}
+
+impl ServerStats {
+    fn new() -> Self {
+        Self {
+            requests_completed: AtomicU64::new(0),
+            requests_pending: AtomicU64::new(0),
+        }
+    }
+}
+
+// LoRA adapter info
+#[derive(Clone)]
+struct LoadedAdapter {
+    adapter_id: String,
+    path: String,
+    scale: f64,
+    active: bool,
 }
 
 impl ModelState {
@@ -52,8 +83,9 @@ impl ModelState {
         eos_token_ids: Vec<u32>,
         dtype: DType,
         config: LlamaModelConfig,
+        model_id: String,
     ) -> Self {
-        Self { model, cache, tokenizer, device, eos_token_ids, dtype, config }
+        Self { model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id }
     }
 
     fn clear_cache(&mut self) {
@@ -231,12 +263,7 @@ fn parse_eos_tokens(eos: &Option<LlamaEosToks>) -> Vec<u32> {
     }
 }
 
-fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
-    // Use Meta-Llama-3.2-3B-Instruct (gated model - requires HF_TOKEN)
-    // Fall back to unsloth/Llama-3.2-3B-Instruct if auth fails
-    let model_id = std::env::var("INFERENCE_MODEL_ID")
-        .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
-
+fn load_model_by_id(model_id: &str) -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
     info!(" Loading {}...", model_id);
     let start = Instant::now();
 
@@ -254,7 +281,7 @@ fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> 
     // Download model from HuggingFace Hub
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
-        model_id.clone(),
+        model_id.to_string(),
         RepoType::Model,
         "main".to_string(),
     ));
@@ -307,7 +334,14 @@ fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> 
     let duration = start.elapsed();
     info!(" Model loaded in {:?}", duration);
 
-    Ok(ModelState::new(model, cache, tokenizer, device, eos_token_ids, dtype, config))
+    Ok(ModelState::new(model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id.to_string()))
+}
+
+/// Load default model from environment
+fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
+    let model_id = std::env::var("INFERENCE_MODEL_ID")
+        .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
+    load_model_by_id(&model_id)
 }
 
 // ============================================================================
@@ -316,12 +350,16 @@ fn load_model() -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> 
 
 pub struct InferenceService {
     state: Arc<RwLock<Option<ModelState>>>,
+    stats: Arc<ServerStats>,
+    adapters: Arc<RwLock<Vec<LoadedAdapter>>>,
 }
 
 impl InferenceService {
     fn new(state: Option<ModelState>) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
+            stats: Arc::new(ServerStats::new()),
+            adapters: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }
@@ -358,6 +396,9 @@ impl Inference for InferenceService {
 
         let (tx, rx) = mpsc::channel(32);
         let state_arc = self.state.clone();
+        let stats = self.stats.clone();
+
+        stats.requests_pending.fetch_add(1, Ordering::SeqCst);
 
         tokio::spawn(async move {
             let start = Instant::now();
@@ -402,6 +443,9 @@ impl Inference for InferenceService {
                 }
             };
 
+            stats.requests_pending.fetch_sub(1, Ordering::SeqCst);
+            stats.requests_completed.fetch_add(1, Ordering::SeqCst);
+
             if tx.send(Ok(response)).await.is_err() {
                 info!(" Failed to send response, client gone");
             } else {
@@ -410,6 +454,209 @@ impl Inference for InferenceService {
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    // ========================================================================
+    // Model Management
+    // ========================================================================
+
+    async fn load_model(
+        &self,
+        request: Request<LoadModelRequest>,
+    ) -> Result<Response<LoadModelResponse>, Status> {
+        let req = request.into_inner();
+        let model_id = req.model_id;
+
+        info!(" LoadModel: {}", model_id);
+        let start = Instant::now();
+
+        // Load the model in a blocking task (model loading is synchronous)
+        let result = tokio::task::spawn_blocking(move || {
+            load_model_by_id(&model_id)
+        }).await;
+
+        match result {
+            Ok(Ok(new_state)) => {
+                let load_time_ms = start.elapsed().as_millis() as i64;
+
+                // Replace current model
+                let mut state = self.state.write().await;
+                *state = Some(new_state);
+
+                info!(" ✅ Model loaded in {}ms", load_time_ms);
+                Ok(Response::new(LoadModelResponse {
+                    success: true,
+                    error: String::new(),
+                    load_time_ms,
+                    memory_bytes: 0, // TODO: track memory usage
+                }))
+            }
+            Ok(Err(e)) => {
+                info!(" ❌ Failed to load model: {}", e);
+                Ok(Response::new(LoadModelResponse {
+                    success: false,
+                    error: e.to_string(),
+                    load_time_ms: 0,
+                    memory_bytes: 0,
+                }))
+            }
+            Err(e) => {
+                info!(" ❌ Load task failed: {}", e);
+                Ok(Response::new(LoadModelResponse {
+                    success: false,
+                    error: format!("Task join error: {}", e),
+                    load_time_ms: 0,
+                    memory_bytes: 0,
+                }))
+            }
+        }
+    }
+
+    async fn unload_model(
+        &self,
+        _request: Request<UnloadModelRequest>,
+    ) -> Result<Response<UnloadModelResponse>, Status> {
+        info!(" UnloadModel");
+
+        let mut state = self.state.write().await;
+        if state.is_some() {
+            *state = None;
+            info!(" ✅ Model unloaded");
+            Ok(Response::new(UnloadModelResponse {
+                success: true,
+                error: String::new(),
+            }))
+        } else {
+            Ok(Response::new(UnloadModelResponse {
+                success: false,
+                error: "No model loaded".to_string(),
+            }))
+        }
+    }
+
+    async fn list_models(
+        &self,
+        _request: Request<ListModelsRequest>,
+    ) -> Result<Response<ListModelsResponse>, Status> {
+        let state = self.state.read().await;
+
+        let models = if let Some(ref model_state) = *state {
+            vec![ModelInfo {
+                model_id: model_state.model_id.clone(),
+                loaded: true,
+                memory_bytes: 0, // TODO: track memory
+                dtype: format!("{:?}", model_state.dtype),
+            }]
+        } else {
+            vec![]
+        };
+
+        Ok(Response::new(ListModelsResponse { models }))
+    }
+
+    // ========================================================================
+    // LoRA Adapter Management (stubs for now)
+    // ========================================================================
+
+    async fn load_adapter(
+        &self,
+        request: Request<LoadAdapterRequest>,
+    ) -> Result<Response<LoadAdapterResponse>, Status> {
+        let req = request.into_inner();
+        info!(" LoadAdapter: {} from {}", req.adapter_id, req.adapter_path);
+
+        // TODO: Implement actual LoRA loading with candle
+        // For now, just track the adapter metadata
+        let adapter = LoadedAdapter {
+            adapter_id: req.adapter_id.clone(),
+            path: req.adapter_path,
+            scale: if req.scale > 0.0 { req.scale } else { 1.0 },
+            active: true,
+        };
+
+        let mut adapters = self.adapters.write().await;
+        adapters.push(adapter);
+
+        info!(" ✅ Adapter registered (LoRA loading not yet implemented)");
+        Ok(Response::new(LoadAdapterResponse {
+            success: true,
+            error: "Adapter registered (LoRA weights not yet loaded)".to_string(),
+            load_time_ms: 0,
+        }))
+    }
+
+    async fn unload_adapter(
+        &self,
+        request: Request<UnloadAdapterRequest>,
+    ) -> Result<Response<UnloadAdapterResponse>, Status> {
+        let adapter_id = request.into_inner().adapter_id;
+        info!(" UnloadAdapter: {}", adapter_id);
+
+        let mut adapters = self.adapters.write().await;
+        let initial_len = adapters.len();
+        adapters.retain(|a| a.adapter_id != adapter_id);
+
+        if adapters.len() < initial_len {
+            info!(" ✅ Adapter unloaded");
+            Ok(Response::new(UnloadAdapterResponse {
+                success: true,
+                error: String::new(),
+            }))
+        } else {
+            Ok(Response::new(UnloadAdapterResponse {
+                success: false,
+                error: format!("Adapter '{}' not found", adapter_id),
+            }))
+        }
+    }
+
+    async fn list_adapters(
+        &self,
+        _request: Request<ListAdaptersRequest>,
+    ) -> Result<Response<ListAdaptersResponse>, Status> {
+        let adapters = self.adapters.read().await;
+
+        let adapter_list: Vec<AdapterInfo> = adapters.iter().map(|a| {
+            AdapterInfo {
+                adapter_id: a.adapter_id.clone(),
+                path: a.path.clone(),
+                scale: a.scale,
+                active: a.active,
+            }
+        }).collect();
+
+        Ok(Response::new(ListAdaptersResponse { adapters: adapter_list }))
+    }
+
+    // ========================================================================
+    // Server Status
+    // ========================================================================
+
+    async fn status(
+        &self,
+        _request: Request<StatusRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let state = self.state.read().await;
+        let adapters = self.adapters.read().await;
+
+        let current_model = state.as_ref()
+            .map(|s| s.model_id.clone())
+            .unwrap_or_default();
+
+        let active_adapters: Vec<String> = adapters.iter()
+            .filter(|a| a.active)
+            .map(|a| a.adapter_id.clone())
+            .collect();
+
+        Ok(Response::new(StatusResponse {
+            healthy: state.is_some(),
+            current_model,
+            memory_used_bytes: 0, // TODO: track memory
+            memory_total_bytes: 0,
+            requests_pending: self.stats.requests_pending.load(Ordering::SeqCst) as i32,
+            requests_completed: self.stats.requests_completed.load(Ordering::SeqCst) as i32,
+            active_adapters,
+        }))
     }
 }
 

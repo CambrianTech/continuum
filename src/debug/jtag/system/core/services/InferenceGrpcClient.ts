@@ -36,6 +36,30 @@ export interface GenerateProgress {
   tokensTotal: number;
 }
 
+export interface ModelInfo {
+  modelId: string;
+  loaded: boolean;
+  memoryBytes: number;
+  dtype: string;
+}
+
+export interface AdapterInfo {
+  adapterId: string;
+  path: string;
+  scale: number;
+  active: boolean;
+}
+
+export interface ServerStatus {
+  healthy: boolean;
+  currentModel: string;
+  memoryUsedBytes: number;
+  memoryTotalBytes: number;
+  requestsPending: number;
+  requestsCompleted: number;
+  activeAdapters: string[];
+}
+
 export class InferenceGrpcClient {
   private client: any;
   private static instance: InferenceGrpcClient | null = null;
@@ -139,5 +163,160 @@ export class InferenceGrpcClient {
    */
   close(): void {
     this.client.close();
+  }
+
+  // ========================================================================
+  // Model Management
+  // ========================================================================
+
+  /**
+   * Load a model by HuggingFace ID
+   */
+  async loadModel(modelId: string, dtype?: string): Promise<{ success: boolean; error?: string; loadTimeMs: number }> {
+    return new Promise((resolve, reject) => {
+      const deadline = new Date(Date.now() + 300000); // 5 minutes for model loading
+      this.client.loadModel({ model_id: modelId, dtype: dtype || '' }, { deadline }, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            success: response.success,
+            error: response.error || undefined,
+            loadTimeMs: Number(response.load_time_ms),
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * Unload the current model
+   */
+  async unloadModel(): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve, reject) => {
+      this.client.unloadModel({}, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            success: response.success,
+            error: response.error || undefined,
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * List loaded models
+   */
+  async listModels(): Promise<ModelInfo[]> {
+    return new Promise((resolve, reject) => {
+      this.client.listModels({}, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve((response.models || []).map((m: any) => ({
+            modelId: m.model_id,
+            loaded: m.loaded,
+            memoryBytes: Number(m.memory_bytes),
+            dtype: m.dtype,
+          })));
+        }
+      });
+    });
+  }
+
+  // ========================================================================
+  // LoRA Adapter Management
+  // ========================================================================
+
+  /**
+   * Load a LoRA adapter
+   */
+  async loadAdapter(adapterId: string, adapterPath: string, scale?: number): Promise<{ success: boolean; error?: string; loadTimeMs: number }> {
+    return new Promise((resolve, reject) => {
+      const deadline = new Date(Date.now() + 60000); // 1 minute
+      this.client.loadAdapter(
+        { adapter_id: adapterId, adapter_path: adapterPath, scale: scale ?? 1.0 },
+        { deadline },
+        (err: Error | null, response: any) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve({
+              success: response.success,
+              error: response.error || undefined,
+              loadTimeMs: Number(response.load_time_ms),
+            });
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Unload a LoRA adapter
+   */
+  async unloadAdapter(adapterId: string): Promise<{ success: boolean; error?: string }> {
+    return new Promise((resolve, reject) => {
+      this.client.unloadAdapter({ adapter_id: adapterId }, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            success: response.success,
+            error: response.error || undefined,
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * List loaded adapters
+   */
+  async listAdapters(): Promise<AdapterInfo[]> {
+    return new Promise((resolve, reject) => {
+      this.client.listAdapters({}, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve((response.adapters || []).map((a: any) => ({
+            adapterId: a.adapter_id,
+            path: a.path,
+            scale: a.scale,
+            active: a.active,
+          })));
+        }
+      });
+    });
+  }
+
+  // ========================================================================
+  // Server Status
+  // ========================================================================
+
+  /**
+   * Get server status
+   */
+  async status(): Promise<ServerStatus> {
+    return new Promise((resolve, reject) => {
+      this.client.status({}, (err: Error | null, response: any) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            healthy: response.healthy,
+            currentModel: response.current_model,
+            memoryUsedBytes: Number(response.memory_used_bytes),
+            memoryTotalBytes: Number(response.memory_total_bytes),
+            requestsPending: response.requests_pending,
+            requestsCompleted: response.requests_completed,
+            activeAdapters: response.active_adapters || [],
+          });
+        }
+      });
+    });
   }
 }

@@ -2,8 +2,24 @@ syntax = "proto3";
 package inference;
 
 service Inference {
+  // Health
   rpc Ping(PingRequest) returns (PingResponse);
+
+  // Inference
   rpc Generate(GenerateRequest) returns (stream GenerateResponse);
+
+  // Model management
+  rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+
+  // LoRA adapter management
+  rpc LoadAdapter(LoadAdapterRequest) returns (LoadAdapterResponse);
+  rpc UnloadAdapter(UnloadAdapterRequest) returns (UnloadAdapterResponse);
+  rpc ListAdapters(ListAdaptersRequest) returns (ListAdaptersResponse);
+
+  // Server status
+  rpc Status(StatusRequest) returns (StatusResponse);
 }
 
 message PingRequest {}
@@ -36,4 +52,87 @@ message Complete {
   string text = 1;
   int32 tokens = 2;
   int32 duration_ms = 3;
+}
+
+// Model management messages
+message LoadModelRequest {
+  string model_id = 1;  // HuggingFace model ID (e.g., "unsloth/Llama-3.2-3B-Instruct")
+  string dtype = 2;     // Optional: "bf16", "f16", "f32" (default: auto)
+}
+
+message LoadModelResponse {
+  bool success = 1;
+  string error = 2;
+  int64 load_time_ms = 3;
+  int64 memory_bytes = 4;
+}
+
+message UnloadModelRequest {
+  string model_id = 1;  // Optional: specific model to unload (default: current)
+}
+
+message UnloadModelResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+message ModelInfo {
+  string model_id = 1;
+  bool loaded = 2;
+  int64 memory_bytes = 3;
+  string dtype = 4;
+}
+
+// LoRA adapter messages
+message LoadAdapterRequest {
+  string adapter_path = 1;  // Path to LoRA adapter (local or HuggingFace)
+  string adapter_id = 2;    // Unique ID for this adapter
+  double scale = 3;         // LoRA scale factor (default: 1.0)
+}
+
+message LoadAdapterResponse {
+  bool success = 1;
+  string error = 2;
+  int64 load_time_ms = 3;
+}
+
+message UnloadAdapterRequest {
+  string adapter_id = 1;
+}
+
+message UnloadAdapterResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message ListAdaptersRequest {}
+
+message ListAdaptersResponse {
+  repeated AdapterInfo adapters = 1;
+}
+
+message AdapterInfo {
+  string adapter_id = 1;
+  string path = 2;
+  double scale = 3;
+  bool active = 4;
+}
+
+// Server status messages
+message StatusRequest {}
+
+message StatusResponse {
+  bool healthy = 1;
+  string current_model = 2;
+  int64 memory_used_bytes = 3;
+  int64 memory_total_bytes = 4;
+  int32 requests_pending = 5;
+  int32 requests_completed = 6;
+  repeated string active_adapters = 7;
 }
