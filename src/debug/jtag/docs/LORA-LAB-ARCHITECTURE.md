@@ -666,6 +666,123 @@ async function createAdapter(params: {
 
 ---
 
+## Persona Lab UI (Widget)
+
+Visual genome editor from the persona page:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PERSONA: helper-ai                                        [Save] [Test]│
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  BASE MODEL: unsloth/Llama-3.2-3B-Instruct              [Change]        │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  GENOME STACK                                      [+ Add Layer] │   │
+│  │                                                                   │   │
+│  │  ☰ Layer 2: my-personality      ████░░░░░░ 0.5  [↑] [↓] [×]     │   │
+│  │  ☰ Layer 1: typescript-expert   ████████░░ 0.8  [↑] [↓] [×]     │   │
+│  │  ☰ Layer 0: code-style          ██████████ 1.0  [↑] [↓] [×]     │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  DYNAMIC ROUTING (MoE)                              [Enabled ✓]  │   │
+│  │  Threshold: ████████░░░░░░░░ 0.3   (min similarity to activate)  │   │
+│  │  Dampening: ██████░░░░░░░░░░ 0.2   (reduce low-score scales)     │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+│  ┌──────────────────────┐  ┌──────────────────────────────────────┐   │
+│  │  AVAILABLE ADAPTERS  │  │  TEST AREA                           │   │
+│  │  □ security-expert   │  │  [Chat] [Benchmark] [Canvas] [Game]  │   │
+│  │  □ writing-clarity   │  │                                      │   │
+│  │  □ legal-reviewer    │  │  > You: Review this code...          │   │
+│  │  [Browse Registry]   │  │  > AI: I notice a potential XSS...   │   │
+│  └──────────────────────┘  │  Routing: ts:0.82 sec:0.91 style:0.3 │   │
+│                            └──────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+- Drag-drop genome layers, adjust scales with sliders
+- Live routing visualization (see which adapters activate per input)
+- Inline testing: chat, benchmarks, canvas, games
+- A/B compare different genome configs
+- Import/Export genome configurations
+
+---
+
+## Persona Genome Autonomy
+
+Should personas control their own genome?
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     GENOME ACCESS MODELS                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  MODEL A: User-Controlled (default)                                     │
+│  ────────────────────────────────────                                   │
+│  • User edits genome via Persona Lab UI                                 │
+│  • Persona sees current genome, cannot modify                           │
+│  • Safe, predictable, explicit control                                  │
+│                                                                          │
+│  MODEL B: Curated Access                                                │
+│  ───────────────────────                                                │
+│  • User whitelists adapters per persona                                 │
+│  • Persona can pick from allowed set                                    │
+│  • "You can use these 5 adapters, choose what fits"                     │
+│                                                                          │
+│  MODEL C: Full Autonomy                                                 │
+│  ──────────────────────                                                 │
+│  • Persona has access to entire registry                                │
+│  • Can add/remove/adjust layers based on task performance               │
+│  • Self-evolving genome (continuous learning)                           │
+│  • Requires trust, may diverge unexpectedly                             │
+│                                                                          │
+│  MODEL D: Supervised Evolution                                          │
+│  ────────────────────────────                                           │
+│  • Persona proposes genome changes                                      │
+│  • User approves/rejects via notification                               │
+│  • "I think adding security-expert would help. Allow? [Y/N]"            │
+│  • Best of both: autonomy with oversight                                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation:**
+
+```typescript
+interface GenomePermissions {
+  mode: 'user-controlled' | 'curated' | 'autonomous' | 'supervised';
+
+  // For 'curated' mode
+  allowedAdapters?: string[];
+
+  // For 'autonomous' and 'supervised' modes
+  canAddLayers: boolean;
+  canRemoveLayers: boolean;
+  canAdjustScales: boolean;
+  maxLayers: number;
+
+  // For 'supervised' mode
+  requireApproval: boolean;
+}
+
+// Persona can request genome changes
+interface GenomeChangeRequest {
+  personaId: string;
+  action: 'add' | 'remove' | 'adjust';
+  adapterId: string;
+  reason: string;           // "This task involves security review"
+  proposedScale?: number;
+  status: 'pending' | 'approved' | 'rejected';
+}
+```
+
+**Supervised Evolution** is probably the sweet spot - personas can learn and propose improvements, but user stays in control. Could even auto-approve low-risk changes (scale adjustments) while requiring approval for adding new layers.
+
+---
+
 ## Entity Definitions
 
 Core entities for the adapter/persona registry:
@@ -1216,13 +1333,70 @@ The real economy is **adapters**, not subscriptions:
 - [x] TypeScript client with `merge` option
 - [ ] Hot-swap adapters without full model reload (future optimization)
 
-### Phase 2.5: Validate with Public Adapters (MILESTONE 1)
-- [ ] Download public Llama LoRA from HuggingFace
-- [ ] Load adapter via gRPC
-- [ ] Merge weights into model
-- [ ] Generate text with merged model
-- [ ] Validate output differs from base model
-- [ ] **This proves the entire inference pipeline works before training**
+### Phase 2.5: Model-Agnostic Adapter Mapping (TODO)
+Different base models and training frameworks use different tensor naming:
+
+```
+PEFT/HuggingFace:  base_model.model.model.layers.X.self_attn.q_proj
+Candle Llama:      model.layers.X.self_attn.q_proj.weight
+Other frameworks:  layers.X.attention.query.weight
+```
+
+**Solution: Adapter Trait Per Model Architecture**
+
+```rust
+trait LoRANameMapper {
+    /// Map LoRA tensor name to base model tensor name
+    fn map_name(&self, lora_name: &str) -> String;
+
+    /// Get target modules for this architecture
+    fn target_modules(&self) -> &[&str];
+}
+
+struct LlamaNameMapper;
+struct Qwen2NameMapper;
+struct MistralNameMapper;
+
+// Registry of mappers by model architecture
+fn get_mapper(model_id: &str) -> Box<dyn LoRANameMapper>;
+```
+
+**Or Algorithmic Strategy:**
+- Parse adapter_config.json for `base_model_name_or_path`
+- Auto-detect architecture from model config
+- Apply appropriate naming transformation
+
+**Current**: Hardcoded Llama/PEFT mapping in `lora.rs::map_lora_name_to_model_name()`
+
+### MILESTONE 1: Single Adapter Inference ✅ COMPLETE (2026-01-06)
+- [x] Downloaded public Llama LoRA: `Jiten1024/llama-3.2-3b-int-finetune-jav-rank-1-alpha-32`
+- [x] Load adapter via gRPC with merge: 196 LoRA layer pairs merged
+- [x] Generate text: haiku generation test
+- [x] Validated output differs from base model (different vocabulary, style)
+- [x] **PROVEN: parsing, merging, rebuild, generation all work**
+
+**Test**: `npx tsx tests/lora-adapter-test.ts` (integration test added)
+
+### MILESTONE 2: Genome Assembly (Multi-Adapter)
+- [ ] Load 2-3 public adapters with different scales
+- [ ] Stack them: W' = W + s₁(B₁A₁) + s₂(B₂A₂) + ...
+- [ ] Generate and verify composite behavior
+- [ ] **Proves: composition math works**
+
+### MILESTONE 3: Local Registry
+- [ ] `~/.continuum/adapters/` directory structure
+- [ ] manifest.json for each adapter
+- [ ] `./jtag adapter/list` discovery
+- [ ] `./jtag adapter/install` from path
+- [ ] **Proves: can organize, store, find adapters**
+
+### MILESTONE 4: Full Personas
+- [ ] Genome config (JSON stack definition)
+- [ ] `./jtag persona/export` with selected DBs
+- [ ] `./jtag persona/import`
+- [ ] **Proves: complete packaging and sharing story**
+
+---
 
 ### Phase 3: Training Commands
 - [ ] `training/prepare` - Collect corrections → JSONL
