@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.6890",
+  "version": "1.0.6893",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -346,6 +346,7 @@
     "@grpc/grpc-js": "^1.14.3",
     "@grpc/proto-loader": "^0.8.0",
     "@modelcontextprotocol/sdk": "^1.25.1",
+    "@preact/signals-core": "^1.12.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/sqlite3": "^3.1.11",
     "@types/uuid": "^10.0.0",

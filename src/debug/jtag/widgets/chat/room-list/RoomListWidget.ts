@@ -2,6 +2,9 @@
  * Room List Widget - Now uses EntityScrollerWidget for automatic EntityScroller management
  *
  * Domain-agnostic room list widget - not chat-specific
+ *
+ * MIGRATED TO SIGNALS: Uses @preact/signals-core for reactive state management.
+ * Room highlighting is now automatic - just set currentRoomId.value and DOM updates.
  */
 
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
@@ -17,10 +20,16 @@ import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 
+// SIGNALS: Reactive primitives - just JavaScript, bundled by existing esbuild
+import { signal, effect, type Signal } from '@preact/signals-core';
+
 export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
-  private currentRoomId: UUID = DEFAULT_ROOMS.GENERAL as UUID; // Sync with ChatWidget's default
+  // SIGNAL: Reactive room ID - DOM updates automatically when value changes
+  private currentRoomIdSignal: Signal<UUID> = signal(DEFAULT_ROOMS.GENERAL as UUID);
+  private previousRoomId: UUID | null = null; // Track previous for highlighting transition
   private unreadCounts: Map<string, number> = new Map();
   private clickHandlerAdded: boolean = false;
+  private highlightEffectDispose?: () => void;
   
   constructor() {
     super({
@@ -113,16 +122,38 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     return `widgets/chat/room-list/${filename}`;
   }
 
+  // Getter for backward compatibility and cleaner access
+  private get currentRoomId(): UUID {
+    return this.currentRoomIdSignal.value;
+  }
+
+  // Setter that triggers reactive updates automatically
+  private set currentRoomId(value: UUID) {
+    this.currentRoomIdSignal.value = value;
+  }
+
   // Override to add click event listeners after widget initialization
   protected override async onWidgetInitialize(): Promise<void> {
     await super.onWidgetInitialize();
     this.setupEventListeners();
 
+    // REACTIVE EFFECT: Automatically update highlighting when currentRoomId changes
+    // This replaces the manual updateRoomHighlighting() calls
+    this.highlightEffectDispose = effect(() => {
+      const newRoomId = this.currentRoomIdSignal.value;
+      const oldRoomId = this.previousRoomId;
+
+      if (oldRoomId !== newRoomId) {
+        this.applyHighlighting(oldRoomId, newRoomId);
+        this.previousRoomId = newRoomId;
+      }
+    });
+
     // Listen for room selection from tab clicks (so sidebar stays in sync)
     Events.subscribe(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
       const newRoomId = data.roomId as UUID;
+      // SIGNAL: Just set the value - highlighting updates automatically via effect()
       if (newRoomId !== this.currentRoomId) {
-        this.updateRoomHighlighting(this.currentRoomId, newRoomId);
         this.currentRoomId = newRoomId;
       }
     });
@@ -200,9 +231,9 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     const roomName = roomEntity.displayName || roomEntity.name;
     const isReselection = this.currentRoomId === roomId;
 
-    // OPTIMISTIC UI: Update visuals immediately before server round-trip
+    // SIGNAL: Just set the value - highlighting updates automatically via effect()
+    // No manual updateRoomHighlighting() call needed anymore!
     if (!isReselection) {
-      this.updateRoomHighlighting(this.currentRoomId, roomId);
       this.currentRoomId = roomId;
     }
 
@@ -232,34 +263,31 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   }
 
   /**
-   * Update room highlighting with CSS only - no full redraw needed
+   * Apply room highlighting via CSS classes
+   * Called automatically by the reactive effect when currentRoomIdSignal changes
    */
-  private updateRoomHighlighting(oldRoomId: UUID, newRoomId: UUID): void {
-    // Access DOM relative to this widget's own shadow root, not from document
+  private applyHighlighting(oldRoomId: UUID | null, newRoomId: UUID): void {
     const container = this.shadowRoot;
-
     if (!container) {
       console.warn(`🎨 RoomListWidget: No shadow root available for highlighting`);
       return;
     }
 
     // Remove active class from previously selected room
-    const oldActiveRoom = container.querySelector(`[data-room-id="${oldRoomId}"]`);
-    if (oldActiveRoom) {
-      oldActiveRoom.classList.remove('active');
-      console.log(`🎨 RoomListWidget: Removed active class from "${oldRoomId}"`);
+    if (oldRoomId) {
+      const oldActiveRoom = container.querySelector(`[data-room-id="${oldRoomId}"]`);
+      if (oldActiveRoom) {
+        oldActiveRoom.classList.remove('active');
+      }
     }
 
     // Add active class to newly selected room
     const newActiveRoom = container.querySelector(`[data-room-id="${newRoomId}"]`);
     if (newActiveRoom) {
       newActiveRoom.classList.add('active');
-      console.log(`🎨 RoomListWidget: Added active class to "${newRoomId}"`);
-    } else {
-      console.warn(`🎨 RoomListWidget: Could not find room element for "${newRoomId}"`);
     }
 
-    console.log(`🎨 RoomListWidget: Updated CSS highlighting "${oldRoomId}" → "${newRoomId}"`);
+    console.log(`🎨 RoomListWidget: [SIGNAL] Highlighting updated "${oldRoomId}" → "${newRoomId}"`);
   }
 
   // Entity count now handled automatically by EntityScrollerWidget base class
@@ -272,11 +300,15 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     // Save current state
     await this.storeData('current_room', this.currentRoomId, { persistent: true });
 
+    // SIGNAL: Dispose the reactive effect to prevent memory leaks
+    this.highlightEffectDispose?.();
+    this.highlightEffectDispose = undefined;
+
     // EntityScroller cleanup now handled by base class
     await super.onWidgetCleanup();
 
     this.unreadCounts.clear();
-    console.log('🧹 RoomListWidget: Additional cleanup complete');
+    console.log('🧹 RoomListWidget: Additional cleanup complete (signals disposed)');
   }
 }
 
