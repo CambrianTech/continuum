@@ -5,6 +5,7 @@
  * Candle, and generating text with the loaded model.
  */
 
+use std::collections::HashMap;
 use std::time::Instant;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
@@ -14,6 +15,8 @@ use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
 use log::{info, debug};
 use rand::Rng;
+
+use crate::lora::{LoRAWeights, merge_lora_weight, map_lora_name_to_model_name};
 
 /// Model state containing loaded model, tokenizer, and cache
 pub struct ModelState {
@@ -25,6 +28,8 @@ pub struct ModelState {
     pub dtype: DType,
     pub config: LlamaModelConfig,
     pub model_id: String,
+    /// Original weight file paths for LoRA merging
+    pub weight_paths: Vec<std::path::PathBuf>,
 }
 
 impl ModelState {
@@ -37,8 +42,9 @@ impl ModelState {
         dtype: DType,
         config: LlamaModelConfig,
         model_id: String,
+        weight_paths: Vec<std::path::PathBuf>,
     ) -> Self {
-        Self { model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id }
+        Self { model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id, weight_paths }
     }
 
     pub fn clear_cache(&mut self) {
@@ -242,7 +248,7 @@ pub fn load_model_by_id(model_id: &str) -> Result<ModelState, Box<dyn std::error
     let duration = start.elapsed();
     info!("✅ Model loaded in {:?}", duration);
 
-    Ok(ModelState::new(model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id.to_string()))
+    Ok(ModelState::new(model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id.to_string(), weight_paths))
 }
 
 /// Load default model from environment variable
@@ -250,4 +256,116 @@ pub fn load_default_model() -> Result<ModelState, Box<dyn std::error::Error + Se
     let model_id = std::env::var("INFERENCE_MODEL_ID")
         .unwrap_or_else(|_| "unsloth/Llama-3.2-3B-Instruct".to_string());
     load_model_by_id(&model_id)
+}
+
+/// Rebuild model with LoRA weights merged
+///
+/// Loads base model weights, applies LoRA deltas (W' = W + scale × B @ A),
+/// and rebuilds the Llama model with merged weights.
+///
+/// Takes paths and config directly to avoid lifetime issues with async tasks.
+pub fn rebuild_with_lora_from_paths(
+    weight_paths: &[std::path::PathBuf],
+    device: &Device,
+    dtype: DType,
+    config: &LlamaModelConfig,
+    lora_weights: &HashMap<String, LoRAWeights>,
+) -> Result<Llama, Box<dyn std::error::Error + Send + Sync>> {
+    use safetensors::SafeTensors;
+
+    info!("🔄 Rebuilding model with {} LoRA layers merged", lora_weights.len());
+    let start = Instant::now();
+
+    // Load all base weights into memory
+    let mut all_tensors: HashMap<String, Tensor> = HashMap::new();
+
+    for path in weight_paths {
+        let data = std::fs::read(path)?;
+        let tensors = SafeTensors::deserialize(&data)?;
+
+        for (name, tensor_view) in tensors.tensors() {
+            let shape: Vec<usize> = tensor_view.shape().to_vec();
+            let st_dtype = tensor_view.dtype();
+
+            // Convert to Candle tensor
+            let tensor = match st_dtype {
+                safetensors::Dtype::F32 => {
+                    let data: Vec<f32> = tensor_view.data().chunks(4)
+                        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
+                    Tensor::from_vec(data, shape.as_slice(), device)?
+                }
+                safetensors::Dtype::F16 => {
+                    let data: Vec<half::f16> = tensor_view.data().chunks(2)
+                        .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
+                        .collect();
+                    let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
+                    Tensor::from_vec(f32_data, shape.as_slice(), device)?
+                }
+                safetensors::Dtype::BF16 => {
+                    let data: Vec<half::bf16> = tensor_view.data().chunks(2)
+                        .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
+                        .collect();
+                    let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
+                    Tensor::from_vec(f32_data, shape.as_slice(), device)?
+                }
+                _ => {
+                    info!("  ⚠ Skipping unsupported dtype: {:?} for {}", st_dtype, name);
+                    continue;
+                }
+            };
+
+            // Convert to target dtype
+            let tensor = if tensor.dtype() != dtype {
+                tensor.to_dtype(dtype)?
+            } else {
+                tensor
+            };
+
+            all_tensors.insert(name.to_string(), tensor);
+        }
+    }
+
+    info!("  Loaded {} base tensors", all_tensors.len());
+
+    // Apply LoRA deltas
+    let mut merged_count = 0;
+    let mut failed_count = 0;
+    for (lora_name, lora) in lora_weights {
+        let model_name = map_lora_name_to_model_name(lora_name);
+
+        if let Some(base_weight) = all_tensors.get(&model_name) {
+            match merge_lora_weight(base_weight, lora) {
+                Ok(merged) => {
+                    all_tensors.insert(model_name.clone(), merged);
+                    merged_count += 1;
+                    debug!("  ✓ Merged: {} → {}", lora_name, model_name);
+                }
+                Err(e) => {
+                    info!("  ⚠ Failed to merge {}: {}", lora_name, e);
+                    failed_count += 1;
+                }
+            }
+        } else {
+            debug!("  ⚠ No base weight for: {} (mapped to {})", lora_name, model_name);
+            failed_count += 1;
+        }
+    }
+
+    if failed_count > 0 {
+        info!("  ⚠ {} LoRA layers failed to merge", failed_count);
+    }
+
+    info!("  Merged {} LoRA layers into base weights", merged_count);
+
+    // Build VarBuilder from merged tensors
+    let vb = VarBuilder::from_tensors(all_tensors, dtype, device);
+
+    // Rebuild model
+    let model = Llama::load(vb, config)?;
+
+    let duration = start.elapsed();
+    info!("✅ Model rebuilt with LoRA in {:?}", duration);
+
+    Ok(model)
 }

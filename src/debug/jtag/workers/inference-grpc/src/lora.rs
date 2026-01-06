@@ -154,20 +154,28 @@ pub fn merge_lora_weight(
 /// Map LoRA layer names to Llama model weight names
 ///
 /// LoRA adapters typically use names like:
-///   base_model.model.layers.0.self_attn.q_proj
+///   base_model.model.model.layers.0.self_attn.q_proj
 ///
 /// Candle Llama uses:
 ///   model.layers.0.self_attn.q_proj.weight
 pub fn map_lora_name_to_model_name(lora_name: &str) -> String {
-    // Strip common prefixes from LoRA training
-    let cleaned = lora_name
-        .trim_start_matches("base_model.")
-        .trim_start_matches("model.")
-        .to_string();
+    // Strip "base_model." prefix (only once, not repeatedly)
+    let cleaned = if lora_name.starts_with("base_model.") {
+        &lora_name["base_model.".len()..]
+    } else {
+        lora_name
+    };
+
+    // Strip ONE extra "model." if there are two (e.g., "model.model.layers" -> "model.layers")
+    let cleaned = if cleaned.starts_with("model.model.") {
+        &cleaned["model.".len()..]
+    } else {
+        cleaned
+    };
 
     // Add .weight suffix if not present
     if cleaned.ends_with(".weight") {
-        cleaned
+        cleaned.to_string()
     } else {
         format!("{}.weight", cleaned)
     }
@@ -179,13 +187,20 @@ mod tests {
 
     #[test]
     fn test_lora_name_mapping() {
+        // PEFT/HuggingFace format: base_model.model.model.layers.X.Y
         assert_eq!(
-            map_lora_name_to_model_name("base_model.model.layers.0.self_attn.q_proj"),
-            "layers.0.self_attn.q_proj.weight"
+            map_lora_name_to_model_name("base_model.model.model.layers.0.self_attn.q_proj"),
+            "model.layers.0.self_attn.q_proj.weight"
         );
+        // Single model prefix
         assert_eq!(
             map_lora_name_to_model_name("model.layers.5.mlp.gate_proj"),
-            "layers.5.mlp.gate_proj.weight"
+            "model.layers.5.mlp.gate_proj.weight"
+        );
+        // Already correct format
+        assert_eq!(
+            map_lora_name_to_model_name("model.layers.5.mlp.gate_proj.weight"),
+            "model.layers.5.mlp.gate_proj.weight"
         );
     }
 }

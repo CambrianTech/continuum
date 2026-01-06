@@ -21,7 +21,7 @@ use crate::inference::{
     ListAdaptersRequest, ListAdaptersResponse, AdapterInfo,
     StatusRequest, StatusResponse,
 };
-use crate::model::{ModelState, load_model_by_id, generate_text};
+use crate::model::{ModelState, load_model_by_id, generate_text, rebuild_with_lora_from_paths};
 use crate::lora::{self, LoadedAdapter};
 
 /// Server statistics tracking
@@ -253,8 +253,9 @@ impl Inference for InferenceService {
         let adapter_path = req.adapter_path.clone();
         let adapter_id = req.adapter_id.clone();
         let scale = if req.scale > 0.0 { req.scale } else { 1.0 };
+        let merge = req.merge; // If true, merge weights into model
 
-        info!("📦 LoadAdapter: {} from {} (scale={})", adapter_id, adapter_path, scale);
+        info!("📦 LoadAdapter: {} from {} (scale={}, merge={})", adapter_id, adapter_path, scale, merge);
         let start = Instant::now();
 
         // Get device and dtype from current model
@@ -272,28 +273,63 @@ impl Inference for InferenceService {
         drop(state);
 
         // Load LoRA weights in blocking task
+        let adapter_path_clone = adapter_path.clone();
         let result = tokio::task::spawn_blocking(move || {
-            lora::load_lora_adapter(&adapter_path, &device, dtype, scale)
+            lora::load_lora_adapter(&adapter_path_clone, &device, dtype, scale)
         }).await;
 
         match result {
             Ok(Ok(weights)) => {
-                let load_time_ms = start.elapsed().as_millis() as i64;
                 let num_layers = weights.len();
 
-                let mut adapter = LoadedAdapter::new(adapter_id.clone(), req.adapter_path.clone(), scale);
-                adapter.weights = Some(weights);
+                // Store adapter metadata
+                let mut adapter = LoadedAdapter::new(adapter_id.clone(), adapter_path.clone(), scale);
+                adapter.weights = Some(weights.clone());
                 adapter.active = true;
 
                 let mut adapters = self.adapters.write().await;
                 adapters.push(adapter);
+                drop(adapters);
 
+                // If merge requested, rebuild model with LoRA weights
+                if merge {
+                    info!("  Merging LoRA weights into model...");
+                    let mut state = self.state.write().await;
+                    if let Some(model_state) = state.as_mut() {
+                        // Clone data needed for blocking task
+                        let weight_paths = model_state.weight_paths.clone();
+                        let device = model_state.device.clone();
+                        let dtype = model_state.dtype;
+                        let config = model_state.config.clone();
+                        let weights_for_merge = weights.clone();
+
+                        let rebuild_result = tokio::task::spawn_blocking(move || {
+                            rebuild_with_lora_from_paths(&weight_paths, &device, dtype, &config, &weights_for_merge)
+                        }).await;
+
+                        match rebuild_result {
+                            Ok(Ok(new_model)) => {
+                                model_state.model = new_model;
+                                model_state.clear_cache();
+                                info!("  ✓ Model rebuilt with LoRA weights");
+                            }
+                            Ok(Err(e)) => {
+                                info!("  ⚠ Failed to rebuild model: {}", e);
+                            }
+                            Err(e) => {
+                                info!("  ⚠ Rebuild task failed: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                let load_time_ms = start.elapsed().as_millis() as i64;
                 info!("✅ Adapter loaded: {} ({} layer pairs, {}ms)",
                     adapter_id, num_layers, load_time_ms);
 
                 Ok(Response::new(LoadAdapterResponse {
                     success: true,
-                    error: format!("Loaded {} LoRA layer pairs", num_layers),
+                    error: format!("Loaded {} LoRA layer pairs{}", num_layers, if merge { " (merged)" } else { "" }),
                     load_time_ms,
                 }))
             }

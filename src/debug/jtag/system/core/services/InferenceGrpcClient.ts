@@ -233,12 +233,29 @@ export class InferenceGrpcClient {
 
   /**
    * Load a LoRA adapter
+   *
+   * @param adapterId - Unique identifier for this adapter
+   * @param adapterPath - Path to the adapter safetensors file
+   * @param options - Loading options
+   * @param options.scale - LoRA scale factor (default: 1.0)
+   * @param options.merge - If true, merge weights into model immediately (slower but permanent)
    */
-  async loadAdapter(adapterId: string, adapterPath: string, scale?: number): Promise<{ success: boolean; error?: string; loadTimeMs: number }> {
+  async loadAdapter(
+    adapterId: string,
+    adapterPath: string,
+    options?: { scale?: number; merge?: boolean }
+  ): Promise<{ success: boolean; error?: string; loadTimeMs: number }> {
     return new Promise((resolve, reject) => {
-      const deadline = new Date(Date.now() + 60000); // 1 minute
+      // Longer timeout when merging weights (rebuilds model)
+      const timeoutMs = options?.merge ? 300000 : 60000;
+      const deadline = new Date(Date.now() + timeoutMs);
       this.client.loadAdapter(
-        { adapter_id: adapterId, adapter_path: adapterPath, scale: scale ?? 1.0 },
+        {
+          adapter_id: adapterId,
+          adapter_path: adapterPath,
+          scale: options?.scale ?? 1.0,
+          merge: options?.merge ?? false,
+        },
         { deadline },
         (err: Error | null, response: any) => {
           if (err) {

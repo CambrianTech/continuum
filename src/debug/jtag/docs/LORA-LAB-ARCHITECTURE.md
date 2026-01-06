@@ -28,12 +28,12 @@ Think: **App Store for AI customizations** - but the "apps" are lightweight adap
 │  M1 Mac (8GB)                 RTX 5090 (32GB VRAM)              │
 │  • Inference only             • Full training                    │
 │  • Small adapters             • Large models (70B+)              │
-│  • MLX backend                • CUDA/Unsloth                     │
+│  • Candle + Metal             • Candle + CUDA                    │
 │                                                                  │
 │  M1 Pro/Max (16-32GB)         Docker/Ubuntu + CUDA              │
 │  • Local training             • Production inference             │
 │  • 3B-7B models               • Multi-GPU training               │
-│  • MLX-LM, MLX-VLM            • Batch processing                 │
+│  • Candle + Metal             • Batch processing                 │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -105,7 +105,7 @@ User downloads adapter from Hub
 ```
 User's training data (corrections, examples)
          ↓
-    MLX LoRA Training (on M1)
+    Candle LoRA Training (Metal backend)
          ↓
     Custom Adapter (.safetensors)
          ↓
@@ -125,9 +125,9 @@ User's training data (corrections, examples)
   --persona="helper-ai" \
   --output="./datasets/my-style.jsonl"
 
-# Train locally on M1
+# Train locally (Rust/Candle with Metal)
 ./jtag training/start \
-  --base="mlx-community/Llama-3.2-3B-Instruct-4bit" \
+  --base="unsloth/Llama-3.2-3B-Instruct" \
   --data="./datasets/my-style.jsonl" \
   --output="./adapters/my-style-v1.safetensors" \
   --epochs=3
@@ -147,7 +147,7 @@ User's training data (corrections, examples)
 ```
 Large datasets + powerful GPU
          ↓
-    Unsloth/PEFT Training (CUDA)
+    Candle LoRA Training (CUDA backend)
          ↓
     High-quality Adapter (.safetensors)
          ↓
@@ -161,13 +161,10 @@ Large datasets + powerful GPU
 
 **Example workflow:**
 ```bash
-# Start training container
-docker run --gpus all -v ./data:/data unsloth/unsloth:latest
-
-# Train large model with Unsloth (4x faster than standard)
+# Train large model (Rust/Candle with CUDA)
 ./jtag training/start \
   --backend="cuda" \
-  --base="unsloth/Qwen2.5-7B-Instruct-bnb-4bit" \
+  --base="Qwen/Qwen2.5-7B-Instruct" \
   --data="./datasets/expert-corrections.jsonl" \
   --output="./adapters/expert-coder-v1.safetensors" \
   --epochs=5 \
@@ -193,7 +190,7 @@ docker run --gpus all -v ./data:/data unsloth/unsloth:latest
 **Power user advantages:**
 - 10-50x faster training than M1
 - Larger models (7B-70B)
-- Vision model training (Qwen2.5-VL 7B)
+- Vision model training
 - Batch processing for production
 - Multi-GPU parallelism
 
@@ -251,14 +248,102 @@ User has API key (Together, Fireworks, Modal)
 **Note:** All models run 100% locally. Training times for ~500 examples with LoRA rank 32.
 
 **Free Tools Used:**
-- MLX-LM (Mac) - Apple's open-source training framework
-- Unsloth (CUDA) - 4x faster training, Apache 2.0 license
-- Candle (Rust) - Our inference backend, MIT license
+- Candle (Rust) - Inference AND training, MIT license
+- candle-lora - LoRA layer swapping for Candle
+- Metal backend - Native Apple Silicon acceleration
+- CUDA backend - NVIDIA GPU acceleration
 - HuggingFace Hub - Free model downloads
+
+**No Python required.** Everything runs in Rust.
 
 ---
 
-## Adapter Hub Structure
+## Local Storage Strategy
+
+**Think Docker images**: Each adapter is like a Docker image with its own internal layers.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ADAPTER: typescript-expert-v3                                       │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  Internal Layers (LoRA weight matrices per model layer):       │  │
+│  │    • layers.0.self_attn.q_proj  (A: [32,4096], B: [4096,32])  │  │
+│  │    • layers.0.self_attn.v_proj  (A: [32,4096], B: [4096,32])  │  │
+│  │    • layers.1.self_attn.q_proj  ...                            │  │
+│  │    • layers.1.self_attn.v_proj  ...                            │  │
+│  │    • ... (typically 64-128 layer pairs)                        │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│  manifest.json: { base: "Llama-3.2-3B", rank: 32, scale: 1.0 }      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Composition** = stacking multiple adapters (like Docker multi-stage builds):
+```
+Your AI = Base Model + Adapter1(scale=1.0) + Adapter2(scale=0.8) + ...
+W' = W + scale₁(B₁A₁) + scale₂(B₂A₂) + ...
+```
+
+**Key insight**: Like Docker images, adapters are immutable, versioned, and composable. Each adapter is a complete package you can pull, push, and stack.
+
+Adapters are stored locally in `~/.continuum/adapters/` with a consistent structure for discovery, loading, and packaging.
+
+### Directory Layout
+
+```
+~/.continuum/
+├── adapters/
+│   ├── installed/                   # Downloaded/installed adapters
+│   │   ├── typescript-expert-v3/
+│   │   │   ├── adapter.safetensors  # LoRA weights (2-50 MB)
+│   │   │   ├── manifest.json        # Metadata, version, compatibility
+│   │   │   └── README.md            # Usage guide
+│   │   └── code-reviewer-v2/
+│   │
+│   ├── training/                    # In-progress training outputs
+│   │   └── my-style-2024-01/
+│   │       ├── checkpoint-500/
+│   │       ├── checkpoint-1000/
+│   │       └── training.log
+│   │
+│   └── personal/                    # User-created, local-only
+│       └── my-writing-style/
+│           ├── adapter.safetensors
+│           ├── manifest.json
+│           └── training-data.jsonl  # Optional: keep training data
+│
+├── models/                          # Base model cache (HuggingFace)
+│   ├── unsloth--Llama-3.2-3B-Instruct/
+│   └── Qwen--Qwen2.5-VL-3B-Instruct/
+│
+└── config.json                      # User settings, API keys
+```
+
+### Key Design Decisions
+
+1. **Single safetensor file per adapter**: `adapter.safetensors` contains all LoRA A/B matrices
+2. **Manifest is required**: Every adapter has `manifest.json` with version, base model, compatibility
+3. **Training checkpoints preserved**: Can resume training or revert to earlier versions
+4. **HuggingFace cache symlinks**: Models stored in standard HF cache, symlinked for organization
+5. **Portable**: Entire `adapters/` directory can be copied/backed up
+
+### Discovery
+
+```bash
+# List all installed adapters
+./jtag adapter/list
+
+# Load by ID (looks in installed/ and personal/)
+./jtag adapter/activate --id="typescript-expert-v3"
+
+# Load by path (any location)
+./jtag adapter/activate --path="./custom/my-adapter.safetensors"
+```
+
+---
+
+## Adapter Hub Structure (Remote)
+
+For sharing adapters publicly:
 
 ```
 continuum-hub/
@@ -295,7 +380,7 @@ continuum-hub/
   "author": "continuum-team",
   "license": "MIT",
 
-  "base_model": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+  "base_model": "unsloth/Llama-3.2-3B-Instruct",
   "adapter_type": "lora",
   "lora_rank": 32,
   "lora_alpha": 64,
@@ -308,8 +393,8 @@ continuum-hub/
 
   "compatibility": {
     "min_memory_gb": 8,
-    "platforms": ["darwin-arm64"],
-    "inference_backends": ["mlx", "candle", "ollama"]
+    "platforms": ["darwin-arm64", "linux-x86_64", "windows-x86_64"],
+    "inference_backends": ["candle-metal", "candle-cuda", "ollama"]
   },
 
   "metrics": {
@@ -323,6 +408,363 @@ continuum-hub/
     "size_mb": 15.2
   }
 }
+```
+
+---
+
+## Persona = Base Model + Genome + Databases
+
+A **Persona** is the complete package - not just adapters:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         PERSONA PACKAGE                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  BASE MODEL (immutable, shared)                                         │
+│  └── unsloth/Llama-3.2-3B-Instruct                                      │
+│                                                                          │
+│  LORA GENOME (0-N layers, shareable)                                    │
+│  ├── Layer 0: code-style:v2 (scale: 1.0)                                │
+│  ├── Layer 1: typescript-expert:v3 (scale: 0.8)                         │
+│  └── Layer 2: my-personality:v1 (scale: 0.5)                            │
+│                                                                          │
+│  DATABASES (per-persona, selective sharing)                             │
+│  ├── ltm.db              [PRIVATE]   Long-term memories                 │
+│  ├── corrections.db      [SHAREABLE] Training examples                  │
+│  ├── preferences.db      [PRIVATE]   User preferences                   │
+│  ├── skills.db           [SHAREABLE] Skill inventory                    │
+│  └── hippocampus.db      [PRIVATE]   Episodic memory                    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Sharing Granularity
+
+Three levels of sharing - like Docker images and containers:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                     SHARING GRANULARITY                        │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  1. INDIVIDUAL LAYER (finest grain)                            │
+│     └── Just one adapter: typescript-expert.safetensors        │
+│         Size: 2-50 MB                                          │
+│         Use: Share a specific skill                            │
+│                                                                │
+│  2. MEMORY-LESS PERSONA (genome only)                          │
+│     └── Stack config + adapter refs (no DBs)                   │
+│         {                                                      │
+│           base: "Llama-3.2-3B",                                │
+│           layers: ["code-style:1.0", "ts-expert:0.8"]          │
+│         }                                                      │
+│         Size: ~1 KB (just JSON, adapters pulled lazily)        │
+│         Use: Share personality without memories                │
+│                                                                │
+│  3. WHOLE PERSONA (genome + memories)                          │
+│     └── Full package with selected DBs                         │
+│         ├── genome.json                                        │
+│         ├── corrections.db    (training examples)              │
+│         ├── skills.db         (capabilities)                   │
+│         └── ltm.db            (optional - user choice)         │
+│         Size: 10-500 MB depending on memory depth              │
+│         Use: Clone a fully-trained expert                      │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**Commands:**
+```bash
+# Share just a layer
+./jtag adapter/push typescript-expert:v3
+
+# Share memory-less persona (just the recipe)
+./jtag persona/push helper-ai --no-memory
+
+# Share whole persona with memories
+./jtag persona/push helper-ai --with-memory
+```
+
+---
+
+## Dynamic Genome Routing (Semantic MoE)
+
+Layer scales aren't static - they're **dynamically computed** based on input using embedding similarity. Like a soft Mixture of Experts routing:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    DYNAMIC GENOME ROUTING                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  INPUT: "Review this TypeScript PR for security issues"         │
+│                         │                                        │
+│                         ▼                                        │
+│                    embed(input)                                  │
+│                         │                                        │
+│                         ▼                                        │
+│         ┌───────────────────────────────────┐                   │
+│         │  COSINE SIMILARITY vs ADAPTERS    │                   │
+│         │                                   │                   │
+│         │  typescript-expert:  0.82 ████████░░                  │
+│         │  security-reviewer:  0.94 █████████░                  │
+│         │  code-style:         0.31 ███░░░░░░░                  │
+│         │  writing-clarity:    0.15 █░░░░░░░░░                  │
+│         └───────────────────────────────────┘                   │
+│                         │                                        │
+│                         ▼                                        │
+│              W' = W + 0.82(B₁A₁)    ← typescript                │
+│                      + 0.94(B₂A₂)    ← security (dominant)      │
+│                      + 0.31(B₃A₃)    ← code-style (reduced)     │
+│                      + 0.15(B₄A₄)    ← writing (minimal)        │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Each adapter has a domain embedding** - a vector representing its competence space:
+
+```typescript
+interface AdapterEntity extends BaseEntity {
+  adapterId: string;
+  digest: string;
+
+  // Domain embedding for MoE routing
+  domainEmbedding: {
+    learned?: number[];        // From usage feedback (best)
+    training?: number[];       // From training data centroid (good)
+    description: number[];     // From text description (fallback)
+  };
+
+  domainDescription: string;   // "TypeScript type safety and patterns"
+}
+```
+
+**Embedding priority** (use best available):
+1. **Learned** - accumulated from actual usage feedback
+2. **Training** - centroid of training examples
+3. **Description** - embed the text description (cold start)
+
+---
+
+## Learned Domain Embeddings
+
+Adapters learn their own competence space from usage:
+
+```
+CONTINUOUS LEARNING
+────────────────────────────────────────────────────────────
+
+User: "Help with this TypeScript generic"
+      → typescript-expert activated at 0.9
+      → Good response, user thumbs up 👍
+      → Move typescript-expert embedding TOWARD this input
+
+User: "Write a poem about code"
+      → typescript-expert activated at 0.4
+      → User corrects: "too technical"
+      → Move typescript-expert embedding AWAY from this input
+
+RESULT: Adapter naturally specializes based on where it actually helps
+```
+
+```typescript
+async function updateDomainEmbedding(
+  adapter: AdapterEntity,
+  input: string,
+  helpful: boolean
+): Promise<void> {
+  const inputEmb = await embed(input);
+  const current = adapter.domainEmbedding.learned
+    ?? adapter.domainEmbedding.training
+    ?? adapter.domainEmbedding.description;
+
+  // Online update: move toward helpful, away from unhelpful
+  const alpha = 0.1;
+  const direction = helpful ? 1 : -1;
+
+  adapter.domainEmbedding.learned = current.map((v, i) =>
+    v + alpha * direction * (inputEmb[i] - v)
+  );
+}
+```
+
+---
+
+## Adapter Inheritance (Transfer Learning)
+
+Training embeddings form a **searchable competence space**. When creating a new adapter, find similar existing ones as starting points:
+
+```
+ADAPTER DISCOVERY / INHERITANCE
+────────────────────────────────────────────────────────────
+
+WANT: "Legal contract clause reviewer"
+                │
+                ▼
+         embed(description)
+                │
+                ▼
+┌───────────────────────────────────────────────────────────┐
+│  SEARCH EXISTING TRAINING SPACES                          │
+│                                                           │
+│  code-reviewer     ████████░░  0.65  (structured review)  │
+│  writing-style     ██████░░░░  0.52  (prose clarity)      │
+│  security-expert   █████░░░░░  0.48  (risk analysis)      │
+│  typescript-expert ██░░░░░░░░  0.21  (wrong domain)       │
+│                                                           │
+└───────────────────────────────────────────────────────────┘
+                │
+                ▼
+         STARTING POINTS:
+         - Initialize from code-reviewer weights (closest)
+         - Blend in writing-style at 0.5
+         - Fine-tune on legal corpus
+
+         → Faster convergence, better results
+```
+
+```typescript
+// Find nearest adapters for transfer learning
+async function findStartingPoints(
+  desiredTraits: string,
+  topK: number = 3
+): Promise<Array<{ adapter: AdapterEntity; similarity: number }>> {
+  const targetEmb = await embed(desiredTraits);
+
+  const scored = adapters.map(a => ({
+    adapter: a,
+    similarity: cosineSimilarity(targetEmb, a.domainEmbedding.training)
+  }));
+
+  return scored
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, topK);
+}
+
+// Create new adapter with informed initialization
+async function createAdapter(params: {
+  description: string;
+  trainingData: string;
+}): Promise<AdapterEntity> {
+  const ancestors = await findStartingPoints(params.description);
+
+  // Warm start from best match if similarity > threshold
+  const initWeights = ancestors[0].similarity > 0.5
+    ? await loadWeights(ancestors[0].adapter)
+    : null;
+
+  return train({
+    data: params.trainingData,
+    initFrom: initWeights,
+  });
+}
+```
+
+**Adapters form a family tree** - new ones inherit from semantically similar ancestors. Never training blind.
+
+---
+
+## Entity Definitions
+
+Core entities for the adapter/persona registry:
+
+```typescript
+// AdapterEntity - Single LoRA layer (content-addressable)
+interface AdapterEntity extends BaseEntity {
+  // Identity
+  adapterId: string;           // "typescript-expert-v3"
+  namespace: string;           // "official" | "community" | "personal"
+  version: string;             // semver: "3.0.0"
+  digest: string;              // SHA256 of safetensors (immutable ref)
+
+  // Base model dependency
+  baseModelId: string;         // "unsloth/Llama-3.2-3B-Instruct"
+
+  // LoRA config
+  loraRank: number;            // 8, 16, 32, 64
+  loraAlpha: number;
+  targetModules: string[];     // ["q_proj", "v_proj", ...]
+
+  // Domain embedding for MoE routing
+  domainEmbedding: {
+    learned?: number[];        // From usage feedback
+    training?: number[];       // From training data centroid
+    description: number[];     // From text description
+  };
+  domainDescription: string;
+
+  // Training provenance
+  trainingExamples: number;
+  trainingSource: 'corrections' | 'dataset' | 'synthetic';
+  ancestorAdapters?: string[]; // Transfer learning lineage
+
+  // Metadata
+  author: string;
+  license: string;
+  sizeBytes: number;
+  filePath: string;
+}
+
+// GenomeEntity - Stack configuration (tiny, just references)
+interface GenomeEntity extends BaseEntity {
+  genomeId: string;
+  name: string;
+  baseModelId: string;
+
+  layers: Array<{
+    order: number;             // Stack order (0 = bottom)
+    adapterId: string;
+    adapterDigest: string;     // Pinned version
+    defaultScale: number;      // Static fallback
+    domain: string;            // For dynamic routing
+  }>;
+
+  // Routing config
+  dynamicRouting: boolean;     // Use semantic MoE?
+  routingThreshold: number;    // Min similarity to activate
+}
+
+// PersonaPackageEntity - Full export manifest
+interface PersonaPackageEntity extends BaseEntity {
+  personaId: string;
+  name: string;
+  description: string;
+
+  // Components
+  genomeId: string;
+  baseModelId: string;
+
+  // Included databases
+  includedDatabases: Array<{
+    name: string;              // "corrections", "skills"
+    type: DatabaseType;
+    digest: string;
+    sizeBytes: number;
+  }>;
+
+  // Excluded (listed for transparency)
+  excludedDatabases: Array<{
+    name: string;
+    type: DatabaseType;
+    reason: 'private' | 'user-choice';
+  }>;
+
+  // Package metadata
+  version: string;
+  totalSizeBytes: number;
+  capabilities: string[];      // ["typescript", "code-review"]
+}
+
+type DatabaseType =
+  | 'ltm'           // Long-term memory
+  | 'corrections'   // Training examples
+  | 'preferences'   // User settings
+  | 'skills'        // Capability inventory
+  | 'hippocampus'   // Episodic memory
+  | 'tasks'         // Task queue
+  ;
 ```
 
 ---
@@ -355,7 +797,7 @@ Result: AI with your style + TS expertise + code conventions
 
 ---
 
-## Local Training Pipeline (M1 Optimized)
+## Local Training Pipeline (Rust/Candle)
 
 ### Step 1: Data Collection
 
@@ -375,23 +817,19 @@ Sources:
 - Imported datasets (JSONL)
 - Failed tool calls with fixes
 
-### Step 2: Training Script
+### Step 2: Training
 
 ```bash
-#!/bin/bash
-# scripts/train-lora-m1.sh
-
-# Optimized for M1 unified memory
-python -m mlx_lm.lora \
-  --model "mlx-community/Llama-3.2-3B-Instruct-4bit" \
-  --data "./datasets/training.jsonl" \
-  --adapter-path "./adapters/output" \
-  --lora-rank 32 \
-  --lora-alpha 64 \
-  --batch-size 2 \
-  --iters 500 \
-  --learning-rate 2e-4 \
-  --warmup-ratio 0.1
+# Train with Candle (auto-detects Metal or CUDA)
+./jtag training/start \
+  --base="unsloth/Llama-3.2-3B-Instruct" \
+  --data="./datasets/training.jsonl" \
+  --output="./adapters/output.safetensors" \
+  --lora-rank=32 \
+  --lora-alpha=64 \
+  --batch-size=2 \
+  --epochs=3 \
+  --learning-rate=2e-4
 ```
 
 ### Step 3: Validation
@@ -399,7 +837,7 @@ python -m mlx_lm.lora \
 ```bash
 # Quick quality check before deployment
 ./jtag training/validate \
-  --adapter="./adapters/output" \
+  --adapter="./adapters/output.safetensors" \
   --test-set="./datasets/test.jsonl" \
   --min-quality=0.8
 ```
@@ -409,7 +847,7 @@ python -m mlx_lm.lora \
 ```bash
 # Hot-swap into running inference
 ./jtag adapter/activate \
-  --path="./adapters/output" \
+  --path="./adapters/output.safetensors" \
   --replace="previous-adapter"
 ```
 
@@ -417,21 +855,21 @@ python -m mlx_lm.lora \
 
 ## Vision Model Workflow (UI/Design)
 
-Vision models are **fully local and free** - same as text models.
+Vision models are **fully local and free** - same as text models. All Rust, no Python.
 
 ### Training UI Expert (Any Platform)
 
-**On Mac (M1/M2/M3):**
+**On Mac (M1/M2/M3) - Metal backend:**
 ```bash
 # 1. Collect UI screenshots with corrections
 ./jtag training/vision/collect \
   --source="screenshots" \
   --with-corrections
 
-# 2. Train with MLX-VLM (free, local)
+# 2. Train with Candle (Metal, free, local)
 ./jtag training/vision/start \
-  --backend="mlx" \
-  --base="mlx-community/Qwen2.5-VL-3B-Instruct-4bit" \
+  --backend="metal" \
+  --base="Qwen/Qwen2.5-VL-3B-Instruct" \
   --data="./datasets/ui-critique.jsonl" \
   --output="./adapters/ui-expert-v1.safetensors" \
   --epochs=3
@@ -443,7 +881,7 @@ Vision models are **fully local and free** - same as text models.
   --prompt="What usability issues do you see?"
 ```
 
-**On CUDA (RTX 5090):**
+**On CUDA (RTX 5090) - CUDA backend:**
 ```bash
 # Same workflow, just different backend
 ./jtag training/vision/start \
@@ -770,15 +1208,25 @@ The real economy is **adapters**, not subscriptions:
 - [x] GPU memory allocator with smart eviction
 - [x] Proto schema for model/adapter management
 
-### Phase 2: LoRA Weight Loading (IN PROGRESS)
+### Phase 2: LoRA Weight Loading (DONE)
 - [x] Proto schema for adapter load/unload
-- [ ] Safetensor parsing in Rust
-- [ ] LoRA weight merging with base model
-- [ ] Hot-swap adapters without model reload
+- [x] Safetensor parsing in Rust (lora.rs with F32/F16/BF16 support)
+- [x] LoRA weight merging with base model (W' = W + scale × B @ A)
+- [x] Rebuild model with merged weights (`rebuild_with_lora_from_paths()`)
+- [x] TypeScript client with `merge` option
+- [ ] Hot-swap adapters without full model reload (future optimization)
+
+### Phase 2.5: Validate with Public Adapters (MILESTONE 1)
+- [ ] Download public Llama LoRA from HuggingFace
+- [ ] Load adapter via gRPC
+- [ ] Merge weights into model
+- [ ] Generate text with merged model
+- [ ] Validate output differs from base model
+- [ ] **This proves the entire inference pipeline works before training**
 
 ### Phase 3: Training Commands
 - [ ] `training/prepare` - Collect corrections → JSONL
-- [ ] `training/start` - Launch MLX/Unsloth training
+- [ ] `training/start` - Launch Candle LoRA training (Metal/CUDA)
 - [ ] `training/status` - Monitor training progress
 - [ ] `training/validate` - Quality check adapter
 
@@ -795,10 +1243,10 @@ The real economy is **adapters**, not subscriptions:
 - [ ] Composite adapter saving
 
 ### Phase 6: Vision Models
-- [ ] Moondream integration in Candle
+- [ ] Moondream/Qwen2.5-VL integration in Candle
 - [ ] Image encoding in gRPC proto
 - [ ] `ai/vision/*` commands
-- [ ] MLX-VLM training wrapper
+- [ ] Vision LoRA training (Candle + Metal/CUDA)
 
 ### Phase 7: Hub & Sharing
 - [ ] Adapter manifest schema validation
@@ -832,7 +1280,8 @@ The real economy is **adapters**, not subscriptions:
 
 ## References
 
-- [MLX-LM LoRA](https://github.com/ml-explore/mlx-examples/tree/main/lora) - Apple's LoRA training
-- [MLX-VLM](https://github.com/Blaizzy/mlx-vlm) - Vision model training on Mac
+- [Candle](https://github.com/huggingface/candle) - Rust ML framework with Metal/CUDA backends
+- [candle-lora](https://github.com/EricLBuehler/candle-lora) - Pure Rust LoRA implementation
+- [safetensors](https://github.com/huggingface/safetensors) - Safe, fast tensor serialization
 - [CONTINUOUS-LEARNING-RUNTIME.md](CONTINUOUS-LEARNING-RUNTIME.md) - Runtime architecture
 - [LORA-TRAINING-STRATEGY.md](LORA-TRAINING-STRATEGY.md) - Training approaches

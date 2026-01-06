@@ -94,6 +94,7 @@ message LoadAdapterRequest {
   string adapter_path = 1;  // Path to LoRA adapter (local or HuggingFace)
   string adapter_id = 2;    // Unique ID for this adapter
   double scale = 3;         // LoRA scale factor (default: 1.0)
+  bool merge = 4;           // If true, merge weights into model (slower but permanent)
 }
 
 message LoadAdapterResponse {
