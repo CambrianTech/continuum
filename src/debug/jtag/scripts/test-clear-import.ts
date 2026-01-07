@@ -6,12 +6,13 @@
  */
 
 import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
+import { getDatabasePath } from '../system/config/ServerConfig';
 
 async function testClearImport() {
   console.log('🧪 Testing clear + import functionality...');
 
   try {
-    const dataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    const dataService = await DataServiceFactory.createSQLiteOnly(getDatabasePath());
 
     const initResult = await dataService.initialize();
     if (!initResult.success) {

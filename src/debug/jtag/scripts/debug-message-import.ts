@@ -7,12 +7,13 @@
 
 import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
 import { validateMessageData } from '../system/data/domains/ChatMessage';
+import { getDatabasePath } from '../system/config/ServerConfig';
 
 async function debugMessageImport() {
   console.log('🔍 Debugging chat message import issues...');
 
   try {
-    const dataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    const dataService = await DataServiceFactory.createSQLiteOnly(getDatabasePath());
 
     const initResult = await dataService.initialize();
     if (!initResult.success) {

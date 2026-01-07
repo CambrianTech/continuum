@@ -86,6 +86,11 @@ export class PositronContentStateAdapter {
   private config: PositronContentStateAdapterConfig;
   private subscribed = false;
 
+  // Deduplication: Track recently processed content to prevent rapid-fire handling
+  // Key: "contentType:entityId", Value: timestamp of last processing
+  private recentlyProcessed: Map<string, number> = new Map();
+  private static readonly DEDUP_WINDOW_MS = 500; // Skip duplicates within 500ms
+
   constructor(
     getUserState: () => UserStateEntity | undefined,
     config: PositronContentStateAdapterConfig
@@ -113,11 +118,43 @@ export class PositronContentStateAdapter {
   }
 
   /**
+   * Check if this content was recently processed (deduplication)
+   */
+  private isDuplicateEvent(contentType: string, entityId?: string): boolean {
+    const key = `${contentType}:${entityId || 'singleton'}`;
+    const lastProcessed = this.recentlyProcessed.get(key);
+    const now = Date.now();
+
+    if (lastProcessed && (now - lastProcessed) < PositronContentStateAdapter.DEDUP_WINDOW_MS) {
+      return true; // Skip - processed too recently
+    }
+
+    // Update timestamp
+    this.recentlyProcessed.set(key, now);
+
+    // Clean up old entries (keep map small)
+    if (this.recentlyProcessed.size > 50) {
+      const cutoff = now - PositronContentStateAdapter.DEDUP_WINDOW_MS;
+      for (const [k, v] of this.recentlyProcessed) {
+        if (v < cutoff) this.recentlyProcessed.delete(k);
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Handle content:opened event
    * Adds new content item to local state without DB refetch
    */
   private handleContentOpened(eventData: unknown): void {
     const data = eventData as ContentOpenedEvent & { setAsCurrent?: boolean };
+
+    // DEDUPLICATION: Skip if we just processed this same content
+    if (this.isDuplicateEvent(data.contentType, data.entityId)) {
+      return;
+    }
+
     const userState = this.getUserState();
 
     // Fallback if state not available

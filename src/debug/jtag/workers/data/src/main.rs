@@ -140,30 +140,14 @@ fn main() -> std::io::Result<()> {
 // ============================================================================
 
 /// Get database path from environment or use default
+/// Single source of truth: $HOME/.continuum/data/database.sqlite
 fn get_database_path() -> String {
-    // Try environment variable first
+    // Try environment variable first (matches TypeScript ServerConfig)
     if let Ok(db_path) = env::var("CONTINUUM_DB_PATH") {
         return db_path;
     }
 
-    // Try to find database in .continuum directory structure
+    // Default path: $HOME/.continuum/data/database.sqlite
     let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let continuum_dir = format!("{home_dir}/.continuum/sessions");
-
-    // Look for continuum.db in session directories
-    if let Ok(entries) = fs::read_dir(&continuum_dir) {
-        for entry in entries.flatten() {
-            let session_path = entry.path();
-            if session_path.is_dir() {
-                // Check for shared/databases/continuum.db
-                let db_path = session_path.join("shared/databases/continuum.db");
-                if db_path.exists() {
-                    return db_path.to_string_lossy().to_string();
-                }
-            }
-        }
-    }
-
-    // Fallback to JTAG default database path
-    ".continuum/jtag/data/database.sqlite".to_string()
+    format!("{home_dir}/.continuum/data/database.sqlite")
 }

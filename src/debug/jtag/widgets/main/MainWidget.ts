@@ -35,6 +35,11 @@ export class MainWidget extends BaseWidget {
   private currentViewType: string | null = null;
   private currentViewEntityId: string | undefined = undefined;
 
+  // Widget cache - persist widgets instead of destroying them on tab switch
+  // Key: widget tag name (e.g., 'chat-widget', 'settings-widget')
+  // Value: the cached widget element
+  private widgetCache = new Map<string, HTMLElement>();
+
   constructor() {
     super({
       widgetName: 'MainWidget',
@@ -318,6 +323,12 @@ export class MainWidget extends BaseWidget {
 
   /**
    * Switch content view to render the appropriate widget
+   *
+   * NEW ARCHITECTURE: Widget caching with hide/show instead of destroy/recreate
+   * - Widgets are created once and cached
+   * - Tab switching = hide old widget, show new widget (instant)
+   * - State changes via direct method call, NOT attribute setting
+   *
    * NOTE: Does NOT emit ROOM_SELECTED - caller is responsible for that to avoid loops
    * Emits RIGHT_PANEL_CONFIGURE to update right panel based on content type's layout
    */
@@ -327,36 +338,67 @@ export class MainWidget extends BaseWidget {
       return; // Already showing this exact content
     }
 
-    const contentView = this.shadowRoot?.querySelector('.content-view');
+    const contentView = this.shadowRoot?.querySelector('.content-view') as HTMLElement;
     if (!contentView) return;
 
     const widgetTag = getWidgetForType(contentType);
-    const existingWidget = contentView.querySelector(widgetTag);
 
-    // OPTIMIZATION: If same widget type already exists, just update its entity attribute
-    // This avoids expensive widget reconstruction when switching between rooms
-    const canReuse = existingWidget && this.currentViewType === contentType;
+    // Update tracking state
+    this.currentViewType = contentType;
+    this.currentViewEntityId = entityId;
 
-    if (canReuse) {
-      // Reuse existing widget - just update attributes
-      this.currentViewEntityId = entityId;
-      if (entityId) {
-        existingWidget.setAttribute('data-entity-id', entityId);
-        existingWidget.setAttribute('room', entityId);
-      } else {
-        existingWidget.removeAttribute('data-entity-id');
-        existingWidget.removeAttribute('room');
+    // === HIDE all cached widgets and notify them ===
+    this.widgetCache.forEach((widget, tag) => {
+      if (widget.style.display !== 'none') {
+        widget.style.display = 'none';
+        // Notify widget it's being deactivated (if it supports the method)
+        if ('onDeactivate' in widget && typeof (widget as any).onDeactivate === 'function') {
+          (widget as any).onDeactivate();
+        }
+        this.verbose() && console.log(`🎯 MainPanel: Deactivated ${tag}`);
       }
+    });
+
+    // === GET OR CREATE widget ===
+    let widget = this.widgetCache.get(widgetTag);
+
+    if (!widget) {
+      // Check if widget already exists in DOM (from template)
+      const existingInDom = contentView.querySelector(widgetTag) as HTMLElement;
+      if (existingInDom) {
+        // Use existing widget from template
+        widget = existingInDom;
+        this.widgetCache.set(widgetTag, widget);
+        this.verbose() && console.log(`🎯 MainPanel: Cached existing ${widgetTag} from template`);
+      } else {
+        // First time seeing this widget type - create and cache it
+        widget = document.createElement(widgetTag);
+        widget.style.display = 'none'; // Start hidden
+        contentView.appendChild(widget);
+        this.widgetCache.set(widgetTag, widget);
+        this.verbose() && console.log(`🎯 MainPanel: Created and cached ${widgetTag}`);
+      }
+    }
+
+    // === ACTIVATE widget (show + notify) ===
+    widget.style.display = '';
+
+    // Notify widget of entity change via method call (NOT attribute)
+    // This avoids triggering attributeChangedCallback which causes full re-renders
+    if ('onActivate' in widget && typeof (widget as any).onActivate === 'function') {
+      // New pattern: widgets implement onActivate(entityId) for state changes
+      (widget as any).onActivate(entityId);
+    } else if ('setEntityId' in widget && typeof (widget as any).setEntityId === 'function') {
+      // Fallback: widgets implement setEntityId(entityId)
+      (widget as any).setEntityId(entityId);
     } else {
-      // Different widget type - need full replacement
-      this.currentViewType = contentType;
-      this.currentViewEntityId = entityId;
-
-      const widgetHtml = entityId
-        ? `<${widgetTag} data-entity-id="${entityId}" room="${entityId}"></${widgetTag}>`
-        : `<${widgetTag}></${widgetTag}>`;
-
-      contentView.innerHTML = widgetHtml;
+      // Legacy fallback: set attribute (will trigger attributeChangedCallback)
+      // TODO: Remove once all widgets implement onActivate()
+      if (entityId) {
+        widget.setAttribute('entity-id', entityId);
+      } else {
+        widget.removeAttribute('entity-id');
+      }
     }
 
     // Emit right panel configuration based on content type's layout
