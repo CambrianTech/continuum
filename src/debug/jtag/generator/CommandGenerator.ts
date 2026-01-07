@@ -161,8 +161,14 @@ function generateExampleSpec(): CommandSpec {
   };
 }
 
-// CLI execution
-if (require.main === module) {
+// CLI execution - only runs when invoked directly as CommandGenerator, not when bundled
+// The __filename check ensures this doesn't run in bundled contexts
+const isDirectExecution = require.main === module &&
+  __filename.includes('CommandGenerator') &&
+  !process.argv[1]?.includes('cli-bundle') &&
+  !process.argv[1]?.includes('cli.js');
+
+if (isDirectExecution) {
   const args = process.argv.slice(2);
 
   if (args.length === 0) {

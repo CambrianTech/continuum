@@ -1,10 +1,19 @@
 #!/bin/bash
 # JTAG Terminal Portal - Pure CLI client (no server startup)
+# Uses pre-bundled CLI for fast startup (~0.6s vs ~2.6s with tsx)
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLE="$SCRIPT_DIR/dist/cli-bundle.js"
 
 # Check for --verbose flag to show connection message
 if [[ "$*" == *"--verbose"* ]]; then
   echo "🔗 JTAG CLI - Connecting to existing server..."
 fi
 
-# Pure client - just connect to existing server
-npx tsx cli.ts "$@"
+# Use bundled CLI if available (faster), otherwise fall back to tsx
+if [[ -f "$BUNDLE" ]]; then
+  node "$BUNDLE" "$@"
+else
+  echo "⚠️ Bundle not found. Using slower tsx (run: npm run build:cli)" >&2
+  npx tsx cli.ts "$@"
+fi
