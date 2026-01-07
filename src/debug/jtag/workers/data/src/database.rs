@@ -6,7 +6,6 @@
 /// - SQL statement execution (INSERT/UPDATE/DELETE - returns changes)
 /// - Parameter binding (JSON values to SQL types)
 /// - Error handling with retries
-
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::ToSql;
@@ -14,7 +13,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::messages::{SqlQueryPayload, SqlQueryResult, SqlExecutePayload, SqlExecuteResult};
+use crate::messages::{SqlExecutePayload, SqlExecuteResult, SqlQueryPayload, SqlQueryResult};
 
 // ============================================================================
 // Connection Pool
@@ -24,15 +23,14 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 
 /// Create a new database connection pool
 pub fn create_pool<P: AsRef<Path>>(db_path: P) -> Result<DbPool, r2d2::Error> {
-    let manager = SqliteConnectionManager::file(db_path)
-        .with_init(|conn| {
-            // Use DELETE mode (matches TypeScript implementation)
-            // Do NOT convert to WAL - keep database in original journal_mode
-            conn.execute_batch(
-                "PRAGMA busy_timeout=30000;
+    let manager = SqliteConnectionManager::file(db_path).with_init(|conn| {
+        // Use DELETE mode (matches TypeScript implementation)
+        // Do NOT convert to WAL - keep database in original journal_mode
+        conn.execute_batch(
+            "PRAGMA busy_timeout=30000;
                  PRAGMA synchronous=NORMAL;",
-            )
-        });
+        )
+    });
 
     Pool::builder()
         .max_size(10) // 10 concurrent connections
@@ -74,12 +72,12 @@ fn json_value_to_sql(value: &Value) -> Box<dyn ToSql> {
 pub fn execute_query(pool: &DbPool, payload: SqlQueryPayload) -> Result<SqlQueryResult, String> {
     let conn = pool
         .get()
-        .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
+        .map_err(|e| format!("Failed to get connection from pool: {e}"))?;
 
     // Prepare statement
     let mut stmt = conn
         .prepare(&payload.sql)
-        .map_err(|e| format!("Prepare query failed: {}", e))?;
+        .map_err(|e| format!("Prepare query failed: {e}"))?;
 
     // Convert JSON params to SQLite params
     let sql_params: Vec<Box<dyn ToSql>> = payload
@@ -126,14 +124,14 @@ pub fn execute_query(pool: &DbPool, payload: SqlQueryPayload) -> Result<SqlQuery
 
             Ok(Value::Object(obj))
         })
-        .map_err(|e| format!("Query execution failed: {}", e))?;
+        .map_err(|e| format!("Query execution failed: {e}"))?;
 
     // Collect all rows
     let mut result_rows = Vec::new();
     for row_result in rows {
         match row_result {
             Ok(row_obj) => result_rows.push(row_obj),
-            Err(e) => eprintln!("⚠️  Row fetch error: {}", e),
+            Err(e) => eprintln!("⚠️  Row fetch error: {e}"),
         }
     }
 
@@ -147,7 +145,7 @@ pub fn execute_statement(
 ) -> Result<SqlExecuteResult, String> {
     let conn = pool
         .get()
-        .map_err(|e| format!("Failed to get connection from pool: {}", e))?;
+        .map_err(|e| format!("Failed to get connection from pool: {e}"))?;
 
     // Convert JSON params to SQLite params
     let sql_params: Vec<Box<dyn ToSql>> = payload
@@ -165,7 +163,7 @@ pub fn execute_statement(
     // Execute statement
     let changes = conn
         .execute(&payload.sql, params_refs.as_slice())
-        .map_err(|e| format!("Execute failed: {}", e))?;
+        .map_err(|e| format!("Execute failed: {e}"))?;
 
     // Get last insert ID if applicable
     let last_insert_id = if payload.sql.trim().to_uppercase().starts_with("INSERT") {

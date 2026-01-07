@@ -19,7 +19,6 @@
 /// | JSON header \n | raw f32 bytes |
 /// | {"type":"binary","length":1536,"dtype":"f32","shape":[384],"batchSize":1} |
 /// ```
-
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
@@ -146,35 +145,42 @@ fn parse_model_name(name: &str) -> Result<EmbeddingModel, String> {
         "bgelargeenv15" | "bge-large-en-v1.5" => Ok(EmbeddingModel::BGELargeENV15),
         "nomicembedtextv1" | "nomic-embed-text-v1" => Ok(EmbeddingModel::NomicEmbedTextV1),
         "nomicembedtextv15" | "nomic-embed-text-v1.5" => Ok(EmbeddingModel::NomicEmbedTextV15),
-        _ => Err(format!("Unknown model: {}. Use 'embedding/model/list' to see available models.", name)),
+        _ => Err(format!(
+            "Unknown model: {name}. Use 'embedding/model/list' to see available models."
+        )),
     }
 }
 
 /// Get or load a model by name
-fn get_or_load_model(model_name: &str) -> Result<Arc<Mutex<HashMap<String, TextEmbedding>>>, String> {
+fn get_or_load_model(
+    model_name: &str,
+) -> Result<Arc<Mutex<HashMap<String, TextEmbedding>>>, String> {
     let cache = get_model_cache();
-    let mut models = cache.lock().map_err(|e| format!("Lock error: {}", e))?;
+    let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
 
     if !models.contains_key(model_name) {
-        println!("📥 Loading model: {} (first use - may download)", model_name);
+        println!("📥 Loading model: {model_name} (first use - may download)");
         let start = Instant::now();
 
         let model_enum = parse_model_name(model_name)?;
         let cache_dir = get_cache_dir();
 
         // Ensure cache directory exists
-        fs::create_dir_all(&cache_dir)
-            .map_err(|e| format!("Failed to create cache dir: {}", e))?;
+        fs::create_dir_all(&cache_dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
 
         let model = TextEmbedding::try_new(
             InitOptions::new(model_enum)
                 .with_cache_dir(cache_dir)
                 .with_show_download_progress(true),
         )
-        .map_err(|e| format!("Failed to load model: {}", e))?;
+        .map_err(|e| format!("Failed to load model: {e}"))?;
 
         let elapsed = start.elapsed();
-        println!("✅ Model loaded in {:.2}s: {}", elapsed.as_secs_f64(), model_name);
+        println!(
+            "✅ Model loaded in {:.2}s: {}",
+            elapsed.as_secs_f64(),
+            model_name
+        );
 
         models.insert(model_name.to_string(), model);
     }
@@ -349,7 +355,7 @@ fn handle_request(request: Request, start_time: Instant) -> Response {
                     data: serde_json::to_value(info).unwrap_or(json!({})),
                 },
                 None => Response::Error {
-                    message: format!("Unknown model: {}", model),
+                    message: format!("Unknown model: {model}"),
                 },
             }
         }
@@ -360,13 +366,13 @@ fn handle_request(request: Request, start_time: Instant) -> Response {
                 Ok(m) => m,
                 Err(e) => {
                     return Response::Error {
-                        message: format!("Lock error: {}", e),
+                        message: format!("Lock error: {e}"),
                     }
                 }
             };
 
             if models.remove(&model).is_some() {
-                println!("🗑️  Unloaded model: {}", model);
+                println!("🗑️  Unloaded model: {model}");
                 Response::Ok {
                     data: json!({
                         "model": model,
@@ -375,7 +381,7 @@ fn handle_request(request: Request, start_time: Instant) -> Response {
                 }
             } else {
                 Response::Error {
-                    message: format!("Model not loaded: {}", model),
+                    message: format!("Model not loaded: {model}"),
                 }
             }
         }
@@ -402,19 +408,17 @@ fn handle_generate_binary<W: Write>(
     // Get or load model
     let cache = get_or_load_model(&model)?;
 
-    let models = cache
-        .lock()
-        .map_err(|e| format!("Lock error: {}", e))?;
+    let models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
 
     let embedding_model = models
         .get(&model)
-        .ok_or_else(|| format!("Model not loaded: {}", model))?;
+        .ok_or_else(|| format!("Model not loaded: {model}"))?;
 
     // Generate embeddings
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
     let embeddings = embedding_model
         .embed(text_refs, None)
-        .map_err(|e| format!("Embedding generation failed: {}", e))?;
+        .map_err(|e| format!("Embedding generation failed: {e}"))?;
 
     let duration_ms = gen_start.elapsed().as_millis() as u64;
     let dimensions = embeddings.first().map(|e| e.len()).unwrap_or(0);
@@ -428,7 +432,7 @@ fn handle_generate_binary<W: Write>(
 
     // Write BINARY response - NO JSON SERIALIZATION of embeddings
     write_binary_embeddings(writer, &embeddings, &model, duration_ms)
-        .map_err(|e| format!("Failed to write binary response: {}", e))
+        .map_err(|e| format!("Failed to write binary response: {e}"))
 }
 
 // ============================================================================
@@ -451,10 +455,10 @@ fn handle_connection(stream: UnixStream, start_time: Instant) -> std::io::Result
             Ok(req) => req,
             Err(e) => {
                 let error_response = Response::Error {
-                    message: format!("Parse error: {}", e),
+                    message: format!("Parse error: {e}"),
                 };
                 let response_json = serde_json::to_string(&error_response)?;
-                writeln!(writer, "{}", response_json)?;
+                writeln!(writer, "{response_json}")?;
                 writer.flush()?;
                 continue;
             }
@@ -468,7 +472,7 @@ fn handle_connection(stream: UnixStream, start_time: Instant) -> std::io::Result
                     // Error response is still JSON
                     let error_response = Response::Error { message: e };
                     let response_json = serde_json::to_string(&error_response)?;
-                    writeln!(writer, "{}", response_json)?;
+                    writeln!(writer, "{response_json}")?;
                     writer.flush()?;
                     continue;
                 }
@@ -480,7 +484,7 @@ fn handle_connection(stream: UnixStream, start_time: Instant) -> std::io::Result
 
         // Send JSON response
         let response_json = serde_json::to_string(&response)?;
-        writeln!(writer, "{}", response_json)?;
+        writeln!(writer, "{response_json}")?;
         writer.flush()?;
     }
 
@@ -508,7 +512,7 @@ fn main() -> std::io::Result<()> {
     }
 
     println!("🦀 Embedding Worker starting...");
-    println!("📡 Socket: {}", socket_path);
+    println!("📡 Socket: {socket_path}");
     println!("📁 Model cache: {:?}", get_cache_dir());
     println!();
 
@@ -516,7 +520,7 @@ fn main() -> std::io::Result<()> {
     println!("📥 Pre-loading default model (AllMiniLML6V2)...");
     match get_or_load_model("AllMiniLML6V2") {
         Ok(_) => println!("✅ Default model ready"),
-        Err(e) => println!("⚠️  Failed to pre-load default model: {}", e),
+        Err(e) => println!("⚠️  Failed to pre-load default model: {e}"),
     }
     println!();
 
@@ -532,11 +536,11 @@ fn main() -> std::io::Result<()> {
                 let start = start_time;
                 thread::spawn(move || {
                     if let Err(e) = handle_connection(stream, start) {
-                        eprintln!("Connection error: {}", e);
+                        eprintln!("Connection error: {e}");
                     }
                 });
             }
-            Err(e) => eprintln!("Accept error: {}", e),
+            Err(e) => eprintln!("Accept error: {e}"),
         }
     }
 

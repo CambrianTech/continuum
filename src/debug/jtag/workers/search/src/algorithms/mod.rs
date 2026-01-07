@@ -5,13 +5,12 @@
 /// - Named parameters with get/set
 /// - Polymorphism-based, not template-heavy
 /// - Serializable (save/load params)
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub mod bow;
 pub mod bm25;
+pub mod bow;
 pub mod cosine;
 
 // ============================================================================
@@ -92,7 +91,7 @@ impl AlgorithmRegistry {
     }
 
     pub fn register(&mut self, name: &'static str, factory: AlgorithmFactory) {
-        println!("📝 Registered algorithm factory: {}", name);
+        println!("📝 Registered algorithm factory: {name}");
         self.factories.insert(name, factory);
     }
 
@@ -109,7 +108,7 @@ impl AlgorithmRegistry {
     ) -> Result<Box<dyn SearchAlgorithm>, String> {
         let mut algo = self
             .create(name)
-            .ok_or_else(|| format!("Unknown algorithm: {}", name))?;
+            .ok_or_else(|| format!("Unknown algorithm: {name}"))?;
 
         for (key, value) in params {
             algo.set_param(key, value.clone())?;

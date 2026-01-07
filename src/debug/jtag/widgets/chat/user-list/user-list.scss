@@ -3,6 +3,7 @@
  * Discord/Teams style user list with AI status indicators
  */
 
+@use "sass:map";
 @use '../../shared/styles/variables' as *;
 
 // Hide intelligence bars for cleaner technical aesthetic
@@ -214,9 +215,9 @@ $ai-statuses: (
 
 @each $status, $props in $ai-statuses {
   .user-item[data-ai-status="#{$status}"] .user-avatar::before {
-    --comet-color: #{map-get($props, color)};
+    --comet-color: #{map.get($props, color)};
     opacity: 1;
-    animation: comet-orbit #{map-get($props, speed)} linear infinite;
+    animation: comet-orbit #{map.get($props, speed)} linear infinite;
   }
 }
 

@@ -26,7 +26,7 @@ const verbose = () => {
     return (window as any).JTAG_VERBOSE === true;
   }
   if (typeof process !== 'undefined') {
-    return process.env.JTAG_VERBOSE === 'true';
+    return process.env.JTAG_VERBOSE === '1';
   }
   return false;
 };
@@ -151,10 +151,11 @@ export class Events {
           verbose() && console.log(`✅ Events: Emitted DOM-only event ${eventName}`);
           return { success: true };
         } else {
-          // Server runtime without router is an error
-          const error = `Events: No router found for context ${context.environment}/${context.uuid}`;
-          console.error(`❌ ${error}`);
-          return { success: false, error };
+          // Server runtime without router - dispatch to local listeners only
+          // This is NOT an error - many events are local-only (no cross-process routing needed)
+          this.checkWildcardSubscriptions(eventName, eventData);
+          verbose() && console.log(`📡 Events: Local-only event ${eventName} (no router for ${context.environment}/${context.uuid.substring(0, 8)}...)`);
+          return { success: true };
         }
       }
 

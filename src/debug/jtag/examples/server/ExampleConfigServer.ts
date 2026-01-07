@@ -74,7 +74,7 @@ class ExampleConfigServerImpl {
         }
       };
 
-      if (process.env.JTAG_VERBOSE === 'true') {
+      if (process.env.JTAG_VERBOSE === '1') {
         console.log(`📋 ExampleConfigServer: Loaded - active: ${this.config.active_example}`);
       }
 
@@ -108,7 +108,7 @@ class ExampleConfigServerImpl {
    */
   getActivePorts(): ExamplePorts {
     const example = this.getActiveExample();
-    if (process.env.JTAG_VERBOSE === 'true') {
+    if (process.env.JTAG_VERBOSE === '1') {
       console.log(`📋 getActivePorts:`, JSON.stringify(example.ports, null, 2));
     }
     return example.ports;

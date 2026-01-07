@@ -43,14 +43,9 @@ enum Response {
         queue_position: usize,
     },
     #[serde(rename = "complete")]
-    Complete {
-        task_id: String,
-        rows_found: usize,
-    },
+    Complete { task_id: String, rows_found: usize },
     #[serde(rename = "pong")]
-    Pong {
-        uptime_seconds: u64,
-    },
+    Pong { uptime_seconds: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -76,10 +71,14 @@ impl CommandClient {
     }
 
     /// Execute a TypeScript command and get result
-    fn execute(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn execute(
+        &self,
+        command: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         // Connect to TypeScript command router
         let stream = UnixStream::connect(&self.socket_path)
-            .map_err(|e| format!("Failed to connect to command router: {}", e))?;
+            .map_err(|e| format!("Failed to connect to command router: {e}"))?;
 
         let mut reader = BufReader::new(&stream);
         let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
@@ -91,15 +90,17 @@ impl CommandClient {
         });
 
         let request_line = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-        writeln!(writer, "{}", request_line).map_err(|e| e.to_string())?;
+        writeln!(writer, "{request_line}").map_err(|e| e.to_string())?;
         writer.flush().map_err(|e| e.to_string())?;
 
         // Read response
         let mut response_line = String::new();
-        reader.read_line(&mut response_line).map_err(|e| e.to_string())?;
+        reader
+            .read_line(&mut response_line)
+            .map_err(|e| e.to_string())?;
 
         let response: serde_json::Value = serde_json::from_str(&response_line)
-            .map_err(|e| format!("Failed to parse response: {}", e))?;
+            .map_err(|e| format!("Failed to parse response: {e}"))?;
 
         Ok(response)
     }
@@ -107,12 +108,16 @@ impl CommandClient {
     /// Get row count from collection (proves data command works)
     #[allow(dead_code)]
     fn get_row_count(&self, collection: &str) -> Result<usize, String> {
-        let result = self.execute("data/list", json!({
-            "collection": collection,
-            "limit": 0
-        }))?;
+        let result = self.execute(
+            "data/list",
+            json!({
+                "collection": collection,
+                "limit": 0
+            }),
+        )?;
 
-        let count = result.get("count")
+        let count = result
+            .get("count")
             .and_then(|v| v.as_u64())
             .ok_or_else(|| "Missing count in response".to_string())?;
 
@@ -127,7 +132,10 @@ impl CommandClient {
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 5 {
-        eprintln!("Usage: {} <worker-socket> <command-router-socket> <primary-db> <archive-db>", args[0]);
+        eprintln!(
+            "Usage: {} <worker-socket> <command-router-socket> <primary-db> <archive-db>",
+            args[0]
+        );
         eprintln!("Example: {} /tmp/archive-worker.sock /tmp/command-router.sock .continuum/jtag/data/database.sqlite .continuum/jtag/data/archive/database-001.sqlite", args[0]);
         std::process::exit(1);
     }
@@ -143,10 +151,10 @@ fn main() -> std::io::Result<()> {
     }
 
     println!("🦀 Archive Worker starting...");
-    println!("📡 Worker socket: {}", worker_socket);
-    println!("📡 Command router: {}", command_router_socket);
-    println!("📁 Primary DB: {}", primary_db);
-    println!("📁 Archive DB: {}", archive_db);
+    println!("📡 Worker socket: {worker_socket}");
+    println!("📡 Command router: {command_router_socket}");
+    println!("📁 Primary DB: {primary_db}");
+    println!("📁 Archive DB: {archive_db}");
 
     // Create command client for calling TypeScript data commands
     let command_client = Arc::new(CommandClient::new(command_router_socket.clone()));
@@ -168,8 +176,10 @@ fn main() -> std::io::Result<()> {
             // Archive rows using Commands.execute() via CommandRouterServer
             match archive_rows(&worker_command_client, &task) {
                 Ok(archived) => {
-                    println!("✅ Task {} complete: Archived {} rows from {}",
-                        task.task_id, archived, task.collection);
+                    println!(
+                        "✅ Task {} complete: Archived {} rows from {}",
+                        task.task_id, archived, task.collection
+                    );
 
                     // Remove from queue
                     let mut q = worker_queue.lock().unwrap();
@@ -195,11 +205,11 @@ fn main() -> std::io::Result<()> {
 
                 thread::spawn(move || {
                     if let Err(e) = handle_connection(stream, queue_clone, task_tx_clone) {
-                        eprintln!("Connection error: {}", e);
+                        eprintln!("Connection error: {e}");
                     }
                 });
             }
-            Err(e) => eprintln!("Accept error: {}", e),
+            Err(e) => eprintln!("Accept error: {e}"),
         }
     }
 
@@ -221,18 +231,26 @@ fn handle_connection(
     loop {
         let mut line = String::new();
         let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 { break; }
+        if bytes == 0 {
+            break;
+        }
 
         let request: Request = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Parse error: {}", e);
+                eprintln!("Parse error: {e}");
                 continue;
             }
         };
 
         let response = match request {
-            Request::Archive { task_id, collection, source_handle, dest_handle, batch_size } => {
+            Request::Archive {
+                task_id,
+                collection,
+                source_handle,
+                dest_handle,
+                batch_size,
+            } => {
                 let task = Task {
                     task_id: task_id.clone(),
                     collection,
@@ -263,7 +281,7 @@ fn handle_connection(
         };
 
         let response_json = serde_json::to_string(&response)?;
-        writeln!(writer, "{}", response_json)?;
+        writeln!(writer, "{response_json}")?;
         writer.flush()?;
     }
 
@@ -279,66 +297,81 @@ fn archive_rows(command_client: &CommandClient, task: &Task) -> Result<usize, St
 
     loop {
         // Get batch of rows from source via Commands.execute()
-        let list_result = command_client.execute("data/list", json!({
-            "collection": task.collection,
-            "dbHandle": task.source_handle,
-            "limit": task.batch_size,
-            "orderBy": [{"field": "created_at", "direction": "asc"}]
-        }))?;
+        let list_result = command_client.execute(
+            "data/list",
+            json!({
+                "collection": task.collection,
+                "dbHandle": task.source_handle,
+                "limit": task.batch_size,
+                "orderBy": [{"field": "created_at", "direction": "asc"}]
+            }),
+        )?;
 
-        let items = list_result.get("items")
+        let items = list_result
+            .get("items")
             .and_then(|v| v.as_array())
             .ok_or_else(|| "Missing items in response".to_string())?;
 
         if items.is_empty() {
-            break;  // No more rows to archive
+            break; // No more rows to archive
         }
 
         let batch_size = items.len();
-        println!("  📋 Batch: {} rows", batch_size);
+        println!("  📋 Batch: {batch_size} rows");
 
         // Copy-verify-delete for each row
         for row in items {
-            let id = row.get("id")
+            let id = row
+                .get("id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Missing id field".to_string())?;
 
             // 1. Copy to archive via Commands.execute()
-            command_client.execute("data/create", json!({
-                "collection": task.collection,
-                "dbHandle": task.dest_handle,
-                "data": row,
-                "suppressEvents": true
-            }))?;
+            command_client.execute(
+                "data/create",
+                json!({
+                    "collection": task.collection,
+                    "dbHandle": task.dest_handle,
+                    "data": row,
+                    "suppressEvents": true
+                }),
+            )?;
 
             // 2. Verify copied (read back from archive)
-            let verify_result = command_client.execute("data/list", json!({
-                "collection": task.collection,
-                "dbHandle": task.dest_handle,
-                "filter": {"id": id},
-                "limit": 1
-            }))?;
+            let verify_result = command_client.execute(
+                "data/list",
+                json!({
+                    "collection": task.collection,
+                    "dbHandle": task.dest_handle,
+                    "filter": {"id": id},
+                    "limit": 1
+                }),
+            )?;
 
-            let verified_items = verify_result.get("items")
+            let verified_items = verify_result
+                .get("items")
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| "Missing items in verify response".to_string())?;
 
             if verified_items.is_empty() {
-                return Err(format!("Failed to verify row {} in archive", id));
+                return Err(format!("Failed to verify row {id} in archive"));
             }
 
             // 3. Delete from primary via Commands.execute()
-            command_client.execute("data/delete", json!({
-                "collection": task.collection,
-                "dbHandle": task.source_handle,
-                "id": id,
-                "suppressEvents": true
-            }))?;
+            command_client.execute(
+                "data/delete",
+                json!({
+                    "collection": task.collection,
+                    "dbHandle": task.source_handle,
+                    "id": id,
+                    "suppressEvents": true
+                }),
+            )?;
 
             total_archived += 1;
         }
 
-        println!("  ✅ Archived {} rows (total: {})", batch_size, total_archived);
+        println!("  ✅ Archived {batch_size} rows (total: {total_archived})");
 
         // Check if we've archived enough (cap at batch size for now)
         if total_archived >= task.batch_size {

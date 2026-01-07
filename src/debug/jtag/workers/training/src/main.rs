@@ -34,14 +34,15 @@ use std::thread;
 
 fn main() -> std::io::Result<()> {
     // Initialize logger (connect to LoggerWorker)
-    let mut logger = LoggerClient::connect(
-        "/tmp/jtag-logger-worker.sock",
-        "TrainingWorker"
-    ).with_category("rust-workers/training".to_string());
+    let mut logger = LoggerClient::connect("/tmp/jtag-logger-worker.sock", "TrainingWorker")
+        .with_category("rust-workers/training".to_string());
 
     // Log startup
     logger.info("========================================");
-    logger.info(&format!("Training Worker starting - PID: {}", std::process::id()));
+    logger.info(&format!(
+        "Training Worker starting - PID: {}",
+        std::process::id()
+    ));
     logger.info(&format!("Start time: {}", chrono::Utc::now().to_rfc3339()));
     logger.info("========================================");
 
@@ -55,7 +56,7 @@ fn main() -> std::io::Result<()> {
     }
 
     let socket_path = &args[1];
-    logger.info(&format!("Socket path: {}", socket_path));
+    logger.info(&format!("Socket path: {socket_path}"));
 
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
@@ -64,7 +65,7 @@ fn main() -> std::io::Result<()> {
     }
 
     println!("🦀 Rust Training Worker starting...");
-    println!("📡 Listening on: {}", socket_path);
+    println!("📡 Listening on: {socket_path}");
 
     // Create shared state (stats)
     let stats = health::create_stats();
@@ -81,12 +82,14 @@ fn main() -> std::io::Result<()> {
     let mut conn_count = 0;
     for stream in listener.incoming() {
         conn_count += 1;
-        logger.info(&format!("Incoming connection #{}", conn_count));
+        logger.info(&format!("Incoming connection #{conn_count}"));
 
         match stream {
             Ok(stream) => {
                 println!("\n🔗 New connection from TypeScript (spawning thread)");
-                logger.info(&format!("Connection #{} accepted, spawning thread", conn_count));
+                logger.info(&format!(
+                    "Connection #{conn_count} accepted, spawning thread"
+                ));
 
                 // Increment connection counter
                 {
@@ -103,16 +106,16 @@ fn main() -> std::io::Result<()> {
                     // Note: Spawned threads don't have access to logger
                     // They use connection_handler's internal logging
                     if let Err(e) = connection_handler::handle_client(stream, stats_clone) {
-                        eprintln!("❌ Error handling client #{}: {}", conn_id, e);
+                        eprintln!("❌ Error handling client #{conn_id}: {e}");
                     }
-                    println!("✅ Connection #{} complete", conn_id);
+                    println!("✅ Connection #{conn_id} complete");
                 });
 
-                logger.info(&format!("Thread spawned for connection #{}", conn_count));
+                logger.info(&format!("Thread spawned for connection #{conn_count}"));
             }
             Err(e) => {
-                logger.error(&format!("Connection #{} accept failed: {}", conn_count, e));
-                eprintln!("❌ Connection error: {}", e);
+                logger.error(&format!("Connection #{conn_count} accept failed: {e}"));
+                eprintln!("❌ Connection error: {e}");
             }
         }
     }

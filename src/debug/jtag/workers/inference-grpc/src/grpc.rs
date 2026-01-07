@@ -1,32 +1,32 @@
+use log::info;
+use std::sync::atomic::{AtomicU64, Ordering};
 /**
  * gRPC Service Implementation
  *
  * Implements the Inference trait for the gRPC server.
  */
-
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::{mpsc, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use log::info;
 
+use crate::adapter_registry;
 use crate::inference::inference_server::Inference;
 use crate::inference::{
-    generate_response, Complete, GenerateRequest, GenerateResponse, PingRequest, PingResponse,
-    LoadModelRequest, LoadModelResponse, UnloadModelRequest, UnloadModelResponse,
-    ListModelsRequest, ListModelsResponse, ModelInfo,
-    LoadAdapterRequest, LoadAdapterResponse, UnloadAdapterRequest, UnloadAdapterResponse,
-    ListAdaptersRequest, ListAdaptersResponse, AdapterInfo,
-    DownloadAdapterRequest, DownloadAdapterResponse, AdapterMetadata,
-    ApplyGenomeRequest, ApplyGenomeResponse,
-    StatusRequest, StatusResponse,
+    generate_response, AdapterInfo, AdapterMetadata, ApplyGenomeRequest, ApplyGenomeResponse,
+    Complete, DownloadAdapterRequest, DownloadAdapterResponse, GenerateRequest, GenerateResponse,
+    ListAdaptersRequest, ListAdaptersResponse, ListModelsRequest, ListModelsResponse,
+    LoadAdapterRequest, LoadAdapterResponse, LoadModelRequest, LoadModelResponse, ModelInfo,
+    PingRequest, PingResponse, StatusRequest, StatusResponse, UnloadAdapterRequest,
+    UnloadAdapterResponse, UnloadModelRequest, UnloadModelResponse,
 };
-use crate::model::{ModelState, load_model_by_id, generate_text, rebuild_with_lora_from_paths, rebuild_with_stacked_lora, GenomeAdapter};
-use crate::quantized_model::{QuantizedModelState, generate_text_quantized};
 use crate::lora::{self, LoadedAdapter};
-use crate::adapter_registry;
+use crate::model::{
+    generate_text, load_model_by_id, rebuild_with_lora_from_paths, rebuild_with_stacked_lora,
+    GenomeAdapter, ModelState,
+};
+use crate::quantized_model::{generate_text_quantized, QuantizedModelState};
 
 /// Server statistics tracking
 pub struct ServerStats {
@@ -56,6 +56,7 @@ pub struct InferenceService {
 
 impl InferenceService {
     /// Create service with full-precision model only
+    #[allow(dead_code)]
     pub fn new(state: Option<ModelState>) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
@@ -66,7 +67,10 @@ impl InferenceService {
     }
 
     /// Create service with either full-precision or quantized model
-    pub fn new_with_quantized(state: Option<ModelState>, quantized: Option<QuantizedModelState>) -> Self {
+    pub fn new_with_quantized(
+        state: Option<ModelState>,
+        quantized: Option<QuantizedModelState>,
+    ) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
             quantized_state: Arc::new(RwLock::new(quantized)),
@@ -88,7 +92,11 @@ impl Inference for InferenceService {
         let model_loaded = state.is_some();
 
         Ok(Response::new(PingResponse {
-            message: if model_loaded { "pong (model loaded)".to_string() } else { "pong (no model)".to_string() },
+            message: if model_loaded {
+                "pong (model loaded)".to_string()
+            } else {
+                "pong (no model)".to_string()
+            },
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -106,13 +114,23 @@ impl Inference for InferenceService {
         let model_id = req.model_id;
         let prompt = req.prompt;
         let max_tokens = req.max_tokens.max(10) as usize;
-        let temperature = if req.temperature > 0.0 { req.temperature } else { 0.7 };
+        let temperature = if req.temperature > 0.0 {
+            req.temperature
+        } else {
+            0.7
+        };
 
         // Check if we're using quantized model
         let is_quantized = self.quantized_state.read().await.is_some();
 
-        info!("🔮 Generate: model={}, prompt={} chars, max_tokens={}, temp={:.2}, quantized={}",
-            model_id, prompt.len(), max_tokens, temperature, is_quantized);
+        info!(
+            "🔮 Generate: model={}, prompt={} chars, max_tokens={}, temp={:.2}, quantized={}",
+            model_id,
+            prompt.len(),
+            max_tokens,
+            temperature,
+            is_quantized
+        );
 
         let (tx, rx) = mpsc::channel(32);
         let state_arc = self.state.clone();
@@ -131,7 +149,7 @@ impl Inference for InferenceService {
                     Some(q_state) => {
                         generate_text_quantized(q_state, &prompt, max_tokens, temperature)
                     }
-                    None => Err("Quantized model not available".to_string())
+                    None => Err("Quantized model not available".to_string()),
                 }
             } else {
                 let mut state_guard = state_arc.write().await;
@@ -139,33 +157,27 @@ impl Inference for InferenceService {
                     Some(model_state) => {
                         generate_text(model_state, &prompt, max_tokens, temperature)
                     }
-                    None => {
-                        Err("Model not loaded".to_string())
-                    }
+                    None => Err("Model not loaded".to_string()),
                 }
             };
 
             let duration = start.elapsed().as_millis() as i32;
 
             let response = match result {
-                Ok((text, tokens)) => {
-                    GenerateResponse {
-                        response: Some(generate_response::Response::Complete(Complete {
-                            text,
-                            tokens: tokens as i32,
-                            duration_ms: duration,
-                        })),
-                    }
-                }
-                Err(e) => {
-                    GenerateResponse {
-                        response: Some(generate_response::Response::Complete(Complete {
-                            text: format!("ERROR: {}", e),
-                            tokens: 0,
-                            duration_ms: duration,
-                        })),
-                    }
-                }
+                Ok((text, tokens)) => GenerateResponse {
+                    response: Some(generate_response::Response::Complete(Complete {
+                        text,
+                        tokens: tokens as i32,
+                        duration_ms: duration,
+                    })),
+                },
+                Err(e) => GenerateResponse {
+                    response: Some(generate_response::Response::Complete(Complete {
+                        text: format!("ERROR: {e}"),
+                        tokens: 0,
+                        duration_ms: duration,
+                    })),
+                },
             };
 
             stats.requests_pending.fetch_sub(1, Ordering::SeqCst);
@@ -174,7 +186,7 @@ impl Inference for InferenceService {
             if tx.send(Ok(response)).await.is_err() {
                 info!("⚠️ Failed to send response, client gone");
             } else {
-                info!("✅ Response sent ({}ms)", duration);
+                info!("✅ Response sent ({duration}ms)");
             }
         });
 
@@ -192,12 +204,10 @@ impl Inference for InferenceService {
         let req = request.into_inner();
         let model_id = req.model_id;
 
-        info!("📥 LoadModel: {}", model_id);
+        info!("📥 LoadModel: {model_id}");
         let start = Instant::now();
 
-        let result = tokio::task::spawn_blocking(move || {
-            load_model_by_id(&model_id)
-        }).await;
+        let result = tokio::task::spawn_blocking(move || load_model_by_id(&model_id)).await;
 
         match result {
             Ok(Ok(new_state)) => {
@@ -206,7 +216,7 @@ impl Inference for InferenceService {
                 let mut state = self.state.write().await;
                 *state = Some(new_state);
 
-                info!("✅ Model loaded in {}ms", load_time_ms);
+                info!("✅ Model loaded in {load_time_ms}ms");
                 Ok(Response::new(LoadModelResponse {
                     success: true,
                     error: String::new(),
@@ -215,7 +225,7 @@ impl Inference for InferenceService {
                 }))
             }
             Ok(Err(e)) => {
-                info!("❌ Failed to load model: {}", e);
+                info!("❌ Failed to load model: {e}");
                 Ok(Response::new(LoadModelResponse {
                     success: false,
                     error: e.to_string(),
@@ -224,10 +234,10 @@ impl Inference for InferenceService {
                 }))
             }
             Err(e) => {
-                info!("❌ Load task failed: {}", e);
+                info!("❌ Load task failed: {e}");
                 Ok(Response::new(LoadModelResponse {
                     success: false,
-                    error: format!("Task join error: {}", e),
+                    error: format!("Task join error: {e}"),
                     load_time_ms: 0,
                     memory_bytes: 0,
                 }))
@@ -291,7 +301,7 @@ impl Inference for InferenceService {
         let scale = if req.scale > 0.0 { req.scale } else { 1.0 };
         let merge = req.merge; // If true, merge weights into model
 
-        info!("📦 LoadAdapter: {} from {} (scale={}, merge={})", adapter_id, adapter_path, scale, merge);
+        info!("📦 LoadAdapter: {adapter_id} from {adapter_path} (scale={scale}, merge={merge})");
         let start = Instant::now();
 
         // Auto-switch from quantized to BF16 if LoRA requested
@@ -305,9 +315,8 @@ impl Inference for InferenceService {
             }
 
             // Load BF16 model
-            let load_result = tokio::task::spawn_blocking(|| {
-                crate::model::load_default_model()
-            }).await;
+            let load_result =
+                tokio::task::spawn_blocking(crate::model::load_default_model).await;
 
             match load_result {
                 Ok(Ok(new_state)) => {
@@ -316,17 +325,17 @@ impl Inference for InferenceService {
                     info!("✅ Switched to BF16 mode for LoRA support");
                 }
                 Ok(Err(e)) => {
-                    info!("❌ Failed to switch to BF16: {}", e);
+                    info!("❌ Failed to switch to BF16: {e}");
                     return Ok(Response::new(LoadAdapterResponse {
                         success: false,
-                        error: format!("Failed to switch to BF16 mode: {}", e),
+                        error: format!("Failed to switch to BF16 mode: {e}"),
                         load_time_ms: 0,
                     }));
                 }
                 Err(e) => {
                     return Ok(Response::new(LoadAdapterResponse {
                         success: false,
-                        error: format!("Mode switch task failed: {}", e),
+                        error: format!("Mode switch task failed: {e}"),
                         load_time_ms: 0,
                     }));
                 }
@@ -351,14 +360,16 @@ impl Inference for InferenceService {
         let adapter_path_clone = adapter_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             lora::load_lora_adapter(&adapter_path_clone, &device, dtype, scale)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(weights)) => {
                 let num_layers = weights.len();
 
                 // Store adapter metadata
-                let mut adapter = LoadedAdapter::new(adapter_id.clone(), adapter_path.clone(), scale);
+                let mut adapter =
+                    LoadedAdapter::new(adapter_id.clone(), adapter_path.clone(), scale);
                 adapter.weights = Some(weights.clone());
                 adapter.active = true;
 
@@ -379,8 +390,15 @@ impl Inference for InferenceService {
                         let weights_for_merge = weights.clone();
 
                         let rebuild_result = tokio::task::spawn_blocking(move || {
-                            rebuild_with_lora_from_paths(&weight_paths, &device, dtype, &config, &weights_for_merge)
-                        }).await;
+                            rebuild_with_lora_from_paths(
+                                &weight_paths,
+                                &device,
+                                dtype,
+                                &config,
+                                &weights_for_merge,
+                            )
+                        })
+                        .await;
 
                         match rebuild_result {
                             Ok(Ok(new_model)) => {
@@ -389,27 +407,32 @@ impl Inference for InferenceService {
                                 info!("  ✓ Model rebuilt with LoRA weights");
                             }
                             Ok(Err(e)) => {
-                                info!("  ⚠ Failed to rebuild model: {}", e);
+                                info!("  ⚠ Failed to rebuild model: {e}");
                             }
                             Err(e) => {
-                                info!("  ⚠ Rebuild task failed: {}", e);
+                                info!("  ⚠ Rebuild task failed: {e}");
                             }
                         }
                     }
                 }
 
                 let load_time_ms = start.elapsed().as_millis() as i64;
-                info!("✅ Adapter loaded: {} ({} layer pairs, {}ms)",
-                    adapter_id, num_layers, load_time_ms);
+                info!(
+                    "✅ Adapter loaded: {adapter_id} ({num_layers} layer pairs, {load_time_ms}ms)"
+                );
 
                 Ok(Response::new(LoadAdapterResponse {
                     success: true,
-                    error: format!("Loaded {} LoRA layer pairs{}", num_layers, if merge { " (merged)" } else { "" }),
+                    error: format!(
+                        "Loaded {} LoRA layer pairs{}",
+                        num_layers,
+                        if merge { " (merged)" } else { "" }
+                    ),
                     load_time_ms,
                 }))
             }
             Ok(Err(e)) => {
-                info!("❌ Failed to load adapter: {}", e);
+                info!("❌ Failed to load adapter: {e}");
                 Ok(Response::new(LoadAdapterResponse {
                     success: false,
                     error: e.to_string(),
@@ -417,10 +440,10 @@ impl Inference for InferenceService {
                 }))
             }
             Err(e) => {
-                info!("❌ Load task failed: {}", e);
+                info!("❌ Load task failed: {e}");
                 Ok(Response::new(LoadAdapterResponse {
                     success: false,
-                    error: format!("Task join error: {}", e),
+                    error: format!("Task join error: {e}"),
                     load_time_ms: 0,
                 }))
             }
@@ -432,7 +455,7 @@ impl Inference for InferenceService {
         request: Request<UnloadAdapterRequest>,
     ) -> Result<Response<UnloadAdapterResponse>, Status> {
         let adapter_id = request.into_inner().adapter_id;
-        info!("📦 UnloadAdapter: {}", adapter_id);
+        info!("📦 UnloadAdapter: {adapter_id}");
 
         let mut adapters = self.adapters.write().await;
         let initial_len = adapters.len();
@@ -447,7 +470,7 @@ impl Inference for InferenceService {
         } else {
             Ok(Response::new(UnloadAdapterResponse {
                 success: false,
-                error: format!("Adapter '{}' not found", adapter_id),
+                error: format!("Adapter '{adapter_id}' not found"),
             }))
         }
     }
@@ -458,16 +481,19 @@ impl Inference for InferenceService {
     ) -> Result<Response<ListAdaptersResponse>, Status> {
         let adapters = self.adapters.read().await;
 
-        let adapter_list: Vec<AdapterInfo> = adapters.iter().map(|a| {
-            AdapterInfo {
+        let adapter_list: Vec<AdapterInfo> = adapters
+            .iter()
+            .map(|a| AdapterInfo {
                 adapter_id: a.adapter_id.clone(),
                 path: a.path.clone(),
                 scale: a.scale,
                 active: a.active,
-            }
-        }).collect();
+            })
+            .collect();
 
-        Ok(Response::new(ListAdaptersResponse { adapters: adapter_list }))
+        Ok(Response::new(ListAdaptersResponse {
+            adapters: adapter_list,
+        }))
     }
 
     async fn download_adapter(
@@ -476,11 +502,23 @@ impl Inference for InferenceService {
     ) -> Result<Response<DownloadAdapterResponse>, Status> {
         let req = request.into_inner();
         let repo_id = req.repo_id;
-        let adapter_id = if req.adapter_id.is_empty() { repo_id.clone() } else { req.adapter_id };
-        let revision = if req.revision.is_empty() { None } else { Some(req.revision.as_str()) };
-        let scale_override = if req.scale > 0.0 { Some(req.scale) } else { None };
+        let adapter_id = if req.adapter_id.is_empty() {
+            repo_id.clone()
+        } else {
+            req.adapter_id
+        };
+        let revision = if req.revision.is_empty() {
+            None
+        } else {
+            Some(req.revision.as_str())
+        };
+        let scale_override = if req.scale > 0.0 {
+            Some(req.scale)
+        } else {
+            None
+        };
 
-        info!("📥 DownloadAdapter from HuggingFace: {}", repo_id);
+        info!("📥 DownloadAdapter from HuggingFace: {repo_id}");
         let start = Instant::now();
 
         // Auto-switch from quantized to BF16 if needed
@@ -490,9 +528,8 @@ impl Inference for InferenceService {
                 let mut q_state = self.quantized_state.write().await;
                 *q_state = None;
             }
-            let load_result = tokio::task::spawn_blocking(|| {
-                crate::model::load_default_model()
-            }).await;
+            let load_result =
+                tokio::task::spawn_blocking(crate::model::load_default_model).await;
             match load_result {
                 Ok(Ok(new_state)) => {
                     let mut state = self.state.write().await;
@@ -502,7 +539,7 @@ impl Inference for InferenceService {
                 Ok(Err(e)) => {
                     return Ok(Response::new(DownloadAdapterResponse {
                         success: false,
-                        error: format!("Failed to switch to BF16 mode: {}", e),
+                        error: format!("Failed to switch to BF16 mode: {e}"),
                         download_time_ms: 0,
                         adapter_id: String::new(),
                         local_path: String::new(),
@@ -512,7 +549,7 @@ impl Inference for InferenceService {
                 Err(e) => {
                     return Ok(Response::new(DownloadAdapterResponse {
                         success: false,
-                        error: format!("Mode switch task failed: {}", e),
+                        error: format!("Mode switch task failed: {e}"),
                         download_time_ms: 0,
                         adapter_id: String::new(),
                         local_path: String::new(),
@@ -542,12 +579,14 @@ impl Inference for InferenceService {
         let revision_owned = revision.map(|s| s.to_string());
         let result = tokio::task::spawn_blocking(move || {
             adapter_registry::download_adapter(&repo_id_clone, revision_owned.as_deref())
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(downloaded)) => {
                 // Calculate scale: override > config-based > 1.0
-                let config_scale = downloaded.config.lora_alpha as f64 / downloaded.config.r.max(1) as f64;
+                let config_scale =
+                    downloaded.config.lora_alpha as f64 / downloaded.config.r.max(1) as f64;
                 let final_scale = scale_override.unwrap_or(config_scale);
                 let weights_path_str = downloaded.weights_path.to_string_lossy().to_string();
 
@@ -558,7 +597,8 @@ impl Inference for InferenceService {
                     None => {
                         return Ok(Response::new(DownloadAdapterResponse {
                             success: false,
-                            error: "Downloaded but model unloaded before weight parsing".to_string(),
+                            error: "Downloaded but model unloaded before weight parsing"
+                                .to_string(),
                             download_time_ms: start.elapsed().as_millis() as i64,
                             adapter_id: String::new(),
                             local_path: weights_path_str,
@@ -572,7 +612,8 @@ impl Inference for InferenceService {
                 let path_clone = weights_path_str.clone();
                 let weights_result = tokio::task::spawn_blocking(move || {
                     lora::load_lora_adapter(&path_clone, &device, dtype, final_scale)
-                }).await;
+                })
+                .await;
 
                 match weights_result {
                     Ok(Ok(weights)) => {
@@ -611,10 +652,10 @@ impl Inference for InferenceService {
                         }))
                     }
                     Ok(Err(e)) => {
-                        info!("❌ Failed to parse adapter weights: {}", e);
+                        info!("❌ Failed to parse adapter weights: {e}");
                         Ok(Response::new(DownloadAdapterResponse {
                             success: false,
-                            error: format!("Downloaded but failed to parse weights: {}", e),
+                            error: format!("Downloaded but failed to parse weights: {e}"),
                             download_time_ms: start.elapsed().as_millis() as i64,
                             adapter_id: String::new(),
                             local_path: weights_path_str,
@@ -622,10 +663,10 @@ impl Inference for InferenceService {
                         }))
                     }
                     Err(e) => {
-                        info!("❌ Weight parsing task failed: {}", e);
+                        info!("❌ Weight parsing task failed: {e}");
                         Ok(Response::new(DownloadAdapterResponse {
                             success: false,
-                            error: format!("Task join error: {}", e),
+                            error: format!("Task join error: {e}"),
                             download_time_ms: start.elapsed().as_millis() as i64,
                             adapter_id: String::new(),
                             local_path: weights_path_str,
@@ -635,7 +676,7 @@ impl Inference for InferenceService {
                 }
             }
             Ok(Err(e)) => {
-                info!("❌ Failed to download adapter: {}", e);
+                info!("❌ Failed to download adapter: {e}");
                 Ok(Response::new(DownloadAdapterResponse {
                     success: false,
                     error: e.to_string(),
@@ -646,10 +687,10 @@ impl Inference for InferenceService {
                 }))
             }
             Err(e) => {
-                info!("❌ Download task failed: {}", e);
+                info!("❌ Download task failed: {e}");
                 Ok(Response::new(DownloadAdapterResponse {
                     success: false,
-                    error: format!("Task join error: {}", e),
+                    error: format!("Task join error: {e}"),
                     download_time_ms: 0,
                     adapter_id: String::new(),
                     local_path: String::new(),
@@ -680,9 +721,8 @@ impl Inference for InferenceService {
                 let mut q_state = self.quantized_state.write().await;
                 *q_state = None;
             }
-            let load_result = tokio::task::spawn_blocking(|| {
-                crate::model::load_default_model()
-            }).await;
+            let load_result =
+                tokio::task::spawn_blocking(crate::model::load_default_model).await;
             match load_result {
                 Ok(Ok(new_state)) => {
                     let mut state = self.state.write().await;
@@ -692,7 +732,7 @@ impl Inference for InferenceService {
                 Ok(Err(e)) => {
                     return Ok(Response::new(ApplyGenomeResponse {
                         success: false,
-                        error: format!("Failed to switch to BF16 mode: {}", e),
+                        error: format!("Failed to switch to BF16 mode: {e}"),
                         apply_time_ms: 0,
                         adapters_applied: 0,
                         layers_merged: 0,
@@ -701,7 +741,7 @@ impl Inference for InferenceService {
                 Err(e) => {
                     return Ok(Response::new(ApplyGenomeResponse {
                         success: false,
-                        error: format!("Mode switch task failed: {}", e),
+                        error: format!("Mode switch task failed: {e}"),
                         apply_time_ms: 0,
                         adapters_applied: 0,
                         layers_merged: 0,
@@ -779,7 +819,8 @@ impl Inference for InferenceService {
         // Rebuild model with stacked adapters
         let rebuild_result = tokio::task::spawn_blocking(move || {
             rebuild_with_stacked_lora(&weight_paths, &device, dtype, &config, &genome_adapters)
-        }).await;
+        })
+        .await;
 
         match rebuild_result {
             Ok(Ok(new_model)) => {
@@ -791,8 +832,12 @@ impl Inference for InferenceService {
                     model_state.clear_cache();
                 }
 
-                info!("✅ Genome applied: {} adapters, {} layers in {}ms",
-                      adapter_entries.len(), total_layers, apply_time_ms);
+                info!(
+                    "✅ Genome applied: {} adapters, {} layers in {}ms",
+                    adapter_entries.len(),
+                    total_layers,
+                    apply_time_ms
+                );
 
                 Ok(Response::new(ApplyGenomeResponse {
                     success: true,
@@ -803,7 +848,7 @@ impl Inference for InferenceService {
                 }))
             }
             Ok(Err(e)) => {
-                info!("❌ Failed to apply genome: {}", e);
+                info!("❌ Failed to apply genome: {e}");
                 Ok(Response::new(ApplyGenomeResponse {
                     success: false,
                     error: e.to_string(),
@@ -813,10 +858,10 @@ impl Inference for InferenceService {
                 }))
             }
             Err(e) => {
-                info!("❌ Genome task failed: {}", e);
+                info!("❌ Genome task failed: {e}");
                 Ok(Response::new(ApplyGenomeResponse {
                     success: false,
-                    error: format!("Task join error: {}", e),
+                    error: format!("Task join error: {e}"),
                     apply_time_ms: 0,
                     adapters_applied: 0,
                     layers_merged: 0,
@@ -836,11 +881,13 @@ impl Inference for InferenceService {
         let state = self.state.read().await;
         let adapters = self.adapters.read().await;
 
-        let current_model = state.as_ref()
+        let current_model = state
+            .as_ref()
             .map(|s| s.model_id.clone())
             .unwrap_or_default();
 
-        let active_adapters: Vec<String> = adapters.iter()
+        let active_adapters: Vec<String> = adapters
+            .iter()
             .filter(|a| a.active)
             .map(|a| a.adapter_id.clone())
             .collect();

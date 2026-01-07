@@ -74,7 +74,7 @@ impl LoggerClient {
         let stream = UnixStream::connect(socket_path).ok();
 
         if stream.is_none() {
-            eprintln!("⚠️  LoggerClient: Failed to connect to {}", socket_path);
+            eprintln!("⚠️  LoggerClient: Failed to connect to {socket_path}");
             eprintln!("   Logs will be written to stderr instead");
         }
 
@@ -141,7 +141,7 @@ impl LoggerClient {
         // Send to LoggerWorker (fire-and-forget)
         if let Some(ref mut stream) = self.stream {
             if let Ok(json) = serde_json::to_string(&request) {
-                let _ = writeln!(stream, "{}", json);
+                let _ = writeln!(stream, "{json}");
                 let _ = stream.flush();
             }
         }

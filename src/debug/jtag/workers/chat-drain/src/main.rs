@@ -16,19 +16,18 @@
 /// - messages: Protocol types (shared with TypeScript)
 ///
 /// Usage: cargo run --release -- /tmp/chat-drain-worker.sock
-
 mod connection_handler;
-mod processor;
 mod health;
 mod messages;
+mod processor;
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 
 // ============================================================================
@@ -56,7 +55,7 @@ pub type ShutdownSignal = Arc<AtomicBool>;
 
 fn debug_log(msg: &str) {
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let log_msg = format!("[{}] {}\n", timestamp, msg);
+    let log_msg = format!("[{timestamp}] {msg}\n");
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -91,7 +90,7 @@ fn main() -> std::io::Result<()> {
     }
 
     let socket_path = &args[1];
-    debug_log(&format!("Socket path: {}", socket_path));
+    debug_log(&format!("Socket path: {socket_path}"));
 
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
@@ -100,7 +99,7 @@ fn main() -> std::io::Result<()> {
     }
 
     println!("🦀 Rust Chat Drain Worker starting...");
-    println!("📡 Listening on: {}", socket_path);
+    println!("📡 Listening on: {socket_path}");
 
     // Create shared state
     let stats = health::create_stats();
@@ -142,14 +141,13 @@ fn main() -> std::io::Result<()> {
         }
 
         conn_count += 1;
-        debug_log(&format!(">>> INCOMING CONNECTION #{}", conn_count));
+        debug_log(&format!(">>> INCOMING CONNECTION #{conn_count}"));
 
         match stream {
             Ok(stream) => {
                 println!("\\n🔗 New connection from TypeScript (spawning thread)");
                 debug_log(&format!(
-                    "Connection #{} accepted, spawning thread",
-                    conn_count
+                    "Connection #{conn_count} accepted, spawning thread"
                 ));
 
                 // Increment connection counter
@@ -166,7 +164,7 @@ fn main() -> std::io::Result<()> {
 
                 // Spawn thread to handle connection concurrently
                 thread::spawn(move || {
-                    debug_log(&format!("[Thread-{}] Starting connection handler", conn_id));
+                    debug_log(&format!("[Thread-{conn_id}] Starting connection handler"));
 
                     if let Err(e) = connection_handler::handle_client(
                         stream,
@@ -174,20 +172,20 @@ fn main() -> std::io::Result<()> {
                         stats_clone,
                         shutdown_clone,
                     ) {
-                        eprintln!("❌ Error handling client #{}: {}", conn_id, e);
-                        debug_log(&format!("[Thread-{}] ERROR: {}", conn_id, e));
+                        eprintln!("❌ Error handling client #{conn_id}: {e}");
+                        debug_log(&format!("[Thread-{conn_id}] ERROR: {e}"));
                     } else {
-                        debug_log(&format!("[Thread-{}] COMPLETE", conn_id));
+                        debug_log(&format!("[Thread-{conn_id}] COMPLETE"));
                     }
 
-                    println!("✅ Connection #{} complete", conn_id);
+                    println!("✅ Connection #{conn_id} complete");
                 });
 
-                debug_log(&format!("Thread spawned for connection #{}", conn_count));
+                debug_log(&format!("Thread spawned for connection #{conn_count}"));
             }
             Err(e) => {
-                eprintln!("❌ Connection error: {}", e);
-                debug_log(&format!("Connection #{} accept failed: {}", conn_count, e));
+                eprintln!("❌ Connection error: {e}");
+                debug_log(&format!("Connection #{conn_count} accept failed: {e}"));
             }
         }
     }

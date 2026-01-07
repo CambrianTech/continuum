@@ -1,3 +1,4 @@
+use log::info;
 /**
  * Inference gRPC Server with Candle LLM Backend
  *
@@ -5,24 +6,22 @@
  * Configuration via ~/.continuum/config.env:
  *   INFERENCE_MODE=auto|quantized|bf16  (default: auto)
  */
-
 use std::fs;
 use std::path::PathBuf;
 use tonic::transport::Server;
-use log::info;
 
+mod adapter_registry;
+mod grpc;
 mod lora;
 mod model;
-mod grpc;
-mod adapter_registry;
 mod quantized_model;
 
 pub mod inference {
     tonic::include_proto!("inference");
 }
 
-use inference::inference_server::InferenceServer;
 use grpc::InferenceService;
+use inference::inference_server::InferenceServer;
 use model::load_default_model;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -69,8 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("===========================================");
     info!("  Inference gRPC Server (Candle + Llama)");
-    info!("  Mode: {:?}", mode);
-    info!("  Listening on: {}", addr);
+    info!("  Mode: {mode:?}");
+    info!("  Listening on: {addr}");
     info!("===========================================");
 
     // Load model based on mode
@@ -86,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (None, Some(state))
                 }
                 Err(e) => {
-                    info!("⚠️  Quantized unavailable: {}", e);
+                    info!("⚠️  Quantized unavailable: {e}");
                     info!("🔄 Falling back to BF16...");
                     match load_default_model() {
                         Ok(state) => {
@@ -94,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             (Some(state), None)
                         }
                         Err(e2) => {
-                            info!("❌ Both modes failed: {}", e2);
+                            info!("❌ Both modes failed: {e2}");
                             (None, None)
                         }
                     }
@@ -109,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (Some(state), None)
                 }
                 Err(e) => {
-                    info!("❌ Failed to load BF16: {}", e);
+                    info!("❌ Failed to load BF16: {e}");
                     (None, None)
                 }
             }

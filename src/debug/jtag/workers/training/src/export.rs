@@ -50,7 +50,7 @@ pub fn validate_output_path(path: &str) -> Result<(), String> {
     // Check parent directory exists
     if let Some(parent) = std::path::Path::new(path).parent() {
         if !parent.exists() {
-            return Err(format!("Parent directory does not exist: {:?}", parent));
+            return Err(format!("Parent directory does not exist: {parent:?}"));
         }
     }
 

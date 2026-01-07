@@ -6,7 +6,6 @@
 /// Parameters:
 /// - k1: Term frequency saturation (default: 1.2, range 1.2-2.0)
 /// - b: Document length normalization (default: 0.75, range 0-1)
-
 use super::{SearchAlgorithm, SearchInput, SearchOutput};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -139,7 +138,11 @@ impl SearchAlgorithm for Bm25Algorithm {
             .collect();
 
         // Document lengths
-        let doc_lens: Vec<usize> = input.corpus.iter().map(|d| self.tokenize(d).len()).collect();
+        let doc_lens: Vec<usize> = input
+            .corpus
+            .iter()
+            .map(|d| self.tokenize(d).len())
+            .collect();
         let avg_doc_len = doc_lens.iter().sum::<usize>() as f64 / n as f64;
 
         // Query terms
@@ -203,7 +206,7 @@ impl SearchAlgorithm for Bm25Algorithm {
                     value.as_u64().ok_or("min_term_length must be uint")? as usize;
                 Ok(())
             }
-            _ => Err(format!("Unknown parameter: {}", name)),
+            _ => Err(format!("Unknown parameter: {name}")),
         }
     }
 

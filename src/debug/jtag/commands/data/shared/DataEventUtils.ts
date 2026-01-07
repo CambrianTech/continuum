@@ -14,7 +14,7 @@ const verbose = () => {
     return (window as any).JTAG_VERBOSE === true;
   }
   if (typeof process !== 'undefined') {
-    return process.env.JTAG_VERBOSE === 'true';
+    return process.env.JTAG_VERBOSE === '1';
   }
   return false;
 };

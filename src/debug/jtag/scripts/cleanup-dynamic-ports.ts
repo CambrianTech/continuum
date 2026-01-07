@@ -27,7 +27,7 @@ class DynamicPortCleanup {
 
       // CRITICAL: Synchronize registry state across all locations before cleanup
       // This solves the distributed state consistency problem
-      const verbose = process.env.JTAG_VERBOSE === 'true';
+      const verbose = process.env.JTAG_VERBOSE === '1';
       if (verbose) console.log('🔄 Synchronizing registry state across all locations...');
       await syncRegistryState();
       if (verbose) console.log('✅ Registry state synchronized');

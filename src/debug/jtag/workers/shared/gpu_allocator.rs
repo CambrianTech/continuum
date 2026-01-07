@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Memory allocation record
 #[derive(Debug, Clone)]
@@ -257,6 +257,7 @@ impl GpuAllocator {
     }
 
     /// Get all allocations (for debugging)
+    #[allow(dead_code)]
     pub fn list_allocations(&self) -> Vec<Allocation> {
         let allocations = self.allocations.lock().unwrap();
         allocations.values().cloned().collect()
@@ -268,6 +269,7 @@ impl GpuAllocator {
     }
 
     /// Touch an allocation (update last_used without reallocating)
+    #[allow(dead_code)]
     pub fn touch(&self, id: &str) -> bool {
         let mut allocations = self.allocations.lock().unwrap();
         if let Some(alloc) = allocations.get_mut(id) {

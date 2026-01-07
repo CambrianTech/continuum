@@ -1,3 +1,6 @@
+use hf_hub::{api::sync::Api, Repo, RepoType};
+use log::{debug, info, warn};
+use serde::{Deserialize, Serialize};
 /**
  * Adapter Registry - HuggingFace Hub integration for LoRA adapters
  *
@@ -9,11 +12,7 @@
  * Note: Actual weight parsing is done by lora::load_lora_adapter() which
  * needs device and dtype from the loaded model.
  */
-
 use std::path::PathBuf;
-use hf_hub::{api::sync::Api, Repo, RepoType};
-use log::{info, debug, warn};
-use serde::{Deserialize, Serialize};
 
 /// Adapter metadata from adapter_config.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +68,7 @@ impl Default for AdapterConfig {
 /// Downloaded adapter with metadata (weights not parsed yet)
 pub struct DownloadedAdapter {
     /// HuggingFace repo ID (e.g., "username/adapter-name")
+    #[allow(dead_code)]
     pub repo_id: String,
 
     /// Local path to adapter_model.safetensors
@@ -90,7 +90,7 @@ pub fn download_adapter(
     repo_id: &str,
     revision: Option<&str>,
 ) -> Result<DownloadedAdapter, Box<dyn std::error::Error + Send + Sync>> {
-    info!("📥 Downloading adapter from HuggingFace: {}", repo_id);
+    info!("📥 Downloading adapter from HuggingFace: {repo_id}");
 
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
@@ -105,7 +105,7 @@ pub fn download_adapter(
             info!("  Found adapter_config.json");
             let config_str = std::fs::read_to_string(&config_path)?;
             serde_json::from_str(&config_str).unwrap_or_else(|e| {
-                warn!("  Failed to parse adapter_config.json: {}", e);
+                warn!("  Failed to parse adapter_config.json: {e}");
                 AdapterConfig::default()
             })
         }
@@ -120,15 +120,16 @@ pub fn download_adapter(
     debug!("  Target modules: {:?}", config.target_modules);
 
     // Download adapter weights (to HF cache first)
-    let hf_weights_path = repo.get("adapter_model.safetensors")
-        .map_err(|e| format!("Failed to download adapter_model.safetensors: {}", e))?;
+    let hf_weights_path = repo
+        .get("adapter_model.safetensors")
+        .map_err(|e| format!("Failed to download adapter_model.safetensors: {e}"))?;
 
-    info!("  Downloaded to HF cache: {:?}", hf_weights_path);
+    info!("  Downloaded to HF cache: {hf_weights_path:?}");
 
     // Copy to our local registry directory (~/.continuum/adapters/)
     let local_path = copy_to_local_registry(repo_id, &hf_weights_path, &config)?;
 
-    info!("  Stored in registry: {:?}", local_path);
+    info!("  Stored in registry: {local_path:?}");
     info!("  Rank: {}, Alpha: {}", config.r, config.lora_alpha);
 
     Ok(DownloadedAdapter {
@@ -170,12 +171,13 @@ fn copy_to_local_registry(
     let manifest_path = adapter_dir.join("manifest.json");
     std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
 
-    info!("  Created manifest: {:?}", manifest_path);
+    info!("  Created manifest: {manifest_path:?}");
 
     Ok(dest_path)
 }
 
 /// Check if an adapter is compatible with a base model
+#[allow(dead_code)]
 pub fn check_base_model_compatibility(
     adapter_config: &AdapterConfig,
     loaded_model_id: &str,
@@ -191,10 +193,13 @@ pub fn check_base_model_compatibility(
 
     // Check for common base model patterns
     // e.g., "unsloth/Llama-3.2-3B-Instruct" should match adapters trained on "meta-llama/Llama-3.2-3B-Instruct"
-    let adapter_name = adapter_base.split('/').last().unwrap_or(&adapter_base);
-    let loaded_name = loaded.split('/').last().unwrap_or(&loaded);
+    let adapter_name = adapter_base.split('/').next_back().unwrap_or(&adapter_base);
+    let loaded_name = loaded.split('/').next_back().unwrap_or(&loaded);
 
-    if adapter_name == loaded_name || adapter_base.contains(&loaded) || loaded.contains(&adapter_base) {
+    if adapter_name == loaded_name
+        || adapter_base.contains(&loaded)
+        || loaded.contains(&adapter_base)
+    {
         return Ok(());
     }
 
@@ -216,6 +221,7 @@ pub fn check_base_model_compatibility(
 /// List locally cached adapters
 ///
 /// Scans the HuggingFace cache directory for downloaded adapters
+#[allow(dead_code)]
 pub fn list_cached_adapters() -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
     let cache_dir = dirs::home_dir()
         .ok_or("Cannot find home directory")?
@@ -270,7 +276,9 @@ mod tests {
         assert!(check_base_model_compatibility(&config, "unsloth/Llama-3.2-3B-Instruct").is_ok());
 
         // Same base model, different org
-        assert!(check_base_model_compatibility(&config, "meta-llama/Llama-3.2-3B-Instruct").is_ok());
+        assert!(
+            check_base_model_compatibility(&config, "meta-llama/Llama-3.2-3B-Instruct").is_ok()
+        );
 
         // Llama variants should be lenient
         assert!(check_base_model_compatibility(&config, "unsloth/Llama-3.2-3B").is_ok());

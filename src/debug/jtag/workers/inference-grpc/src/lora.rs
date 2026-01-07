@@ -4,7 +4,6 @@
  * Handles loading LoRA adapters from safetensor files and merging
  * their weights with base model weights.
  */
-
 use candle_core::{DType, Device, Tensor};
 use log::{debug, info};
 use std::collections::HashMap;
@@ -12,8 +11,8 @@ use std::collections::HashMap;
 /// LoRA weight pair (A and B matrices)
 #[derive(Clone)]
 pub struct LoRAWeights {
-    pub lora_a: Tensor,  // [rank, in_features]
-    pub lora_b: Tensor,  // [out_features, rank]
+    pub lora_a: Tensor, // [rank, in_features]
+    pub lora_b: Tensor, // [out_features, rank]
     pub scale: f64,
 }
 
@@ -48,7 +47,7 @@ pub fn load_lora_adapter(
 ) -> Result<HashMap<String, LoRAWeights>, Box<dyn std::error::Error + Send + Sync>> {
     use safetensors::SafeTensors;
 
-    info!("📦 Loading LoRA adapter from: {}", adapter_path);
+    info!("📦 Loading LoRA adapter from: {adapter_path}");
 
     // Read the safetensor file
     let data = std::fs::read(adapter_path)?;
@@ -67,7 +66,7 @@ pub fn load_lora_adapter(
             (name.trim_end_matches(".lora_B.weight").to_string(), false)
         } else {
             // Not a LoRA weight, skip
-            debug!("  Skipping non-LoRA tensor: {}", name);
+            debug!("  Skipping non-LoRA tensor: {name}");
             continue;
         };
 
@@ -78,27 +77,33 @@ pub fn load_lora_adapter(
         // Get raw data and convert to target dtype
         let tensor = match st_dtype {
             safetensors::Dtype::F32 => {
-                let data: Vec<f32> = tensor_view.data().chunks(4)
+                let data: Vec<f32> = tensor_view
+                    .data()
+                    .chunks(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
                 Tensor::from_vec(data, shape.as_slice(), device)?
             }
             safetensors::Dtype::F16 => {
-                let data: Vec<half::f16> = tensor_view.data().chunks(2)
+                let data: Vec<half::f16> = tensor_view
+                    .data()
+                    .chunks(2)
                     .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
                 Tensor::from_vec(f32_data, shape.as_slice(), device)?
             }
             safetensors::Dtype::BF16 => {
-                let data: Vec<half::bf16> = tensor_view.data().chunks(2)
+                let data: Vec<half::bf16> = tensor_view
+                    .data()
+                    .chunks(2)
                     .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
                     .collect();
                 let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
                 Tensor::from_vec(f32_data, shape.as_slice(), device)?
             }
             _ => {
-                return Err(format!("Unsupported LoRA tensor dtype: {:?}", st_dtype).into());
+                return Err(format!("Unsupported LoRA tensor dtype: {st_dtype:?}").into());
             }
         };
 
@@ -109,7 +114,7 @@ pub fn load_lora_adapter(
             tensor
         };
 
-        debug!("  LoRA tensor: {} shape={:?}", name, shape);
+        debug!("  LoRA tensor: {name} shape={shape:?}");
 
         if is_a {
             pending_a.insert(base_name, tensor);
@@ -121,17 +126,28 @@ pub fn load_lora_adapter(
     // Pair up A and B matrices
     for (base_name, lora_a) in pending_a {
         if let Some(lora_b) = pending_b.remove(&base_name) {
-            info!("  ✓ Paired: {} (A: {:?}, B: {:?})",
-                base_name, lora_a.dims(), lora_b.dims());
-            lora_pairs.insert(base_name, LoRAWeights { lora_a, lora_b, scale });
+            info!(
+                "  ✓ Paired: {} (A: {:?}, B: {:?})",
+                base_name,
+                lora_a.dims(),
+                lora_b.dims()
+            );
+            lora_pairs.insert(
+                base_name,
+                LoRAWeights {
+                    lora_a,
+                    lora_b,
+                    scale,
+                },
+            );
         } else {
-            info!("  ⚠ No B matrix for {}", base_name);
+            info!("  ⚠ No B matrix for {base_name}");
         }
     }
 
     // Check for orphaned B matrices
     for base_name in pending_b.keys() {
-        info!("  ⚠ No A matrix for {}", base_name);
+        info!("  ⚠ No A matrix for {base_name}");
     }
 
     info!("📦 Loaded {} LoRA weight pairs", lora_pairs.len());
@@ -177,7 +193,7 @@ pub fn map_lora_name_to_model_name(lora_name: &str) -> String {
     if cleaned.ends_with(".weight") {
         cleaned.to_string()
     } else {
-        format!("{}.weight", cleaned)
+        format!("{cleaned}.weight")
     }
 }
 

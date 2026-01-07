@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 /// Health Module - Universal Worker Protocol Implementation
 ///
 /// Implements the three required interfaces:
@@ -7,10 +8,8 @@
 ///
 /// This module is the reference implementation of the universal protocol
 /// that all workers must implement.
-
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 // ============================================================================
@@ -35,7 +34,7 @@ pub struct WorkerStats {
     connections_total: u64,
     requests_processed: u64,
     errors_total: u64,
-    queue_depth: usize,  // Current queue size
+    queue_depth: usize, // Current queue size
 }
 
 impl WorkerStats {
@@ -75,6 +74,7 @@ impl WorkerStats {
     }
 
     /// Get total connections
+    #[allow(dead_code)]
     pub fn connections_total(&self) -> u64 {
         self.connections_total
     }
@@ -231,7 +231,7 @@ pub fn generate_ping_result(stats: &WorkerStats) -> PingResult {
 }
 
 /// Generate detailed status result
-pub fn generate_status_result(stats: &WorkerStats, verbose: bool) -> StatusResult {
+pub fn generate_status_result(stats: &WorkerStats, _verbose: bool) -> StatusResult {
     StatusResult {
         worker_type: "data".to_string(),
         version: "1.0.0".to_string(),
@@ -240,7 +240,7 @@ pub fn generate_status_result(stats: &WorkerStats, verbose: bool) -> StatusResul
         status: stats.status(),
         metrics: StatusMetrics {
             queue_depth: stats.queue_depth(),
-            queue_capacity: 1000,  // Unbounded, but report a "soft" limit
+            queue_capacity: 1000, // Unbounded, but report a "soft" limit
             processed_total: stats.requests_processed(),
             errors_total: stats.errors_total(),
             error_rate: stats.error_rate(),
@@ -248,7 +248,7 @@ pub fn generate_status_result(stats: &WorkerStats, verbose: bool) -> StatusResul
         resources: StatusResources {
             memory_mb: get_memory_mb(),
             memory_limit_mb: 512.0,
-            threads: 4,  // Main + processor + N connections
+            threads: 4, // Main + processor + N connections
         },
     }
 }

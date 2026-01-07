@@ -49,7 +49,7 @@ fn main() -> std::io::Result<()> {
         std::fs::remove_file(socket_path)?;
     }
 
-    println!("🦀 Logger Worker starting on {}", socket_path);
+    println!("🦀 Logger Worker starting on {socket_path}");
 
     // Create shared state (file cache, headers, stats)
     let file_cache = file_manager::create_file_cache();
@@ -74,7 +74,7 @@ fn main() -> std::io::Result<()> {
                 &writer_file_cache,
                 &writer_headers,
             ) {
-                eprintln!("❌ Logger write error: {}", e);
+                eprintln!("❌ Logger write error: {e}");
             }
         }
     });
@@ -108,12 +108,12 @@ fn main() -> std::io::Result<()> {
                         stats_clone,
                         log_tx_clone,
                     ) {
-                        eprintln!("❌ Logger client error: {}", e);
+                        eprintln!("❌ Logger client error: {e}");
                     }
                 });
             }
             Err(e) => {
-                eprintln!("❌ Logger connection error: {}", e);
+                eprintln!("❌ Logger connection error: {e}");
             }
         }
     }

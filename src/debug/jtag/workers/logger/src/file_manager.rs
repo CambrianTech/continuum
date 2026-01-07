@@ -116,10 +116,10 @@ pub fn active_category_count(file_cache: &FileCache) -> usize {
 fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
     if category.starts_with("personas/") {
         // Persona logs: .continuum/personas/{id}/logs/genome.log
-        PathBuf::from(format!(".continuum/{}.log", category))
+        PathBuf::from(format!(".continuum/{category}.log"))
     } else {
         // Daemon/system logs: {log_dir}/daemons/LoggerDaemonServer.log
-        PathBuf::from(log_dir).join(format!("{}.log", category))
+        PathBuf::from(log_dir).join(format!("{category}.log"))
     }
 }
 
@@ -163,7 +163,6 @@ fn ensure_file_handle(
         // Open file in append mode
         let file = OpenOptions::new()
             .create(true)
-            .write(true)
             .append(true)
             .open(log_file_path)?;
 
@@ -241,9 +240,9 @@ fn format_log_entry(payload: &WriteLogPayload, timestamp: &str) -> String {
     );
 
     if let Some(args) = &payload.args {
-        format!("{} {}\n", base, args)
+        format!("{base} {args}\n")
     } else {
-        format!("{}\n", base)
+        format!("{base}\n")
     }
 }
 

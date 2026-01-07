@@ -91,9 +91,9 @@ import type { IConnectionBroker, ConnectionParams } from '../../connection-broke
 import { ConnectionBroker } from '../../connection-broker/shared/ConnectionBroker';
 import { DEFAULT_USER_UNIQUE_IDS } from '../../../data/domains/DefaultEntities';
 
-// Verbose logging utility - only logs when JTAG_VERBOSE=true (Node.js) or window.JTAG_VERBOSE (browser)
+// Verbose logging utility - only logs when JTAG_VERBOSE=1 (Node.js) or window.JTAG_VERBOSE (browser)
 const verbose = (message: string, ...args: unknown[]) => {
-  const isVerbose = (typeof process !== 'undefined' && process.env?.JTAG_VERBOSE === 'true') ||
+  const isVerbose = (typeof process !== 'undefined' && process.env?.JTAG_VERBOSE === '1') ||
                     (typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true);
   if (isVerbose) {
     console.log(message, ...args);

@@ -5,8 +5,9 @@
  * Uses shared variables from widgets/shared/styles/
  */
 
-@import '../../shared/styles/variables';
-@import '../../shared/styles/mixins';
+@use "sass:color";
+@use '../../shared/styles/variables' as *;
+@use '../../shared/styles/mixins' as *;
 
 // === Text Selection ===
 .brain-container,
@@ -521,7 +522,7 @@
 }
 
 .issue-module {
-  color: lighten($color-error, 20%);
+  color: color.adjust($color-error, $lightness: 20%);
   text-transform: uppercase;
 }
 

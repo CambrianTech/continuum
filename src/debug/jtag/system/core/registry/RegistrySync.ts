@@ -47,7 +47,7 @@ export async function syncRegistryState(): Promise<RegistryState | null> {
     }
   }
   
-  const verbose = process.env.JTAG_VERBOSE === 'true';
+  const verbose = process.env.JTAG_VERBOSE === '1';
 
   if (registries.length === 0) {
     if (verbose) console.log('📋 Registry Sync: No registries found');

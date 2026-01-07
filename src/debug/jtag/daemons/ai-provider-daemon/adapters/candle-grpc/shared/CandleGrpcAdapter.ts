@@ -44,9 +44,9 @@ interface CompatibilityResult {
 // Our base model identifier
 const BASE_MODEL_ID = 'unsloth/Llama-3.2-3B-Instruct';
 
-// Verbose logging utility - only logs when JTAG_VERBOSE=true
+// Verbose logging utility - only logs when JTAG_VERBOSE=1
 const verbose = (message: string, ...args: unknown[]) => {
-  if (process.env.JTAG_VERBOSE === 'true') {
+  if (process.env.JTAG_VERBOSE === '1') {
     console.log(message, ...args);
   }
 };

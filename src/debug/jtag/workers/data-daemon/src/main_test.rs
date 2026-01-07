@@ -8,8 +8,7 @@
 /// - open-database: Opens SQLite database
 /// - create-record: Creates a record
 /// - read-record: Reads a record by ID
-
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -115,7 +114,7 @@ fn main() {
 
     // Bind Unix socket
     let listener = UnixListener::bind(socket_path).expect("Failed to bind socket");
-    println!("🦀 Data worker (TEST) listening on {}", socket_path);
+    println!("🦀 Data worker (TEST) listening on {socket_path}");
 
     // Create handle registry
     let registry: HandleRegistry = Arc::new(Mutex::new(HashMap::new()));
@@ -129,7 +128,7 @@ fn main() {
                 thread::spawn(move || handle_client(stream, registry_clone));
             }
             Err(err) => {
-                eprintln!("❌ Connection error: {}", err);
+                eprintln!("❌ Connection error: {err}");
             }
         }
     }
@@ -156,7 +155,7 @@ fn handle_client(stream: UnixStream, registry: HandleRegistry) {
                 let request: JTAGRequest = match serde_json::from_str(line) {
                     Ok(req) => req,
                     Err(err) => {
-                        eprintln!("❌ Failed to parse request: {} - {}", err, line);
+                        eprintln!("❌ Failed to parse request: {err} - {line}");
                         continue;
                     }
                 };
@@ -167,16 +166,20 @@ fn handle_client(stream: UnixStream, registry: HandleRegistry) {
                 let response = handle_message(request, &registry);
 
                 // Send response (newline-delimited JSON)
-                let response_json = serde_json::to_string(&response).expect("Failed to serialize response");
-                if let Err(err) = writeln!(writer, "{}", response_json) {
-                    eprintln!("❌ Failed to write response: {}", err);
+                let response_json =
+                    serde_json::to_string(&response).expect("Failed to serialize response");
+                if let Err(err) = writeln!(writer, "{response_json}") {
+                    eprintln!("❌ Failed to write response: {err}");
                     break;
                 }
 
-                println!("📤 Response: {} - success={}", response.request_id, response.success);
+                println!(
+                    "📤 Response: {} - success={}",
+                    response.request_id, response.success
+                );
             }
             Err(err) => {
-                eprintln!("❌ Read error: {}", err);
+                eprintln!("❌ Read error: {err}");
                 break;
             }
         }
@@ -239,7 +242,7 @@ fn handle_open_database(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -256,7 +259,7 @@ fn handle_open_database(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to create directory: {}", err)),
+                error: Some(format!("Failed to create directory: {err}")),
             };
         }
     }
@@ -272,14 +275,14 @@ fn handle_open_database(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to open database: {}", err)),
+                error: Some(format!("Failed to open database: {err}")),
             };
         }
     };
 
     // Enable WAL mode
     if let Err(err) = connection.execute("PRAGMA journal_mode=WAL", []) {
-        eprintln!("⚠️ Failed to enable WAL mode: {}", err);
+        eprintln!("⚠️ Failed to enable WAL mode: {err}");
     }
 
     // Generate handle
@@ -294,7 +297,7 @@ fn handle_open_database(
 
     registry.lock().unwrap().insert(handle.clone(), db_handle);
 
-    println!("   ✅ Database opened: handle={}", handle);
+    println!("   ✅ Database opened: handle={handle}");
 
     let response = OpenDatabaseResponse {
         handle,
@@ -330,7 +333,7 @@ fn handle_create_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -366,7 +369,7 @@ fn handle_create_record(
             payload: None,
             request_id: request.id,
             success: false,
-            error: Some(format!("Failed to create table: {}", err)),
+            error: Some(format!("Failed to create table: {err}")),
         };
     }
 
@@ -406,11 +409,14 @@ fn handle_create_record(
             payload: None,
             request_id: request.id,
             success: false,
-            error: Some(format!("Failed to insert record: {}", err)),
+            error: Some(format!("Failed to insert record: {err}")),
         };
     }
 
-    println!("   ✅ Record created: {}/{}", create_req.collection, record_id);
+    println!(
+        "   ✅ Record created: {}/{}",
+        create_req.collection, record_id
+    );
 
     JTAGResponse {
         id: response_id,
@@ -440,7 +446,7 @@ fn handle_read_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Invalid payload: {}", err)),
+                error: Some(format!("Invalid payload: {err}")),
             };
         }
     };
@@ -463,39 +469,37 @@ fn handle_read_record(
     };
 
     // Query record
-    let query_sql = format!(
-        "SELECT data FROM {} WHERE id = ?1",
-        read_req.collection
-    );
+    let query_sql = format!("SELECT data FROM {} WHERE id = ?1", read_req.collection);
 
-    let data_json: String = match db_handle
-        .connection
-        .query_row(&query_sql, params![read_req.id], |row| row.get(0))
-    {
-        Ok(data) => data,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            return JTAGResponse {
-                id: response_id,
-                msg_type: request.msg_type,
-                timestamp,
-                payload: None,
-                request_id: request.id,
-                success: false,
-                error: Some(format!("Record not found: {}", read_req.id)),
-            };
-        }
-        Err(err) => {
-            return JTAGResponse {
-                id: response_id,
-                msg_type: request.msg_type,
-                timestamp,
-                payload: None,
-                request_id: request.id,
-                success: false,
-                error: Some(format!("Failed to query record: {}", err)),
-            };
-        }
-    };
+    let data_json: String =
+        match db_handle
+            .connection
+            .query_row(&query_sql, params![read_req.id], |row| row.get(0))
+        {
+            Ok(data) => data,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return JTAGResponse {
+                    id: response_id,
+                    msg_type: request.msg_type,
+                    timestamp,
+                    payload: None,
+                    request_id: request.id,
+                    success: false,
+                    error: Some(format!("Record not found: {}", read_req.id)),
+                };
+            }
+            Err(err) => {
+                return JTAGResponse {
+                    id: response_id,
+                    msg_type: request.msg_type,
+                    timestamp,
+                    payload: None,
+                    request_id: request.id,
+                    success: false,
+                    error: Some(format!("Failed to query record: {err}")),
+                };
+            }
+        };
 
     // Parse data
     let data: Value = match serde_json::from_str(&data_json) {
@@ -508,7 +512,7 @@ fn handle_read_record(
                 payload: None,
                 request_id: request.id,
                 success: false,
-                error: Some(format!("Failed to parse record data: {}", err)),
+                error: Some(format!("Failed to parse record data: {err}")),
             };
         }
     };

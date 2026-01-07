@@ -2,7 +2,6 @@
 ///
 /// This uses the universal JTAGProtocol from workers/shared/jtag_protocol.rs
 /// which mirrors shared/ipc/JTAGProtocol.ts on the TypeScript side.
-
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

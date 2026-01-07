@@ -2,6 +2,7 @@
  * Theme Widget - Theme Selector Controls (SCSS)
  */
 
+@use "sass:color";
 @use '../../shared/styles/variables' as *;
 
 :host {
@@ -100,16 +101,16 @@
 }
 
 .theme-apply-btn {
-  background: var(--button-primary-background, linear-gradient(135deg, $color-primary, darken($color-primary, 15%)));
+  background: var(--button-primary-background, linear-gradient(135deg, $color-primary, color.adjust($color-primary, $lightness: -15%)));
   color: var(--button-primary-text, #000000);
 
   &:hover {
-    background: var(--button-primary-background-hover, linear-gradient(135deg, lighten($color-primary, 5%), darken($color-primary, 10%)));
+    background: var(--button-primary-background-hover, linear-gradient(135deg, color.adjust($color-primary, $lightness: 5%), color.adjust($color-primary, $lightness: -10%)));
     transform: translateY(-1px);
   }
 
   &:active {
-    background: var(--button-primary-background-active, linear-gradient(135deg, darken($color-primary, 5%), darken($color-primary, 20%)));
+    background: var(--button-primary-background-active, linear-gradient(135deg, color.adjust($color-primary, $lightness: -5%), color.adjust($color-primary, $lightness: -20%)));
     transform: translateY(0);
   }
 }
