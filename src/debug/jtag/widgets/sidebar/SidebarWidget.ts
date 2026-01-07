@@ -54,8 +54,11 @@ export class SidebarWidget extends BaseSidePanelWidget {
 
     // Listen for layout changes when content type switches
     Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
-      this.verbose() && console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
-      this.updateLayout(payload.contentType);
+      // Guard: only update if content type actually changed (prevents unnecessary DOM clearing)
+      if (payload.contentType !== this.currentContentType) {
+        this.verbose() && console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
+        this.updateLayout(payload.contentType);
+      }
     });
 
     // Also listen for content:switched events as backup

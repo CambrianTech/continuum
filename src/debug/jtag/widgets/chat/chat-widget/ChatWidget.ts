@@ -858,11 +858,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    */
   private async loadRoomData(roomId: UUID): Promise<void> {
     try {
-      // Load room entity
+      // Load room entity (no backend:'server' - let browser command use localStorage cache)
       const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>(DATA_COMMANDS.READ, {
         collection: RoomEntity.collection,
-        id: roomId,
-        backend: 'server'
+        id: roomId
       });
 
       if (!roomResult?.success || !roomResult.data) {
