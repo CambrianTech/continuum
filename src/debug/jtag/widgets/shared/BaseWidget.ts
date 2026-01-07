@@ -334,6 +334,11 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   async connectedCallback(): Promise<void> {
+    // GUARD: Prevent double-initialization (causes subscription leaks)
+    if (this.state.isInitialized) {
+      return;
+    }
+
     try {
       // Reduce log spam - only log errors
       // console.log(`🎨 ${this.config.widgetName}: BaseWidget initialization starting...`);
@@ -370,17 +375,15 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   async disconnectedCallback(): Promise<void> {
-    console.log(`🎨 ${this.config.widgetName}: BaseWidget cleanup starting...`);
-    
     // Let subclass clean up first
     await this.onWidgetCleanup();
-    
+
     // Persist final state
     await this.persistCurrentState();
-    
+
     // Disconnect from daemons
     this.disconnectFromDaemons();
-    
+
     // Clean up event listeners
     this.eventEmitter.clear();
     this.operationCache.clear();
@@ -401,8 +404,9 @@ export abstract class BaseWidget extends HTMLElement {
       this._widgetStateStore = undefined;
     }
 
+    // Reset state for potential re-initialization
     this.state.isConnected = false;
-    console.log(`✅ ${this.config.widgetName}: BaseWidget cleanup complete`);
+    this.state.isInitialized = false;
   }
 
   // === ABSTRACT METHODS - Subclasses must implement ===

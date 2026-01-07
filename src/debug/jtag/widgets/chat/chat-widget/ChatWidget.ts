@@ -28,7 +28,8 @@ import { PositronWidgetState } from '../../shared/services/state/PositronWidgetS
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLTextAreaElement;
-  private currentRoomId: UUID | null = DEFAULT_ROOMS.GENERAL as UUID; // Default to General room
+  private currentRoomId: UUID | null = null; // No default - set by pageState or attribute
+  private currentRoomUniqueId: string | null = null; // Track uniqueId for guard comparisons
   private currentRoomName: string = 'General';
   private currentRoom: RoomEntity | null = null;
   private roomMembers: Map<UUID, UserEntity> = new Map(); // Map of userId -> UserEntity
@@ -49,6 +50,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private _isActiveContent: boolean = false; // Whether this is the currently visible chat tab
   private _isPinnedWidget: boolean = false; // Whether pinned to specific room via attribute
   private _eventUnsubscribers: Array<() => void> = []; // For cleanup on disconnect
+  private _pendingMessageTempIds: Set<UUID> = new Set(); // Track optimistic message IDs
 
   constructor() {
     super({
@@ -165,20 +167,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Consolidated room switching logic - single source of truth for room changes.
    * Called by all room-related events (ROOM_SELECTED, content:opened, content:switched).
    */
-  private async handleRoomSwitch(roomIdOrUniqueId: string, roomName?: string, source?: string): Promise<void> {
+  private async handleRoomSwitch(roomIdOrUniqueId: string, _roomName?: string, _source?: string): Promise<void> {
     // Skip if pinned widget (handled elsewhere)
     if (this._isPinnedWidget) {
-      console.log(`📨 ChatWidget: Ignoring ${source || 'room switch'} - pinned widget`);
       return;
     }
 
-    // Skip if already on this room (compare both ID and uniqueId)
-    if (roomIdOrUniqueId === this.currentRoomId) {
-      console.log(`📨 ChatWidget: Already on room ${roomIdOrUniqueId}, skipping`);
+    // Skip if already on this room - check BOTH UUID and uniqueId
+    // This prevents expensive DB queries when multiple events fire for the same room
+    if (roomIdOrUniqueId === this.currentRoomId || roomIdOrUniqueId === this.currentRoomUniqueId) {
       return;
     }
-
-    console.log(`🏠 ChatWidget: Switching to room "${roomName || roomIdOrUniqueId}" (${source || 'direct'})`);
 
     // Use the full switchToRoom method for proper resolution
     await this.switchToRoom(roomIdOrUniqueId);
@@ -207,15 +206,18 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Skip if already on this room
       if (roomId === this.currentRoomId) {
-        console.log(`📨 ChatWidget: Already on room ${roomName}, skipping switch`);
         return;
       }
 
-      console.log(`📨 ChatWidget: Switching to room "${roomName}" (${roomId})`);
-
-      // Update state
+      // Update state - track BOTH UUID and uniqueId for guard comparisons
       this.currentRoomId = roomId;
       this.currentRoomName = roomName;
+      // Track uniqueId if we resolved it, otherwise use the input
+      if (result.success && result.items?.[0]?.uniqueId) {
+        this.currentRoomUniqueId = result.items[0].uniqueId;
+      } else {
+        this.currentRoomUniqueId = roomIdOrName;
+      }
 
       // Reset counters for new room
       this.totalMessageCount = 0;
@@ -269,7 +271,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         : `<p>${message.content?.text || '(no content)'}</p>`;
 
       const messageElement = globalThis.document.createElement('div');
-      const postingClass = (message.metadata as any)?.posting ? ' posting' : '';
+      // Show pending messages with lower opacity (optimistic update)
+      const postingClass = message.status === 'sending' ? ' posting' : '';
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}${postingClass}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
       messageElement.setAttribute('message-id', message.id);
@@ -406,8 +409,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Only add messages that belong to the current room
     const shouldAdd = !!(this.currentRoomId && entity.roomId === this.currentRoomId);
 
-    // CRITICAL: Increment total count when new message is accepted via events
     if (shouldAdd) {
+      // 🚀 OPTIMISTIC UPDATE: Remove temp message when real one arrives
+      // Check if this is from the human user (Joel) and we have pending temp messages
+      if (entity.senderType === 'human' && this._pendingMessageTempIds.size > 0) {
+        // Remove the oldest pending temp message (FIFO order)
+        const tempId = this._pendingMessageTempIds.values().next().value;
+        if (tempId) {
+          this._pendingMessageTempIds.delete(tempId);
+          this.scroller?.remove(tempId);
+        }
+      }
+
+      // CRITICAL: Increment total count when new message is accepted via events
       this.totalMessageCount++;
       this.loadedMessageCount++;
     }
@@ -440,15 +454,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // IMPORTANT: Call parent to setup ChatMessage event subscriptions for real-time updates
     await super.onWidgetInitialize();
 
-    console.log(`📨 ChatWidget: Initializing with React-like visibility tracking...`);
-
     // === STEP 1: Determine widget mode (pinned vs. dynamic) ===
     const roomAttr = this.getAttribute('room');
     this._isPinnedWidget = !!roomAttr;
 
     if (this._isPinnedWidget && roomAttr) {
       // Pinned widget (e.g., right panel) - load specific room, ignore events
-      console.log(`📨 ChatWidget: PINNED to room "${roomAttr}" - will ignore content events`);
       await this.switchToRoom(roomAttr);
       this._isActiveContent = true; // Pinned widgets are always "active"
     } else {
@@ -484,8 +495,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.positronUnsubscribe = PositronWidgetState.subscribeToWidget('profile', 'status:changed', (data) => {
       this.handleProfileStatusChange(data as { userId: string; status: string; displayName: string });
     });
-
-    console.log(`✅ ChatWidget: Initialized (pinned=${this._isPinnedWidget}, active=${this._isActiveContent})`);
   }
 
   /**
@@ -523,7 +532,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private setupContentEventSubscriptions(): void {
     // Skip all content events for pinned widgets
     if (this._isPinnedWidget) {
-      console.log(`📨 ChatWidget: Skipping content event subscriptions (pinned widget)`);
       return;
     }
 
@@ -550,8 +558,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.setActiveContent(false, `switched to ${data.contentType}`);
       }
     });
-
-    console.log(`📨 ChatWidget: Content event subscriptions active (with cleanup tracking)`);
   }
 
   /**
@@ -575,15 +581,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     aiEventHandler(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data) => this.aiStatusIndicator.onCheckingRedundancy(data));
     aiEventHandler(AI_DECISION_EVENTS.ERROR, (data) => this.aiStatusIndicator.onError(data));
 
-    // POSTED event needs extra logging for debugging
+    // POSTED event - AI finished responding
     this.subscribeWithCleanup(AI_DECISION_EVENTS.POSTED, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onPosted(data);
         this.updateHeader();
       }
     });
-
-    console.log(`📨 ChatWidget: AI decision event subscriptions active`);
   }
 
   /**
@@ -601,8 +605,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_ERROR, () => {
       this.removeLearningBorder();
     });
-
-    console.log(`📨 ChatWidget: Learning event subscriptions active`);
   }
 
   /**
@@ -645,7 +647,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * CRITICAL: Must clean up all event subscriptions to prevent memory leaks
    */
   async disconnectedCallback(): Promise<void> {
-    console.log(`🧹 ChatWidget: Cleaning up (${this._eventUnsubscribers.length} event subscriptions)...`);
 
     // Clean up ALL tracked event subscriptions (React-like cleanup pattern)
     for (const unsubscribe of this._eventUnsubscribers) {
@@ -680,8 +681,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Call parent cleanup
     await super.disconnectedCallback();
-
-    console.log(`✅ ChatWidget: Cleanup complete`);
   }
 
   /**
@@ -1190,7 +1189,21 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }));
     }
 
-    // 🚀 OPTIMISTIC UPDATE: Clear input immediately for instant feedback
+    // 🚀 OPTIMISTIC UPDATE: Show message immediately with "sending" state
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 8)}` as UUID;
+    messageEntity.id = tempId;
+    messageEntity.status = 'sending';
+
+    // Add to scroller immediately - CSS will show pending state (lower opacity)
+    if (this.scroller) {
+      this.scroller.add(messageEntity);
+      this.scroller.scrollToEnd();
+    }
+
+    // Track temp ID so we can remove it when real message arrives
+    this._pendingMessageTempIds.add(tempId);
+
+    // Clear input
     this.messageInput.value = '';
     const attachmentCount = this.pendingAttachments.length;
     this.pendingAttachments = [];
@@ -1199,8 +1212,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Reset textarea height to single row
     this.autoGrowTextarea();
 
-    // Send in background without awaiting (non-blocking)
-    // Entity events will update UI when server responds
+    // Send in background - entity events will add confirmed message
     Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
       collection: ChatMessageEntity.collection,
       data: messageEntity,

@@ -110,7 +110,6 @@ export class PositronContentStateAdapter {
     Events.subscribe('content:switched', this.handleContentSwitched.bind(this));
 
     this.subscribed = true;
-    console.log(`${this.name}: Subscribed to content events (Positron pattern)`);
   }
 
   /**
@@ -118,8 +117,6 @@ export class PositronContentStateAdapter {
    * Adds new content item to local state without DB refetch
    */
   private handleContentOpened(eventData: unknown): void {
-    console.log(`${this.name}: Received content:opened event`, eventData);
-
     const data = eventData as ContentOpenedEvent & { setAsCurrent?: boolean };
     const userState = this.getUserState();
 
@@ -147,11 +144,9 @@ export class PositronContentStateAdapter {
         priority: 'normal' as ContentPriority
       };
       userState.contentState.openItems.push(newItem);
-      console.log(`${this.name}: Added new tab to local state: ${newItem.title}`);
     } else if (existingItem) {
       // Update lastAccessedAt for existing item
       existingItem.lastAccessedAt = new Date();
-      console.log(`${this.name}: Updated existing tab: ${existingItem.title}`);
     }
 
     // Set as current if requested
@@ -164,7 +159,6 @@ export class PositronContentStateAdapter {
 
     // Switch view if requested
     if (data.setAsCurrent && data.contentType) {
-      console.log(`${this.name}: Switching to new ${data.contentType} content`);
       this.config.onViewSwitch?.(data.contentType, data.entityId);
       this.config.onUrlUpdate?.(data.contentType, data.entityId);
     }
@@ -175,8 +169,6 @@ export class PositronContentStateAdapter {
    * Removes content item from local state without DB refetch
    */
   private handleContentClosed(eventData: unknown): void {
-    console.log(`${this.name}: Received content:closed event`, eventData);
-
     const data = eventData as ContentClosedEventData;
     const userState = this.getUserState();
 
@@ -192,7 +184,6 @@ export class PositronContentStateAdapter {
       userState.contentState.openItems = userState.contentState.openItems.filter(
         item => item.id !== data.contentItemId
       );
-      console.log(`${this.name}: Removed closed tab from local state`);
 
       // Update currentItemId if provided
       if (data.currentItemId) {
@@ -216,8 +207,6 @@ export class PositronContentStateAdapter {
    * Updates current item in local state without DB refetch
    */
   private handleContentSwitched(eventData: unknown): void {
-    console.log(`${this.name}: Received content:switched event`, eventData);
-
     const data = eventData as ContentSwitchedEventData;
     const userState = this.getUserState();
 
@@ -231,7 +220,6 @@ export class PositronContentStateAdapter {
     // Update currentItemId in local state (Positron: state drives UI)
     if (data.currentItemId) {
       userState.contentState.currentItemId = data.currentItemId;
-      console.log(`${this.name}: Set current tab in local state: ${data.currentItemId}`);
     }
 
     // Update lastAccessedAt for the switched-to item
@@ -247,7 +235,6 @@ export class PositronContentStateAdapter {
 
     // Switch view
     if (data.contentType) {
-      console.log(`${this.name}: Switching view to ${data.contentType}`);
       this.config.onViewSwitch?.(data.contentType, data.entityId);
       this.config.onUrlUpdate?.(data.contentType, data.entityId);
     }

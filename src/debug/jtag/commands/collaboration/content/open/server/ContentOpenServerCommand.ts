@@ -17,6 +17,7 @@ import { Events } from '@system/core/shared/Events';
 import { generateUUID, type UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
+import { RoutingService } from '@system/routing/RoutingService';
 
 export class ContentOpenServerCommand extends ContentOpenCommand {
 
@@ -47,41 +48,52 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       const userState = Object.assign(new UserStateEntity(), listResult.items[0]);
 
-      // 2. Generate unique ID for the content item
+      // 2. Resolve entityId to canonical UUID (prevents duplicate tabs from uniqueId vs UUID mismatch)
+      //    URL might use "general" but DB stores UUID "5e71a0c8-..."
+      let canonicalEntityId = params.entityId;
+      if (params.entityId) {
+        const resolved = await RoutingService.resolve(params.contentType, params.entityId);
+        if (resolved) {
+          canonicalEntityId = resolved.id;
+        }
+      }
+
+      // 3. Generate unique ID for the content item
       const contentItemId = generateUUID();
 
-      // 3. Derive title if not provided (for singletons like settings/help/theme)
+      // 4. Derive title if not provided (for singletons like settings/help/theme)
       const title = params.title || this.deriveTitle(params.contentType);
 
-      // 4. Add content item using UserStateEntity method
+      // 5. Add content item using UserStateEntity method (uses canonical UUID for deduplication)
       userState.addContentItem({
         id: contentItemId,
         type: params.contentType,
-        entityId: params.entityId,
+        entityId: canonicalEntityId,
         title,
         subtitle: params.subtitle,
         priority: params.priority || 'normal',
         metadata: params.metadata
       });
 
-      // 5. Optionally set as current item (default: true)
+      // 6. Optionally set as current item (default: true)
       const setAsCurrent = params.setAsCurrent !== false; // Default to true
       if (setAsCurrent) {
         userState.setCurrentContent(contentItemId);
       }
 
-      // 6. Save updated userState to database
+      // 7. Save updated userState to database
       await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
         collection: 'user_states',
         id: userState.id,
         data: userState
       });
 
-      // 7. Emit content:opened event for widgets to respond to
+      // 8. Emit content:opened event for widgets to respond to
+      //    Use canonical entityId (UUID) so browser state matches DB
       const event: ContentOpenedEvent = {
         contentItemId,
         contentType: params.contentType,
-        entityId: params.entityId,
+        entityId: canonicalEntityId,  // Use resolved UUID for consistency
         title,  // Use derived title
         userId,
         currentItemId: userState.contentState.currentItemId,
@@ -90,7 +102,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       await Events.emit(this.context, 'content:opened', event);
 
-      // 8. Return success result
+      // 9. Return success result
       return transformPayload(params, {
         success: true,
         contentItemId,

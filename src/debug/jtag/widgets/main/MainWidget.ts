@@ -124,16 +124,20 @@ export class MainWidget extends BaseWidget {
     // URL → PageState → Widget (in that order)
     // Delay slightly to let the DOM render first
     setTimeout(async () => {
-      // 1. Resolve entity for proper display name
+      // 1. Resolve entity for proper display name AND canonical UUID
       const resolved = entityId
         ? await RoutingService.resolve(type, entityId)
         : undefined;
 
-      // 2. Set page state FIRST (single source of truth for widgets)
-      pageState.setContent(type, entityId, resolved || undefined);
+      // Use resolved UUID for storage, uniqueId for URLs
+      // This prevents duplicate tabs from UUID vs uniqueId mismatch
+      const canonicalEntityId = resolved?.id || entityId;
 
-      // 3. Ensure tab exists in UserState
-      await this.ensureTabForContent(type, entityId);
+      // 2. Set page state FIRST (single source of truth for widgets)
+      pageState.setContent(type, canonicalEntityId, resolved || undefined);
+
+      // 3. Ensure tab exists in UserState (use canonical UUID, not URL string)
+      await this.ensureTabForContent(type, canonicalEntityId);
 
       // 4. For chat, emit ROOM_SELECTED for other listeners
       if (type === 'chat' && entityId && resolved) {
@@ -145,7 +149,7 @@ export class MainWidget extends BaseWidget {
       }
 
       // 5. THEN create widget (reads from pageState)
-      this.switchContentView(type, entityId);
+      this.switchContentView(type, canonicalEntityId);
     }, 100);
   }
 
@@ -227,9 +231,7 @@ export class MainWidget extends BaseWidget {
 
     // Listen to tab events from content-tabs-widget via DOM events
     this.addEventListener('tab-clicked', ((event: CustomEvent) => {
-      const tabData: TabClickData = event.detail;
-      console.log('📋 MainWidget: Received tab-clicked DOM event:', tabData.tabId);
-      this.handleTabClick(tabData);
+      this.handleTabClick(event.detail);
     }) as EventListener);
 
     this.addEventListener('tab-closed', ((event: CustomEvent) => {
@@ -237,15 +239,8 @@ export class MainWidget extends BaseWidget {
       this.handleTabClose(tabId);
     }) as EventListener);
 
-    // Also listen via Events system (more reliable across shadow DOM)
-    Events.subscribe('tabs:clicked', (data: TabClickData) => {
-      console.log('📋 MainWidget: Received tabs:clicked event:', data.tabId);
-      this.handleTabClick(data);
-    });
-
-    Events.subscribe('tabs:close', (data: { tabId: string }) => {
-      this.handleTabClose(data.tabId);
-    });
+    // NOTE: Removed duplicate Events.subscribe('tabs:clicked') - DOM events work fine
+    // and having both caused handleTabClick to be called twice per click!
   }
 
   /**
@@ -253,11 +248,7 @@ export class MainWidget extends BaseWidget {
    * Uses tab data passed from ContentTabsWidget (no userState lookup needed)
    */
   private async handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): Promise<void> {
-    console.log('🔥 MainWidget.handleTabClick CALLED with:', tabData);
-
     const { tabId, label, entityId, contentType } = tabData;
-
-    console.log(`📋 MainPanel.handleTabClick: tabId="${tabId}", entityId="${entityId}", type="${contentType}"`);
 
     // If missing entityId, try to look up from userState as fallback
     let resolvedEntityId = entityId;
@@ -333,26 +324,40 @@ export class MainWidget extends BaseWidget {
   private switchContentView(contentType: string, entityId?: string): void {
     // GUARD: Prevent infinite re-render loops by checking if already showing this content
     if (this.currentViewType === contentType && this.currentViewEntityId === entityId) {
-      console.log(`🔄 MainPanel: Already showing ${contentType}/${entityId || 'default'}, skipping re-render`);
-      return;
+      return; // Already showing this exact content
     }
 
     const contentView = this.shadowRoot?.querySelector('.content-view');
     if (!contentView) return;
 
-    // Track what we're rendering to prevent loops
-    this.currentViewType = contentType;
-    this.currentViewEntityId = entityId;
-
     const widgetTag = getWidgetForType(contentType);
+    const existingWidget = contentView.querySelector(widgetTag);
 
-    // Create widget element with entity context
-    // Use data-entity-id for widgets to read (standard HTML data attribute)
-    const widgetHtml = entityId
-      ? `<${widgetTag} data-entity-id="${entityId}"></${widgetTag}>`
-      : `<${widgetTag}></${widgetTag}>`;
+    // OPTIMIZATION: If same widget type already exists, just update its entity attribute
+    // This avoids expensive widget reconstruction when switching between rooms
+    const canReuse = existingWidget && this.currentViewType === contentType;
 
-    contentView.innerHTML = widgetHtml;
+    if (canReuse) {
+      // Reuse existing widget - just update attributes
+      this.currentViewEntityId = entityId;
+      if (entityId) {
+        existingWidget.setAttribute('data-entity-id', entityId);
+        existingWidget.setAttribute('room', entityId);
+      } else {
+        existingWidget.removeAttribute('data-entity-id');
+        existingWidget.removeAttribute('room');
+      }
+    } else {
+      // Different widget type - need full replacement
+      this.currentViewType = contentType;
+      this.currentViewEntityId = entityId;
+
+      const widgetHtml = entityId
+        ? `<${widgetTag} data-entity-id="${entityId}" room="${entityId}"></${widgetTag}>`
+        : `<${widgetTag}></${widgetTag}>`;
+
+      contentView.innerHTML = widgetHtml;
+    }
 
     // Emit right panel configuration based on content type's layout
     const rightPanelConfig = getRightPanelConfig(contentType);
@@ -670,16 +675,19 @@ export class MainWidget extends BaseWidget {
       const newPath = buildContentPath('chat', urlIdentifier);
       this.updateUrl(newPath);
 
-      // CRITICAL: Set pageState BEFORE creating widget - ChatWidget reads from pageState
-      // Resolve entity for proper display name
+      // CRITICAL: Use UUID (roomId) for internal state, NOT uniqueId
+      // This prevents duplicate tabs from UUID vs uniqueId mismatch
+      const canonicalEntityId = data.roomId;
+
+      // Set pageState with canonical UUID
       const resolved = await RoutingService.resolve('chat', urlIdentifier);
-      pageState.setContent('chat', urlIdentifier, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
+      pageState.setContent('chat', canonicalEntityId, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
 
-      // Switch to the selected chat room (use uniqueId for content view)
-      this.switchContentView('chat', urlIdentifier);
+      // Switch to the selected chat room (use UUID for content view)
+      this.switchContentView('chat', canonicalEntityId);
 
-      // Small delay to let the content/open command complete first
-      setTimeout(() => this.refreshTabsFromDatabase('ROOM_SELECTED'), 100);
+      // NOTE: Removed DB refresh here - was causing closed tabs to reappear!
+      // The Positron pattern handles state locally without DB refetch.
     });
 
     console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
@@ -729,16 +737,14 @@ export class MainWidget extends BaseWidget {
     if (this.userState?.contentState?.openItems) {
       // Map content items to tab format with full data for click handling
       for (const item of this.userState.contentState.openItems) {
-        const tabData = {
+        tabs.push({
           id: item.id,
           label: item.title,
           active: item.id === this.userState.contentState.currentItemId,
           closeable: true,
           entityId: item.entityId,
           contentType: item.type
-        };
-        console.log('📋 MainWidget.updateContentTabs: Creating tab:', tabData.label, 'entityId:', tabData.entityId, 'type:', tabData.contentType);
-        tabs.push(tabData);
+        });
       }
     } else {
       // Fallback: show current room as single tab if userState not loaded yet
