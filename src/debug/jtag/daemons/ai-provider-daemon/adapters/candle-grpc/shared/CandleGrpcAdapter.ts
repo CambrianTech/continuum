@@ -44,6 +44,13 @@ interface CompatibilityResult {
 // Our base model identifier
 const BASE_MODEL_ID = 'unsloth/Llama-3.2-3B-Instruct';
 
+// Verbose logging utility - only logs when JTAG_VERBOSE=true
+const verbose = (message: string, ...args: unknown[]) => {
+  if (process.env.JTAG_VERBOSE === 'true') {
+    console.log(message, ...args);
+  }
+};
+
 export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'candle';
   readonly providerName = 'Candle (gRPC)';
@@ -55,9 +62,10 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   // The Rust gRPC server is single-threaded, so we must wait for each request to complete
   private inFlight: boolean = false;
   private queueDepth: number = 0;
-  // Increased timeout: local inference takes ~15s per request
-  // With queue depth of 3, worst case wait is ~60s (acceptable for local inference)
-  private static readonly MAX_WAIT_TIME_MS = 90000; // 90 seconds max wait
+  // Timeout for waiting in queue. With InferenceCoordinator limiting to 1 concurrent,
+  // wait should never exceed ~15-20s. Set to 30s for safety margin.
+  // If hitting this timeout, InferenceCoordinator coordination is likely broken.
+  private static readonly MAX_WAIT_TIME_MS = 30000; // 30 seconds max wait
 
   // Track currently applied adapters (for genome integration)
   private appliedAdapters: Set<string> = new Set();
@@ -104,7 +112,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       // Calculate proper LoRA scale (alpha / rank)
       if (manifest.rank && manifest.alpha) {
         result.scale = manifest.alpha / manifest.rank;
-        console.log(`[CandleGrpcAdapter] 🧬 Adapter scale: α=${manifest.alpha} / r=${manifest.rank} = ${result.scale.toFixed(2)}`);
+        verbose(`[CandleGrpcAdapter] 🧬 Adapter scale: α=${manifest.alpha} / r=${manifest.rank} = ${result.scale.toFixed(2)}`);
       }
 
       // Check base model compatibility
@@ -226,7 +234,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     // Test connection
     try {
       const pong = await this.client.ping();
-      console.log(`[CandleGrpcAdapter] Connected: ${pong.message}`);
+      verbose(`[CandleGrpcAdapter] Connected: ${pong.message}`);
     } catch (err) {
       console.error(`[CandleGrpcAdapter] Failed to connect:`, err);
       throw err;
@@ -291,7 +299,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     // Track queue depth for logging
     this.queueDepth++;
     if (this.queueDepth > 1) {
-      console.log(`[CandleGrpcAdapter] Queue depth: ${this.queueDepth} (waiting for in-flight request)`);
+      verbose(`[CandleGrpcAdapter] Queue depth: ${this.queueDepth} (waiting for in-flight request)`);
     }
 
     // Wait for current request to finish (simple serial lock)
@@ -317,12 +325,12 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       if (request.activeAdapters && request.activeAdapters.length > 0) {
         // Check for safe mode or corrupted model
         if (this.safeMode) {
-          console.log(`[CandleGrpcAdapter] 🧬 SAFE MODE: Skipping ${request.activeAdapters.length} adapters`);
+          verbose(`[CandleGrpcAdapter] 🧬 SAFE MODE: Skipping ${request.activeAdapters.length} adapters`);
         } else if (this.modelCorrupted) {
-          console.log(`[CandleGrpcAdapter] 🧬 MODEL CORRUPTED: Entering safe mode`);
+          verbose(`[CandleGrpcAdapter] 🧬 MODEL CORRUPTED: Entering safe mode`);
           await this.enterSafeMode('Model corrupted by previous adapter');
         } else {
-          console.log(`[CandleGrpcAdapter] 🧬 Loading ${request.activeAdapters.length} adapters from request`);
+          verbose(`[CandleGrpcAdapter] 🧬 Loading ${request.activeAdapters.length} adapters from request`);
 
           for (const adapter of request.activeAdapters) {
             // Skip blocked adapters
@@ -333,7 +341,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
 
             // Skip already applied adapters
             if (this.appliedAdapters.has(adapter.name)) {
-              console.log(`[CandleGrpcAdapter] 🧬 Adapter ${adapter.name} already loaded`);
+              verbose(`[CandleGrpcAdapter] 🧬 Adapter ${adapter.name} already loaded`);
               adaptersAppliedThisRequest.push(adapter.name);
               continue;
             }
@@ -360,7 +368,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
 
             try {
               // Load adapter with PROPER scale from manifest (α/r)
-              console.log(`[CandleGrpcAdapter] 🧬 Loading adapter ${adapter.name} with scale=${compatibility.scale.toFixed(2)}...`);
+              verbose(`[CandleGrpcAdapter] 🧬 Loading adapter ${adapter.name} with scale=${compatibility.scale.toFixed(2)}...`);
               const loadResult = await this.client.loadAdapter(adapter.name, absolutePath, {
                 scale: compatibility.scale,  // Use calculated scale, NOT hardcoded 1.0
                 merge: true,  // Merge weights into model
@@ -369,7 +377,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
               if (loadResult.success) {
                 this.appliedAdapters.add(adapter.name);
                 adaptersAppliedThisRequest.push(adapter.name);
-                console.log(`[CandleGrpcAdapter] 🧬 ✅ Adapter ${adapter.name} loaded in ${loadResult.loadTimeMs}ms`);
+                verbose(`[CandleGrpcAdapter] 🧬 ✅ Adapter ${adapter.name} loaded in ${loadResult.loadTimeMs}ms`);
               } else {
                 console.warn(`[CandleGrpcAdapter] 🧬 ❌ Failed to load adapter ${adapter.name}: ${loadResult.error}`);
               }
@@ -385,7 +393,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       const MAX_PROMPT_CHARS = 8000;
       let prompt = this.formatMessagesAsLlama32(request);
       if (prompt.length > MAX_PROMPT_CHARS) {
-        console.log(`[CandleGrpcAdapter] Truncating prompt from ${prompt.length} to ${MAX_PROMPT_CHARS} chars`);
+        verbose(`[CandleGrpcAdapter] Truncating prompt from ${prompt.length} to ${MAX_PROMPT_CHARS} chars`);
         prompt = prompt.slice(-MAX_PROMPT_CHARS); // Keep the most recent context
       }
 
@@ -398,7 +406,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       // The gRPC server loads Llama-3.2-3B-Instruct
       const modelId = 'Llama-3.2-3B-Instruct';
 
-      console.log(`[CandleGrpcAdapter] Generate: model=${modelId}, prompt=${prompt.length} chars, maxTokens=${maxTokens}, queue=${this.queueDepth}, adapters=[${adaptersAppliedThisRequest.join(',')}]`);
+      verbose(`[CandleGrpcAdapter] Generate: model=${modelId}, prompt=${prompt.length} chars, maxTokens=${maxTokens}, queue=${this.queueDepth}, adapters=[${adaptersAppliedThisRequest.join(',')}]`);
 
       const result = await this.client.generate(modelId, prompt, {
         maxTokens,
