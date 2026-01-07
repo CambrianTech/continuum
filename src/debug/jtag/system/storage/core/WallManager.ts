@@ -101,7 +101,7 @@ export class WallManager {
 
     if (isRoomUUID(roomNameOrId)) {
       // Query by UUID
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: 'rooms',
         filter: { id: roomNameOrId },
         limit: 1
@@ -114,7 +114,7 @@ export class WallManager {
       roomEntity = result.items[0];
     } else {
       // Query by name
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: 'rooms',
         filter: { name: roomNameOrId },
         limit: 1
@@ -265,7 +265,7 @@ export class WallManager {
     const roomInfo = await this.resolveRoomPath(room);
 
     // Query WallDocumentEntity for this room
-    const result = await Commands.execute<DataListParams<WallDocumentEntity>, DataListResult<WallDocumentEntity>>(DATA_COMMANDS.LIST, {
+    const result = await Commands.execute<DataListParams, DataListResult<WallDocumentEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.WALL_DOCUMENTS,
       filter: { roomId: roomInfo.roomId }
     });

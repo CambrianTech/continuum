@@ -5,15 +5,20 @@
  * Following the established state command pattern for simple delegation
  */
 
-import type { JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
-export interface StateUpdateParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
+/** State update command parameters */
+export interface StateUpdateParams extends CommandParams {
+  /** Collection containing the entity */
   readonly collection: string;
+  /** ID of entity to update */
   readonly id: UUID;
-  readonly data: Partial<T>;
-  readonly userId?: UUID; // Auto-inject current user context
+  /** Update data */
+  readonly data: Record<string, any>;
+  /** User ID for context */
+  readonly userId?: UUID;
 }
 
 export interface StateUpdateResult<T extends BaseEntity> extends JTAGPayload {

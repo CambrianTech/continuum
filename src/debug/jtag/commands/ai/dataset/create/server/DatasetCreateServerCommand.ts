@@ -58,7 +58,7 @@ export class DatasetCreateServerCommand {
     };
 
     // Save to database
-    const createResult = await Commands.execute<DataCreateParams<DatasetExecutionEntity>, DataCreateResultType>(DATA_COMMANDS.CREATE, {
+    const createResult = await Commands.execute<DataCreateParams, DataCreateResultType>(DATA_COMMANDS.CREATE, {
       collection: DatasetExecutionEntity.collection,
       data: execution,
       id: jobId,
@@ -193,7 +193,7 @@ export class DatasetCreateServerCommand {
    * Update job status in database
    */
   private async updateJobStatus(jobId: string, updates: Partial<DatasetExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams<DatasetExecutionEntity>, any>(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, any>(DATA_COMMANDS.UPDATE, {
       collection: DatasetExecutionEntity.collection,
       id: jobId,
       data: updates,

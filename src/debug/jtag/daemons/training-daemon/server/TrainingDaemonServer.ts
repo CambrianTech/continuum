@@ -102,7 +102,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
     for (const roomUniqueId of this.config.enabledRooms) {
       try {
         // Use Commands.execute instead of DataDaemon.query for reliability
-        const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+        const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.ROOMS,
           filter: { uniqueId: roomUniqueId },
           limit: 1

@@ -4,10 +4,16 @@
  */
 
 import type { FileParams, FileResult } from '../../shared/FileTypes';
+import type { CommandParams } from '../../../../system/core/types/JTAGTypes';
 
-export interface FileMimeTypeParams extends FileParams {
+/** File MIME type detection parameters */
+export interface FileMimeTypeParams extends CommandParams {
+  /** Path to the file */
+  readonly filepath: string;
   /** Whether to inspect file content if extension is unknown (default: false) */
   inspectContent?: boolean;
+  /** File encoding */
+  readonly encoding?: string;
 }
 
 export interface FileMimeTypeResult extends FileResult {

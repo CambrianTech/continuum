@@ -7,7 +7,7 @@ import type { DataUpdateParams, DataUpdateResult } from './DataUpdateTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 export abstract class DataUpdateCommand<T extends BaseEntity = BaseEntity>
-  extends BaseDataCommand<DataUpdateParams<T>, DataUpdateResult<T>> {
+  extends BaseDataCommand<DataUpdateParams, DataUpdateResult<T>> {
 
-  protected abstract executeDataCommand(params: DataUpdateParams<T>): Promise<DataUpdateResult<T>>;
+  protected abstract executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<T>>;
 }

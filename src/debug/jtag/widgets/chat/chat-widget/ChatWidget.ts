@@ -362,7 +362,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // This ensures we only get messages for THIS room, with proper paging/cursors
       // Load NEWEST messages first (DESC) so recent messages appear after refresh
       // EntityScroller + CSS handle display order based on SCROLLER_PRESETS.CHAT direction
-      const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
         filter: {
           roomId: this.currentRoomId,
@@ -889,7 +889,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const memberIds = this.currentRoom.members.map(m => m.userId);
 
     try {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
         collection: UserEntity.collection,
         filter: { id: { $in: memberIds } },
         limit: memberIds.length
@@ -920,7 +920,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
 
       // Query UserState to get current content item
-      const listResult = await Commands.execute<DataListParams<any>, DataListResult<any>>(DATA_COMMANDS.LIST, {
+      const listResult = await Commands.execute<DataListParams, DataListResult<any>>(DATA_COMMANDS.LIST, {
         collection: 'user_states',
         filter: { userId: sessionResult.userId },
         limit: 1
@@ -1268,7 +1268,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.autoGrowTextarea();
 
     // Send in background - entity events will add confirmed message
-    Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+    Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
       collection: ChatMessageEntity.collection,
       data: messageEntity,
       backend: 'server'
@@ -1318,7 +1318,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     try {
-      await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+      await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
         collection: ChatMessageEntity.collection,
         data: messageEntity,
         backend: 'server'

@@ -11,11 +11,10 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { BaseDataParams, BaseDataResult } from '../../shared/BaseDataTypes';
 import { createBaseDataParams } from '../../shared/BaseDataTypes';
 
-/**
- * Data Create Parameters - extends base data params
- */
-export interface DataCreateParams<T extends BaseEntity = BaseEntity> extends BaseDataParams {
-  readonly data: T;
+/** Data create command parameters */
+export interface DataCreateParams extends BaseDataParams {
+  /** Entity data to create */
+  readonly data: Record<string, any>;
 }
 
 /**
@@ -28,11 +27,11 @@ export interface DataCreateResult<T extends BaseEntity = BaseEntity> extends Bas
 /**
  * Factory function for creating DataCreateParams
  */
-export const createDataCreateParams = <T extends BaseEntity = BaseEntity>(
+export const createDataCreateParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataCreateParams<T>, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
-): DataCreateParams<T> => {
+  data: Omit<DataCreateParams, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
+): DataCreateParams => {
   // Use base factory to ensure backend defaults are applied
   const baseParams = createBaseDataParams(context, sessionId, {
     collection: data.collection,

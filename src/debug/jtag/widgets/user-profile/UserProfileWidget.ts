@@ -73,7 +73,7 @@ export class UserProfileWidget extends BaseWidget {
         this.user = result.data;
       } else {
         // Try finding by uniqueId
-        const listResult = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+        const listResult = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
           collection: 'users',
           filter: { uniqueId: entityId },
           limit: 1

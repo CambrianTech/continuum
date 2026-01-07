@@ -106,7 +106,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
     }
 
     // 7. Update proposal in database
-    const updateResult = await Commands.execute<DataUpdateParams<DecisionEntity>, DataUpdateResult<DecisionEntity>>(
+    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionEntity>>(
       DATA_COMMANDS.UPDATE,
       {
         collection: DecisionEntity.collection,
@@ -136,7 +136,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
    * Find proposal by proposalId
    */
   private async findProposal(params: DecisionVoteParams): Promise<DecisionEntity> {
-    const result = await Commands.execute<DataListParams<DecisionEntity>, DataListResult<DecisionEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<DecisionEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: DecisionEntity.collection,
@@ -188,7 +188,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
 
     // If user exists in database, return it
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,

@@ -10,7 +10,9 @@ import type { BaseDataParams, BaseDataResult } from '../../shared/BaseDataTypes'
 import { createBaseDataParams } from '../../shared/BaseDataTypes';
 import type { MediaItem } from '../../../../system/data/entities/ChatMessageEntity';
 
+/** Data read command parameters */
 export interface DataReadParams extends BaseDataParams {
+  /** ID of entity to read */
   readonly id: UUID;
 }
 

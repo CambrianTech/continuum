@@ -7,13 +7,16 @@
  */
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '../../shared/FileTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface FileLoadParams extends FileParams {
-  // Pure inheritance - no additional fields needed
-  // FileParams already provides filepath, encoding
+/** File load command parameters */
+export interface FileLoadParams extends CommandParams {
+  /** Path to the file to load */
+  readonly filepath: string;
+  /** File encoding (default: utf8) */
+  readonly encoding?: string;
 }
 
 export const createFileLoadParams = (

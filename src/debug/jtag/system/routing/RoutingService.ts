@@ -61,7 +61,7 @@ class RoutingServiceImpl {
     try {
       // If already a UUID, look up directly
       if (isUUID(identifier)) {
-        const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+        const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
           DATA_COMMANDS.LIST,
           {
             collection: 'rooms',
@@ -84,7 +84,7 @@ class RoutingServiceImpl {
       }
 
       // Look up by uniqueId
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: 'rooms',
@@ -126,7 +126,7 @@ class RoutingServiceImpl {
     try {
       // If already a UUID, look up directly
       if (isUUID(identifier)) {
-        const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+        const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
           DATA_COMMANDS.LIST,
           {
             collection: 'users',
@@ -149,7 +149,7 @@ class RoutingServiceImpl {
       }
 
       // Look up by uniqueId
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: 'users',

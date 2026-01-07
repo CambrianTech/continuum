@@ -79,7 +79,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
       const now = Date.now();
 
       // Query all active proposals past their deadline
-      const result = await Commands.execute<DataListParams<DecisionProposalEntity>, DataListResult<DecisionProposalEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: COLLECTIONS.DECISION_PROPOSALS,

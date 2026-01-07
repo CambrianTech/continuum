@@ -4,16 +4,14 @@
  * Following the same pattern as FileTypes for consistency
  */
 
-import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
 /**
  * Base theme parameters interface
  */
-export interface ThemeParams {
-  readonly context: JTAGContext;
-  readonly sessionId: UUID;
+export interface ThemeParams extends CommandParams {
   readonly timestamp?: string;
 }
 

@@ -25,14 +25,14 @@ const DEFAULT_CONFIG = {
 
 
 
-export class DataListServerCommand<T extends BaseEntity> extends CommandBase<DataListParams<T>, DataListResult<T>> {
+export class DataListServerCommand<T extends BaseEntity> extends CommandBase<DataListParams, DataListResult<T>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-list', context, subpath, commander);
   }
 
 
-  async execute(params: DataListParams<T>): Promise<DataListResult<T>> {
+  async execute(params: DataListParams): Promise<DataListResult<T>> {
     const collection = params.collection;
 
     try {

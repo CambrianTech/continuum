@@ -195,7 +195,7 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
     }
 
     // Query all rooms to find by name
-    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,

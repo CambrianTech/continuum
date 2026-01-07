@@ -671,7 +671,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
   // Required by EntityScrollerWidget - load function using data/list command
   protected getLoadFunction(): LoadFn<UserEntity> {
     return async (cursor, limit) => {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
         collection: UserEntity.collection,
         orderBy: [{ field: 'lastActiveAt', direction: 'desc' }],
         limit: limit ?? 100

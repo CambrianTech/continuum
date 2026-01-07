@@ -41,7 +41,7 @@ export class AICostServerCommand extends AICostCommand {
       }
 
       // Query AIGenerationEntity from database using data/list - let SQL do the filtering
-      const listParams = createDataListParams<AIGenerationEntity>(
+      const listParams = createDataListParams(
         params.context,
         params.sessionId,
         {
@@ -52,7 +52,7 @@ export class AICostServerCommand extends AICostCommand {
         }
       );
 
-      const listResult = await Commands.execute<DataListParams<AIGenerationEntity>, DataListResult<AIGenerationEntity>>(
+      const listResult = await Commands.execute<DataListParams, DataListResult<AIGenerationEntity>>(
         DATA_COMMANDS.LIST,
         listParams
       );

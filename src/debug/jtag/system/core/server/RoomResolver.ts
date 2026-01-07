@@ -147,7 +147,7 @@ export class RoomResolver {
     }
 
     // Fetch from database
-    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: COLLECTIONS.ROOMS,

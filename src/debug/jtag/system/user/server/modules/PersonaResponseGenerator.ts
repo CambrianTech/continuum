@@ -1331,14 +1331,14 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
       // Prefer this.client if available (set by UserDaemon), fallback to shared instance
       const postStartTime = Date.now();
       const result = this.client
-        ? await this.client.daemons.commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+        ? await this.client.daemons.commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
             context: this.client.context,
             sessionId: this.client.sessionId,
             collection: ChatMessageEntity.collection,
             backend: 'server',
             data: responseMessage
           })
-        : await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+        : await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
             collection: ChatMessageEntity.collection,
             backend: 'server',
             data: responseMessage

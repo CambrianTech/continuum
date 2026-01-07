@@ -295,7 +295,7 @@ export class AIProviderDaemon extends DaemonBase {
       }
 
       // Persist to database using data/create command
-      await Commands.execute<DataCreateParams<AIGenerationEntity>, DataCreateResult<AIGenerationEntity>>(
+      await Commands.execute<DataCreateParams, DataCreateResult<AIGenerationEntity>>(
         DATA_COMMANDS.CREATE,
         {
           collection: 'ai_generations',
@@ -346,7 +346,7 @@ export class AIProviderDaemon extends DaemonBase {
       }
 
       // Persist to database
-      await Commands.execute<DataCreateParams<AIGenerationEntity>, DataCreateResult<AIGenerationEntity>>(
+      await Commands.execute<DataCreateParams, DataCreateResult<AIGenerationEntity>>(
         DATA_COMMANDS.CREATE,
         {
           collection: 'ai_generations',

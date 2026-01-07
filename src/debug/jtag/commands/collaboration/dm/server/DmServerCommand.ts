@@ -91,7 +91,7 @@ export class DmServerCommand extends DmCommand {
     const callerIdFromParams = (params as any).callerId || (params as any).personaId;
 
     if (callerIdFromParams) {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,
@@ -112,7 +112,7 @@ export class DmServerCommand extends DmCommand {
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,
@@ -143,7 +143,7 @@ export class DmServerCommand extends DmCommand {
 
     for (const ref of participantRefs) {
       // Try by ID first
-      let result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      let result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,
@@ -160,7 +160,7 @@ export class DmServerCommand extends DmCommand {
       }
 
       // Try by uniqueId
-      result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,
@@ -195,7 +195,7 @@ export class DmServerCommand extends DmCommand {
     params: DmParams
   ): Promise<RoomEntity | null> {
     // Phase 1: Try by uniqueId (fast path)
-    const byUniqueId = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+    const byUniqueId = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
@@ -212,7 +212,7 @@ export class DmServerCommand extends DmCommand {
 
     // Phase 2: Search direct/private rooms and match by member set
     // This handles cases where user UUIDs changed (e.g., after reseed)
-    const directRooms = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+    const directRooms = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
@@ -297,7 +297,7 @@ export class DmServerCommand extends DmCommand {
     room.tags = ['dm', 'private'];
 
     // Store using data/create
-    const createResult = await Commands.execute<DataCreateParams<RoomEntity>, DataCreateResult<RoomEntity>>(
+    const createResult = await Commands.execute<DataCreateParams, DataCreateResult<RoomEntity>>(
       DATA_COMMANDS.CREATE,
       {
         collection: RoomEntity.collection,

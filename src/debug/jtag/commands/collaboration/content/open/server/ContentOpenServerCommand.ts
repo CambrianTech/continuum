@@ -31,7 +31,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       const userId = params.userId;
 
       // 1. Load user's UserStateEntity from database
-      const listResult = await Commands.execute<DataListParams<UserStateEntity>, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: 'user_states',
         filter: { userId },
         limit: 1

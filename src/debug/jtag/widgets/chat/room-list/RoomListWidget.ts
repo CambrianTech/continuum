@@ -77,7 +77,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   // Required by EntityScrollerWidget - load function using data/list command
   protected getLoadFunction(): LoadFn<RoomEntity> {
     return async (cursor, limit) => {
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
         collection: RoomEntity.collection,
         orderBy: [{ field: 'name', direction: 'asc' }],
         limit: limit ?? 100

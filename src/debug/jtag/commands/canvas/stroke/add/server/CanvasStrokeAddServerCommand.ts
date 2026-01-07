@@ -127,7 +127,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
   private async notifyCanvasRoom(stroke: CanvasStrokeEntity, params: CanvasStrokeAddParams): Promise<void> {
     try {
       // Find the canvas room
-      const roomResult = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+      const roomResult = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: RoomEntity.collection,
@@ -169,7 +169,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       };
 
       // Store message
-      await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
+      await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(
         DATA_COMMANDS.CREATE,
         {
           collection: ChatMessageEntity.collection,
