@@ -1,240 +1,113 @@
 /**
  * Console Daemon - Server Implementation
- * 
- * Server-specific console daemon that handles server console logging and file writes.
+ *
+ * Server-specific console daemon that delegates to Rust logger worker for efficient I/O.
+ * NO file I/O in TypeScript - all writes go through Unix socket to Rust.
  */
 
 import { ConsoleDaemon } from '../shared/ConsoleDaemon';
 import type { ConsolePayload } from '../shared/ConsoleDaemon';
-import { SYSTEM_SCOPES, shouldDualScope } from '../../../system/core/types/SystemScopes';
-import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import { shouldDualScope } from '../../../system/core/types/SystemScopes';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
+import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
-  private symlinkWarningShown = false;
-  private currentUserSymlinkWarningShown = false;
-  private lastCurrentUserTarget = '';
-  private currentUserUpdateInProgress = false;
+  private readonly SOCKET_PATH = '/tmp/jtag-logger-worker.sock';
+  private loggerClient: LoggerWorkerClient | null = null;
+  private connectionAttempted = false;
+  private connectionFailed = false;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
 
-    // Set up file-based logging using class name automatically
-    // Logs go to .continuum/jtag/logs/system/daemons/{ClassName}.log
-    // NOTE: Future LoggerDaemon will run in separate process(es) for log aggregation
     const className = this.constructor.name;
     this.log = Logger.create(className, `daemons/${className}`);
   }
-  
-  
-  // setupConsoleInterception() is now handled by the base class
 
   /**
-   * Process console payload - server implementation with dual-scope logging
+   * Initialize and connect to Rust logger worker
+   */
+  protected override async initialize(): Promise<void> {
+    await super.initialize();
+
+    // Try to connect to Rust logger worker
+    await this.connectToRustWorker();
+  }
+
+  private async connectToRustWorker(): Promise<void> {
+    if (this.connectionAttempted) return;
+    this.connectionAttempted = true;
+
+    try {
+      this.loggerClient = new LoggerWorkerClient({
+        socketPath: this.SOCKET_PATH,
+        timeout: 5000,
+        userId: 'console-daemon'
+      });
+
+      await this.loggerClient.connect();
+      this.originalConsole.log(`🦀 ${this.toString()}: Connected to Rust logger worker`);
+    } catch (error) {
+      // Rust worker not running - fall back to no-op (logs still go to console)
+      this.connectionFailed = true;
+      this.loggerClient = null;
+      this.originalConsole.warn(`⚠️ ${this.toString()}: Rust logger worker not available - console logs will not be persisted to files`);
+    }
+  }
+
+  /**
+   * Map console log level to worker log level ('log' -> 'info')
+   */
+  private mapLogLevel(level: string): WorkerLogLevel {
+    return level === 'log' ? 'info' : level as WorkerLogLevel;
+  }
+
+  /**
+   * Process console payload - send to Rust logger worker
+   * FAST: No file I/O in TypeScript, just IPC to Rust
    */
   protected async processConsolePayload(consolePayload: ConsolePayload): Promise<void> {
-    // Always write to system logs
-    await this.writeToSystemLogs(consolePayload);
-    
-    // Don't create session directories for server context UUIDs
-    if (consolePayload.sessionId === this.context.uuid) {
-      return;
+    // Skip if no Rust worker connection
+    if (!this.loggerClient || this.connectionFailed) {
+      return; // Logs still went to console, just not persisted
     }
-    
-    // Write to session logs for real client sessions
-    if (shouldDualScope(consolePayload.sessionId)) {
-      await this.writeToSessionLogs(consolePayload);
-    }
-    
-    // Error monitoring
-    if (consolePayload.level === 'error') {
-      await this.notifyErrorMonitoring(consolePayload);
-    }
-  }
 
-  private async writeToSystemLogs(consolePayload: ConsolePayload): Promise<void> {
+    const workerLevel = this.mapLogLevel(consolePayload.level);
+
     try {
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const logDir = path.join(continuumPath, 'jtag', 'sessions', 'system', SYSTEM_SCOPES.SYSTEM, 'logs');
-      await fs.mkdir(logDir, { recursive: true });
-      
-      await this.ensureSystemSymlink(continuumPath);
-      await this.writeLogFiles(logDir, consolePayload);
+      // Send to Rust worker for efficient batched file I/O
+      await this.loggerClient.writeLog({
+        category: `system/${consolePayload.context.environment}`,
+        level: workerLevel,
+        component: consolePayload.component,
+        message: consolePayload.message,
+        args: consolePayload.data ? [consolePayload.data] : undefined
+      });
 
+      // Session logs (if applicable)
+      if (consolePayload.sessionId !== this.context.uuid && shouldDualScope(consolePayload.sessionId)) {
+        await this.loggerClient.writeLog({
+          category: `sessions/${consolePayload.sessionId}`,
+          level: workerLevel,
+          component: consolePayload.component,
+          message: consolePayload.message,
+          args: consolePayload.data ? [consolePayload.data] : undefined
+        });
+      }
     } catch (error) {
-      this.log.error('ConsoleDaemon: Failed to write system logs:', error);
-    }
-  }
-
-  private async writeToSessionLogs(consolePayload: ConsolePayload): Promise<void> {
-    try {
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      const category = 'user';
-      const logDir = path.join(continuumPath, 'jtag', 'sessions', category, consolePayload.sessionId, 'logs');
-      await fs.mkdir(logDir, { recursive: true });
-      
-      await this.ensureCurrentUserSymlink(continuumPath, category, consolePayload.sessionId);
-      await this.writeLogFiles(logDir, consolePayload);
-
-    } catch (error) {
-      this.log.error('ConsoleDaemon: Failed to write session logs:', error);
-    }
-  }
-
-  private async ensureSystemSymlink(continuumPath: string): Promise<void> {
-    try {
-      const symlinkPath = path.join(continuumPath, 'jtag', 'system');
-      const targetPath = `sessions/system/${SYSTEM_SCOPES.SYSTEM}`;
-      
-      // Check if symlink already exists and points to the correct target
-      try {
-        const stats = await fs.lstat(symlinkPath);
-        if (stats.isSymbolicLink()) {
-          const linkTarget = await fs.readlink(symlinkPath);
-          if (linkTarget === targetPath) {
-            // Symlink already exists and points to correct target - no action needed
-            return;
-          }
-          // Symlink exists but points to wrong target - remove it
-          await fs.unlink(symlinkPath);
-          this.log.info(`🔗 ${this.toString()}: Removed outdated system symlink (was: ${linkTarget})`);
-        } else {
-          // Path exists but is not a symlink - remove it
-          await fs.rm(symlinkPath, { recursive: true, force: true });
-          this.log.info(`🔗 ${this.toString()}: Removed non-symlink at system path`);
-        }
-      } catch (checkError: unknown) {
-        // Path doesn't exist or other error - that's fine, we'll create it
-        const errorCode = (checkError as { code?: string })?.code;
-        if (checkError instanceof Error && errorCode && errorCode !== 'ENOENT') {
-          this.log.info(`🔗 ${this.toString()}: Symlink check warning (continuing): ${checkError.message}`);
-        }
-      }
-
-      // Create the symlink (path should be clear now)
-      await fs.symlink(targetPath, symlinkPath);
-      this.log.info(`🔗 ${this.toString()}: Created system symlink: ${symlinkPath} -> ${targetPath}`);
-      
-    } catch (error: unknown) {
-      // Don't fail the whole operation if symlink creation fails - this is non-critical
-      // Special handling for EEXIST - this is normal and expected
-      if (error instanceof Error && error.message.includes('EEXIST: file already exists')) {
-        // Symlink already exists - this is fine, no need to report
-        return;
-      }
-      
-      // Only warn once for other errors to avoid log spam
-      if (!this.symlinkWarningShown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.log.warn(`ConsoleDaemon: Symlink creation failed (non-critical):`, errorMessage);
-        this.symlinkWarningShown = true;
+      // Don't spam console on every write failure - just note connection lost
+      if (!this.connectionFailed) {
+        this.connectionFailed = true;
+        this.originalConsole.warn(`⚠️ ${this.toString()}: Lost connection to Rust logger worker`);
       }
     }
-  }
-
-  private async ensureCurrentUserSymlink(continuumPath: string, category: string, sessionId: string): Promise<void> {
-    try {
-      const symlinkPath = path.join(continuumPath, 'jtag', 'currentUser');
-      const targetPath = `sessions/${category}/${sessionId}`;
-      
-      // CRITICAL FIX: Always check current symlink target FIRST, regardless of cache
-      // This prevents unnecessary work when symlink already points to correct target
-      try {
-        const stats = await fs.lstat(symlinkPath);
-        if (stats.isSymbolicLink()) {
-          const currentTarget = await fs.readlink(symlinkPath);
-          if (currentTarget === targetPath) {
-            // Symlink already exists and points to correct target - NO ACTION NEEDED
-            this.lastCurrentUserTarget = targetPath;
-            return;
-          }
-        }
-      } catch (checkError: unknown) {
-        // Path doesn't exist - that's fine, we'll create it below
-        const errorCode = (checkError as { code?: string })?.code;
-        if (checkError instanceof Error && errorCode !== 'ENOENT') {
-          this.log.info(`🔗 ${this.toString()}: Symlink check warning: ${checkError.message}`);
-        }
-      }
-      
-      // Prevent concurrent updates that can cause race conditions
-      if (this.currentUserUpdateInProgress) {
-        return;
-      }
-      
-      this.currentUserUpdateInProgress = true;
-      
-      try {
-        // Only now do we need to update the symlink
-        try {
-          const stats = await fs.lstat(symlinkPath);
-          if (stats.isSymbolicLink()) {
-            const linkTarget = await fs.readlink(symlinkPath);
-            // Remove existing symlink (we know it's wrong from check above)
-            await fs.unlink(symlinkPath);
-            this.log.info(`🔗 ${this.toString()}: Removed outdated currentUser symlink (was: ${linkTarget})`);
-          } else {
-            // Path exists but is not a symlink - remove it
-            await fs.rm(symlinkPath, { recursive: true, force: true });
-            this.log.info(`🔗 ${this.toString()}: Removed non-symlink at currentUser path`);
-          }
-        } catch (removeError: unknown) {
-          // Path doesn't exist - that's fine
-          const errorCode = (removeError as { code?: string })?.code;
-          if (removeError instanceof Error && errorCode !== 'ENOENT') {
-            this.log.info(`🔗 ${this.toString()}: Symlink removal warning: ${removeError.message}`);
-          }
-        }
-
-        // Create the symlink
-        await fs.symlink(targetPath, symlinkPath);
-        this.lastCurrentUserTarget = targetPath;
-        this.log.info(`🔗 ${this.toString()}: Updated currentUser symlink: ${symlinkPath} -> ${targetPath}`);
-        
-      } finally {
-        this.currentUserUpdateInProgress = false;
-      }
-      
-    } catch (error: unknown) {
-      this.currentUserUpdateInProgress = false;
-      
-      // Don't fail the whole operation if symlink creation fails - this is non-critical
-      if (error instanceof Error && error.message.includes('EEXIST: file already exists')) {
-        // Symlink already exists - this is fine, no need to report
-        return;
-      }
-      
-      // Only warn once for other errors to avoid log spam
-      if (!this.currentUserSymlinkWarningShown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.log.warn(`ConsoleDaemon: CurrentUser symlink creation failed (non-critical):`, errorMessage);
-        this.currentUserSymlinkWarningShown = true;
-      }
-    }
-  }
-
-  private async writeLogFiles(logDir: string, consolePayload: ConsolePayload): Promise<void> {
-    // Write to both text and JSON files
-    const baseName = `${consolePayload.context.environment}-console-${consolePayload.level}`;
-    const txtFile = path.join(logDir, `${baseName}.log`);
-    const jsonFile = path.join(logDir, `${baseName}.json`);
-    
-    // Append to text log
-    const logLine = `${consolePayload.timestamp} [${consolePayload.component}] ${consolePayload.message}\n`;
-    await fs.appendFile(txtFile, logLine);
-    
-    // Append to JSON log
-    const jsonEntry = JSON.stringify(consolePayload) + '\n';
-    await fs.appendFile(jsonFile, jsonEntry);
   }
 
   private async notifyErrorMonitoring(consolePayload: ConsolePayload): Promise<void> {
-    // Send errors to monitoring systems
-    // NOTE: Future LoggerDaemon will handle log aggregation in separate process(es)
-    this.log.info(`🚨 Error monitoring notification:`, consolePayload.message);
+    // Future: Send to error monitoring service
+    // For now, errors are already logged via Rust worker
   }
 }

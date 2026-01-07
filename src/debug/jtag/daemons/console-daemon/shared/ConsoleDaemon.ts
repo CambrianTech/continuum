@@ -436,52 +436,28 @@ export abstract class ConsoleDaemon extends DaemonBase {
     }
   }
 
+  // Pre-compiled skip pattern for FAST filtering (check BEFORE serialization)
+  private static readonly SKIP_PATTERN = /ConsoleDaemon|websocket-server:|JTAGRouter|WebSocket|CommandDaemon|HealthManager|EventSystem|Transport|Routing|📨|📤|🏠|🔍|📢|🎯|📡/;
+
   /**
    * Process raw console call arguments into ConsolePayload
    * Shared logic for parsing and creating payload
+   * OPTIMIZED: Fast-path filtering BEFORE expensive serialization
    */
   protected processConsoleCall(level: LogLevel, args: unknown[]): void {
-    const message = args.map(arg => 
+    // FAST PATH: Check first arg for skip patterns BEFORE serialization
+    // Most logs start with identifying text, so we can skip early
+    const firstArg = args[0];
+    if (typeof firstArg === 'string' && ConsoleDaemon.SKIP_PATTERN.test(firstArg)) {
+      return; // Skip without serialization
+    }
+
+    const message = args.map(arg =>
       this.serializeArgument(arg)
     ).join(' ');
 
-    // Skip only internal daemon messages that cause infinite loops - be surgical!
-    const skipPatterns = [
-      // Console daemon self-reference (critical for preventing loops)
-      'ConsoleDaemon', '🎧 ConsoleDaemon',
-      
-      // CRITICAL FIX: Exact patterns from infinite loop logs
-      '📨 websocket-server:', '📨 JTAGRouterDynamic:', '🏠 JTAGRouterDynamic',
-      'JTAGRouterDynamicServer[universal-router@server:', '🔍 JTAGRouterDynamicServer[',
-      '📢 JTAGRouterDynamicServer[', '🎯 JTAGRouterDynamicServer[',
-      'Processing message with intelligent routing:', 'Routing locally to server/console',
-      
-      // Message routing operations (critical for preventing loops) - COMPREHENSIVE
-      'JTAGRouter[', 'JTAGMessageQueue[', 'Routing message', 'Routing locally',
-      'Queued message', 'Delivered queued message', 'Using hierarchical routing',
-      'Sending response', 'Response sent', 'Skipping flush - connection unhealthy',
-      
-      // WebSocket operations (prevent loops) - EXPANDED
-      '📤 WebSocket Server', '📨 WebSocket Server', '📤 WebSocket Client',
-      'Broadcasting message to', 'clients', 'Message sent to', 'Received message from client',
-      
-      // CommandDaemon operations (prevent noise)
-      '📨 CommandDaemonServer', 'Handling message to server/commands',
-      
-      // Transport internal operations (prevent loops) - COMPREHENSIVE
-      'Transport Factory', 'Message handler connected',
-      'websocket-client:', 'websocket-server:', 'Sending message to server',
-      'Received message from client', 'WebSocket transport', 'HTTP transport',
-      
-      // Health/ping operations (prevent noise)
-      'HealthManager', 'Ping successful', 'Connection established',
-      
-      // Event system internal operations (prevent loops)
-      '📡 JTAGEventSystem: Emitting', 'JTAGEventSystem: Processing'
-    ];
-    
-    if (skipPatterns.some(pattern => message.includes(pattern))) {
-      //this.originalConsole.log(message);
+    // Double-check full message (some patterns span multiple args)
+    if (ConsoleDaemon.SKIP_PATTERN.test(message)) {
       return;
     }
 
