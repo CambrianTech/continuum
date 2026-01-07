@@ -60,11 +60,15 @@ export class SecretManager {
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
-      console.log('🔐 SecretManager: Already initialized');
+      if (process.env.JTAG_VERBOSE === 'true') {
+        console.log('🔐 SecretManager: Already initialized');
+      }
       return;
     }
 
-    console.log('🔐 SecretManager: Initializing secrets...');
+    if (process.env.JTAG_VERBOSE === 'true') {
+      console.log('🔐 SecretManager: Initializing secrets...');
+    }
 
     // Load from ~/.continuum/config.env (primary source)
     await this.loadFromHomeConfig();
@@ -76,7 +80,9 @@ export class SecretManager {
     await this.loadFromProjectEnv();
 
     this.isInitialized = true;
-    console.log(`✅ SecretManager: Loaded ${this.secrets.size} secrets`);
+    if (process.env.JTAG_VERBOSE === 'true') {
+      console.log(`✅ SecretManager: Loaded ${this.secrets.size} secrets`);
+    }
   }
 
   /**

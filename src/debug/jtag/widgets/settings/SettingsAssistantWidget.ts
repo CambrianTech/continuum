@@ -42,7 +42,7 @@ export class SettingsAssistantWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🤖 SettingsAssistant: Initializing...');
+    this.verbose() && console.log('🤖 SettingsAssistant: Initializing...');
 
     // Subscribe to settings events
     this.unsubscribers.push(
@@ -75,7 +75,7 @@ export class SettingsAssistantWidget extends BaseWidget {
     this.addMessage('info', '👋 I\'m here to help you configure your AI providers. Click "Test" on any provider and I\'ll help troubleshoot any issues.');
 
     this.renderWidget();
-    console.log('🤖 SettingsAssistant: Subscribed to settings events');
+    this.verbose() && console.log('🤖 SettingsAssistant: Subscribed to settings events');
   }
 
   private addMessage(type: 'info' | 'success' | 'error' | 'help', text: string): void {
@@ -224,7 +224,7 @@ Give a brief, helpful troubleshooting tip (2-3 sentences max). Focus on the most
       unsub();
     }
     this.unsubscribers = [];
-    console.log('🤖 SettingsAssistant: Cleaned up subscriptions');
+    this.verbose() && console.log('🤖 SettingsAssistant: Cleaned up subscriptions');
 
     await super.disconnectedCallback();
   }

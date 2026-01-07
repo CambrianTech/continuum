@@ -52,7 +52,7 @@ export class ThemeWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎨 ThemeWidget: Initializing...');
+    this.verbose() && console.log('🎨 ThemeWidget: Initializing...');
 
     try {
       // Discover all available themes dynamically
@@ -64,7 +64,7 @@ export class ThemeWidget extends BaseWidget {
         : null;
 
       this.currentTheme = savedTheme || 'base';
-      console.log(`🎨 ThemeWidget: Using theme '${this.currentTheme}' from localStorage`);
+      this.verbose() && console.log(`🎨 ThemeWidget: Using theme '${this.currentTheme}' from localStorage`);
 
     } catch (error) {
       console.error('❌ ThemeWidget: Theme discovery failed:', error);
@@ -74,7 +74,7 @@ export class ThemeWidget extends BaseWidget {
     // Emit Positron context for AI awareness
     this.emitPositronContext();
 
-    console.log('✅ ThemeWidget: Initialization complete');
+    this.verbose() && console.log('✅ ThemeWidget: Initialization complete');
   }
 
   /**
@@ -99,11 +99,11 @@ export class ThemeWidget extends BaseWidget {
   }
 
   protected async renderWidget(): Promise<void> {
-    console.log(`🎨 ThemeWidget: renderWidget() - currentTheme: ${this.currentTheme}`);
+    this.verbose() && console.log(`🎨 ThemeWidget: renderWidget() - currentTheme: ${this.currentTheme}`);
 
     // Load theme CSS if not already in DOM (uses this.currentTheme set from localStorage in init)
     if (!this.themeStyleElement) {
-      console.log(`🎨 ThemeWidget: Loading theme '${this.currentTheme}' CSS`);
+      this.verbose() && console.log(`🎨 ThemeWidget: Loading theme '${this.currentTheme}' CSS`);
       await this.setTheme(this.currentTheme);
     }
 
@@ -119,7 +119,7 @@ export class ThemeWidget extends BaseWidget {
     // Setup event listeners
     this.setupThemeControls();
 
-    console.log('✅ ThemeWidget: Rendered');
+    this.verbose() && console.log('✅ ThemeWidget: Rendered');
   }
 
   private renderContent(): void {
@@ -153,14 +153,14 @@ export class ThemeWidget extends BaseWidget {
     // Just clear our reference so we can re-acquire it on next init
     this.themeStyleElement = null;
 
-    console.log('✅ ThemeWidget: Cleanup complete (theme CSS preserved in document.head)');
+    this.verbose() && console.log('✅ ThemeWidget: Cleanup complete (theme CSS preserved in document.head)');
   }
 
   /**
    * Switch theme - API for external control
    */
   async setTheme(themeName: string): Promise<void> {
-    console.log(`🎨 ThemeWidget: Switching to theme '${themeName}'`);
+    this.verbose() && console.log(`🎨 ThemeWidget: Switching to theme '${themeName}'`);
     this.currentTheme = themeName;
 
     // Reload all theme CSS and inject into document head
@@ -179,7 +179,7 @@ export class ThemeWidget extends BaseWidget {
       // Update Positron context with new theme
       this.emitPositronContext();
 
-      console.log('✅ ThemeWidget: Theme switched, injected globally, and saved to UserState');
+      this.verbose() && console.log('✅ ThemeWidget: Theme switched, injected globally, and saved to UserState');
 
     } catch (error) {
       console.error('❌ ThemeWidget: Failed to switch theme:', error);
@@ -192,7 +192,7 @@ export class ThemeWidget extends BaseWidget {
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
-      console.log('🎨 ThemeWidget: Injecting theme CSS into document head...');
+      this.verbose() && console.log('🎨 ThemeWidget: Injecting theme CSS into document head...');
 
       // Check for existing theme style elements in DOM (may exist from previous widget instance)
       const existingStyles = document.querySelectorAll('style[id^="jtag-theme-"]');
@@ -205,7 +205,7 @@ export class ThemeWidget extends BaseWidget {
 
       document.head.appendChild(this.themeStyleElement);
 
-      console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
+      this.verbose() && console.log(`✅ ThemeWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
 
       // Dispatch theme change event
       this.dispatchEvent(new CustomEvent('theme-changed', {
@@ -224,7 +224,7 @@ export class ThemeWidget extends BaseWidget {
    */
   private async loadAllThemeCSS(): Promise<string> {
     try {
-      console.log('🎨 ThemeWidget: Loading ALL theme CSS (base + theme)');
+      this.verbose() && console.log('🎨 ThemeWidget: Loading ALL theme CSS (base + theme)');
 
       // Load base CSS files from themes/base/
       const baseStyles = await this.loadDirectoryStyles('base');
@@ -237,7 +237,7 @@ export class ThemeWidget extends BaseWidget {
       // Combine base + theme styles
       const combinedCSS = baseStyles + themeStyles;
 
-      console.log(`✅ ThemeWidget: Combined theme CSS loaded (${combinedCSS.length} chars)`);
+      this.verbose() && console.log(`✅ ThemeWidget: Combined theme CSS loaded (${combinedCSS.length} chars)`);
       return combinedCSS;
 
     } catch (error) {
@@ -259,7 +259,7 @@ export class ThemeWidget extends BaseWidget {
         try {
           // Use BaseWidget's protected executeCommand method - same as loadResource does internally
           const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
-          console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
+          this.verbose() && console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
 
           const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
             filepath: filePath
@@ -269,9 +269,9 @@ export class ThemeWidget extends BaseWidget {
           const fileData = (result as FileLoadResult & { commandResult?: FileLoadResult }).commandResult ?? result;
           if (result.success && fileData.success && fileData.content) {
             combinedStyles += `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
-            console.log(`✅ ThemeWidget: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
+            this.verbose() && console.log(`✅ ThemeWidget: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
           } else {
-            console.log(`⚠️ ThemeWidget: ${directoryName}/${fileName} not found - skipping`);
+            this.verbose() && console.log(`⚠️ ThemeWidget: ${directoryName}/${fileName} not found - skipping`);
           }
         } catch (error) {
           console.warn(`⚠️ ThemeWidget: Could not load ${directoryName}/${fileName}:`, error);
@@ -325,14 +325,14 @@ export class ThemeWidget extends BaseWidget {
       card.addEventListener('click', async () => {
         const themeName = (card as HTMLElement).dataset.theme;
         if (themeName && themeName !== this.currentTheme) {
-          console.log(`🎨 ThemeWidget: Theme card clicked - switching to '${themeName}'`);
+          this.verbose() && console.log(`🎨 ThemeWidget: Theme card clicked - switching to '${themeName}'`);
           // Use setTheme directly - it handles CSS loading, persistence to localStorage AND UserState
           await this.setTheme(themeName);
         }
       });
     });
 
-    console.log('✅ ThemeWidget: Theme controls set up successfully');
+    this.verbose() && console.log('✅ ThemeWidget: Theme controls set up successfully');
   }
 
   /**
@@ -340,13 +340,13 @@ export class ThemeWidget extends BaseWidget {
    */
   private async saveThemeToUserState(themeName: string): Promise<void> {
     try {
-      console.log(`🔧 ThemeWidget: Saving theme '${themeName}' to UserState`);
+      this.verbose() && console.log(`🔧 ThemeWidget: Saving theme '${themeName}' to UserState`);
 
       // 1. Save to localStorage immediately for instant persistence
       if (LocalStorageStateManager.isAvailable()) {
         const success = LocalStorageStateManager.setTheme(themeName);
         if (success) {
-          console.log(`✅ ThemeWidget: Theme '${themeName}' saved to localStorage`);
+          this.verbose() && console.log(`✅ ThemeWidget: Theme '${themeName}' saved to localStorage`);
         } else {
           console.warn('⚠️ ThemeWidget: Failed to save theme to localStorage');
         }
@@ -362,7 +362,7 @@ export class ThemeWidget extends BaseWidget {
         return;
       }
 
-      console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
+      this.verbose() && console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
 
       // Update existing UserState's preferences
       await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>(DATA_COMMANDS.UPDATE, {
@@ -377,7 +377,7 @@ export class ThemeWidget extends BaseWidget {
         }
       });
 
-      console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState`);
+      this.verbose() && console.log(`✅ ThemeWidget: Theme '${themeName}' saved to UserState`);
 
 
     } catch (error) {
@@ -390,16 +390,16 @@ export class ThemeWidget extends BaseWidget {
    */
   private async loadThemeFromUserState(): Promise<string | null> {
     try {
-      console.log('🔧 ThemeWidget: Loading theme using hybrid persistence');
+      this.verbose() && console.log('🔧 ThemeWidget: Loading theme using hybrid persistence');
 
       // 1. Try localStorage first for instant response
       if (LocalStorageStateManager.isAvailable()) {
         const localTheme = LocalStorageStateManager.getTheme();
         if (localTheme) {
-          console.log(`✅ ThemeWidget: Loaded theme '${localTheme}' from localStorage`);
+          this.verbose() && console.log(`✅ ThemeWidget: Loaded theme '${localTheme}' from localStorage`);
           return localTheme;
         }
-        console.log('ℹ️ ThemeWidget: No theme found in localStorage, trying UserState');
+        this.verbose() && console.log('ℹ️ ThemeWidget: No theme found in localStorage, trying UserState');
       }
 
       // 2. Fall back to UserState from localStorage for persistence
@@ -407,7 +407,7 @@ export class ThemeWidget extends BaseWidget {
       const { BrowserDeviceIdentity } = await import('../../system/core/browser/BrowserDeviceIdentity');
       const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
 
-      console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
+      this.verbose() && console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
 
       // Find the user's UserState in localStorage (get most recent first)
       const userStates = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
@@ -428,19 +428,19 @@ export class ThemeWidget extends BaseWidget {
         const savedTheme = preferences.theme;
 
         if (typeof savedTheme === 'string') {
-          console.log(`✅ ThemeWidget: Loaded theme '${savedTheme}' from UserState database`);
+          this.verbose() && console.log(`✅ ThemeWidget: Loaded theme '${savedTheme}' from UserState database`);
 
           // Sync back to localStorage for faster future access
           if (LocalStorageStateManager.isAvailable()) {
             LocalStorageStateManager.setTheme(savedTheme);
-            console.log(`🔄 ThemeWidget: Synced theme '${savedTheme}' to localStorage`);
+            this.verbose() && console.log(`🔄 ThemeWidget: Synced theme '${savedTheme}' to localStorage`);
           }
 
           return savedTheme;
         }
       }
 
-      console.log('ℹ️ ThemeWidget: No saved theme found in either localStorage or UserState');
+      this.verbose() && console.log('ℹ️ ThemeWidget: No saved theme found in either localStorage or UserState');
       return null;
 
     } catch (error) {

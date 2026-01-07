@@ -9,6 +9,9 @@
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { ChatContentType } from '../shared/ChatMessagePayload';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export interface AdapterRenderOptions {
   readonly enableIntersectionObserver?: boolean;
   readonly lazyLoadContent?: boolean;
@@ -204,7 +207,7 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
    */
   protected setupIntersectionObserver(element: HTMLElement): void {
     // Future: Implement lazy loading with intersection observer
-    console.log(`🔄 Setting up intersection observer for ${this.contentType}`);
+    verbose() && console.log(`🔄 Setting up intersection observer for ${this.contentType}`);
   }
 
   /**
@@ -236,7 +239,7 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
   async handleAIEdit(editInstructions: any): Promise<void> {
     if (!this.options.aiEditingEnabled) return;
 
-    console.log(`🤖 AI editing ${this.contentType}:`, editInstructions);
+    verbose() && console.log(`🤖 AI editing ${this.contentType}:`, editInstructions);
     this.hooks.onAIEdit?.(editInstructions);
   }
 }

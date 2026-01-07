@@ -45,23 +45,23 @@ export class SidebarWidget extends BaseSidePanelWidget {
   // === Lifecycle ===
 
   protected async onPanelInitialize(): Promise<void> {
-    console.log('🎯 SidebarWidget: Initializing...');
+    this.verbose() && console.log('🎯 SidebarWidget: Initializing...');
 
     // Detect initial content type from URL
     const initialContentType = this.detectContentTypeFromUrl();
-    console.log(`📐 SidebarWidget: Initial content type from URL: ${initialContentType}`);
+    this.verbose() && console.log(`📐 SidebarWidget: Initial content type from URL: ${initialContentType}`);
     this.updateLayout(initialContentType);
 
     // Listen for layout changes when content type switches
     Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
-      console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
+      this.verbose() && console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
       this.updateLayout(payload.contentType);
     });
 
     // Also listen for content:switched events as backup
     Events.subscribe('content:switched', (data: { contentType?: string }) => {
       if (data.contentType && data.contentType !== this.currentContentType) {
-        console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
+        this.verbose() && console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
         this.updateLayout(data.contentType);
       }
     });
@@ -93,7 +93,7 @@ export class SidebarWidget extends BaseSidePanelWidget {
     const layout = getLayoutForContentType(contentType);
     this.leftWidgets = getWidgetsForPosition(layout, 'left');
 
-    console.log(`📐 SidebarWidget: Got ${this.leftWidgets.length} left widgets for ${contentType}:`,
+    this.verbose() && console.log(`📐 SidebarWidget: Got ${this.leftWidgets.length} left widgets for ${contentType}:`,
       this.leftWidgets.map(w => w.widget));
 
     // Re-render with new widgets - call the inherited rendering method
@@ -106,7 +106,7 @@ export class SidebarWidget extends BaseSidePanelWidget {
   }
 
   protected async onPanelCleanup(): Promise<void> {
-    console.log('🧹 SidebarWidget: Cleanup complete');
+    this.verbose() && console.log('🧹 SidebarWidget: Cleanup complete');
   }
 
   // === Content Rendering ===
@@ -179,7 +179,7 @@ export class SidebarWidget extends BaseSidePanelWidget {
   }
 
   protected async onPanelRendered(): Promise<void> {
-    console.log('✅ SidebarWidget: Rendered');
+    this.verbose() && console.log('✅ SidebarWidget: Rendered');
   }
 }
 

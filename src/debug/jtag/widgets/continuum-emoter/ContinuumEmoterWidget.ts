@@ -12,6 +12,9 @@ import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversa
 import { OrbStateManager, type ConnectionStatus, type HealthState } from './OrbStateManager';
 import { TRANSPORT_EVENTS } from '../../system/transports/shared/TransportEvents';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: ConnectionStatus = 'initializing';
   private health: HealthState = 'unknown';
@@ -34,7 +37,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎭 ContinuumEmoter: Initializing...');
+    verbose() && console.log('🎭 ContinuumEmoter: Initializing...');
 
     this.subscribeToTransportEvents();  // Listen for instant connection state changes
     this.subscribeToAIEvents();
@@ -42,10 +45,10 @@ export class ContinuumEmoterWidget extends BaseWidget {
     this.subscribeToEmotionEvents();
 
     // Add test message to verify scroller works
-    console.log('🎭 ContinuumEmoter: Adding test message...');
+    verbose() && console.log('🎭 ContinuumEmoter: Adding test message...');
     this.addStatusMessage('System: initialized');
 
-    console.log('✅ ContinuumEmoter: Initialized');
+    verbose() && console.log('✅ ContinuumEmoter: Initialized');
   }
 
   protected override async onWidgetCleanup(): Promise<void> {
@@ -95,8 +98,8 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Subscribe to cognition pipeline events
    */
   private subscribeToCognitionEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to cognition events...');
-    console.log('🎭 ContinuumEmoter: COGNITION_EVENTS constant:', COGNITION_EVENTS);
+    verbose() && console.log('🎭 ContinuumEmoter: Subscribing to cognition events...');
+    verbose() && console.log('🎭 ContinuumEmoter: COGNITION_EVENTS constant:', COGNITION_EVENTS);
 
     Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
       // Show stage completion in status feed
@@ -112,7 +115,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Subscribe to emotion events (emoji + color overlay)
    */
   private subscribeToEmotionEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to emotion events...');
+    verbose() && console.log('🎭 ContinuumEmoter: Subscribing to emotion events...');
 
     Events.subscribe('continuum:emotion', (data: { emoji: string; color: string; duration: number }) => {
       this.showEmotion(data.emoji, data.color, data.duration);
@@ -227,19 +230,19 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Subscribe to transport events for instant connection state updates
    */
   private subscribeToTransportEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to transport events...');
-    console.log(`🎭 ContinuumEmoter: DISCONNECTED event name = "${TRANSPORT_EVENTS.DISCONNECTED}"`);
-    console.log(`🎭 ContinuumEmoter: CONNECTED event name = "${TRANSPORT_EVENTS.CONNECTED}"`);
+    verbose() && console.log('🎭 ContinuumEmoter: Subscribing to transport events...');
+    verbose() && console.log(`🎭 ContinuumEmoter: DISCONNECTED event name = "${TRANSPORT_EVENTS.DISCONNECTED}"`);
+    verbose() && console.log(`🎭 ContinuumEmoter: CONNECTED event name = "${TRANSPORT_EVENTS.CONNECTED}"`);
 
     // Listen for instant disconnection
     Events.subscribe(TRANSPORT_EVENTS.DISCONNECTED, () => {
-      console.log('🔴 ContinuumEmoter: Received DISCONNECTED event');
+      verbose() && console.log('🔴 ContinuumEmoter: Received DISCONNECTED event');
       this.updateStatus('disconnected', 'error');
     });
 
     // Listen for instant reconnection
     Events.subscribe(TRANSPORT_EVENTS.CONNECTED, () => {
-      console.log('🟢 ContinuumEmoter: Received CONNECTED event');
+      verbose() && console.log('🟢 ContinuumEmoter: Received CONNECTED event');
       this.updateStatus('connected', 'healthy');
     });
 

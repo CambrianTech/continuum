@@ -8,6 +8,9 @@
 import type { ChatMessageEntity, MediaItem } from '../../../system/data/entities/ChatMessageEntity';
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface ImageContentData {
   readonly images: readonly MediaItem[];  // Support multiple images
   readonly caption?: string;               // Text that wasn't a placeholder
@@ -328,7 +331,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
     if (!img) return;
 
     // Future: Implement fullscreen overlay
-    console.log('🖼️ Opening fullscreen for:', img.src);
+    verbose() && console.log('🖼️ Opening fullscreen for:', img.src);
     this.hooks.onUserInteraction?.('fullscreen', { url: img.src });
   }
 
@@ -355,7 +358,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
     const img = element.querySelector('.message-image') as HTMLImageElement;
     if (!img) return;
 
-    console.log('🤖 Requesting AI description for:', img.src);
+    verbose() && console.log('🤖 Requesting AI description for:', img.src);
 
     // Future: Call AI service for image description
     // const description = await aiService.describeImage(img.src);
@@ -400,7 +403,7 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
    * Handle AI editing of image content
    */
   async handleAIEdit(editInstructions: Record<string, unknown>): Promise<void> {
-    console.log('🤖 AI editing image content:', editInstructions);
+    verbose() && console.log('🤖 AI editing image content:', editInstructions);
 
     // Future: AI can:
     // - Generate better alt text

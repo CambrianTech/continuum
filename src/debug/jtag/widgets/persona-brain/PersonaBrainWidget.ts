@@ -240,7 +240,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
   private async toggleCategoryLogging(category: string): Promise<void> {
     // Block if global logging is off
     if (!this.loggingConfig.enabled) {
-      console.log('PersonaBrainWidget: Global logging is off, enable it first');
+      this.verbose() && console.log('PersonaBrainWidget: Global logging is off, enable it first');
       return;
     }
 
@@ -1062,7 +1062,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
     this.shadowRoot.querySelectorAll('.feed-item').forEach(el => {
       el.addEventListener('click', () => {
         const eventType = (el as HTMLElement).dataset.eventType;
-        console.log('PersonaBrainWidget: Activity event clicked:', eventType);
+        this.verbose() && console.log('PersonaBrainWidget: Activity event clicked:', eventType);
         // Future: could open a detail modal or navigate to relevant log
       });
     });
@@ -1078,7 +1078,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
         e.stopPropagation(); // Don't trigger module selection
         // SVG elements use getAttribute, not dataset
         const category = el.getAttribute('data-category');
-        console.log('🔧 Log toggle clicked, category:', category);
+        this.verbose() && console.log('🔧 Log toggle clicked, category:', category);
         if (category) {
           await this.toggleCategoryLogging(category);
         }

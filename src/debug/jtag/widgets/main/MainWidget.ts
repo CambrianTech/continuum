@@ -67,7 +67,7 @@ export class MainWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎯 MainPanel: Initializing main content panel...');
+    this.verbose() && console.log('🎯 MainPanel: Initializing main content panel...');
 
     // Load recipe layouts early so ContentTypeRegistry can use them
     // This enables dynamic, recipe-driven content type → widget mapping
@@ -91,7 +91,7 @@ export class MainWidget extends BaseWidget {
     // PHASE 3BIS: Track tab visibility for temperature
     this.setupVisibilityTracking();
 
-    console.log('✅ MainPanel: Main panel initialized');
+    this.verbose() && console.log('✅ MainPanel: Main panel initialized');
   }
 
   /**
@@ -113,13 +113,13 @@ export class MainWidget extends BaseWidget {
       initialPath = defaultPath;
       // Update URL without triggering navigation
       window.history.replaceState({ path: initialPath }, '', initialPath);
-      console.log(`🔗 MainPanel: Redirected to default route: ${initialPath}`);
+      this.verbose() && console.log(`🔗 MainPanel: Redirected to default route: ${initialPath}`);
     }
 
     this.currentPath = initialPath;
     // Parse and load the content
     const { type, entityId } = parseContentPath(initialPath);
-    console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
+    this.verbose() && console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
 
     // URL → PageState → Widget (in that order)
     // Delay slightly to let the DOM render first
@@ -191,7 +191,7 @@ export class MainWidget extends BaseWidget {
         // Refresh tabs from DB
         await this.loadUserContext();
         await this.updateContentTabs();
-        console.log(`📋 MainPanel: Created tab for ${contentType}/${entityId || 'default'}`);
+        this.verbose() && console.log(`📋 MainPanel: Created tab for ${contentType}/${entityId || 'default'}`);
       } catch (err) {
         console.error(`Failed to create tab for ${contentType}:`, err);
       }
@@ -217,7 +217,7 @@ export class MainWidget extends BaseWidget {
     // Update content tabs widget with current tab data
     await this.updateContentTabs();
 
-    console.log('✅ MainPanel: Main panel rendered');
+    this.verbose() && console.log('✅ MainPanel: Main panel rendered');
   }
 
   private setupEventListeners(): void {
@@ -260,7 +260,7 @@ export class MainWidget extends BaseWidget {
       if (contentItem) {
         resolvedEntityId = contentItem.entityId;
         resolvedContentType = contentItem.type;
-        console.log(`📋 MainPanel: Found in userState - entityId="${resolvedEntityId}", type="${resolvedContentType}"`);
+        this.verbose() && console.log(`📋 MainPanel: Found in userState - entityId="${resolvedEntityId}", type="${resolvedContentType}"`);
       } else {
         console.error(`❌ MainPanel: Tab not found in userState either:`, tabId);
         return;
@@ -269,7 +269,7 @@ export class MainWidget extends BaseWidget {
 
     // Already the current tab? Skip
     if (this.userState?.contentState?.currentItemId === tabId) {
-      console.log('📋 MainPanel: Tab already current, skipping');
+      this.verbose() && console.log('📋 MainPanel: Tab already current, skipping');
       return;
     }
 
@@ -313,7 +313,7 @@ export class MainWidget extends BaseWidget {
       });
     }
 
-    console.log(`📋 MainPanel: Switched to ${resolvedContentType} tab "${label}"`);
+    this.verbose() && console.log(`📋 MainPanel: Switched to ${resolvedContentType} tab "${label}"`);
   }
 
   /**
@@ -379,7 +379,7 @@ export class MainWidget extends BaseWidget {
       }
     });
 
-    console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}, rightPanel: ${rightPanelConfig ? rightPanelConfig.room : 'hidden'}`);
+    this.verbose() && console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}, rightPanel: ${rightPanelConfig ? rightPanelConfig.room : 'hidden'}`);
   }
 
   /**
@@ -436,7 +436,7 @@ export class MainWidget extends BaseWidget {
           // No tabs left - open default chat room instead of empty state
           const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
           const defaultPath = `/chat/${defaultRoom}`;
-          console.log(`📋 MainPanel: All tabs closed, opening default ${defaultPath}`);
+          this.verbose() && console.log(`📋 MainPanel: All tabs closed, opening default ${defaultPath}`);
           this.openContentTab('chat', 'General');
           // Navigate to default room
           this.currentPath = defaultPath;
@@ -468,7 +468,7 @@ export class MainWidget extends BaseWidget {
       }).catch(err => console.error('Failed to persist tab close:', err));
     }
 
-    console.log(`📋 MainPanel: Closed tab "${contentItem.title}"`);
+    this.verbose() && console.log(`📋 MainPanel: Closed tab "${contentItem.title}"`);
   }
 
   private switchToTab(tabName: string): void {
@@ -484,7 +484,7 @@ export class MainWidget extends BaseWidget {
     // Update content view based on tab
     this.updateContentView(tabName);
     
-    console.log(`📄 MainPanel: Switched to tab: ${tabName}`);
+    this.verbose() && console.log(`📄 MainPanel: Switched to tab: ${tabName}`);
   }
 
   private updateContentView(tabName: string): void {
@@ -533,7 +533,7 @@ export class MainWidget extends BaseWidget {
       });
     }
 
-    console.log(`🔄 MainPanel: Navigated to ${type}/${entityId || 'default'}`);
+    this.verbose() && console.log(`🔄 MainPanel: Navigated to ${type}/${entityId || 'default'}`);
   }
 
   /**
@@ -548,9 +548,9 @@ export class MainWidget extends BaseWidget {
         // Determine room type based on roomId
         const roomType = roomId.startsWith('user-') ? 'user_chat' : 'private';
         await this.contentManager.createRoom(roomId, roomType);
-        console.log(`🏠 MainPanel: Created new room: ${roomId} (${roomType})`);
+        this.verbose() && console.log(`🏠 MainPanel: Created new room: ${roomId} (${roomType})`);
       } else {
-        console.log(`✅ MainPanel: Room exists: ${roomId} (${content.displayName})`);
+        this.verbose() && console.log(`✅ MainPanel: Room exists: ${roomId} (${content.displayName})`);
       }
     } catch (error) {
       console.error(`❌ MainPanel: Failed to ensure room ${roomId} exists:`, error);
@@ -562,7 +562,7 @@ export class MainWidget extends BaseWidget {
    */
   private async subscribeToPathEvents(path: string): Promise<void> {
     // Events already have path built in, so just subscribe to this path
-    console.log(`📡 MainPanel: Subscribing to events for path: ${path}`);
+    this.verbose() && console.log(`📡 MainPanel: Subscribing to events for path: ${path}`);
     // The actual event subscription would happen here
     // For now, just log that we're subscribing to path-based events
   }
@@ -583,7 +583,7 @@ export class MainWidget extends BaseWidget {
             activityId: roomId,
             present
           } as any);  // Cast to any for new command not yet in type registry
-          console.log(`🌡️ MainPanel: User ${present ? 'present' : 'left'} in room ${roomId}`);
+          this.verbose() && console.log(`🌡️ MainPanel: User ${present ? 'present' : 'left'} in room ${roomId}`);
         } catch (error) {
           // Silently ignore when disconnected - this is expected
           const isDisconnected = error instanceof Error &&
@@ -595,11 +595,11 @@ export class MainWidget extends BaseWidget {
       }
     });
 
-    console.log('👁️ MainPanel: Visibility tracking initialized');
+    this.verbose() && console.log('👁️ MainPanel: Visibility tracking initialized');
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 MainPanel: Cleanup complete');
+    this.verbose() && console.log('🧹 MainPanel: Cleanup complete');
   }
 
   /**
@@ -607,7 +607,7 @@ export class MainWidget extends BaseWidget {
    */
   private async initializeContentTabs(): Promise<void> {
     // Set up tab switching logic
-    console.log('📋 MainPanel: Content tabs initialized');
+    this.verbose() && console.log('📋 MainPanel: Content tabs initialized');
   }
 
   /**
@@ -616,7 +616,7 @@ export class MainWidget extends BaseWidget {
   private setupHeaderControlsListeners(): void {
     // Listen to theme-clicked event - opens Theme tab with integrated AI chat
     this.addEventListener('theme-clicked', () => {
-      console.log('🎨 MainPanel: Theme button clicked - opening Theme tab');
+      this.verbose() && console.log('🎨 MainPanel: Theme button clicked - opening Theme tab');
       // Opens theme-widget with embedded chat for AI assistance
       // The Theme room (DEFAULT_ROOMS.THEME) provides the chat backend
       this.openContentTab('theme', 'Theme');
@@ -624,7 +624,7 @@ export class MainWidget extends BaseWidget {
 
     // Listen to settings-clicked event - opens Settings tab with integrated AI chat
     this.addEventListener('settings-clicked', () => {
-      console.log('⚙️ MainPanel: Settings button clicked - opening Settings tab');
+      this.verbose() && console.log('⚙️ MainPanel: Settings button clicked - opening Settings tab');
       // Opens settings-widget with embedded chat for AI assistance
       // The Settings room (DEFAULT_ROOMS.SETTINGS) provides the chat backend
       this.openContentTab('settings', 'Settings');
@@ -632,7 +632,7 @@ export class MainWidget extends BaseWidget {
 
     // Listen to help-clicked event - opens Help tab with integrated AI chat
     this.addEventListener('help-clicked', () => {
-      console.log('❓ MainPanel: Help button clicked - opening Help tab');
+      this.verbose() && console.log('❓ MainPanel: Help button clicked - opening Help tab');
       // Opens help-widget with embedded chat for AI assistance
       // The Help room (DEFAULT_ROOMS.HELP) provides the chat backend
       this.openContentTab('help', 'Help');
@@ -640,11 +640,11 @@ export class MainWidget extends BaseWidget {
 
     // Listen to browser-clicked event - opens Browser tab
     this.addEventListener('browser-clicked', () => {
-      console.log('🌐 MainPanel: Browser button clicked - opening Browser tab');
+      this.verbose() && console.log('🌐 MainPanel: Browser button clicked - opening Browser tab');
       this.openContentTab('browser', 'Browser');
     });
 
-    console.log('🔗 MainPanel: Header controls listeners registered');
+    this.verbose() && console.log('🔗 MainPanel: Header controls listeners registered');
   }
 
   /**
@@ -681,7 +681,7 @@ export class MainWidget extends BaseWidget {
       this.switchContentView('chat', data.roomId);
     });
 
-    console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
+    this.verbose() && console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
   }
 
   /**
@@ -690,10 +690,10 @@ export class MainWidget extends BaseWidget {
    */
   private async refreshTabsFromDatabase(source: string): Promise<void> {
     try {
-      console.log(`📋 MainPanel: Refreshing tabs from DB (${source})...`);
+      this.verbose() && console.log(`📋 MainPanel: Refreshing tabs from DB (${source})...`);
       await this.loadUserContext();
       await this.updateContentTabs();
-      console.log(`✅ MainPanel: Tabs refreshed from DB (${source}), now ${this.userState?.contentState?.openItems?.length} items`);
+      this.verbose() && console.log(`✅ MainPanel: Tabs refreshed from DB (${source}), now ${this.userState?.contentState?.openItems?.length} items`);
     } catch (error) {
       console.error(`❌ MainPanel: Error refreshing tabs from DB (${source}):`, error);
     }
@@ -705,7 +705,7 @@ export class MainWidget extends BaseWidget {
   private async loadCurrentContent(): Promise<void> {
     try {
       this.currentContent = await this.contentManager.getContentByPath(this.currentPath);
-      console.log(`📄 MainPanel: Loaded content info for ${this.currentPath}:`, this.currentContent?.displayName);
+      this.verbose() && console.log(`📄 MainPanel: Loaded content info for ${this.currentPath}:`, this.currentContent?.displayName);
     } catch (error) {
       console.error(`❌ MainPanel: Failed to load content for ${this.currentPath}:`, error);
       this.currentContent = null;
@@ -768,14 +768,14 @@ export class MainWidget extends BaseWidget {
     // Call updateTabs method on the widget
     (tabsWidget as any).updateTabs(tabs);
 
-    console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs from', this.userState?.contentState ? 'userState' : 'fallback');
+    this.verbose() && console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs from', this.userState?.contentState ? 'userState' : 'fallback');
   }
 
   /**
    * Switch to a different content page
    */
   switchToPage(pageName: string): void {
-    console.log(`📄 MainPanel: Switching to page: ${pageName}`);
+    this.verbose() && console.log(`📄 MainPanel: Switching to page: ${pageName}`);
     // Will update the content view to show different widgets
   }
 
@@ -840,7 +840,7 @@ export class MainWidget extends BaseWidget {
       }).catch(err => console.error(`Failed to persist ${contentType} tab:`, err));
     }
 
-    console.log(`📋 MainPanel: Opened new ${contentType} tab`);
+    this.verbose() && console.log(`📋 MainPanel: Opened new ${contentType} tab`);
   }
 }
 

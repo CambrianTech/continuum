@@ -41,14 +41,14 @@ export class RightPanelWidget extends BaseSidePanelWidget {
   // === Lifecycle ===
 
   protected async onPanelInitialize(): Promise<void> {
-    console.log('📋 RightPanelWidget: Initializing...');
+    this.verbose() && console.log('📋 RightPanelWidget: Initializing...');
 
     // Listen for layout configuration events from MainWidget
     Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
       this.handleLayoutConfig(config);
     });
 
-    console.log('✅ RightPanelWidget: Initialized with layout event listener');
+    this.verbose() && console.log('✅ RightPanelWidget: Initialized with layout event listener');
   }
 
   protected async onPanelCleanup(): Promise<void> {
@@ -117,13 +117,13 @@ export class RightPanelWidget extends BaseSidePanelWidget {
    * Updates room and visibility based on content type's recipe
    */
   private handleLayoutConfig(config: RightPanelConfigPayload): void {
-    console.log(`📋 RightPanelWidget: Received layout config for ${config.contentType}:`, config);
+    this.verbose() && console.log(`📋 RightPanelWidget: Received layout config for ${config.contentType}:`, config);
 
     if (config.widget === null) {
       // Hide the panel
       this.isHidden = true;
       this.collapse();
-      console.log(`📋 RightPanelWidget: Hiding panel for ${config.contentType}`);
+      this.verbose() && console.log(`📋 RightPanelWidget: Hiding panel for ${config.contentType}`);
     } else {
       // Show the panel with configured room
       this.isHidden = false;
@@ -132,7 +132,7 @@ export class RightPanelWidget extends BaseSidePanelWidget {
       if (this.currentRoom !== newRoom) {
         this.currentRoom = newRoom;
         this.updateEmbeddedChat();
-        console.log(`📋 RightPanelWidget: Switched to room '${newRoom}' for ${config.contentType}`);
+        this.verbose() && console.log(`📋 RightPanelWidget: Switched to room '${newRoom}' for ${config.contentType}`);
       }
 
       // Expand if it was hidden before

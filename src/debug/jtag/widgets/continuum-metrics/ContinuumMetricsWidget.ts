@@ -10,6 +10,9 @@ import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents'
 import { AIGenerationEntity } from '../../system/data/entities/AIGenerationEntity';
 import type { AICostParams, AICostResult } from '../../commands/ai/cost/shared/AICostTypes';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface MetricsData {
   totalGenerations: number;
   totalTokens: number;
@@ -32,7 +35,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
   private chartInterval: string = '1h';  // Chart granularity
 
   constructor() {
-    console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor called');
+    verbose() && console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor called');
     super({
       widgetId: 'continuum-metrics-widget',
       widgetName: 'ContinuumMetricsWidget',
@@ -43,7 +46,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
       enableRouterEvents: false,
       enableScreenshots: false
     });
-    console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor completed');
+    verbose() && console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor completed');
   }
 
   protected async onWidgetInitialize(): Promise<void> {
@@ -71,7 +74,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('📊 ContinuumMetrics: Cleaning up...');
+    verbose() && console.log('📊 ContinuumMetrics: Cleaning up...');
   }
 
   /**
@@ -117,7 +120,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
     const chartArea = this.shadowRoot?.querySelector('.chart-area');
     if (chartArea) {
       chartArea.addEventListener('click', () => {
-        console.log('📊 ContinuumMetrics: Chart clicked - expand to full view');
+        verbose() && console.log('📊 ContinuumMetrics: Chart clicked - expand to full view');
         // TODO: Emit event to open full metrics view
       });
     }
@@ -199,7 +202,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
    * Update displayed metric
    */
   private updateMetric(metric: string): void {
-    console.log('📊 ContinuumMetrics: Update metric:', metric);
+    verbose() && console.log('📊 ContinuumMetrics: Update metric:', metric);
     this.currentMetric = metric;
     this.updateMetricDisplay();
     this.renderChart();  // Re-render chart for new metric
@@ -255,7 +258,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
    * Update time range
    */
   private async updateTimeRange(range: string): Promise<void> {
-    console.log('📊 ContinuumMetrics: Update time range:', range);
+    verbose() && console.log('📊 ContinuumMetrics: Update time range:', range);
     this.currentTimeRange = range;
     await this.fetchMetricsData();
   }

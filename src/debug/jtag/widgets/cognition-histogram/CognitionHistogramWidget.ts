@@ -13,6 +13,9 @@ import { SimpleBarsRenderer } from './SimpleBarsRenderer';
 import { WaveGraphRenderer } from './WaveGraphRenderer';
 import type { ChartData } from './ChartRenderer';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface StageData {
   stage: PipelineStage;
   avgDuration: number;
@@ -43,7 +46,7 @@ export class CognitionHistogramWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🧠 CognitionHistogram: Initializing...');
+    verbose() && console.log('🧠 CognitionHistogram: Initializing...');
 
     // Initialize stage data with defaults
     const stages: PipelineStage[] = ['rag-build', 'should-respond', 'generate', 'coordination', 'post-response'];
@@ -61,7 +64,7 @@ export class CognitionHistogramWidget extends BaseWidget {
     this.subscribeToCognitionEvents();
     this.startAnimationLoop();
 
-    console.log('✅ CognitionHistogram: Initialized');
+    verbose() && console.log('✅ CognitionHistogram: Initialized');
   }
 
   private setupClickHandler(): void {
@@ -77,7 +80,7 @@ export class CognitionHistogramWidget extends BaseWidget {
           this.mode = 'pipeline';
         }
 
-        console.log(`🧠 CognitionHistogram: Switched to ${this.mode} mode`);
+        verbose() && console.log(`🧠 CognitionHistogram: Switched to ${this.mode} mode`);
         this.updateModeLabel();
         this.renderCurrentMode(); // Re-render with new mode
       });

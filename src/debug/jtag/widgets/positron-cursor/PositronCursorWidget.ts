@@ -68,11 +68,11 @@ export class PositronCursorWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('👆 PositronCursor: Initializing AI presence cursor...');
+    this.verbose() && console.log('👆 PositronCursor: Initializing AI presence cursor...');
 
     this.subscribeToEvents();
 
-    console.log('✅ PositronCursor: Ready');
+    this.verbose() && console.log('✅ PositronCursor: Ready');
   }
 
   private subscribeToEvents(): void {
@@ -115,7 +115,7 @@ export class PositronCursorWidget extends BaseWidget {
       this.hideTimeout = setTimeout(() => this.handleUnfocus(), duration);
     }
 
-    console.log(`👆 PositronCursor: ${personaName || 'AI'} focusing at (${pos.x}, ${pos.y})`);
+    this.verbose() && console.log(`👆 PositronCursor: ${personaName || 'AI'} focusing at (${pos.x}, ${pos.y})`);
   }
 
   private handleUnfocus(): void {
@@ -194,7 +194,7 @@ export class PositronCursorWidget extends BaseWidget {
       return;
     }
 
-    console.log(`👆 PositronCursor: Showing cursor at (${x}, ${y}) with color ${color}`);
+    this.verbose() && console.log(`👆 PositronCursor: Showing cursor at (${x}, ${y}) with color ${color}`);
     this.cursorElement.style.left = `${x}px`;
     this.cursorElement.style.top = `${y}px`;
     this.cursorElement.style.setProperty('--cursor-color', color);

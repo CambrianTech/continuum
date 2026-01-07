@@ -9,6 +9,9 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { Events } from '../../system/core/shared/Events';
 import { Commands } from '../../system/core/shared/Commands';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export interface TabInfo {
   id: string;
   label: string;
@@ -36,7 +39,7 @@ export class ContentTabsWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('📋 ContentTabsWidget: Initializing content tabs...');
+    verbose() && console.log('📋 ContentTabsWidget: Initializing content tabs...');
 
     // Subscribe to tab updates from parent or router
     Events.subscribe('tabs:update', (tabs: TabInfo[]) => {
@@ -44,7 +47,7 @@ export class ContentTabsWidget extends BaseWidget {
       this.renderWidget();
     });
 
-    console.log('✅ ContentTabsWidget: Initialized');
+    verbose() && console.log('✅ ContentTabsWidget: Initialized');
   }
 
   protected async renderWidget(): Promise<void> {
@@ -144,7 +147,7 @@ export class ContentTabsWidget extends BaseWidget {
     // Add event listeners after DOM is created
     this.setupEventListeners();
 
-    console.log('✅ ContentTabsWidget: Rendered with', this.tabs.length, 'tabs');
+    verbose() && console.log('✅ ContentTabsWidget: Rendered with', this.tabs.length, 'tabs');
   }
 
   /**
@@ -170,12 +173,12 @@ export class ContentTabsWidget extends BaseWidget {
    * Setup event listeners for tabs - direct listeners on each element
    */
   private setupEventListeners(): void {
-    console.log('📋 ContentTabsWidget.setupEventListeners: Setting up direct click listeners');
+    verbose() && console.log('📋 ContentTabsWidget.setupEventListeners: Setting up direct click listeners');
 
     // Add click listener to each tab directly
     const tabs = this.shadowRoot?.querySelectorAll('.content-tab');
     if (!tabs || tabs.length === 0) {
-      console.warn('📋 ContentTabsWidget: No tabs found for event listeners');
+      verbose() && console.warn('📋 ContentTabsWidget: No tabs found for event listeners');
       return;
     }
 
@@ -183,11 +186,11 @@ export class ContentTabsWidget extends BaseWidget {
       const tab = tabElement as HTMLElement;
       const tabId = tab.dataset.tabId;
 
-      console.log('📋 ContentTabsWidget: Adding click listener to tab:', tabId);
+      verbose() && console.log('📋 ContentTabsWidget: Adding click listener to tab:', tabId);
 
       tab.addEventListener('click', (event) => {
         const target = event.target as HTMLElement;
-        console.log('🔥 TAB CLICKED! tabId:', tabId, 'target:', target.tagName, target.className);
+        verbose() && console.log('🔥 TAB CLICKED! tabId:', tabId, 'target:', target.tagName, target.className);
 
         // Check if close button was clicked
         if (target.classList.contains('tab-close') || target.hasAttribute('data-close-tab')) {
@@ -205,24 +208,24 @@ export class ContentTabsWidget extends BaseWidget {
       });
     });
 
-    console.log('📋 ContentTabsWidget: Added listeners to', tabs.length, 'tabs');
+    verbose() && console.log('📋 ContentTabsWidget: Added listeners to', tabs.length, 'tabs');
   }
 
   /**
    * Handle tab click
    */
   private handleTabClick(tabId: string): void {
-    console.log('🔥 ContentTabsWidget.handleTabClick CALLED with tabId:', tabId);
-    console.log('🔥 ContentTabsWidget: this.tabs has', this.tabs.length, 'items:', this.tabs.map(t => ({id: t.id, label: t.label})));
+    verbose() && console.log('🔥 ContentTabsWidget.handleTabClick CALLED with tabId:', tabId);
+    verbose() && console.log('🔥 ContentTabsWidget: this.tabs has', this.tabs.length, 'items:', this.tabs.map(t => ({id: t.id, label: t.label})));
 
     // Find the full tab data
     const tab = this.tabs.find(t => t.id === tabId);
     if (!tab) {
-      console.warn('📋 ContentTabsWidget: Tab not found:', tabId, '- available tabs:', this.tabs.map(t => t.id));
+      verbose() && console.warn('📋 ContentTabsWidget: Tab not found:', tabId, '- available tabs:', this.tabs.map(t => t.id));
       return;
     }
 
-    console.log('📋 ContentTabsWidget: Tab clicked:', tabId, 'entityId:', tab.entityId, 'type:', tab.contentType);
+    verbose() && console.log('📋 ContentTabsWidget: Tab clicked:', tabId, 'entityId:', tab.entityId, 'type:', tab.contentType);
 
     // Emit event with full tab data for parent widget
     const tabData = {
@@ -233,7 +236,7 @@ export class ContentTabsWidget extends BaseWidget {
     };
 
     // DEBUG: Call ping command to verify click is working (visible in server logs)
-    Commands.execute('ping', {}).then(r => console.log('🔥 TAB CLICK VERIFIED via ping:', r));
+    Commands.execute('ping', {}).then(r => verbose() && console.log('🔥 TAB CLICK VERIFIED via ping:', r));
 
     Events.emit('tabs:clicked', tabData);
 
@@ -249,7 +252,7 @@ export class ContentTabsWidget extends BaseWidget {
    * Handle tab close
    */
   private handleTabClose(tabId: string): void {
-    console.log('📋 ContentTabsWidget: Tab close requested:', tabId);
+    verbose() && console.log('📋 ContentTabsWidget: Tab close requested:', tabId);
 
     // Emit event for parent widget to handle close logic
     Events.emit('tabs:close', { tabId });
@@ -271,7 +274,7 @@ export class ContentTabsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 ContentTabsWidget: Cleanup complete');
+    verbose() && console.log('🧹 ContentTabsWidget: Cleanup complete');
   }
 }
 

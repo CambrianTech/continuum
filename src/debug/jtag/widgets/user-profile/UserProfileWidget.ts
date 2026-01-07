@@ -49,7 +49,7 @@ export class UserProfileWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('UserProfile: Initializing...');
+    this.verbose() && console.log('UserProfile: Initializing...');
     await this.loadUser();
   }
 
@@ -359,7 +359,7 @@ export class UserProfileWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('UserProfile: Cleanup complete');
+    this.verbose() && console.log('UserProfile: Cleanup complete');
   }
 }
 

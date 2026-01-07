@@ -23,6 +23,9 @@ import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } fro
 // SIGNALS: Reactive primitives - just JavaScript, bundled by existing esbuild
 import { signal, effect, type Signal } from '@preact/signals-core';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
   // SIGNAL: Reactive room ID - DOM updates automatically when value changes
   private currentRoomIdSignal: Signal<UUID> = signal(DEFAULT_ROOMS.GENERAL as UUID);
@@ -287,7 +290,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
       newActiveRoom.classList.add('active');
     }
 
-    console.log(`🎨 RoomListWidget: [SIGNAL] Highlighting updated "${oldRoomId}" → "${newRoomId}"`);
+    verbose() && console.log(`🎨 RoomListWidget: [SIGNAL] Highlighting updated "${oldRoomId}" → "${newRoomId}"`);
   }
 
   // Entity count now handled automatically by EntityScrollerWidget base class
@@ -308,7 +311,7 @@ export class RoomListWidget extends EntityScrollerWidget<RoomEntity> {
     await super.onWidgetCleanup();
 
     this.unreadCounts.clear();
-    console.log('🧹 RoomListWidget: Additional cleanup complete (signals disposed)');
+    verbose() && console.log('🧹 RoomListWidget: Additional cleanup complete (signals disposed)');
   }
 }
 

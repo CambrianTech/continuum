@@ -28,6 +28,9 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ACTIVITY_UNIQUE_IDS } from '../../system/data/constants/ActivityConstants';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * Result from user/get-me command
  */
@@ -120,7 +123,7 @@ export class DrawingCanvasWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎨 DrawingCanvas: Initializing collaborative canvas...');
+    verbose() && console.log('🎨 DrawingCanvas: Initializing collaborative canvas...');
 
     // Get current user info for stroke attribution
     await this.loadUserInfo();
@@ -139,7 +142,7 @@ export class DrawingCanvasWidget extends BaseWidget {
     // Note: loadStrokes is called from setupCanvas after ctx is ready
     // This is because renderWidget runs AFTER onWidgetInitialize
 
-    console.log('✅ DrawingCanvas: Ready for collaborative drawing');
+    verbose() && console.log('✅ DrawingCanvas: Ready for collaborative drawing');
   }
 
   /**
@@ -175,7 +178,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       if (result.success && result.user) {
         this._userId = result.user.id;
         this._userName = result.user.displayName || 'Unknown';
-        console.log(`🎨 DrawingCanvas: User identified as ${this._userName}`);
+        verbose() && console.log(`🎨 DrawingCanvas: User identified as ${this._userName}`);
       }
     } catch (err) {
       console.warn('🎨 DrawingCanvas: Could not get user info, using session ID');
@@ -203,7 +206,7 @@ export class DrawingCanvasWidget extends BaseWidget {
         // Don't render our own strokes (we drew them locally)
         if (data.stroke.creatorId === this._userId) return;
 
-        console.log(`🎨 DrawingCanvas: Received stroke from ${data.stroke.creatorName}`);
+        verbose() && console.log(`🎨 DrawingCanvas: Received stroke from ${data.stroke.creatorName}`);
         this.renderRemoteStroke(data.stroke);
         this.loadedStrokeIds.add(data.strokeId);
       }
@@ -226,7 +229,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       );
 
       if (result.success && result.strokes) {
-        console.log(`🎨 DrawingCanvas: Loading ${result.strokes.length} strokes`);
+        verbose() && console.log(`🎨 DrawingCanvas: Loading ${result.strokes.length} strokes`);
         for (const stroke of result.strokes) {
           if (!this.loadedStrokeIds.has(stroke.id)) {
             this.renderRemoteStroke(stroke);
@@ -532,10 +535,10 @@ export class DrawingCanvasWidget extends BaseWidget {
 
       // Load existing strokes now that ctx is ready
       if (this.activityId) {
-        console.log(`🎨 DrawingCanvas: Loading strokes for canvas ${this.activityId}`);
+        verbose() && console.log(`🎨 DrawingCanvas: Loading strokes for canvas ${this.activityId}`);
         this.loadStrokes();
       } else {
-        console.log('🎨 DrawingCanvas: No activityId - strokes will not persist');
+        verbose() && console.log('🎨 DrawingCanvas: No activityId - strokes will not persist');
       }
     }
   }
@@ -814,7 +817,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       if (result.success && result.strokeId) {
         // Mark as loaded so we don't re-render when event comes back
         this.loadedStrokeIds.add(result.strokeId);
-        console.log(`🎨 DrawingCanvas: Saved stroke ${result.strokeId}`);
+        verbose() && console.log(`🎨 DrawingCanvas: Saved stroke ${result.strokeId}`);
 
         // Update Positron context so AIs know canvas changed
         this.emitPositronContext();
@@ -900,7 +903,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       timestamp: Date.now()
     });
 
-    console.log('📷 DrawingCanvas: Captured for AI vision');
+    verbose() && console.log('📷 DrawingCanvas: Captured for AI vision');
     return base64;
   }
 
@@ -948,7 +951,7 @@ export class DrawingCanvasWidget extends BaseWidget {
     }
 
     this.saveToHistory();
-    console.log(`🎨 DrawingCanvas: ${personaName || 'AI'} drew ${tool} at (${startX}, ${startY})`);
+    verbose() && console.log(`🎨 DrawingCanvas: ${personaName || 'AI'} drew ${tool} at (${startX}, ${startY})`);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -961,6 +964,6 @@ export class DrawingCanvasWidget extends BaseWidget {
     // Clear loaded stroke IDs
     this.loadedStrokeIds.clear();
 
-    console.log('🎨 DrawingCanvas: Cleaned up collaborative canvas');
+    verbose() && console.log('🎨 DrawingCanvas: Cleaned up collaborative canvas');
   }
 }

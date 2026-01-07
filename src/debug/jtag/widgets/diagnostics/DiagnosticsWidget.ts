@@ -14,6 +14,9 @@ import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface PersonaInfo {
   uniqueId: string;
   displayName: string;
@@ -280,7 +283,7 @@ export class DiagnosticsWidget extends BasePanelWidget {
   }
 
   private async openLogTab(logPath: string, logName: string): Promise<void> {
-    console.log(`DiagnosticsWidget: Opening log tab for ${logPath}`);
+    verbose() && console.log(`DiagnosticsWidget: Opening log tab for ${logPath}`);
 
     // TODO: Implement opening log as a new tab
     // This will use the content/open command to create a new tab with a log viewer
@@ -303,7 +306,7 @@ export class DiagnosticsWidget extends BasePanelWidget {
   private async handleDetailAction(action: string): Promise<void> {
     if (!this.selectedPersona) return;
 
-    console.log(`DiagnosticsWidget: Action ${action} for ${this.selectedPersona}`);
+    verbose() && console.log(`DiagnosticsWidget: Action ${action} for ${this.selectedPersona}`);
 
     switch (action) {
       case 'view-memory':

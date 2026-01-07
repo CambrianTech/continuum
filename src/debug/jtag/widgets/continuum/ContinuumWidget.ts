@@ -15,6 +15,9 @@ import { LocalStorageStateManager } from '../../system/core/browser/LocalStorage
 import { ThemeRegistry } from '../shared/themes/ThemeTypes';
 import { positronicBridge } from '../../system/state/PositronicBridge';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export class ContinuumWidget extends BaseWidget {
   private currentStatus: ContinuumStatus | null = null;
   private currentTheme: string = 'base';
@@ -32,14 +35,14 @@ export class ContinuumWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
+    verbose() && console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
 
     // Load saved theme from localStorage FIRST
     const savedTheme = LocalStorageStateManager.isAvailable()
       ? LocalStorageStateManager.getTheme()
       : null;
     this.currentTheme = savedTheme || 'base';
-    console.log(`🎨 ContinuumWidget: Using theme '${this.currentTheme}' from localStorage`);
+    verbose() && console.log(`🎨 ContinuumWidget: Using theme '${this.currentTheme}' from localStorage`);
 
     // CRITICAL: Load and inject theme CSS FIRST, before any child widgets render
     // This ensures CSS variables are available when sidebar, room-list, etc. initialize
@@ -62,17 +65,17 @@ export class ContinuumWidget extends BaseWidget {
 
     // Initialize Positronic state bridge for AI context awareness
     // This bridges browser-side state to server RAG context
-    console.log('🌐 ContinuumWidget: About to initialize PositronicBridge...');
+    verbose() && console.log('🌐 ContinuumWidget: About to initialize PositronicBridge...');
     try {
       positronicBridge.initialize();
       // Expose on window for debugging
       (window as any).positronicBridge = positronicBridge;
-      console.log('🌐 ContinuumWidget: PositronicBridge initialized successfully');
+      verbose() && console.log('🌐 ContinuumWidget: PositronicBridge initialized successfully');
     } catch (error) {
       console.error('🌐 ContinuumWidget: PositronicBridge initialization failed:', error);
     }
 
-    console.log('✅ ContinuumWidget: Desktop interface initialized with status listener');
+    verbose() && console.log('✅ ContinuumWidget: Desktop interface initialized with status listener');
   }
 
   protected async renderWidget(): Promise<void> {
@@ -98,7 +101,7 @@ export class ContinuumWidget extends BaseWidget {
     // Set up expand button click handlers
     this.setupExpandButtons();
 
-    console.log('✅ ContinuumWidget: Desktop interface rendered');
+    verbose() && console.log('✅ ContinuumWidget: Desktop interface rendered');
   }
 
   /**
@@ -126,7 +129,7 @@ export class ContinuumWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 ContinuumWidget: Cleanup complete');
+    verbose() && console.log('🧹 ContinuumWidget: Cleanup complete');
   }
 
   /**
@@ -134,7 +137,7 @@ export class ContinuumWidget extends BaseWidget {
    */
   private async updateConnectionStatus(): Promise<void> {
     // This could connect to system status, for now just show connected
-    console.log('🔗 ContinuumWidget: Connection status updated');
+    verbose() && console.log('🔗 ContinuumWidget: Connection status updated');
   }
 
   /**
@@ -168,7 +171,7 @@ export class ContinuumWidget extends BaseWidget {
 
       // If current theme is not 'base', load and overlay its CSS
       if (this.currentTheme !== 'base') {
-        console.log(`🎨 ContinuumWidget: Loading theme '${this.currentTheme}' CSS overlay`);
+        verbose() && console.log(`🎨 ContinuumWidget: Loading theme '${this.currentTheme}' CSS overlay`);
 
         // Get theme manifest for file list
         const themeManifest = ThemeRegistry.getTheme(this.currentTheme);
@@ -188,7 +191,7 @@ export class ContinuumWidget extends BaseWidget {
         }
       }
 
-      console.log(`🎨 ContinuumWidget: Loaded theme '${this.currentTheme}' CSS (${combinedCss.length} chars)`);
+      verbose() && console.log(`🎨 ContinuumWidget: Loaded theme '${this.currentTheme}' CSS (${combinedCss.length} chars)`);
       return combinedCss;
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to load theme CSS:', error);
@@ -209,7 +212,7 @@ export class ContinuumWidget extends BaseWidget {
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
-      console.log(`🎨 ContinuumWidget: Injecting theme '${this.currentTheme}' CSS into document head...`);
+      verbose() && console.log(`🎨 ContinuumWidget: Injecting theme '${this.currentTheme}' CSS into document head...`);
 
       // Remove any existing theme style elements
       const existingStyles = document.head.querySelectorAll('style[id^="jtag-theme-"]');
@@ -222,7 +225,7 @@ export class ContinuumWidget extends BaseWidget {
 
       document.head.appendChild(themeStyleElement);
 
-      console.log(`✅ ContinuumWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
+      verbose() && console.log(`✅ ContinuumWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
 
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to inject theme CSS into document head:', error);
@@ -245,7 +248,7 @@ export class ContinuumWidget extends BaseWidget {
       // Wait for script to load
       await new Promise<void>((resolve, reject) => {
         html2canvasScript.onload = () => {
-          console.log('📸 ContinuumWidget: html2canvas script loaded into shadow DOM');
+          verbose() && console.log('📸 ContinuumWidget: html2canvas script loaded into shadow DOM');
           resolve();
         };
         html2canvasScript.onerror = () => {
@@ -269,19 +272,19 @@ export class ContinuumWidget extends BaseWidget {
    * Handle continuum:status events from continuum/set command
    */
   private handleStatusUpdate(status: ContinuumStatus): void {
-    console.log('✨ ContinuumWidget: Received status update:', status);
+    verbose() && console.log('✨ ContinuumWidget: Received status update:', status);
 
     // Handle clear request
     if (status.clear) {
       this.currentStatus = null;
       this.updateStatusDisplay();
-      console.log('🔄 ContinuumWidget: Status cleared, returning to system default');
+      verbose() && console.log('🔄 ContinuumWidget: Status cleared, returning to system default');
       return;
     }
 
     // Check priority - only override if new status has higher or equal priority
     if (this.currentStatus && this.getPriorityLevel(status.priority) < this.getPriorityLevel(this.currentStatus.priority)) {
-      console.log(`⚠️ ContinuumWidget: Ignoring lower priority status (${status.priority} < ${this.currentStatus.priority})`);
+      verbose() && console.log(`⚠️ ContinuumWidget: Ignoring lower priority status (${status.priority} < ${this.currentStatus.priority})`);
       return;
     }
 
@@ -298,7 +301,7 @@ export class ContinuumWidget extends BaseWidget {
   private updateStatusDisplay(): void {
     // Update favicon to match current status (or ground state if null)
     this.updateFavicon();
-    console.log('✅ ContinuumWidget: Favicon updated');
+    verbose() && console.log('✅ ContinuumWidget: Favicon updated');
   }
 
   /**
@@ -373,7 +376,7 @@ export class ContinuumWidget extends BaseWidget {
       }
       faviconLink.href = faviconUrl;
 
-      console.log(`🎨 ContinuumWidget: Favicon updated (${emoji || 'dot'}, ${faviconColor})`);
+      verbose() && console.log(`🎨 ContinuumWidget: Favicon updated (${emoji || 'dot'}, ${faviconColor})`);
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to update favicon:', error);
     }

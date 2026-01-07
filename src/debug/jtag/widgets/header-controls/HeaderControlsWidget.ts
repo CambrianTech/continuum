@@ -10,6 +10,9 @@ import { BaseWidget } from '../shared/BaseWidget';
 import { VERSION } from '../../shared/version';
 import { Events } from '../../system/core/shared/Events';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export class HeaderControlsWidget extends BaseWidget {
   private currentVersion: string = VERSION;
 
@@ -26,7 +29,7 @@ export class HeaderControlsWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎮 HeaderControlsWidget: Initializing header controls...');
+    verbose() && console.log('🎮 HeaderControlsWidget: Initializing header controls...');
 
     // Subscribe to version updates (future: when version changes dynamically)
     Events.subscribe('system:version', (version: string) => {
@@ -34,7 +37,7 @@ export class HeaderControlsWidget extends BaseWidget {
       this.updateVersionDisplay();
     });
 
-    console.log(`✅ HeaderControlsWidget: Initialized (version: ${this.currentVersion})`);
+    verbose() && console.log(`✅ HeaderControlsWidget: Initialized (version: ${this.currentVersion})`);
   }
 
   protected async renderWidget(): Promise<void> {
@@ -131,7 +134,7 @@ export class HeaderControlsWidget extends BaseWidget {
     // Add event listeners after DOM is created
     this.setupEventListeners();
 
-    console.log('✅ HeaderControlsWidget: Rendered');
+    verbose() && console.log('✅ HeaderControlsWidget: Rendered');
   }
 
   /**
@@ -149,7 +152,7 @@ export class HeaderControlsWidget extends BaseWidget {
     const versionBadge = this.shadowRoot?.getElementById('version-badge');
     if (versionBadge) {
       versionBadge.textContent = this.getVersionText();
-      console.log(`🔄 HeaderControlsWidget: Updated version to ${this.currentVersion}`);
+      verbose() && console.log(`🔄 HeaderControlsWidget: Updated version to ${this.currentVersion}`);
     }
   }
 
@@ -182,7 +185,7 @@ export class HeaderControlsWidget extends BaseWidget {
    * Handle theme button click
    */
   private handleThemeClick(): void {
-    console.log('🎨 HeaderControlsWidget: Theme button clicked');
+    verbose() && console.log('🎨 HeaderControlsWidget: Theme button clicked');
 
     // Emit event for parent widget to handle theme modal
     Events.emit('header:theme-clicked', {});
@@ -198,7 +201,7 @@ export class HeaderControlsWidget extends BaseWidget {
    * Handle settings button click
    */
   private handleSettingsClick(): void {
-    console.log('⚙️ HeaderControlsWidget: Settings button clicked');
+    verbose() && console.log('⚙️ HeaderControlsWidget: Settings button clicked');
 
     // Emit event for future settings implementation
     Events.emit('header:settings-clicked', {});
@@ -213,7 +216,7 @@ export class HeaderControlsWidget extends BaseWidget {
    * Handle browser button click
    */
   private handleBrowserClick(): void {
-    console.log('🌐 HeaderControlsWidget: Browser button clicked');
+    verbose() && console.log('🌐 HeaderControlsWidget: Browser button clicked');
 
     Events.emit('header:browser-clicked', {});
 
@@ -227,7 +230,7 @@ export class HeaderControlsWidget extends BaseWidget {
    * Handle help button click
    */
   private handleHelpClick(): void {
-    console.log('❓ HeaderControlsWidget: Help button clicked');
+    verbose() && console.log('❓ HeaderControlsWidget: Help button clicked');
 
     // Emit event for future help implementation
     Events.emit('header:help-clicked', {});
@@ -239,7 +242,7 @@ export class HeaderControlsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 HeaderControlsWidget: Cleanup complete');
+    verbose() && console.log('🧹 HeaderControlsWidget: Cleanup complete');
   }
 }
 

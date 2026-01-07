@@ -49,12 +49,12 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('Settings: Initializing settings widget...');
+    this.verbose() && console.log('Settings: Initializing settings widget...');
 
     // Listen for section changes from SettingsNavWidget in sidebar
     Events.subscribe(SETTINGS_NAV_EVENTS.SECTION_CHANGED, (payload: SettingsSectionChangedPayload) => {
       if (payload.section !== this.currentSection) {
-        console.log(`Settings: Section changed to ${payload.section} (from SettingsNavWidget)`);
+        this.verbose() && console.log(`Settings: Section changed to ${payload.section} (from SettingsNavWidget)`);
         this.currentSection = payload.section;
         this.renderWidget();
         this.emitPositronContext();
@@ -127,7 +127,7 @@ export class SettingsWidget extends BaseWidget {
     this.renderWidget();
 
     try {
-      console.log('Settings: Calling ai/providers/status...');
+      this.verbose() && console.log('Settings: Calling ai/providers/status...');
       const result = await Commands.execute('ai/providers/status', {} as any) as any;
 
       if (result?.providers) {
@@ -401,7 +401,7 @@ export class SettingsWidget extends BaseWidget {
 
     // If user entered a new value, test that
     if (newValue && !newValue.startsWith('sk-...') && !newValue.startsWith('gsk_...')) {
-      console.log(`Testing new key for ${configKey}`);
+      this.verbose() && console.log(`Testing new key for ${configKey}`);
       const result = await this.tester.testKey({ provider, key: newValue }, configKey);
       this.emitTestResult(provider, configKey, result);
       return;
@@ -409,14 +409,14 @@ export class SettingsWidget extends BaseWidget {
 
     // If already configured, test the stored key (pass empty to use server-side key)
     if (entry?.isConfigured) {
-      console.log(`Testing stored key for ${configKey}`);
+      this.verbose() && console.log(`Testing stored key for ${configKey}`);
       const result = await this.tester.testKey({ provider, key: '', useStored: true } as any, configKey);
       this.emitTestResult(provider, configKey, result);
       return;
     }
 
     // Not configured and no new value - show error
-    console.log(`No key to test for ${configKey}`);
+    this.verbose() && console.log(`No key to test for ${configKey}`);
     const result = await this.tester.testKey({ provider, key: '' }, configKey);
     this.emitTestResult(provider, configKey, result);
   }
@@ -504,7 +504,7 @@ export class SettingsWidget extends BaseWidget {
         return;
       }
 
-      console.log('Settings: Would save config:', Object.keys(config));
+      this.verbose() && console.log('Settings: Would save config:', Object.keys(config));
 
       // TODO: Implement system/config/save command
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -519,7 +519,7 @@ export class SettingsWidget extends BaseWidget {
       }
 
       this.saveStatus = 'saved';
-      console.log('Settings: Configuration saved (stub)');
+      this.verbose() && console.log('Settings: Configuration saved (stub)');
 
       // Emit success event - AI can congratulate or suggest next steps
       PositronWidgetState.emitWidgetEvent('settings', 'config:saved', {
@@ -541,7 +541,7 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('Settings: Cleanup complete');
+    this.verbose() && console.log('Settings: Cleanup complete');
   }
 }
 

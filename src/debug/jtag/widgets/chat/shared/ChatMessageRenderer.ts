@@ -7,6 +7,9 @@
 
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * Handles creating DOM elements for chat messages
  */
@@ -28,7 +31,7 @@ export class ChatMessageRenderer {
     const tempAlignment = tempIsCurrentUser ? 'right' : 'left';
 
     // Debug logging for alignment issues
-    console.log(`🎯 ALIGNMENT DEBUG: senderId="${message.senderId}", hardcodedUserId="${tempCurrentUserId}", isCurrentUser=${tempIsCurrentUser}, alignment=${tempAlignment}`);
+    verbose() && console.log(`🎯 ALIGNMENT DEBUG: senderId="${message.senderId}", hardcodedUserId="${tempCurrentUserId}", isCurrentUser=${tempIsCurrentUser}, alignment=${tempAlignment}`);
 
     // Create elements using DOM methods - no HTML strings
     const messageRow = document.createElement('div');

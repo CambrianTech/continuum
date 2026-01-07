@@ -8,6 +8,9 @@
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface URLCardData {
   readonly url: string;
   readonly title?: string;
@@ -264,7 +267,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
     const url = element.querySelector('.url-card')?.getAttribute('data-url');
     if (!url) return;
 
-    console.log('🤖 Requesting AI summary for:', url);
+    verbose() && console.log('🤖 Requesting AI summary for:', url);
 
     // Future: AI content summarization
     // const summary = await aiService.summarizeURL(url);
@@ -384,7 +387,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
    * Handle AI editing of URL card content
    */
   async handleAIEdit(editInstructions: any): Promise<void> {
-    console.log('🤖 AI editing URL card:', editInstructions);
+    verbose() && console.log('🤖 AI editing URL card:', editInstructions);
 
     // Future: AI can:
     // - Generate better titles

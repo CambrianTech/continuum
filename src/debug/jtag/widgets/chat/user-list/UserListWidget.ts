@@ -14,6 +14,9 @@ import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEven
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
 import type { ContentOpenParams, ContentOpenResult } from '../../../commands/collaboration/content/open/shared/ContentOpenTypes';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * AI Status tracking for user list display
  */
@@ -69,7 +72,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
    * Subscribe to AI decision events for status emoji indicators
    */
   private setupAIEventSubscriptions(): void {
-    console.log('🔧 UserListWidget: Setting up AI event subscriptions...');
+    verbose() && console.log('🔧 UserListWidget: Setting up AI event subscriptions...');
 
     Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string }) => {
       this.updateAIStatus(data.personaId, 'evaluating');
@@ -104,7 +107,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
    * Subscribe to AI learning events for learning indicators
    */
   private setupLearningEventSubscriptions(): void {
-    console.log('🧬 UserListWidget: Setting up learning event subscriptions...');
+    verbose() && console.log('🧬 UserListWidget: Setting up learning event subscriptions...');
 
     Events.subscribe(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: { personaId: string; domain: string }) => {
       this.updateLearningStatus(data.personaId, true, data.domain);
@@ -599,7 +602,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
     const entityId = userEntity.uniqueId || userEntity.id;
     const title = userEntity.displayName || 'User Profile';
 
-    console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
+    verbose() && console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
 
     // Emit content:opened for MainWidget tab update (optimistic UI)
     Events.emit('content:opened', {
@@ -629,7 +632,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
     const entityId = userEntity.uniqueId || userEntity.id;
     const title = userEntity.displayName || 'AI Brain';
 
-    console.log(`🧠 UserListWidget: Opening brain for ${title} (${entityId})`);
+    verbose() && console.log(`🧠 UserListWidget: Opening brain for ${title} (${entityId})`);
 
     // Emit content:opened for MainWidget tab update (optimistic UI)
     Events.emit('content:opened', {
@@ -656,7 +659,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
    * Toggle favorite status
    */
   private toggleFavorite(userId: string): void {
-    console.log(`⭐ UserListWidget: Toggle favorite for user ${userId}`);
+    verbose() && console.log(`⭐ UserListWidget: Toggle favorite for user ${userId}`);
     // TODO: Implement favorite persistence
   }
 
@@ -664,7 +667,7 @@ export class UserListWidget extends EntityScrollerWidget<UserEntity> {
    * Show action menu for user
    */
   private showActionMenu(userId: string): void {
-    console.log(`» UserListWidget: Show action menu for user ${userId}`);
+    verbose() && console.log(`» UserListWidget: Show action menu for user ${userId}`);
     // TODO: Implement action menu (DM, view profile, etc.)
   }
 

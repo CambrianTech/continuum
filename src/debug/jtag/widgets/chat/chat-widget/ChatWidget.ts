@@ -3,6 +3,9 @@
  * Eliminates ~300 lines of manual EntityScroller and CRUD event handling
  */
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { ChatMessageEntity, type MediaItem, type MediaType } from '../../../system/data/entities/ChatMessageEntity';
@@ -175,7 +178,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (this._isActiveContent === isActive) return;
 
     this._isActiveContent = isActive;
-    console.log(`📨 ChatWidget: ${isActive ? 'ACTIVATED' : 'DEACTIVATED'} (${reason})`);
+    verbose() && console.log(`📨 ChatWidget: ${isActive ? 'ACTIVATED' : 'DEACTIVATED'} (${reason})`);
 
     if (isActive) {
       // When activated, ensure UI is up-to-date
@@ -378,7 +381,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
 
       // Reduce log spam
-      // console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
+      // verbose() && console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
 
       // Store total count from database (not just loaded items)
       this.totalMessageCount = result.count ?? result.items.length;
@@ -569,13 +572,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // 4. Default to General
 
     if (this.pageState?.contentType === 'chat' && this.pageState.entityId) {
-      console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
+      verbose() && console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
       await this.switchToRoom(this.pageState.entityId);
       this._isActiveContent = true;
     } else {
       const entityIdAttr = this.getAttribute('entity-id') || this.getAttribute('data-entity-id');
       if (entityIdAttr) {
-        console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
+        verbose() && console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
         await this.switchToRoom(entityIdAttr);
         this._isActiveContent = true;
       } else {
@@ -690,7 +693,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.positronUpdateDebounce = setTimeout(() => {
       const member = this.roomMembers.get(profileUserId);
       if (member && member.status !== data.status) {
-        console.log(`🧠 ChatWidget: Profile event - ${member.displayName} status: ${member.status} → ${data.status}`);
+        verbose() && console.log(`🧠 ChatWidget: Profile event - ${member.displayName} status: ${member.status} → ${data.status}`);
 
         // Update the member's status
         member.status = data.status as UserEntity['status'];
@@ -762,7 +765,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (container) {
       container.classList.add('learning-active');
       container.dataset.learningPersona = personaName;
-      console.log(`🧬 ChatWidget: Added learning border for ${personaName}`);
+      verbose() && console.log(`🧬 ChatWidget: Added learning border for ${personaName}`);
     }
   }
 
@@ -774,7 +777,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (container) {
       container.classList.remove('learning-active');
       delete container.dataset.learningPersona;
-      console.log(`🧬 ChatWidget: Removed learning border`);
+      verbose() && console.log(`🧬 ChatWidget: Removed learning border`);
     }
   }
 
@@ -827,7 +830,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.aiStatusIndicator.setContainer(this.aiStatusContainer);
       // Set initial display state based on errorsHidden flag
       this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
-      console.log(`✅ ChatWidget: AI status container ready`);
+      verbose() && console.log(`✅ ChatWidget: AI status container ready`);
     }
 
     // Setup error toggle handler
@@ -915,7 +918,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Get current user's ID from session
       const sessionResult = await Commands.execute<any, any>('session/get-user', {});
       if (!sessionResult?.success || !sessionResult.userId) {
-        console.log('📨 ChatWidget: No user session, using default General room');
+        verbose() && console.log('📨 ChatWidget: No user session, using default General room');
         return;
       }
 
@@ -927,7 +930,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       });
 
       if (!listResult?.success || !listResult.items?.length) {
-        console.log('📨 ChatWidget: No UserState found, using default General room');
+        verbose() && console.log('📨 ChatWidget: No UserState found, using default General room');
         return;
       }
 
@@ -938,17 +941,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Find the current content item
       const currentItem = openItems.find((item: any) => item.id === currentItemId);
       if (!currentItem) {
-        console.log('📨 ChatWidget: No current content item, using default General room');
+        verbose() && console.log('📨 ChatWidget: No current content item, using default General room');
         return;
       }
 
       // Only use if it's a chat type with an entityId (room ID)
       if (currentItem.type === 'chat' && currentItem.entityId) {
-        console.log(`📨 ChatWidget: Loading room from UserState: "${currentItem.title}" (${currentItem.entityId})`);
+        verbose() && console.log(`📨 ChatWidget: Loading room from UserState: "${currentItem.title}" (${currentItem.entityId})`);
         this.currentRoomId = currentItem.entityId as UUID;
         this.currentRoomName = currentItem.title || 'Chat';
       } else {
-        console.log(`📨 ChatWidget: Current content is "${currentItem.type}", not a chat room`);
+        verbose() && console.log(`📨 ChatWidget: Current content is "${currentItem.type}", not a chat room`);
       }
     } catch (error) {
       console.warn('⚠️ ChatWidget: Error loading from UserState, using default:', error);
@@ -1120,7 +1123,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       chip.addEventListener('click', () => {
         const personaId = chip.getAttribute('data-persona-id');
         const hasError = chip.getAttribute('data-has-error') === 'true';
-        console.log(`🔍 ChatWidget: Clicked persona ${personaId} (error=${hasError})`);
+        verbose() && console.log(`🔍 ChatWidget: Clicked persona ${personaId} (error=${hasError})`);
 
         // Show the status panel
         this.toggleErrorPanel(true);
