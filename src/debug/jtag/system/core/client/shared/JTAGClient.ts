@@ -730,10 +730,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     await client.initialize(options);
     
     console.log('✅ JTAGClient: Connection established');
-    
-    // 🔑 BOOTSTRAP: Call list() to discover commands and return result for CLI
-    console.log('🔄 JTAGClient: Discovering available commands...');
-    const listResult = await client.commands.list();
+
+    // Use already-discovered commands from initialize() - no need for second network call
+    const listResult = {
+      context: client.context,
+      sessionId: client.sessionId,
+      success: true,
+      commands: Array.from(client.discoveredCommands.values()),
+      totalCount: client.discoveredCommands.size
+    };
     
     // console.log(`✅ JTAGClient: ${JTAG_BOOTSTRAP_MESSAGES.BOOTSTRAP_COMPLETE_PREFIX} ${listResult.totalCount} commands`);
     
