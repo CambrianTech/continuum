@@ -140,16 +140,30 @@
         </div>
     </div>
     
-    <!-- Dynamic script loading based on configuration -->
-    <script src="/dist/browser-index.js"></script>
+    <!-- Dynamic script loading with ES modules for code splitting -->
+    <script type="module" src="/dist/index.js"></script>
     <script>
         let jtagSystem = null;
         let activeExample = null;
         let exampleConfig = null;
-        
+
+        // Wait for ES module to load and export jtag
+        async function waitForJtag(maxWait = 5000) {
+            const start = Date.now();
+            while (typeof jtag === 'undefined' && Date.now() - start < maxWait) {
+                await new Promise(r => setTimeout(r, 50));
+            }
+            if (typeof jtag === 'undefined') {
+                throw new Error('JTAG module failed to load');
+            }
+            return jtag;
+        }
+
         // Initialize JTAG system
         async function initializeJTAG() {
             try {
+                log('core', '🔌 Waiting for JTAG module...');
+                await waitForJtag();
                 log('core', '🔌 Connecting to JTAG system...');
                 const connection = await jtag.connect();
                 jtagSystem = connection.client || connection;

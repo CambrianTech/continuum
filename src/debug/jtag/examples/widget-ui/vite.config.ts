@@ -33,24 +33,24 @@ export default defineConfig({
     }
   },
 
-  // Build configuration - matches esbuild output
+  // Build configuration - single bundle with minification
   build: {
     outDir: 'dist',
     emptyOutDir: true,
     sourcemap: true,
-    minify: false, // Match esbuild settings
+    minify: true, // Enable minification for ~35% smaller bundle
     target: 'es2020',
 
     // Library mode for browser bundle
     lib: {
       entry: resolve(__dirname, 'src/index.ts'),
       formats: ['es'],
-      fileName: () => 'index.js' // Match esbuild output name
+      fileName: () => 'index.js'
     },
 
     rollupOptions: {
       output: {
-        // Single bundle (no code splitting)
+        // Single bundle (code splitting caused circular dep issues)
         inlineDynamicImports: true,
         // Ensure CSS is extracted
         assetFileNames: '[name][extname]'

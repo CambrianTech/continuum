@@ -26,7 +26,7 @@ import { WidgetDiscovery } from './system/core/browser/utils/WidgetIntrospection
 export const jtag = {
   // Widget debugging utilities
   widgets: WidgetUtils,
-  
+
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
     // Reduce log spam
@@ -82,3 +82,7 @@ export const jtag = {
 export { JTAGSystemBrowser };
 export * from './system/core/types/JTAGTypes';
 export * from './commands/interface/screenshot/shared/browser-utils/BrowserElementUtils';
+
+// Set jtag on globalThis immediately for non-module scripts
+// This allows inline scripts to call jtag.connect() without waiting for imports
+(globalThis as any).jtag = jtag;
