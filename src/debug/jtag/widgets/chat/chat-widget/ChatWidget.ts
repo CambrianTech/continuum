@@ -24,33 +24,65 @@ import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
 import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
-// MessageComposerWidget removed - using inline HTML instead
+// Signals for React-like state management
+import { createWidgetSignals, watch, type WidgetSignalState, type Dispose } from '@system/signals';
+
+/**
+ * ChatWidget signal state - React-like reactive state management
+ * Changes to these values automatically trigger UI updates via watch()
+ */
+interface ChatSignalState {
+  roomId: UUID | null;
+  roomUniqueId: string | null;
+  roomName: string;
+  isActiveContent: boolean;
+  totalMessageCount: number;
+  loadedMessageCount: number;
+}
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLTextAreaElement;
-  private currentRoomId: UUID | null = null; // No default - set by pageState or attribute
-  private currentRoomUniqueId: string | null = null; // Track uniqueId for guard comparisons
-  private currentRoomName: string = 'General';
+
+  // === SIGNAL-BASED STATE (React-like reactivity) ===
+  private _signals: WidgetSignalState<ChatSignalState>;
+  private _signalDisposers: Dispose[] = []; // Cleanup for watch/effect subscriptions
+
+  // Getters for backward compatibility - read from signals
+  private get currentRoomId(): UUID | null { return this._signals.state.roomId; }
+  private set currentRoomId(v: UUID | null) { this._signals.set('roomId', v); }
+
+  private get currentRoomUniqueId(): string | null { return this._signals.state.roomUniqueId; }
+  private set currentRoomUniqueId(v: string | null) { this._signals.set('roomUniqueId', v); }
+
+  private get currentRoomName(): string { return this._signals.state.roomName; }
+  private set currentRoomName(v: string) { this._signals.set('roomName', v); }
+
+  private get totalMessageCount(): number { return this._signals.state.totalMessageCount; }
+  private set totalMessageCount(v: number) { this._signals.set('totalMessageCount', v); }
+
+  private get loadedMessageCount(): number { return this._signals.state.loadedMessageCount; }
+  private set loadedMessageCount(v: number) { this._signals.set('loadedMessageCount', v); }
+
+  // Non-signal state (doesn't need reactivity)
   private currentRoom: RoomEntity | null = null;
-  private roomMembers: Map<UUID, UserEntity> = new Map(); // Map of userId -> UserEntity
-  private totalMessageCount: number = 0; // Total messages in database (not just loaded)
-  private loadedMessageCount: number = 0; // Number of messages actually loaded so far
-  private adapterRegistry: AdapterRegistry; // Selects adapters per message based on content
-  private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
-  private aiStatusContainer?: HTMLElement; // Container for AI status indicators
-  private headerUpdateTimeout?: number; // Debounce timeout for header updates
-  private errorsHidden: boolean = true; // Toggle state for error notifications
-  private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
-  private isSending: boolean = false; // Guard against duplicate sends
-  private positronUnsubscribe?: () => void; // Cleanup for Positron subscription
-  private positronUpdateDebounce?: number; // Debounce for Positron state updates
+  private roomMembers: Map<UUID, UserEntity> = new Map();
+  private adapterRegistry: AdapterRegistry;
+  private aiStatusIndicator: AIStatusIndicator;
+  private aiStatusContainer?: HTMLElement;
+  private headerUpdateTimeout?: number;
+  private errorsHidden: boolean = true;
+  private pendingAttachments: MediaItem[] = [];
+  private isSending: boolean = false;
+  private positronUnsubscribe?: () => void;
+  private positronUpdateDebounce?: number;
 
   // === REACT-LIKE VISIBILITY STATE ===
-  // Track whether this widget is the currently active/visible content
-  private _isActiveContent: boolean = false; // Whether this is the currently visible chat tab
-  private _isPinnedWidget: boolean = false; // Whether pinned to specific room via attribute
-  private _eventUnsubscribers: Array<() => void> = []; // For cleanup on disconnect
-  private _pendingMessageTempIds: Set<UUID> = new Set(); // Track optimistic message IDs
+  private get _isActiveContent(): boolean { return this._signals.state.isActiveContent; }
+  private set _isActiveContent(v: boolean) { this._signals.set('isActiveContent', v); }
+
+  private _isPinnedWidget: boolean = false;
+  private _eventUnsubscribers: Array<() => void> = [];
+  private _pendingMessageTempIds: Set<UUID> = new Set();
 
   constructor() {
     super({
@@ -62,6 +94,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       enableRouterEvents: false,
       enableScreenshots: false
     });
+
+    // Initialize signal store with default state (React-like pattern)
+    this._signals = createWidgetSignals<ChatSignalState>({
+      roomId: null,
+      roomUniqueId: null,
+      roomName: 'General',
+      isActiveContent: false,
+      totalMessageCount: 0,
+      loadedMessageCount: 0
+    }, { widgetName: 'ChatWidget' });
 
     // Initialize adapter registry for per-message adapter selection
     this.adapterRegistry = new AdapterRegistry();
@@ -495,6 +537,29 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.positronUnsubscribe = PositronWidgetState.subscribeToWidget('profile', 'status:changed', (data) => {
       this.handleProfileStatusChange(data as { userId: string; status: string; displayName: string });
     });
+
+    // === STEP 5: Setup signal watchers for reactive UI updates ===
+    this.setupSignalWatchers();
+  }
+
+  /**
+   * Setup signal watchers for reactive UI updates (React-like pattern)
+   * These automatically update the UI when signal state changes
+   */
+  private setupSignalWatchers(): void {
+    // Watch totalMessageCount - auto-update header when count changes
+    const countWatcher = watch(
+      this._signals.getSignal('totalMessageCount'),
+      () => this.updateHeader()
+    );
+    this._signalDisposers.push(countWatcher);
+
+    // Watch roomName - auto-update header when room changes
+    const roomWatcher = watch(
+      this._signals.getSignal('roomName'),
+      () => this.updateHeader()
+    );
+    this._signalDisposers.push(roomWatcher);
   }
 
   /**
@@ -658,6 +723,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
     this._eventUnsubscribers = [];
 
+    // Clean up signal watch/effect subscriptions
+    for (const dispose of this._signalDisposers) {
+      try {
+        dispose();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    this._signalDisposers = [];
+
+    // Dispose the entire signal store (cleans up all internal effects)
+    this._signals.dispose();
+
     // Clean up Positron subscription
     if (this.positronUnsubscribe) {
       this.positronUnsubscribe();
@@ -675,9 +753,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       clearTimeout(this.headerUpdateTimeout);
       this.headerUpdateTimeout = undefined;
     }
-
-    // Reset visibility state
-    this._isActiveContent = false;
 
     // Call parent cleanup
     await super.disconnectedCallback();
