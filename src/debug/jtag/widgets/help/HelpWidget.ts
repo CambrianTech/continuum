@@ -1,55 +1,141 @@
 /**
- * HelpWidget - Onboarding and documentation with AI assistance
+ * HelpWidget - Onboarding and documentation
  *
- * Helps new users get started with Continuum.
- * Includes embedded AI assistant for contextual help.
- *
- * Structure:
- * - public/help-widget.html - Template container
- * - public/help-widget.scss - Styles (compiled to .css)
- * - HelpWidget.ts - Logic (this file)
+ * MIGRATED TO ReactiveWidget:
+ * - Lit's reactive properties
+ * - Declarative templates
+ * - Automatic DOM diffing
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import { ReactiveWidget, html, css, reactive, type TemplateResult } from '../shared/ReactiveWidget';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
 interface HelpSection {
   id: string;
   title: string;
   icon: string;
-  content: string;
+  content: TemplateResult;
 }
 
-export class HelpWidget extends BaseWidget {
-  private activeSection: string = 'getting-started';
+export class HelpWidget extends ReactiveWidget {
+  @reactive() private activeSection: string = 'getting-started';
 
-  constructor() {
-    super({
-      widgetName: 'HelpWidget',
-      template: 'help-widget.html',
-      styles: 'help-widget.css',
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: false,
-      enableScreenshots: false
-    });
-  }
+  static override styles = css`
+    :host {
+      display: block;
+      height: 100%;
+    }
 
-  /**
-   * Override path resolution - directory is 'help' (matches class name pattern)
-   */
-  protected resolveResourcePath(filename: string): string {
-    return `widgets/help/public/${filename}`;
-  }
+    .help-layout {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      height: 100%;
+      gap: var(--spacing-md, 12px);
+      padding: var(--spacing-md, 12px);
+    }
 
-  protected async onWidgetInitialize(): Promise<void> {
+    .help-nav {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs, 4px);
+      border-right: 1px solid var(--border-color, #333);
+      padding-right: var(--spacing-md, 12px);
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm, 8px);
+      padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+      border-radius: var(--border-radius-sm, 4px);
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+      color: var(--text-secondary, #aaa);
+    }
+
+    .nav-item:hover {
+      background-color: var(--hover-background, rgba(255, 255, 255, 0.05));
+    }
+
+    .nav-item.active {
+      background-color: var(--active-background, rgba(0, 200, 255, 0.1));
+      color: var(--text-primary, #fff);
+    }
+
+    .nav-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--accent-color, #00c8ff);
+      color: var(--background-color, #1a1a2e);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75em;
+      font-weight: bold;
+    }
+
+    .help-content {
+      overflow-y: auto;
+      padding: var(--spacing-md, 12px);
+    }
+
+    .help-content h3 {
+      margin-top: 0;
+      color: var(--text-primary, #fff);
+    }
+
+    .help-content h4 {
+      color: var(--accent-color, #00c8ff);
+      margin-top: 1.5em;
+    }
+
+    .help-content p {
+      color: var(--text-secondary, #aaa);
+      line-height: 1.6;
+    }
+
+    .help-content ol, .help-content ul {
+      color: var(--text-secondary, #aaa);
+      padding-left: 1.5em;
+    }
+
+    .help-content li {
+      margin-bottom: 0.5em;
+    }
+
+    .help-content code {
+      background: var(--code-background, rgba(0, 200, 255, 0.1));
+      padding: 0.2em 0.4em;
+      border-radius: 3px;
+      font-family: monospace;
+    }
+
+    .help-content a {
+      color: var(--accent-color, #00c8ff);
+    }
+
+    .help-content table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .help-content td {
+      padding: 0.5em;
+      border-bottom: 1px solid var(--border-color, #333);
+    }
+
+    .help-content td:first-child {
+      width: 150px;
+    }
+  `;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
     console.log('Help: Initializing help widget...');
     this.emitPositronContext();
   }
 
-  /**
-   * Emit Positron context for AI awareness
-   */
   private emitPositronContext(): void {
     const sections = this.getSections();
     const currentSectionData = sections.find(s => s.id === this.activeSection);
@@ -74,7 +160,7 @@ export class HelpWidget extends BaseWidget {
         id: 'getting-started',
         title: 'Getting Started',
         icon: '1',
-        content: `
+        content: html`
           <h3>Welcome to Continuum</h3>
           <p>Continuum is a collaborative AI workspace where you can chat with multiple AI models,
           configure your environment, and work together with AI assistants.</p>
@@ -92,7 +178,7 @@ export class HelpWidget extends BaseWidget {
         id: 'ollama',
         title: 'Free AI with Ollama',
         icon: '2',
-        content: `
+        content: html`
           <h3>Local AI - No API Keys Required</h3>
           <p>Ollama runs AI models locally on your machine, completely free.</p>
 
@@ -116,7 +202,7 @@ export class HelpWidget extends BaseWidget {
         id: 'api-keys',
         title: 'API Keys',
         icon: '3',
-        content: `
+        content: html`
           <h3>Cloud AI Providers</h3>
           <p>For more powerful AI models, add API keys in Settings.</p>
 
@@ -137,7 +223,7 @@ export class HelpWidget extends BaseWidget {
         id: 'chat-rooms',
         title: 'Chat Rooms',
         icon: '4',
-        content: `
+        content: html`
           <h3>Collaborative Spaces</h3>
           <p>Chat rooms are collaborative spaces where you and AI assistants can work together.</p>
 
@@ -161,9 +247,9 @@ export class HelpWidget extends BaseWidget {
         id: 'keyboard',
         title: 'Keyboard Shortcuts',
         icon: '5',
-        content: `
+        content: html`
           <h3>Keyboard Shortcuts</h3>
-          <table style="width: 100%; border-collapse: collapse;">
+          <table>
             <tr><td><code>Enter</code></td><td>Send message</td></tr>
             <tr><td><code>Shift + Enter</code></td><td>New line in message</td></tr>
             <tr><td><code>Ctrl/Cmd + K</code></td><td>Quick command palette</td></tr>
@@ -175,55 +261,39 @@ export class HelpWidget extends BaseWidget {
     ];
   }
 
-  protected async renderWidget(): Promise<void> {
-    // Inject loaded template and styles into shadow DOM
-    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
-      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
-      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
+  private handleSectionClick(sectionId: string): void {
+    if (sectionId !== this.activeSection) {
+      this.activeSection = sectionId;
+      this.emitPositronContext();
     }
-
-    // Render dynamic content
-    this.renderContent();
-    this.setupEventListeners();
   }
 
-  private renderContent(): void {
+  private renderNavItem(section: HelpSection): TemplateResult {
+    return html`
+      <div
+        class="nav-item ${section.id === this.activeSection ? 'active' : ''}"
+        @click=${() => this.handleSectionClick(section.id)}
+      >
+        <span class="nav-icon">${section.icon}</span>
+        <span>${section.title}</span>
+      </div>
+    `;
+  }
+
+  override render(): TemplateResult {
     const sections = this.getSections();
-    const activeContent = sections.find(s => s.id === this.activeSection)?.content || '';
+    const activeContent = sections.find(s => s.id === this.activeSection)?.content;
 
-    // Render nav items
-    const navItemsContainer = this.shadowRoot?.querySelector('.nav-items');
-    if (navItemsContainer) {
-      navItemsContainer.innerHTML = sections.map(s => `
-        <div class="nav-item ${s.id === this.activeSection ? 'active' : ''}" data-section="${s.id}">
-          <span class="nav-icon">${s.icon}</span>
-          <span>${s.title}</span>
+    return html`
+      <div class="help-layout">
+        <div class="help-nav">
+          ${sections.map(s => this.renderNavItem(s))}
         </div>
-      `).join('');
-    }
-
-    // Render help content
-    const contentContainer = this.shadowRoot?.querySelector('.help-content');
-    if (contentContainer) {
-      contentContainer.innerHTML = activeContent;
-    }
-  }
-
-  private setupEventListeners(): void {
-    this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        const section = (e.currentTarget as HTMLElement).dataset.section;
-        if (section && section !== this.activeSection) {
-          this.activeSection = section;
-          this.renderWidget();
-          this.emitPositronContext();  // Notify AIs of section change
-        }
-      });
-    });
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    console.log('Help: Cleanup complete');
+        <div class="help-content">
+          ${activeContent}
+        </div>
+      </div>
+    `;
   }
 }
 
