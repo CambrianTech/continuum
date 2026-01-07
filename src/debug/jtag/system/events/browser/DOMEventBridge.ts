@@ -6,6 +6,9 @@
 
 import { EventManager } from '../shared/JTAGEventSystem';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export class DOMEventBridge {
   private eventManager: EventManager;
   private eventMappings: Map<string, string> = new Map();
@@ -25,8 +28,8 @@ export class DOMEventBridge {
     this.eventMappings.set('chat-room-updated', 'chat:room-updated');
     this.eventMappings.set('chat-participant-joined', 'chat:participant-joined');
     this.eventMappings.set('chat-participant-left', 'chat:participant-left');
-    
-    console.log('🌉 DOMEventBridge: Registered event mappings');
+
+    verbose() && console.log('🌉 DOMEventBridge: Registered event mappings');
   }
 
   /**
@@ -38,8 +41,8 @@ export class DOMEventBridge {
       this.eventManager.events.on(jtagEventName, (data: any) => {
         this.bridgeToDOMEvent(domEventName, data);
       });
-      
-      console.log(`🔗 DOMEventBridge: Listening for '${jtagEventName}' → '${domEventName}'`);
+
+      verbose() && console.log(`🔗 DOMEventBridge: Listening for '${jtagEventName}' → '${domEventName}'`);
     });
   }
 
@@ -55,7 +58,7 @@ export class DOMEventBridge {
       });
 
       document.dispatchEvent(customEvent);
-      console.log(`✨ DOMEventBridge: Emitted DOM event '${domEventName}'`);
+      verbose() && console.log(`✨ DOMEventBridge: Emitted DOM event '${domEventName}'`);
       
     } catch (error) {
       console.error(`❌ DOMEventBridge: Failed to emit DOM event '${domEventName}':`, error);
@@ -72,8 +75,8 @@ export class DOMEventBridge {
     this.eventManager.events.on(jtagEventName, (data: any) => {
       this.bridgeToDOMEvent(domEventName, data);
     });
-    
-    console.log(`🔗 DOMEventBridge: Added mapping '${jtagEventName}' → '${domEventName}'`);
+
+    verbose() && console.log(`🔗 DOMEventBridge: Added mapping '${jtagEventName}' → '${domEventName}'`);
   }
 
   /**

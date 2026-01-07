@@ -15,6 +15,9 @@ import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { EventSubscriptionManager } from '../../../system/events/shared/EventSubscriptionManager';
 import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 // EventBridge metadata structure for better type safety
 interface EventBridgeMetadata {
   __JTAG_BRIDGED__?: boolean;
@@ -40,8 +43,8 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
 
     // Setup DOM event bridge for widget communication
     this.domEventBridge = new DOMEventBridge(this.eventManager);
-    console.log('🌉 EventsDaemonBrowser: DOM event bridge initialized');
-    console.log('🎧 EventsDaemonBrowser: Unified subscription manager initialized');
+    verbose() && console.log('🌉 EventsDaemonBrowser: DOM event bridge initialized');
+    verbose() && console.log('🎧 EventsDaemonBrowser: Unified subscription manager initialized');
   }
 
   /**
@@ -88,6 +91,6 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
    */
   public emitEntityEvent<T extends BaseEntity>(eventName: string, entity: T): void {
     this.eventManager.events.emit(eventName, { entity });
-    console.log(`🔄 EventsDaemonBrowser: Emitted ${eventName} event for ${entity.collection}/${entity.id}`);
+    verbose() && console.log(`🔄 EventsDaemonBrowser: Emitted ${eventName} event for ${entity.collection}/${entity.id}`);
   }
 }

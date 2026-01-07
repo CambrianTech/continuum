@@ -12,6 +12,9 @@ import { DataDaemonBase, type DataOperationPayload } from '../shared/DataDaemonB
 import type { DataRecord, StorageResult } from '../shared/DataStorageAdapter';
 import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * Data Daemon Browser - Pure Forwarding Client
  * 
@@ -27,7 +30,7 @@ export class DataDaemonBrowser extends DataDaemonBase {
    * Initialize browser data daemon
    */
   protected async initialize(): Promise<void> {
-    console.log(`🗄️ ${this.toString()}: Browser data daemon initialized - forwarding to server`);
+    verbose() && console.log(`🗄️ ${this.toString()}: Browser data daemon initialized - forwarding to server`);
   }
   
   /**

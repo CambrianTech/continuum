@@ -9,6 +9,9 @@
 
 import { generateUUID, type UUID } from '../types/CrossPlatformUUID';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface DeviceIdentity {
   deviceId: string;        // Unique device identifier
   userId: UUID;            // Persistent user ID (anonymous or authenticated)
@@ -33,7 +36,7 @@ export class BrowserDeviceIdentity {
     // Try to load existing identity
     const existing = this.loadIdentity();
     if (existing) {
-      console.log(`🔐 BrowserDeviceIdentity: Loaded existing device ${existing.deviceId.substring(0, 8)}...`);
+      verbose() && console.log(`🔐 BrowserDeviceIdentity: Loaded existing device ${existing.deviceId.substring(0, 8)}...`);
       return existing;
     }
 
@@ -41,7 +44,7 @@ export class BrowserDeviceIdentity {
     const identity = this.createNewIdentity();
     this.saveIdentity(identity);
 
-    console.log(`🔐 BrowserDeviceIdentity: Created new device ${identity.deviceId.substring(0, 8)}...`);
+    verbose() && console.log(`🔐 BrowserDeviceIdentity: Created new device ${identity.deviceId.substring(0, 8)}...`);
     return identity;
   }
 
@@ -74,7 +77,7 @@ export class BrowserDeviceIdentity {
     };
 
     this.saveIdentity(upgraded);
-    console.log(`🔐 BrowserDeviceIdentity: Upgraded to authenticated user ${authenticatedUserId.substring(0, 8)}...`);
+    verbose() && console.log(`🔐 BrowserDeviceIdentity: Upgraded to authenticated user ${authenticatedUserId.substring(0, 8)}...`);
   }
 
   /**
@@ -193,7 +196,7 @@ export class BrowserDeviceIdentity {
    */
   static clear(): void {
     localStorage.removeItem(this.STORAGE_KEY);
-    console.log('🔐 BrowserDeviceIdentity: Cleared device identity');
+    verbose() && console.log('🔐 BrowserDeviceIdentity: Cleared device identity');
   }
 
   /**

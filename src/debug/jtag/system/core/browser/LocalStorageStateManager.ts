@@ -17,6 +17,9 @@ import type { UUID } from '../types/CrossPlatformUUID';
 import { stringToUUID } from '../types/CrossPlatformUUID';
 import { getDefaultPreferencesForType } from '../../user/config/UserCapabilitiesDefaults';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export interface LocalStateData {
   userId: UUID;
   theme?: string;
@@ -71,7 +74,7 @@ export class LocalStorageStateManager {
     try {
       const storedData = localStorage.getItem(this.STORAGE_KEY);
       if (!storedData) {
-        console.log('🔧 LocalStorageStateManager: No stored state found');
+        verbose() && console.log('🔧 LocalStorageStateManager: No stored state found');
         return null;
       }
 
@@ -90,7 +93,7 @@ export class LocalStorageStateManager {
         return null;
       }
 
-      console.log('✅ LocalStorageStateManager: State loaded successfully');
+      verbose() && console.log('✅ LocalStorageStateManager: State loaded successfully');
       return parsedData;
 
     } catch (error) {
@@ -120,7 +123,7 @@ export class LocalStorageStateManager {
       };
 
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedState));
-      console.log('✅ LocalStorageStateManager: State saved successfully');
+      verbose() && console.log('✅ LocalStorageStateManager: State saved successfully');
       return true;
 
     } catch (error) {
@@ -180,7 +183,7 @@ export class LocalStorageStateManager {
   static clearState(): void {
     try {
       localStorage.removeItem(this.STORAGE_KEY);
-      console.log('✅ LocalStorageStateManager: State cleared successfully');
+      verbose() && console.log('✅ LocalStorageStateManager: State cleared successfully');
     } catch (error) {
       console.error('❌ LocalStorageStateManager: Failed to clear state:', error);
     }
@@ -224,7 +227,7 @@ export class LocalStorageStateManager {
     };
 
     this.saveState(initialState);
-    console.log('✅ LocalStorageStateManager: Initial state created');
+    verbose() && console.log('✅ LocalStorageStateManager: Initial state created');
     return initialState;
   }
 

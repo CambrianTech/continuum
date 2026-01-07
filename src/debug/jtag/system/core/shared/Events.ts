@@ -20,6 +20,17 @@ import { RouterRegistry } from './RouterRegistry';
 import { BaseEntity } from '../../data/entities/BaseEntity';
 import { ElegantSubscriptionParser, type SubscriptionFilter } from '../../events/shared/ElegantSubscriptionParser';
 
+// Verbose logging helper (works in both browser and server)
+const verbose = () => {
+  if (typeof window !== 'undefined') {
+    return (window as any).JTAG_VERBOSE === true;
+  }
+  if (typeof process !== 'undefined') {
+    return process.env.JTAG_VERBOSE === 'true';
+  }
+  return false;
+};
+
 export interface EventEmitOptions {
   scope?: EventScope;
   scopeId?: string;
@@ -125,7 +136,7 @@ export class Events {
       if (!router) {
         // If no router found and we're running in browser, fall back to DOM-only events
         if (isBrowserRuntime) {
-          console.log(`🌐 Events: No router for context ${context.environment}/${context.uuid}, using DOM-only event for ${eventName}`);
+          verbose() && console.log(`🌐 Events: No router for context ${context.environment}/${context.uuid}, using DOM-only event for ${eventName}`);
 
           // Trigger wildcard/pattern subscriptions
           this.checkWildcardSubscriptions(eventName, eventData);
@@ -137,7 +148,7 @@ export class Events {
           });
           document.dispatchEvent(domEvent);
 
-          console.log(`✅ Events: Emitted DOM-only event ${eventName}`);
+          verbose() && console.log(`✅ Events: Emitted DOM-only event ${eventName}`);
           return { success: true };
         } else {
           // Server runtime without router is an error
@@ -285,7 +296,7 @@ export class Events {
       if (isElegantPattern) {
         // Parse elegant pattern
         const parsedPattern = ElegantSubscriptionParser.parsePattern(patternOrEventName);
-        console.log(`🎯 Events: Parsed elegant pattern:`, parsedPattern);
+        verbose() && console.log(`🎯 Events: Parsed elegant pattern:`, parsedPattern);
 
         // Create subscription ID - use subscriberId if provided for deduplication
         const subscriptionId = subscriberId
@@ -298,7 +309,7 @@ export class Events {
         // Check if replacing existing subscription (deduplication)
         const existingSubscription = this.elegantSubscriptions.get(subscriptionId);
         if (existingSubscription) {
-          console.log(`🔄 Events: Replacing existing subscription ${subscriptionId} for pattern ${patternOrEventName}`);
+          verbose() && console.log(`🔄 Events: Replacing existing subscription ${subscriptionId} for pattern ${patternOrEventName}`);
         }
 
         this.elegantSubscriptions.set(subscriptionId, {
@@ -308,12 +319,12 @@ export class Events {
           originalPattern: patternOrEventName
         });
 
-        console.log(`🎧 Events: ${existingSubscription ? 'Replaced' : 'Added'} elegant subscription ${subscriptionId} for pattern ${patternOrEventName}`);
+        verbose() && console.log(`🎧 Events: ${existingSubscription ? 'Replaced' : 'Added'} elegant subscription ${subscriptionId} for pattern ${patternOrEventName}`);
 
         // Return unsubscribe function
         return () => {
           this.elegantSubscriptions?.delete(subscriptionId);
-          console.log(`🔌 Events: Unsubscribed elegant pattern ${patternOrEventName} (${subscriptionId})`);
+          verbose() && console.log(`🔌 Events: Unsubscribed elegant pattern ${patternOrEventName} (${subscriptionId})`);
         };
 
       } else if (patternOrEventName.includes('*')) {
@@ -330,7 +341,7 @@ export class Events {
         // Check if replacing existing subscription (deduplication)
         const existingSubscription = this.wildcardSubscriptions.get(subscriptionId);
         if (existingSubscription) {
-          console.log(`🔄 Events: Replacing existing wildcard subscription ${subscriptionId} for pattern ${patternOrEventName}`);
+          verbose() && console.log(`🔄 Events: Replacing existing wildcard subscription ${subscriptionId} for pattern ${patternOrEventName}`);
         }
 
         this.wildcardSubscriptions.set(subscriptionId, {
@@ -371,7 +382,7 @@ export class Events {
         // Check if replacing existing subscription (deduplication)
         const existingSubscription = this.exactMatchSubscriptions.get(subscriptionId);
         if (existingSubscription) {
-          console.log(`🔄 Events: Replacing existing exact-match subscription ${subscriptionId} for ${patternOrEventName}`);
+          verbose() && console.log(`🔄 Events: Replacing existing exact-match subscription ${subscriptionId} for ${patternOrEventName}`);
         }
 
         this.exactMatchSubscriptions.set(subscriptionId, {
@@ -423,7 +434,7 @@ export class Events {
       this.wildcardSubscriptions.forEach((subscription, subscriptionId) => {
         if (subscription.pattern.test(eventName)) {
           try {
-            console.log(`🎯 Events: Wildcard match! ${subscription.eventName} pattern matches ${eventName}`);
+            verbose() && console.log(`🎯 Events: Wildcard match! ${subscription.eventName} pattern matches ${eventName}`);
             subscription.listener(eventData);
             totalMatchCount++;
           } catch (error) {
@@ -441,7 +452,7 @@ export class Events {
           if (ElegantSubscriptionParser.matchesPattern(eventName, subscription.pattern)) {
             // Check if event data matches filters
             if (ElegantSubscriptionParser.matchesFilter(eventData, subscription.filter)) {
-              console.log(`🎯 Events: Elegant pattern match! ${subscription.originalPattern} matches ${eventName}`);
+              verbose() && console.log(`🎯 Events: Elegant pattern match! ${subscription.originalPattern} matches ${eventName}`);
 
               // Create enhanced event data with action metadata
               const enhancedEvent = ElegantSubscriptionParser.createEnhancedEvent(eventName, eventData);
