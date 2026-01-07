@@ -356,8 +356,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         };
       }
 
-      console.log(`🔍 DEBUG: currentRoomId type=${typeof this.currentRoomId}, value="${this.currentRoomId}"`);
-      console.log(`🔍 CURSOR-WIDGET-DEBUG: cursor param=${cursor}, limit=${limit}`);
+      // DEBUG logs removed - were causing WebSocket spam
 
       // CRITICAL: The filter MUST be applied at the database level, not client-side
       // This ensures we only get messages for THIS room, with proper paging/cursors
@@ -408,7 +407,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         nextCursor = oldestMessage?.timestamp?.toString();
       }
 
-      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 30}), nextCursor=${nextCursor}`);
+      // PAGINATION log removed - too verbose for hot path
 
       return {
         items: validMessages,
@@ -509,13 +508,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       await this.initializeDynamicWidget();
     }
 
-    // === STEP 2: Load initial room data ===
-    if (this.currentRoomId) {
-      await this.loadRoomData(this.currentRoomId);
-      this.updateHeader();
-    }
+    // NOTE: Step 2 removed - switchToRoom() already calls loadRoomData()
+    // Having it here caused duplicate DB queries (room data loaded twice)
 
-    // === STEP 3: Setup event subscriptions (with cleanup tracking) ===
+    // === STEP 2: Setup event subscriptions (with cleanup tracking) ===
     this.setupContentEventSubscriptions();
     this.setupAIEventSubscriptions();
     this.setupLearningEventSubscriptions();
@@ -872,7 +868,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
 
       this.currentRoom = roomResult.data;
-      console.log(`✅ ChatWidget: Loaded room data with ${this.currentRoom?.members?.length ?? 0} members`);
 
       // Load user details for each member
       await this.loadRoomMembers();
@@ -882,31 +877,32 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
-   * Load user entities for all room members
+   * Load user entities for all room members in a single batch query
+   * Optimized: Uses data/list with id filter instead of N individual reads
    */
   private async loadRoomMembers(): Promise<void> {
-    if (!this.currentRoom) return;
+    if (!this.currentRoom || this.currentRoom.members.length === 0) return;
 
     this.roomMembers.clear();
 
-    // Load each member's user entity
-    for (const member of this.currentRoom.members) {
-      try {
-        const userResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
-          collection: UserEntity.collection,
-          id: member.userId,
-          backend: 'server'
-        });
+    // Batch load all members in ONE query (was N+1 queries before)
+    const memberIds = this.currentRoom.members.map(m => m.userId);
 
-        if (userResult?.success && userResult.data) {
-          this.roomMembers.set(member.userId, userResult.data);
+    try {
+      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+        collection: UserEntity.collection,
+        filter: { id: { $in: memberIds } },
+        limit: memberIds.length
+      });
+
+      if (result?.success && result.items) {
+        for (const user of result.items) {
+          this.roomMembers.set(user.id as UUID, user);
         }
-      } catch (error) {
-        console.warn(`⚠️ ChatWidget: Failed to load user ${member.userId}:`, error);
       }
+    } catch (error) {
+      console.warn(`⚠️ ChatWidget: Failed to batch load members:`, error);
     }
-
-    console.log(`✅ ChatWidget: Loaded ${this.roomMembers.size} member details`);
   }
 
   /**
@@ -1175,7 +1171,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        console.log('🔧 ENTER-KEY-PRESSED - text:', this.messageInput?.value, 'attachments:', this.pendingAttachments.length);
         this.sendMessage();
       }
     });
@@ -1211,12 +1206,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private async sendMessage(): Promise<void> {
     // Guard against concurrent sends
     if (this.isSending) {
-      console.log('🔧 SEND-ALREADY-IN-PROGRESS - ignoring duplicate call');
       return;
     }
 
     this.isSending = true;
-    console.log('🔧 SEND-MESSAGE-CALLED-' + Date.now());
 
     if (!this.messageInput) {
       this.isSending = false;
@@ -1224,12 +1217,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     const text = this.messageInput.value.trim();
-    console.log('🔧 MESSAGE-TEXT-LENGTH-' + text.length);
-    console.log('🔧 PENDING-ATTACHMENTS-COUNT-' + this.pendingAttachments.length);
 
     // Must have either text or attachments
     if (!text && this.pendingAttachments.length === 0) {
-      console.log('🔧 SEND-ABORTED-NO-CONTENT');
       return;
     }
 
@@ -1253,16 +1243,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     messageEntity.priority = 'normal';
     messageEntity.timestamp = new Date();
     messageEntity.reactions = [];
-
-    console.log('🔧 MESSAGE-ENTITY-MEDIA-COUNT-' + (messageEntity.content.media?.length ?? 0));
-    if (messageEntity.content.media && messageEntity.content.media.length > 0) {
-      console.log('🔧 FIRST-MEDIA-ITEM-' + JSON.stringify({
-        type: messageEntity.content.media[0].type,
-        filename: messageEntity.content.media[0].filename,
-        size: messageEntity.content.media[0].size,
-        base64Length: messageEntity.content.media[0].base64?.length ?? 0
-      }));
-    }
 
     // 🚀 OPTIMISTIC UPDATE: Show message immediately with "sending" state
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 8)}` as UUID;
@@ -1292,10 +1272,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       collection: ChatMessageEntity.collection,
       data: messageEntity,
       backend: 'server'
-    }).then(result => {
-      console.log('🔧 COMMAND-RESULT-' + JSON.stringify(result).substring(0, 200));
-      console.log(`✅ Message sent${attachmentCount > 0 ? ` with ${attachmentCount} attachment(s)` : ''}`);
-
+    }).then(() => {
       // Scroll to bottom after message added by event system
       if (this.scroller) {
         this.scroller.scrollToEnd();
@@ -1346,7 +1323,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         data: messageEntity,
         backend: 'server'
       });
-      console.log('✅ Message sent successfully');
+      // Message sent - scroll handled by entity events
 
       // Scroll to bottom after sending OWN message
       if (this.scroller) {
@@ -1382,8 +1359,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     e.preventDefault();
     e.stopPropagation();
 
-    console.log('🔧 DROP-EVENT-FIRED-' + Date.now());
-
     // Remove visual feedback
     const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
     if (container) {
@@ -1391,20 +1366,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     const files = e.dataTransfer?.files;
-    console.log('🔧 FILES-DROPPED-COUNT-' + (files?.length ?? 0));
 
     if (files && files.length > 0) {
-      console.log(`📎 Processing ${files.length} dropped file(s)...`);
-
       // Convert all files to MediaItems
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        console.log('🔧 PROCESSING-FILE-' + file.name + '-TYPE-' + file.type + '-SIZE-' + file.size);
         try {
           const mediaItem = await this.fileToMediaItem(file);
           this.pendingAttachments.push(mediaItem);
-          console.log(`✅ Added ${file.name} (${this.formatFileSize(file.size)})`);
-          console.log('🔧 PENDING-ATTACHMENTS-NOW-' + this.pendingAttachments.length);
         } catch (error) {
           console.error(`❌ Failed to process ${file.name}:`, error);
         }

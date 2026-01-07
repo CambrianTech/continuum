@@ -829,6 +829,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   }
 
   /**
+   * Synchronous check for registered client - NO POLLING
+   * Used by Events.emit to avoid 5-second timeout on server-side Form 1 calls
+   * Returns immediately with client or undefined (never waits)
+   */
+  static getRegisteredClientSync(key: string): JTAGClient | undefined {
+    return this.clientRegistry.get(key);
+  }
+
+  /**
    * Get shared instance from global context - works in browser and server
    * Browser: (window as WindowWithJTAG).jtag
    * Server: (globalThis as any).jtag

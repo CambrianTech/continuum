@@ -656,38 +656,29 @@ export class MainWidget extends BaseWidget {
     // directly from event data instead of refetching from DB
     this.contentStateAdapter.subscribeToEvents();
 
-    // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup
-    // RoomListWidget emits this and it definitely works (sidebar highlights change)
+    // IMPORTANT: Listen for ROOM_SELECTED from sidebar clicks (RoomListWidget)
+    // NOTE: content:opened handler already emits ROOM_SELECTED, so we check if already on this room
     Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (data: { roomId: string; roomName: string; uniqueId?: string }) => {
-      console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
-
       // Only switch to chat if we're currently viewing chat content
-      // Don't override settings/help/theme when sidebar highlights a room
-      const { type: currentType } = parseContentPath(this.currentPath);
+      const { type: currentType, entityId: currentEntityId } = parseContentPath(this.currentPath);
       if (currentType !== 'chat') {
-        console.log(`📋 MainPanel: Ignoring ROOM_SELECTED - currently on ${currentType}, not chat`);
+        return; // Don't override settings/help/theme when sidebar highlights a room
+      }
+
+      // GUARD: Skip if already on this room (prevents duplicate work from content:opened → ROOM_SELECTED chain)
+      if (currentEntityId === data.roomId || currentEntityId === data.uniqueId) {
         return;
       }
 
       // Update URL for room selection (bookmarkable deep links)
-      // Use uniqueId for human-readable URLs, fall back to roomId if not available
       const urlIdentifier = data.uniqueId || data.roomId;
       const newPath = buildContentPath('chat', urlIdentifier);
       this.updateUrl(newPath);
 
-      // CRITICAL: Use UUID (roomId) for internal state, NOT uniqueId
-      // This prevents duplicate tabs from UUID vs uniqueId mismatch
-      const canonicalEntityId = data.roomId;
-
-      // Set pageState with canonical UUID
+      // Set pageState and switch view (use UUID for internal state)
       const resolved = await RoutingService.resolve('chat', urlIdentifier);
-      pageState.setContent('chat', canonicalEntityId, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
-
-      // Switch to the selected chat room (use UUID for content view)
-      this.switchContentView('chat', canonicalEntityId);
-
-      // NOTE: Removed DB refresh here - was causing closed tabs to reappear!
-      // The Positron pattern handles state locally without DB refetch.
+      pageState.setContent('chat', data.roomId, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
+      this.switchContentView('chat', data.roomId);
     });
 
     console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');

@@ -24,7 +24,6 @@ export class StateContentSwitchServerCommand extends CommandBase<StateContentSwi
   }
 
   async execute(params: StateContentSwitchParams): Promise<StateContentSwitchResult> {
-    console.log('🔧 SERVER: Executing state/content/switch', params);
 
     // Validate required parameters
     if (!params.userId) {

@@ -65,18 +65,26 @@ export class Events {
 
       if (typeof contextOrEventName === 'string') {
         // Form 1: emit(eventName, data, options?)
-        // Auto-discover context from JTAGClient.sharedInstance
+        // Auto-discover context - NON-BLOCKING to prevent 5s timeouts
         const { JTAGClient } = await import('../client/shared/JTAGClient');
+        const isBrowserRuntime = typeof document !== 'undefined';
 
-        try {
-          const client = await JTAGClient.sharedInstance;
-          context = client.context;
-        } catch (error) {
-          // sharedInstance not ready yet (browser initialization race)
-          // Use minimal fallback context - will trigger DOM-only event path
-          const isBrowserRuntime = typeof document !== 'undefined';
-          if (isBrowserRuntime) {
-            // Create minimal context for DOM-only events
+        // Try SYNCHRONOUS check first (no polling/waiting)
+        const registeredClient = JTAGClient.getRegisteredClientSync?.('default');
+        const globalJtag = (globalThis as any).jtag;
+
+        if (registeredClient) {
+          context = registeredClient.context;
+        } else if (globalJtag?.context) {
+          context = globalJtag.context;
+        } else if (isBrowserRuntime) {
+          // Browser: Use async sharedInstance (waits for initialization)
+          // This is acceptable in browser because the client WILL be ready shortly
+          try {
+            const client = await JTAGClient.sharedInstance;
+            context = client.context;
+          } catch {
+            // Fallback to minimal context for DOM-only events
             const { generateUUID } = await import('../types/CrossPlatformUUID');
             context = {
               uuid: generateUUID(),
@@ -84,10 +92,17 @@ export class Events {
               config: {} as any,
               getConfig: () => ({} as any)
             };
-          } else {
-            // Server runtime - re-throw error
-            throw error;
           }
+        } else {
+          // Server: Create minimal context for local-only event dispatch
+          // DON'T wait 5 seconds for JTAGClient - just emit locally
+          const { generateUUID } = await import('../types/CrossPlatformUUID');
+          context = {
+            uuid: generateUUID(),
+            environment: 'server' as const,
+            config: {} as any,
+            getConfig: () => ({} as any)
+          };
         }
 
         eventName = contextOrEventName;
