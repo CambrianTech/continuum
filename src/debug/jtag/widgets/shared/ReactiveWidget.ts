@@ -37,6 +37,21 @@ import { PositronWidgetState, type InteractionHint } from './services/state/Posi
 import { widgetStateRegistry, type WidgetStateSlice } from '../../system/state/WidgetStateRegistry';
 import type { ReactiveStore } from '../../system/state/ReactiveStore';
 
+/**
+ * Cleanup function returned by effects
+ */
+export type EffectCleanup = () => void;
+
+/**
+ * Effect handler function - can return cleanup
+ */
+export type EffectHandler<T> = (value: T, prevValue: T | undefined) => void | EffectCleanup;
+
+/**
+ * Selector function to extract dependencies from widget
+ */
+export type DependencySelector<W, T> = (widget: W) => T;
+
 // Re-export Lit utilities for subclasses
 export { html, css, type TemplateResult, type CSSResultGroup };
 export type { InteractionHint };
@@ -147,6 +162,16 @@ export abstract class ReactiveWidget extends LitElement {
    */
   private _widgetStateStore?: ReactiveStore<WidgetStateSlice>;
 
+  /**
+   * Active effects with their selectors, handlers, and cleanup functions
+   */
+  private _effects: Array<{
+    selector: (widget: ReactiveWidget) => unknown;
+    handler: EffectHandler<unknown>;
+    prevValue: unknown;
+    cleanup?: EffectCleanup;
+  }> = [];
+
   constructor(config: Partial<ReactiveWidgetConfig> = {}) {
     super();
     this.config = {
@@ -181,10 +206,29 @@ export abstract class ReactiveWidget extends LitElement {
     super.disconnectedCallback();
     this.log('Disconnected from DOM');
 
+    // Clean up all effects
+    this.disposeEffects();
+
     // Clean up widget state registration
     this.unregisterWidgetState();
 
     this.onDisconnect();
+  }
+
+  /**
+   * Clean up all effects
+   */
+  private disposeEffects(): void {
+    for (const effect of this._effects) {
+      if (effect.cleanup) {
+        try {
+          effect.cleanup();
+        } catch (e) {
+          console.error(`${this.config.widgetName}: Effect cleanup error:`, e);
+        }
+      }
+    }
+    this._effects = [];
   }
 
   /**
@@ -205,12 +249,169 @@ export abstract class ReactiveWidget extends LitElement {
     if (this.config.debug) {
       this.log(`Updated: ${[...changedProperties.keys()].join(', ')}`);
     }
+
+    // Run effects when any property changes
+    if (changedProperties.size > 0) {
+      this.runEffects();
+    }
+  }
+
+  /**
+   * Run all effects, checking for dependency changes
+   */
+  private runEffects(): void {
+    for (const effect of this._effects) {
+      try {
+        const currentValue = effect.selector(this);
+
+        // Check if dependencies changed
+        if (!this.shallowEqual(currentValue, effect.prevValue)) {
+          // Run cleanup from previous execution
+          if (effect.cleanup) {
+            effect.cleanup();
+            effect.cleanup = undefined;
+          }
+
+          // Run the effect handler
+          const cleanup = effect.handler(currentValue, effect.prevValue);
+          if (typeof cleanup === 'function') {
+            effect.cleanup = cleanup;
+          }
+
+          // Store current value for next comparison
+          effect.prevValue = currentValue;
+
+          if (this.config.debug) {
+            this.log(`Effect triggered:`, { prev: effect.prevValue, current: currentValue });
+          }
+        }
+      } catch (e) {
+        console.error(`${this.config.widgetName}: Effect error:`, e);
+      }
+    }
+  }
+
+  /**
+   * Shallow equality check for effect dependency comparison
+   */
+  private shallowEqual<T>(a: T, b: T): boolean {
+    if (a === b) return true;
+    if (a === null || b === null) return false;
+    if (typeof a !== 'object' || typeof b !== 'object') return false;
+
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      return a.every((v, i) => v === b[i]);
+    }
+
+    const keysA = Object.keys(a) as (keyof T)[];
+    const keysB = Object.keys(b) as (keyof T)[];
+    if (keysA.length !== keysB.length) return false;
+
+    return keysA.every(key => a[key] === b[key]);
   }
 
   // Hooks for subclasses (cleaner than overriding lifecycle methods)
   protected onConnect(): void {}
   protected onDisconnect(): void {}
   protected onFirstRender(): void {}
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EFFECTS - React-like side effect management
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Create an effect that runs when dependencies change (like React useEffect)
+   *
+   * Call in onFirstRender() or onConnect() to set up side effects.
+   * Effects run after every render where their dependencies changed.
+   *
+   * @param selector - Function that returns dependencies (runs on every render)
+   * @param handler - Function that runs when dependencies change
+   * @returns Dispose function to remove the effect
+   *
+   * @example
+   * ```typescript
+   * class MyChatWidget extends ReactiveWidget {
+   *   @reactive() roomId: string | null = null;
+   *
+   *   protected onFirstRender() {
+   *     // Effect: load messages when roomId changes
+   *     this.createEffect(
+   *       (w) => w.roomId,
+   *       (roomId) => {
+   *         if (roomId) this.loadMessages(roomId);
+   *       }
+   *     );
+   *   }
+   *
+   *   switchRoom(id: string) {
+   *     this.roomId = id;  // Effect runs automatically
+   *   }
+   * }
+   * ```
+   */
+  protected createEffect<T>(
+    selector: DependencySelector<this, T>,
+    handler: EffectHandler<T>
+  ): EffectCleanup {
+    // Get initial value
+    const initialValue = selector(this);
+
+    // Create effect entry - cast selector to avoid 'this' type issues
+    const effect = {
+      selector: selector as unknown as (widget: ReactiveWidget) => unknown,
+      handler: handler as EffectHandler<unknown>,
+      prevValue: undefined as unknown, // Will trigger on first run
+      cleanup: undefined as EffectCleanup | undefined
+    };
+
+    this._effects.push(effect);
+
+    // Run effect immediately with initial value
+    try {
+      const cleanup = handler(initialValue, undefined);
+      if (typeof cleanup === 'function') {
+        effect.cleanup = cleanup;
+      }
+      effect.prevValue = initialValue;
+    } catch (e) {
+      console.error(`${this.config.widgetName}: Initial effect error:`, e);
+    }
+
+    // Return dispose function
+    return () => {
+      const index = this._effects.indexOf(effect);
+      if (index >= 0) {
+        if (effect.cleanup) {
+          effect.cleanup();
+        }
+        this._effects.splice(index, 1);
+      }
+    };
+  }
+
+  /**
+   * Create an effect that only runs once (like React useEffect with empty deps)
+   *
+   * @param handler - Function that runs once on first render
+   * @returns Dispose function
+   */
+  protected createMountEffect(handler: () => void | EffectCleanup): EffectCleanup {
+    let hasRun = false;
+    let cleanup: EffectCleanup | undefined;
+
+    return this.createEffect(
+      () => null, // Constant dependency
+      () => {
+        if (!hasRun) {
+          hasRun = true;
+          cleanup = handler() ?? undefined;
+        }
+        return cleanup;
+      }
+    );
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDERING - The React-like pattern

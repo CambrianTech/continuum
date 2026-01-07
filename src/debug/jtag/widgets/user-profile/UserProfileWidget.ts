@@ -23,6 +23,7 @@ import type { DataDeleteParams, DataDeleteResult } from '../../commands/data/del
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { getWidgetEntityId } from '../shared/WidgetConstants';
 
 export class UserProfileWidget extends BaseWidget {
   private user: UserEntity | null = null;
@@ -54,7 +55,9 @@ export class UserProfileWidget extends BaseWidget {
   }
 
   private async loadUser(): Promise<void> {
-    const entityId = this.getAttribute('data-entity-id');
+    // Use helper function for consistent attribute handling
+    const entityId = getWidgetEntityId(this) || this.pageState?.entityId;
+
     if (!entityId) {
       this.error = 'No user specified';
       this.loading = false;
