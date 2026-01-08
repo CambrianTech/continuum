@@ -43,7 +43,7 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     return html`
       <div class="entity-list-header">
         <span class="list-title">${this.listTitle}</span>
-        <span class="list-count">${this.itemCount}</span>
+        <span class="list-count">${this.entityCount}</span>
       </div>
     `;
   }

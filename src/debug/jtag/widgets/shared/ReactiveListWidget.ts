@@ -52,7 +52,6 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
   abstract renderItem(item: T): TemplateResult;
 
   // === REACTIVE STATE ===
-  @reactive() protected itemCount = 0;
   @reactive() protected selectedId: string | null = null;
 
   // === OPTIONAL CONFIGURATION ===
@@ -84,7 +83,7 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
     return html`
       <div class="list-header">
         <span class="list-title">${this.listTitle}</span>
-        <span class="list-count">${this.itemCount}</span>
+        <span class="list-count">${this.entityCount}</span>
       </div>
     `;
   }
@@ -111,33 +110,6 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
     `;
   }
 
-  // === LIFECYCLE ===
-
-  protected override onFirstRender(): void {
-    super.onFirstRender();
-    // Sync count after scroller loads
-    this.scheduleCountSync();
-  }
-
-  private scheduleCountSync(): void {
-    // Defer to allow scroller to load, then sync
-    setTimeout(() => {
-      const count = this.entityCount;
-      if (this.itemCount !== count) {
-        this.itemCount = count;
-      }
-    }, 150);
-  }
-
-  // Called by Lit after state changes - sync count
-  override requestUpdate(name?: PropertyKey, oldValue?: unknown): void {
-    super.requestUpdate(name, oldValue);
-    // Re-sync count on any update
-    const count = this.entityCount;
-    if (this.itemCount !== count) {
-      this.itemCount = count;
-    }
-  }
 
   // === ENTITY SCROLLER IMPLEMENTATION ===
 
