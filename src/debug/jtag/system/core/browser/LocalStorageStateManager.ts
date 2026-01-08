@@ -11,11 +11,15 @@
  * 2. UserState: Database persistence, cross-device sync
  *
  * Architecture decision: localStorage as cache layer for UserState
+ *
+ * NOTE: Uses asyncStorage for non-blocking writes. Reads are synchronous
+ * but check pending writes first for read-your-writes consistency.
  */
 
 import type { UUID } from '../types/CrossPlatformUUID';
 import { stringToUUID } from '../types/CrossPlatformUUID';
 import { getDefaultPreferencesForType } from '../../user/config/UserCapabilitiesDefaults';
+import { asyncStorage } from '../../../widgets/shared/AsyncStorage';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
@@ -69,10 +73,11 @@ export class LocalStorageStateManager {
 
   /**
    * Load state from localStorage with proper error handling
+   * Uses asyncStorage for read-your-writes consistency with pending writes
    */
   static loadState(): LocalStateData | null {
     try {
-      const storedData = localStorage.getItem(this.STORAGE_KEY);
+      const storedData = asyncStorage.getItem(this.STORAGE_KEY);
       if (!storedData) {
         verbose() && console.log('🔧 LocalStorageStateManager: No stored state found');
         return null;
@@ -103,7 +108,7 @@ export class LocalStorageStateManager {
   }
 
   /**
-   * Save state to localStorage with proper error handling
+   * Save state to localStorage with proper error handling (non-blocking write)
    */
   static saveState(stateData: Partial<LocalStateData>): boolean {
     try {
@@ -122,7 +127,7 @@ export class LocalStorageStateManager {
         lastSync: new Date().toISOString()
       };
 
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedState));
+      asyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedState));
       verbose() && console.log('✅ LocalStorageStateManager: State saved successfully');
       return true;
 
@@ -182,7 +187,7 @@ export class LocalStorageStateManager {
    */
   static clearState(): void {
     try {
-      localStorage.removeItem(this.STORAGE_KEY);
+      asyncStorage.removeItem(this.STORAGE_KEY);
       verbose() && console.log('✅ LocalStorageStateManager: State cleared successfully');
     } catch (error) {
       console.error('❌ LocalStorageStateManager: Failed to clear state:', error);
@@ -193,15 +198,8 @@ export class LocalStorageStateManager {
    * Check if localStorage is available in the current environment
    */
   static isAvailable(): boolean {
-    try {
-      const testKey = '__continuum_test__';
-      localStorage.setItem(testKey, 'test');
-      localStorage.removeItem(testKey);
-      return true;
-    } catch (error) {
-      console.warn('⚠️ LocalStorageStateManager: localStorage not available:', error);
-      return false;
-    }
+    // asyncStorage wraps localStorage, so just check window exists
+    return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
   }
 
   /**

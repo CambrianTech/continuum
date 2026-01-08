@@ -49,18 +49,26 @@ class ContentStateServiceImpl {
   };
   private listeners: Set<ContentStateListener> = new Set();
   private initialized = false;
+  private _notifyPending = false;
 
   /**
    * Initialize from persisted userState (call once on app load)
+   * GUARDED: Skips if already initialized with same data
    */
   initialize(openItems: ContentItem[], currentItemId?: UUID): void {
+    // Guard: Skip if already initialized with same item count
+    // (prevents redundant re-initialization from multiple sources)
+    if (this.initialized && this.state.openItems.length === openItems.length) {
+      return; // Already initialized, skip
+    }
+
     this.state = {
       openItems: [...openItems],
       currentItemId
     };
     this.initialized = true;
     console.log(`📋 ContentState: Initialized with ${openItems.length} items`);
-    this.notifyListeners();
+    this.scheduleNotify();
   }
 
   /**
@@ -131,7 +139,7 @@ class ContentStateServiceImpl {
       console.log(`📋 ContentState: Added ${newItem.type}/${newItem.entityId || 'default'}`);
     }
 
-    this.notifyListeners();
+    this.scheduleNotify();
     return existing || newItem;
   }
 
@@ -154,7 +162,7 @@ class ContentStateServiceImpl {
     }
 
     console.log(`📋 ContentState: Removed item, ${this.state.openItems.length} remaining`);
-    this.notifyListeners();
+    this.scheduleNotify();
   }
 
   /**
@@ -166,7 +174,7 @@ class ContentStateServiceImpl {
       this.state.currentItemId = itemId;
       item.lastAccessedAt = new Date();
       console.log(`📋 ContentState: Switched to ${item.type}/${item.entityId || 'default'}`);
-      this.notifyListeners();
+      this.scheduleNotify();
     } else {
       console.warn(`📋 ContentState: Item ${itemId} not found`);
     }
@@ -193,7 +201,7 @@ class ContentStateServiceImpl {
         this.state.currentItemId = realId;
       }
       console.log(`📋 ContentState: Updated temp ID ${tempId} → ${realId}`);
-      this.notifyListeners();
+      this.scheduleNotify();
     }
   }
 
@@ -226,9 +234,22 @@ class ContentStateServiceImpl {
   }
 
   /**
-   * Notify all listeners of state change
+   * Schedule async notification to all listeners.
+   * Uses queueMicrotask to batch rapid state changes into single notification.
    */
-  private notifyListeners(): void {
+  private scheduleNotify(): void {
+    if (this._notifyPending) return;
+    this._notifyPending = true;
+    queueMicrotask(() => {
+      this._notifyPending = false;
+      this.flushNotifications();
+    });
+  }
+
+  /**
+   * Actually notify all listeners (called from microtask)
+   */
+  private flushNotifications(): void {
     for (const listener of this.listeners) {
       try {
         listener(this.state);
@@ -244,7 +265,7 @@ class ContentStateServiceImpl {
   reset(): void {
     this.state = { openItems: [], currentItemId: undefined };
     this.initialized = false;
-    this.notifyListeners();
+    this.scheduleNotify();
   }
 }
 

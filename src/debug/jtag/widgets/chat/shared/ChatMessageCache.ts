@@ -12,10 +12,14 @@
  *   - TTL expiry (5 minutes)
  *   - New message arrives (via event subscription)
  *   - Manual clear on room data change
+ *
+ * NOTE: Uses asyncStorage for non-blocking writes. Reads are synchronous
+ * but check pending writes first for read-your-writes consistency.
  */
 
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { asyncStorage } from '../../shared/AsyncStorage';
 
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
@@ -35,11 +39,11 @@ export class ChatMessageCache {
    * Returns null if cache miss or expired
    */
   static get(roomId: UUID): CachedRoomMessages | null {
-    if (typeof localStorage === 'undefined') return null;
+    if (typeof window === 'undefined') return null;
 
     try {
       const key = this.PREFIX + roomId;
-      const cached = localStorage.getItem(key);
+      const cached = asyncStorage.getItem(key);
       if (!cached) return null;
 
       const data: CachedRoomMessages = JSON.parse(cached);
@@ -47,7 +51,7 @@ export class ChatMessageCache {
       // Check TTL
       if (Date.now() - data.lastFetch > this.TTL_MS) {
         verbose() && console.log(`⏰ ChatMessageCache: Cache expired for room ${roomId}`);
-        localStorage.removeItem(key);
+        asyncStorage.removeItem(key);
         return null;
       }
 
@@ -60,10 +64,10 @@ export class ChatMessageCache {
   }
 
   /**
-   * Cache messages for a room
+   * Cache messages for a room (non-blocking write)
    */
   static set(roomId: UUID, messages: ChatMessageEntity[], totalCount: number): void {
-    if (typeof localStorage === 'undefined') return;
+    if (typeof window === 'undefined') return;
 
     try {
       const key = this.PREFIX + roomId;
@@ -72,7 +76,7 @@ export class ChatMessageCache {
         lastFetch: Date.now(),
         totalCount
       };
-      localStorage.setItem(key, JSON.stringify(data));
+      asyncStorage.setItem(key, JSON.stringify(data));
       verbose() && console.log(`💾 ChatMessageCache: Cached ${data.messages.length} messages for room ${roomId}`);
     } catch (error) {
       // localStorage might be full - ignore
@@ -82,10 +86,10 @@ export class ChatMessageCache {
 
   /**
    * Add a new message to the cache (for real-time updates)
-   * Keeps cache in sync without requiring full refresh
+   * Keeps cache in sync without requiring full refresh (non-blocking write)
    */
   static addMessage(roomId: UUID, message: ChatMessageEntity): void {
-    if (typeof localStorage === 'undefined') return;
+    if (typeof window === 'undefined') return;
 
     try {
       const cached = this.get(roomId);
@@ -102,14 +106,14 @@ export class ChatMessageCache {
       // Increment total count
       cached.totalCount++;
 
-      // Save updated cache
+      // Save updated cache (non-blocking)
       const key = this.PREFIX + roomId;
       const data: CachedRoomMessages = {
         messages: cached.messages,
         lastFetch: Date.now(), // Refresh TTL
         totalCount: cached.totalCount
       };
-      localStorage.setItem(key, JSON.stringify(data));
+      asyncStorage.setItem(key, JSON.stringify(data));
 
       verbose() && console.log(`📥 ChatMessageCache: Added message to room ${roomId}, now ${cached.messages.length} cached`);
     } catch (error) {
@@ -121,10 +125,10 @@ export class ChatMessageCache {
    * Invalidate cache for a room (force refresh on next load)
    */
   static invalidate(roomId: UUID): void {
-    if (typeof localStorage === 'undefined') return;
+    if (typeof window === 'undefined') return;
 
     const key = this.PREFIX + roomId;
-    localStorage.removeItem(key);
+    asyncStorage.removeItem(key);
     verbose() && console.log(`🗑️ ChatMessageCache: Invalidated room ${roomId}`);
   }
 
@@ -132,16 +136,10 @@ export class ChatMessageCache {
    * Clear all cached messages (useful for logout/data reset)
    */
   static clearAll(): void {
-    if (typeof localStorage === 'undefined') return;
+    if (typeof window === 'undefined') return;
 
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(this.PREFIX)) {
-        keysToRemove.push(key);
-      }
-    }
-    keysToRemove.forEach(key => localStorage.removeItem(key));
+    const keysToRemove = asyncStorage.keys().filter(key => key.startsWith(this.PREFIX));
+    keysToRemove.forEach(key => asyncStorage.removeItem(key));
     verbose() && console.log(`🗑️ ChatMessageCache: Cleared ${keysToRemove.length} cached rooms`);
   }
 
@@ -149,7 +147,7 @@ export class ChatMessageCache {
    * Get cache stats for debugging
    */
   static getStats(): { roomCount: number; totalMessages: number; totalBytes: number } {
-    if (typeof localStorage === 'undefined') {
+    if (typeof window === 'undefined') {
       return { roomCount: 0, totalMessages: 0, totalBytes: 0 };
     }
 
@@ -157,19 +155,17 @@ export class ChatMessageCache {
     let totalMessages = 0;
     let totalBytes = 0;
 
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(this.PREFIX)) {
-        roomCount++;
-        const value = localStorage.getItem(key);
-        if (value) {
-          totalBytes += value.length * 2; // UTF-16
-          try {
-            const data: CachedRoomMessages = JSON.parse(value);
-            totalMessages += data.messages.length;
-          } catch {
-            // Ignore parse errors
-          }
+    const cacheKeys = asyncStorage.keys().filter(key => key.startsWith(this.PREFIX));
+    for (const key of cacheKeys) {
+      roomCount++;
+      const value = asyncStorage.getItem(key);
+      if (value) {
+        totalBytes += value.length * 2; // UTF-16
+        try {
+          const data: CachedRoomMessages = JSON.parse(value);
+          totalMessages += data.messages.length;
+        } catch {
+          // Ignore parse errors
         }
       }
     }
