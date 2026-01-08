@@ -296,7 +296,10 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   }
 
   // === STATUS UPDATES ===
+  // NOTE: EntityScroller caches rendered elements, so reactive state changes
+  // don't automatically re-render existing items. We must update DOM directly.
   private updateAIStatus(personaId: string, phase: AIStatusState['currentPhase'], errorMessage?: string): void {
+    // Update reactive state for new renders
     const newMap = new Map(this.aiStatuses);
     if (phase === null) {
       newMap.delete(personaId);
@@ -304,9 +307,22 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
       newMap.set(personaId, { personaId, currentPhase: phase, timestamp: Date.now(), errorMessage });
     }
     this.aiStatuses = newMap;
+
+    // CRITICAL: Also update DOM directly for cached elements
+    // EntityScroller doesn't re-render existing items when state changes
+    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${personaId}"]`) as HTMLElement;
+    if (userElement) {
+      if (phase === null) {
+        userElement.removeAttribute('data-ai-status');
+      } else {
+        userElement.setAttribute('data-ai-status', phase);
+      }
+      verbose() && console.log(`🎯 UserList: Updated AI status for ${personaId} to ${phase}`);
+    }
   }
 
   private updateLearningStatus(personaId: string, isLearning: boolean, domain?: string): void {
+    // Update reactive state for new renders
     const newMap = new Map(this.learningStatuses);
     if (!isLearning) {
       newMap.delete(personaId);
@@ -314,6 +330,16 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
       newMap.set(personaId, { personaId, isLearning: true, domain, timestamp: Date.now() });
     }
     this.learningStatuses = newMap;
+
+    // CRITICAL: Also update DOM directly for cached elements
+    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${personaId}"]`) as HTMLElement;
+    if (userElement) {
+      if (isLearning) {
+        userElement.setAttribute('data-learning', 'true');
+      } else {
+        userElement.removeAttribute('data-learning');
+      }
+    }
   }
 
   // === EVENT HANDLERS ===

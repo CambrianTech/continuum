@@ -21,6 +21,9 @@ import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } fro
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
 import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
+import { MessageEventDelegator } from '../adapters/MessageEventDelegator';
+import { ImageMessageAdapter } from '../adapters/ImageMessageAdapter';
+import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
@@ -69,6 +72,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private currentRoom: RoomEntity | null = null;
   private roomMembers: Map<UUID, UserEntity> = new Map();
   private adapterRegistry: AdapterRegistry;
+  private eventDelegator: MessageEventDelegator;
   private aiStatusIndicator: AIStatusIndicator;
   private aiStatusContainer?: HTMLElement;
   private headerUpdateTimeout?: number;
@@ -109,6 +113,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Initialize adapter registry for per-message adapter selection
     this.adapterRegistry = new AdapterRegistry();
+
+    // Initialize event delegator for memory-efficient message interactions
+    this.eventDelegator = new MessageEventDelegator({ verbose: false });
 
     // Initialize AI status indicator manager
     this.aiStatusIndicator = new AIStatusIndicator();
@@ -740,6 +747,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.headerUpdateTimeout = undefined;
     }
 
+    // Detach event delegator to clean up the single listener
+    this.eventDelegator.detach();
+
     // Call parent cleanup
     await super.disconnectedCallback();
   }
@@ -836,6 +846,24 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Apply compact mode if set via attribute
       this.updateCompactMode();
+
+      // === EVENT DELEGATION FOR MEMORY-EFFICIENT MESSAGE INTERACTIONS ===
+      // Attach single listener to container instead of per-element listeners
+      this.eventDelegator.attach(container);
+
+      // Register ImageMessageAdapter action handlers
+      this.eventDelegator.onAction('image-fullscreen', (target) => ImageMessageAdapter.handleFullscreen(target));
+      this.eventDelegator.onAction('image-download', (target) => ImageMessageAdapter.handleDownload(target));
+      this.eventDelegator.onAction('image-ai-describe', (target) => ImageMessageAdapter.handleAIDescribe(target));
+      this.eventDelegator.onAction('image-retry', (target) => ImageMessageAdapter.handleRetry(target));
+
+      // Register URLCardAdapter action handlers
+      this.eventDelegator.onAction('url-card-click', (target, event) => URLCardAdapter.handleCardClick(target, event));
+      this.eventDelegator.onAction('url-open-external', (target) => URLCardAdapter.handleOpenExternal(target));
+      this.eventDelegator.onAction('url-ai-summarize', (target) => URLCardAdapter.handleAISummarize(target));
+      this.eventDelegator.onAction('url-retry-preview', (target) => URLCardAdapter.handleRetryPreview(target));
+
+      verbose() && console.log('✅ ChatWidget: Event delegator attached with action handlers');
     }
   }
 

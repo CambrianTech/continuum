@@ -212,17 +212,20 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
 
   /**
    * Set up user interaction handlers
+   *
+   * NOTE: We NO LONGER add per-element event listeners here.
+   * Instead, use data-action attributes in your HTML and register handlers
+   * with the MessageEventDelegator in ChatWidget.
+   *
+   * This prevents memory leaks when message elements are removed from DOM.
+   * The delegator uses event bubbling from a single listener on the container.
+   *
+   * Example HTML: <button data-action="fullscreen">View</button>
+   * Example delegator: delegator.onAction('fullscreen', handler)
    */
-  protected setupInteractionHandlers(element: HTMLElement): void {
-    if (!this.options.enableInteractions) return;
-
-    element.addEventListener('click', (e) => {
-      this.hooks.onUserInteraction?.('click', {
-        contentType: this.contentType,
-        target: e.target,
-        contentData: this.contentData
-      });
-    });
+  protected setupInteractionHandlers(_element: HTMLElement): void {
+    // NO-OP: Event delegation handles this via MessageEventDelegator
+    // Subclasses should NOT add addEventListener to dynamic message elements
   }
 
   /**

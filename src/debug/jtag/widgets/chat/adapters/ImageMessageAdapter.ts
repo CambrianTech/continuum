@@ -81,12 +81,12 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
           <div class="image-error" style="display: none;">
             <span class="error-icon">🖼️</span>
             <span class="error-text">Image failed to load</span>
-            <button class="retry-button" data-url="${url}">Retry</button>
+            <button class="retry-button" data-action="image-retry" data-url="${url}">Retry</button>
           </div>
           <div class="image-actions">
-            <button class="action-button fullscreen" title="View fullscreen">🔍</button>
-            <button class="action-button download" title="Download" data-url="${url}" data-filename="${filename}">⬇️</button>
-            <button class="action-button ai-describe" title="AI describe image">🤖</button>
+            <button class="action-button" data-action="image-fullscreen" title="View fullscreen">🔍</button>
+            <button class="action-button" data-action="image-download" data-url="${url}" data-filename="${filename}" title="Download">⬇️</button>
+            <button class="action-button" data-action="image-ai-describe" title="AI describe image">🤖</button>
           </div>
         </div>
       `;
@@ -272,74 +272,35 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
     `;
   }
 
+  // NOTE: setupInteractionHandlers removed - now uses event delegation
+  // Action handlers are static and called by MessageEventDelegator in ChatWidget
+
   /**
-   * Enhanced interaction handlers for images
+   * Static action handlers for event delegation
+   * These are called by MessageEventDelegator, not per-element listeners
    */
-  protected setupInteractionHandlers(element: HTMLElement): void {
-    super.setupInteractionHandlers(element);
-
-    // Fullscreen viewing
-    const fullscreenBtns = element.querySelectorAll('.fullscreen');
-    fullscreenBtns.forEach((btn): void => {
-      btn.addEventListener('click', (e): void => {
-        e.stopPropagation();
-        const container = (e.target as HTMLElement).closest('.image-container');
-        if (container) this.openFullscreen(container as HTMLElement);
-      });
-    });
-
-    // Download functionality
-    const downloadBtns = element.querySelectorAll('.download');
-    downloadBtns.forEach((btn): void => {
-      btn.addEventListener('click', (e): void => {
-        e.stopPropagation();
-        const target = e.target as HTMLElement;
-        const url = target.dataset.url;
-        const filename = target.dataset.filename;
-        if (url) this.downloadImage(url, filename);
-      });
-    });
-
-    // AI describe functionality
-    const aiBtns = element.querySelectorAll('.ai-describe');
-    aiBtns.forEach((btn): void => {
-      btn.addEventListener('click', (e): void => {
-        e.stopPropagation();
-        const container = (e.target as HTMLElement).closest('.image-container');
-        if (container) this.requestAIDescription(container as HTMLElement);
-      });
-    });
-
-    // Retry on error
-    const retryBtns = element.querySelectorAll('.retry-button');
-    retryBtns.forEach((btn): void => {
-      btn.addEventListener('click', (e): void => {
-        e.stopPropagation();
-        const target = e.target as HTMLElement;
-        const url = target.dataset.url;
-        const container = target.closest('.image-container');
-        if (url && container) this.retryImageLoad(container as HTMLElement, url);
-      });
-    });
-  }
 
   /**
    * Open image in fullscreen mode
    */
-  private openFullscreen(element: HTMLElement): void {
-    const img = element.querySelector('.message-image') as HTMLImageElement;
+  static handleFullscreen(target: HTMLElement): void {
+    const container = target.closest('.image-container');
+    const img = container?.querySelector('.message-image') as HTMLImageElement;
     if (!img) return;
 
-    // Future: Implement fullscreen overlay
     verbose() && console.log('🖼️ Opening fullscreen for:', img.src);
-    this.hooks.onUserInteraction?.('fullscreen', { url: img.src });
+    // Future: Implement fullscreen overlay
   }
 
   /**
    * Download image
    */
-  private downloadImage(url: string, filename?: string): void {
-    if (typeof document === 'undefined') return; // Server-side guard
+  static handleDownload(target: HTMLElement): void {
+    if (typeof document === 'undefined') return;
+
+    const url = target.dataset.url;
+    const filename = target.dataset.filename;
+    if (!url) return;
 
     const a = document.createElement('a');
     a.href = url;
@@ -348,44 +309,39 @@ export class ImageMessageAdapter extends AbstractMessageAdapter<ImageContentData
     a.click();
     document.body.removeChild(a);
 
-    this.hooks.onUserInteraction?.('download', { url, filename });
+    verbose() && console.log('⬇️ Downloaded:', filename);
   }
 
   /**
    * Request AI-generated description
    */
-  private async requestAIDescription(element: HTMLElement): Promise<void> {
-    const img = element.querySelector('.message-image') as HTMLImageElement;
+  static handleAIDescribe(target: HTMLElement): void {
+    const container = target.closest('.image-container');
+    const img = container?.querySelector('.message-image') as HTMLImageElement;
     if (!img) return;
 
     verbose() && console.log('🤖 Requesting AI description for:', img.src);
-
     // Future: Call AI service for image description
-    // const description = await aiService.describeImage(img.src);
-
-    this.hooks.onUserInteraction?.('ai_describe', {
-      url: img.src,
-      action: 'describe_image'
-    });
   }
 
   /**
-   * Retry failed image load
+   * Retry loading a failed image
    */
-  private retryImageLoad(element: HTMLElement, url: string): void {
-    const img = element.querySelector('.message-image') as HTMLImageElement;
-    const placeholder = element.querySelector('.image-loading-placeholder') as HTMLElement;
-    const errorDiv = element.querySelector('.image-error') as HTMLElement;
+  static handleRetry(target: HTMLElement): void {
+    const url = target.dataset.url;
+    const container = target.closest('.image-container');
+    if (!url || !container) return;
 
-    if (!img) return;
+    const img = container.querySelector('.message-image') as HTMLImageElement;
+    const placeholder = container.querySelector('.image-loading-placeholder') as HTMLElement;
+    const errorDiv = container.querySelector('.image-error') as HTMLElement;
 
-    // Reset states
-    errorDiv.style.display = 'none';
-    placeholder.style.display = 'block';
-    img.style.display = 'none';
-
-    // Force reload by adding timestamp
-    img.src = `${url}?retry=${Date.now()}`;
+    if (img && placeholder && errorDiv) {
+      placeholder.style.display = 'flex';
+      errorDiv.style.display = 'none';
+      img.src = ''; // Force reload
+      img.src = url;
+    }
   }
 
   /**
