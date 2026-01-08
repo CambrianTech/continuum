@@ -157,12 +157,24 @@ npm start
 ## Success Metrics
 
 - [x] No `.innerHTML =` in container widgets (P0 complete) ✅ 2026-01-08
-- [ ] No animation restarts on tab switch
-- [ ] No form focus loss on updates
-- [ ] Heap memory stable during rapid navigation
+- [x] No animation restarts on tab switch ✅ 2026-01-08 (GLOBAL_LAYOUT widgets persist, setAttribute for updates)
+- [x] No form focus loss on updates ✅ 2026-01-08 (Lit diffing + GLOBAL_LAYOUT persistence)
+- [x] Heap memory stable during rapid navigation ✅ 2026-01-08 (async state + batching)
 - [x] All 7 P0 widgets audited ✅ 2026-01-08 (2 fixed, 5 already safe)
 - [x] All 6 P1 widgets audited ✅ 2026-01-08 (all safe - plain HTML only)
 - [x] All 10 P2 widgets audited ✅ 2026-01-08 (all initial render only)
+
+## Async State System (From Plan)
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | RoomListWidget - use pageState, remove self-subscription | ✅ Done |
+| 2 | ReactiveEntityScrollerWidget - batchedUpdate() | ✅ Done |
+| 3 | Event transaction guards | ✅ Done (EventGuard.ts) |
+| 4 | ReactiveState - async notifications | ✅ Done |
+| 5 | AsyncStorage - non-blocking localStorage | ✅ Done |
+| 6 | pageState single source of truth | ✅ Done |
+| 7 | Event serializer for concurrent safety | ✅ Done (EventGuard.ts) |
 
 ---
 
@@ -191,5 +203,10 @@ npm start
 | 2026-01-08 | ThemeWidget | ✅ OK | Initial + theme cards plain HTML |
 | 2026-01-08 | UserProfileWidget | ✅ OK | Initial + profile sections plain HTML |
 | 2026-01-08 | **P2 Audit Complete** | ✅ OK | All 10 widgets - initial render only |
-| | | | |
+| 2026-01-08 | ContentStateService | ✅ DONE | Async notifications via scheduleNotify() |
+| 2026-01-08 | AsyncStorage.ts | ✅ DONE | Non-blocking localStorage wrapper |
+| 2026-01-08 | ChatMessageCache | ✅ DONE | Migrated to asyncStorage |
+| 2026-01-08 | LocalStorageStateManager | ✅ DONE | Migrated to asyncStorage |
+| 2026-01-08 | EventGuard.ts | ✅ DONE | Event guards + serializer utility |
+| 2026-01-08 | **All Phases Complete** | ✅ DONE | All 7 async state phases implemented |
 
