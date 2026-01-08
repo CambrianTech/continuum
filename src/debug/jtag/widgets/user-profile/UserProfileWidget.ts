@@ -99,26 +99,11 @@ export class UserProfileWidget extends BaseWidget {
 
   /**
    * Emit Positron context for AI awareness
+   * NOTE: Removed PositronWidgetState.emit() - MainWidget handles context.
+   * KEPT: emitWidgetEvent for widget-to-widget communication (ChatWidget listens)
    */
   private emitPositronContext(): void {
     if (!this.user) return;
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'profile',
-        section: this.user.type,
-        title: `Profile - ${this.user.displayName}`,
-        entityId: this.user.id,
-        metadata: {
-          userType: this.user.type,
-          userName: this.user.displayName,
-          userStatus: this.user.status,
-          isAI: this.user.type === 'persona' || this.user.type === 'agent',
-          hasModelConfig: !!this.user.modelConfig
-        }
-      },
-      { action: 'viewing', target: `${this.user.type} profile` }
-    );
 
     // Emit widget event for reactive subscriptions (ChatWidget listens to this)
     PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
@@ -173,13 +158,17 @@ export class UserProfileWidget extends BaseWidget {
       // Emit event so user list can refresh
       Events.emit('data:users:deleted', { id: this.user.id });
 
-      // Navigate back to chat
-      Events.emit('content:opened', {
-        contentType: 'chat',
-        entityId: 'general',
-        title: 'General',
-        setAsCurrent: true
-      });
+      // Navigate back to chat via command (command emits content:opened)
+      const userId = this.userState?.userId;
+      if (userId) {
+        Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+          userId,
+          contentType: 'chat',
+          entityId: 'general',
+          title: 'General',
+          setAsCurrent: true
+        }).catch(console.error);
+      }
     } catch (err) {
       console.error('Failed to delete user:', err);
     }
@@ -188,14 +177,8 @@ export class UserProfileWidget extends BaseWidget {
   private async openCognition(): Promise<void> {
     if (!this.user) return;
 
-    Events.emit('content:opened', {
-      contentType: 'persona',
-      entityId: this.user.uniqueId || this.user.id,
-      title: `${this.user.displayName} - Brain`,
-      setAsCurrent: true
-    });
-
-    // Persist to server
+    // NOTE: Removed direct Events.emit('content:opened') - the command emits it
+    // Having both causes duplicate events and state cascade
     const userId = this.userState?.userId;
     if (userId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {

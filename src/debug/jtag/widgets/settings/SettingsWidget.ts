@@ -111,15 +111,8 @@ export class SettingsWidget extends BaseWidget {
       }
     }
 
-    PositronWidgetState.emit(
-      {
-        widgetType: 'settings',
-        section: this.currentSection,
-        title: `Settings - ${sectionTitles[this.currentSection]}`,
-        metadata
-      },
-      { action: 'configuring', target: sectionTitles[this.currentSection] }
-    );
+    // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
+    // Widgets should RECEIVE state, not emit it (avoid cascade)
   }
 
   private async loadConfig(): Promise<void> {

@@ -79,23 +79,10 @@ export class ThemeWidget extends BaseWidget {
 
   /**
    * Emit Positron context for AI awareness
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    const themes = ThemeRegistry.getAllThemes();
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'theme',
-        section: 'theme-selector',
-        title: 'Theme Customization',
-        metadata: {
-          currentTheme: this.currentTheme,
-          availableThemes: themes.length,
-          themeNames: themes.map(t => t.name)
-        }
-      },
-      { action: 'configuring', target: 'workspace appearance' }
-    );
+    // No-op - context cascade fix
   }
 
   protected async renderWidget(): Promise<void> {

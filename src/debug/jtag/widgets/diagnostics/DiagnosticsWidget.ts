@@ -58,26 +58,8 @@ export class DiagnosticsWidget extends BasePanelWidget {
    * Emit Positron context for AI awareness
    */
   private emitPositronContext(): void {
-    const selectedPersonaInfo = this.selectedPersona
-      ? this.personas.find(p => p.uniqueId === this.selectedPersona)
-      : null;
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'diagnostics',
-        section: this.selectedPersona ? 'persona-logs' : 'persona-list',
-        title: this.selectedPersona
-          ? `Diagnostics - ${selectedPersonaInfo?.displayName || this.selectedPersona}`
-          : 'System Diagnostics',
-        entityId: this.selectedPersona || undefined,
-        metadata: {
-          personaCount: this.personas.length,
-          selectedPersona: this.selectedPersona,
-          onlinePersonas: this.personas.filter(p => p.status === 'online').length
-        }
-      },
-      { action: 'debugging', target: this.selectedPersona ? 'persona logs' : 'system health' }
-    );
+    // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
+    // Widgets should RECEIVE state, not emit it (avoid cascade)
   }
 
   private async loadPersonas(): Promise<void> {

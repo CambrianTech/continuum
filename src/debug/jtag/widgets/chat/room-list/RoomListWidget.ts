@@ -14,9 +14,8 @@ import type { ContentOpenParams, ContentOpenResult } from '../../../commands/col
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/shared/Commands';
-import { Events } from '../../../system/core/shared/Events';
-import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
+import { pageState } from '../../../system/state/PageStateService';
 
 import { styles as externalStyles } from './room-list-widget.styles';
 
@@ -83,16 +82,16 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   protected override onFirstRender(): void {
     super.onFirstRender();
 
+    // Subscribe to pageState to highlight current room
     this.createMountEffect(() => {
-      const unsubscribe = Events.subscribe(
-        UI_EVENTS.ROOM_SELECTED,
-        (data: { roomId: string }) => {
-          const newRoomId = data.roomId as UUID;
+      const unsubscribe = pageState.subscribe((state) => {
+        if (state.contentType === 'chat' && state.entityId) {
+          const newRoomId = state.entityId as UUID;
           if (newRoomId !== this.currentRoomId) {
             this.currentRoomId = newRoomId;
           }
         }
-      );
+      });
       return () => unsubscribe();
     });
   }
@@ -104,12 +103,14 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
 
     this.currentRoomId = roomId;
 
-    Events.emit(UI_EVENTS.ROOM_SELECTED, {
-      roomId,
-      roomName: room.displayName || room.name,
-      uniqueId: room.uniqueId || room.name || roomId
+    // Set pageState - ChatWidget subscribes to this (single source of truth)
+    pageState.setContent('chat', roomId, {
+      id: roomId,
+      uniqueId: room.uniqueId || room.name || roomId,
+      displayName: room.displayName || room.name
     });
 
+    // Persist to user state
     const userId = this.currentUser?.id;
     if (userId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {

@@ -144,16 +144,7 @@ export class MainWidget extends BaseWidget {
       // 3. Ensure tab exists in UserState (use canonical UUID, not URL string)
       await this.ensureTabForContent(type, canonicalEntityId);
 
-      // 4. For chat, emit ROOM_SELECTED for other listeners
-      if (type === 'chat' && entityId && resolved) {
-        Events.emit(UI_EVENTS.ROOM_SELECTED, {
-          roomId: resolved.id,
-          roomName: resolved.displayName,
-          uniqueId: resolved.uniqueId
-        });
-      }
-
-      // 5. THEN create widget (reads from pageState)
+      // 4. THEN create widget (reads from pageState)
       this.switchContentView(type, canonicalEntityId);
     }, 100);
   }
@@ -309,15 +300,6 @@ export class MainWidget extends BaseWidget {
     const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
     this.updateUrl(newPath);
 
-    // Emit appropriate event based on content type
-    if (resolvedContentType === 'chat' && resolvedEntityId && resolved) {
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: resolved.id,
-        roomName: resolved.displayName || label || 'Chat',
-        uniqueId: resolved.uniqueId  // For URL building
-      });
-    }
-
     this.verbose() && console.log(`📋 MainPanel: Switched to ${resolvedContentType} tab "${label}"`);
   }
 
@@ -329,7 +311,7 @@ export class MainWidget extends BaseWidget {
    * - Tab switching = hide old widget, show new widget (instant)
    * - State changes via direct method call, NOT attribute setting
    *
-   * NOTE: Does NOT emit ROOM_SELECTED - caller is responsible for that to avoid loops
+   * NOTE: pageState is set BEFORE calling this method - ChatWidget subscribes to pageState.
    * Emits RIGHT_PANEL_CONFIGURE to update right panel based on content type's layout
    */
   private switchContentView(contentType: string, entityId?: string): void {
@@ -455,25 +437,7 @@ export class MainWidget extends BaseWidget {
           // Update URL
           const newPath = buildContentPath(firstItem.type, firstItem.entityId);
           this.updateUrl(newPath);
-          // Only emit ROOM_SELECTED for chat content
-          if (firstItem.type === 'chat' && firstItem.entityId) {
-            // Resolve uniqueId → UUID for consistent room identification
-            RoutingService.resolveRoom(firstItem.entityId).then(resolved => {
-              if (resolved) {
-                Events.emit(UI_EVENTS.ROOM_SELECTED, {
-                  roomId: resolved.id,
-                  roomName: resolved.displayName || firstItem.title,
-                  uniqueId: resolved.uniqueId  // For URL building
-                });
-              } else {
-                Events.emit(UI_EVENTS.ROOM_SELECTED, {
-                  roomId: firstItem.entityId,
-                  roomName: firstItem.title,
-                  uniqueId: firstItem.entityId
-                });
-              }
-            });
-          }
+          // pageState is already set - ChatWidget subscribes to it
         } else {
           // No tabs left - open default chat room instead of empty state
           const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
@@ -484,16 +448,7 @@ export class MainWidget extends BaseWidget {
           this.currentPath = defaultPath;
           this.updateUrl(defaultPath);
           this.switchContentView('chat', defaultRoom);
-          // Emit ROOM_SELECTED for chat widget
-          RoutingService.resolveRoom(defaultRoom).then(resolved => {
-            if (resolved) {
-              Events.emit(UI_EVENTS.ROOM_SELECTED, {
-                roomId: resolved.id,
-                roomName: resolved.displayName || 'General',
-                uniqueId: defaultRoom
-              });
-            }
-          });
+          // pageState is set by switchContentView - ChatWidget subscribes to it
         }
       }
     }
@@ -563,17 +518,8 @@ export class MainWidget extends BaseWidget {
     // 3. Ensure a tab exists for this URL
     await this.ensureTabForContent(type, entityId);
 
-    // 4. Switch content view
+    // 4. Switch content view (ChatWidget subscribes to pageState)
     this.switchContentView(type, entityId);
-
-    // 5. For chat, emit ROOM_SELECTED for other listeners
-    if (type === 'chat' && entityId && resolved) {
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: resolved.id,
-        roomName: resolved.displayName,
-        uniqueId: resolved.uniqueId
-      });
-    }
 
     this.verbose() && console.log(`🔄 MainPanel: Navigated to ${type}/${entityId || 'default'}`);
   }
@@ -698,32 +644,11 @@ export class MainWidget extends BaseWidget {
     // directly from event data instead of refetching from DB
     this.contentStateAdapter.subscribeToEvents();
 
-    // IMPORTANT: Listen for ROOM_SELECTED from sidebar clicks (RoomListWidget)
-    // NOTE: content:opened handler already emits ROOM_SELECTED, so we check if already on this room
-    Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (data: { roomId: string; roomName: string; uniqueId?: string }) => {
-      // Only switch to chat if we're currently viewing chat content
-      const { type: currentType, entityId: currentEntityId } = parseContentPath(this.currentPath);
-      if (currentType !== 'chat') {
-        return; // Don't override settings/help/theme when sidebar highlights a room
-      }
+    // NOTE: ROOM_SELECTED removed - RoomListWidget now uses pageState.setContent()
+    // directly, and ChatWidget subscribes to pageState changes.
+    // This eliminates the redundant event cascade.
 
-      // GUARD: Skip if already on this room (prevents duplicate work from content:opened → ROOM_SELECTED chain)
-      if (currentEntityId === data.roomId || currentEntityId === data.uniqueId) {
-        return;
-      }
-
-      // Update URL for room selection (bookmarkable deep links)
-      const urlIdentifier = data.uniqueId || data.roomId;
-      const newPath = buildContentPath('chat', urlIdentifier);
-      this.updateUrl(newPath);
-
-      // Set pageState and switch view (use UUID for internal state)
-      const resolved = await RoutingService.resolve('chat', urlIdentifier);
-      pageState.setContent('chat', data.roomId, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
-      this.switchContentView('chat', data.roomId);
-    });
-
-    this.verbose() && console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
+    this.verbose() && console.log('🔗 MainPanel: Subscribed to content events');
   }
 
   /**

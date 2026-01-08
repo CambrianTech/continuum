@@ -339,13 +339,8 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
     verbose() && console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
 
-    Events.emit('content:opened', {
-      contentType: 'profile',
-      entityId,
-      title,
-      setAsCurrent: true
-    });
-
+    // NOTE: Removed direct Events.emit('content:opened') - the command emits it
+    // Having both causes duplicate events and state cascade
     const userId = this.currentUser?.id;
     if (userId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {

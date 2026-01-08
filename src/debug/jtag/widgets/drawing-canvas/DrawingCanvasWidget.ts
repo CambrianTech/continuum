@@ -147,26 +147,10 @@ export class DrawingCanvasWidget extends BaseWidget {
 
   /**
    * Emit Positron context for AI awareness
-   * Called on initialization and after significant canvas changes
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    PositronWidgetState.emit({
-      widgetType: 'drawing-canvas',
-      title: 'Collaborative Canvas',
-      entityId: this.activityId || undefined,
-      metadata: {
-        activityId: this.activityId,
-        strokeCount: this.loadedStrokeIds.size,
-        currentTool: this.currentTool,
-        brushColor: this.brushSettings.color,
-        brushSize: this.brushSettings.size,
-        description: `Collaborative canvas with ${this.loadedStrokeIds.size} strokes. Users and AIs can draw together.`
-      }
-    }, {
-      action: 'viewing',
-      target: 'canvas',
-      details: `Viewing canvas ${this.activityId} with ${this.loadedStrokeIds.size} strokes`
-    });
+    // No-op - context cascade fix
   }
 
   /**

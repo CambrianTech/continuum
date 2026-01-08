@@ -137,21 +137,8 @@ export class HelpWidget extends ReactiveWidget {
   }
 
   private emitPositronContext(): void {
-    const sections = this.getSections();
-    const currentSectionData = sections.find(s => s.id === this.activeSection);
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'help',
-        section: this.activeSection,
-        title: `Help - ${currentSectionData?.title || 'Documentation'}`,
-        metadata: {
-          totalSections: sections.length,
-          sectionTitles: sections.map(s => s.title)
-        }
-      },
-      { action: 'viewing', target: currentSectionData?.title || 'help documentation' }
-    );
+    // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
+    // Widgets should RECEIVE state, not emit it (avoid cascade)
   }
 
   private getSections(): HelpSection[] {

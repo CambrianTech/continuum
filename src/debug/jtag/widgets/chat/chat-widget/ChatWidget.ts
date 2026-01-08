@@ -17,7 +17,6 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
-import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
@@ -210,7 +209,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Consolidated room switching logic - single source of truth for room changes.
-   * Called by all room-related events (ROOM_SELECTED, content:opened, content:switched).
+   * Called by pageState subscription and content events (content:opened, content:switched).
    */
   private async handleRoomSwitch(roomIdOrUniqueId: string, _roomName?: string, _source?: string): Promise<void> {
     // Skip if pinned widget (handled elsewhere)
@@ -283,16 +282,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Update header with correct count
       this.updateHeader();
 
-      // Emit Positron widget state for AI awareness
-      PositronWidgetState.emit({
-        widgetType: 'chat',
-        entityId: roomId,
-        title: `Chat - ${roomName}`,
-        metadata: {
-          room: roomName,
-          messageCount: this.totalMessageCount
-        }
-      });
+      // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
+      // Widgets should RECEIVE state, not emit it (avoid cascade)
 
     } catch (error) {
       console.error('ChatWidget: Failed to switch room:', error);
@@ -590,19 +581,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
-   * Setup content-related event subscriptions (ROOM_SELECTED, content:opened, content:switched)
-   * CONSOLIDATED: All three events now use the same handleRoomSwitch method
+   * Setup content-related event subscriptions (content:opened, content:switched)
+   * CONSOLIDATED: All events use the same handleRoomSwitch method
+   * NOTE: ROOM_SELECTED removed - pageState subscription handles room changes
    */
   private setupContentEventSubscriptions(): void {
     // Skip all content events for pinned widgets
     if (this._isPinnedWidget) {
       return;
     }
-
-    // ROOM_SELECTED - from sidebar clicks
-    this.subscribeWithCleanup(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
-      this.handleRoomSwitch(data.roomId, data.roomName, 'ROOM_SELECTED');
-    });
 
     // content:opened - from content/open command
     this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId: string; title: string }) => {

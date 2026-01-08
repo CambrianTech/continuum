@@ -119,38 +119,10 @@ export class LogViewerWidget extends BasePanelWidget {
 
   /**
    * Emit Positron context for AI awareness
-   * Called when log loads or filters change
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    // Count errors and warnings in visible lines
-    const errorCount = this.logData.lines.filter(l => l.level === 'ERROR').length;
-    const warnCount = this.logData.lines.filter(l => l.level === 'WARN').length;
-
-    // Get recent errors for AI context
-    const recentErrors = this.logData.lines
-      .filter(l => l.level === 'ERROR')
-      .slice(-5)
-      .map(l => l.content);
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'log-viewer',
-        entityId: this.logData.logPath,
-        title: `Logs - ${this.logData.logName}`,
-        metadata: {
-          logPath: this.logData.logPath,
-          totalLines: this.logData.totalLines,
-          visibleLines: this.logData.lines.length,
-          levelFilter: this.logData.levelFilter,
-          componentFilter: this.logData.componentFilter,
-          errorCount,
-          warnCount,
-          autoFollow: this.logData.autoFollow,
-          recentErrors
-        }
-      },
-      { action: 'debugging', target: this.logData.logName }
-    );
+    // No-op - context cascade fix
   }
 
   private startAutoRefresh(): void {

@@ -101,30 +101,10 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
   /**
    * Emit Positron context for AI awareness
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    PositronWidgetState.emit(
-      {
-        widgetType: 'persona',
-        section: this.selectedModule || 'overview',
-        title: this.persona
-          ? `AI Brain - ${this.persona.displayName}`
-          : 'AI Brain',
-        entityId: this.persona?.id,
-        metadata: {
-          personaId: this.personaId,
-          personaName: this.persona?.displayName,
-          personaStatus: this.persona?.status,
-          selectedModule: this.selectedModule,
-          issueCount: this.issues.length,
-          moduleStatuses: Object.entries(this.moduleStats).map(([name, stats]) => ({
-            module: name,
-            status: stats.status
-          }))
-        }
-      },
-      { action: 'debugging', target: this.selectedModule ? `${this.selectedModule} module` : 'cognitive system' }
-    );
+    // No-op - context cascade fix
   }
 
   private async loadPersonaData(): Promise<void> {
