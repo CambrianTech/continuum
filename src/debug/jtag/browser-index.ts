@@ -29,45 +29,33 @@ export const jtag = {
 
   // Universal client interface - always returns connection result with client property
   async connect(): Promise<ReturnType<typeof JTAGClientBrowser.connectLocal>> {
-    // Reduce log spam
-    // console.debug('🔌 Browser: Connecting via JTAGClientBrowser (local connection)');
-
-    // Connect client FIRST
+    // Connect client FIRST - widgets need it for resource loading
     const connectionResult = await JTAGClientBrowser.connectLocal();
     const client = connectionResult.client;
 
     // Set up global window.jtag for widgets and tests
     (globalThis as any).jtag = client;
 
-    // Expose WidgetDiscovery for universal selector support (used by GlobalUtils.safeQuerySelector)
+    // Expose WidgetDiscovery for universal selector support
     (globalThis as any).WidgetDiscovery = WidgetDiscovery;
 
     // Register client in static registry for sharedInstance access
     JTAGClient.registerClient('default', client);
 
-    // NOW register widgets - after client is available for sharedInstance
-    // console.debug(`🎭 Registering ${BROWSER_WIDGETS.length} widgets...`);
+    // NOW register widgets - after client is available for resource loading
     BROWSER_WIDGETS.forEach(widget => {
       if (!customElements.get(widget.tagName)) {
         try {
           customElements.define(widget.tagName, widget.widgetClass);
-          // console.debug(`✅ Registered widget: ${widget.tagName} (${widget.className})`);
         } catch (error) {
           console.warn(`⚠️ Failed to register widget ${widget.tagName}: ${error}`);
-          console.warn(`⚠️ This usually means the constructor has already been used with this registry`);
-          console.warn(`⚠️ Skipping registration for ${widget.tagName}`);
         }
-      } else {
-        console.warn(`⚠️ Widget ${widget.tagName} already registered, skipping`);
       }
     });
 
-    // Enhance client with organized services - no globals needed
+    // Enhance client with organized services
     const services = createJTAGClientServices(client);
     Object.assign(client, services);
-
-
-
 
     return { ...connectionResult, client };
   },

@@ -87,7 +87,10 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
   protected override firstUpdated(): void {
     super.firstUpdated();
     // Setup scroller after first render when DOM exists
-    this.setupEntityScroller();
+    // Use queueMicrotask to avoid blocking the render thread
+    queueMicrotask(() => {
+      this.setupEntityScroller();
+    });
   }
 
   // === EntityScroller Setup ===
