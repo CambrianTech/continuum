@@ -38,13 +38,13 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
-      // FIRST: Get total count with same filters (no limit, no cursor)
+      // FIRST: Get total count using SQL COUNT(*) - NOT fetching all rows!
       const countQuery = {
         collection,
         filter: params.filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
       };
-      const countResult = await DataDaemon.query<BaseEntity>(countQuery);
-      const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
+      const countResult = await DataDaemon.count(countQuery);
+      const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
       // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {
