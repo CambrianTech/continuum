@@ -91,6 +91,7 @@ export class DrawingCanvasWidget extends BaseWidget {
   private _userId: UUID | null = null;
   private _userName: string = 'Unknown';
   private strokeEventUnsubscribe: (() => void) | null = null;
+  private aiDrawUnsubscribe: (() => void) | null = null;
   private loadedStrokeIds = new Set<string>(); // Prevent re-rendering same stroke
 
   constructor() {
@@ -122,6 +123,22 @@ export class DrawingCanvasWidget extends BaseWidget {
     this._activityId = id;
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * This allows cached widgets to reload with different canvas activities.
+   */
+  public async onActivate(entityId?: string): Promise<void> {
+    console.log(`🎨 DrawingCanvas: onActivate called with entityId=${entityId}`);
+
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+      this._activityId = entityId as UUID;
+    }
+
+    // Reload strokes for the new canvas
+    await this.loadStrokes();
+  }
+
   protected async onWidgetInitialize(): Promise<void> {
     verbose() && console.log('🎨 DrawingCanvas: Initializing collaborative canvas...');
 
@@ -129,7 +146,7 @@ export class DrawingCanvasWidget extends BaseWidget {
     await this.loadUserInfo();
 
     // Subscribe to AI draw requests
-    Events.subscribe(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data: any) => {
+    this.aiDrawUnsubscribe = Events.subscribe(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data: any) => {
       this.handleAIDrawRequest(data);
     });
 
@@ -943,6 +960,12 @@ export class DrawingCanvasWidget extends BaseWidget {
     if (this.strokeEventUnsubscribe) {
       this.strokeEventUnsubscribe();
       this.strokeEventUnsubscribe = null;
+    }
+
+    // Unsubscribe from AI draw events
+    if (this.aiDrawUnsubscribe) {
+      this.aiDrawUnsubscribe();
+      this.aiDrawUnsubscribe = null;
     }
 
     // Clear loaded stroke IDs

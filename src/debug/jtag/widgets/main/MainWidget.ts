@@ -23,6 +23,7 @@ import { PositronContentStateAdapter } from '../shared/services/state/PositronCo
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { RoutingService } from '../../system/routing/RoutingService';
 import { pageState } from '../../system/state/PageStateService';
+import { contentState } from '../../system/state/ContentStateService';
 // Theme loading removed - handled by ContinuumWidget
 
 export class MainWidget extends BaseWidget {
@@ -60,7 +61,7 @@ export class MainWidget extends BaseWidget {
       () => this.userState,
       {
         name: 'MainWidget',
-        onStateChange: () => this.updateContentTabs(),
+        onStateChange: () => this.syncUserStateToContentState(),
         onViewSwitch: (contentType, entityId) => this.switchContentView(contentType, entityId),
         onUrlUpdate: (contentType, entityId) => {
           const newPath = buildContentPath(contentType, entityId);
@@ -152,6 +153,8 @@ export class MainWidget extends BaseWidget {
   /**
    * Ensure a tab exists for the given content type and entityId
    * Creates tab if it doesn't exist, selects it if it does
+   *
+   * NOTE: Follows React pattern - ONLY call command, let event handle UI.
    */
   private async ensureTabForContent(contentType: string, entityId?: string): Promise<void> {
     // Check if tab already exists
@@ -160,37 +163,34 @@ export class MainWidget extends BaseWidget {
     );
 
     if (existingTab) {
-      // Tab exists - just make sure it's current
-      if (this.userState?.contentState) {
-        this.userState.contentState.currentItemId = existingTab.id;
+      // Tab exists - switch to it via command
+      const userId = this.userState?.userId;
+      if (userId) {
+        Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+          userId: userId as UUID,
+          contentItemId: existingTab.id as UUID
+        }).catch(err => console.error('Failed to switch to existing tab:', err));
       }
-      this.updateContentTabs();
       return;
     }
 
     // Create tab via content/open command
+    // Command emits content:opened, adapter handles state + UI
     const userId = this.userState?.userId;
     if (userId) {
-      // Get title from entityId or content type
       const title = entityId
         ? entityId.charAt(0).toUpperCase() + entityId.slice(1)
         : contentType.charAt(0).toUpperCase() + contentType.slice(1);
 
-      try {
-        await Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-          userId: userId as UUID,
-          contentType: contentType as ContentType,
-          entityId: entityId,
-          title: title,
-          setAsCurrent: true
-        });
-        // Refresh tabs from DB
-        await this.loadUserContext();
-        await this.updateContentTabs();
-        this.verbose() && console.log(`📋 MainPanel: Created tab for ${contentType}/${entityId || 'default'}`);
-      } catch (err) {
-        console.error(`Failed to create tab for ${contentType}:`, err);
-      }
+      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+        userId: userId as UUID,
+        contentType: contentType as ContentType,
+        entityId: entityId,
+        title: title,
+        setAsCurrent: true
+      }).catch(err => console.error(`Failed to create tab for ${contentType}:`, err));
+
+      this.verbose() && console.log(`📋 MainPanel: Creating tab for ${contentType}/${entityId || 'default'} - command will handle state update`);
     }
   }
 
@@ -210,33 +210,14 @@ export class MainWidget extends BaseWidget {
     // Add event listeners after DOM is created
     this.setupEventListeners();
 
-    // Update content tabs widget with current tab data
-    await this.updateContentTabs();
+    // ContentTabsWidget subscribes to global contentState - no manual update needed
 
     this.verbose() && console.log('✅ MainPanel: Main panel rendered');
   }
 
   private setupEventListeners(): void {
-    // Tab click data includes entityId and contentType so we don't need userState lookup
-    type TabClickData = {
-      tabId: string;
-      label?: string;
-      entityId?: string;
-      contentType?: string;
-    };
-
-    // Listen to tab events from content-tabs-widget via DOM events
-    this.addEventListener('tab-clicked', ((event: CustomEvent) => {
-      this.handleTabClick(event.detail);
-    }) as EventListener);
-
-    this.addEventListener('tab-closed', ((event: CustomEvent) => {
-      const tabId = event.detail.tabId;
-      this.handleTabClose(tabId);
-    }) as EventListener);
-
-    // NOTE: Removed duplicate Events.subscribe('tabs:clicked') - DOM events work fine
-    // and having both caused handleTabClick to be called twice per click!
+    // Tab close handled via content:closed event → adapter → onStateChange
+    // No DOM event listener needed - state drives UI
   }
 
   /**
@@ -279,24 +260,20 @@ export class MainWidget extends BaseWidget {
       }).catch(err => console.error('Failed to persist tab switch:', err));
     }
 
-    // Update local state immediately (optimistic UI)
-    if (this.userState?.contentState) {
-      this.userState.contentState.currentItemId = tabId;
-    }
+    // OPTIMISTIC UPDATE: Update global contentState immediately
+    // The command will persist + emit event, but switchContentView's guard prevents duplicate render
+    contentState.setCurrent(tabId as UUID);
 
-    // Resolve entity and set page state FIRST
+    // Set pageState (ChatWidget subscribes to this)
     const resolved = resolvedEntityId
       ? await RoutingService.resolve(resolvedContentType, resolvedEntityId)
       : undefined;
     pageState.setContent(resolvedContentType, resolvedEntityId, resolved || undefined);
 
-    // Update tab highlighting
-    this.updateContentTabs();
-
-    // Switch content view to the correct widget type
+    // Instant UI switch (guard in switchContentView prevents duplicate if event arrives)
     this.switchContentView(resolvedContentType, resolvedEntityId);
 
-    // Update URL (bookmarkable)
+    // Update URL
     const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
     this.updateUrl(newPath);
 
@@ -418,45 +395,37 @@ export class MainWidget extends BaseWidget {
 
   /**
    * Handle tab close - remove from openItems
+   *
+   * Uses optimistic update for instant UI, command persists in background.
+   * Adapter's event handler will see state already updated, minimal duplicate work.
    */
   private async handleTabClose(tabId: string): Promise<void> {
-    const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
+    // Use global contentState
+    const contentItem = contentState.openItems.find(item => item.id === tabId);
     if (!contentItem) return;
 
-    // Remove from local state immediately (optimistic UI)
-    if (this.userState?.contentState) {
-      this.userState.contentState.openItems = this.userState.contentState.openItems.filter(item => item.id !== tabId);
+    const wasCurrentItem = contentState.currentItemId === tabId;
 
-      // If we closed the current tab, switch to the first remaining tab
-      if (this.userState.contentState.currentItemId === tabId) {
-        const firstItem = this.userState.contentState.openItems[0];
-        if (firstItem) {
-          this.userState.contentState.currentItemId = firstItem.id;
-          // Switch to the correct content view based on content type
-          this.switchContentView(firstItem.type, firstItem.entityId);
-          // Update URL
-          const newPath = buildContentPath(firstItem.type, firstItem.entityId);
-          this.updateUrl(newPath);
-          // pageState is already set - ChatWidget subscribes to it
-        } else {
-          // No tabs left - open default chat room instead of empty state
-          const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
-          const defaultPath = `/chat/${defaultRoom}`;
-          this.verbose() && console.log(`📋 MainPanel: All tabs closed, opening default ${defaultPath}`);
-          this.openContentTab('chat', 'General');
-          // Navigate to default room
-          this.currentPath = defaultPath;
-          this.updateUrl(defaultPath);
-          this.switchContentView('chat', defaultRoom);
-          // pageState is set by switchContentView - ChatWidget subscribes to it
-        }
+    // Remove from global state - ContentTabsWidget will re-render automatically
+    contentState.removeItem(tabId as UUID);
+
+    // If we closed the current tab, switch view
+    if (wasCurrentItem) {
+      const newCurrent = contentState.currentItem;
+      if (newCurrent) {
+        pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
+        this.switchContentView(newCurrent.type, newCurrent.entityId);
+        this.updateUrl(buildContentPath(newCurrent.type, newCurrent.entityId));
+      } else {
+        // No tabs left - open default
+        const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
+        pageState.setContent('chat', defaultRoom, undefined);
+        this.switchContentView('chat', defaultRoom);
+        this.updateUrl(`/chat/${defaultRoom}`);
       }
     }
 
-    // Update tabs immediately
-    this.updateContentTabs();
-
-    // Persist to server in background (don't await)
+    // Persist in background
     const userId = this.userState?.userId;
     if (userId) {
       Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
@@ -594,8 +563,31 @@ export class MainWidget extends BaseWidget {
    * Initialize content tabs system
    */
   private async initializeContentTabs(): Promise<void> {
-    // Set up tab switching logic
-    this.verbose() && console.log('📋 MainPanel: Content tabs initialized');
+    // Initialize global contentState from persisted userState
+    if (this.userState?.contentState) {
+      const openItems = this.userState.contentState.openItems || [];
+      const currentItemId = this.userState.contentState.currentItemId;
+      contentState.initialize(openItems, currentItemId);
+      this.verbose() && console.log(`📋 MainPanel: Initialized global contentState with ${openItems.length} items`);
+    } else {
+      this.verbose() && console.log('📋 MainPanel: No persisted contentState, starting empty');
+      contentState.initialize([], undefined);
+    }
+  }
+
+  /**
+   * Sync userState.contentState to global contentState
+   * Called when PositronContentStateAdapter updates userState from server events
+   */
+  private syncUserStateToContentState(): void {
+    if (!this.userState?.contentState) return;
+
+    // Re-initialize contentState from userState
+    // This syncs server-persisted changes to the global state
+    const openItems = this.userState.contentState.openItems || [];
+    const currentItemId = this.userState.contentState.currentItemId;
+    contentState.initialize(openItems, currentItemId);
+    this.verbose() && console.log(`📋 MainPanel: Synced ${openItems.length} items from server to global contentState`);
   }
 
   /**
@@ -644,11 +636,19 @@ export class MainWidget extends BaseWidget {
     // directly from event data instead of refetching from DB
     this.contentStateAdapter.subscribeToEvents();
 
-    // NOTE: ROOM_SELECTED removed - RoomListWidget now uses pageState.setContent()
-    // directly, and ChatWidget subscribes to pageState changes.
-    // This eliminates the redundant event cascade.
+    // Subscribe to pageState changes for IMMEDIATE view switching
+    // This handles optimistic updates from ContentTabsWidget
+    pageState.subscribe((state) => {
+      if (state?.contentType) {
+        // Guard: only switch if different from current view
+        if (state.contentType !== this.currentViewType ||
+            state.entityId !== this.currentViewEntityId) {
+          this.switchContentView(state.contentType, state.entityId);
+        }
+      }
+    });
 
-    this.verbose() && console.log('🔗 MainPanel: Subscribed to content events');
+    this.verbose() && console.log('🔗 MainPanel: Subscribed to content events and pageState');
   }
 
   /**
@@ -659,8 +659,9 @@ export class MainWidget extends BaseWidget {
     try {
       this.verbose() && console.log(`📋 MainPanel: Refreshing tabs from DB (${source})...`);
       await this.loadUserContext();
-      await this.updateContentTabs();
-      this.verbose() && console.log(`✅ MainPanel: Tabs refreshed from DB (${source}), now ${this.userState?.contentState?.openItems?.length} items`);
+      // Sync userState to global contentState - ContentTabsWidget will re-render
+      this.syncUserStateToContentState();
+      this.verbose() && console.log(`✅ MainPanel: Tabs refreshed from DB (${source}), now ${contentState.openItems.length} items`);
     } catch (error) {
       console.error(`❌ MainPanel: Error refreshing tabs from DB (${source}):`, error);
     }
@@ -680,65 +681,6 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
-   * Update content tabs widget with current tab data
-   */
-  private async updateContentTabs(): Promise<void> {
-    const tabsWidget = this.shadowRoot?.querySelector('content-tabs-widget');
-    if (!tabsWidget) {
-      console.warn('⚠️ MainPanel: ContentTabsWidget not found in shadow root');
-      return;
-    }
-
-    // Read tabs from userState.contentState.openItems
-    const tabs = [];
-
-    if (this.userState?.contentState?.openItems) {
-      // Map content items to tab format with full data for click handling
-      for (const item of this.userState.contentState.openItems) {
-        tabs.push({
-          id: item.id,
-          label: item.title,
-          active: item.id === this.userState.contentState.currentItemId,
-          closeable: true,
-          entityId: item.entityId,
-          contentType: item.type
-        });
-      }
-    } else {
-      // Fallback: show current room as single tab if userState not loaded yet
-      if (!this.currentContent) {
-        await this.loadCurrentContent();
-      }
-
-      if (this.currentContent) {
-        const displayName = this.currentContent.displayName || this.currentContent.name;
-        tabs.push({
-          id: this.currentContent.id,
-          label: displayName,
-          active: true,
-          closeable: false
-        });
-      } else {
-        // Final fallback for loading states
-        const [, pathType, roomId] = this.currentPath.split('/');
-        const fallbackName = roomId ? roomId.charAt(0).toUpperCase() + roomId.slice(1) : 'Chat';
-
-        tabs.push({
-          id: roomId || 'default',
-          label: fallbackName,
-          active: true,
-          closeable: false
-        });
-      }
-    }
-
-    // Call updateTabs method on the widget
-    (tabsWidget as any).updateTabs(tabs);
-
-    this.verbose() && console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs from', this.userState?.contentState ? 'userState' : 'fallback');
-  }
-
-  /**
    * Switch to a different content page
    */
   switchToPage(pageName: string): void {
@@ -748,66 +690,69 @@ export class MainWidget extends BaseWidget {
 
   /**
    * Open a content tab (e.g., settings, help) or switch to it if already open
+   *
+   * Uses global contentState - updates state, ContentTabsWidget re-renders automatically.
    */
   private openContentTab(contentType: string, title: string): void {
-    // Check if tab already exists
-    const existingTab = this.userState?.contentState?.openItems?.find(
-      item => item.type === contentType
-    );
-
-    if (existingTab) {
-      // Tab exists - just switch to it with full data
-      this.handleTabClick({
-        tabId: existingTab.id,
-        label: existingTab.title,
-        entityId: existingTab.entityId,
-        contentType: existingTab.type
-      });
+    const userId = this.userState?.userId;
+    if (!userId) {
+      console.error('❌ MainPanel: Cannot open tab - userState not loaded');
       return;
     }
 
-    // Create new tab in local state with all required properties
-    const newTabId = `${contentType}-${Date.now()}` as UUID;
-    const newTab = {
-      id: newTabId,
-      type: contentType as ContentType,
-      title: title,
-      lastAccessedAt: new Date(),
-      priority: 'normal' as ContentPriority
-    };
+    // Check if tab already exists in global state
+    const existingTab = contentState.findItem(contentType, undefined);
 
-    // Add to openItems (optimistic UI)
-    if (this.userState?.contentState) {
-      this.userState.contentState.openItems.push(newTab);
-      this.userState.contentState.currentItemId = newTabId;
+    if (existingTab) {
+      // Tab exists - set as current in global state
+      contentState.setCurrent(existingTab.id);
+
+      // Set pageState for MainWidget view switching
+      pageState.setContent(contentType, existingTab.entityId, undefined);
+
+      // Switch view
+      this.switchContentView(contentType, existingTab.entityId);
+      this.updateUrl(buildContentPath(contentType, existingTab.entityId));
+
+      // Persist in background
+      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+        userId: userId as UUID,
+        contentItemId: existingTab.id as UUID
+      }).catch(err => console.error('Failed to persist tab switch:', err));
+
+      this.verbose() && console.log(`📋 MainPanel: Switched to existing ${contentType} tab`);
+      return;
     }
 
-    // Set page state FIRST (single source of truth)
-    // Content types like settings/help/theme don't have entityIds
+    // NEW TAB: Add to global contentState (generates temp ID)
+    const newItem = contentState.addItem({
+      type: contentType as ContentType,
+      entityId: undefined,
+      title: title,
+      priority: 'normal' as ContentPriority
+    }, true);
+
+    // Set pageState for widgets
     pageState.setContent(contentType, undefined, undefined);
 
-    // Update tabs UI
-    this.updateContentTabs();
+    // Switch view
+    this.switchContentView(contentType, undefined);
+    this.updateUrl(buildContentPath(contentType, undefined));
 
-    // Switch to the new content view
-    this.switchContentView(contentType);
+    // Persist in background - command will create real ID
+    Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+      userId: userId as UUID,
+      contentType: contentType as ContentType,
+      title: title,
+      setAsCurrent: true
+    }).then(result => {
+      // Update temp ID with real ID from server
+      if (result?.contentItemId) {
+        contentState.updateItemId(newItem.id, result.contentItemId);
+      }
+    }).catch(err => console.error(`Failed to open ${contentType} tab:`, err));
 
-    // Update URL
-    const newPath = buildContentPath(contentType);
-    this.updateUrl(newPath);
-
-    // PERSIST to database - singletons like settings have no entityId
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId: userId as UUID,
-        contentType: contentType as ContentType,
-        title: title,
-        setAsCurrent: true
-      }).catch(err => console.error(`Failed to persist ${contentType} tab:`, err));
-    }
-
-    this.verbose() && console.log(`📋 MainPanel: Opened new ${contentType} tab`);
+    this.verbose() && console.log(`📋 MainPanel: Opened new ${contentType} tab with optimistic update`);
   }
 }
 

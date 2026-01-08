@@ -1,13 +1,22 @@
 /**
- * ContentTabsWidget - Dynamic content tabs for navigation
+ * ContentTabsWidget - React-style subscriber to global content state
  *
- * Displays content tabs based on current context (rooms, threads, pages).
- * Emits tab-clicked events for parent widget to handle navigation.
+ * ARCHITECTURE:
+ * 1. Subscribes to contentState (global singleton)
+ * 2. Renders tabs from contentState.openItems
+ * 3. On click: updates contentState → triggers re-render
+ * 4. On close: updates contentState → triggers re-render
+ *
+ * NO events, NO parent calls, just shared state.
  */
 
 import { BaseWidget } from '../shared/BaseWidget';
-import { Events } from '../../system/core/shared/Events';
+import { contentState, type ContentStateData } from '../../system/state/ContentStateService';
+import { pageState } from '../../system/state/PageStateService';
 import { Commands } from '../../system/core/shared/Commands';
+import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
+import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
@@ -17,37 +26,54 @@ export interface TabInfo {
   label: string;
   active: boolean;
   closeable?: boolean;
-  /** Entity ID (e.g., room UUID for chat content) */
   entityId?: string;
-  /** Content type (e.g., 'chat', 'settings') */
   contentType?: string;
 }
 
 export class ContentTabsWidget extends BaseWidget {
   private tabs: TabInfo[] = [];
+  private unsubscribe?: () => void;
 
   constructor() {
     super({
       widgetName: 'ContentTabsWidget',
-      template: undefined,  // Inline template
-      styles: undefined,     // Inline styles
+      template: undefined,
+      styles: undefined,
       enableAI: false,
-      enableDatabase: false,
+      enableDatabase: true,
       enableRouterEvents: false,
       enableScreenshots: false
     });
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    verbose() && console.log('📋 ContentTabsWidget: Initializing content tabs...');
+    verbose() && console.log('📋 ContentTabsWidget: Subscribing to contentState...');
 
-    // Subscribe to tab updates from parent or router
-    Events.subscribe('tabs:update', (tabs: TabInfo[]) => {
-      this.tabs = tabs;
-      this.renderWidget();
+    // Subscribe to global contentState - React pattern
+    this.unsubscribe = contentState.subscribe((state) => {
+      this.updateFromContentState(state);
     });
 
-    verbose() && console.log('✅ ContentTabsWidget: Initialized');
+    verbose() && console.log('✅ ContentTabsWidget: Subscribed');
+  }
+
+  /**
+   * Update from global contentState - the ONLY source of truth
+   */
+  private updateFromContentState(state: ContentStateData): void {
+    verbose() && console.log('📋 ContentTabsWidget: State update', state.openItems.length, 'items');
+
+    // Convert to TabInfo format
+    this.tabs = state.openItems.map(item => ({
+      id: item.id,
+      label: item.title || item.type,
+      active: item.id === state.currentItemId,
+      closeable: true,
+      entityId: item.entityId,
+      contentType: item.type
+    }));
+
+    this.renderWidget();
   }
 
   protected async renderWidget(): Promise<void> {
@@ -59,16 +85,14 @@ export class ContentTabsWidget extends BaseWidget {
         flex: 1;
         overflow-x: auto;
         overflow-y: hidden;
-        /* Extend tabs below the header border to overlap it */
         margin-bottom: -1px;
         padding-bottom: 1px;
-        /* Hide scrollbar but keep scrollable */
-        scrollbar-width: none;  /* Firefox */
-        -ms-overflow-style: none;  /* IE/Edge */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
       }
 
       .content-tabs-container::-webkit-scrollbar {
-        display: none;  /* Chrome/Safari - hide scrollbar */
+        display: none;
       }
 
       .content-tab {
@@ -98,7 +122,6 @@ export class ContentTabsWidget extends BaseWidget {
       }
 
       .content-tab.active {
-        /* Active tab connects to content below */
         background: rgba(15, 20, 25, 0.95);
         border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
         border-bottom-color: transparent;
@@ -133,149 +156,97 @@ export class ContentTabsWidget extends BaseWidget {
       }
     `;
 
-    const template = `
-      <div class="content-tabs-container">
-        ${this.getTabsHTML()}
-      </div>
-    `;
+    const tabsHTML = this.tabs.length === 0
+      ? '<div class="empty-state">No content tabs</div>'
+      : this.tabs.map(tab => `
+          <div class="content-tab ${tab.active ? 'active' : ''}" data-tab-id="${tab.id}">
+            <span class="tab-label">${tab.label}</span>
+            ${tab.closeable ? `<span class="tab-close" data-close-tab="${tab.id}">×</span>` : ''}
+          </div>
+        `).join('');
 
     this.shadowRoot!.innerHTML = `
       <style>${styles}</style>
-      ${template}
+      <div class="content-tabs-container">${tabsHTML}</div>
     `;
 
-    // Add event listeners after DOM is created
     this.setupEventListeners();
-
-    verbose() && console.log('✅ ContentTabsWidget: Rendered with', this.tabs.length, 'tabs');
   }
 
-  /**
-   * Generate tabs HTML
-   */
-  private getTabsHTML(): string {
-    if (this.tabs.length === 0) {
-      return '<div class="empty-state">No content tabs</div>';
-    }
-
-    return this.tabs.map(tab => `
-      <div
-        class="content-tab ${tab.active ? 'active' : ''}"
-        data-tab-id="${tab.id}"
-      >
-        <span class="tab-label">${tab.label}</span>
-        ${tab.closeable ? '<span class="tab-close" data-close-tab="${tab.id}">×</span>' : ''}
-      </div>
-    `).join('');
-  }
-
-  /**
-   * Setup event listeners for tabs - direct listeners on each element
-   */
   private setupEventListeners(): void {
-    verbose() && console.log('📋 ContentTabsWidget.setupEventListeners: Setting up direct click listeners');
-
-    // Add click listener to each tab directly
     const tabs = this.shadowRoot?.querySelectorAll('.content-tab');
-    if (!tabs || tabs.length === 0) {
-      verbose() && console.warn('📋 ContentTabsWidget: No tabs found for event listeners');
-      return;
-    }
+    if (!tabs) return;
 
     tabs.forEach((tabElement) => {
       const tab = tabElement as HTMLElement;
       const tabId = tab.dataset.tabId;
 
-      verbose() && console.log('📋 ContentTabsWidget: Adding click listener to tab:', tabId);
-
       tab.addEventListener('click', (event) => {
         const target = event.target as HTMLElement;
-        verbose() && console.log('🔥 TAB CLICKED! tabId:', tabId, 'target:', target.tagName, target.className);
 
-        // Check if close button was clicked
         if (target.classList.contains('tab-close') || target.hasAttribute('data-close-tab')) {
-          if (tabId) {
-            this.handleTabClose(tabId);
-          }
+          if (tabId) this.handleTabClose(tabId);
           event.stopPropagation();
           return;
         }
 
-        // Handle tab selection
-        if (tabId) {
-          this.handleTabClick(tabId);
-        }
+        if (tabId) this.handleTabClick(tabId);
       });
     });
-
-    verbose() && console.log('📋 ContentTabsWidget: Added listeners to', tabs.length, 'tabs');
   }
 
   /**
-   * Handle tab click
+   * Handle tab click - update global state immediately
    */
   private handleTabClick(tabId: string): void {
-    verbose() && console.log('🔥 ContentTabsWidget.handleTabClick CALLED with tabId:', tabId);
-    verbose() && console.log('🔥 ContentTabsWidget: this.tabs has', this.tabs.length, 'items:', this.tabs.map(t => ({id: t.id, label: t.label})));
+    // Skip if already current
+    if (contentState.currentItemId === tabId) return;
 
-    // Find the full tab data
+    // Find the tab to get its type/entityId
     const tab = this.tabs.find(t => t.id === tabId);
-    if (!tab) {
-      verbose() && console.warn('📋 ContentTabsWidget: Tab not found:', tabId, '- available tabs:', this.tabs.map(t => t.id));
-      return;
+    if (!tab) return;
+
+    // Update global state - triggers re-render via subscription
+    contentState.setCurrent(tabId as UUID);
+
+    // Update pageState for MainWidget view switching
+    pageState.setContent(tab.contentType || '', tab.entityId, undefined);
+
+    // Persist to DB in background
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+        userId: userId as UUID,
+        contentItemId: tabId as UUID
+      }).catch(err => console.error('ContentTabsWidget: Failed to persist tab switch:', err));
     }
-
-    verbose() && console.log('📋 ContentTabsWidget: Tab clicked:', tabId, 'entityId:', tab.entityId, 'type:', tab.contentType);
-
-    // Emit event with full tab data for parent widget
-    const tabData = {
-      tabId: tab.id,
-      label: tab.label,
-      entityId: tab.entityId,
-      contentType: tab.contentType
-    };
-
-    // DEBUG: Call ping command to verify click is working (visible in server logs)
-    Commands.execute('ping', {}).then(r => verbose() && console.log('🔥 TAB CLICK VERIFIED via ping:', r));
-
-    Events.emit('tabs:clicked', tabData);
-
-    // Also dispatch DOM event with full tab data
-    this.dispatchEvent(new CustomEvent('tab-clicked', {
-      bubbles: true,
-      composed: true,
-      detail: tabData
-    }));
   }
 
   /**
-   * Handle tab close
+   * Handle tab close - update global state immediately
    */
   private handleTabClose(tabId: string): void {
-    verbose() && console.log('📋 ContentTabsWidget: Tab close requested:', tabId);
+    // Remove from global state - triggers re-render via subscription
+    contentState.removeItem(tabId as UUID);
 
-    // Emit event for parent widget to handle close logic
-    Events.emit('tabs:close', { tabId });
+    // Get new current item for pageState update
+    const newCurrent = contentState.currentItem;
+    if (newCurrent) {
+      pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
+    }
 
-    // Also dispatch DOM event
-    this.dispatchEvent(new CustomEvent('tab-closed', {
-      bubbles: true,
-      composed: true,
-      detail: { tabId }
-    }));
-  }
-
-  /**
-   * Public API: Update tabs from parent widget
-   */
-  public updateTabs(tabs: TabInfo[]): void {
-    this.tabs = tabs;
-    this.renderWidget();
+    // Persist to DB in background
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
+        userId: userId as UUID,
+        contentItemId: tabId as UUID
+      }).catch(err => console.error('ContentTabsWidget: Failed to persist tab close:', err));
+    }
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this.unsubscribe?.();
     verbose() && console.log('🧹 ContentTabsWidget: Cleanup complete');
   }
 }
-
-// Registration handled by centralized BROWSER_WIDGETS registry

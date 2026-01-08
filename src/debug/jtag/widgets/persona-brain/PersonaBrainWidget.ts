@@ -90,10 +90,35 @@ export class PersonaBrainWidget extends BasePanelWidget {
   }
 
   protected async onPanelInitialize(): Promise<void> {
-    // Get persona ID from content item
-    this.personaId = (this as any).getAttribute?.('data-entity-id') ||
+    // Get persona ID from content item (check both attribute formats)
+    this.personaId = this.getAttribute('entity-id') ||
+                     this.getAttribute('data-entity-id') ||
                      (this as any).entityId ||
                      'helper'; // Default for testing
+
+    await this.loadPersonaData();
+    this.emitPositronContext();
+  }
+
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * This allows cached widgets to reload with different personas.
+   */
+  public async onActivate(entityId?: string): Promise<void> {
+    console.log(`🧠 PersonaBrain: onActivate called with entityId=${entityId}`);
+
+    // Update personaId
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+      this.personaId = entityId;
+    }
+
+    // Reset state and reload
+    this.persona = null;
+    this.isLoading = true;
+    this.selectedModule = null;
+    this.activityFeed = [];
+    this.issues = [];
 
     await this.loadPersonaData();
     this.emitPositronContext();

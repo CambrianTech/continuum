@@ -31,6 +31,7 @@ export class CognitionHistogramWidget extends BaseWidget {
   private stageData: Map<PipelineStage, StageData> = new Map();
   private animationFrame: number | null = null;
   private mode: VisualizationMode = 'pipeline';
+  private _eventUnsubscribe?: () => void;
 
   constructor() {
     super({
@@ -100,6 +101,7 @@ export class CognitionHistogramWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this._eventUnsubscribe?.();
     if (this.animationFrame) {
       cancelAnimationFrame(this.animationFrame);
     }
@@ -109,7 +111,7 @@ export class CognitionHistogramWidget extends BaseWidget {
    * Subscribe to cognition events from pipeline stages
    */
   private subscribeToCognitionEvents(): void {
-    Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
+    this._eventUnsubscribe = Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
       this.updateStageData(data);
     });
   }

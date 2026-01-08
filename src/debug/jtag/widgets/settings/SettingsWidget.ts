@@ -52,7 +52,7 @@ export class SettingsWidget extends BaseWidget {
     this.verbose() && console.log('Settings: Initializing settings widget...');
 
     // Listen for section changes from SettingsNavWidget in sidebar
-    Events.subscribe(SETTINGS_NAV_EVENTS.SECTION_CHANGED, (payload: SettingsSectionChangedPayload) => {
+    this.sectionEventUnsubscribe = Events.subscribe(SETTINGS_NAV_EVENTS.SECTION_CHANGED, (payload: SettingsSectionChangedPayload) => {
       if (payload.section !== this.currentSection) {
         this.verbose() && console.log(`Settings: Section changed to ${payload.section} (from SettingsNavWidget)`);
         this.currentSection = payload.section;
@@ -534,6 +534,7 @@ export class SettingsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this.sectionEventUnsubscribe?.();
     this.verbose() && console.log('Settings: Cleanup complete');
   }
 }

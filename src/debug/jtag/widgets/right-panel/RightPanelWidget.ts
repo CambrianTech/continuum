@@ -17,6 +17,7 @@ import { UI_EVENTS, type RightPanelConfigPayload } from '../../system/core/share
 export class RightPanelWidget extends BaseSidePanelWidget {
   private currentRoom: string = 'help';
   private isHidden: boolean = false;
+  private _eventUnsubscribe?: () => void;
 
   constructor() {
     super({
@@ -44,7 +45,7 @@ export class RightPanelWidget extends BaseSidePanelWidget {
     this.verbose() && console.log('📋 RightPanelWidget: Initializing...');
 
     // Listen for layout configuration events from MainWidget
-    Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
+    this._eventUnsubscribe = Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
       this.handleLayoutConfig(config);
     });
 
@@ -52,7 +53,7 @@ export class RightPanelWidget extends BaseSidePanelWidget {
   }
 
   protected async onPanelCleanup(): Promise<void> {
-    // Nothing to clean up - ChatWidget handles its own cleanup
+    this._eventUnsubscribe?.();
   }
 
   // === Content Rendering ===

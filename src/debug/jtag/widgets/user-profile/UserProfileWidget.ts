@@ -54,6 +54,27 @@ export class UserProfileWidget extends BaseWidget {
     await this.loadUser();
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * This allows cached widgets to reload with different entities.
+   */
+  public async onActivate(entityId?: string): Promise<void> {
+    this.verbose() && console.log(`UserProfile: onActivate called with entityId=${entityId}`);
+
+    // Store entityId as attribute for loadUser to find
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+    } else {
+      this.removeAttribute('entity-id');
+    }
+
+    // Reset state and reload
+    this.user = null;
+    this.loading = true;
+    this.error = null;
+    await this.loadUser();
+  }
+
   private async loadUser(): Promise<void> {
     // Use helper function for consistent attribute handling
     const entityId = getWidgetEntityId(this) || this.pageState?.entityId;

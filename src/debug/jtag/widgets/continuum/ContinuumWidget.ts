@@ -21,6 +21,7 @@ const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERB
 export class ContinuumWidget extends BaseWidget {
   private currentStatus: ContinuumStatus | null = null;
   private currentTheme: string = 'base';
+  private _eventUnsubscribe?: () => void;
 
   constructor() {
     super({
@@ -59,7 +60,7 @@ export class ContinuumWidget extends BaseWidget {
     await this.loadExternalScripts();
 
     // Listen for continuum:status events from continuum/set command
-    Events.subscribe('continuum:status', (status: ContinuumStatus) => {
+    this._eventUnsubscribe = Events.subscribe('continuum:status', (status: ContinuumStatus) => {
       this.handleStatusUpdate(status);
     });
 
@@ -129,6 +130,7 @@ export class ContinuumWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this._eventUnsubscribe?.();
     verbose() && console.log('🧹 ContinuumWidget: Cleanup complete');
   }
 

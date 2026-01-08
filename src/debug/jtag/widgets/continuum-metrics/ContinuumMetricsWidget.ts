@@ -33,6 +33,7 @@ export class ContinuumMetricsWidget extends BaseWidget {
   private currentTimeRange: string = '24h';
   private metricsData: MetricsData | null = null;
   private chartInterval: string = '1h';  // Chart granularity
+  private _eventUnsubscribers: Array<() => void> = [];
 
   constructor() {
     verbose() && console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor called');
@@ -74,6 +75,10 @@ export class ContinuumMetricsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    for (const unsub of this._eventUnsubscribers) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+    this._eventUnsubscribers = [];
     verbose() && console.log('📊 ContinuumMetrics: Cleaning up...');
   }
 
@@ -82,15 +87,19 @@ export class ContinuumMetricsWidget extends BaseWidget {
    */
   private subscribeToAIEvents(): void {
     // Update metrics whenever an AI generates a response (cost/tokens change)
-    Events.subscribe(AI_DECISION_EVENTS.POSTED, () => {
-      this.fetchMetricsData();
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(AI_DECISION_EVENTS.POSTED, () => {
+        this.fetchMetricsData();
+      })
+    );
 
     // Also subscribe to database events for AI generation tracking
     const dbEvent = `data:${AIGenerationEntity.collection}:created`;
-    Events.subscribe(dbEvent, () => {
-      this.fetchMetricsData();
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(dbEvent, () => {
+        this.fetchMetricsData();
+      })
+    );
   }
 
   /**

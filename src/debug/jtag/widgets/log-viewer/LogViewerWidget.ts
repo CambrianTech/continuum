@@ -65,10 +65,29 @@ export class LogViewerWidget extends BasePanelWidget {
     await this.loadLogPathFromContent();
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * This allows cached widgets to reload with different log files.
+   */
+  public async onActivate(entityId?: string): Promise<void> {
+    console.log(`📜 LogViewer: onActivate called with entityId=${entityId}`);
+
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+    }
+
+    // Stop current auto-refresh before switching
+    this.stopAutoRefresh();
+
+    // Reload with new log path
+    await this.loadLogPathFromContent();
+  }
+
   private async loadLogPathFromContent(): Promise<void> {
     // Try to get log path from content item metadata
     // The DiagnosticsWidget passes logPath in metadata when opening this tab
-    const logPath = (this as any).getAttribute?.('data-entity-id') ||
+    const logPath = this.getAttribute('entity-id') ||
+                    this.getAttribute('data-entity-id') ||
                     (this as any).entityId ||
                     '.continuum/personas/helper/logs/hippocampus.log'; // Default for testing
 
@@ -134,6 +153,13 @@ export class LogViewerWidget extends BasePanelWidget {
       this.refreshInterval = window.setInterval(() => {
         this.refreshLog();
       }, 3000); // Refresh every 3 seconds
+    }
+  }
+
+  private stopAutoRefresh(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = undefined;
     }
   }
 

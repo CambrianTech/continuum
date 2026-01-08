@@ -15,6 +15,7 @@ const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERB
 
 export class HeaderControlsWidget extends BaseWidget {
   private currentVersion: string = VERSION;
+  private _eventUnsubscribe?: () => void;
 
   constructor() {
     super({
@@ -32,7 +33,7 @@ export class HeaderControlsWidget extends BaseWidget {
     verbose() && console.log('🎮 HeaderControlsWidget: Initializing header controls...');
 
     // Subscribe to version updates (future: when version changes dynamically)
-    Events.subscribe('system:version', (version: string) => {
+    this._eventUnsubscribe = Events.subscribe('system:version', (version: string) => {
       this.currentVersion = version;
       this.updateVersionDisplay();
     });
@@ -242,6 +243,7 @@ export class HeaderControlsWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    this._eventUnsubscribe?.();
     verbose() && console.log('🧹 HeaderControlsWidget: Cleanup complete');
   }
 }

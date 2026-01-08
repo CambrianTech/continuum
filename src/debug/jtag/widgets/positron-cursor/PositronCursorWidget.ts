@@ -56,6 +56,7 @@ export class PositronCursorWidget extends BaseWidget {
   private cursorElement: HTMLElement | null = null;
   private overlayCanvas: HTMLCanvasElement | null = null;
   private hideTimeout: ReturnType<typeof setTimeout> | null = null;
+  private _eventUnsubscribers: Array<() => void> = [];
 
   constructor() {
     super({
@@ -76,21 +77,20 @@ export class PositronCursorWidget extends BaseWidget {
   }
 
   private subscribeToEvents(): void {
-    Events.subscribe(POSITRON_CURSOR_EVENTS.FOCUS, (data: PositronFocusEvent) => {
-      this.handleFocus(data);
-    });
-
-    Events.subscribe(POSITRON_CURSOR_EVENTS.UNFOCUS, () => {
-      this.handleUnfocus();
-    });
-
-    Events.subscribe(POSITRON_CURSOR_EVENTS.DRAW, (data: PositronDrawEvent) => {
-      this.handleDraw(data);
-    });
-
-    Events.subscribe(POSITRON_CURSOR_EVENTS.CLEAR, () => {
-      this.clearOverlay();
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(POSITRON_CURSOR_EVENTS.FOCUS, (data: PositronFocusEvent) => {
+        this.handleFocus(data);
+      }),
+      Events.subscribe(POSITRON_CURSOR_EVENTS.UNFOCUS, () => {
+        this.handleUnfocus();
+      }),
+      Events.subscribe(POSITRON_CURSOR_EVENTS.DRAW, (data: PositronDrawEvent) => {
+        this.handleDraw(data);
+      }),
+      Events.subscribe(POSITRON_CURSOR_EVENTS.CLEAR, () => {
+        this.clearOverlay();
+      })
+    );
   }
 
   private handleFocus(data: PositronFocusEvent): void {
@@ -398,6 +398,11 @@ export class PositronCursorWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
+    for (const unsub of this._eventUnsubscribers) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+    this._eventUnsubscribers = [];
+
     if (this.hideTimeout) {
       clearTimeout(this.hideTimeout);
     }

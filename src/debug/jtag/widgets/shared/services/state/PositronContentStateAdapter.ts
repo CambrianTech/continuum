@@ -217,21 +217,33 @@ export class PositronContentStateAdapter {
     }
 
     if (data.contentItemId) {
+      // Check if we're closing the current item
+      const wasCurrentItem = userState.contentState.currentItemId === data.contentItemId;
+
       // Remove closed item from local state (Positron: state drives UI)
       userState.contentState.openItems = userState.contentState.openItems.filter(
         item => item.id !== data.contentItemId
       );
 
+      // Find the new current item
+      let newCurrentItem: ContentItem | undefined;
+
       // Update currentItemId if provided
       if (data.currentItemId) {
         userState.contentState.currentItemId = data.currentItemId;
+        newCurrentItem = userState.contentState.openItems.find(item => item.id === data.currentItemId);
       } else if (userState.contentState.openItems.length > 0) {
         // Fallback to most recent item if current was closed
-        userState.contentState.currentItemId = userState.contentState.openItems[
-          userState.contentState.openItems.length - 1
-        ].id;
+        newCurrentItem = userState.contentState.openItems[userState.contentState.openItems.length - 1];
+        userState.contentState.currentItemId = newCurrentItem.id;
       } else {
         userState.contentState.currentItemId = undefined;
+      }
+
+      // If we closed the current item, switch view to the new current
+      if (wasCurrentItem && newCurrentItem) {
+        this.config.onViewSwitch?.(newCurrentItem.type, newCurrentItem.entityId);
+        this.config.onUrlUpdate?.(newCurrentItem.type, newCurrentItem.entityId);
       }
     }
 

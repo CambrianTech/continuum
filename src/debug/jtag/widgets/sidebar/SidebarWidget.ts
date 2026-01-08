@@ -17,6 +17,7 @@ import { LAYOUT_EVENTS, type LayoutChangedPayload, type LayoutWidget, DEFAULT_LA
 export class SidebarWidget extends BaseSidePanelWidget {
   private currentContentType: string = 'chat';
   private leftWidgets: LayoutWidget[] = [];
+  private _eventUnsubscribers: Array<() => void> = [];
 
   constructor() {
     super({
@@ -53,21 +54,21 @@ export class SidebarWidget extends BaseSidePanelWidget {
     this.updateLayout(initialContentType);
 
     // Listen for layout changes when content type switches
-    Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
-      // Guard: only update if content type actually changed (prevents unnecessary DOM clearing)
-      if (payload.contentType !== this.currentContentType) {
-        this.verbose() && console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
-        this.updateLayout(payload.contentType);
-      }
-    });
-
-    // Also listen for content:switched events as backup
-    Events.subscribe('content:switched', (data: { contentType?: string }) => {
-      if (data.contentType && data.contentType !== this.currentContentType) {
-        this.verbose() && console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
-        this.updateLayout(data.contentType);
-      }
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
+        // Guard: only update if content type actually changed (prevents unnecessary DOM clearing)
+        if (payload.contentType !== this.currentContentType) {
+          this.verbose() && console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
+          this.updateLayout(payload.contentType);
+        }
+      }),
+      Events.subscribe('content:switched', (data: { contentType?: string }) => {
+        if (data.contentType && data.contentType !== this.currentContentType) {
+          this.verbose() && console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
+          this.updateLayout(data.contentType);
+        }
+      })
+    );
   }
 
   /**
@@ -109,6 +110,11 @@ export class SidebarWidget extends BaseSidePanelWidget {
   }
 
   protected async onPanelCleanup(): Promise<void> {
+    // Unsubscribe from ALL events to prevent memory leaks
+    for (const unsub of this._eventUnsubscribers) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+    this._eventUnsubscribers = [];
     this.verbose() && console.log('🧹 SidebarWidget: Cleanup complete');
   }
 
