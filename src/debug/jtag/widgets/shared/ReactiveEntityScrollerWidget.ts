@@ -31,6 +31,20 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
   protected scroller?: EntityScroller<T>;
   private _unsubscribeEvents?: () => void;
   private _scrollerInitialized = false;
+  private _pendingUpdate = false;
+
+  /**
+   * Batched requestUpdate() - prevents cascading re-renders from rapid CRUD events.
+   * Multiple calls within the same microtask are coalesced into a single update.
+   */
+  private batchedUpdate(): void {
+    if (this._pendingUpdate) return;
+    this._pendingUpdate = true;
+    queueMicrotask(() => {
+      this._pendingUpdate = false;
+      this.requestUpdate();
+    });
+  }
 
   constructor(config: ReactiveScrollerConfig) {
     super();
@@ -136,24 +150,24 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
         add: (entity: T) => {
           if (this.shouldAddEntity(entity)) {
             this.scroller?.addWithAutoScroll(entity);
-            this.requestUpdate(); // Trigger Lit re-render
+            this.batchedUpdate(); // Batched - coalesces rapid adds
           }
         },
         update: (id: string, entity: T) => {
           if (this.shouldUpdateEntity(id, entity)) {
             this.scroller?.update(id, entity);
-            this.requestUpdate();
+            this.batchedUpdate(); // Batched
           }
         },
         remove: (id: string) => {
           if (this.shouldRemoveEntity(id)) {
             this.scroller?.remove(id);
-            this.requestUpdate();
+            this.batchedUpdate(); // Batched
           }
         },
         clear: () => {
           this.scroller?.clear();
-          this.requestUpdate();
+          this.batchedUpdate(); // Batched
         }
       }
     );
@@ -182,13 +196,13 @@ export abstract class ReactiveEntityScrollerWidget<T extends BaseEntity> extends
   /** Refresh the scroller (reload data) */
   protected async refresh(): Promise<void> {
     await this.scroller?.refresh();
-    this.requestUpdate();
+    this.batchedUpdate(); // Batched for consistency
   }
 
   /** Clear all entities */
   protected clear(): void {
     this.scroller?.clear();
-    this.requestUpdate();
+    this.batchedUpdate(); // Batched for consistency
   }
 
   /** Scroll to end (useful for chat) */
