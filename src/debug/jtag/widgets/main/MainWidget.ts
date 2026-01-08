@@ -437,30 +437,9 @@ export class MainWidget extends BaseWidget {
     this.verbose() && console.log(`📋 MainPanel: Closed tab "${contentItem.title}"`);
   }
 
-  private switchToTab(tabName: string): void {
-    // Remove active class from all tabs
-    this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
-      tab.classList.remove('active');
-    });
-
-    // Add active class to selected tab
-    const selectedTab = this.shadowRoot?.querySelector(`[data-tab="${tabName}"]`);
-    selectedTab?.classList.add('active');
-
-    // Update content view based on tab
-    this.updateContentView(tabName);
-    
-    this.verbose() && console.log(`📄 MainPanel: Switched to tab: ${tabName}`);
-  }
-
-  private updateContentView(tabName: string): void {
-    const contentView = this.shadowRoot?.querySelector('.content-view');
-    if (!contentView) return;
-
-    // Get the widget for this content type from registry
-    const widget = getWidgetForType(tabName);
-    contentView.innerHTML = `<${widget}></${widget}>`;
-  }
+  // NOTE: Legacy switchToTab() and updateContentView() removed.
+  // They used innerHTML which destroys child widgets.
+  // switchContentView() is the correct implementation using widget cache.
 
   /**
    * Navigate to a different path (e.g., /chat/academy, /chat/user-123)
