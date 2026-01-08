@@ -208,5 +208,6 @@ npm start
 | 2026-01-08 | ChatMessageCache | ✅ DONE | Migrated to asyncStorage |
 | 2026-01-08 | LocalStorageStateManager | ✅ DONE | Migrated to asyncStorage |
 | 2026-01-08 | EventGuard.ts | ✅ DONE | Event guards + serializer utility |
+| 2026-01-08 | AsyncStorage → system/ | ✅ DONE | Moved from widgets/ to system/core/browser/ - fixes layering violation |
 | 2026-01-08 | **All Phases Complete** | ✅ DONE | All 7 async state phases implemented |
 

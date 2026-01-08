@@ -19,7 +19,7 @@
 import type { UUID } from '../types/CrossPlatformUUID';
 import { stringToUUID } from '../types/CrossPlatformUUID';
 import { getDefaultPreferencesForType } from '../../user/config/UserCapabilitiesDefaults';
-import { asyncStorage } from '../../../widgets/shared/AsyncStorage';
+import { asyncStorage } from './AsyncStorage';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;

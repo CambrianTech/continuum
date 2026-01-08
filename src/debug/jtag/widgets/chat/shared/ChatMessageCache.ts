@@ -19,7 +19,7 @@
 
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { asyncStorage } from '../../shared/AsyncStorage';
+import { asyncStorage } from '../../../system/core/browser/AsyncStorage';
 
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
