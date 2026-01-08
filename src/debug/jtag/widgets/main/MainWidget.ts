@@ -63,9 +63,11 @@ export class MainWidget extends BaseWidget {
         name: 'MainWidget',
         onStateChange: () => this.syncUserStateToContentState(),
         onViewSwitch: (contentType, entityId) => this.switchContentView(contentType, entityId),
-        onUrlUpdate: (contentType, entityId) => {
-          // Use helper to resolve UUID to uniqueId for human-readable URLs
-          this.updateUrlWithResolvedPath(contentType, entityId);
+        onUrlUpdate: (contentType, identifier) => {
+          // identifier is now uniqueId (e.g., "general") when available
+          // No async resolution needed - passed directly from content:opened event
+          const newPath = buildContentPath(contentType, identifier);
+          this.updateUrl(newPath);
         },
         onFallback: () => this.refreshTabsFromDatabase('fallback')
       }
@@ -391,22 +393,6 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
-   * Build URL with human-readable uniqueId and update browser
-   * Resolves UUID to uniqueId (e.g., "5e71a0c8-..." → "general")
-   */
-  private async updateUrlWithResolvedPath(contentType: string, entityId?: string): Promise<void> {
-    let urlEntityId = entityId;
-    if (entityId) {
-      const resolved = await RoutingService.resolve(contentType, entityId);
-      if (resolved?.uniqueId) {
-        urlEntityId = resolved.uniqueId;
-      }
-    }
-    const newPath = buildContentPath(contentType, urlEntityId);
-    this.updateUrl(newPath);
-  }
-
-  /**
    * Handle tab close - remove from openItems
    *
    * Uses optimistic update for instant UI, command persists in background.
@@ -428,7 +414,9 @@ export class MainWidget extends BaseWidget {
       if (newCurrent) {
         pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
         this.switchContentView(newCurrent.type, newCurrent.entityId);
-        this.updateUrlWithResolvedPath(newCurrent.type, newCurrent.entityId);
+        // Use uniqueId from content item for human-readable URLs (no async needed)
+        const urlId = newCurrent.uniqueId || newCurrent.entityId;
+        this.updateUrl(buildContentPath(newCurrent.type, urlId));
       } else {
         // No tabs left - open default
         const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
@@ -574,11 +562,11 @@ export class MainWidget extends BaseWidget {
   private syncUserStateToContentState(): void {
     if (!this.userState?.contentState) return;
 
-    // Re-initialize contentState from userState
-    // This syncs server-persisted changes to the global state
+    // Update contentState from userState (always syncs, even if count unchanged)
+    // This handles cases where item content changed (title, uniqueId) but count didn't
     const openItems = this.userState.contentState.openItems || [];
     const currentItemId = this.userState.contentState.currentItemId;
-    contentState.initialize(openItems, currentItemId);
+    contentState.update(openItems, currentItemId);
     this.verbose() && console.log(`📋 MainPanel: Synced ${openItems.length} items from server to global contentState`);
   }
 
@@ -704,7 +692,9 @@ export class MainWidget extends BaseWidget {
 
       // Switch view
       this.switchContentView(contentType, existingTab.entityId);
-      this.updateUrlWithResolvedPath(contentType, existingTab.entityId);
+      // Use uniqueId from content item for human-readable URLs (no async needed)
+      const urlId = existingTab.uniqueId || existingTab.entityId;
+      this.updateUrl(buildContentPath(contentType, urlId));
 
       // Persist in background
       Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
@@ -729,7 +719,8 @@ export class MainWidget extends BaseWidget {
 
     // Switch view
     this.switchContentView(contentType, undefined);
-    this.updateUrlWithResolvedPath(contentType, undefined);
+    // Singleton content (settings/help/etc) - no entityId needed
+    this.updateUrl(buildContentPath(contentType, undefined));
 
     // Persist in background - command will create real ID
     Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {

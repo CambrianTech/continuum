@@ -72,6 +72,21 @@ class ContentStateServiceImpl {
   }
 
   /**
+   * Update state from external source (e.g., Positron adapter event)
+   * Unlike initialize(), this ALWAYS updates and notifies subscribers,
+   * even if item count is the same (content may have changed).
+   */
+  update(openItems: ContentItem[], currentItemId?: UUID): void {
+    this.state = {
+      openItems: [...openItems],
+      currentItemId
+    };
+    this.initialized = true;
+    console.log(`📋 ContentState: Updated with ${openItems.length} items`);
+    this.scheduleNotify();
+  }
+
+  /**
    * Check if initialized
    */
   get isInitialized(): boolean {

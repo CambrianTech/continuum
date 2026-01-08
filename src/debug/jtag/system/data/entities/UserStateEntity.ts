@@ -16,6 +16,7 @@ export interface ContentItem {
   id: UUID;
   type: ContentType;
   entityId?: UUID;          // ID of the entity being displayed (roomId, userId, etc.) - optional for singleton content like settings
+  uniqueId?: string;        // Human-readable identifier for URLs (e.g., "general" instead of UUID)
   title: string;            // Display title for the tab/content
   subtitle?: string;        // Optional subtitle or status
   lastAccessedAt: Date;
@@ -211,6 +212,16 @@ export class UserStateEntity extends BaseEntity {
     if (existingItem) {
       // Already open - just switch to it (NO reordering, just update timestamp and focus)
       existingItem.lastAccessedAt = new Date();
+
+      // Update missing fields that may have been added later (e.g., uniqueId for URLs)
+      if (item.uniqueId && !existingItem.uniqueId) {
+        existingItem.uniqueId = item.uniqueId;
+      }
+      // Fix title if it was incorrectly set to UUID
+      if (item.title && existingItem.title === existingItem.entityId) {
+        existingItem.title = item.title;
+      }
+
       this.contentState.currentItemId = existingItem.id;
       this.contentState.lastUpdatedAt = new Date();
       return;

@@ -48,14 +48,16 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       const userState = Object.assign(new UserStateEntity(), listResult.items[0]);
 
-      // 2. Resolve entityId to canonical UUID and get display name
+      // 2. Resolve entityId to canonical UUID, uniqueId, and display name
       //    URL might use "general" but DB stores UUID "5e71a0c8-..."
       let canonicalEntityId = params.entityId;
+      let resolvedUniqueId: string | undefined;
       let resolvedDisplayName: string | undefined;
       if (params.entityId) {
         const resolved = await RoutingService.resolve(params.contentType, params.entityId);
         if (resolved) {
           canonicalEntityId = resolved.id;
+          resolvedUniqueId = resolved.uniqueId;
           resolvedDisplayName = resolved.displayName;
         }
       }
@@ -71,6 +73,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
         id: contentItemId,
         type: params.contentType,
         entityId: canonicalEntityId,
+        uniqueId: resolvedUniqueId,  // Store for fast URL building without async resolution
         title,
         subtitle: params.subtitle,
         priority: params.priority || 'normal',
@@ -91,15 +94,16 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       });
 
       // 8. Emit content:opened event for widgets to respond to
-      //    Use canonical entityId (UUID) so browser state matches DB
+      //    Include both UUID (for DB) and uniqueId (for URLs)
       const event: ContentOpenedEvent = {
         contentItemId,
         contentType: params.contentType,
-        entityId: canonicalEntityId,  // Use resolved UUID for consistency
-        title,  // Use derived title
+        entityId: canonicalEntityId,  // UUID for database lookups
+        uniqueId: resolvedUniqueId,   // Human-readable for URLs (e.g., "general")
+        title,
         userId,
         currentItemId: userState.contentState.currentItemId,
-        setAsCurrent  // Include so browser knows to switch view
+        setAsCurrent
       };
 
       await Events.emit(this.context, 'content:opened', event);

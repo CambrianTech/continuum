@@ -176,6 +176,7 @@ export class PositronContentStateAdapter {
         id: data.contentItemId,
         type: data.contentType,
         entityId: data.entityId,
+        uniqueId: data.uniqueId,  // Human-readable ID for URLs
         title: data.title || data.contentType,
         lastAccessedAt: new Date(),
         priority: 'normal' as ContentPriority
@@ -184,6 +185,14 @@ export class PositronContentStateAdapter {
     } else if (existingItem) {
       // Update lastAccessedAt for existing item
       existingItem.lastAccessedAt = new Date();
+      // Update uniqueId if it was missing
+      if (data.uniqueId && !existingItem.uniqueId) {
+        existingItem.uniqueId = data.uniqueId;
+      }
+      // Fix title if it was incorrectly set to UUID (migration for old data)
+      if (data.title && existingItem.title === existingItem.entityId) {
+        existingItem.title = data.title;
+      }
     }
 
     // Set as current if requested
@@ -194,10 +203,11 @@ export class PositronContentStateAdapter {
     // Notify UI to re-render from local state (no DB fetch!)
     this.config.onStateChange();
 
-    // Switch view if requested
+    // Switch view if requested - use uniqueId for URLs, entityId for views
     if (data.setAsCurrent && data.contentType) {
       this.config.onViewSwitch?.(data.contentType, data.entityId);
-      this.config.onUrlUpdate?.(data.contentType, data.entityId);
+      // Use uniqueId for human-readable URLs, fall back to entityId
+      this.config.onUrlUpdate?.(data.contentType, data.uniqueId || data.entityId);
     }
   }
 
@@ -243,7 +253,9 @@ export class PositronContentStateAdapter {
       // If we closed the current item, switch view to the new current
       if (wasCurrentItem && newCurrentItem) {
         this.config.onViewSwitch?.(newCurrentItem.type, newCurrentItem.entityId);
-        this.config.onUrlUpdate?.(newCurrentItem.type, newCurrentItem.entityId);
+        // Use uniqueId from content item for human-readable URLs
+        const urlId = newCurrentItem.uniqueId || newCurrentItem.entityId;
+        this.config.onUrlUpdate?.(newCurrentItem.type, urlId);
       }
     }
 
@@ -282,10 +294,12 @@ export class PositronContentStateAdapter {
     // Notify UI to re-render from local state (no DB fetch!)
     this.config.onStateChange();
 
-    // Switch view
+    // Switch view - use uniqueId from content item for URLs
     if (data.contentType) {
       this.config.onViewSwitch?.(data.contentType, data.entityId);
-      this.config.onUrlUpdate?.(data.contentType, data.entityId);
+      // Look up uniqueId from content item for human-readable URLs
+      const urlId = switchedItem?.uniqueId || data.entityId;
+      this.config.onUrlUpdate?.(data.contentType, urlId);
     }
   }
 
