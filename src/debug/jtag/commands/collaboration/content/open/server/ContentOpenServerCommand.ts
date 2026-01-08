@@ -48,21 +48,23 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       const userState = Object.assign(new UserStateEntity(), listResult.items[0]);
 
-      // 2. Resolve entityId to canonical UUID (prevents duplicate tabs from uniqueId vs UUID mismatch)
+      // 2. Resolve entityId to canonical UUID and get display name
       //    URL might use "general" but DB stores UUID "5e71a0c8-..."
       let canonicalEntityId = params.entityId;
+      let resolvedDisplayName: string | undefined;
       if (params.entityId) {
         const resolved = await RoutingService.resolve(params.contentType, params.entityId);
         if (resolved) {
           canonicalEntityId = resolved.id;
+          resolvedDisplayName = resolved.displayName;
         }
       }
 
       // 3. Generate unique ID for the content item
       const contentItemId = generateUUID();
 
-      // 4. Derive title if not provided (for singletons like settings/help/theme)
-      const title = params.title || this.deriveTitle(params.contentType);
+      // 4. Derive title: prefer params.title, then resolved displayName, then fallback
+      const title = params.title || resolvedDisplayName || this.deriveTitle(params.contentType);
 
       // 5. Add content item using UserStateEntity method (uses canonical UUID for deduplication)
       userState.addContentItem({

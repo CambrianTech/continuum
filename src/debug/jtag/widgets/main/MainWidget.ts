@@ -64,8 +64,8 @@ export class MainWidget extends BaseWidget {
         onStateChange: () => this.syncUserStateToContentState(),
         onViewSwitch: (contentType, entityId) => this.switchContentView(contentType, entityId),
         onUrlUpdate: (contentType, entityId) => {
-          const newPath = buildContentPath(contentType, entityId);
-          this.updateUrl(newPath);
+          // Use helper to resolve UUID to uniqueId for human-readable URLs
+          this.updateUrlWithResolvedPath(contentType, entityId);
         },
         onFallback: () => this.refreshTabsFromDatabase('fallback')
       }
@@ -176,17 +176,14 @@ export class MainWidget extends BaseWidget {
 
     // Create tab via content/open command
     // Command emits content:opened, adapter handles state + UI
+    // NOTE: Don't pass title - let server derive it from resolved entity displayName
     const userId = this.userState?.userId;
     if (userId) {
-      const title = entityId
-        ? entityId.charAt(0).toUpperCase() + entityId.slice(1)
-        : contentType.charAt(0).toUpperCase() + contentType.slice(1);
-
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
         userId: userId as UUID,
         contentType: contentType as ContentType,
         entityId: entityId,
-        title: title,
+        // title omitted - server derives from entity displayName
         setAsCurrent: true
       }).catch(err => console.error(`Failed to create tab for ${contentType}:`, err));
 
@@ -394,6 +391,22 @@ export class MainWidget extends BaseWidget {
   }
 
   /**
+   * Build URL with human-readable uniqueId and update browser
+   * Resolves UUID to uniqueId (e.g., "5e71a0c8-..." → "general")
+   */
+  private async updateUrlWithResolvedPath(contentType: string, entityId?: string): Promise<void> {
+    let urlEntityId = entityId;
+    if (entityId) {
+      const resolved = await RoutingService.resolve(contentType, entityId);
+      if (resolved?.uniqueId) {
+        urlEntityId = resolved.uniqueId;
+      }
+    }
+    const newPath = buildContentPath(contentType, urlEntityId);
+    this.updateUrl(newPath);
+  }
+
+  /**
    * Handle tab close - remove from openItems
    *
    * Uses optimistic update for instant UI, command persists in background.
@@ -415,7 +428,7 @@ export class MainWidget extends BaseWidget {
       if (newCurrent) {
         pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
         this.switchContentView(newCurrent.type, newCurrent.entityId);
-        this.updateUrl(buildContentPath(newCurrent.type, newCurrent.entityId));
+        this.updateUrlWithResolvedPath(newCurrent.type, newCurrent.entityId);
       } else {
         // No tabs left - open default
         const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
@@ -691,7 +704,7 @@ export class MainWidget extends BaseWidget {
 
       // Switch view
       this.switchContentView(contentType, existingTab.entityId);
-      this.updateUrl(buildContentPath(contentType, existingTab.entityId));
+      this.updateUrlWithResolvedPath(contentType, existingTab.entityId);
 
       // Persist in background
       Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
@@ -716,7 +729,7 @@ export class MainWidget extends BaseWidget {
 
     // Switch view
     this.switchContentView(contentType, undefined);
-    this.updateUrl(buildContentPath(contentType, undefined));
+    this.updateUrlWithResolvedPath(contentType, undefined);
 
     // Persist in background - command will create real ID
     Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
