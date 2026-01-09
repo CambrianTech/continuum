@@ -1,11 +1,20 @@
 /**
  * ContinuumWidget - Main Desktop Interface Widget
- * 
+ *
  * Encompasses the entire JTAG desktop layout including sidebar and main content area.
  * This is the top-level widget that contains all other interface components.
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
@@ -14,143 +23,117 @@ import type { ContinuumStatus } from '../../commands/continuum/set/shared/Contin
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
 import { ThemeRegistry } from '../shared/themes/ThemeTypes';
 import { positronicBridge } from '../../system/state/PositronicBridge';
+import { styles as CONTINUUM_STYLES } from './public/continuum-widget.styles';
 
-// Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+export class ContinuumWidget extends ReactiveWidget {
+  // Static styles using compiled SCSS
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(CONTINUUM_STYLES)
+  ] as CSSResultGroup;
 
-export class ContinuumWidget extends BaseWidget {
-  private currentStatus: ContinuumStatus | null = null;
-  private currentTheme: string = 'base';
-  private _eventUnsubscribe?: () => void;
+  // Reactive state
+  @reactive() private currentStatus: ContinuumStatus | null = null;
+  @reactive() private currentTheme: string = 'base';
 
   constructor() {
     super({
-      widgetName: 'ContinuumWidget',
-      template: 'continuum-widget.html',
-      styles: 'continuum-widget.css',
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: true,
-      enableScreenshots: false
+      widgetName: 'ContinuumWidget'
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    verbose() && console.log('🌐 ContinuumWidget: Initializing main desktop interface...');
+  // === LIFECYCLE ===
+
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
+    this.log('Initializing main desktop interface...');
 
     // Load saved theme from localStorage FIRST
     const savedTheme = LocalStorageStateManager.isAvailable()
       ? LocalStorageStateManager.getTheme()
       : null;
     this.currentTheme = savedTheme || 'base';
-    verbose() && console.log(`🎨 ContinuumWidget: Using theme '${this.currentTheme}' from localStorage`);
+    this.log(`Using theme '${this.currentTheme}' from localStorage`);
 
     // CRITICAL: Load and inject theme CSS FIRST, before any child widgets render
     // This ensures CSS variables are available when sidebar, room-list, etc. initialize
     const themeCSS = await this.loadThemeCSS();
     await this.injectThemeIntoDocumentHead(themeCSS);
 
-    // Initialize any dynamic content or state
-    await this.updateConnectionStatus();
-
     // Set initial favicon (default blue dot)
     this.updateFavicon();
 
-    // Load external scripts into shadow DOM for complete encapsulation
+    // Load external scripts (html2canvas)
     await this.loadExternalScripts();
 
-    // Listen for continuum:status events from continuum/set command
-    this._eventUnsubscribe = Events.subscribe('continuum:status', (status: ContinuumStatus) => {
-      this.handleStatusUpdate(status);
+    // Subscribe to continuum:status events
+    this.createMountEffect(() => {
+      const unsubscribe = Events.subscribe('continuum:status', (status: ContinuumStatus) => {
+        this.handleStatusUpdate(status);
+      });
+      return () => unsubscribe();
     });
 
     // Initialize Positronic state bridge for AI context awareness
-    // This bridges browser-side state to server RAG context
-    verbose() && console.log('🌐 ContinuumWidget: About to initialize PositronicBridge...');
+    this.log('Initializing PositronicBridge...');
     try {
       positronicBridge.initialize();
       // Expose on window for debugging
       (window as any).positronicBridge = positronicBridge;
-      verbose() && console.log('🌐 ContinuumWidget: PositronicBridge initialized successfully');
+      this.log('PositronicBridge initialized successfully');
     } catch (error) {
       console.error('🌐 ContinuumWidget: PositronicBridge initialization failed:', error);
     }
 
-    verbose() && console.log('✅ ContinuumWidget: Desktop interface initialized with status listener');
+    this.log('Desktop interface initialized with status listener');
   }
 
-  protected async renderWidget(): Promise<void> {
-    // Use BaseWidget's template and styles system
-    const styles = this.templateCSS ?? '/* No styles loaded */';
-    const template = this.templateHTML ?? '<div>No template loaded</div>';
+  // === RENDER ===
 
-    // Theme CSS already injected in onWidgetInitialize() - no need to reload here
+  protected override renderContent(): TemplateResult {
+    return html`
+      <div class="desktop-container">
+        <!-- Left Sidebar Panel with Resizer -->
+        <div class="sidebar-container">
+          <sidebar-widget class="left-sidebar"></sidebar-widget>
+          <panel-resizer side="left" css-var-prefix="sidebar" container-class="sidebar-container"></panel-resizer>
+        </div>
 
-    // Ensure template is a string
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
+        <!-- Main Content Panel -->
+        <main-widget></main-widget>
 
-    // Replace any dynamic content
-    const dynamicContent = templateString
-      .replace('<!-- CONNECTION_STATUS -->', await this.getConnectionStatusHTML())
-      .replace('<!-- CURRENT_TIMESTAMP -->', new Date().toLocaleTimeString());
+        <!-- Right Panel with Resizer (Assistant, Logs, Tools) -->
+        <div class="right-panel-container">
+          <panel-resizer side="right" css-var-prefix="right-panel" container-class="right-panel-container"></panel-resizer>
+          <right-panel-widget></right-panel-widget>
+        </div>
 
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${dynamicContent}
+        <!-- Expand buttons - outside shadow DOMs for proper z-index -->
+        <button class="panel-expand-btn left-expand" title="Expand sidebar" @click=${this.handleLeftExpand}>»</button>
+        <button class="panel-expand-btn right-expand" title="Expand panel" @click=${this.handleRightExpand}>«</button>
+      </div>
+
+      <!-- AI Presence Layer - Positron Cursor (floats above everything) -->
+      <positron-cursor-widget></positron-cursor-widget>
     `;
-
-    // Set up expand button click handlers
-    this.setupExpandButtons();
-
-    verbose() && console.log('✅ ContinuumWidget: Desktop interface rendered');
   }
+
+  // === EVENT HANDLERS ===
+
+  private handleLeftExpand = (): void => {
+    const resizer = this.shadowRoot?.querySelector('panel-resizer[side="left"]') as any;
+    resizer?.expand?.();
+  };
+
+  private handleRightExpand = (): void => {
+    const resizer = this.shadowRoot?.querySelector('panel-resizer[side="right"]') as any;
+    resizer?.expand?.();
+  };
+
+  // === THEME LOADING ===
 
   /**
-   * Set up click handlers for panel expand buttons
-   * These buttons are in ContinuumWidget's shadow DOM (not nested shadow DOMs)
-   * so they can properly overlay everything
-   */
-  private setupExpandButtons(): void {
-    const leftExpand = this.shadowRoot?.querySelector('.left-expand');
-    const rightExpand = this.shadowRoot?.querySelector('.right-expand');
-
-    if (leftExpand) {
-      leftExpand.addEventListener('click', () => {
-        const resizer = this.shadowRoot?.querySelector('panel-resizer[side="left"]') as any;
-        resizer?.expand?.();
-      });
-    }
-
-    if (rightExpand) {
-      rightExpand.addEventListener('click', () => {
-        const resizer = this.shadowRoot?.querySelector('panel-resizer[side="right"]') as any;
-        resizer?.expand?.();
-      });
-    }
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    this._eventUnsubscribe?.();
-    verbose() && console.log('🧹 ContinuumWidget: Cleanup complete');
-  }
-
-  /**
-   * Update connection status display
-   */
-  private async updateConnectionStatus(): Promise<void> {
-    // This could connect to system status, for now just show connected
-    verbose() && console.log('🔗 ContinuumWidget: Connection status updated');
-  }
-
-  /**
-   * Get connection status HTML
-   */
-  private async getConnectionStatusHTML(): Promise<string> {
-    return '<div id="connection-status" class="status connected">CONNECTED</div>';
-  }
-
-  /**
-   * Load theme CSS for shadow DOM injection
+   * Load theme CSS for document head injection
    * Loads base CSS first, then overlays current theme if not 'base'
    */
   private async loadThemeCSS(): Promise<string> {
@@ -173,7 +156,7 @@ export class ContinuumWidget extends BaseWidget {
 
       // If current theme is not 'base', load and overlay its CSS
       if (this.currentTheme !== 'base') {
-        verbose() && console.log(`🎨 ContinuumWidget: Loading theme '${this.currentTheme}' CSS overlay`);
+        this.log(`Loading theme '${this.currentTheme}' CSS overlay`);
 
         // Get theme manifest for file list
         const themeManifest = ThemeRegistry.getTheme(this.currentTheme);
@@ -193,7 +176,7 @@ export class ContinuumWidget extends BaseWidget {
         }
       }
 
-      verbose() && console.log(`🎨 ContinuumWidget: Loaded theme '${this.currentTheme}' CSS (${combinedCss.length} chars)`);
+      this.log(`Loaded theme '${this.currentTheme}' CSS (${combinedCss.length} chars)`);
       return combinedCss;
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to load theme CSS:', error);
@@ -208,13 +191,12 @@ export class ContinuumWidget extends BaseWidget {
     return this.currentTheme;
   }
 
-
   /**
-   * Inject theme CSS into document head for global widget access (copied from ThemeWidget)
+   * Inject theme CSS into document head for global widget access
    */
   private async injectThemeIntoDocumentHead(combinedCSS: string): Promise<void> {
     try {
-      verbose() && console.log(`🎨 ContinuumWidget: Injecting theme '${this.currentTheme}' CSS into document head...`);
+      this.log(`Injecting theme '${this.currentTheme}' CSS into document head...`);
 
       // Remove any existing theme style elements
       const existingStyles = document.head.querySelectorAll('style[id^="jtag-theme-"]');
@@ -227,8 +209,7 @@ export class ContinuumWidget extends BaseWidget {
 
       document.head.appendChild(themeStyleElement);
 
-      verbose() && console.log(`✅ ContinuumWidget: Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
-
+      this.log(`Theme '${this.currentTheme}' CSS injected (${combinedCSS.length} chars)`);
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to inject theme CSS into document head:', error);
     }
@@ -243,14 +224,14 @@ export class ContinuumWidget extends BaseWidget {
       const html2canvasScript = document.createElement('script');
       html2canvasScript.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
       html2canvasScript.async = true;
-      
+
       // Add script to shadow DOM
-      this.shadowRoot.appendChild(html2canvasScript);
-      
+      this.shadowRoot?.appendChild(html2canvasScript);
+
       // Wait for script to load
       await new Promise<void>((resolve, reject) => {
         html2canvasScript.onload = () => {
-          verbose() && console.log('📸 ContinuumWidget: html2canvas script loaded into shadow DOM');
+          this.log('html2canvas script loaded into shadow DOM');
           resolve();
         };
         html2canvasScript.onerror = () => {
@@ -263,47 +244,31 @@ export class ContinuumWidget extends BaseWidget {
     }
   }
 
-  /**
-   * List available rooms/channels for sidebar
-   */
-  async getAvailableRooms(): Promise<string[]> {
-    return ['general', 'academy', 'community'];
-  }
+  // === STATUS HANDLING ===
 
   /**
    * Handle continuum:status events from continuum/set command
    */
   private handleStatusUpdate(status: ContinuumStatus): void {
-    verbose() && console.log('✨ ContinuumWidget: Received status update:', status);
+    this.log('Received status update:', status);
 
     // Handle clear request
     if (status.clear) {
       this.currentStatus = null;
-      this.updateStatusDisplay();
-      verbose() && console.log('🔄 ContinuumWidget: Status cleared, returning to system default');
+      this.updateFavicon();
+      this.log('Status cleared, returning to system default');
       return;
     }
 
     // Check priority - only override if new status has higher or equal priority
     if (this.currentStatus && this.getPriorityLevel(status.priority) < this.getPriorityLevel(this.currentStatus.priority)) {
-      verbose() && console.log(`⚠️ ContinuumWidget: Ignoring lower priority status (${status.priority} < ${this.currentStatus.priority})`);
+      this.log(`Ignoring lower priority status (${status.priority} < ${this.currentStatus.priority})`);
       return;
     }
 
-    // Store new status
+    // Store new status (triggers re-render via @reactive)
     this.currentStatus = status;
-    this.updateStatusDisplay();
-  }
-
-  /**
-   * Update the visual display of the status in the widget
-   * Note: Visual status is shown by ContinuumEmoterWidget in sidebar
-   * ContinuumWidget only needs to update the favicon
-   */
-  private updateStatusDisplay(): void {
-    // Update favicon to match current status (or ground state if null)
     this.updateFavicon();
-    verbose() && console.log('✅ ContinuumWidget: Favicon updated');
   }
 
   /**
@@ -378,10 +343,17 @@ export class ContinuumWidget extends BaseWidget {
       }
       faviconLink.href = faviconUrl;
 
-      verbose() && console.log(`🎨 ContinuumWidget: Favicon updated (${emoji || 'dot'}, ${faviconColor})`);
+      this.log(`Favicon updated (${emoji || 'dot'}, ${faviconColor})`);
     } catch (error) {
       console.error('❌ ContinuumWidget: Failed to update favicon:', error);
     }
+  }
+
+  /**
+   * List available rooms/channels for sidebar
+   */
+  async getAvailableRooms(): Promise<string[]> {
+    return ['general', 'academy', 'community'];
   }
 }
 

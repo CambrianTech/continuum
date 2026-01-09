@@ -33,9 +33,13 @@ import { LitElement, html, css, unsafeCSS, type TemplateResult, type CSSResultGr
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
+import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { PositronWidgetState, type InteractionHint } from './services/state/PositronWidgetState';
 import { widgetStateRegistry, type WidgetStateSlice } from '../../system/state/WidgetStateRegistry';
 import type { ReactiveStore } from '../../system/state/ReactiveStore';
+import { COLLECTIONS } from '../../system/shared/Constants';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 
 /**
  * Cleanup function returned by effects
@@ -158,6 +162,11 @@ export abstract class ReactiveWidget extends LitElement {
   private commandCache = new Map<string, CachedValue<unknown>>();
 
   /**
+   * User state cache - loaded via loadUserContext()
+   */
+  protected _userState?: UserStateEntity;
+
+  /**
    * Widget state store for Positronic state system
    * Enables automatic RAG context injection
    */
@@ -196,6 +205,13 @@ export abstract class ReactiveWidget extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.log('Connected to DOM');
+
+    // Auto-load user context (non-blocking)
+    this.loadUserContext().catch(err => {
+      // Silent fail - user context is optional for some widgets
+      this.log('User context load failed (may be expected):', err);
+    });
+
     this.onConnect();
   }
 
@@ -703,6 +719,50 @@ export abstract class ReactiveWidget extends LitElement {
     return client?.user?.entity as UserEntity | undefined;
   }
 
+  /**
+   * Get current user state (lazy load on first access)
+   */
+  protected get userState(): UserStateEntity | undefined {
+    return this._userState;
+  }
+
+  /**
+   * Load user context from database
+   * Called automatically on widget initialization, but can be called manually to refresh
+   */
+  protected async loadUserContext(): Promise<void> {
+    try {
+      const jtagClient = (window as WindowWithJTAG).jtag;
+      const currentUser = jtagClient?.user;
+
+      if (!currentUser) {
+        console.warn(`⚠️ ${this.config.widgetName}: No user in session`);
+        return;
+      }
+
+      // Get userId - works for both BaseUser instances (getter) and plain objects (JSON deserialized)
+      const userId = currentUser.id ?? (currentUser as any).entity?.id;
+
+      if (!userId) {
+        console.warn(`⚠️ ${this.config.widgetName}: User has no id`);
+        return;
+      }
+
+      // Load user state from database
+      const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+        collection: COLLECTIONS.USER_STATES,
+        filter: { userId },
+        limit: 1
+      });
+
+      if (stateResult.success && stateResult.items && stateResult.items.length > 0) {
+        this._userState = stateResult.items[0];
+      }
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: Failed to load user context:`, error);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // UTILITIES
   // ═══════════════════════════════════════════════════════════════════════════
@@ -716,12 +776,21 @@ export abstract class ReactiveWidget extends LitElement {
   }
 
   /**
-   * Debug logging
+   * Debug logging (uses config.debug flag)
    */
   protected log(...args: unknown[]): void {
     if (this.config.debug) {
       console.log(`🔄 ${this.config.widgetName}:`, ...args);
     }
+  }
+
+  /**
+   * Verbose logging helper for browser widgets
+   * Usage: this.verbose() && console.log('message');
+   * Enable with: window.JTAG_VERBOSE = true
+   */
+  protected verbose(): boolean {
+    return typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
   }
 
   /**

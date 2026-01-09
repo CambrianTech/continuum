@@ -7,42 +7,54 @@
  * - Proper flexbox/overflow for scrolling content
  * - Common styling patterns via CSS variables
  *
- * Different from BasePanelWidget which is for content panels (Settings, Help, Theme).
- * This is specifically for the collapsible sidebars.
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  *
  * Subclasses implement:
  * - panelTitle, panelIcon, panelSide
- * - renderPanelContent() - the panel's main content
+ * - renderPanelContent() - returns TemplateResult for the panel's content
  * - onPanelInitialize(), onPanelCleanup()
  */
 
-import { BaseWidget, type WidgetConfig } from './BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from './ReactiveWidget';
+import { styles as SIDE_PANEL_STYLES } from './styles/side-panel.styles';
 
 export type SidePanelSide = 'left' | 'right';
 
-export interface SidePanelConfig extends Partial<WidgetConfig> {
+export interface SidePanelConfig {
+  widgetName: string;
   title?: string;
   icon?: string;
   side?: SidePanelSide;
 }
 
-export abstract class BaseSidePanelWidget extends BaseWidget {
+export abstract class BaseSidePanelWidget extends ReactiveWidget {
+  // Static styles using compiled SCSS
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(SIDE_PANEL_STYLES)
+  ] as CSSResultGroup;
 
-  constructor(config: SidePanelConfig = {}) {
+  constructor(config: SidePanelConfig) {
     super({
-      widgetName: config.widgetName || 'BaseSidePanelWidget',
-      template: undefined,  // Inline styles - no external files
-      styles: undefined,
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: true,
-      enableScreenshots: false
+      widgetName: config.widgetName
     });
   }
 
-  /** Panel configuration - subclasses override */
+  // === ABSTRACT PANEL CONFIGURATION ===
+
+  /** Panel title text */
   protected abstract get panelTitle(): string;
+
+  /** Panel icon (emoji or text) */
   protected abstract get panelIcon(): string;
+
+  /** Panel side: 'left' or 'right' */
   protected abstract get panelSide(): SidePanelSide;
 
   /** Whether to show the header bar (default: true). Override to false for minimal header. */
@@ -55,220 +67,115 @@ export abstract class BaseSidePanelWidget extends BaseWidget {
     return this.panelSide === 'left' ? '«' : '»';
   }
 
-  /** Panel-specific initialization */
+  // === ABSTRACT LIFECYCLE ===
+
+  /** Panel-specific initialization - called in onFirstRender */
   protected abstract onPanelInitialize(): Promise<void>;
 
-  /** Panel-specific cleanup */
+  /** Panel-specific cleanup - called in onDisconnect */
   protected abstract onPanelCleanup(): Promise<void>;
 
-  /** Render the panel's main content (inside .panel-content) */
+  /** Render the panel's main content - returns TemplateResult */
   protected abstract renderPanelContent(): Promise<string>;
 
-  // === BaseWidget Implementation ===
+  /** Called after render - subclasses can override for post-render setup */
+  protected async onPanelRendered(): Promise<void> {
+    // Default: nothing
+  }
 
-  protected async onWidgetInitialize(): Promise<void> {
+  /** Override to add custom styles - subclasses return CSS string */
+  protected getAdditionalStyles(): string {
+    return '';
+  }
+
+  // === LIFECYCLE ===
+
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
     await this.onPanelInitialize();
+    await this.onPanelRendered();
   }
 
-  protected async onWidgetCleanup(): Promise<void> {
-    await this.onPanelCleanup();
+  protected override onDisconnect(): void {
+    super.onDisconnect();
+    this.onPanelCleanup().catch(err => console.error('Panel cleanup error:', err));
   }
 
-  protected async renderWidget(): Promise<void> {
-    const styles = this.getSidePanelStyles();
+  // === RENDER ===
+
+  protected override renderContent(): TemplateResult {
     const additionalStyles = this.getAdditionalStyles();
-    const content = await this.renderPanelContent();
 
     if (this.showHeader) {
-      this.shadowRoot!.innerHTML = `
-        <style>${styles}${additionalStyles}</style>
+      return html`
+        ${additionalStyles ? html`<style>${additionalStyles}</style>` : ''}
         <div class="panel-header">
           <div class="panel-title">
             <span class="panel-title-icon">${this.panelIcon}</span>
             <span>${this.panelTitle}</span>
           </div>
-          <button class="collapse-btn" title="Collapse panel">${this.collapseChar}</button>
+          <button class="collapse-btn" title="Collapse panel" @click=${this.toggleCollapse}>
+            ${this.collapseChar}
+          </button>
         </div>
-        <div class="panel-content">
-          ${content}
-        </div>
+        <div class="panel-content" id="panel-content"></div>
       `;
     } else {
       // Minimal header: just floating collapse button
-      this.shadowRoot!.innerHTML = `
-        <style>${styles}${additionalStyles}</style>
-        <button class="collapse-btn floating" title="Collapse panel">${this.collapseChar}</button>
-        <div class="panel-content full-height">
-          ${content}
-        </div>
+      return html`
+        ${additionalStyles ? html`<style>${additionalStyles}</style>` : ''}
+        <button class="collapse-btn floating" title="Collapse panel" @click=${this.toggleCollapse}>
+          ${this.collapseChar}
+        </button>
+        <div class="panel-content full-height" id="panel-content"></div>
       `;
     }
-
-    this.setupCollapseButton();
-    await this.onPanelRendered();
   }
 
-  /** Override to add custom styles */
-  protected getAdditionalStyles(): string {
-    return '';
-  }
+  /**
+   * Called after first render to inject panel content
+   * Uses innerHTML because subclasses still return string (gradual migration)
+   */
+  protected override async firstUpdated(): Promise<void> {
+    super.firstUpdated();
 
-  /** Called after render - subclasses can override to set up event listeners */
-  protected async onPanelRendered(): Promise<void> {
-    // Default: nothing
-  }
-
-  // === Collapse/Expand via PanelResizer (single source of truth) ===
-
-  private setupCollapseButton(): void {
-    const collapseBtn = this.shadowRoot?.querySelector('.collapse-btn');
-    if (collapseBtn) {
-      collapseBtn.addEventListener('click', () => {
-        this.toggleCollapse();
-      });
+    // Inject panel content (still string-based for backwards compatibility)
+    const contentContainer = this.shadowRoot?.querySelector('#panel-content');
+    if (contentContainer) {
+      const content = await this.renderPanelContent();
+      contentContainer.innerHTML = content;
     }
   }
 
-  protected toggleCollapse(): void {
-    const continuumWidget = document.querySelector('continuum-widget') as any;
+  // === COLLAPSE/EXPAND VIA PANELRESIZER ===
+
+  protected toggleCollapse = (): void => {
+    const continuumWidget = document.querySelector('continuum-widget');
     if (continuumWidget?.shadowRoot) {
       const resizer = continuumWidget.shadowRoot.querySelector(
         `panel-resizer[side="${this.panelSide}"]`
       ) as any;
-      if (resizer?.toggle) {
-        resizer.toggle();
-      }
+      resizer?.toggle?.();
     }
-  }
+  };
 
   protected collapse(): void {
-    const continuumWidget = document.querySelector('continuum-widget') as any;
+    const continuumWidget = document.querySelector('continuum-widget');
     if (continuumWidget?.shadowRoot) {
       const resizer = continuumWidget.shadowRoot.querySelector(
         `panel-resizer[side="${this.panelSide}"]`
       ) as any;
-      if (resizer?.collapse) {
-        resizer.collapse();
-      }
+      resizer?.collapse?.();
     }
   }
 
   protected expand(): void {
-    const continuumWidget = document.querySelector('continuum-widget') as any;
+    const continuumWidget = document.querySelector('continuum-widget');
     if (continuumWidget?.shadowRoot) {
       const resizer = continuumWidget.shadowRoot.querySelector(
         `panel-resizer[side="${this.panelSide}"]`
       ) as any;
-      if (resizer?.expand) {
-        resizer.expand();
-      }
+      resizer?.expand?.();
     }
-  }
-
-  // === Common Side Panel Styles ===
-
-  private getSidePanelStyles(): string {
-    return `
-      :host {
-        display: block;
-        position: relative;
-        height: 100%;
-        width: 100%;
-        overflow: hidden;
-        background: var(--sidebar-background, rgba(20, 25, 35, 0.95));
-        color: var(--content-primary, #e0e6ed);
-      }
-
-      .panel-header {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 35px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 8px 12px;
-        border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.1));
-        background: rgba(0, 0, 0, 0.2);
-        z-index: 5;
-        box-sizing: border-box;
-      }
-
-      .panel-title {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--content-accent, #00d4ff);
-      }
-
-      .panel-title-icon {
-        font-size: 14px;
-      }
-
-      .collapse-btn {
-        background: none;
-        border: none;
-        color: var(--content-secondary, #8a92a5);
-        cursor: pointer;
-        padding: 4px 8px;
-        font-size: 14px;
-        transition: color 0.2s;
-      }
-
-      .collapse-btn:hover {
-        color: var(--content-accent, #00d4ff);
-      }
-
-      /* Floating collapse button (no header mode) */
-      .collapse-btn.floating {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        z-index: 10;
-      }
-
-      .panel-content.full-height {
-        top: 0;  /* No header, start from top */
-      }
-
-      .panel-content {
-        position: absolute;
-        top: 35px;  /* Default: below header */
-        left: 0;
-        right: 0;
-        bottom: 0;
-        overflow: hidden;  /* Let children handle their own scrolling */
-      }
-
-      /* Scrollbar styling for panel content */
-      .panel-content::-webkit-scrollbar {
-        width: 6px;
-      }
-
-      .panel-content::-webkit-scrollbar-track {
-        background: transparent;
-      }
-
-      .panel-content::-webkit-scrollbar-thumb {
-        background: var(--border-subtle, rgba(255,255,255,0.2));
-        border-radius: 3px;
-      }
-
-      .panel-content::-webkit-scrollbar-thumb:hover {
-        background: var(--content-secondary, rgba(255,255,255,0.3));
-      }
-
-      /* Widget containers inside panel */
-      .widget-container {
-        flex: 1;
-        min-height: 0;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-      }
-    `;
   }
 }
