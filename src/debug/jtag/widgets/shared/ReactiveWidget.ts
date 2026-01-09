@@ -29,7 +29,7 @@
  * ```
  */
 
-import { LitElement, html, css, type TemplateResult, type CSSResultGroup, type PropertyDeclaration } from 'lit';
+import { LitElement, html, css, unsafeCSS, type TemplateResult, type CSSResultGroup, type PropertyDeclaration } from 'lit';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
@@ -53,12 +53,13 @@ export type EffectHandler<T> = (value: T, prevValue: T | undefined) => void | Ef
 export type DependencySelector<W, T> = (widget: W) => T;
 
 // Re-export Lit utilities for subclasses
-export { html, css, type TemplateResult, type CSSResultGroup };
+export { html, css, unsafeCSS, type TemplateResult, type CSSResultGroup };
 export type { InteractionHint };
 
 /**
  * Property decorator that works with TC39 standard decorators
  * Use: @reactive() myProp = initialValue;
+ * NOTE: Must call requestUpdate() after changing state until decorator is fixed
  */
 export function reactive(options?: PropertyDeclaration) {
   return function(target: undefined, context: ClassFieldDecoratorContext) {
