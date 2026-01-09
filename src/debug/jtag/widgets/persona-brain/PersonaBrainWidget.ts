@@ -126,17 +126,31 @@ export class PersonaBrainWidget extends ReactiveWidget {
   /**
    * Called by MainWidget when this widget is activated with a new entityId.
    * This allows cached widgets to reload with different personas.
+   *
+   * OPTIMIZATION: Only reload if entityId actually changed. When switching
+   * back to the same persona, preserve cached state for instant display.
    */
   public async onActivate(entityId?: string): Promise<void> {
-    console.log(`🧠 PersonaBrain: onActivate called with entityId=${entityId}`);
+    // Check if this is the same persona (handles both UUID and uniqueId formats)
+    const isSameEntity = entityId && (
+      entityId === this.personaId ||
+      entityId === this.persona?.id ||
+      entityId === this.persona?.uniqueId
+    );
 
-    // Update personaId
+    if (isSameEntity && this.persona) {
+      // Same persona, already loaded - just trigger re-render
+      this.requestUpdate();
+      return;
+    }
+
+    // Different persona - update and reload
     if (entityId) {
       this.setAttribute('entity-id', entityId);
       this.personaId = entityId;
     }
 
-    // Reset state and reload
+    // Reset state and reload for new persona
     this.persona = null;
     this.isLoading = true;
     this.selectedModule = null;

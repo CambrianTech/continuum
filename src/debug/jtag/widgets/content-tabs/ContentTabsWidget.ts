@@ -8,18 +8,24 @@
  * 4. On close: updates contentState → triggers re-render
  *
  * NO events, NO parent calls, just shared state.
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { contentState, type ContentStateData } from '../../system/state/ContentStateService';
 import { pageState } from '../../system/state/PageStateService';
 import { Commands } from '../../system/core/shared/Commands';
 import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-
-// Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
 export interface TabInfo {
   id: string;
@@ -30,54 +36,11 @@ export interface TabInfo {
   contentType?: string;
 }
 
-export class ContentTabsWidget extends BaseWidget {
-  private tabs: TabInfo[] = [];
-  private unsubscribe?: () => void;
-
-  constructor() {
-    super({
-      widgetName: 'ContentTabsWidget',
-      template: undefined,
-      styles: undefined,
-      enableAI: false,
-      enableDatabase: true,
-      enableRouterEvents: false,
-      enableScreenshots: false
-    });
-  }
-
-  protected async onWidgetInitialize(): Promise<void> {
-    verbose() && console.log('📋 ContentTabsWidget: Subscribing to contentState...');
-
-    // Subscribe to global contentState - React pattern
-    this.unsubscribe = contentState.subscribe((state) => {
-      this.updateFromContentState(state);
-    });
-
-    verbose() && console.log('✅ ContentTabsWidget: Subscribed');
-  }
-
-  /**
-   * Update from global contentState - the ONLY source of truth
-   */
-  private updateFromContentState(state: ContentStateData): void {
-    verbose() && console.log('📋 ContentTabsWidget: State update', state.openItems.length, 'items');
-
-    // Convert to TabInfo format
-    this.tabs = state.openItems.map(item => ({
-      id: item.id,
-      label: item.title || item.type,
-      active: item.id === state.currentItemId,
-      closeable: true,
-      entityId: item.entityId,
-      contentType: item.type
-    }));
-
-    this.renderWidget();
-  }
-
-  protected async renderWidget(): Promise<void> {
-    const styles = `
+export class ContentTabsWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(`
       .content-tabs-container {
         display: flex;
         gap: 0;
@@ -154,60 +117,83 @@ export class ContentTabsWidget extends BaseWidget {
         font-size: 12px;
         font-style: italic;
       }
-    `;
+    `)
+  ] as CSSResultGroup;
 
-    const tabsHTML = this.tabs.length === 0
-      ? '<div class="empty-state">No content tabs</div>'
-      : this.tabs.map(tab => `
-          <div class="content-tab ${tab.active ? 'active' : ''}" data-tab-id="${tab.id}">
-            <span class="tab-label">${tab.label}</span>
-            ${tab.closeable ? `<span class="tab-close" data-close-tab="${tab.id}">×</span>` : ''}
-          </div>
-        `).join('');
+  // Reactive state
+  @reactive() private tabs: TabInfo[] = [];
 
-    this.shadowRoot!.innerHTML = `
-      <style>${styles}</style>
-      <div class="content-tabs-container">${tabsHTML}</div>
-    `;
-
-    this.setupEventListeners();
+  constructor() {
+    super({
+      widgetName: 'ContentTabsWidget'
+    });
   }
 
-  private setupEventListeners(): void {
-    const tabs = this.shadowRoot?.querySelectorAll('.content-tab');
-    if (!tabs) return;
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
 
-    tabs.forEach((tabElement) => {
-      const tab = tabElement as HTMLElement;
-      const tabId = tab.dataset.tabId;
-
-      tab.addEventListener('click', (event) => {
-        const target = event.target as HTMLElement;
-
-        if (target.classList.contains('tab-close') || target.hasAttribute('data-close-tab')) {
-          if (tabId) this.handleTabClose(tabId);
-          event.stopPropagation();
-          return;
-        }
-
-        if (tabId) this.handleTabClick(tabId);
+    // Subscribe to global contentState - React pattern
+    this.createMountEffect(() => {
+      const unsubscribe = contentState.subscribe((state) => {
+        this.updateFromContentState(state);
       });
+      return () => unsubscribe();
     });
   }
 
   /**
+   * Update from global contentState - the ONLY source of truth
+   */
+  private updateFromContentState(state: ContentStateData): void {
+    // Convert to TabInfo format
+    this.tabs = state.openItems.map(item => ({
+      id: item.id,
+      label: item.title || item.type,
+      active: item.id === state.currentItemId,
+      closeable: true,
+      entityId: item.entityId,
+      contentType: item.type
+    }));
+    this.requestUpdate();
+  }
+
+  // === Render ===
+
+  protected override renderContent(): TemplateResult {
+    if (this.tabs.length === 0) {
+      return html`
+        <div class="content-tabs-container">
+          <div class="empty-state">No content tabs</div>
+        </div>
+      `;
+    }
+
+    return html`
+      <div class="content-tabs-container">
+        ${this.tabs.map(tab => html`
+          <div class="content-tab ${tab.active ? 'active' : ''}"
+               @click=${(e: Event) => this.handleTabClick(e, tab)}>
+            <span class="tab-label">${tab.label}</span>
+            ${tab.closeable ? html`
+              <span class="tab-close" @click=${(e: Event) => this.handleTabClose(e, tab)}>×</span>
+            ` : ''}
+          </div>
+        `)}
+      </div>
+    `;
+  }
+
+  // === Event Handlers ===
+
+  /**
    * Handle tab click - update global state immediately
    */
-  private handleTabClick(tabId: string): void {
+  private handleTabClick(event: Event, tab: TabInfo): void {
     // Skip if already current
-    if (contentState.currentItemId === tabId) return;
-
-    // Find the tab to get its type/entityId
-    const tab = this.tabs.find(t => t.id === tabId);
-    if (!tab) return;
+    if (contentState.currentItemId === tab.id) return;
 
     // Update global state - triggers re-render via subscription
-    contentState.setCurrent(tabId as UUID);
+    contentState.setCurrent(tab.id as UUID);
 
     // Update pageState for MainWidget view switching
     pageState.setContent(tab.contentType || '', tab.entityId, undefined);
@@ -217,7 +203,7 @@ export class ContentTabsWidget extends BaseWidget {
     if (userId) {
       Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
         userId: userId as UUID,
-        contentItemId: tabId as UUID
+        contentItemId: tab.id as UUID
       }).catch(err => console.error('ContentTabsWidget: Failed to persist tab switch:', err));
     }
   }
@@ -225,9 +211,11 @@ export class ContentTabsWidget extends BaseWidget {
   /**
    * Handle tab close - update global state immediately
    */
-  private handleTabClose(tabId: string): void {
+  private handleTabClose(event: Event, tab: TabInfo): void {
+    event.stopPropagation(); // Don't trigger tab click
+
     // Remove from global state - triggers re-render via subscription
-    contentState.removeItem(tabId as UUID);
+    contentState.removeItem(tab.id as UUID);
 
     // Get new current item for pageState update
     const newCurrent = contentState.currentItem;
@@ -240,13 +228,10 @@ export class ContentTabsWidget extends BaseWidget {
     if (userId) {
       Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
         userId: userId as UUID,
-        contentItemId: tabId as UUID
+        contentItemId: tab.id as UUID
       }).catch(err => console.error('ContentTabsWidget: Failed to persist tab close:', err));
     }
   }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    this.unsubscribe?.();
-    verbose() && console.log('🧹 ContentTabsWidget: Cleanup complete');
-  }
 }
+
+// Registration handled by centralized BROWSER_WIDGETS registry
