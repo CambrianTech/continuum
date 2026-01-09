@@ -22,6 +22,7 @@ import type { StorageResult, StorageQuery } from '../shared/DataStorageAdapter';
 import { createDataOperationPayload, type DataOperationPayload } from '../shared/DataDaemonBase';
 import { Events } from '../../../system/core/shared/Events';
 import { LocalStorageDataBackend } from './LocalStorageDataBackend';
+import { IndexedDBBackend } from './IndexedDBBackend';
 import { SyncQueue, type SyncOperation } from './SyncQueue';
 import { ConnectionStatus } from './ConnectionStatus';
 
@@ -43,6 +44,11 @@ export class OfflineStorageAdapter {
   private readonly syncQueue: SyncQueue;
   private readonly connectionStatus: ConnectionStatus;
   private isSyncing: boolean = false;
+
+  // Debounce user_states updates to prevent main thread blocking
+  private pendingUserStateUpdates: Map<UUID, { id: UUID; [key: string]: unknown }> = new Map();
+  private userStateUpdateScheduled = false;
+  private static readonly USER_STATE_DEBOUNCE_MS = 100;
 
   constructor(context: JTAGContext, router: JTAGRouter) {
     this.context = context;
@@ -323,28 +329,60 @@ export class OfflineStorageAdapter {
    * When server pushes changes, update local cache.
    */
   private subscribeToServerEvents(): void {
-    // Generic pattern: data:<collection>:updated
+    // user_states uses IndexedDB (async, non-blocking) instead of localStorage
     Events.subscribe('data:user_states:updated', async (data: { id: UUID; [key: string]: unknown }) => {
       if (data && data.id) {
-        await LocalStorageDataBackend.update('user_states', data.id, data as any);
+        // IndexedDB is async - doesn't block main thread
+        await IndexedDBBackend.update('user_states', data.id, data as any);
       }
     });
 
     Events.subscribe('data:user_states:deleted', async (data: { id: UUID }) => {
       if (data && data.id) {
-        await LocalStorageDataBackend.delete('user_states', data.id);
+        await IndexedDBBackend.delete('user_states', data.id);
       }
     });
 
     Events.subscribe('data:user_states:created', async (data: { id: UUID; [key: string]: unknown }) => {
       if (data && data.id) {
-        // Only create if not already exists
-        const existing = await LocalStorageDataBackend.read('user_states', data.id);
-        if (!existing.success) {
-          await LocalStorageDataBackend.create('user_states', data as any);
-        }
+        // IndexedDB is async - doesn't block main thread
+        await IndexedDBBackend.create('user_states', data as any);
       }
     });
+  }
+
+  /**
+   * Schedule debounced flush of user_states updates.
+   * Uses requestIdleCallback when available for non-blocking writes.
+   */
+  private scheduleUserStateFlush(): void {
+    if (this.userStateUpdateScheduled) return;
+    this.userStateUpdateScheduled = true;
+
+    // Use setTimeout for debouncing, then requestIdleCallback for non-blocking write
+    setTimeout(() => {
+      this.userStateUpdateScheduled = false;
+
+      // Flush all pending updates
+      const updates = new Map(this.pendingUserStateUpdates);
+      this.pendingUserStateUpdates.clear();
+
+      if (updates.size === 0) return;
+
+      // Use requestIdleCallback if available for non-blocking localStorage writes
+      const flushFn = async () => {
+        for (const [id, data] of updates) {
+          await LocalStorageDataBackend.update('user_states', id, data as any);
+        }
+      };
+
+      if ('requestIdleCallback' in window) {
+        (window as any).requestIdleCallback(flushFn, { timeout: 500 });
+      } else {
+        // Fallback: use microtask to at least batch
+        queueMicrotask(flushFn);
+      }
+    }, OfflineStorageAdapter.USER_STATE_DEBOUNCE_MS);
   }
 
   /**

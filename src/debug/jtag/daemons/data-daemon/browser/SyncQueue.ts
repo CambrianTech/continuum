@@ -4,10 +4,13 @@
  * Stores pending sync operations in localStorage so they survive page refreshes.
  * Operations are processed FIFO (oldest first) when connection is restored.
  *
+ * Uses AsyncStorage for non-blocking writes (debounced, requestIdleCallback).
+ *
  * Part of the offline-first dual-storage ORM architecture.
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { asyncStorage } from '../../../system/core/browser/AsyncStorage';
 
 /**
  * A sync operation waiting to be sent to the server
@@ -88,10 +91,11 @@ export class SyncQueue {
 
   /**
    * Get all pending operations (read-only)
+   * Uses asyncStorage which checks pending writes first for read-your-writes consistency
    */
   getQueue(): SyncOperation[] {
     try {
-      const stored = localStorage.getItem(SyncQueue.STORAGE_KEY);
+      const stored = asyncStorage.getItem(SyncQueue.STORAGE_KEY);
       if (!stored) return [];
 
       const parsed = JSON.parse(stored);
@@ -110,20 +114,21 @@ export class SyncQueue {
   }
 
   /**
-   * Clear all pending operations
+   * Clear all pending operations (non-blocking via asyncStorage)
    */
   clear(): void {
-    localStorage.removeItem(SyncQueue.STORAGE_KEY);
+    asyncStorage.removeItem(SyncQueue.STORAGE_KEY);
   }
 
   /**
-   * Save queue to localStorage
+   * Save queue to localStorage (non-blocking via asyncStorage)
+   * Writes are debounced and deferred to requestIdleCallback
    */
   private saveQueue(queue: SyncOperation[]): void {
     if (queue.length === 0) {
-      localStorage.removeItem(SyncQueue.STORAGE_KEY);
+      asyncStorage.removeItem(SyncQueue.STORAGE_KEY);
     } else {
-      localStorage.setItem(SyncQueue.STORAGE_KEY, JSON.stringify(queue));
+      asyncStorage.setItem(SyncQueue.STORAGE_KEY, JSON.stringify(queue));
     }
   }
 

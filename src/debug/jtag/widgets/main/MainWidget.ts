@@ -57,19 +57,29 @@ export class MainWidget extends BaseWidget {
 
     // Initialize Positron content state adapter
     // This handles content:opened/closed/switched events with proper state management
+    // Helper to run work off main thread
+    const offMainThread = (fn: () => void, timeout = 500) => {
+      if ('requestIdleCallback' in window) {
+        (window as any).requestIdleCallback(fn, { timeout });
+      } else {
+        setTimeout(fn, 0);
+      }
+    };
+
     this.contentStateAdapter = new PositronContentStateAdapter(
       () => this.userState,
       {
         name: 'MainWidget',
-        onStateChange: () => this.syncUserStateToContentState(),
-        onViewSwitch: (contentType, entityId) => this.switchContentView(contentType, entityId),
+        onStateChange: () => offMainThread(() => this.syncUserStateToContentState(), 1000),
+        onViewSwitch: (contentType, entityId) => offMainThread(() => this.switchContentView(contentType, entityId)),
         onUrlUpdate: (contentType, identifier) => {
-          // identifier is now uniqueId (e.g., "general") when available
-          // No async resolution needed - passed directly from content:opened event
-          const newPath = buildContentPath(contentType, identifier);
-          this.updateUrl(newPath);
+          // URL updates are fast - use microtask
+          queueMicrotask(() => {
+            const newPath = buildContentPath(contentType, identifier);
+            this.updateUrl(newPath);
+          });
         },
-        onFallback: () => this.refreshTabsFromDatabase('fallback')
+        onFallback: () => offMainThread(() => this.refreshTabsFromDatabase('fallback'), 2000)
       }
     );
   }

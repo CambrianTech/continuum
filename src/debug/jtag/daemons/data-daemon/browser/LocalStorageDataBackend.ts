@@ -8,15 +8,20 @@
  * - data/delete -> localStorage.removeItem()
  * - data/list -> localStorage key enumeration
  *
+ * Uses AsyncStorage for non-blocking writes (debounced, requestIdleCallback).
+ * Reads are synchronous for read-your-writes consistency but check pending queue first.
+ *
  * Benefits:
  * - Reuses existing entity validation and types
  * - Consistent data command interface
  * - Automatic entity serialization/deserialization
  * - Type safety through existing entity system
+ * - Non-blocking writes via asyncStorage
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import { asyncStorage } from '../../../system/core/browser/AsyncStorage';
 
 export interface LocalStorageEntityData {
   id: UUID;
@@ -42,12 +47,13 @@ export class LocalStorageDataBackend {
 
   /**
    * Get all entity keys for a collection
+   * Uses asyncStorage.keys() which includes pending writes
    */
   private static getCollectionKeys(collection?: string): string[] {
+    const allKeys = asyncStorage.keys();
     const keys: string[] = [];
 
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
+    for (const key of allKeys) {
       if (key && key.startsWith(this.KEY_PREFIX)) {
         if (!collection) {
           keys.push(key);
@@ -85,8 +91,8 @@ export class LocalStorageDataBackend {
 
       const key = this.getEntityKey(collection, entity.id);
 
-      // Check if entity already exists
-      if (localStorage.getItem(key)) {
+      // Check if entity already exists (asyncStorage checks pending writes first)
+      if (asyncStorage.getItem(key)) {
         return { success: false, error: `Entity ${entity.id} already exists in collection ${collection}` };
       }
 
@@ -99,7 +105,8 @@ export class LocalStorageDataBackend {
         updatedAt: new Date().toISOString()
       };
 
-      localStorage.setItem(key, JSON.stringify(entityData));
+      // Non-blocking write via asyncStorage
+      asyncStorage.setItem(key, JSON.stringify(entityData));
       this.updateIndex(collection, entity.id, 'create');
 
       console.log(`✅ LocalStorageDataBackend: Created ${collection}:${entity.id}`);
@@ -113,6 +120,7 @@ export class LocalStorageDataBackend {
 
   /**
    * Read entity from localStorage (equivalent to data/read)
+   * Uses asyncStorage.getItem which checks pending writes first for read-your-writes consistency
    */
   static async read<T extends BaseEntity>(
     collection: string,
@@ -120,7 +128,7 @@ export class LocalStorageDataBackend {
   ): Promise<{ success: boolean; entity?: T; error?: string }> {
     try {
       const key = this.getEntityKey(collection, id);
-      const stored = localStorage.getItem(key);
+      const stored = asyncStorage.getItem(key);
 
       if (!stored) {
         return { success: false, error: `Entity ${id} not found in collection ${collection}` };
@@ -143,6 +151,7 @@ export class LocalStorageDataBackend {
 
   /**
    * Update entity in localStorage (equivalent to data/update)
+   * Uses asyncStorage for non-blocking writes
    */
   static async update<T extends BaseEntity>(
     collection: string,
@@ -151,7 +160,7 @@ export class LocalStorageDataBackend {
   ): Promise<{ success: boolean; error?: string }> {
     try {
       const key = this.getEntityKey(collection, id);
-      const stored = localStorage.getItem(key);
+      const stored = asyncStorage.getItem(key);
 
       if (!stored) {
         return { success: false, error: `Entity ${id} not found in collection ${collection}` };
@@ -166,7 +175,8 @@ export class LocalStorageDataBackend {
       entityData.entity = updatedEntity;
       entityData.updatedAt = new Date().toISOString();
 
-      localStorage.setItem(key, JSON.stringify(entityData));
+      // Non-blocking write via asyncStorage
+      asyncStorage.setItem(key, JSON.stringify(entityData));
 
       console.log(`✅ LocalStorageDataBackend: Updated ${collection}:${id}`);
       return { success: true };
@@ -179,6 +189,7 @@ export class LocalStorageDataBackend {
 
   /**
    * Delete entity from localStorage (equivalent to data/delete)
+   * Uses asyncStorage for non-blocking removal
    */
   static async delete(
     collection: string,
@@ -187,11 +198,12 @@ export class LocalStorageDataBackend {
     try {
       const key = this.getEntityKey(collection, id);
 
-      if (!localStorage.getItem(key)) {
+      if (!asyncStorage.hasItem(key)) {
         return { success: false, error: `Entity ${id} not found in collection ${collection}` };
       }
 
-      localStorage.removeItem(key);
+      // Non-blocking remove via asyncStorage
+      asyncStorage.removeItem(key);
       this.updateIndex(collection, id, 'delete');
 
       console.log(`✅ LocalStorageDataBackend: Deleted ${collection}:${id}`);
@@ -205,6 +217,7 @@ export class LocalStorageDataBackend {
 
   /**
    * List entities from localStorage (equivalent to data/list)
+   * Uses asyncStorage.getItem which checks pending writes first
    */
   static async list<T extends BaseEntity>(
     collection: string,
@@ -215,7 +228,7 @@ export class LocalStorageDataBackend {
       const entities: T[] = [];
 
       for (const key of keys) {
-        const stored = localStorage.getItem(key);
+        const stored = asyncStorage.getItem(key);
         if (stored) {
           try {
             const entityData: LocalStorageEntityData = JSON.parse(stored);
@@ -247,13 +260,15 @@ export class LocalStorageDataBackend {
 
   /**
    * Clear all entities from a collection
+   * Uses asyncStorage for non-blocking removal
    */
   static async clear(collection: string): Promise<{ success: boolean; error?: string }> {
     try {
       const keys = this.getCollectionKeys(collection);
 
       for (const key of keys) {
-        localStorage.removeItem(key);
+        // Non-blocking remove via asyncStorage
+        asyncStorage.removeItem(key);
       }
 
       // Clear collection from index
@@ -270,10 +285,11 @@ export class LocalStorageDataBackend {
 
   /**
    * Maintain index of collections and entities for faster querying
+   * Uses asyncStorage for non-blocking index updates
    */
   private static updateIndex(collection: string, id: UUID, operation: 'create' | 'delete'): void {
     try {
-      const indexData = JSON.parse(localStorage.getItem(this.INDEX_KEY) || '{}');
+      const indexData = JSON.parse(asyncStorage.getItem(this.INDEX_KEY) || '{}');
 
       if (!indexData[collection]) {
         indexData[collection] = [];
@@ -290,7 +306,8 @@ export class LocalStorageDataBackend {
         }
       }
 
-      localStorage.setItem(this.INDEX_KEY, JSON.stringify(indexData));
+      // Non-blocking index write via asyncStorage
+      asyncStorage.setItem(this.INDEX_KEY, JSON.stringify(indexData));
 
     } catch (error) {
       console.warn('⚠️ LocalStorageDataBackend: Index update failed:', error);
@@ -299,12 +316,14 @@ export class LocalStorageDataBackend {
 
   /**
    * Clear collection from index
+   * Uses asyncStorage for non-blocking index updates
    */
   private static clearCollectionFromIndex(collection: string): void {
     try {
-      const indexData = JSON.parse(localStorage.getItem(this.INDEX_KEY) || '{}');
+      const indexData = JSON.parse(asyncStorage.getItem(this.INDEX_KEY) || '{}');
       delete indexData[collection];
-      localStorage.setItem(this.INDEX_KEY, JSON.stringify(indexData));
+      // Non-blocking index write via asyncStorage
+      asyncStorage.setItem(this.INDEX_KEY, JSON.stringify(indexData));
     } catch (error) {
       console.warn('⚠️ LocalStorageDataBackend: Index clear failed:', error);
     }
@@ -312,6 +331,7 @@ export class LocalStorageDataBackend {
 
   /**
    * Get storage statistics
+   * Uses asyncStorage.keys() for consistent view including pending writes
    */
   static getStats(): {
     totalKeys: number;
@@ -324,19 +344,17 @@ export class LocalStorageDataBackend {
       entityKeys.map(key => key.replace(this.KEY_PREFIX, '').split(':')[0])
     )];
 
+    const allKeys = asyncStorage.keys();
     let storageUsed = 0;
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key) {
-        const value = localStorage.getItem(key);
-        if (value) {
-          storageUsed += key.length + value.length;
-        }
+    for (const key of allKeys) {
+      const value = asyncStorage.getItem(key);
+      if (value) {
+        storageUsed += key.length + value.length;
       }
     }
 
     return {
-      totalKeys: localStorage.length,
+      totalKeys: allKeys.length,
       entityKeys: entityKeys.length,
       collections,
       storageUsed
@@ -345,6 +363,7 @@ export class LocalStorageDataBackend {
 
   /**
    * Debug helper
+   * Uses asyncStorage for consistent view
    */
   static debug(): void {
     const stats = this.getStats();
@@ -352,7 +371,8 @@ export class LocalStorageDataBackend {
     console.log('Version:', this.VERSION);
     console.log('Key prefix:', this.KEY_PREFIX);
     console.log('Statistics:', stats);
-    console.log('Index:', JSON.parse(localStorage.getItem(this.INDEX_KEY) || '{}'));
+    console.log('Index:', JSON.parse(asyncStorage.getItem(this.INDEX_KEY) || '{}'));
+    console.log('AsyncStorage pending writes:', asyncStorage.getStats());
     console.groupEnd();
   }
 }

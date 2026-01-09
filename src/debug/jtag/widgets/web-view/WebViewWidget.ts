@@ -15,6 +15,7 @@ import { ReactiveWidget, html, css } from '../shared/ReactiveWidget';
 import type { TemplateResult, CSSResultGroup } from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 import type { ConnectionStatus } from '../../system/core/client/browser/ConnectionMonitor';
+import { asyncStorage } from '../../system/core/browser/AsyncStorage';
 
 // Verbose logging helper for browser (standalone since ReactiveWidget != BaseWidget)
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
@@ -284,16 +285,16 @@ export class WebViewWidget extends ReactiveWidget {
     window.addEventListener('message', this.boundHandleShimMessage);
 
     // Check for pending navigation URL (set by navigate command before widget mounted)
-    const pendingUrl = localStorage.getItem('webview:pending-url');
+    const pendingUrl = asyncStorage.getItem('webview:pending-url');
     if (pendingUrl) {
       verbose() && console.log(`🌐 WebViewWidget: Found pending URL: ${pendingUrl}`);
-      localStorage.removeItem('webview:pending-url');
+      asyncStorage.removeItem('webview:pending-url');
       this.navigateToUrl(pendingUrl);
       return;  // Skip restoring saved URL - use pending instead
     }
 
     // Restore saved URL (from previous session)
-    const savedUrl = localStorage.getItem(STORAGE_KEY);
+    const savedUrl = asyncStorage.getItem(STORAGE_KEY);
     if (savedUrl) {
       this.urlInput = savedUrl;
       this.loadUrl();
@@ -446,8 +447,8 @@ export class WebViewWidget extends ReactiveWidget {
     this.pageTitle = pageTitle || '';
     this.siteName = this.extractSiteName(actualUrl, pageTitle);
 
-    // Persist for next session
-    localStorage.setItem(STORAGE_KEY, actualUrl);
+    // Persist for next session (non-blocking via asyncStorage)
+    asyncStorage.setItem(STORAGE_KEY, actualUrl);
 
     // Update Positronic state for RAG context
     this.updateWidgetState({
@@ -715,8 +716,8 @@ export class WebViewWidget extends ReactiveWidget {
     this.isLoading = true;
     this.siteName = this.extractSiteName(url, '');
 
-    // Persist URL for next session
-    localStorage.setItem(STORAGE_KEY, url);
+    // Persist URL for next session (non-blocking via asyncStorage)
+    asyncStorage.setItem(STORAGE_KEY, url);
 
     // Create proxy URL
     this.proxyUrl = '/proxy/' + encodeURIComponent(url);

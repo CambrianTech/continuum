@@ -20,6 +20,7 @@
 
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import { ReactiveStore } from './ReactiveStore';
+import { asyncStorage } from '../core/browser/AsyncStorage';
 
 /**
  * Site-level state data structure
@@ -94,6 +95,7 @@ class SiteStateStore extends ReactiveStore<SiteStateData> {
 
   /**
    * Set theme and persist to localStorage
+   * Uses asyncStorage for non-blocking write
    */
   setTheme(theme: string): void {
     this.update({
@@ -101,9 +103,9 @@ class SiteStateStore extends ReactiveStore<SiteStateData> {
       updatedAt: Date.now()
     });
 
-    // Persist theme preference
+    // Persist theme preference (non-blocking via asyncStorage)
     try {
-      localStorage.setItem('jtag-theme', theme);
+      asyncStorage.setItem('jtag-theme', theme);
     } catch {
       // localStorage not available
     }
@@ -127,10 +129,11 @@ class SiteStateStore extends ReactiveStore<SiteStateData> {
 
   /**
    * Load persisted state from localStorage
+   * Uses asyncStorage.getItem for consistency (checks pending writes first)
    */
   private loadFromStorage(): void {
     try {
-      const savedTheme = localStorage.getItem('jtag-theme');
+      const savedTheme = asyncStorage.getItem('jtag-theme');
       if (savedTheme) {
         this.update({ theme: savedTheme });
       }

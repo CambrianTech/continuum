@@ -73,10 +73,14 @@ class ContentStateServiceImpl {
 
   /**
    * Update state from external source (e.g., Positron adapter event)
-   * Unlike initialize(), this ALWAYS updates and notifies subscribers,
-   * even if item count is the same (content may have changed).
+   * Only notifies subscribers if state actually changed (prevents render loops).
    */
   update(openItems: ContentItem[], currentItemId?: UUID): void {
+    // Fast path: check if anything actually changed
+    if (this.initialized && !this.hasStateChanged(openItems, currentItemId)) {
+      return; // No change, skip notification
+    }
+
     this.state = {
       openItems: [...openItems],
       currentItemId
@@ -84,6 +88,33 @@ class ContentStateServiceImpl {
     this.initialized = true;
     console.log(`📋 ContentState: Updated with ${openItems.length} items`);
     this.scheduleNotify();
+  }
+
+  /**
+   * Check if incoming state differs from current state.
+   * Compares item count, currentItemId, and item contents (id, title, uniqueId).
+   */
+  private hasStateChanged(openItems: ContentItem[], currentItemId?: UUID): boolean {
+    // Different current item
+    if (this.state.currentItemId !== currentItemId) return true;
+
+    // Different item count
+    if (this.state.openItems.length !== openItems.length) return true;
+
+    // Check each item for changes (compare key fields that affect rendering)
+    for (let i = 0; i < openItems.length; i++) {
+      const oldItem = this.state.openItems[i];
+      const newItem = openItems[i];
+      if (oldItem.id !== newItem.id ||
+          oldItem.title !== newItem.title ||
+          oldItem.uniqueId !== newItem.uniqueId ||
+          oldItem.type !== newItem.type ||
+          oldItem.entityId !== newItem.entityId) {
+        return true;
+      }
+    }
+
+    return false; // No changes detected
   }
 
   /**

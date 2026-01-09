@@ -110,9 +110,20 @@ export class PositronContentStateAdapter {
       return;
     }
 
-    Events.subscribe('content:opened', this.handleContentOpened.bind(this));
-    Events.subscribe('content:closed', this.handleContentClosed.bind(this));
-    Events.subscribe('content:switched', this.handleContentSwitched.bind(this));
+    // Wrap handlers to run off main thread - prevents blocking during tab operations
+    const offMainThread = (handler: (data: unknown) => void) => {
+      return (data: unknown) => {
+        if ('requestIdleCallback' in window) {
+          (window as any).requestIdleCallback(() => handler(data), { timeout: 100 });
+        } else {
+          queueMicrotask(() => handler(data));
+        }
+      };
+    };
+
+    Events.subscribe('content:opened', offMainThread(this.handleContentOpened.bind(this)));
+    Events.subscribe('content:closed', offMainThread(this.handleContentClosed.bind(this)));
+    Events.subscribe('content:switched', offMainThread(this.handleContentSwitched.bind(this)));
 
     this.subscribed = true;
   }
