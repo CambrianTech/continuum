@@ -33,6 +33,7 @@ export interface TabInfo {
   active: boolean;
   closeable?: boolean;
   entityId?: string;
+  uniqueId?: string;  // Human-readable ID for URLs
   contentType?: string;
 }
 
@@ -152,6 +153,7 @@ export class ContentTabsWidget extends ReactiveWidget {
       active: item.id === state.currentItemId,
       closeable: true,
       entityId: item.entityId,
+      uniqueId: item.uniqueId,  // For human-readable URLs
       contentType: item.type
     }));
     this.requestUpdate();
@@ -198,6 +200,14 @@ export class ContentTabsWidget extends ReactiveWidget {
     // Update pageState for MainWidget view switching
     pageState.setContent(tab.contentType || '', tab.entityId, undefined);
 
+    // Update URL immediately - use uniqueId for human-readable URLs
+    const urlId = tab.uniqueId || tab.entityId || '';
+    const contentType = tab.contentType || '';
+    const newPath = urlId ? `/${contentType}/${urlId}` : `/${contentType}`;
+    if (window.location.pathname !== newPath) {
+      window.history.pushState({ path: newPath }, '', newPath);
+    }
+
     // Persist to DB in background
     const userId = this.userState?.userId;
     if (userId) {
@@ -217,10 +227,18 @@ export class ContentTabsWidget extends ReactiveWidget {
     // Remove from global state - triggers re-render via subscription
     contentState.removeItem(tab.id as UUID);
 
-    // Get new current item for pageState update
+    // Get new current item for pageState update and URL
     const newCurrent = contentState.currentItem;
     if (newCurrent) {
       pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
+
+      // Update URL to new current tab
+      const urlId = newCurrent.uniqueId || newCurrent.entityId || '';
+      const contentType = newCurrent.type || '';
+      const newPath = urlId ? `/${contentType}/${urlId}` : `/${contentType}`;
+      if (window.location.pathname !== newPath) {
+        window.history.pushState({ path: newPath }, '', newPath);
+      }
     }
 
     // Persist to DB in background
