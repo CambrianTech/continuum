@@ -21,8 +21,9 @@ import type { DataReadParams, DataReadResult } from '../../commands/data/read/sh
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataDeleteParams, DataDeleteResult } from '../../commands/data/delete/shared/DataDeleteTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
-import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { ContentService } from '../../system/state/ContentService';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { getWidgetEntityId } from '../shared/WidgetConstants';
 
 export class UserProfileWidget extends BaseWidget {
@@ -179,37 +180,32 @@ export class UserProfileWidget extends BaseWidget {
       // Emit event so user list can refresh
       Events.emit('data:users:deleted', { id: this.user.id });
 
-      // Navigate back to chat via command (command emits content:opened)
-      const userId = this.userState?.userId;
-      if (userId) {
-        Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-          userId,
-          contentType: 'chat',
-          entityId: 'general',
-          title: 'General',
-          setAsCurrent: true
-        }).catch(console.error);
+      // OPTIMISTIC: Navigate back to chat instantly
+      if (this.userState?.userId) {
+        ContentService.setUserId(this.userState.userId as UUID);
       }
+      ContentService.open('chat', 'general', {
+        title: 'General',
+        uniqueId: 'general'
+      });
     } catch (err) {
       console.error('Failed to delete user:', err);
     }
   }
 
-  private async openCognition(): Promise<void> {
+  private openCognition(): void {
     if (!this.user) return;
 
-    // NOTE: Removed direct Events.emit('content:opened') - the command emits it
-    // Having both causes duplicate events and state cascade
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId,
-        contentType: 'persona',
-        entityId: this.user.uniqueId || this.user.id,
-        title: `${this.user.displayName} - Brain`,
-        setAsCurrent: true
-      }).catch(console.error);
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
     }
+
+    const entityId = this.user.uniqueId || this.user.id;
+    ContentService.open('persona', entityId, {
+      title: `${this.user.displayName} - Brain`,
+      uniqueId: entityId
+    });
   }
 
   protected async renderWidget(): Promise<void> {

@@ -196,6 +196,19 @@ export class PositronContentStateAdapter {
     } else if (existingItem) {
       // Update lastAccessedAt for existing item
       existingItem.lastAccessedAt = new Date();
+
+      // CRITICAL: Update temp ID to server's real ID BEFORE setting currentItemId
+      // This prevents tab flickering where currentItemId points to non-existent ID
+      if (data.contentItemId && existingItem.id !== data.contentItemId) {
+        // Track if this was the current item (with temp ID)
+        const wasCurrentItem = userState.contentState.currentItemId === existingItem.id;
+        existingItem.id = data.contentItemId;
+        // Immediately update currentItemId if it was pointing to the old temp ID
+        if (wasCurrentItem) {
+          userState.contentState.currentItemId = data.contentItemId;
+        }
+      }
+
       // Update uniqueId if it was missing
       if (data.uniqueId && !existingItem.uniqueId) {
         existingItem.uniqueId = data.uniqueId;
@@ -206,7 +219,7 @@ export class PositronContentStateAdapter {
       }
     }
 
-    // Set as current if requested
+    // Set as current if requested (ID already updated above if existingItem matched)
     if (data.setAsCurrent && data.contentItemId) {
       userState.contentState.currentItemId = data.contentItemId;
     }

@@ -21,7 +21,7 @@ import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
-import type { ContentOpenParams, ContentOpenResult } from '../../../commands/collaboration/content/open/shared/ContentOpenTypes';
+import { ContentService } from '../../../system/state/ContentService';
 
 import { styles as externalStyles } from './user-list.styles';
 
@@ -438,23 +438,22 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     verbose() && console.log(`» UserListWidget: Show action menu for user ${userId}`);
   }
 
-  private async openUserProfile(userEntity: UserEntity): Promise<void> {
+  private openUserProfile(userEntity: UserEntity): void {
     const entityId = userEntity.uniqueId || userEntity.id;
     const title = userEntity.displayName || 'User Profile';
 
     verbose() && console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
 
-    // Server handles tab creation via content:opened event
-    const userId = this.currentUser?.id;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId,
-        contentType: 'profile',
-        entityId,
-        title,
-        setAsCurrent: true
-      }).catch(err => console.error('Failed to persist profile open:', err));
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    // ContentService handles: tab creation, view switch, URL update, server persist
+    if (this.currentUser?.id) {
+      ContentService.setUserId(this.currentUser.id as UUID);
     }
+
+    ContentService.open('profile', entityId, {
+      title,
+      uniqueId: entityId
+    });
   }
 
   // === HELPER METHODS ===

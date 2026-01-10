@@ -13,6 +13,7 @@ import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { ContentService } from '../../system/state/ContentService';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
@@ -264,25 +265,22 @@ export class DiagnosticsWidget extends BasePanelWidget {
     this.renderWidget();
   }
 
-  private async openLogTab(logPath: string, logName: string): Promise<void> {
+  private openLogTab(logPath: string, logName: string): void {
     verbose() && console.log(`DiagnosticsWidget: Opening log tab for ${logPath}`);
 
-    // TODO: Implement opening log as a new tab
-    // This will use the content/open command to create a new tab with a log viewer
-    try {
-      await Commands.execute('collaboration/content/open', {
-        contentType: 'diagnostics-log',
-        entityId: logPath,
-        title: logName,
-        setAsCurrent: true,
-        metadata: {
-          logPath,
-          autoFollow: true
-        }
-      } as any);
-    } catch (error) {
-      console.error('DiagnosticsWidget: Error opening log tab:', error);
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
     }
+
+    ContentService.open('diagnostics-log', logPath, {
+      title: logName,
+      uniqueId: logPath,
+      metadata: {
+        logPath,
+        autoFollow: true
+      }
+    });
   }
 
   private async handleDetailAction(action: string): Promise<void> {

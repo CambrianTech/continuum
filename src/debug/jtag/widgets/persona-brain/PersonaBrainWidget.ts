@@ -31,6 +31,7 @@ import { unsafeSVG } from 'lit/directives/unsafe-svg.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { ContentService } from '../../system/state/ContentService';
 import { LogToggle, type LogToggleState } from './components/LogToggle';
 import { styles as personaBrainStyles } from './styles/persona-brain-widget.styles';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
@@ -1196,7 +1197,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
     this.requestUpdate();
   }
 
-  private async openLogViewer(logType: string): Promise<void> {
+  private openLogViewer(logType: string): void {
     // Guard: Don't try to open logs that don't exist
     if (!this.availableLogs.has(logType)) {
       console.warn(`PersonaBrainWidget: Log '${logType}' not available for ${this.personaId}. Available: ${[...this.availableLogs].join(', ')}`);
@@ -1206,17 +1207,12 @@ export class PersonaBrainWidget extends ReactiveWidget {
     // Log paths are in format: {uniqueId}/{logType} e.g., "helper/cns", "local/prefrontal"
     const logPath = `${this.personaId}/${logType}`;
 
-    try {
-      await Commands.execute('collaboration/content/open', {
-        contentType: 'diagnostics-log',
-        entityId: logPath,
-        title: `${this.persona?.displayName} - ${logType}`,
-        setAsCurrent: true,
-        metadata: { logPath, autoFollow: true }
-      } as any);
-    } catch (error) {
-      console.error('PersonaBrainWidget: Error opening log:', error);
-    }
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    ContentService.open('diagnostics-log', logPath, {
+      title: `${this.persona?.displayName} - ${logType}`,
+      uniqueId: logPath,
+      metadata: { logPath, autoFollow: true }
+    });
   }
 }
 
