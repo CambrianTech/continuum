@@ -22,12 +22,13 @@
   flex-shrink: 0;
 }
 
-// Dynamic widgets - flex to fill remaining space
+// Dynamic widgets - smaller flex, let persistent widgets take priority
 .widget-slot--dynamic {
-  flex: 1;
+  flex: 0.3;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 120px;
 
   > * {
     flex: 1;
