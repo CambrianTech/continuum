@@ -16,12 +16,23 @@
 
 import { contentState } from './ContentStateService';
 import { pageState } from './PageStateService';
+import { entityCache } from './EntityCacheService';
 import { Commands } from '../core/shared/Commands';
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import type { ContentType, ContentPriority, ContentItem } from '../data/entities/UserStateEntity';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
+import { getRecipeLayoutService } from '../recipes/browser/RecipeLayoutService';
+
+// Map content types to their associated entity collections
+const CONTENT_TYPE_COLLECTIONS: Record<string, string> = {
+  chat: 'chat_messages',
+  settings: 'settings',
+  persona: 'users',
+  profile: 'users',
+  canvas: 'activities',
+};
 
 export interface OpenContentOptions {
   title?: string;
@@ -30,6 +41,8 @@ export interface OpenContentOptions {
   priority?: ContentPriority;
   metadata?: Record<string, unknown>;
   setAsCurrent?: boolean;
+  /** Recipe ID for this content (looked up automatically if not provided) */
+  recipeId?: string;
 }
 
 class ContentServiceImpl {
@@ -46,10 +59,12 @@ class ContentServiceImpl {
    * Open content - THE entry point for all content opening
    *
    * This method:
-   * 1. Adds tab optimistically (instant UI)
-   * 2. Updates pageState (view switches)
-   * 3. Updates URL (browser history)
-   * 4. Persists to server (background)
+   * 1. Looks up recipe for content type (Positronic: recipe defines behavior)
+   * 2. Adds tab optimistically (instant UI)
+   * 3. Updates pageState (view switches)
+   * 4. Updates URL (browser history)
+   * 5. Pre-populates cache for entity collection (Positronic: cache-first)
+   * 6. Persists to server (background)
    */
   open(contentType: ContentType | string, entityId?: string, options: OpenContentOptions = {}): ContentItem {
     const {
@@ -58,10 +73,19 @@ class ContentServiceImpl {
       uniqueId = entityId,
       priority = 'normal',
       metadata,
-      setAsCurrent = true
+      setAsCurrent = true,
+      recipeId: providedRecipeId
     } = options;
 
-    // 1. OPTIMISTIC: Add tab immediately
+    // 1. RECIPE LOOKUP: Get recipe ID for this content type
+    const recipeId = providedRecipeId ?? this.lookupRecipeId(contentType);
+
+    // Merge recipe info into metadata
+    const enhancedMetadata = recipeId
+      ? { ...metadata, recipeId }
+      : metadata;
+
+    // 2. OPTIMISTIC: Add tab immediately
     const newItem = contentState.addItem({
       type: contentType as ContentType,
       entityId: entityId as UUID | undefined,
@@ -69,10 +93,13 @@ class ContentServiceImpl {
       title,
       subtitle,
       priority,
-      metadata
+      metadata: enhancedMetadata
     }, setAsCurrent);
 
-    // 2. Update pageState (triggers view switch in MainWidget)
+    // 3. PRE-POPULATE CACHE: Ensure event subscription for entity collection
+    this.ensureCacheSubscription(contentType);
+
+    // 4. Update pageState (triggers view switch in MainWidget)
     if (setAsCurrent) {
       // Only pass resolved entity if we have all required fields
       const resolved = entityId && uniqueId && title ? {
@@ -83,12 +110,12 @@ class ContentServiceImpl {
       pageState.setContent(contentType, entityId, resolved);
     }
 
-    // 3. Update URL
+    // 5. Update URL
     if (setAsCurrent) {
       this.updateUrl(contentType, uniqueId);
     }
 
-    // 4. Persist to server (background, non-blocking)
+    // 6. Persist to server (background, non-blocking)
     if (this.currentUserId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
         userId: this.currentUserId,
@@ -97,7 +124,7 @@ class ContentServiceImpl {
         title,
         subtitle,
         priority,
-        metadata,
+        metadata: enhancedMetadata,
         setAsCurrent
       }).then(result => {
         // Update temp ID with real ID from server
@@ -211,6 +238,43 @@ class ContentServiceImpl {
       openItemsCount: contentState.openItems.length,
       currentPath: window.location.pathname
     };
+  }
+
+  // ==================== RECIPE AWARENESS (Positronic) ====================
+
+  /**
+   * Look up recipe ID for a content type
+   * Uses RecipeLayoutService to find matching recipe
+   */
+  private lookupRecipeId(contentType: string): string | undefined {
+    try {
+      const recipeService = getRecipeLayoutService();
+      if (recipeService.isLoaded() && recipeService.hasRecipe(contentType)) {
+        // Recipe uniqueId matches content type
+        return contentType;
+      }
+    } catch {
+      // RecipeLayoutService not available (e.g., in tests)
+    }
+    return undefined;
+  }
+
+  /**
+   * Ensure EntityCacheService is subscribed to events for this content type's collection
+   * This enables real-time updates without explicit subscription in widgets
+   */
+  private ensureCacheSubscription(contentType: string): void {
+    const collection = CONTENT_TYPE_COLLECTIONS[contentType];
+    if (collection) {
+      entityCache.ensureEventSubscription(collection);
+    }
+  }
+
+  /**
+   * Get the entity collection associated with a content type
+   */
+  getCollectionForContentType(contentType: string): string | undefined {
+    return CONTENT_TYPE_COLLECTIONS[contentType];
   }
 }
 
