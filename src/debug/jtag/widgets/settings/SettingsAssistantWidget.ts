@@ -6,10 +6,17 @@
  * - When config save fails, diagnoses the issue
  * - Suggests next steps based on current configuration
  *
- * Uses the reactive widget pattern via PositronWidgetState.subscribeToWidget()
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { Commands } from '../../system/core/shared/Commands';
 
@@ -28,64 +35,146 @@ interface ConfigErrorEvent {
   needsHelp: boolean;
 }
 
-export class SettingsAssistantWidget extends BaseWidget {
-  private unsubscribers: Array<() => void> = [];
-  private messages: Array<{ type: 'info' | 'success' | 'error' | 'help'; text: string; timestamp: number }> = [];
+interface AssistantMessage {
+  type: 'info' | 'success' | 'error' | 'help';
+  text: string;
+  timestamp: number;
+}
+
+export class SettingsAssistantWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(`
+      :host {
+        display: block;
+        height: 100%;
+        background: var(--surface-background, rgba(15, 20, 25, 0.95));
+        color: var(--content-primary, #e0e0e0);
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      .assistant-container {
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        height: 100%;
+        overflow-y: auto;
+      }
+      .assistant-header {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--content-accent, #00d4ff);
+        margin-bottom: 8px;
+      }
+      .assistant-msg {
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.4;
+        animation: fadeIn 0.3s ease;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .msg-info {
+        background: rgba(0, 212, 255, 0.1);
+        border-left: 3px solid var(--content-accent, #00d4ff);
+      }
+      .msg-success {
+        background: rgba(0, 255, 100, 0.1);
+        border-left: 3px solid #00ff64;
+      }
+      .msg-error {
+        background: rgba(255, 80, 80, 0.1);
+        border-left: 3px solid #ff5050;
+      }
+      .msg-help {
+        background: rgba(255, 200, 0, 0.15);
+        border-left: 3px solid #ffc800;
+      }
+    `)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private messages: AssistantMessage[] = [];
+
+  // Non-reactive
   private isGenerating = false;
 
   constructor() {
     super({
-      widgetName: 'SettingsAssistantWidget',
-      enableAI: true,
-      enableDatabase: false
+      widgetName: 'SettingsAssistantWidget'
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    this.verbose() && console.log('🤖 SettingsAssistant: Initializing...');
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
 
     // Subscribe to settings events
-    this.unsubscribers.push(
-      PositronWidgetState.subscribeToWidget('settings', 'provider:tested', (data) => {
-        this.handleProviderTested(data as ProviderTestedEvent);
-      })
-    );
-
-    this.unsubscribers.push(
-      PositronWidgetState.subscribeToWidget('settings', 'config:error', (data) => {
-        this.handleConfigError(data as ConfigErrorEvent);
-      })
-    );
-
-    this.unsubscribers.push(
-      PositronWidgetState.subscribeToWidget('settings', 'config:saved', () => {
-        this.addMessage('success', '✅ Configuration saved successfully!');
-      })
-    );
-
-    this.unsubscribers.push(
-      PositronWidgetState.subscribeToWidget('settings', 'section:changed', (data: any) => {
-        if (data.section === 'providers') {
-          this.addMessage('info', '💡 Tip: Test your API keys before saving to verify they work.');
-        }
-      })
-    );
+    this.createMountEffect(() => {
+      const unsubs = [
+        PositronWidgetState.subscribeToWidget('settings', 'provider:tested', (data) => {
+          this.handleProviderTested(data as ProviderTestedEvent);
+        }),
+        PositronWidgetState.subscribeToWidget('settings', 'config:error', (data) => {
+          this.handleConfigError(data as ConfigErrorEvent);
+        }),
+        PositronWidgetState.subscribeToWidget('settings', 'config:saved', () => {
+          this.addMessage('success', '✅ Configuration saved successfully!');
+        }),
+        PositronWidgetState.subscribeToWidget('settings', 'section:changed', (data: any) => {
+          if (data.section === 'providers') {
+            this.addMessage('info', '💡 Tip: Test your API keys before saving to verify they work.');
+          }
+        })
+      ];
+      return () => unsubs.forEach(u => u());
+    });
 
     // Initial greeting
     this.addMessage('info', '👋 I\'m here to help you configure your AI providers. Click "Test" on any provider and I\'ll help troubleshoot any issues.');
-
-    this.renderWidget();
-    this.verbose() && console.log('🤖 SettingsAssistant: Subscribed to settings events');
   }
+
+  // === Render ===
+
+  protected override renderContent(): TemplateResult {
+    return html`
+      <div class="assistant-container">
+        <div class="assistant-header">🤖 Settings Assistant</div>
+        ${this.messages.length > 0
+          ? this.messages.map(msg => this.renderMessage(msg))
+          : html`<div class="assistant-msg msg-info">Ready to help with your configuration.</div>`
+        }
+      </div>
+    `;
+  }
+
+  private renderMessage(msg: AssistantMessage): TemplateResult {
+    const iconClass = {
+      'info': 'msg-info',
+      'success': 'msg-success',
+      'error': 'msg-error',
+      'help': 'msg-help'
+    }[msg.type];
+
+    return html`<div class="assistant-msg ${iconClass}">${msg.text}</div>`;
+  }
+
+  // === Message Management ===
 
   private addMessage(type: 'info' | 'success' | 'error' | 'help', text: string): void {
-    this.messages.push({ type, text, timestamp: Date.now() });
+    // Create new array for reactivity
+    this.messages = [...this.messages, { type, text, timestamp: Date.now() }];
     // Keep last 10 messages
     if (this.messages.length > 10) {
-      this.messages.shift();
+      this.messages = this.messages.slice(-10);
     }
-    this.renderWidget();
+    this.requestUpdate();
   }
+
+  // === Event Handlers ===
 
   private async handleProviderTested(data: ProviderTestedEvent): Promise<void> {
     const { provider, success, status, message, responseTime } = data;
@@ -127,11 +216,9 @@ Give a brief, helpful troubleshooting tip (2-3 sentences max). Focus on the most
       if (result?.text) {
         this.addMessage('help', `💡 ${result.text}`);
       } else {
-        // Fallback help based on status
         this.addMessage('help', this.getFallbackHelp(provider, status));
       }
     } catch (error) {
-      // Fallback help if AI generation fails
       this.addMessage('help', this.getFallbackHelp(provider, status));
     }
 
@@ -147,92 +234,6 @@ Give a brief, helpful troubleshooting tip (2-3 sentences max). Focus on the most
     };
     return tips[status] || `Check your ${provider} API key and try again. Visit their docs for help.`;
   }
-
-  protected async renderWidget(): Promise<void> {
-    const messagesHtml = this.messages.map(msg => {
-      const iconClass = {
-        'info': 'msg-info',
-        'success': 'msg-success',
-        'error': 'msg-error',
-        'help': 'msg-help'
-      }[msg.type];
-
-      return `<div class="assistant-msg ${iconClass}">${msg.text}</div>`;
-    }).join('');
-
-    this.shadowRoot!.innerHTML = `
-      <style>
-        :host {
-          display: block;
-          height: 100%;
-          background: var(--surface-background, rgba(15, 20, 25, 0.95));
-          color: var(--content-primary, #e0e0e0);
-          font-family: system-ui, -apple-system, sans-serif;
-        }
-        .assistant-container {
-          padding: 16px;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          height: 100%;
-          overflow-y: auto;
-        }
-        .assistant-header {
-          font-size: 14px;
-          font-weight: 600;
-          color: var(--content-accent, #00d4ff);
-          margin-bottom: 8px;
-        }
-        .assistant-msg {
-          padding: 10px 12px;
-          border-radius: 8px;
-          font-size: 13px;
-          line-height: 1.4;
-          animation: fadeIn 0.3s ease;
-        }
-        @keyframes fadeIn {
-          from { opacity: 0; transform: translateY(5px); }
-          to { opacity: 1; transform: translateY(0); }
-        }
-        .msg-info {
-          background: rgba(0, 212, 255, 0.1);
-          border-left: 3px solid var(--content-accent, #00d4ff);
-        }
-        .msg-success {
-          background: rgba(0, 255, 100, 0.1);
-          border-left: 3px solid #00ff64;
-        }
-        .msg-error {
-          background: rgba(255, 80, 80, 0.1);
-          border-left: 3px solid #ff5050;
-        }
-        .msg-help {
-          background: rgba(255, 200, 0, 0.15);
-          border-left: 3px solid #ffc800;
-        }
-      </style>
-      <div class="assistant-container">
-        <div class="assistant-header">🤖 Settings Assistant</div>
-        ${messagesHtml || '<div class="assistant-msg msg-info">Ready to help with your configuration.</div>'}
-      </div>
-    `;
-  }
-
-  async disconnectedCallback(): Promise<void> {
-    // Clean up all subscriptions
-    for (const unsub of this.unsubscribers) {
-      unsub();
-    }
-    this.unsubscribers = [];
-    this.verbose() && console.log('🤖 SettingsAssistant: Cleaned up subscriptions');
-
-    await super.disconnectedCallback();
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    // Cleanup handled in disconnectedCallback
-  }
 }
 
-// Register custom element
 // Registration handled by centralized BROWSER_WIDGETS registry

@@ -14,68 +14,75 @@
  * Attributes:
  * - title: Panel header title
  * - subtitle: Panel header subtitle (optional)
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from './BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from './ReactiveWidget';
 import { ALL_PANEL_STYLES } from './styles';
 
-export class PanelLayoutWidget extends BaseWidget {
+export class PanelLayoutWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(`
+      ${ALL_PANEL_STYLES}
+
+      :host {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      ::slotted(*) {
+        display: block;
+      }
+    `)
+  ] as CSSResultGroup;
+
+  // Reactive state from attributes
+  @reactive() private panelTitle: string = 'Panel';
+  @reactive() private panelSubtitle: string | null = null;
+
+  // Observed attributes
+  static override get observedAttributes(): string[] {
+    return [...super.observedAttributes, 'title', 'subtitle'];
+  }
+
   constructor() {
     super({
-      widgetName: 'PanelLayoutWidget',
-      template: undefined,
-      styles: undefined,
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: false,
-      enableScreenshots: false
+      widgetName: 'PanelLayoutWidget'
     });
   }
 
-  static get observedAttributes(): string[] {
-    return ['title', 'subtitle'];
-  }
-
-  attributeChangedCallback(name: string, oldValue: string, newValue: string): void {
-    if (oldValue !== newValue) {
-      this.renderWidget();
+  override attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void {
+    super.attributeChangedCallback(name, oldValue, newValue);
+    if (name === 'title' && newValue !== oldValue) {
+      this.panelTitle = newValue || 'Panel';
+      this.requestUpdate();
+    } else if (name === 'subtitle' && newValue !== oldValue) {
+      this.panelSubtitle = newValue;
+      this.requestUpdate();
     }
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    // Initial render
-  }
+  // === Render ===
 
-  protected async onWidgetCleanup(): Promise<void> {
-    // No cleanup needed
-  }
-
-  protected async renderWidget(): Promise<void> {
-    if (!this.shadowRoot) return;
-
-    const title = this.getAttribute('title') || 'Panel';
-    const subtitle = this.getAttribute('subtitle');
-
-    this.shadowRoot.innerHTML = `
-      <style>
-        ${ALL_PANEL_STYLES}
-
-        :host {
-          display: block;
-          width: 100%;
-          height: 100%;
-        }
-
-        ::slotted(*) {
-          display: block;
-        }
-      </style>
+  protected override renderContent(): TemplateResult {
+    return html`
       <div class="panel-layout">
         <div class="panel-main">
           <div class="panel-container">
             <div class="panel-header">
-              <h1 class="panel-title">${title}</h1>
-              ${subtitle ? `<p class="panel-subtitle">${subtitle}</p>` : ''}
+              <h1 class="panel-title">${this.panelTitle}</h1>
+              ${this.panelSubtitle ? html`<p class="panel-subtitle">${this.panelSubtitle}</p>` : ''}
             </div>
             <slot></slot>
           </div>

@@ -5,9 +5,18 @@
  * Can point, highlight, draw attention, and later gesture.
  *
  * The orb in the corner is the AI's "eye" - this cursor is its "hand"
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 
 // Cursor modes
@@ -50,48 +59,175 @@ export const POSITRON_CURSOR_EVENTS = {
   GESTURE: 'positron:gesture',  // Future: hand gestures
 } as const;
 
-export class PositronCursorWidget extends BaseWidget {
-  private currentMode: CursorMode = 'idle';
+export class PositronCursorWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(`
+      :host {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+        z-index: 10000;
+      }
+
+      .overlay-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      .cursor {
+        position: absolute;
+        width: 40px;
+        height: 40px;
+        transform: translate(-50%, -50%);
+        opacity: 0;
+        transition: opacity 0.2s ease, transform 0.3s ease;
+      }
+
+      .cursor.visible {
+        opacity: 1;
+      }
+
+      .cursor.idle {
+        opacity: 0;
+      }
+
+      /* Cursor visual - glowing ring like the emoter orb */
+      .cursor-ring {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        border: 3px solid var(--cursor-color, #00d4ff);
+        background: radial-gradient(circle,
+          color-mix(in srgb, var(--cursor-color, #00d4ff) 20%, transparent) 0%,
+          transparent 70%
+        );
+        box-shadow: 0 0 15px var(--cursor-color, #00d4ff),
+                    0 0 30px var(--cursor-color, #00d4ff),
+                    0 0 45px color-mix(in srgb, var(--cursor-color, #00d4ff) 50%, transparent);
+        animation: pulse-cursor 1.5s ease-in-out infinite;
+      }
+
+      .cursor.pointing .cursor-ring {
+        animation: pulse-point 0.8s ease-in-out infinite;
+      }
+
+      .cursor.highlighting .cursor-ring {
+        width: 48px;
+        height: 48px;
+        animation: pulse-highlight 1s ease-in-out infinite;
+      }
+
+      @keyframes pulse-cursor {
+        0%, 100% { opacity: 0.8; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.1); }
+      }
+
+      @keyframes pulse-point {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.7; transform: scale(0.9); }
+      }
+
+      @keyframes pulse-highlight {
+        0%, 100% { opacity: 0.9; transform: scale(1); }
+        50% { opacity: 1; transform: scale(1.15); }
+      }
+
+      /* Tooltip */
+      .cursor-tooltip {
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        margin-top: 8px;
+        padding: 4px 8px;
+        background: rgba(0, 0, 0, 0.85);
+        border: 1px solid var(--cursor-color, #00d4ff);
+        border-radius: 4px;
+        color: white;
+        font-size: 11px;
+        white-space: nowrap;
+        display: none;
+      }
+    `)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private currentMode: CursorMode = 'idle';
+  @reactive() private isVisible: boolean = false;
+  @reactive() private cursorX: number = 0;
+  @reactive() private cursorY: number = 0;
+  @reactive() private cursorColor: string = '#00d4ff';
+  @reactive() private tooltipText: string = '';
+  @reactive() private showTooltip: boolean = false;
+
+  // Non-reactive
   private currentPersona: string | null = null;
-  private cursorElement: HTMLElement | null = null;
   private overlayCanvas: HTMLCanvasElement | null = null;
   private hideTimeout: ReturnType<typeof setTimeout> | null = null;
-  private _eventUnsubscribers: Array<() => void> = [];
 
   constructor() {
     super({
-      widgetName: 'PositronCursorWidget',
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: false,
-      enableScreenshots: false
+      widgetName: 'PositronCursorWidget'
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    this.verbose() && console.log('👆 PositronCursor: Initializing AI presence cursor...');
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
 
-    this.subscribeToEvents();
+    // Subscribe to events
+    this.createMountEffect(() => {
+      const unsubs = [
+        Events.subscribe(POSITRON_CURSOR_EVENTS.FOCUS, (data: PositronFocusEvent) => {
+          this.handleFocus(data);
+        }),
+        Events.subscribe(POSITRON_CURSOR_EVENTS.UNFOCUS, () => {
+          this.handleUnfocus();
+        }),
+        Events.subscribe(POSITRON_CURSOR_EVENTS.DRAW, (data: PositronDrawEvent) => {
+          this.handleDraw(data);
+        }),
+        Events.subscribe(POSITRON_CURSOR_EVENTS.CLEAR, () => {
+          this.clearOverlay();
+        })
+      ];
+      return () => unsubs.forEach(u => u());
+    });
 
-    this.verbose() && console.log('✅ PositronCursor: Ready');
+    // Get canvas reference after render
+    this.overlayCanvas = this.shadowRoot?.querySelector('.overlay-canvas') as HTMLCanvasElement;
   }
 
-  private subscribeToEvents(): void {
-    this._eventUnsubscribers.push(
-      Events.subscribe(POSITRON_CURSOR_EVENTS.FOCUS, (data: PositronFocusEvent) => {
-        this.handleFocus(data);
-      }),
-      Events.subscribe(POSITRON_CURSOR_EVENTS.UNFOCUS, () => {
-        this.handleUnfocus();
-      }),
-      Events.subscribe(POSITRON_CURSOR_EVENTS.DRAW, (data: PositronDrawEvent) => {
-        this.handleDraw(data);
-      }),
-      Events.subscribe(POSITRON_CURSOR_EVENTS.CLEAR, () => {
-        this.clearOverlay();
-      })
-    );
+  // === Render ===
+
+  protected override renderContent(): TemplateResult {
+    const cursorClasses = [
+      'cursor',
+      this.isVisible ? 'visible' : 'idle',
+      this.currentMode
+    ].filter(Boolean).join(' ');
+
+    return html`
+      <canvas class="overlay-canvas"></canvas>
+
+      <div class="${cursorClasses}"
+           style="left: ${this.cursorX}px; top: ${this.cursorY}px; --cursor-color: ${this.cursorColor};">
+        <div class="cursor-ring"></div>
+        <div class="cursor-tooltip" style="display: ${this.showTooltip ? 'block' : 'none'}">
+          ${this.tooltipText}
+        </div>
+      </div>
+    `;
   }
+
+  // === Event Handlers ===
 
   private handleFocus(data: PositronFocusEvent): void {
     const { target, mode = 'pointing', color = '#00d4ff', duration = 0, personaName, message } = data;
@@ -189,39 +325,34 @@ export class PositronCursorWidget extends BaseWidget {
   }
 
   private showCursor(x: number, y: number, color: string, message?: string): void {
-    if (!this.cursorElement) {
-      console.warn('👆 PositronCursor: cursorElement is null - renderWidget may not have been called');
-      return;
-    }
-
-    this.verbose() && console.log(`👆 PositronCursor: Showing cursor at (${x}, ${y}) with color ${color}`);
-    this.cursorElement.style.left = `${x}px`;
-    this.cursorElement.style.top = `${y}px`;
-    this.cursorElement.style.setProperty('--cursor-color', color);
-    this.cursorElement.classList.add('visible');
-    this.cursorElement.classList.remove('idle');
-    this.cursorElement.classList.add(this.currentMode);
+    // Update reactive state - triggers re-render
+    this.cursorX = x;
+    this.cursorY = y;
+    this.cursorColor = color;
+    this.isVisible = true;
 
     // Update tooltip
-    const tooltip = this.cursorElement.querySelector('.cursor-tooltip') as HTMLElement;
-    if (tooltip) {
-      if (message || this.currentPersona) {
-        tooltip.textContent = message || `${this.currentPersona} is looking here`;
-        tooltip.style.display = 'block';
-      } else {
-        tooltip.style.display = 'none';
-      }
+    if (message || this.currentPersona) {
+      this.tooltipText = message || `${this.currentPersona} is looking here`;
+      this.showTooltip = true;
+    } else {
+      this.showTooltip = false;
     }
+
+    this.requestUpdate();
   }
 
   private hideCursor(): void {
-    if (!this.cursorElement) return;
-
-    this.cursorElement.classList.remove('visible', 'pointing', 'highlighting', 'drawing');
-    this.cursorElement.classList.add('idle');
+    this.isVisible = false;
+    this.currentMode = 'idle';
+    this.requestUpdate();
   }
 
   private drawShape(shape: string, pos: { x: number; y: number; width?: number; height?: number }, color: string): void {
+    // Get canvas reference if needed
+    if (!this.overlayCanvas) {
+      this.overlayCanvas = this.shadowRoot?.querySelector('.overlay-canvas') as HTMLCanvasElement;
+    }
     if (!this.overlayCanvas) return;
 
     const ctx = this.overlayCanvas.getContext('2d');
@@ -280,6 +411,10 @@ export class PositronCursorWidget extends BaseWidget {
   }
 
   private clearOverlay(): void {
+    // Get canvas reference if needed
+    if (!this.overlayCanvas) {
+      this.overlayCanvas = this.shadowRoot?.querySelector('.overlay-canvas') as HTMLCanvasElement;
+    }
     if (!this.overlayCanvas) return;
 
     const ctx = this.overlayCanvas.getContext('2d');
@@ -287,124 +422,6 @@ export class PositronCursorWidget extends BaseWidget {
       ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
     }
   }
-
-  protected async renderWidget(): Promise<void> {
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host {
-          position: fixed;
-          top: 0;
-          left: 0;
-          width: 100vw;
-          height: 100vh;
-          pointer-events: none;
-          z-index: 10000;
-        }
-
-        .overlay-canvas {
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-        }
-
-        .cursor {
-          position: absolute;
-          width: 40px;
-          height: 40px;
-          transform: translate(-50%, -50%);
-          opacity: 0;
-          transition: opacity 0.2s ease, transform 0.3s ease;
-        }
-
-        .cursor.visible {
-          opacity: 1;
-        }
-
-        .cursor.idle {
-          opacity: 0;
-        }
-
-        /* Cursor visual - glowing ring like the emoter orb */
-        .cursor-ring {
-          width: 100%;
-          height: 100%;
-          border-radius: 50%;
-          border: 3px solid var(--cursor-color, #00d4ff);
-          background: radial-gradient(circle,
-            color-mix(in srgb, var(--cursor-color, #00d4ff) 20%, transparent) 0%,
-            transparent 70%
-          );
-          box-shadow: 0 0 15px var(--cursor-color, #00d4ff),
-                      0 0 30px var(--cursor-color, #00d4ff),
-                      0 0 45px color-mix(in srgb, var(--cursor-color, #00d4ff) 50%, transparent);
-          animation: pulse-cursor 1.5s ease-in-out infinite;
-        }
-
-        .cursor.pointing .cursor-ring {
-          animation: pulse-point 0.8s ease-in-out infinite;
-        }
-
-        .cursor.highlighting .cursor-ring {
-          width: 48px;
-          height: 48px;
-          animation: pulse-highlight 1s ease-in-out infinite;
-        }
-
-        @keyframes pulse-cursor {
-          0%, 100% { opacity: 0.8; transform: scale(1); }
-          50% { opacity: 1; transform: scale(1.1); }
-        }
-
-        @keyframes pulse-point {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.7; transform: scale(0.9); }
-        }
-
-        @keyframes pulse-highlight {
-          0%, 100% { opacity: 0.9; transform: scale(1); }
-          50% { opacity: 1; transform: scale(1.15); }
-        }
-
-        /* Tooltip */
-        .cursor-tooltip {
-          position: absolute;
-          top: 100%;
-          left: 50%;
-          transform: translateX(-50%);
-          margin-top: 8px;
-          padding: 4px 8px;
-          background: rgba(0, 0, 0, 0.85);
-          border: 1px solid var(--cursor-color, #00d4ff);
-          border-radius: 4px;
-          color: white;
-          font-size: 11px;
-          white-space: nowrap;
-          display: none;
-        }
-      </style>
-
-      <canvas class="overlay-canvas"></canvas>
-
-      <div class="cursor idle">
-        <div class="cursor-ring"></div>
-        <div class="cursor-tooltip"></div>
-      </div>
-    `;
-
-    this.cursorElement = this.shadowRoot.querySelector('.cursor');
-    this.overlayCanvas = this.shadowRoot.querySelector('.overlay-canvas');
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    for (const unsub of this._eventUnsubscribers) {
-      try { unsub(); } catch { /* ignore */ }
-    }
-    this._eventUnsubscribers = [];
-
-    if (this.hideTimeout) {
-      clearTimeout(this.hideTimeout);
-    }
-  }
 }
+
+// Registration handled by centralized BROWSER_WIDGETS registry
