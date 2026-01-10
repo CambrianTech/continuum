@@ -234,38 +234,32 @@ export class ThemeWidget extends BaseWidget {
   }
 
   /**
-   * Load all CSS files from a theme directory using BaseWidget's existing asset delivery
+   * Load all CSS files from a theme directory in parallel
    */
   private async loadDirectoryStyles(directoryName: string): Promise<string> {
     try {
-      // Get list of files to load for this directory
       const cssFiles = await this.getDirectoryFiles(directoryName);
-      let combinedStyles = '';
 
-      for (const fileName of cssFiles) {
-        try {
-          // Use BaseWidget's protected executeCommand method - same as loadResource does internally
-          const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
-          this.verbose() && console.log(`🎨 ThemeWidget: Loading ${filePath} via BaseWidget executeCommand`);
-
-          const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
-            filepath: filePath
-          });
-
-          // Handle nested JTAG response structure (same as BaseWidget loadResource)
-          const fileData = (result as FileLoadResult & { commandResult?: FileLoadResult }).commandResult ?? result;
-          if (result.success && fileData.success && fileData.content) {
-            combinedStyles += `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
-            this.verbose() && console.log(`✅ ThemeWidget: Loaded ${directoryName}/${fileName} (${fileData.bytesRead} bytes)`);
-          } else {
-            this.verbose() && console.log(`⚠️ ThemeWidget: ${directoryName}/${fileName} not found - skipping`);
+      // Load all files in parallel
+      const results = await Promise.all(
+        cssFiles.map(async (fileName) => {
+          try {
+            const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
+            const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+              filepath: filePath
+            });
+            const fileData = (result as FileLoadResult & { commandResult?: FileLoadResult }).commandResult ?? result;
+            if (result.success && fileData.success && fileData.content) {
+              return `\n/* === ${directoryName}/${fileName} === */\n${fileData.content}\n`;
+            }
+          } catch {
+            // Silent - file not found
           }
-        } catch (error) {
-          console.warn(`⚠️ ThemeWidget: Could not load ${directoryName}/${fileName}:`, error);
-        }
-      }
+          return '';
+        })
+      );
 
-      return combinedStyles;
+      return results.join('');
     } catch (error) {
       console.error(`❌ ThemeWidget: Failed to load directory styles for '${directoryName}':`, error);
       return '';

@@ -5,5 +5,5 @@
  */
 
 export const styles = `
-.sidebar-widgets{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:var(--spacing-md, 12px);padding:var(--spacing-md, 12px);overflow-y:auto;overflow-x:hidden}.widget-slot--persistent{flex-shrink:0}.widget-slot--dynamic{flex:1;min-height:100px;display:flex;flex-direction:column;overflow:hidden}.widget-slot--dynamic>*{flex:1;min-height:0}
+.sidebar-widgets{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:var(--spacing-md, 12px);padding:var(--spacing-md, 12px);overflow-y:auto;overflow-x:hidden}.widget-slot--persistent{flex-shrink:0}.widget-slot--dynamic{flex:1;display:flex;flex-direction:column;overflow:hidden}.widget-slot--dynamic>*{flex:1;min-height:0}.widget-slot--persistent:last-child{flex:1;display:flex;flex-direction:column;overflow:hidden}.widget-slot--persistent:last-child>*{flex:1;min-height:0}
 `;

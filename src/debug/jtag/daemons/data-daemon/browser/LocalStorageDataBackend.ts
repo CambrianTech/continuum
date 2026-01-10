@@ -109,7 +109,7 @@ export class LocalStorageDataBackend {
       asyncStorage.setItem(key, JSON.stringify(entityData));
       this.updateIndex(collection, entity.id, 'create');
 
-      console.log(`✅ LocalStorageDataBackend: Created ${collection}:${entity.id}`);
+      // Silent - no logging in hot path
       return { success: true, id: entity.id };
 
     } catch (error) {
@@ -178,7 +178,7 @@ export class LocalStorageDataBackend {
       // Non-blocking write via asyncStorage
       asyncStorage.setItem(key, JSON.stringify(entityData));
 
-      console.log(`✅ LocalStorageDataBackend: Updated ${collection}:${id}`);
+      // Silent - no logging in hot path
       return { success: true };
 
     } catch (error) {
@@ -206,7 +206,7 @@ export class LocalStorageDataBackend {
       asyncStorage.removeItem(key);
       this.updateIndex(collection, id, 'delete');
 
-      console.log(`✅ LocalStorageDataBackend: Deleted ${collection}:${id}`);
+      // Silent - no logging in hot path
       return { success: true };
 
     } catch (error) {
@@ -274,7 +274,7 @@ export class LocalStorageDataBackend {
       // Clear collection from index
       this.clearCollectionFromIndex(collection);
 
-      console.log(`✅ LocalStorageDataBackend: Cleared collection ${collection} (${keys.length} entities)`);
+      // Silent - no logging in hot path
       return { success: true };
 
     } catch (error) {

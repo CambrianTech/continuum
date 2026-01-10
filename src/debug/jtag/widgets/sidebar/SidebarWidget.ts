@@ -153,6 +153,8 @@ export class SidebarWidget extends ReactiveWidget {
 
   protected override renderContent(): TemplateResult {
     // Minimal header: just floating collapse button
+    const dynamicWidget = this.renderDynamicWidget();
+
     return html`
       <button class="collapse-btn floating" title="Collapse panel" @click=${this.handleCollapse}>
         ${this.collapseChar}
@@ -160,9 +162,7 @@ export class SidebarWidget extends ReactiveWidget {
       <div class="panel-content full-height">
         <div class="sidebar-widgets">
           ${this.renderGlobalWidgetsBefore()}
-          <div class="widget-slot widget-slot--dynamic">
-            ${this.renderDynamicWidget()}
-          </div>
+          ${dynamicWidget ? html`<div class="widget-slot widget-slot--dynamic">${dynamicWidget}</div>` : ''}
           ${this.renderGlobalWidgetsAfter()}
         </div>
       </div>
