@@ -25,7 +25,39 @@ Major overhaul of widget system to use Lit's reactive state properly, eliminate 
 
 ## Known Technical Debt (See WIDGET-TECHNICAL-DEBT.md)
 
-### CRITICAL - Causes 30+ Second Load Times
+### CRITICAL - Daemon Architecture (Root Cause of 30+ Second Delays)
+
+The daemon system uses synchronous initialization that blocks everything:
+
+```typescript
+// DaemonBase.ts - THE PROBLEM
+async initializeDaemon(): Promise<void> {
+  await this.initialize();  // BLOCKS - 18 daemons × avg 500ms = 9+ seconds
+}
+```
+
+**Required Fix: OS Kernel-Style Architecture**
+
+| Current (Web Dev) | Fix (OS/RTOS) |
+|-------------------|---------------|
+| `await this.initialize()` | Non-blocking `start()` with state machine |
+| Boolean `isReady` | Process states: `created→starting→ready→failed→stopped` |
+| `setTimeout(check, 100)` | Event-driven signals via EventEmitter |
+| Sequential DB queries | Return immediately, resolve async in background |
+
+**Files to Refactor:**
+- `daemons/command-daemon/shared/DaemonBase.ts` - Add lifecycle states, message queuing
+- `system/core/system/shared/JTAGSystem.ts` - Non-blocking daemon orchestration
+- `daemons/session-daemon/server/SessionDaemonServer.ts` - Fast session creation
+- `commands/state/get/server/StateGetServerCommand.ts` - State caching
+
+**Rust Migration Path:** Daemons can be migrated to Rust with TypeScript wrappers maintaining the same interface.
+
+---
+
+### Widget Technical Debt
+
+#### CRITICAL - Causes 30+ Second Load Times
 - [ ] MainWidget setTimeout hacks
 - [ ] BaseWidget polling loop (`setTimeout(checkReady, 100)`)
 

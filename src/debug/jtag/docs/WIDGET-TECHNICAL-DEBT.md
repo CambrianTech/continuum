@@ -1,8 +1,58 @@
-# Widget Technical Debt - MUST FIX
+# Technical Debt - MUST FIX
 
 **Branch:** `feature/widget-overhaul-vite`
 **Date:** 2026-01-10
 **Status:** IN PROGRESS
+
+---
+
+## CRITICAL: Daemon Architecture (Root Cause of 30+ Second Delays)
+
+The synchronous daemon initialization pattern is the root cause of startup delays.
+
+### The Problem
+
+```typescript
+// DaemonBase.ts:64-70
+async initializeDaemon(): Promise<void> {
+  this.router.registerSubscriber(this.subpath, this);
+  await this.initialize();  // <-- BLOCKS EVERYTHING
+}
+```
+
+Every daemon waits for the previous to fully initialize. 18 daemons × avg 500ms = 9+ seconds minimum.
+
+### The Fix: OS Kernel-Style Architecture
+
+Daemons should behave like systemd units, not Express middleware.
+
+| OS Concept | Current (Bad) | Fix |
+|------------|---------------|-----|
+| Process States | `isReady: boolean` | `created→starting→ready→failed→stopped` |
+| Blocking | `await this.initialize()` | `start()` returns immediately |
+| Polling | `setTimeout(check, 100)` | Event-driven via EventEmitter |
+| Queuing | None - fails if not ready | Queue messages while starting |
+| Dependencies | Timing guesses | Explicit `dependencies: string[]` |
+
+### Files to Modify
+
+| File | Change | Priority |
+|------|--------|----------|
+| `daemons/command-daemon/shared/DaemonBase.ts` | Lifecycle states, message queue | CRITICAL |
+| `system/core/system/shared/JTAGSystem.ts` | Non-blocking orchestration | CRITICAL |
+| `daemons/session-daemon/server/SessionDaemonServer.ts` | Fast session creation | HIGH |
+| `commands/state/get/server/StateGetServerCommand.ts` | State caching | HIGH |
+
+### Rust Migration Path
+
+Daemons can be migrated to Rust with TypeScript wrappers:
+- TypeScript maintains interface compatibility
+- Rust handles heavy lifting via Unix socket
+- Zero-copy for performance-critical paths
+
+---
+
+## Widget-Specific Issues
 
 ## Critical Issues Causing Performance Problems
 
@@ -12,7 +62,7 @@ Using `innerHTML =` destroys DOM state, breaks focus, causes re-renders, and byp
 
 | File | Count | Priority |
 |------|-------|----------|
-| `ChatWidget.ts` | 2 | HIGH |
+| `ChatWidget.ts` | 1* | DONE (partial) |
 | `AIStatusIndicator.ts` | 1 | HIGH |
 | `ChatWidgetBase.ts` | 1 | HIGH |
 | `ContinuumEmoterWidget.ts` | 2 | MEDIUM |
@@ -78,11 +128,13 @@ These widgets extend `BaseWidget` instead of `ReactiveWidget`, missing Lit's rea
 - [x] `ReactiveListWidget` - Base class with shouldAddEntity pattern
 - [x] `LocalStorageDataBackend` - Removed logging spam
 - [x] `ThemeWidget` - Parallel file loading
+- [x] `ChatWidget.ts` - Header uses targeted DOM updates, message static structure uses DOM APIs
+  - *Remaining: adapter content still uses innerHTML (adapters return HTML strings - separate refactor needed)
 
 ## Migration Priority Order
 
 1. **CRITICAL:** Fix MainWidget/BaseWidget timeouts (white screen issue)
-2. **HIGH:** ChatWidget innerHTML removal
+2. ~~**HIGH:** ChatWidget innerHTML removal~~ ✅ DONE (static structure, adapter content remains)
 3. **HIGH:** AIStatusIndicator innerHTML removal
 4. **MEDIUM:** Migrate remaining BaseWidget widgets
 5. **LOW:** Clean up animation timeouts

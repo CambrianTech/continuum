@@ -45,6 +45,19 @@ interface ChatSignalState {
   loadedMessageCount: number;
 }
 
+/**
+ * Data needed to render a member chip in the header
+ */
+interface MemberChipData {
+  personaId: UUID;
+  displayName: string;
+  role: string;
+  roleIcon: string;
+  statusEmoji: string;
+  hasError: boolean;
+  hasStatus: boolean;
+}
+
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLTextAreaElement;
 
@@ -319,26 +332,40 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}${postingClass}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
       messageElement.setAttribute('message-id', message.id);
-      messageElement.innerHTML = `
-        <div class="message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}">
-          <div class="message-header">
-            <span class="sender-name">${senderName}</span>
-            <span class="message-time">${new Date(message.timestamp).toLocaleString()}</span>
-          </div>
-          <div class="message-content">
-            ${contentHtml}
-          </div>
-        </div>
-      `;
+
+      // Build message structure with DOM APIs (no innerHTML for static structure)
+      const bubble = globalThis.document.createElement('div');
+      bubble.className = `message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}`;
+
+      const header = globalThis.document.createElement('div');
+      header.className = 'message-header';
+
+      const senderSpan = globalThis.document.createElement('span');
+      senderSpan.className = 'sender-name';
+      senderSpan.textContent = senderName;
+
+      const timeSpan = globalThis.document.createElement('span');
+      timeSpan.className = 'message-time';
+      timeSpan.textContent = new Date(message.timestamp).toLocaleString();
+
+      header.appendChild(senderSpan);
+      header.appendChild(timeSpan);
+
+      const contentDiv = globalThis.document.createElement('div');
+      contentDiv.className = 'message-content';
+      // Adapter content uses innerHTML - adapters return HTML strings
+      // TODO: Refactor adapters to return DOM elements for full innerHTML elimination
+      contentDiv.innerHTML = contentHtml;
+
+      bubble.appendChild(header);
+      bubble.appendChild(contentDiv);
+      messageElement.appendChild(bubble);
 
       // Initialize adapter content loading (e.g., image load handlers)
       if (adapter && adapter.handleContentLoading) {
-        const contentDiv = messageElement.querySelector('.message-content');
-        if (contentDiv) {
-          adapter.handleContentLoading(contentDiv as HTMLElement).catch((err) => {
-            console.error('Failed to handle content loading:', err);
-          });
-        }
+        adapter.handleContentLoading(contentDiv).catch((err) => {
+          console.error('Failed to handle content loading:', err);
+        });
       }
 
       return messageElement;
@@ -833,6 +860,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Setup error toggle handler
     this.setupErrorToggleHandler();
 
+    // Setup member click handlers (for initial HTML-rendered chips)
+    this.setupMemberClickHandlers();
+
     // Cache input element after DOM is rendered
     this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLTextAreaElement;
     this.setupMessageInputHandlers();
@@ -1060,6 +1090,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   /**
    * Update the header with current room and member information
    * Debounced to prevent rebuilding on every event
+   *
+   * REFACTORED: Uses targeted DOM updates instead of innerHTML replacement
+   * This preserves event handlers and is more efficient
    */
   private updateHeader(): void {
     // Clear any pending update
@@ -1069,17 +1102,217 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Schedule update for next frame
     this.headerUpdateTimeout = setTimeout(() => {
-      const headerElement = this.shadowRoot.querySelector('.entity-list-header');
-      if (headerElement) {
-        headerElement.innerHTML = this.renderHeader();
-        // Reattach handlers after header update
-        this.setupErrorToggleHandler();
-        this.setupMemberClickHandlers();
-      }
+      this.updateHeaderElements();
       // Update the compact status summary line
       this.updateStatusSummary();
       this.headerUpdateTimeout = undefined;
     }, 0) as unknown as number;
+  }
+
+  /**
+   * Targeted DOM updates for header elements
+   * Avoids innerHTML replacement - preserves handlers, more efficient
+   */
+  private updateHeaderElements(): void {
+    const headerElement = this.shadowRoot?.querySelector('.entity-list-header');
+    if (!headerElement) return;
+
+    // Update title text
+    const titleElement = headerElement.querySelector('.header-title');
+    if (titleElement) {
+      const headerText = this.currentRoom?.topic
+        || this.currentRoom?.description
+        || this.currentRoomName;
+      titleElement.textContent = headerText;
+    }
+
+    // Update message count
+    const countElement = headerElement.querySelector('.list-count');
+    if (countElement) {
+      countElement.textContent = String(this.getEntityCount());
+    }
+
+    // Update error toggle button
+    const errorToggle = headerElement.querySelector('#errorToggle') as HTMLButtonElement;
+    if (errorToggle) {
+      const errorCount = this.aiStatusIndicator.getErrorCount();
+      errorToggle.textContent = `Errors 🗑️${errorCount > 0 ? ` (${errorCount})` : ''}`;
+      errorToggle.title = `${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}`;
+    }
+
+    // Update members list (rebuild this section only)
+    const membersContainer = headerElement.querySelector('.header-members');
+    if (membersContainer) {
+      this.updateMembersList(membersContainer as HTMLElement);
+    }
+  }
+
+  /**
+   * Update members list with targeted DOM manipulation
+   * Creates/updates member chips without full innerHTML replacement
+   */
+  private updateMembersList(container: HTMLElement): void {
+    // Get or create the members-list div
+    let membersList = container.querySelector('.members-list') as HTMLElement;
+
+    if (!this.currentRoom || this.roomMembers.size === 0) {
+      // Show loading state - use DOM manipulation instead of innerHTML
+      if (!membersList) {
+        const existingContent = container.querySelector('.no-members');
+        if (!existingContent) {
+          container.textContent = ''; // Clear any existing content
+          const loadingSpan = document.createElement('span');
+          loadingSpan.className = 'no-members';
+          loadingSpan.textContent = 'Loading members...';
+          container.appendChild(loadingSpan);
+        }
+      }
+      return;
+    }
+
+    // Create members-list if it doesn't exist
+    if (!membersList) {
+      // Clear container using DOM methods
+      while (container.firstChild) {
+        container.removeChild(container.firstChild);
+      }
+      membersList = document.createElement('div');
+      membersList.className = 'members-list';
+      container.appendChild(membersList);
+    }
+
+    // Build a map of existing chips by persona ID for efficient updates
+    const existingChips = new Map<UUID, HTMLElement>();
+    membersList.querySelectorAll('.member-chip').forEach((chip) => {
+      const personaId = chip.getAttribute('data-persona-id') as UUID;
+      if (personaId) {
+        existingChips.set(personaId, chip as HTMLElement);
+      }
+    });
+
+    // Track which IDs we've processed (to remove stale ones)
+    const processedIds = new Set<UUID>();
+
+    // Update or create chips for each member
+    for (const user of this.roomMembers.values()) {
+      const data = this.buildMemberChipData(user);
+      processedIds.add(data.personaId);
+
+      let chip = existingChips.get(data.personaId);
+
+      if (chip) {
+        this.updateMemberChip(chip, data);
+      } else {
+        chip = this.createMemberChip(data);
+        membersList.appendChild(chip);
+      }
+    }
+
+    // Remove chips for members no longer in the room
+    for (const [personaId, chip] of existingChips) {
+      if (!processedIds.has(personaId)) {
+        chip.remove();
+      }
+    }
+  }
+
+  /**
+   * Build MemberChipData from a UserEntity
+   */
+  private buildMemberChipData(user: UserEntity): MemberChipData {
+    const role = this.getMemberRole(user.id);
+    const statusEmoji = this.aiStatusIndicator.getStatusEmoji(user.id) || '';
+
+    return {
+      personaId: user.id,
+      displayName: user.displayName || 'Unknown',
+      role,
+      roleIcon: role === 'owner' ? '👑' : role === 'admin' ? '⭐' : '',
+      statusEmoji,
+      hasError: statusEmoji === '❌' || statusEmoji === '💸' || statusEmoji === '⏳',
+      hasStatus: statusEmoji !== ''
+    };
+  }
+
+  /**
+   * Create a member chip element from MemberChipData
+   */
+  private createMemberChip(data: MemberChipData): HTMLElement {
+    const chip = document.createElement('div');
+    chip.className = `member-chip${data.hasError ? ' clickable-error' : data.hasStatus ? ' clickable-status' : ''}`;
+    chip.setAttribute('data-persona-id', data.personaId);
+    chip.setAttribute('data-has-error', String(data.hasError));
+    chip.setAttribute('data-has-status', String(data.hasStatus));
+
+    const clickHint = data.hasError ? ' - Click to view error' : data.hasStatus ? ' - Click to view status' : '';
+    chip.title = `${data.displayName} (${data.role})${clickHint}`;
+
+    // Build chip content
+    if (data.roleIcon) {
+      chip.appendChild(document.createTextNode(data.roleIcon));
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'member-name';
+    nameSpan.textContent = data.displayName;
+    chip.appendChild(nameSpan);
+
+    if (data.statusEmoji) {
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'member-status';
+      statusSpan.textContent = data.statusEmoji;
+      chip.appendChild(statusSpan);
+    }
+
+    // Add click handler for chips with status
+    if (data.hasStatus) {
+      chip.addEventListener('click', () => {
+        verbose() && console.log(`🔍 ChatWidget: Clicked persona ${data.personaId} (error=${data.hasError})`);
+        this.toggleErrorPanel(true);
+
+        if (this.aiStatusContainer) {
+          const statusElement = this.aiStatusContainer.querySelector(`[data-persona-id="${data.personaId}"]`);
+          if (statusElement) {
+            statusElement.classList.add('flash-highlight');
+            setTimeout(() => statusElement.classList.remove('flash-highlight'), 1000);
+          }
+        }
+      });
+    }
+
+    return chip;
+  }
+
+  /**
+   * Update an existing member chip element from MemberChipData
+   */
+  private updateMemberChip(chip: HTMLElement, data: MemberChipData): void {
+    // Update classes
+    chip.className = `member-chip${data.hasError ? ' clickable-error' : data.hasStatus ? ' clickable-status' : ''}`;
+    chip.setAttribute('data-has-error', String(data.hasError));
+    chip.setAttribute('data-has-status', String(data.hasStatus));
+
+    const clickHint = data.hasError ? ' - Click to view error' : data.hasStatus ? ' - Click to view status' : '';
+    chip.title = `${data.displayName} (${data.role})${clickHint}`;
+
+    // Update name
+    const nameSpan = chip.querySelector('.member-name');
+    if (nameSpan) {
+      nameSpan.textContent = data.displayName;
+    }
+
+    // Update or create status span
+    let statusSpan = chip.querySelector('.member-status') as HTMLElement;
+    if (data.statusEmoji) {
+      if (!statusSpan) {
+        statusSpan = document.createElement('span');
+        statusSpan.className = 'member-status';
+        chip.appendChild(statusSpan);
+      }
+      statusSpan.textContent = data.statusEmoji;
+    } else if (statusSpan) {
+      statusSpan.remove();
+    }
   }
 
   /**
