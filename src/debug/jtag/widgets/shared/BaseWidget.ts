@@ -342,41 +342,60 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-  async connectedCallback(): Promise<void> {
+  connectedCallback(): void {
     // GUARD: Prevent double-initialization (causes subscription leaks)
     if (this.state.isInitialized) {
       return;
     }
 
+    // REACT PATTERN: Render loading state IMMEDIATELY, don't block
+    this.renderLoadingState();
+
+    // Fire async initialization WITHOUT blocking render
+    this.initializeAsync();
+  }
+
+  /**
+   * Render loading state immediately - no blocking
+   */
+  private renderLoadingState(): void {
+    if (this.shadowRoot) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          .widget-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-secondary, #888);
+            font-size: 14px;
+          }
+        </style>
+        <div class="widget-loading">Loading...</div>
+      `;
+    }
+  }
+
+  /**
+   * Async initialization - runs in background after loading state renders
+   */
+  private async initializeAsync(): Promise<void> {
     try {
-      // Reduce log spam - only log errors
-      // console.log(`🎨 ${this.config.widgetName}: BaseWidget initialization starting...`);
-
-      // 1. Connect to daemon systems (abstracted) WAS DEAD CODE
-      //await this.initializeDaemonConnections();
-
-      // 2. Load user context (currentUser and userState)
+      // 1. Load user context (currentUser and userState)
       await this.loadUserContext();
 
-      // 3. Restore persisted state (abstracted) - removed unused persistence system
-
-      // 4. Load external resources (template & styles)
+      // 2. Load external resources (template & styles)
       await this.loadResources();
 
-      // 5. Let subclass initialize its specific logic
+      // 3. Let subclass initialize its specific logic
       await this.onWidgetInitialize();
 
-      // 6. Render UI (subclass-specific but with base support)
+      // 4. Render UI (subclass-specific but with base support)
       await this.renderWidget();
-
-      // 7. Setup event coordination (abstracted) 3600000
-      //await this.initializeEventSystem();
 
       this.state.isInitialized = true;
       this.state.isConnected = true;
 
-      // console.log(`✅ ${this.config.widgetName}: BaseWidget initialization complete`);
-      
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Initialization failed:`, error);
       this.handleInitializationError(error);
