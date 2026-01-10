@@ -153,7 +153,8 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     }
 
     this.activeFilters = newFilters;
-    this.scroller?.refresh();
+    this.requestUpdate();  // Re-render header with new active states
+    this.scroller?.refresh();  // Re-filter the list
   }
 
   // === MAIN RENDER ===

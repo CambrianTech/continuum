@@ -139,14 +139,15 @@
   }
 
   &.active {
-    background: rgba(0, 180, 200, 0.15);
-    border-color: rgba(0, 220, 240, 0.5);
+    background: rgba(0, 180, 200, 0.2);
+    border-color: rgba(0, 220, 240, 0.6);
     color: rgba(0, 255, 220, 1);
-    box-shadow: 0 0 6px rgba(0, 200, 220, 0.2);
+    box-shadow: 0 0 8px rgba(0, 200, 220, 0.3);
+    padding: 0 8px;
 
     .chip-label {
-      max-width: 50px;
-      opacity: 0.8;
+      max-width: 60px;
+      opacity: 1;
       margin-left: 4px;
     }
   }
