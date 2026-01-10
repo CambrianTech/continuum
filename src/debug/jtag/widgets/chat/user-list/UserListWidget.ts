@@ -77,11 +77,14 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
   // === HEADER with filter chips ===
   protected override renderHeader(): TemplateResult {
-    const filters = [
+    const typeFilters = [
       { id: 'all', label: 'All', icon: '◉' },
       { id: 'human', label: 'Human', icon: '👤' },
       { id: 'persona', label: 'Persona', icon: '⭐' },
-      { id: 'agent', label: 'Agent', icon: '🤖' },
+      { id: 'agent', label: 'Agent', icon: '🤖' }
+    ];
+
+    const statusFilters = [
       { id: 'online', label: 'Online', icon: '●' }
     ];
 
@@ -91,16 +94,31 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
         <span class="user-count">${this.entityCount}</span>
       </div>
       <div class="filter-chips">
-        ${filters.map(f => html`
-          <button
-            class="filter-chip ${this.activeFilters.has(f.id) ? 'active' : ''}"
-            data-filter="${f.id}"
-            @click=${() => this.toggleFilter(f.id)}
-            title="${f.label}"
-          >
-            <span class="chip-icon">${f.icon}</span>
-          </button>
-        `)}
+        <div class="filter-group type-filters">
+          ${typeFilters.map(f => html`
+            <button
+              class="filter-chip ${this.activeFilters.has(f.id) ? 'active' : ''}"
+              data-filter="${f.id}"
+              @click=${() => this.toggleFilter(f.id)}
+            >
+              <span class="chip-icon">${f.icon}</span>
+              <span class="chip-label">${f.label}</span>
+            </button>
+          `)}
+        </div>
+        <span class="filter-divider"></span>
+        <div class="filter-group status-filters">
+          ${statusFilters.map(f => html`
+            <button
+              class="filter-chip ${this.activeFilters.has(f.id) ? 'active' : ''}"
+              data-filter="${f.id}"
+              @click=${() => this.toggleFilter(f.id)}
+            >
+              <span class="chip-icon">${f.icon}</span>
+              <span class="chip-label">${f.label}</span>
+            </button>
+          `)}
+        </div>
       </div>
     `;
   }

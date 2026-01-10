@@ -72,50 +72,99 @@
 // Filter Chips
 .filter-chips {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 3px;
   padding: 6px var(--spacing-md);
   flex-shrink: 0;
-  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  gap: 3px;
+}
+
+.filter-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(0, 180, 200, 0.2);
+  margin: 0 4px;
 }
 
 .filter-chip {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 24px;
-  padding: 0;
+  gap: 0;
+  height: 22px;
+  padding: 0 6px;
   background: rgba(0, 40, 60, 0.6);
-  border: 1px solid rgba(0, 180, 200, 0.2);
-  border-radius: 4px;
-  color: rgba(0, 200, 220, 0.6);
+  border: 1px solid rgba(0, 180, 200, 0.15);
+  border-radius: 3px;
+  color: rgba(0, 200, 220, 0.5);
   cursor: pointer;
-  transition: all 0.15s ease;
-  font-size: 12px;
+  transition: all 0.2s ease;
+  font-size: 11px;
+  overflow: hidden;
+
+  .chip-icon {
+    font-size: 10px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .chip-label {
+    max-width: 0;
+    opacity: 0;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    transition: max-width 0.2s ease, opacity 0.2s ease, margin 0.2s ease;
+    margin-left: 0;
+  }
 
   &:hover {
     background: rgba(0, 60, 80, 0.8);
     border-color: rgba(0, 200, 220, 0.4);
     color: rgba(0, 220, 240, 0.9);
+    padding: 0 8px;
+
+    .chip-label {
+      max-width: 50px;
+      opacity: 1;
+      margin-left: 4px;
+    }
   }
 
   &.active {
-    background: rgba(0, 180, 200, 0.2);
-    border-color: rgba(0, 220, 240, 0.6);
+    background: rgba(0, 180, 200, 0.15);
+    border-color: rgba(0, 220, 240, 0.5);
     color: rgba(0, 255, 220, 1);
-    box-shadow: 0 0 8px rgba(0, 200, 220, 0.3);
+    box-shadow: 0 0 6px rgba(0, 200, 220, 0.2);
+
+    .chip-label {
+      max-width: 50px;
+      opacity: 0.8;
+      margin-left: 4px;
+    }
   }
 
-  .chip-icon {
-    font-size: 11px;
-    line-height: 1;
-  }
+  // Online status - green theme
+  &[data-filter="online"] {
+    .chip-icon {
+      font-size: 8px;
+    }
 
-  // Online dot specific color
-  &[data-filter="online"].active {
-    color: #10b981;
-    border-color: rgba(16, 185, 129, 0.6);
-    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
+    &:hover, &.active {
+      color: #10b981;
+      border-color: rgba(16, 185, 129, 0.5);
+    }
+
+    &.active {
+      box-shadow: 0 0 6px rgba(16, 185, 129, 0.25);
+    }
   }
 }
 
