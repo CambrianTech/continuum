@@ -56,7 +56,12 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
 
   // === OPTIONAL CONFIGURATION ===
 
+  /** Database-level filter (passed to data/list command) */
   protected get loadFilter(): Record<string, unknown> { return {}; }
+
+  /** Client-side filter - override to filter loaded items (e.g., by tags) */
+  protected shouldAddEntity(_item: T): boolean { return true; }
+
   protected get orderBy(): Array<{ field: string; direction: 'asc' | 'desc' }> {
     return [{ field: 'name', direction: 'asc' }];
   }
@@ -141,7 +146,9 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
       if (!result?.success) {
         throw new Error(`Failed to load ${this.collection}: ${result?.error ?? 'Unknown error'}`);
       }
-      return { items: result.items ?? [], hasMore: false, nextCursor: undefined };
+      // Apply client-side filter via shouldAddEntity
+      const items = (result.items ?? []).filter(item => this.shouldAddEntity(item));
+      return { items, hasMore: false, nextCursor: undefined };
     };
   }
 

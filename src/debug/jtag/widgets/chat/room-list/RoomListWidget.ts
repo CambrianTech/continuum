@@ -74,8 +74,15 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   }
 
   // === FILTERING ===
+
+  /** Filter out system rooms and DMs from main room list */
   protected override shouldAddEntity(room: RoomEntity): boolean {
-    return !(room.tags ?? []).includes('system');
+    // Hide system rooms (settings, help, theme, canvas sidebars)
+    if ((room.tags ?? []).includes('system')) return false;
+    // Hide DM/private rooms
+    if (room.type === 'direct') return false;
+    if ((room.tags ?? []).includes('dm')) return false;
+    return true;
   }
 
   // === LIFECYCLE ===
@@ -103,11 +110,22 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
 
     if (changedProperties.has('currentRoomId')) {
       // Scroll selected room into view with smooth animation
+      // Use multiple rAF to ensure DOM is fully updated
       requestAnimationFrame(() => {
-        const activeItem = this.shadowRoot?.querySelector('.room-item.active') as HTMLElement;
-        if (activeItem) {
-          activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        }
+        requestAnimationFrame(() => {
+          const container = this.shadowRoot?.querySelector('.entity-list-body') as HTMLElement;
+          const activeItem = this.shadowRoot?.querySelector('.room-item.active') as HTMLElement;
+          if (container && activeItem) {
+            // Scroll item into view within the container
+            const containerRect = container.getBoundingClientRect();
+            const itemRect = activeItem.getBoundingClientRect();
+
+            // Check if item is outside visible area
+            if (itemRect.top < containerRect.top || itemRect.bottom > containerRect.bottom) {
+              activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+          }
+        });
       });
     }
   }
