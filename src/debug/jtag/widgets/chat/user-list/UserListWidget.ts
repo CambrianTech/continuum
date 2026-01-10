@@ -444,29 +444,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
     verbose() && console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
 
-    // OPTIMISTIC: Switch view IMMEDIATELY before server confirms
-    // Import contentState/pageState at top of file for this
-    const { contentState } = await import('../../../system/state/ContentStateService');
-    const { pageState } = await import('../../../system/state/PageStateService');
-
-    // Check for existing tab
-    const existingTab = contentState.findItem('profile', entityId);
-    if (existingTab) {
-      contentState.setCurrent(existingTab.id);
-      pageState.setContent('profile', entityId, undefined);
-      // View switch happens via state change listeners
-    } else {
-      // Create optimistic tab
-      contentState.addItem({
-        type: 'profile' as any,
-        entityId,
-        title,
-        priority: 'normal' as any
-      }, true);
-      pageState.setContent('profile', entityId, undefined);
-    }
-
-    // BACKGROUND: Persist to server (fire-and-forget)
+    // Server handles tab creation via content:opened event
     const userId = this.currentUser?.id;
     if (userId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {

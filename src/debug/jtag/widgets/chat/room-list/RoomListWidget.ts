@@ -16,7 +16,6 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../system/core/shared/Commands';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { pageState } from '../../../system/state/PageStateService';
-import { contentState } from '../../../system/state/ContentStateService';
 
 import { styles as externalStyles } from './room-list-widget.styles';
 
@@ -137,37 +136,22 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     if (this.currentRoomId === roomId) return;
 
     this.currentRoomId = roomId;
-    const title = room.displayName || room.name;
 
-    // OPTIMISTIC: Create/switch tab IMMEDIATELY
-    const existingTab = contentState.findItem('chat', roomId);
-    if (existingTab) {
-      contentState.setCurrent(existingTab.id);
-    } else {
-      contentState.addItem({
-        type: 'chat' as any,
-        entityId: roomId,
-        uniqueId: room.uniqueId || room.name,
-        title,
-        priority: 'normal' as any
-      }, true);
-    }
-
-    // Set pageState - ChatWidget subscribes to this
+    // Set pageState - ChatWidget subscribes to this (single source of truth)
     pageState.setContent('chat', roomId, {
       id: roomId,
       uniqueId: room.uniqueId || room.name || roomId,
-      displayName: title
+      displayName: room.displayName || room.name
     });
 
-    // BACKGROUND: Persist to server (fire-and-forget)
+    // Persist to user state - server handles tab creation via content:opened event
     const userId = this.currentUser?.id;
     if (userId) {
       Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
         userId,
         contentType: 'chat',
         entityId: roomId,
-        title,
+        title: room.displayName || room.name,
         subtitle: room.topic,
         setAsCurrent: true
       }).catch(err => console.error('Failed to persist room open:', err));
