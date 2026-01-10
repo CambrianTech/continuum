@@ -10,12 +10,11 @@ import {
   type TemplateResult,
   type CSSResultGroup
 } from '../../shared/ReactiveListWidget';
-import type { ContentOpenParams, ContentOpenResult } from '../../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { Commands } from '../../../system/core/shared/Commands';
 import { DEFAULT_ROOMS } from '../../../system/data/domains/DefaultEntities';
 import { pageState } from '../../../system/state/PageStateService';
+import { ContentService } from '../../../system/state/ContentService';
 
 import { styles as externalStyles } from './room-list-widget.styles';
 
@@ -141,25 +140,17 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
 
     this.currentRoomId = roomId;
 
-    // Set pageState - ChatWidget subscribes to this (single source of truth)
-    pageState.setContent('chat', roomId, {
-      id: roomId,
-      uniqueId: room.uniqueId || room.name || roomId,
-      displayName: room.displayName || room.name
-    });
-
-    // Persist to user state - server handles tab creation via content:opened event
-    const userId = this.currentUser?.id;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId,
-        contentType: 'chat',
-        entityId: roomId,
-        title: room.displayName || room.name,
-        subtitle: room.topic,
-        setAsCurrent: true
-      }).catch(err => console.error('Failed to persist room open:', err));
+    // Set userId on service if not already set
+    if (this.currentUser?.id) {
+      ContentService.setUserId(this.currentUser.id as UUID);
     }
+
+    // ONE call handles: tab, view, URL, persist
+    ContentService.open('chat', roomId, {
+      title: room.displayName || room.name,
+      subtitle: room.topic,
+      uniqueId: room.uniqueId || room.name || roomId
+    });
   }
 
   protected override onItemClick(_item: RoomEntity): void {

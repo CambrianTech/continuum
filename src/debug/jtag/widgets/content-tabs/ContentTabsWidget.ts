@@ -21,10 +21,7 @@ import {
   type CSSResultGroup
 } from '../shared/ReactiveWidget';
 import { contentState, type ContentStateData } from '../../system/state/ContentStateService';
-import { pageState } from '../../system/state/PageStateService';
-import { Commands } from '../../system/core/shared/Commands';
-import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
-import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
+import { ContentService } from '../../system/state/ContentService';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 export interface TabInfo {
@@ -188,67 +185,25 @@ export class ContentTabsWidget extends ReactiveWidget {
   // === Event Handlers ===
 
   /**
-   * Handle tab click - update global state immediately
+   * Handle tab click - delegate to ContentService
    */
   private handleTabClick(event: Event, tab: TabInfo): void {
-    // Skip if already current
-    if (contentState.currentItemId === tab.id) return;
-
-    // Update global state - triggers re-render via subscription
-    contentState.setCurrent(tab.id as UUID);
-
-    // Update pageState for MainWidget view switching
-    pageState.setContent(tab.contentType || '', tab.entityId, undefined);
-
-    // Update URL immediately - use uniqueId for human-readable URLs
-    const urlId = tab.uniqueId || tab.entityId || '';
-    const contentType = tab.contentType || '';
-    const newPath = urlId ? `/${contentType}/${urlId}` : `/${contentType}`;
-    if (window.location.pathname !== newPath) {
-      window.history.pushState({ path: newPath }, '', newPath);
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
     }
-
-    // Persist to DB in background
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
-        userId: userId as UUID,
-        contentItemId: tab.id as UUID
-      }).catch(err => console.error('ContentTabsWidget: Failed to persist tab switch:', err));
-    }
+    ContentService.switchTo(tab.id);
   }
 
   /**
-   * Handle tab close - update global state immediately
+   * Handle tab close - delegate to ContentService
    */
   private handleTabClose(event: Event, tab: TabInfo): void {
     event.stopPropagation(); // Don't trigger tab click
 
-    // Remove from global state - triggers re-render via subscription
-    contentState.removeItem(tab.id as UUID);
-
-    // Get new current item for pageState update and URL
-    const newCurrent = contentState.currentItem;
-    if (newCurrent) {
-      pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
-
-      // Update URL to new current tab
-      const urlId = newCurrent.uniqueId || newCurrent.entityId || '';
-      const contentType = newCurrent.type || '';
-      const newPath = urlId ? `/${contentType}/${urlId}` : `/${contentType}`;
-      if (window.location.pathname !== newPath) {
-        window.history.pushState({ path: newPath }, '', newPath);
-      }
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
     }
-
-    // Persist to DB in background
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
-        userId: userId as UUID,
-        contentItemId: tab.id as UUID
-      }).catch(err => console.error('ContentTabsWidget: Failed to persist tab close:', err));
-    }
+    ContentService.close(tab.id);
   }
 }
 

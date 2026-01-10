@@ -331,7 +331,13 @@ export function createScroller<T extends BaseEntity>(
     container.addEventListener('scroll', onUserScroll, { passive: true });
   }
 
-  // Diff-based DOM update - only add/remove what changed
+  // Track entities added via real-time events (not from DB load)
+  // These should NOT be removed during diff since they're newer than DB
+  const eventAddedIds = new Set<string>();
+
+  // Diff-based DOM update - only add new items, NEVER remove event-added items
+  // CRITICAL FIX: DB results are stale compared to real-time events.
+  // Event-added entities must be preserved during refresh.
   const diffAndUpdateDOM = (newItems: readonly T[]): void => {
     const newItemsById = new Map<string, T>();
     for (const item of newItems) {
@@ -345,15 +351,19 @@ export function createScroller<T extends BaseEntity>(
     ));
     const newIds = new Set(newItemsById.keys());
 
-    // Remove entities no longer present (without clearing everything)
+    // FIXED: Only remove entities that were from PREVIOUS DB load, NOT event-added ones
+    // Event-added entities are more recent than DB and must be preserved
     for (const id of existingIds) {
-      if (!newIds.has(id)) {
+      if (!newIds.has(id) && !eventAddedIds.has(id)) {
+        // This entity was from a previous DB load and is no longer in DB results
+        // Safe to remove (probably deleted or filtered out)
         entityManager.remove(id);
         const element = container.querySelector(`[data-entity-id="${id}"]`);
         if (element) {
           element.remove();
         }
       }
+      // If eventAddedIds.has(id) - KEEP IT, it came from real-time event
     }
 
     // Add new entities (addEntitiesToDOM handles duplicates)
@@ -363,6 +373,8 @@ export function createScroller<T extends BaseEntity>(
       if (!existingIds.has(id)) {
         itemsToAdd.push(item);
       }
+      // If entity is now in DB, it's no longer "event-only" - remove from tracking
+      eventAddedIds.delete(id);
     }
 
     if (itemsToAdd.length > 0) {
@@ -491,6 +503,9 @@ export function createScroller<T extends BaseEntity>(
         existingElement.remove();
       }
 
+      // CRITICAL: Track this as event-added so it survives diff during refresh
+      eventAddedIds.add(entityId);
+
       // Add entity - insert in correct timestamp order for messages
       insertEntityInOrder(entity);
     },
@@ -531,6 +546,9 @@ export function createScroller<T extends BaseEntity>(
 
       // CHECK SCROLL POSITION BEFORE ADDING (critical: must check before DOM changes)
       const wasAtBottom = config.autoScroll?.enabled && isNearEnd();
+
+      // CRITICAL: Track this as event-added so it survives diff during refresh
+      eventAddedIds.add(entityId);
 
       // Add entity - insert in correct timestamp order
       insertEntityInOrder(entity);
@@ -574,6 +592,7 @@ export function createScroller<T extends BaseEntity>(
 
     clear(): void {
       entityManager.clear();
+      eventAddedIds.clear(); // Clear event tracking on full clear
       // Remove entity elements but preserve sentinel and structure
       const entityElements = container.querySelectorAll('[data-entity-id]');
       entityElements.forEach(el => el.remove());
