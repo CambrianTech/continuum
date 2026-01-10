@@ -52,10 +52,12 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   readonly collection = UserEntity.collection;
 
   // === REACTIVE STATE ===
-  @reactive() private searchFilter: string = '';
   @reactive() private _selectedUserId: string | null = null;
   @reactive() private aiStatuses: Map<string, AIStatusState> = new Map();
   @reactive() private learningStatuses: Map<string, AILearningState> = new Map();
+
+  // Filter chips state
+  @reactive() private activeFilters: Set<string> = new Set(['all']);
 
   static override styles = [
     ReactiveListWidget.styles,
@@ -73,27 +75,66 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     return [{ field: 'lastActiveAt', direction: 'desc' as const }];
   }
 
-  // === HEADER with search ===
+  // === HEADER with filter chips ===
   protected override renderHeader(): TemplateResult {
+    const filters = [
+      { id: 'all', label: 'All', icon: '◉' },
+      { id: 'human', label: 'Human', icon: '👤' },
+      { id: 'persona', label: 'Persona', icon: '⭐' },
+      { id: 'agent', label: 'Agent', icon: '🤖' },
+      { id: 'online', label: 'Online', icon: '●' }
+    ];
+
     return html`
       <div class="entity-list-header">
         <span class="header-title">${this.listTitle}</span>
         <span class="user-count">${this.entityCount}</span>
       </div>
-      <div class="user-search">
-        <input
-          type="text"
-          class="search-input"
-          placeholder="Search users and agents..."
-          .value=${this.searchFilter}
-          @input=${this.handleSearchInput}
-        />
+      <div class="filter-chips">
+        ${filters.map(f => html`
+          <button
+            class="filter-chip ${this.activeFilters.has(f.id) ? 'active' : ''}"
+            data-filter="${f.id}"
+            @click=${() => this.toggleFilter(f.id)}
+            title="${f.label}"
+          >
+            <span class="chip-icon">${f.icon}</span>
+          </button>
+        `)}
       </div>
     `;
   }
 
-  private handleSearchInput(e: Event): void {
-    this.searchFilter = (e.target as HTMLInputElement).value.toLowerCase();
+  private toggleFilter(filterId: string): void {
+    const newFilters = new Set(this.activeFilters);
+
+    if (filterId === 'all') {
+      // 'All' clears other type filters, keeps status filters
+      newFilters.clear();
+      newFilters.add('all');
+    } else if (filterId === 'online') {
+      // Toggle online status independently
+      if (newFilters.has('online')) {
+        newFilters.delete('online');
+      } else {
+        newFilters.add('online');
+      }
+    } else {
+      // Type filter - remove 'all' and toggle this type
+      newFilters.delete('all');
+      if (newFilters.has(filterId)) {
+        newFilters.delete(filterId);
+        // If no type filters left, go back to 'all'
+        const typeFilters = ['human', 'persona', 'agent'];
+        if (!typeFilters.some(t => newFilters.has(t))) {
+          newFilters.add('all');
+        }
+      } else {
+        newFilters.add(filterId);
+      }
+    }
+
+    this.activeFilters = newFilters;
     this.scroller?.refresh();
   }
 
@@ -206,18 +247,33 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   }
 
   // === FILTERING ===
-  private matchesSearch(user: UserEntity): boolean {
-    if (!this.searchFilter) return true;
-    const displayName = user.displayName ?? 'Unknown User';
-    const searchableText = `${displayName} ${user.type} ${user.profile?.speciality ?? ''}`.toLowerCase();
-    return searchableText.includes(this.searchFilter);
+  private matchesFilters(user: UserEntity): boolean {
+    // Check type filters
+    const hasAll = this.activeFilters.has('all');
+    const typeFilters = ['human', 'persona', 'agent'];
+    const activeTypeFilters = typeFilters.filter(t => this.activeFilters.has(t));
+
+    if (!hasAll && activeTypeFilters.length > 0) {
+      if (!activeTypeFilters.includes(user.type)) {
+        return false;
+      }
+    }
+
+    // Check online filter
+    if (this.activeFilters.has('online')) {
+      if (user.status !== 'online') {
+        return false;
+      }
+    }
+
+    return true;
   }
 
-  // Override getRenderFunction to apply dynamic search filtering
+  // Override getRenderFunction to apply chip filtering
   protected override getRenderFunction(): RenderFn<UserEntity> {
     return (user: UserEntity, _context: RenderContext<UserEntity>) => {
-      // Return hidden element for non-matching users (dynamic filtering)
-      if (!this.matchesSearch(user)) {
+      // Return hidden element for non-matching users
+      if (!this.matchesFilters(user)) {
         const hiddenElement = globalThis.document.createElement('div');
         hiddenElement.style.display = 'none';
         hiddenElement.dataset.id = user.id;

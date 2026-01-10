@@ -69,32 +69,53 @@
   font-weight: 600;
 }
 
-// Search
-.user-search {
-  margin-bottom: var(--spacing-sm);
+// Filter Chips
+.filter-chips {
+  display: flex;
+  gap: 4px;
+  padding: 6px var(--spacing-md);
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
-.search-input {
-  width: 100%;
-  max-width: 100%;
-  box-sizing: border-box;
-  background: var(--input-background);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  color: var(--input-text);
-  font-size: 13px;
-  outline: none;
-  transition: border-color $transition-fast;
+.filter-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  background: rgba(0, 40, 60, 0.6);
+  border: 1px solid rgba(0, 180, 200, 0.2);
+  border-radius: 4px;
+  color: rgba(0, 200, 220, 0.6);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 12px;
 
-  &::placeholder {
-    color: var(--input-placeholder);
+  &:hover {
+    background: rgba(0, 60, 80, 0.8);
+    border-color: rgba(0, 200, 220, 0.4);
+    color: rgba(0, 220, 240, 0.9);
   }
 
-  &:focus {
-    border-color: var(--input-border-focus);
-    box-shadow: 0 0 0 2px var(--input-focus-shadow);
+  &.active {
+    background: rgba(0, 180, 200, 0.2);
+    border-color: rgba(0, 220, 240, 0.6);
+    color: rgba(0, 255, 220, 1);
+    box-shadow: 0 0 8px rgba(0, 200, 220, 0.3);
+  }
+
+  .chip-icon {
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  // Online dot specific color
+  &[data-filter="online"].active {
+    color: #10b981;
+    border-color: rgba(16, 185, 129, 0.6);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);
   }
 }
 
