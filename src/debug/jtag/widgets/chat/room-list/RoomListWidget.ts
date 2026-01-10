@@ -93,7 +93,11 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
         if (state.contentType === 'chat' && state.entityId) {
-          const newRoomId = state.entityId as UUID;
+          // entityId might be UUID or uniqueId - find matching room
+          const matchingRoom = this.entities.find(
+            (room: RoomEntity) => room.id === state.entityId || room.uniqueId === state.entityId
+          );
+          const newRoomId = matchingRoom?.id as UUID || state.entityId as UUID;
           if (newRoomId !== this.currentRoomId) {
             this.currentRoomId = newRoomId;
             // Scroll handled by updated() lifecycle
