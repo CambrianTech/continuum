@@ -3,18 +3,24 @@
  *
  * Winamp-style frequency bars showing 5 pipeline stages:
  * rag-build, should-respond, generate, coordination, post-response
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 import { COGNITION_EVENTS, type StageCompleteEvent, type PipelineStage, BASELINE_SPEEDS } from '../../system/conversation/shared/CognitionEventTypes';
 import { PipelineStagesRenderer } from './PipelineStagesRenderer';
 import { SimpleBarsRenderer } from './SimpleBarsRenderer';
 import { WaveGraphRenderer } from './WaveGraphRenderer';
 import type { ChartData } from './ChartRenderer';
-
-// Verbose logging helper for browser
-const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
 interface StageData {
   stage: PipelineStage;
@@ -27,27 +33,129 @@ interface StageData {
 
 type VisualizationMode = 'pipeline' | 'simple-bars' | 'wave-graph';
 
-export class CognitionHistogramWidget extends BaseWidget {
+export class CognitionHistogramWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(`
+      :host {
+        display: block;
+        width: 100%;
+        max-height: 120px;
+      }
+
+      .histogram-container {
+        display: flex;
+        flex-direction: column;
+        height: 120px;
+        max-height: 120px;
+        background: var(--surface-secondary, #0f1117);
+        border: 1px solid var(--border-primary, #2a2d35);
+        border-radius: 6px;
+        padding: 8px;
+        cursor: pointer;
+        transition: border-color 0.2s ease;
+      }
+
+      .histogram-container:hover {
+        border-color: var(--accent-primary, #4a9eff);
+      }
+
+      .histogram-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        padding: 0 4px;
+      }
+
+      .mode-label {
+        font-size: 10px;
+        font-weight: 600;
+        font-family: var(--font-mono, monospace);
+        color: var(--content-secondary, #8a92a5);
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+      }
+
+      .histogram-svg {
+        flex: 1;
+        width: 100%;
+        background: var(--surface-primary, #1a1d24);
+        border: 1px solid var(--border-secondary, #383b44);
+        border-radius: 4px;
+      }
+
+      .histogram-svg rect {
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .histogram-svg path {
+        transition: d 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .legend {
+        display: flex;
+        gap: 10px;
+        margin-top: 4px;
+        padding: 0 4px;
+        font-size: 11px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-weight: 500;
+        color: var(--content-tertiary, #6a7280);
+        text-transform: lowercase;
+      }
+
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+        display: inline-block;
+      }
+
+      .legend-dot.fast {
+        background: lime;
+        box-shadow: 0 0 3px lime;
+      }
+
+      .legend-dot.normal {
+        background: #ff0;
+        box-shadow: 0 0 3px #ff0;
+      }
+
+      .legend-dot.slow {
+        background: #fa0;
+        box-shadow: 0 0 3px #fa0;
+      }
+
+      .legend-dot.bottleneck {
+        background: red;
+        box-shadow: 0 0 3px red;
+      }
+    `)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private mode: VisualizationMode = 'pipeline';
+  @reactive() private modeLabel: string = 'Pipeline Stages';
+
+  // Non-reactive
   private stageData: Map<PipelineStage, StageData> = new Map();
-  private animationFrame: number | null = null;
-  private mode: VisualizationMode = 'pipeline';
-  private _eventUnsubscribe?: () => void;
 
   constructor() {
     super({
-      widgetId: 'cognition-histogram-widget',
-      widgetName: 'CognitionHistogram',
-      template: 'cognition-histogram.html',
-      styles: 'cognition-histogram.css',
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: false,
-      enableScreenshots: false
+      widgetName: 'CognitionHistogramWidget'
     });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    verbose() && console.log('🧠 CognitionHistogram: Initializing...');
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
 
     // Initialize stage data with defaults
     const stages: PipelineStage[] = ['rag-build', 'should-respond', 'generate', 'coordination', 'post-response'];
@@ -62,59 +170,61 @@ export class CognitionHistogramWidget extends BaseWidget {
       });
     });
 
-    this.subscribeToCognitionEvents();
-    this.startAnimationLoop();
-
-    verbose() && console.log('✅ CognitionHistogram: Initialized');
-  }
-
-  private setupClickHandler(): void {
-    const container = this.shadowRoot?.querySelector('.histogram-container');
-    if (container) {
-      container.addEventListener('click', () => {
-        // Cycle through modes
-        if (this.mode === 'pipeline') {
-          this.mode = 'simple-bars';
-        } else if (this.mode === 'simple-bars') {
-          this.mode = 'wave-graph';
-        } else {
-          this.mode = 'pipeline';
-        }
-
-        verbose() && console.log(`🧠 CognitionHistogram: Switched to ${this.mode} mode`);
-        this.updateModeLabel();
-        this.renderCurrentMode(); // Re-render with new mode
+    // Subscribe to cognition events
+    this.createMountEffect(() => {
+      const unsubscribe = Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
+        this.updateStageData(data);
       });
-    }
-  }
-
-  private updateModeLabel(): void {
-    const label = this.shadowRoot?.querySelector('.mode-label');
-    if (label) {
-      const modeNames = {
-        'pipeline': 'Pipeline Stages',
-        'simple-bars': 'Simple Bars',
-        'wave-graph': 'Wave Graph'
-      };
-      label.textContent = modeNames[this.mode];
-    }
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    this._eventUnsubscribe?.();
-    if (this.animationFrame) {
-      cancelAnimationFrame(this.animationFrame);
-    }
-  }
-
-  /**
-   * Subscribe to cognition events from pipeline stages
-   */
-  private subscribeToCognitionEvents(): void {
-    this._eventUnsubscribe = Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
-      this.updateStageData(data);
+      return () => unsubscribe();
     });
+
+    // Initial render
+    this.renderCurrentMode();
   }
+
+  // === Render ===
+
+  protected override renderContent(): TemplateResult {
+    return html`
+      <div class="histogram-container" @click=${this.handleContainerClick}>
+        <div class="histogram-header">
+          <span class="mode-label">${this.modeLabel}</span>
+        </div>
+
+        <svg class="histogram-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <!-- Histogram bars rendered dynamically by renderers -->
+        </svg>
+
+        <div class="legend">
+          <span class="legend-item"><span class="legend-dot fast"></span>Fast</span>
+          <span class="legend-item"><span class="legend-dot normal"></span>Normal</span>
+          <span class="legend-item"><span class="legend-dot slow"></span>Slow</span>
+          <span class="legend-item"><span class="legend-dot bottleneck"></span>Stuck</span>
+        </div>
+      </div>
+    `;
+  }
+
+  // === Event Handlers ===
+
+  private handleContainerClick = (): void => {
+    // Cycle through modes
+    if (this.mode === 'pipeline') {
+      this.mode = 'simple-bars';
+      this.modeLabel = 'Simple Bars';
+    } else if (this.mode === 'simple-bars') {
+      this.mode = 'wave-graph';
+      this.modeLabel = 'Wave Graph';
+    } else {
+      this.mode = 'pipeline';
+      this.modeLabel = 'Pipeline Stages';
+    }
+
+    this.requestUpdate();
+    this.renderCurrentMode();
+  };
+
+  // === Data Management ===
 
   /**
    * Update stage data with new event
@@ -138,18 +248,6 @@ export class CognitionHistogramWidget extends BaseWidget {
 
     // Render only when data changes (not 60fps infinite loop!)
     this.renderCurrentMode();
-  }
-
-  /**
-   * Start animation loop for smooth histogram updates
-   * DISABLED: Was causing massive browser overhead (60fps infinite rendering)
-   * Now only renders when data actually changes (see updateStageData)
-   */
-  private startAnimationLoop(): void {
-    // Initial render
-    this.renderCurrentMode();
-
-    // No infinite loop - only render on data changes!
   }
 
   /**
@@ -242,24 +340,6 @@ export class CognitionHistogramWidget extends BaseWidget {
     renderer.render(chartData);
   }
 
-  protected async renderWidget(): Promise<void> {
-    // Use BaseWidget's template and styles system
-    const styles = this.templateCSS ?? '/* No styles loaded */';
-    const template = this.templateHTML ?? '<div>Loading...</div>';
-
-    // Ensure template is a string
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${templateString}
-    `;
-
-    // Set up click handler AFTER DOM is rendered
-    this.setupClickHandler();
-  }
-
-  protected resolveResourcePath(filename: string): string {
-    return `widgets/cognition-histogram/public/${filename}`;
-  }
 }
+
+// Registration handled by centralized BROWSER_WIDGETS registry

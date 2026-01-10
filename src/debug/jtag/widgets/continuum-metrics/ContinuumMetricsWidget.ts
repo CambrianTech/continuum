@@ -42,7 +42,10 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
       :host {
         display: block;
         width: 100%;
-        --color-primary: #00d4ff;
+        --color-requests: #00d4ff;
+        --color-tokens: #ff6b6b;
+        --color-latency: #ffd700;
+        --color-cost: #4ade80;
       }
 
       .metrics-container {
@@ -55,13 +58,14 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
         border-radius: 6px;
       }
 
-      .metric-header {
+      .metrics-header {
         display: flex;
         justify-content: space-between;
-        align-items: baseline;
+        align-items: center;
+        margin-bottom: 4px;
       }
 
-      .metric-title {
+      .metrics-title {
         font-size: 10px;
         font-weight: 600;
         font-family: var(--font-mono, monospace);
@@ -70,48 +74,8 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
         text-transform: uppercase;
       }
 
-      .metric-value {
-        font-size: 18px;
-        font-weight: 700;
-        font-family: var(--font-mono, monospace);
-        color: var(--color-primary, #00d4ff);
-      }
-
-      .chart-area {
-        height: 80px;
-        background: var(--surface-primary, #1a1d24);
-        border: 1px solid var(--border-secondary, #383b44);
-        border-radius: 4px;
-        padding: 8px;
-        cursor: pointer;
-        transition: border-color 0.2s ease;
-      }
-
-      .chart-area:hover {
-        border-color: var(--accent-primary, #4a9eff);
-      }
-
-      .chart-svg {
-        width: 100%;
-        height: 100%;
-      }
-
-      .chart-line {
-        stroke: var(--accent-primary, #ffd700);
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        filter: drop-shadow(0 0 2px rgba(255, 215, 0, 0.4));
-      }
-
-      .metric-controls {
-        display: flex;
-        gap: 6px;
-      }
-
-      .metric-select,
       .time-select {
-        flex: 1;
-        padding: 4px 6px;
+        padding: 2px 6px;
         font-size: 9px;
         font-family: var(--font-mono, monospace);
         background: var(--surface-primary, #1a1d24);
@@ -119,27 +83,87 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
         border: 1px solid var(--border-secondary, #383b44);
         border-radius: 3px;
         cursor: pointer;
+      }
+
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+
+      .metric-card {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        background: var(--surface-primary, #1a1d24);
+        border: 1px solid var(--border-secondary, #383b44);
+        border-radius: 4px;
+        cursor: pointer;
         transition: border-color 0.2s ease;
       }
 
-      .metric-select:hover,
-      .time-select:hover {
+      .metric-card:hover {
         border-color: var(--accent-primary, #4a9eff);
       }
 
-      .metric-select:focus,
-      .time-select:focus {
-        outline: none;
-        border-color: var(--accent-primary, #4a9eff);
+      .metric-card.requests { --card-color: var(--color-requests); }
+      .metric-card.tokens { --card-color: var(--color-tokens); }
+      .metric-card.latency { --card-color: var(--color-latency); }
+      .metric-card.cost { --card-color: var(--color-cost); }
+
+      .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+
+      .card-title {
+        font-size: 9px;
+        font-weight: 600;
+        font-family: var(--font-mono, monospace);
+        color: var(--content-tertiary, #6a7280);
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+      }
+
+      .card-value {
+        font-size: 14px;
+        font-weight: 700;
+        font-family: var(--font-mono, monospace);
+        color: var(--card-color, #00d4ff);
+      }
+
+      .sparkline-container {
+        height: 24px;
+        width: 100%;
+      }
+
+      .sparkline-svg {
+        width: 100%;
+        height: 100%;
+      }
+
+      .sparkline {
+        stroke: var(--card-color, #00d4ff);
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        fill: none;
+        filter: drop-shadow(0 0 2px var(--card-color));
       }
     `)
   ] as CSSResultGroup;
 
   // Reactive state
-  @reactive() private currentMetric: string = 'requests';
   @reactive() private currentTimeRange: string = '24h';
   @reactive() private metricsData: MetricsData | null = null;
-  @reactive() private chartPoints: string = '0,20 10,15 20,18 30,10 40,8 50,12 60,11 70,5 80,9 90,14 100,12';
+  @reactive() private sparklines: Record<string, string> = {
+    requests: '0,12 25,10 50,14 75,8 100,12',
+    tokens: '0,12 25,14 50,10 75,16 100,8',
+    latency: '0,8 25,12 50,10 75,14 100,12',
+    cost: '0,10 25,12 50,8 75,14 100,10'
+  };
 
   // Non-reactive
   private chartInterval: string = '1h';
@@ -171,29 +195,8 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
   protected override renderContent(): TemplateResult {
     return html`
       <div class="metrics-container">
-        <div class="metric-header">
-          <div class="metric-title">${this.getMetricTitle()}</div>
-          <div class="metric-value">${this.getMetricValue()}</div>
-        </div>
-
-        <div class="chart-area" @click=${this.handleChartClick}>
-          <svg class="chart-svg" viewBox="0 0 100 30" preserveAspectRatio="none">
-            <polyline
-              class="chart-line"
-              points="${this.chartPoints}"
-              fill="none"
-              stroke-width="1"
-            />
-          </svg>
-        </div>
-
-        <div class="metric-controls">
-          <select class="metric-select" @change=${this.handleMetricChange}>
-            <option value="requests" ?selected=${this.currentMetric === 'requests'}>Requests</option>
-            <option value="tokens" ?selected=${this.currentMetric === 'tokens'}>Tokens/s</option>
-            <option value="latency" ?selected=${this.currentMetric === 'latency'}>Latency</option>
-            <option value="cost" ?selected=${this.currentMetric === 'cost'}>Cost</option>
-          </select>
+        <div class="metrics-header">
+          <span class="metrics-title">AI Performance</span>
           <select class="time-select" @change=${this.handleTimeChange}>
             <option value="1h" ?selected=${this.currentTimeRange === '1h'}>1h</option>
             <option value="6h" ?selected=${this.currentTimeRange === '6h'}>6h</option>
@@ -201,37 +204,53 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
             <option value="7d" ?selected=${this.currentTimeRange === '7d'}>7d</option>
           </select>
         </div>
+
+        <div class="metrics-grid">
+          ${this.renderMetricCard('requests', 'Requests', this.getRequestsValue())}
+          ${this.renderMetricCard('tokens', 'Tokens', this.getTokensValue())}
+          ${this.renderMetricCard('latency', 'Latency', this.getLatencyValue())}
+          ${this.renderMetricCard('cost', 'Cost', this.getCostValue())}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderMetricCard(metric: string, title: string, value: string): TemplateResult {
+    return html`
+      <div class="metric-card ${metric}" @click=${() => this.handleCardClick(metric)}>
+        <div class="card-header">
+          <span class="card-title">${title}</span>
+          <span class="card-value">${value}</span>
+        </div>
+        <div class="sparkline-container">
+          <svg class="sparkline-svg" viewBox="0 0 100 24" preserveAspectRatio="none">
+            <polyline class="sparkline" points="${this.sparklines[metric]}" />
+          </svg>
+        </div>
       </div>
     `;
   }
 
   // === Computed Values ===
 
-  private getMetricTitle(): string {
-    switch (this.currentMetric) {
-      case 'requests': return 'REQUESTS';
-      case 'tokens': return 'TOKENS';
-      case 'latency': return 'LATENCY';
-      case 'cost': return 'COST';
-      default: return 'REQUESTS';
-    }
+  private getRequestsValue(): string {
+    if (!this.metricsData) return '—';
+    return this.metricsData.totalGenerations.toString();
   }
 
-  private getMetricValue(): string {
+  private getTokensValue(): string {
     if (!this.metricsData) return '—';
+    return this.formatNumber(this.metricsData.totalTokens);
+  }
 
-    switch (this.currentMetric) {
-      case 'requests':
-        return this.metricsData.totalGenerations.toString();
-      case 'tokens':
-        return this.formatNumber(this.metricsData.totalTokens);
-      case 'latency':
-        return `${(this.metricsData.avgResponseTime / 1000).toFixed(2)}s`;
-      case 'cost':
-        return `$${this.metricsData.totalCost.toFixed(2)}`;
-      default:
-        return '—';
-    }
+  private getLatencyValue(): string {
+    if (!this.metricsData) return '—';
+    return `${(this.metricsData.avgResponseTime / 1000).toFixed(1)}s`;
+  }
+
+  private getCostValue(): string {
+    if (!this.metricsData) return '—';
+    return `$${this.metricsData.totalCost.toFixed(2)}`;
   }
 
   private formatNumber(num: number): string {
@@ -242,21 +261,15 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
 
   // === Event Handlers ===
 
-  private handleMetricChange = (e: Event): void => {
-    const select = e.target as HTMLSelectElement;
-    this.currentMetric = select.value;
-    this.updateChart();
-    this.requestUpdate();
-  };
-
   private handleTimeChange = async (e: Event): Promise<void> => {
     const select = e.target as HTMLSelectElement;
     this.currentTimeRange = select.value;
     await this.fetchMetricsData();
   };
 
-  private handleChartClick = (): void => {
-    // TODO: Emit event to open full metrics view
+  private handleCardClick = (metric: string): void => {
+    // TODO: Open detailed view for this metric
+    console.log(`Metrics: Clicked ${metric} card`);
   };
 
   // === Data Fetching ===
@@ -280,7 +293,7 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
           timeSeries: result.timeSeries
         };
 
-        this.updateChart();
+        this.updateCharts();
         this.requestUpdate();
       }
     } catch (error) {
@@ -288,28 +301,36 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
     }
   }
 
-  private updateChart(): void {
+  private updateCharts(): void {
     if (!this.metricsData?.timeSeries) return;
 
-    const values = this.metricsData.timeSeries.map(point => {
-      switch (this.currentMetric) {
-        case 'requests': return point.generations;
-        case 'tokens': return point.tokens;
-        case 'cost': return point.cost * 1000;
-        case 'latency': return point.avgResponseTime / 1000;
-        default: return point.generations;
-      }
-    });
+    // Update sparkline for each metric
+    const metrics = ['requests', 'tokens', 'latency', 'cost'];
 
-    const maxValue = Math.max(...values, 1);
-    const minValue = Math.min(...values, 0);
-    const range = maxValue - minValue || 1;
+    for (const metric of metrics) {
+      const values = this.metricsData.timeSeries.map(point => {
+        switch (metric) {
+          case 'requests': return point.generations;
+          case 'tokens': return point.tokens;
+          case 'cost': return point.cost * 1000;
+          case 'latency': return point.avgResponseTime / 1000;
+          default: return point.generations;
+        }
+      });
 
-    this.chartPoints = values.map((value, index) => {
-      const x = (index / (values.length - 1 || 1)) * 100;
-      const y = 30 - ((value - minValue) / range) * 30;
-      return `${x},${y}`;
-    }).join(' ');
+      const maxValue = Math.max(...values, 1);
+      const minValue = Math.min(...values, 0);
+      const range = maxValue - minValue || 1;
+
+      this.sparklines[metric] = values.map((value, index) => {
+        const x = (index / (values.length - 1 || 1)) * 100;
+        const y = 24 - ((value - minValue) / range) * 20;
+        return `${x},${y}`;
+      }).join(' ');
+    }
+
+    // Trigger re-render
+    this.sparklines = { ...this.sparklines };
   }
 }
 
