@@ -342,6 +342,17 @@ export class MainWidget extends ReactiveWidget {
       return;
     }
 
+    // === OPTIMISTIC UPDATE: Switch view IMMEDIATELY (no blocking) ===
+    contentState.setCurrent(tabId as UUID);
+    pageState.setContent(resolvedContentType, resolvedEntityId, undefined);
+    this.switchContentView(resolvedContentType, resolvedEntityId);
+
+    const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
+    this.updateUrl(newPath);
+
+    this.log(`Switched to ${resolvedContentType} tab "${label}"`);
+
+    // === BACKGROUND: Persist to server and resolve entity metadata ===
     const userId = this.userState?.userId;
     if (userId) {
       Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
@@ -350,19 +361,16 @@ export class MainWidget extends ReactiveWidget {
       }).catch(err => console.error('Failed to persist tab switch:', err));
     }
 
-    contentState.setCurrent(tabId as UUID);
-
-    const resolved = resolvedEntityId
-      ? await RoutingService.resolve(resolvedContentType, resolvedEntityId)
-      : undefined;
-    pageState.setContent(resolvedContentType, resolvedEntityId, resolved || undefined);
-
-    this.switchContentView(resolvedContentType, resolvedEntityId);
-
-    const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
-    this.updateUrl(newPath);
-
-    this.log(`Switched to ${resolvedContentType} tab "${label}"`);
+    // Resolve entity metadata in background (for pageState enrichment, not blocking UI)
+    if (resolvedEntityId) {
+      RoutingService.resolve(resolvedContentType, resolvedEntityId)
+        .then(resolved => {
+          if (resolved) {
+            pageState.setContent(resolvedContentType, resolvedEntityId, resolved);
+          }
+        })
+        .catch(err => console.warn('Failed to resolve entity metadata:', err));
+    }
   }
 
   private async handleTabClose(tabId: string): Promise<void> {

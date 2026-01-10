@@ -305,13 +305,13 @@ export class PositronContentStateAdapter {
     // Notify UI to re-render from local state (no DB fetch!)
     this.config.onStateChange();
 
-    // Switch view - use uniqueId from content item for URLs
-    if (data.contentType) {
-      this.config.onViewSwitch?.(data.contentType, data.entityId);
-      // Look up uniqueId from content item for human-readable URLs
-      const urlId = switchedItem?.uniqueId || data.entityId;
-      this.config.onUrlUpdate?.(data.contentType, urlId);
-    }
+    // NOTE: We intentionally do NOT call onViewSwitch() here.
+    // View switching is handled optimistically by click handlers.
+    // Calling it here would cause race conditions when multiple tabs are clicked rapidly,
+    // as the server events arrive async and would re-switch views unexpectedly.
+    //
+    // If multi-tab sync is needed (switching from another browser tab), that should be
+    // implemented separately with source tracking (e.g., sessionId comparison).
   }
 
   /**
