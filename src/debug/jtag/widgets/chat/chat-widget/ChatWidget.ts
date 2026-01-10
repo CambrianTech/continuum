@@ -31,6 +31,8 @@ import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEven
 import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
 // Signals for React-like state management
 import { createWidgetSignals, watch, type WidgetSignalState, type Dispose } from '@system/signals';
+// EntityCacheService - single source of truth for entity data (Positronic pattern)
+import { entityCache } from '../../../system/state/EntityCacheService';
 
 /**
  * ChatWidget signal state - React-like reactive state management
@@ -413,6 +415,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Only filter out empty messages, NOT by roomId (database already did that)
       const validMessages = result.items.filter(msg => msg.content?.text?.trim());
+
+      // Populate EntityCacheService with loaded messages (Positronic pattern)
+      // This makes the cache the single source of truth for entity data
+      entityCache.populate<ChatMessageEntity>(ChatMessageEntity.collection, validMessages);
 
       // Calculate if there are more messages to load
       // Update running total of loaded messages
