@@ -82,18 +82,34 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   protected override onFirstRender(): void {
     super.onFirstRender();
 
-    // Subscribe to pageState to highlight current room
+    // Subscribe to pageState - single source of truth for current room
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
         if (state.contentType === 'chat' && state.entityId) {
           const newRoomId = state.entityId as UUID;
           if (newRoomId !== this.currentRoomId) {
             this.currentRoomId = newRoomId;
+            // Scroll handled by updated() lifecycle
           }
         }
       });
       return () => unsubscribe();
     });
+  }
+
+  // === REACTIVE SCROLL - triggers on @reactive() currentRoomId change ===
+  protected override updated(changedProperties: Map<string, unknown>): void {
+    super.updated(changedProperties);
+
+    if (changedProperties.has('currentRoomId')) {
+      // Scroll selected room into view with smooth animation
+      requestAnimationFrame(() => {
+        const activeItem = this.shadowRoot?.querySelector('.room-item.active') as HTMLElement;
+        if (activeItem) {
+          activeItem.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+      });
+    }
   }
 
   // === ROOM SELECTION ===
