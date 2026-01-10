@@ -323,10 +323,13 @@ export class MainWidget extends ReactiveWidget {
 
     let resolvedEntityId = entityId;
     let resolvedContentType = contentType;
+    let urlId = entityId;  // For URL - prefer uniqueId over UUID
+
+    // Always look up contentItem to get uniqueId for human-readable URLs
+    const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
 
     if (!resolvedEntityId || !resolvedContentType) {
       console.warn(`⚠️ MainPanel: Tab missing entityId/contentType, looking up in userState...`);
-      const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
       if (contentItem) {
         resolvedEntityId = contentItem.entityId;
         resolvedContentType = contentItem.type;
@@ -335,6 +338,11 @@ export class MainWidget extends ReactiveWidget {
         console.error(`❌ MainPanel: Tab not found in userState either:`, tabId);
         return;
       }
+    }
+
+    // Use uniqueId for URL if available (human-readable like "general" vs UUID)
+    if (contentItem?.uniqueId) {
+      urlId = contentItem.uniqueId;
     }
 
     if (this.userState?.contentState?.currentItemId === tabId) {
@@ -347,7 +355,7 @@ export class MainWidget extends ReactiveWidget {
     pageState.setContent(resolvedContentType, resolvedEntityId, undefined);
     this.switchContentView(resolvedContentType, resolvedEntityId);
 
-    const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
+    const newPath = buildContentPath(resolvedContentType, urlId);
     this.updateUrl(newPath);
 
     this.log(`Switched to ${resolvedContentType} tab "${label}"`);
