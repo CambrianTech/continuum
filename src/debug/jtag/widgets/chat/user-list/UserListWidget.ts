@@ -154,7 +154,11 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
     this.activeFilters = newFilters;
     this.requestUpdate();  // Re-render header with new active states
-    this.scroller?.refresh();  // Re-filter the list
+
+    // Clear and reload to apply new filters
+    // (getRenderFunction checks matchesFilters for each item)
+    this.scroller?.clear();
+    this.scroller?.load();
   }
 
   // === MAIN RENDER ===
