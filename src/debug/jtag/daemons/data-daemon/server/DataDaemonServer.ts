@@ -66,52 +66,69 @@ export class DataDaemonServer extends DataDaemonBase {
   }
   
   /**
-   * Initialize data daemon
+   * PHASE 1: Core initialization (BLOCKING)
+   * Sets up database and emits system:ready - minimum for other daemons to proceed.
    */
   protected async initialize(): Promise<void> {
+    const coreStart = Date.now();
+    this.log.info('🚀 DataDaemonServer: CORE init starting...');
+
     // Register router for universal event system
     RouterRegistry.register(this.context, this.router);
-    this.log.info('Registered router with RouterRegistry');
 
     // Initialize entity registry before DataDaemon initialization
     await this.initializeEntityRegistry();
 
+    // Initialize the database connection
     await this.dataDaemon.initialize();
 
     // Initialize static DataDaemon interface for commands to use
     const context = this.createDataContext('data-daemon-server');
     DataDaemon.initialize(this.dataDaemon, context, this.context);
 
-    this.log.info('Data daemon server initialized with SQLite backend');
+    // CRITICAL: Emit system:ready ASAP so other daemons can proceed
+    // This unblocks UserDaemon, RoomMembershipDaemon, TrainingDaemon, etc.
+    const { Events } = await import('../../../system/core/shared/Events');
+    const { SYSTEM_EVENTS } = await import('../../../system/core/shared/EventConstants');
+    await Events.emit(SYSTEM_EVENTS.READY, { daemon: 'data' });
+
+    const coreMs = Date.now() - coreStart;
+    this.log.info(`✅ DataDaemonServer: CORE init complete (${coreMs}ms) - system:ready emitted`);
+    this.log.info(`   Archive handles, CodeDaemon, SystemDaemon will init in background`);
+  }
+
+  /**
+   * PHASE 2: Deferred initialization (NON-BLOCKING)
+   * Sets up archive databases, CodeDaemon, SystemDaemon - runs after daemon is READY.
+   */
+  protected async initializeDeferred(): Promise<void> {
+    this.log.info('🔄 DataDaemonServer: DEFERRED init starting...');
+    const deferredStart = Date.now();
 
     // Register custom JSON file adapters for config collections
-    // This allows data/read and data/update to work with JSON files
     await this.registerJsonFileAdapters();
 
     // Register database handles for multi-database operations (archiving, etc.)
     await this.registerDatabaseHandles();
-    this.log.info('Database handles registered');
+    this.log.debug('Database handles registered');
 
     // Initialize CodeDaemon for code/read operations
     const { initializeCodeDaemon } = await import('../../code-daemon/server/CodeDaemonServer');
     await initializeCodeDaemon(this.context);
-    this.log.info('Code daemon initialized');
+    this.log.debug('Code daemon initialized');
 
     // Initialize SystemDaemon for efficient system config access
     const { SystemDaemon } = await import('../../system-daemon/shared/SystemDaemon');
     await SystemDaemon.initialize(this.context);
-    this.log.info('System daemon initialized');
+    this.log.debug('System daemon initialized');
 
     // Initialize governance notifications (vote events → chat messages)
     const { initializeGovernanceNotifications } = await import('../../../system/governance/GovernanceNotifications');
     initializeGovernanceNotifications();
-    this.log.info('Governance notifications initialized');
+    this.log.debug('Governance notifications initialized');
 
-    // Emit system ready event so other daemons can proceed with initialization
-    const { Events } = await import('../../../system/core/shared/Events');
-    const { SYSTEM_EVENTS } = await import('../../../system/core/shared/EventConstants');
-    await Events.emit(SYSTEM_EVENTS.READY, { daemon: 'data' });
-    this.log.info('Emitted system:ready event');
+    const deferredMs = Date.now() - deferredStart;
+    this.log.info(`✅ DataDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
   }
 
   /**

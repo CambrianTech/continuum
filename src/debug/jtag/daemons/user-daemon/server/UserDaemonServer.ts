@@ -44,22 +44,52 @@ export class UserDaemonServer extends UserDaemon {
     // Store singleton instance
     UserDaemonServer.instance = this;
 
-    // Initialize AI decision logger for persona decision-making (system-wide)
+    // NOTE: All async initialization moved to initialize()/initializeDeferred()
+    // Constructor should only do synchronous setup
+  }
+
+  /**
+   * PHASE 1: Core initialization (BLOCKING)
+   * Sets up event subscriptions - fast, no I/O, no external dependencies.
+   */
+  protected async initialize(): Promise<void> {
+    const coreStart = Date.now();
+    this.log.info('🚀 UserDaemonServer: CORE init starting...');
+
+    // Initialize AI decision logger (synchronous, in-memory only)
     AIDecisionLogger.initialize();
 
-    this.setupEventSubscriptions().catch((error: Error) => {
-      this.log.error('Failed to setup event subscriptions:', error);
-    });
+    // Setup event subscriptions (fast, just registers handlers)
+    await this.setupEventSubscriptions();
 
-    // Initialize all PersonaUser instances when DataDaemon is ready (event-driven, not setTimeout)
+    // Subscribe to system:ready for deferred persona initialization
     this.subscribeToSystemReady();
+
+    const coreMs = Date.now() - coreStart;
+    this.log.info(`✅ UserDaemonServer: CORE init complete (${coreMs}ms) - READY`);
+    this.log.info(`   ToolRegistry + Persona clients will initialize via system:ready event`);
+  }
+
+  /**
+   * PHASE 2: Deferred initialization (NON-BLOCKING)
+   * ToolRegistry initialization runs here, after daemon is READY.
+   */
+  protected async initializeDeferred(): Promise<void> {
+    this.log.info('🔄 UserDaemonServer: DEFERRED init starting (ToolRegistry)...');
+    const deferredStart = Date.now();
+
+    // Initialize ToolRegistry for dynamic tool discovery
+    await this.initializeToolRegistry();
+
+    const deferredMs = Date.now() - deferredStart;
+    this.log.info(`✅ UserDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
   }
 
   /**
    * Subscribe to system ready event to initialize personas when DataDaemon is ready
+   * NOTE: ToolRegistry is initialized in initializeDeferred(), not here
    */
   private subscribeToSystemReady(): void {
-    // Import SYSTEM_EVENTS at top of file, use it here
     const unsubReady = Events.subscribe('system:ready', async (payload: any) => {
       if (payload?.daemon === 'data') {
         this.log.info('📡 UserDaemon: Received system:ready from DataDaemon, initializing personas...');
@@ -70,12 +100,6 @@ export class UserDaemonServer extends UserDaemon {
       }
     });
     this.registerSubscription(unsubReady);
-
-    // Initialize ToolRegistry immediately in constructor (not async event-based)
-    // This prevents race conditions where personas need tools before system:ready fires
-    this.initializeToolRegistry().catch((error: Error) => {
-      this.log.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
-    });
   }
 
   /**

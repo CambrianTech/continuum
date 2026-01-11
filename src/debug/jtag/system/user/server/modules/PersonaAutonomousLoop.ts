@@ -242,6 +242,10 @@ export class PersonaAutonomousLoop {
 
       // Process message using cognition-enhanced evaluation logic
       await this.personaUser.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);
+
+      // Update bookmark AFTER processing complete - enables true pause/resume
+      // Shutdown mid-processing will re-query this message on restart
+      await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
     } else if (item.type === 'task') {
       // PHASE 5: Task execution based on task type
       await this.executeTask(item);

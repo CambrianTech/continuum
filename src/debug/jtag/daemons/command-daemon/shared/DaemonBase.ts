@@ -146,8 +146,17 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
    * LIFECYCLE: CREATED → STARTING → READY (or FAILED)
    *
    * Messages arriving during STARTING are queued and processed once READY.
+   *
+   * TWO-PHASE INITIALIZATION:
+   * 1. initialize() - BLOCKING: Core setup required before READY (fast, minimal)
+   * 2. initializeDeferred() - NON-BLOCKING: Heavy work runs AFTER READY in background
+   *
+   * This allows daemons to accept messages quickly while heavy initialization
+   * (external connections, data loading, health checks) runs off the critical path.
    */
   async initializeDaemon(): Promise<void> {
+    const initStart = Date.now();
+
     // Transition: CREATED → STARTING
     this._lifecycleState = DaemonLifecycleState.STARTING;
 
@@ -155,7 +164,7 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
     this.router.registerSubscriber(this.subpath, this);
 
     try {
-      // Initialize daemon-specific functionality (may take time)
+      // PHASE 1: Core initialization (BLOCKING - keep this fast!)
       await this.initialize();
 
       // Transition: STARTING → READY
@@ -166,6 +175,12 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
 
       // Emit ready event for health monitoring
       this.emitReady();
+
+      const coreInitMs = Date.now() - initStart;
+
+      // PHASE 2: Deferred initialization (NON-BLOCKING - runs in background)
+      // This happens AFTER the daemon is READY and can process messages
+      this.runDeferredInitialization(coreInitMs);
 
     } catch (error) {
       // Transition: STARTING → FAILED
@@ -181,10 +196,94 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   }
 
   /**
-   * Initialize daemon-specific functionality
-   * Called automatically after construction
+   * Run deferred initialization in background (non-blocking)
+   */
+  private runDeferredInitialization(coreInitMs: number): void {
+    // Use setImmediate to yield to event loop before starting deferred work
+    const scheduleDeferred = typeof setImmediate !== 'undefined'
+      ? setImmediate
+      : (fn: () => void) => setTimeout(fn, 0);
+
+    scheduleDeferred(async () => {
+      const deferredStart = Date.now();
+      try {
+        await this.initializeDeferred();
+        const deferredMs = Date.now() - deferredStart;
+
+        // Emit metrics for observability
+        this.emitInitMetrics(coreInitMs, deferredMs);
+
+      } catch (error) {
+        // Deferred init failures are logged but don't fail the daemon
+        // The daemon is already READY and processing messages
+        this.log.error(`Deferred initialization failed:`, error);
+      }
+    });
+  }
+
+  /**
+   * Emit initialization metrics for observability
+   */
+  private emitInitMetrics(coreInitMs: number, deferredMs: number): void {
+    try {
+      if (typeof window !== 'undefined') return;
+
+      const { Events } = require('../../../system/core/shared/Events');
+      Events.emit('system:daemon:init-metrics', {
+        daemon: this.name,
+        subpath: this.subpath,
+        coreInitMs,
+        deferredMs,
+        totalMs: coreInitMs + deferredMs,
+        timestamp: Date.now()
+      });
+
+      // Log if initialization was slow
+      if (coreInitMs > 100) {
+        this.log.warn(`Slow core init: ${coreInitMs}ms (should be <100ms)`);
+      }
+    } catch {
+      // Ignore - Events module may not be available
+    }
+  }
+
+  /**
+   * PHASE 1: Core initialization (BLOCKING)
+   *
+   * Override this for MINIMAL setup required before the daemon can process messages.
+   * Keep this FAST (<100ms) - move heavy work to initializeDeferred().
+   *
+   * Examples of what belongs here:
+   * - Event subscriptions
+   * - In-memory data structure setup
+   * - Router registration (done automatically)
+   *
+   * Examples of what does NOT belong here:
+   * - Database connections (move to deferred)
+   * - External API calls (move to deferred)
+   * - File I/O (move to deferred)
+   * - Health checks (move to deferred)
    */
   protected abstract initialize(): Promise<void>;
+
+  /**
+   * PHASE 2: Deferred initialization (NON-BLOCKING)
+   *
+   * Override this for HEAVY work that can run after the daemon is READY.
+   * This runs in the background - the daemon is already accepting messages.
+   *
+   * Examples of what belongs here:
+   * - Database connections and migrations
+   * - External service connections (Ollama, APIs)
+   * - Loading cached data
+   * - Health check initialization
+   * - Periodic task registration
+   *
+   * Failures here are logged but don't fail the daemon.
+   */
+  protected async initializeDeferred(): Promise<void> {
+    // Default: no-op (backward compatible with existing daemons)
+  }
 
   /**
    * Process a message - SUBCLASSES MUST IMPLEMENT THIS

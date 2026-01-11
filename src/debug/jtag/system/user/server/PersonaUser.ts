@@ -184,6 +184,9 @@ export class PersonaUser extends AIUser {
   // Room name cache for contextName in timeline events
   private _roomNameCache: Map<UUID, string> = new Map();
 
+  // MEMORY LEAK FIX: Track event subscriptions for cleanup
+  private _eventUnsubscribes: (() => void)[] = [];
+
   /**
    * Get unified consciousness for cross-context awareness
    * Public for RAG sources and cognitive modules
@@ -565,13 +568,19 @@ export class PersonaUser extends AIUser {
 
       // Subscribe to truncate events to reset rate limiter (using Events.subscribe)
       // Pass this.id as subscriberId to enable deduplication (prevents duplicate subscriptions)
-      Events.subscribe('data:chat_messages:truncated', () => {
+      // MEMORY LEAK FIX: Store unsubscribe function for cleanup
+      const unsubTruncate = Events.subscribe('data:chat_messages:truncated', () => {
         // Clear message deduplication cache when messages are truncated
         this.rateLimiter.clearEvaluatedMessages();
       }, undefined, this.id);
+      this._eventUnsubscribes.push(unsubTruncate);
 
       this.eventsSubscribed = true;
       this.log.info(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
+
+      // STARTUP CATCH-UP: Query recent messages that may have arrived during initialization
+      // This prevents the race condition where messages arrive before subscriptions are active
+      await this.catchUpOnRecentMessages();
     } else {
       this.log.info(`⏭️ ${this.displayName}: Skipping subscriptions (already subscribed or no client), eventsSubscribed=${this.eventsSubscribed}, hasClient=${!!this.client}`);
     }
@@ -735,6 +744,98 @@ export class PersonaUser extends AIUser {
   }
 
   /**
+   * Catch up on messages since last processed bookmark
+   * Uses roomReadState from UserStateEntity to track per-room progress
+   * Ensures no messages are missed even after system restart
+   */
+  private async catchUpOnRecentMessages(): Promise<void> {
+    try {
+      const roomIds = Array.from(this.myRoomIds);
+      if (roomIds.length === 0) {
+        this.log.debug(`⏭️ ${this.displayName}: No rooms to catch up on`);
+        return;
+      }
+
+      let totalCaughtUp = 0;
+
+      // Process each room's bookmark independently
+      for (const roomId of roomIds) {
+        // Direct property access (state may be plain object from DB)
+        const roomState = this.state.roomReadState?.[roomId];
+        const cutoffTime = roomState?.lastReadMessageTimestamp || new Date(0).toISOString();
+
+        const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+          collection: COLLECTIONS.CHAT_MESSAGES,
+          filter: {
+            roomId,
+            timestamp: { $gt: cutoffTime }, // Messages AFTER bookmark
+            senderId: { $ne: this.id },
+            senderType: { $ne: 'system' }
+          },
+          sort: [{ field: 'timestamp', direction: 'asc' }],
+          limit: 100 // Process up to 100 per room
+        });
+
+        if (!recentMessages.success || !recentMessages.data || recentMessages.data.length === 0) {
+          continue;
+        }
+
+        const messages = recentMessages.data.map(r => r.data);
+        this.log.info(`🔄 ${this.displayName}: Catching up on ${messages.length} messages in room ${roomId.slice(0,8)}`);
+
+        for (const message of messages) {
+          await this.handleChatMessage(message);
+        }
+
+        totalCaughtUp += messages.length;
+      }
+
+      if (totalCaughtUp > 0) {
+        this.log.info(`✅ ${this.displayName}: Catch-up complete (${totalCaughtUp} messages)`);
+      }
+    } catch (error) {
+      this.log.warn(`⚠️ ${this.displayName}: Catch-up failed (non-fatal):`, error);
+    }
+  }
+
+  /**
+   * Update the room read state bookmark after processing a message
+   * Persists to UserStateEntity for survival across restarts
+   *
+   * Called AFTER message is fully processed (response sent or decision not to respond)
+   * This enables true pause/resume: shutdown mid-processing resumes on restart
+   *
+   * @param roomId - Room the message was in
+   * @param timestamp - Message timestamp (Date or number ms)
+   * @param messageId - Message ID for exact tracking
+   */
+  public async updateMessageBookmark(roomId: UUID, timestamp: Date | number, messageId: UUID): Promise<void> {
+    try {
+      const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp;
+
+      // Update roomReadState directly (state may be plain object from DB, not class instance)
+      if (!this.state.roomReadState) {
+        this.state.roomReadState = {};
+      }
+      this.state.roomReadState[roomId] = {
+        lastReadMessageTimestamp: ts.toISOString(),
+        lastReadMessageId: messageId
+      };
+
+      // Persist state change - storage.save returns result, doesn't throw
+      const result = await this.storage.save(this.state);
+      if (!result.success) {
+        this.log.warn(`⚠️ ${this.displayName}: Bookmark save failed: ${result.error} (stateId=${this.state.id}, roomId=${roomId})`);
+      } else {
+        this.log.debug(`🔖 ${this.displayName}: Bookmark updated for room ${roomId.slice(0,8)} → ${ts.toISOString()}`);
+      }
+    } catch (error) {
+      this.log.warn(`⚠️ ${this.displayName}: Failed to update bookmark: ${error instanceof Error ? error.message : String(error)}`);
+      // Non-fatal - continue processing
+    }
+  }
+
+  /**
    * Handle incoming chat message - PHASE 1: ENQUEUE TO INBOX
    * Messages flow through priority queue before evaluation (proves inbox works)
    * NO autonomous loop yet - still processes immediately after enqueue
@@ -818,6 +919,9 @@ export class PersonaUser extends AIUser {
 
     // Update inbox load in state (for mood calculation)
     this.personaState.updateInboxLoad(this.inbox.getSize());
+
+    // NOTE: Bookmark is NOT updated here - only after message is fully processed
+    // This enables true pause/resume: shutdown mid-processing resumes on restart
 
     this.log.info(`📨 ${this.displayName}: Enqueued message (priority=${priority.toFixed(2)}, inbox size=${this.inbox.getSize()}, mood=${this.personaState.getState().mood})`);
 
@@ -1049,15 +1153,17 @@ export class PersonaUser extends AIUser {
   /**
    * Subscribe to chat events for a single room
    * Used both during initialization and when dynamically added to a room
+   * MEMORY LEAK FIX: Store unsubscribe function for cleanup
    */
   private subscribeToRoomChatEvents(roomId: string): void {
     const eventName = getDataEventName(COLLECTIONS.CHAT_MESSAGES, 'created');
     const handler = this.handleChatMessage.bind(this);
 
-    Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
+    const unsub = Events.subscribe(eventName, async (messageData: ChatMessageEntity) => {
       this.log.debug(`🔔 ${this.displayName}: Event for room ${roomId.slice(0,8)}`);
       await handler(messageData);
     }, { where: { roomId } }, `${this.id}_${roomId}`);
+    this._eventUnsubscribes.push(unsub);
 
     this.log.info(`📡 ${this.displayName}: Subscribed to chat events for room ${roomId.slice(0,8)}`);
   }
@@ -1498,6 +1604,21 @@ export class PersonaUser extends AIUser {
    * Shutdown worker thread and cleanup resources
    */
   async shutdown(): Promise<void> {
+    // MEMORY LEAK FIX: Unsubscribe from all events first
+    const subCount = this._eventUnsubscribes.length;
+    for (const unsub of this._eventUnsubscribes) {
+      try {
+        unsub();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    this._eventUnsubscribes = [];
+    this.log.info(`🧹 ${this.displayName}: Cleaned up ${subCount} event subscriptions`);
+
+    // Clear room name cache
+    this._roomNameCache.clear();
+
     // Unregister consciousness from GlobalAwarenessSource
     if (this._consciousness) {
       unregisterConsciousness(this.id);

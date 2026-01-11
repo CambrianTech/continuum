@@ -358,26 +358,16 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       throw new Error(`CandleGrpcAdapter: Circuit breaker open - local inference unavailable (cooldown ${CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s)`);
     }
 
-    // Track queue depth for logging
-    this.queueDepth++;
-    if (this.queueDepth > 1) {
-      verbose(`[CandleGrpcAdapter] Queue depth: ${this.queueDepth} (waiting for in-flight request)`);
-    }
+    // NOTE: InferenceCoordinator already limits local-inference to 1 concurrent request.
+    // We trust that coordination happened upstream and proceed directly to inference.
+    // No busy-wait queue here - that caused timeout cascades when multiple requests
+    // got past InferenceCoordinator but hit this adapter's internal queue.
 
-    // Wait for current request to finish (simple serial lock)
-    // Local inference takes ~15s per request, so we wait patiently
-    while (this.inFlight) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      // Check if we've been waiting too long
-      if (Date.now() - startTime > CandleGrpcAdapter.MAX_WAIT_TIME_MS) {
-        this.queueDepth--;
-        this.recordTimeout();  // Track for circuit breaker
-        throw new Error(`CandleGrpcAdapter: Timeout waiting for slot (${CandleGrpcAdapter.MAX_WAIT_TIME_MS / 1000}s)`);
-      }
-    }
+    // Track for metrics only (not blocking)
+    this.queueDepth++;
+    verbose(`[CandleGrpcAdapter] Processing request (queue depth: ${this.queueDepth})`);
 
     this.inFlight = true;
-    this.queueDepth--;
 
     // Track adapters applied for this request
     const adaptersAppliedThisRequest: string[] = [];
@@ -535,8 +525,9 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       console.error(`[CandleGrpcAdapter] Generate failed:`, err);
       throw err;
     } finally {
-      // Always release the lock
+      // Always release the lock and decrement queue depth
       this.inFlight = false;
+      this.queueDepth--;
     }
   }
 

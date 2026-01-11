@@ -10,6 +10,27 @@ NC='\033[0m' # No Color
 
 CONFIG_FILE="$(dirname "$0")/workers-config.json"
 
+# Memory limit helper - converts "8G" to bytes for ulimit
+parse_memory_limit() {
+  local limit="$1"
+  local default="$2"
+
+  if [ -z "$limit" ] || [ "$limit" = "null" ]; then
+    limit="$default"
+  fi
+
+  # Extract number and unit
+  local num=$(echo "$limit" | sed 's/[^0-9]//g')
+  local unit=$(echo "$limit" | sed 's/[0-9]//g' | tr '[:lower:]' '[:upper:]')
+
+  case "$unit" in
+    G) echo $((num * 1024 * 1024));; # KB for ulimit -v
+    M) echo $((num * 1024));;
+    K) echo "$num";;
+    *) echo $((4 * 1024 * 1024));; # Default 4GB
+  esac
+}
+
 # Source config.env to get API keys (HF_TOKEN, etc.) for workers
 if [ -f "$HOME/.continuum/config.env" ]; then
   set -a  # Auto-export all variables
@@ -63,6 +84,9 @@ sleep 1.0
 declare -a WORKER_PIDS=()
 declare -a WORKER_NAMES=()
 
+# Get default memory limit from config
+DEFAULT_MEM_LIMIT=$(jq -r '.memoryLimits.default // "4G"' "$CONFIG_FILE")
+
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
   binary=$(echo "$worker" | jq -r '.binary')
@@ -70,16 +94,22 @@ while read -r worker; do
   port=$(echo "$worker" | jq -r '.port // empty')
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   description=$(echo "$worker" | jq -r '.description')
+  mem_limit=$(echo "$worker" | jq -r '.memoryLimit // empty')
 
   # Get args array (may be empty)
   args=$(echo "$worker" | jq -r '.args[]?' || echo "")
 
+  # Calculate memory limit in KB for ulimit
+  MEM_LIMIT_KB=$(parse_memory_limit "$mem_limit" "$DEFAULT_MEM_LIMIT")
+
   echo -e "${YELLOW}🚀 Starting ${name}...${NC}"
   echo -e "   ${description}"
+  echo -e "   Memory limit: ${mem_limit:-$DEFAULT_MEM_LIMIT} (${MEM_LIMIT_KB} KB)"
 
   if [ "$worker_type" = "tcp" ]; then
     # TCP worker (e.g., gRPC server) - no socket argument
-    nohup "$binary" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
+    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
     WORKER_PID=$!
     disown $WORKER_PID
 
@@ -98,15 +128,16 @@ while read -r worker; do
     done
   else
     # Unix socket worker (original behavior)
+    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     if [ -z "$args" ]; then
-      nohup "$binary" "$socket" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
     else
       # Convert newline-separated args to array
       arg_array=()
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      nohup "$binary" "$socket" "${arg_array[@]}" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
     fi
 
     WORKER_PID=$!

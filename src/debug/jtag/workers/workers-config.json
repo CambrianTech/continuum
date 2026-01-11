@@ -1,4 +1,9 @@
 {
+  "memoryLimits": {
+    "default": "4G",
+    "inference": "8G",
+    "embedding": "2G"
+  },
   "workers": [
     {
       "name": "archive",
@@ -30,7 +35,8 @@
         "/tmp/jtag-embedding.sock"
       ],
       "description": "Native embedding generation via fastembed (ONNX). ~5ms vs ~80ms Ollama HTTP.",
-      "enabled": true
+      "enabled": true,
+      "memoryLimit": "2G"
     },
     {
       "name": "inference",
@@ -41,6 +47,7 @@
       ],
       "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
       "enabled": false,
+      "memoryLimit": "8G",
       "preloadModels": [
         "Qwen/Qwen2-1.5B-Instruct",
         "Qwen/Qwen2-0.5B-Instruct"
@@ -52,7 +59,8 @@
       "type": "tcp",
       "port": 50051,
       "description": "gRPC inference server with Candle LLM backend. Replaces Unix socket worker.",
-      "enabled": true
+      "enabled": true,
+      "memoryLimit": "8G"
     },
     {
       "name": "logger",
