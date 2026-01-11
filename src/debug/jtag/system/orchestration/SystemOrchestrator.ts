@@ -693,9 +693,9 @@ export class SystemOrchestrator extends EventEmitter {
       if (pingResponse.success && pingResponse.browser) {
         console.log('🔄 Browser already connected - triggering reload to pick up new code');
 
-        // Navigate to root to reload with new code
+        // Trigger reload in browser
         try {
-          await execAsync('./jtag interface/navigate --path="/"');
+          await execAsync('./jtag interface/navigate');
           console.log('✅ Browser reloaded');
         } catch (navError) {
           console.warn('⚠️ Could not navigate browser, trying page reload');

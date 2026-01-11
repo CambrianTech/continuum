@@ -15,6 +15,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
+import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
@@ -1510,12 +1511,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Must have either text or attachments
     if (!text && this.pendingAttachments.length === 0) {
+      this.isSending = false;
       return;
     }
 
     // Can't send message without a room selected
     if (!this.currentRoomId) {
       console.warn('Cannot send message: no room selected');
+      this.isSending = false;
       return;
     }
 
@@ -1557,18 +1560,32 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Reset textarea height to single row
     this.autoGrowTextarea();
 
-    // Send in background - entity events will add confirmed message
-    Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-      collection: ChatMessageEntity.collection,
-      data: messageEntity,
-      backend: 'server'
-    }).then(() => {
-      // Scroll to bottom after message added by event system
-      if (this.scroller) {
+    // Use proper chat/send command - it generates proper UUIDs and handles all message setup
+    // ARCHITECTURE: Directly replace temp message with real entity from response
+    // This is deterministic - no relying on events/FIFO matching
+    Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+      message: text,
+      room: this.currentRoomId,
+      senderId: DEFAULT_USERS.HUMAN as UUID,  // Explicitly send as Joel, not browser session identity
+      // Media attachments would need to be file paths for chat/send - TODO: handle properly
+    }).then((result) => {
+      console.log(`📤 ChatWidget: chat/send response:`, JSON.stringify(result, null, 2));
+      console.log(`📤 ChatWidget: Message sent successfully, ID: ${result.messageEntity?.id}, replacing temp: ${tempId}`);
+
+      // CRITICAL: Directly replace temp message with real entity
+      // This is the proper pattern for optimistic UI updates
+      this._pendingMessageTempIds.delete(tempId);
+      if (this.scroller && result.messageEntity) {
+        // Remove temp, add real - scroller handles the swap
+        this.scroller.remove(tempId);
+        this.scroller.add(result.messageEntity);
         this.scroller.scrollToEnd();
       }
     }).catch(error => {
-      console.error('❌ Failed to send message:', error);
+      console.error('Failed to send message:', error);
+      // Remove temp message on failure - show error state
+      this._pendingMessageTempIds.delete(tempId);
+      this.scroller?.remove(tempId);
     });
 
     // Scroll immediately to give responsive feel

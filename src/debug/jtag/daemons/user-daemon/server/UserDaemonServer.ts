@@ -72,14 +72,20 @@ export class UserDaemonServer extends UserDaemon {
 
   /**
    * PHASE 2: Deferred initialization (NON-BLOCKING)
-   * ToolRegistry initialization runs here, after daemon is READY.
+   * ToolRegistry + Persona clients initialization runs here, after daemon is READY.
    */
   protected async initializeDeferred(): Promise<void> {
-    this.log.info('🔄 UserDaemonServer: DEFERRED init starting (ToolRegistry)...');
+    this.log.info('🔄 UserDaemonServer: DEFERRED init starting (ToolRegistry + Personas)...');
     const deferredStart = Date.now();
 
     // Initialize ToolRegistry for dynamic tool discovery
     await this.initializeToolRegistry();
+
+    // Initialize persona clients - ensures they're created even if system:ready event was missed
+    // This handles race conditions where DataDaemon emits before UserDaemon subscribes
+    await this.ensurePersonaClients().catch((error: Error) => {
+      this.log.error('❌ UserDaemon: Failed to initialize persona clients in deferred:', error);
+    });
 
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ UserDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
@@ -112,7 +118,8 @@ export class UserDaemonServer extends UserDaemon {
       await ToolRegistry.getInstance().initialize();
       this.log.info('✅ UserDaemon: ToolRegistry initialized');
     } catch (error) {
-      this.log.error('❌ UserDaemon: Failed to initialize ToolRegistry:', error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      this.log.error(`❌ UserDaemon: Failed to initialize ToolRegistry: ${errorMsg}`);
     }
   }
 
@@ -195,8 +202,10 @@ export class UserDaemonServer extends UserDaemon {
    * Ensure all existing PersonaUsers have active client instances
    */
   protected async ensurePersonaClients(): Promise<void> {
+    this.log.info('🔧 UserDaemon: ensurePersonaClients() starting...');
     try {
       // Query all PersonaUser entities from database
+      this.log.info('🔧 UserDaemon: Querying personas from database...');
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'persona' }
@@ -213,10 +222,15 @@ export class UserDaemonServer extends UserDaemon {
         id: r.id
       } as UserEntity));
 
+      this.log.info(`🔧 UserDaemon: Found ${personas.length} personas to initialize`);
+
       // Ensure each persona has correct state
       for (const persona of personas) {
+        this.log.info(`🔧 UserDaemon: Processing persona: ${persona.displayName}`);
         await this.ensurePersonaCorrectState(persona);
       }
+
+      this.log.info(`✅ UserDaemon: ensurePersonaClients() complete - processed ${personas.length} personas`);
 
     } catch (error) {
       // During initialization, DataDaemon might not be ready yet - this is expected
@@ -225,7 +239,7 @@ export class UserDaemonServer extends UserDaemon {
         this.log.warn('⚠️  UserDaemon: Deferring persona client initialization (DataDaemon not ready yet)');
       } else {
         // Unexpected error - log as ERROR
-        this.log.error('❌ UserDaemon: Failed to ensure persona clients:', error);
+        this.log.error(`❌ UserDaemon: Failed to ensure persona clients: ${errorMessage}`);
       }
     }
   }
@@ -293,7 +307,12 @@ export class UserDaemonServer extends UserDaemon {
       this.personaClients.set(userEntity.id, personaUser);
 
     } catch (error) {
-      this.log.error(`❌ UserDaemon: Failed to create persona client for ${userEntity.displayName}:`, error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : '';
+      this.log.error(`❌ UserDaemon: Failed to create persona client for ${userEntity.displayName}: ${errorMsg}`);
+      if (errorStack) {
+        this.log.error(`   Stack: ${errorStack.split('\n').slice(1, 4).join('\n   ')}`);
+      }
     }
   }
 

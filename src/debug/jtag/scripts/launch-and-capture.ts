@@ -622,29 +622,55 @@ async function main(): Promise<void> {
         console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
         console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
 
-        // Refresh browser to ensure it has latest code
-        console.log('🔄 Refreshing browser to sync with latest build...');
+        // Check if browser is connected via ping, then refresh or open
+        console.log('🔄 Checking browser connection...');
         try {
-          const refreshResult = await new Promise<{ success: boolean }>((resolve) => {
-            exec('./jtag interface/navigate', { timeout: 5000 }, (error, stdout) => {
+          const browserUrl = `http://localhost:${httpPort}/`;
+
+          // Check ping to see if browser is connected
+          const pingResult = await new Promise<{ browserConnected: boolean; browserUrl?: string }>((resolve) => {
+            exec('./jtag ping', { timeout: 5000 }, (error, stdout) => {
               if (error) {
-                console.log('⚠️ Browser refresh skipped (browser may not be connected)');
-                resolve({ success: false });
+                resolve({ browserConnected: false });
               } else {
+                try {
+                  const result = JSON.parse(stdout);
+                  // Browser is connected if ping returns browser info
+                  const connected = result.browser && result.browser.type === 'browser';
+                  resolve({
+                    browserConnected: connected,
+                    browserUrl: result.browser?.url
+                  });
+                } catch {
+                  resolve({ browserConnected: false });
+                }
+              }
+            });
+          });
+
+          if (pingResult.browserConnected) {
+            // Browser is connected - refresh it
+            console.log('🔄 Browser connected, refreshing...');
+            exec('./jtag interface/navigate', { timeout: 5000 }, (error, stdout) => {
+              if (!error) {
                 try {
                   const result = JSON.parse(stdout);
                   if (result.success) {
                     console.log('✅ Browser refreshed');
                   }
-                  resolve(result);
                 } catch {
-                  resolve({ success: false });
+                  // Ignore parse errors
                 }
               }
             });
-          });
+          } else {
+            // No browser connected - open one
+            console.log('🌐 No browser connected, opening...');
+            spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
+            console.log(`✅ Browser opened: ${browserUrl}`);
+          }
         } catch {
-          // Browser refresh is best-effort, don't fail startup
+          // Browser sync is best-effort, don't fail startup
         }
 
         if (behavior.showCommands) {

@@ -25,6 +25,7 @@ import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
 import { SystemPaths } from '../../core/config/SystemPaths';
+import { DEFAULT_USERS, DEFAULT_USER_UNIQUE_IDS } from '../../data/domains/DefaultEntities';
 
 /**
  * HumanUser class for human users
@@ -81,7 +82,13 @@ export class HumanUser extends BaseUser {
     userEntity.lastActiveAt = new Date();
     userEntity.capabilities = params.capabilities ?? getDefaultCapabilitiesForType('human');
     userEntity.sessionsActive = [];
-    // createdAt, updatedAt, version, id handled by constructor
+
+    // Use deterministic UUID for known system users (single source of truth)
+    // This ensures DEFAULT_USERS.HUMAN matches the seeded Joel user
+    if (params.uniqueId === DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) {
+      userEntity.id = DEFAULT_USERS.HUMAN;
+    }
+    // Note: other id fields handled by constructor if not explicitly set
 
     const storedEntity = await DataDaemon.store<UserEntity>(
       COLLECTIONS.USERS,
