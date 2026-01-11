@@ -29,6 +29,9 @@ export interface ResponseScoringWeights {
 
   /** High activity in room recently (deprecated, default: 0) */
   readonly roomActivity: number;
+
+  /** Message from human (not AI) - humans should get responses (default: 25) */
+  readonly humanMessage: number;
 }
 
 /**
@@ -74,6 +77,7 @@ export interface ShouldRespondFastParams extends CommandParams {
   /** Sender information */
   readonly senderId: UUID;
   readonly senderName: string;
+  readonly senderType?: 'human' | 'persona' | 'agent' | 'system';
 
   /** Optional: Override default config */
   readonly config?: Partial<PersonaResponseConfig>;
@@ -100,6 +104,7 @@ export interface ShouldRespondFastResult extends CommandResult {
     isQuestion: number;
     unansweredQuestion: number;
     roomActivity: number;
+    humanMessage: number;
   };
 
   /** Detected signals */
@@ -108,6 +113,7 @@ export interface ShouldRespondFastResult extends CommandResult {
     matchedKeywords: string[];
     isQuestion: boolean;
     recentlyActive: boolean;
+    isHumanMessage: boolean;
   };
 
   /** Why this decision was made */
@@ -129,7 +135,8 @@ export const DEFAULT_SCORING_WEIGHTS: ResponseScoringWeights = {
   conversationContext: 20,  // Reduced from 30 - thread continuation
   isQuestion: 10,           // Reduced from 20 - question signal
   unansweredQuestion: 5,    // New: someone should answer, but who?
-  roomActivity: 0           // Disabled: was 5, caused noise
+  roomActivity: 0,          // Disabled: was 5, caused noise
+  humanMessage: 25          // NEW: Humans deserve responses! AI-to-AI can be lower priority
 };
 
 /**
@@ -137,9 +144,10 @@ export const DEFAULT_SCORING_WEIGHTS: ResponseScoringWeights = {
  *
  * With new weights:
  * - Direct mention: 100 → Always respond
+ * - Human question: 25 + 10 + 5 = 40 → Respond (humans deserve attention!)
  * - Domain + context: 25 + 20 = 45 → Respond (engaged expert)
  * - Domain + question: 25 + 10 = 35 → Maybe respond (borderline)
- * - Just question: 10 → Don't respond (let experts handle it)
+ * - AI question: 10 + 5 = 15 → Don't respond (let others handle AI chatter)
  * - Random message: 0 → Never respond
  */
 export const DEFAULT_RESPONSE_THRESHOLD = 35;
