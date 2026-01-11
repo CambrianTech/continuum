@@ -253,9 +253,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       return;
     }
 
-    // Skip if already on this room - check BOTH UUID and uniqueId
-    // This prevents expensive DB queries when multiple events fire for the same room
+    // SAME ROOM: Just refresh messages (new messages may have arrived)
+    // This is critical for switching back to a tab - don't skip the refresh!
     if (roomIdOrUniqueId === this.currentRoomId || roomIdOrUniqueId === this.currentRoomUniqueId) {
+      verbose() && console.log(`📨 ChatWidget: Same room, refreshing messages`);
+      await this.scroller?.refresh();
+      this.updateHeader();
       return;
     }
 
@@ -299,8 +302,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         }
       }
 
-      // Skip if already on this room
+      // SAME ROOM: Refresh messages instead of skipping entirely
+      // New messages may have arrived while viewing other content
       if (roomId === this.currentRoomId) {
+        verbose() && console.log(`📨 ChatWidget: switchToRoom same room, refreshing`);
+        await this.scroller?.refresh();
+        this.updateHeader();
         return;
       }
 
