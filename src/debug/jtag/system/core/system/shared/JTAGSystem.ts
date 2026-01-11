@@ -19,6 +19,7 @@ import type { JTAGRouterConfig } from '../../router/shared/JTAGRouterTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 import type { SessionCategory } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import { isEventSubscriptionProvider, type IEventSubscriptionProvider } from '../../../events/shared/IEventSubscriptionProvider';
+import { DaemonOrchestrator, type DaemonInitMetrics } from './DaemonOrchestrator';
 
 
 /**
@@ -161,8 +162,12 @@ export abstract class JTAGSystem extends JTAGBase {
       
   }
 
+  /** Last daemon init metrics (for observability) */
+  protected lastDaemonMetrics: DaemonInitMetrics[] = [];
+
   /**
    * Setup server-specific daemons using static structure
+   * Uses DaemonOrchestrator for wave-based parallel startup
    */
   async setupDaemons(): Promise<void> {
     // Emit daemons loading event
@@ -171,43 +176,45 @@ export abstract class JTAGSystem extends JTAGBase {
       timestamp: new Date().toISOString(),
       expectedDaemons: this.daemonEntries.map(d => d.name)
     });
-    console.log(`🏗️ JTAG Server: Loading ${this.daemonEntries.length} daemons...`);
 
-    const daemonPromises = this.daemonEntries.map(async (daemonEntry) => {
-      try {
-        const daemon = this.createDaemon(daemonEntry, this.context, this.router);
-        
-        if (daemon) {
-          // Initialize daemon after construction is complete
-          await daemon.initializeDaemon();
+    // Use DaemonOrchestrator for dependency-aware startup
+    const orchestrator = new DaemonOrchestrator(
+      this.daemonEntries,
+      this.context,
+      this.router,
+      (entry, ctx, router) => this.createDaemon(entry, ctx, router)
+    );
 
-          this.register(daemon);
+    const { daemons, metrics } = await orchestrator.startAll();
+    this.lastDaemonMetrics = metrics;
 
-          // Register CommandDaemon to globalThis for server-side Commands.execute() routing
-          if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
-            (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
-          }
-          return daemon;
-        }
-        return null;
-      } catch (error) {
-        console.error(`❌ Failed to create server daemon ${daemonEntry.name}:`, error);
-        return null;
+    // Register all daemons
+    for (const daemon of daemons) {
+      this.register(daemon);
+
+      // Register CommandDaemon to globalThis for server-side Commands.execute() routing
+      if (daemon.name === 'command-daemon' && typeof process !== 'undefined') {
+        (globalThis as any).__JTAG_COMMAND_DAEMON__ = daemon;
       }
-    });
+    }
 
-    await Promise.all(daemonPromises);
-    
     // Emit daemons loaded event
     this.router.eventManager.events.emit(SYSTEM_EVENTS.DAEMONS_LOADED, {
       context: this.context,
       timestamp: new Date().toISOString(),
-      loadedDaemons: this.daemons.map(d => d.name)
+      loadedDaemons: this.daemons.map(d => d.name),
+      metrics: metrics
     });
-    console.log(`🔌 JTAG Server System: Registered ${this.daemons.length} daemons statically`);
-    
+
     // After daemons are set up, connect to SessionDaemon
     await this.connectSession();
+  }
+
+  /**
+   * Get last daemon initialization metrics
+   */
+  getDaemonMetrics(): DaemonInitMetrics[] {
+    return this.lastDaemonMetrics;
   }
 
   /**
