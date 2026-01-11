@@ -15,6 +15,7 @@ mod grpc;
 mod lora;
 mod model;
 mod quantized_model;
+mod worker_pool;
 
 pub mod inference {
     tonic::include_proto!("inference");
@@ -23,6 +24,40 @@ pub mod inference {
 use grpc::InferenceService;
 use inference::inference_server::InferenceServer;
 use model::load_default_model;
+use worker_pool::WorkerPool;
+
+/// Get number of inference workers from config or auto-detect
+fn get_num_workers() -> usize {
+    // Load from ~/.continuum/config.env
+    let config_path = dirs::home_dir()
+        .map(|h| h.join(".continuum/config.env"))
+        .unwrap_or_else(|| PathBuf::from(".continuum/config.env"));
+
+    if let Ok(content) = fs::read_to_string(&config_path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with("INFERENCE_WORKERS=") {
+                if let Some(value) = line.strip_prefix("INFERENCE_WORKERS=") {
+                    if let Ok(n) = value.parse::<usize>() {
+                        return n.max(1).min(8); // Clamp to 1-8
+                    }
+                }
+            }
+        }
+    }
+
+    // Auto-detect: use available memory / 2GB per worker, max 4
+    // Each quantized model uses ~2GB
+    let sys_info = sys_info::mem_info();
+    if let Ok(mem) = sys_info {
+        let total_gb = mem.total as f64 / (1024.0 * 1024.0);
+        let workers = ((total_gb - 4.0) / 2.0).floor() as usize; // Reserve 4GB for system
+        return workers.max(1).min(4); // 1-4 workers
+    }
+
+    // Default: 2 workers
+    2
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum InferenceMode {
@@ -72,50 +107,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("  Listening on: {addr}");
     info!("===========================================");
 
+    // Determine number of workers for concurrent inference
+    let num_workers = get_num_workers();
+    info!("  Workers: {} (INFERENCE_WORKERS env or auto-detected)", num_workers);
+
     // Load model based on mode
-    // Default: quantized (fast startup, auto-switches to BF16 when LoRA is needed)
-    let (model_state, quantized_state) = match mode {
+    // Default: worker pool with quantized models for concurrent inference
+    let service = match mode {
         InferenceMode::Auto | InferenceMode::Quantized => {
-            // Quantized: fast startup (~2s), low memory (~2GB)
-            // Auto-switches to BF16 when LoRA adapters are requested
-            info!("📦 Loading quantized model (Q4_K_M)...");
-            match quantized_model::load_default_quantized() {
-                Ok(state) => {
-                    info!("✅ Quantized ready (2s load, auto-switches to BF16 for LoRA)");
-                    (None, Some(state))
+            // Try to create worker pool for concurrent quantized inference
+            info!("🏭 Creating worker pool with {} quantized models...", num_workers);
+
+            match WorkerPool::new(num_workers).await {
+                Ok(pool) => {
+                    info!("✅ Worker pool ready ({} concurrent inference slots)", num_workers);
+                    InferenceService::new_with_pool(pool)
                 }
                 Err(e) => {
-                    info!("⚠️  Quantized unavailable: {e}");
-                    info!("🔄 Falling back to BF16...");
-                    match load_default_model() {
+                    info!("⚠️ Worker pool failed: {e}");
+                    info!("🔄 Falling back to single quantized instance...");
+
+                    // Fallback to single instance
+                    match quantized_model::load_default_quantized() {
                         Ok(state) => {
-                            info!("✅ BF16 model ready (~14s load)");
-                            (Some(state), None)
+                            info!("✅ Single quantized instance ready");
+                            InferenceService::new_with_quantized(None, Some(state))
                         }
                         Err(e2) => {
-                            info!("❌ Both modes failed: {e2}");
-                            (None, None)
+                            info!("⚠️ Quantized unavailable: {e2}");
+                            info!("🔄 Falling back to BF16...");
+                            match load_default_model() {
+                                Ok(state) => {
+                                    info!("✅ BF16 model ready");
+                                    InferenceService::new_with_quantized(Some(state), None)
+                                }
+                                Err(e3) => {
+                                    info!("❌ All modes failed: {e3}");
+                                    InferenceService::new_with_quantized(None, None)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         InferenceMode::BF16 => {
-            info!("📦 Loading BF16 model (forced)...");
+            // BF16 mode for LoRA support - single instance
+            info!("📦 Loading BF16 model (forced, LoRA support)...");
             match load_default_model() {
                 Ok(state) => {
                     info!("✅ BF16 model ready");
-                    (Some(state), None)
+                    InferenceService::new_with_quantized(Some(state), None)
                 }
                 Err(e) => {
                     info!("❌ Failed to load BF16: {e}");
-                    (None, None)
+                    InferenceService::new_with_quantized(None, None)
                 }
             }
         }
     };
-
-    let service = InferenceService::new_with_quantized(model_state, quantized_state);
 
     Server::builder()
         .add_service(InferenceServer::new(service))
