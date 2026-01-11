@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Continuum Widget Dev - Vite</title>
+  <style>
+    :root {
+      --bg-primary: #0a0e14;
+      --bg-secondary: #141a24;
+      --text-primary: #e6e6e6;
+      --text-secondary: #8a8a8a;
+      --accent: #00bcd4;
+      --accent-hover: #00d4f0;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    h1 {
+      color: var(--accent);
+      margin-bottom: 1rem;
+      font-size: 1.5rem;
+    }
+
+    h2 {
+      color: var(--text-secondary);
+      margin: 2rem 0 1rem;
+      font-size: 1.1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .demo-card {
+      background: var(--bg-secondary);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    button {
+      background: var(--accent);
+      color: var(--bg-primary);
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: 600;
+      margin-right: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    button:hover {
+      background: var(--accent-hover);
+    }
+
+    .count-display {
+      font-size: 3rem;
+      font-weight: bold;
+      color: var(--accent);
+      margin: 1rem 0;
+    }
+
+    .message-list {
+      list-style: none;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .message-list li {
+      padding: 0.5rem;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .loading {
+      color: var(--text-secondary);
+      font-style: italic;
+    }
+
+    .room-name {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    code {
+      background: rgba(0,188,212,0.1);
+      padding: 0.2rem 0.4rem;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+
+    .code-block {
+      background: #1a2233;
+      padding: 1rem;
+      border-radius: 4px;
+      margin: 1rem 0;
+      overflow-x: auto;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <h1>Continuum Widget Dev - Vite + Signals</h1>
+  <p style="color: var(--text-secondary); margin-bottom: 2rem;">
+    Demonstrating reactive patterns for widget migration.
+    Run with <code>npm run dev:vite</code> (port 9100).
+  </p>
+
+  <h2>Example 1: Counter with Signals</h2>
+  <div class="demo-card">
+    <p>A simple counter showing signal reactivity:</p>
+    <div class="count-display" id="count-display">0</div>
+    <button id="increment">Increment</button>
+    <button id="decrement">Decrement</button>
+    <button id="reset">Reset</button>
+  </div>
+
+  <h2>Example 2: Room Store (Chat Pattern)</h2>
+  <div class="demo-card">
+    <p>Simulating ChatWidget state management:</p>
+    <div>
+      <span style="color: var(--text-secondary);">Current Room:</span>
+      <span class="room-name" id="room-name">General</span>
+    </div>
+    <div id="loading-indicator" class="loading" style="display: none;">Loading messages...</div>
+    <ul class="message-list" id="message-list"></ul>
+    <div style="margin-top: 1rem;">
+      <button id="switch-academy">Switch to Academy</button>
+      <button id="switch-general">Switch to General</button>
+      <button id="add-message">Add Message</button>
+    </div>
+  </div>
+
+  <h2>Pattern Comparison</h2>
+  <div class="demo-card">
+    <p><strong>OLD (manual DOM):</strong></p>
+    <div class="code-block">
+this.shadowRoot.querySelector('.count').textContent = count.toString();
+// Must manually update every time count changes
+    </div>
+
+    <p><strong>NEW (signals):</strong></p>
+    <div class="code-block">
+const count = signal(0);
+effect(() => element.textContent = count.value.toString());
+// Automatically updates when count.value changes!
+    </div>
+  </div>
+
+  <script type="module">
+    import { signal, computed, effect, createRoomStore, bindText } from './src/vite-entry.ts';
+
+    // ============================================
+    // Example 1: Simple Counter
+    // ============================================
+    const count = signal(0);
+    const countDisplay = document.getElementById('count-display');
+
+    // This effect runs whenever count changes - AUTOMATIC reactivity!
+    effect(() => {
+      countDisplay.textContent = count.value.toString();
+      console.log('Counter updated:', count.value);
+    });
+
+    document.getElementById('increment').onclick = () => count.value++;
+    document.getElementById('decrement').onclick = () => count.value--;
+    document.getElementById('reset').onclick = () => count.value = 0;
+
+    // ============================================
+    // Example 2: Room Store (like ChatWidget)
+    // ============================================
+    const roomStore = createRoomStore();
+    const roomNameEl = document.getElementById('room-name');
+    const messageListEl = document.getElementById('message-list');
+    const loadingEl = document.getElementById('loading-indicator');
+
+    // Subscribe to room name changes
+    const roomNameSignal = roomStore.getSignal('roomName');
+    effect(() => {
+      roomNameEl.textContent = roomNameSignal.value;
+    });
+
+    // Subscribe to loading state
+    const isLoadingSignal = roomStore.getSignal('isLoading');
+    effect(() => {
+      loadingEl.style.display = isLoadingSignal.value ? 'block' : 'none';
+    });
+
+    // Subscribe to messages
+    const messagesSignal = roomStore.getSignal('messages');
+    effect(() => {
+      messageListEl.innerHTML = '';
+      for (const msg of messagesSignal.value) {
+        const li = document.createElement('li');
+        li.innerHTML = `<strong>${msg.author}:</strong> ${msg.content}`;
+        messageListEl.appendChild(li);
+      }
+    });
+
+    // Room switching simulation
+    async function switchRoom(roomName, roomId) {
+      roomStore.set('isLoading', true);
+      roomStore.set('messages', []);
+      roomStore.set('roomName', roomName);
+      roomStore.set('currentRoomId', roomId);
+
+      // Simulate API call
+      await new Promise(r => setTimeout(r, 500));
+
+      // Simulate loaded messages
+      const sampleMessages = [
+        { id: '1', author: 'Helper AI', content: `Welcome to ${roomName}!` },
+        { id: '2', author: 'Joel', content: 'Testing the reactive system' },
+        { id: '3', author: 'Claude', content: 'Signals make state management clean!' }
+      ];
+      roomStore.set('messages', sampleMessages);
+      roomStore.set('isLoading', false);
+    }
+
+    document.getElementById('switch-academy').onclick = () => switchRoom('Academy', 'academy-123');
+    document.getElementById('switch-general').onclick = () => switchRoom('General', 'general-456');
+
+    let msgCounter = 4;
+    document.getElementById('add-message').onclick = () => {
+      const current = messagesSignal.value;
+      roomStore.set('messages', [
+        ...current,
+        { id: String(msgCounter++), author: 'User', content: `New message at ${new Date().toLocaleTimeString()}` }
+      ]);
+    };
+
+    // Initialize with General room
+    switchRoom('General', 'general-456');
+
+    console.log('🎉 Vite + Signals demo loaded!');
+  </script>
+</body>
+</html>

@@ -70,21 +70,23 @@ export class RecipeLayoutService {
   }
 
   private async doLoad(): Promise<void> {
+    const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
     try {
-      console.log('📚 RecipeLayoutService: Loading recipe layouts via data/list...');
+      if (verbose) console.log('📚 RecipeLayoutService: Loading recipe layouts via data/list...');
 
-      // Query recipes directly from database to get full entity including layout
+      // Query recipes with field projection - only fetch what we need
       const result = await Commands.execute('data/list', {
         collection: 'recipes',
-        limit: 100
+        limit: 100,
+        fields: ['uniqueId', 'displayName', 'layout'] // Only fetch layout-relevant fields
       } as any) as unknown as { items?: RecipeLayoutData[]; success?: boolean; error?: string };
 
-      console.log('📚 RecipeLayoutService: data/list result:', result);
+      if (verbose) console.log('📚 RecipeLayoutService: data/list result:', result);
 
       if (result?.items && result.items.length > 0) {
         for (const recipe of result.items) {
           if (recipe.uniqueId) {
-            console.log(`📚 RecipeLayoutService: Adding recipe '${recipe.uniqueId}' with layout:`, recipe.layout);
+            if (verbose) console.log(`📚 RecipeLayoutService: Adding recipe '${recipe.uniqueId}' with layout:`, recipe.layout);
             this.layouts.set(recipe.uniqueId, {
               uniqueId: recipe.uniqueId,
               displayName: recipe.displayName || recipe.uniqueId,
@@ -92,9 +94,9 @@ export class RecipeLayoutService {
             });
           }
         }
-        console.log(`✅ RecipeLayoutService: Loaded ${this.layouts.size} recipe layouts: ${Array.from(this.layouts.keys()).join(', ')}`);
+        if (verbose) console.log(`✅ RecipeLayoutService: Loaded ${this.layouts.size} recipe layouts: ${Array.from(this.layouts.keys()).join(', ')}`);
       } else {
-        console.warn('⚠️ RecipeLayoutService: No recipes returned from data/list', result);
+        if (verbose) console.warn('⚠️ RecipeLayoutService: No recipes returned from data/list', result);
       }
 
       this.loaded = true;

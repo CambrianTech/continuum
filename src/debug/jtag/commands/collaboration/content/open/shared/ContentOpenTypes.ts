@@ -31,7 +31,8 @@ export interface ContentOpenResult extends CommandResult {
 export interface ContentOpenedEvent {
   readonly contentItemId: UUID;
   readonly contentType: ContentType;
-  readonly entityId?: UUID;          // Optional for singletons like settings
+  readonly entityId?: UUID;          // Canonical UUID - for database lookups
+  readonly uniqueId?: string;        // Human-readable ID - for URLs (e.g., "general")
   readonly title: string;
   readonly userId: UUID;
   readonly currentItemId?: UUID;

@@ -17,7 +17,7 @@ use std::os::unix::net::UnixStream;
 fn debug_log(msg: &str) {
     use std::fs::OpenOptions;
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let log_msg = format!("[{}] {}\n", timestamp, msg);
+    let log_msg = format!("[{timestamp}] {msg}\n");
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -37,10 +37,7 @@ fn debug_log(msg: &str) {
 /// - "export-training": Export training data to JSONL
 /// - "ping": Health check (return stats)
 /// - Unknown types: Return error response
-pub fn handle_client(
-    stream: UnixStream,
-    stats: StatsHandle,
-) -> std::io::Result<()> {
+pub fn handle_client(stream: UnixStream, stats: StatsHandle) -> std::io::Result<()> {
     debug_log("handle_client: START");
     debug_log("Creating BufReader and cloning stream for writer");
     let mut reader = BufReader::new(&stream);
@@ -52,7 +49,7 @@ pub fn handle_client(
         debug_log("Loop iteration: Calling read_line()...");
         let mut line = String::new();
         let bytes_read = reader.read_line(&mut line)?;
-        debug_log(&format!("read_line() returned {} bytes", bytes_read));
+        debug_log(&format!("read_line() returned {bytes_read} bytes"));
 
         if bytes_read == 0 {
             debug_log("bytes_read == 0, client disconnected (EOF)");
@@ -78,18 +75,12 @@ pub fn handle_client(
         // Parse and route message
         match parse_message(line) {
             Ok((msg_type, msg_id)) => {
-                println!("✅ Parsed request: type={}, id={}", msg_type, msg_id);
-                handle_message(
-                    line,
-                    &msg_type,
-                    &msg_id,
-                    &stats,
-                    &mut writer,
-                )?;
+                println!("✅ Parsed request: type={msg_type}, id={msg_id}");
+                handle_message(line, &msg_type, &msg_id, &stats, &mut writer)?;
             }
             Err(e) => {
-                eprintln!("❌ Failed to parse request: {}", e);
-                eprintln!("   Raw message: {}", line);
+                eprintln!("❌ Failed to parse request: {e}");
+                eprintln!("   Raw message: {line}");
                 send_parse_error(line, &mut writer, &e)?;
             }
         }
@@ -192,8 +183,7 @@ fn handle_export_training(
             send_response(&response, writer)?;
 
             println!(
-                "✅ Sent response: {} examples, {} bytes, {}ms",
-                examples_exported, bytes_written, duration_ms
+                "✅ Sent response: {examples_exported} examples, {bytes_written} bytes, {duration_ms}ms"
             );
             Ok(())
         }
@@ -216,11 +206,7 @@ fn handle_export_training(
 }
 
 /// Handle ping request (health check).
-fn handle_ping(
-    line: &str,
-    stats: &StatsHandle,
-    writer: &mut UnixStream,
-) -> std::io::Result<()> {
+fn handle_ping(line: &str, stats: &StatsHandle, writer: &mut UnixStream) -> std::io::Result<()> {
     // Parse request
     let request: JTAGRequest<PingPayload> =
         serde_json::from_str(line).expect("Failed to parse ping payload");
@@ -247,15 +233,14 @@ fn handle_ping(
     send_response(&response, writer)?;
 
     println!(
-        "✅ Sent ping response: uptime={}ms, connections={}, requests={}, examples={}",
-        uptime_ms, connections_total, requests_processed, examples_processed
+        "✅ Sent ping response: uptime={uptime_ms}ms, connections={connections_total}, requests={requests_processed}, examples={examples_processed}"
     );
     Ok(())
 }
 
 /// Handle unknown message type.
 fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std::io::Result<()> {
-    eprintln!("❌ Unknown message type: {}", msg_type);
+    eprintln!("❌ Unknown message type: {msg_type}");
     let error_response = JTAGResponse::<ExportTrainingResult>::error(
         msg_id.to_string(),
         msg_type.to_string(),
@@ -265,7 +250,7 @@ fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std:
             average_quality: 0.0,
             duration_ms: 0,
         },
-        format!("Unknown message type: {}", msg_type),
+        format!("Unknown message type: {msg_type}"),
         JTAGErrorType::Validation,
     );
     send_response(&error_response, writer)
@@ -281,7 +266,7 @@ fn send_response<T: serde::Serialize>(
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     let json = serde_json::to_string(response).expect("Failed to serialize response");
-    writeln!(writer, "{}", json)?;
+    writeln!(writer, "{json}")?;
     writer.flush()
 }
 
@@ -303,7 +288,7 @@ fn send_parse_error(
                     average_quality: 0.0,
                     duration_ms: 0,
                 },
-                format!("Parse error: {}", error),
+                format!("Parse error: {error}"),
                 JTAGErrorType::Validation,
             );
             send_response(&error_response, writer)?;

@@ -25,26 +25,26 @@ const DEFAULT_CONFIG = {
 
 
 
-export class DataListServerCommand<T extends BaseEntity> extends CommandBase<DataListParams<T>, DataListResult<T>> {
+export class DataListServerCommand<T extends BaseEntity> extends CommandBase<DataListParams, DataListResult<T>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-list', context, subpath, commander);
   }
 
 
-  async execute(params: DataListParams<T>): Promise<DataListResult<T>> {
+  async execute(params: DataListParams): Promise<DataListResult<T>> {
     const collection = params.collection;
 
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
-      // FIRST: Get total count with same filters (no limit, no cursor)
+      // FIRST: Get total count using SQL COUNT(*) - NOT fetching all rows!
       const countQuery = {
         collection,
         filter: params.filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
       };
-      const countResult = await DataDaemon.query<BaseEntity>(countQuery);
-      const totalCount = countResult.success ? (countResult.data?.length ?? 0) : 0;
+      const countResult = await DataDaemon.count(countQuery);
+      const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
       // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {

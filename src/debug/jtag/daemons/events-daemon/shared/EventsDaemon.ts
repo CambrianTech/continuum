@@ -1,11 +1,95 @@
 /**
  * Events Daemon - Cross-Context Event Bridge Handler
- * 
+ *
  * Handles 'event-bridge' messages sent by ScopedEventSystem's EventBridge
  * to propagate events between browser and server contexts.
+ *
+ * CRITICAL: Includes rate limiting to prevent cascade failures.
  */
 
 import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
+
+/**
+ * Rate limiter to prevent cascade failures from event floods.
+ * Tracks event counts per type and blocks when threshold exceeded.
+ * Enhanced with diagnostics to identify trending events.
+ */
+class EventRateLimiter {
+  private counts = new Map<string, number>();
+  private windowStart = Date.now();
+  private readonly windowMs = 100;      // 100ms window
+  private readonly maxPerWindow = 20;   // Max 20 of same event per window
+  private readonly warnThreshold = 10;  // Warn at 10+ per window
+  private blocked = new Set<string>();
+  private warned = new Set<string>();   // Track warned events to avoid spam
+
+  // Global stats for diagnostics
+  private totalBlocked = 0;
+  private totalWarned = 0;
+  private blockedHistory: Array<{ event: string; count: number; time: number }> = [];
+
+  shouldBlock(eventName: string): boolean {
+    const now = Date.now();
+
+    // Reset window if expired
+    if (now - this.windowStart > this.windowMs) {
+      // Log summary of previous window if there was activity
+      if (this.counts.size > 0) {
+        const hotEvents = Array.from(this.counts.entries())
+          .filter(([_, count]) => count >= this.warnThreshold)
+          .sort((a, b) => b[1] - a[1]);
+
+        if (hotEvents.length > 0) {
+          console.warn(`⚠️ EVENT ACTIVITY: ${hotEvents.map(([e, c]) => `${e}(${c})`).join(', ')}`);
+        }
+      }
+
+      this.counts.clear();
+      this.blocked.clear();
+      this.warned.clear();
+      this.windowStart = now;
+    }
+
+    // Check if already blocked this window
+    if (this.blocked.has(eventName)) {
+      return true;
+    }
+
+    // Increment count
+    const count = (this.counts.get(eventName) ?? 0) + 1;
+    this.counts.set(eventName, count);
+
+    // Warn at threshold (once per window per event)
+    if (count === this.warnThreshold && !this.warned.has(eventName)) {
+      this.warned.add(eventName);
+      this.totalWarned++;
+      console.warn(`⚠️ EVENT TRENDING: "${eventName}" at ${count}x in ${this.windowMs}ms (blocking at ${this.maxPerWindow})`);
+    }
+
+    // Block if over threshold
+    if (count > this.maxPerWindow) {
+      this.blocked.add(eventName);
+      this.totalBlocked++;
+      this.blockedHistory.push({ event: eventName, count, time: now });
+      // Keep only last 100 blocked events
+      if (this.blockedHistory.length > 100) {
+        this.blockedHistory.shift();
+      }
+      console.error(`🛑 EVENT CASCADE BLOCKED: "${eventName}" fired ${count}x in ${this.windowMs}ms`);
+      return true;
+    }
+
+    return false;
+  }
+
+  getStats(): { totalBlocked: number; totalWarned: number; recentBlocked: Array<{ event: string; count: number; time: number }> } {
+    return {
+      totalBlocked: this.totalBlocked,
+      totalWarned: this.totalWarned,
+      recentBlocked: this.blockedHistory.slice(-10)
+    };
+  }
+}
 import type { JTAGMessage, JTAGContext, JTAGPayload } from '../../../system/core/types/JTAGTypes';
 import { JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
@@ -59,6 +143,9 @@ export abstract class EventsDaemon extends DaemonBase {
   public readonly subpath: string = JTAG_ENDPOINTS.EVENTS.BASE;
   protected abstract eventManager: EventManager;
 
+  // Rate limiter to prevent cascade failures
+  private rateLimiter = new EventRateLimiter();
+
   /**
    * Handle event bridging to local context - implemented by environment-specific subclasses
    */
@@ -105,7 +192,16 @@ export abstract class EventsDaemon extends DaemonBase {
    */
   private async handleEventBridge(message: JTAGMessage): Promise<EventBridgeResponse> {
     const payload = message.payload as EventBridgePayload;
-    
+
+    // CRITICAL: Rate limit to prevent cascade failures
+    if (this.rateLimiter.shouldBlock(payload.eventName)) {
+      return createBaseResponse(true, message.context, payload.sessionId, {
+        bridged: false,
+        eventName: payload.eventName,
+        scope: 'blocked-cascade'
+      }) as EventBridgeResponse;
+    }
+
     try {
       // Check if we're the origin context - if so, skip local emission but still route cross-environment
       const isOriginContext = payload.originContextUUID && payload.originContextUUID === this.context.uuid;

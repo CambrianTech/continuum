@@ -50,7 +50,7 @@ export class UserCreateServerCommand extends UserCreateCommand {
         }
 
         // Create properly typed params with context and sessionId
-        const listParams = createDataListParams<UserEntity>(
+        const listParams = createDataListParams(
           this.context,
           params.sessionId,
           {

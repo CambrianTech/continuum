@@ -11,7 +11,6 @@
 /// - Fast rusqlite execution
 /// - Connection pooling
 /// - Concurrent query handling
-
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

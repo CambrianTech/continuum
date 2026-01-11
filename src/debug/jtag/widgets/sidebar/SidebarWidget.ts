@@ -1,22 +1,62 @@
 /**
- * SidebarWidget - Left sidebar panel with dynamic content
+ * SidebarWidget - Left sidebar panel with responsive content
  *
  * Shows different widgets based on content type:
  * - Default (chat): Emoter, histogram, metrics, room list, user list
  * - Settings: Settings navigation
  * - Help: Help topics navigation
  *
- * Uses LayoutManager to determine which widgets to show.
- * Extends BaseSidePanelWidget for consistent panel behavior.
+ * RESPONSIVE DESIGN: Persistent widgets (emoter, histogram, metrics, user-list)
+ * are rendered ONCE and survive tab switches. Only the dynamic slot is swapped
+ * when content type changes. This preserves animations and prevents expensive
+ * widget recreation.
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseSidePanelWidget, type SidePanelSide } from '../shared/BaseSidePanelWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
-import { LAYOUT_EVENTS, type LayoutChangedPayload, type LayoutWidget, DEFAULT_LAYOUTS, getWidgetsForPosition, getLayoutForContentType } from '../../system/layout';
+import { LAYOUT_EVENTS, type LayoutChangedPayload, type LayoutWidget, DEFAULT_LAYOUTS, getWidgetsForPosition, getLayoutForContentType, GLOBAL_LAYOUT } from '../../system/layout';
+import { styles as SIDE_PANEL_STYLES } from '../shared/styles/side-panel.styles';
+import { styles as SIDEBAR_STYLES } from './public/sidebar-widget.styles';
 
-export class SidebarWidget extends BaseSidePanelWidget {
-  private currentContentType: string = 'chat';
-  private leftWidgets: LayoutWidget[] = [];
+/**
+ * Set of widget tag names that are globally persistent (from GLOBAL_LAYOUT).
+ * These widgets survive ALL content type changes and should never be destroyed.
+ * Content-specific widgets (even if marked persistent: true) are swapped on navigation.
+ */
+const GLOBAL_WIDGET_NAMES = new Set(
+  GLOBAL_LAYOUT.widgets
+    .filter(w => w.position === 'left')
+    .map(w => w.widget)
+);
+
+export class SidebarWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(SIDE_PANEL_STYLES),
+    unsafeCSS(SIDEBAR_STYLES)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private currentContentType: string = 'chat';
+  @reactive() private leftWidgets: LayoutWidget[] = [];
+
+  // Non-reactive state (internal tracking)
+  private _eventUnsubscribers: Array<() => void> = [];
+  private _persistentWidgetsCreated: boolean = false;
+  private _currentDynamicWidgetTag: string | null = null;
+
+  // Widget cache - key is widget tag name, value is created element
+  private _widgetCache = new Map<string, HTMLElement>();
 
   constructor() {
     super({
@@ -26,15 +66,7 @@ export class SidebarWidget extends BaseSidePanelWidget {
 
   // === Panel Configuration ===
 
-  protected get panelTitle(): string {
-    return '';  // Not used - no header
-  }
-
-  protected get panelIcon(): string {
-    return '';  // Not used - no header
-  }
-
-  protected get panelSide(): SidePanelSide {
+  protected get panelSide(): 'left' | 'right' {
     return 'left';
   }
 
@@ -42,145 +74,189 @@ export class SidebarWidget extends BaseSidePanelWidget {
     return false;  // Just floating « button
   }
 
+  protected get collapseChar(): string {
+    return '«';
+  }
+
   // === Lifecycle ===
 
-  protected async onPanelInitialize(): Promise<void> {
-    console.log('🎯 SidebarWidget: Initializing...');
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
+    this.verbose() && console.log('🎯 SidebarWidget: Initializing...');
 
     // Detect initial content type from URL
     const initialContentType = this.detectContentTypeFromUrl();
-    console.log(`📐 SidebarWidget: Initial content type from URL: ${initialContentType}`);
+    this.verbose() && console.log(`📐 SidebarWidget: Initial content type from URL: ${initialContentType}`);
     this.updateLayout(initialContentType);
 
     // Listen for layout changes when content type switches
-    Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
-      console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
-      this.updateLayout(payload.contentType);
-    });
-
-    // Also listen for content:switched events as backup
-    Events.subscribe('content:switched', (data: { contentType?: string }) => {
-      if (data.contentType && data.contentType !== this.currentContentType) {
-        console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
-        this.updateLayout(data.contentType);
-      }
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(LAYOUT_EVENTS.LAYOUT_CHANGED, (payload: LayoutChangedPayload) => {
+        if (payload.contentType !== this.currentContentType) {
+          this.verbose() && console.log(`📐 SidebarWidget: Layout changed to ${payload.contentType}`);
+          this.updateLayout(payload.contentType);
+        }
+      }),
+      Events.subscribe('content:switched', (data: { contentType?: string }) => {
+        if (data.contentType && data.contentType !== this.currentContentType) {
+          this.verbose() && console.log(`📐 SidebarWidget: Content switched to ${data.contentType}`);
+          this.updateLayout(data.contentType);
+        }
+      })
+    );
   }
 
-  /**
-   * Detect content type from current URL pathname
-   * Maps paths like /settings, /theme, /help to their content types
-   * Uses DEFAULT_LAYOUTS keys as source of truth for valid content types
-   */
+  protected override onDisconnect(): void {
+    super.onDisconnect();
+
+    // Unsubscribe from ALL events to prevent memory leaks
+    for (const unsub of this._eventUnsubscribers) {
+      try { unsub(); } catch { /* ignore */ }
+    }
+    this._eventUnsubscribers = [];
+
+    // Reset state
+    this._persistentWidgetsCreated = false;
+    this._currentDynamicWidgetTag = null;
+    this._widgetCache.clear();
+
+    this.verbose() && console.log('🧹 SidebarWidget: Cleanup complete');
+  }
+
+  // === URL Detection ===
+
   private detectContentTypeFromUrl(): string {
     const pathname = window.location.pathname;
-
-    // Get first segment from path (e.g., /settings -> 'settings')
     const firstSegment = pathname.split('/').filter(Boolean)[0] || '';
-
-    // Check if this path matches a known layout content type
     const knownContentTypes = Object.keys(DEFAULT_LAYOUTS);
     if (knownContentTypes.includes(firstSegment)) {
       return firstSegment;
     }
-
-    // Default to chat for root or unknown paths
     return 'chat';
   }
+
+  // === Layout Management ===
 
   private updateLayout(contentType: string): void {
     this.currentContentType = contentType;
     const layout = getLayoutForContentType(contentType);
     this.leftWidgets = getWidgetsForPosition(layout, 'left');
 
-    console.log(`📐 SidebarWidget: Got ${this.leftWidgets.length} left widgets for ${contentType}:`,
+    this.verbose() && console.log(`📐 SidebarWidget: Got ${this.leftWidgets.length} left widgets for ${contentType}:`,
       this.leftWidgets.map(w => w.widget));
 
-    // Re-render with new widgets - call the inherited rendering method
-    this.renderPanelContent().then(html => {
-      const contentContainer = this.shadowRoot?.querySelector('.panel-content');
-      if (contentContainer) {
-        contentContainer.innerHTML = html;
-      }
-    });
+    // Trigger re-render - Lit will diff and update efficiently
+    this.requestUpdate();
   }
 
-  protected async onPanelCleanup(): Promise<void> {
-    console.log('🧹 SidebarWidget: Cleanup complete');
-  }
+  // === Render ===
 
-  // === Content Rendering ===
+  protected override renderContent(): TemplateResult {
+    // Minimal header: just floating collapse button
+    const dynamicWidget = this.renderDynamicWidget();
 
-  protected async renderPanelContent(): Promise<string> {
-    // Always use layout system - GLOBAL_LAYOUT provides persistent widgets,
-    // content-specific layouts are merged on top by getLayoutForContentType()
-    const widgetsHtml = this.leftWidgets.map(w => this.renderLayoutWidget(w)).join('\n');
-    return `<div class="sidebar-widgets">${widgetsHtml}</div>`;
-  }
-
-  private renderLayoutWidget(layoutWidget: LayoutWidget): string {
-    const tagName = layoutWidget.widget;
-
-    // Build attributes from config
-    let attrs = '';
-    if (layoutWidget.config) {
-      for (const [key, value] of Object.entries(layoutWidget.config)) {
-        if (typeof value === 'string') {
-          attrs += ` ${key}="${value}"`;
-        } else if (typeof value === 'boolean' && value) {
-          attrs += ` ${key}`;
-        } else if (typeof value === 'number') {
-          attrs += ` ${key}="${value}"`;
-        }
-      }
-    }
-
-    // Add wrapper with appropriate class for persistent vs dynamic widgets
-    const wrapperClass = layoutWidget.persistent ? 'widget-slot widget-slot--persistent' : 'widget-slot widget-slot--dynamic';
-    return `<div class="${wrapperClass}"><${tagName}${attrs}></${tagName}></div>`;
-  }
-
-  protected getAdditionalStyles(): string {
-    return `
-      .sidebar-widgets {
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        display: flex;
-        flex-direction: column;
-        gap: var(--spacing-md, 12px);
-        padding: var(--spacing-md, 12px);
-        overflow-y: auto;
-        overflow-x: hidden;
-      }
-
-      /* Persistent widgets - natural height, no flex grow */
-      .widget-slot--persistent {
-        flex-shrink: 0;
-      }
-
-      /* Dynamic widgets - flex to fill remaining space */
-      .widget-slot--dynamic {
-        flex: 1;
-        min-height: 100px;
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-      }
-
-      /* Child widgets fill their container */
-      .widget-slot--dynamic > * {
-        flex: 1;
-        min-height: 0;
-      }
+    return html`
+      <button class="collapse-btn floating" title="Collapse panel" @click=${this.handleCollapse}>
+        ${this.collapseChar}
+      </button>
+      <div class="panel-content full-height">
+        <div class="sidebar-widgets">
+          ${this.renderGlobalWidgetsBefore()}
+          ${dynamicWidget ? html`<div class="widget-slot widget-slot--dynamic">${dynamicWidget}</div>` : ''}
+          ${this.renderGlobalWidgetsAfter()}
+        </div>
+      </div>
     `;
   }
 
-  protected async onPanelRendered(): Promise<void> {
-    console.log('✅ SidebarWidget: Rendered');
+  /**
+   * Render global widgets that appear BEFORE the dynamic slot (order < 0)
+   */
+  private renderGlobalWidgetsBefore(): TemplateResult[] {
+    const isGlobal = (w: LayoutWidget) => GLOBAL_WIDGET_NAMES.has(w.widget);
+    const globalBefore = this.leftWidgets.filter(w => isGlobal(w) && w.order < 0);
+
+    return globalBefore.map(w => html`
+      <div class="widget-slot widget-slot--persistent">
+        ${this.getOrCreateWidget(w)}
+      </div>
+    `);
   }
+
+  /**
+   * Render global widgets that appear AFTER the dynamic slot (order > 0)
+   */
+  private renderGlobalWidgetsAfter(): TemplateResult[] {
+    const isGlobal = (w: LayoutWidget) => GLOBAL_WIDGET_NAMES.has(w.widget);
+    const globalAfter = this.leftWidgets.filter(w => isGlobal(w) && w.order > 0);
+
+    return globalAfter.map(w => html`
+      <div class="widget-slot widget-slot--persistent">
+        ${this.getOrCreateWidget(w)}
+      </div>
+    `);
+  }
+
+  /**
+   * Render the dynamic widget (content-specific, swaps on navigation)
+   */
+  private renderDynamicWidget(): HTMLElement | null {
+    const isGlobal = (w: LayoutWidget) => GLOBAL_WIDGET_NAMES.has(w.widget);
+    const dynamicWidget = this.leftWidgets.find(w => !isGlobal(w));
+
+    if (!dynamicWidget) return null;
+
+    const newTag = dynamicWidget.widget;
+    if (newTag !== this._currentDynamicWidgetTag) {
+      this.verbose() && console.log(`📐 SidebarWidget: Dynamic widget changed: ${this._currentDynamicWidgetTag} → ${newTag}`);
+      this._currentDynamicWidgetTag = newTag;
+    }
+
+    return this.getOrCreateWidget(dynamicWidget);
+  }
+
+  /**
+   * Get a cached widget or create a new one
+   * Widgets are cached to preserve state across re-renders
+   */
+  private getOrCreateWidget(layoutWidget: LayoutWidget): HTMLElement {
+    const tagName = layoutWidget.widget;
+    let widget = this._widgetCache.get(tagName);
+
+    if (!widget) {
+      widget = document.createElement(tagName);
+
+      // Apply config as attributes
+      if (layoutWidget.config) {
+        for (const [key, value] of Object.entries(layoutWidget.config)) {
+          if (typeof value === 'string') {
+            widget.setAttribute(key, value);
+          } else if (typeof value === 'boolean' && value) {
+            widget.setAttribute(key, '');
+          } else if (typeof value === 'number') {
+            widget.setAttribute(key, String(value));
+          }
+        }
+      }
+
+      this._widgetCache.set(tagName, widget);
+      this.verbose() && console.log(`📐 SidebarWidget: Created and cached ${tagName}`);
+    }
+
+    return widget;
+  }
+
+  // === Event Handlers ===
+
+  private handleCollapse = (): void => {
+    const continuumWidget = document.querySelector('continuum-widget');
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector(
+        `panel-resizer[side="${this.panelSide}"]`
+      ) as any;
+      resizer?.toggle?.();
+    }
+  };
 }
 
 // Registration handled by centralized BROWSER_WIDGETS registry

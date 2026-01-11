@@ -13,7 +13,6 @@
 ///
 /// Usage:
 ///   cargo run --release -- /tmp/data-worker.sock
-
 mod connection_handler;
 mod database;
 mod health;
@@ -49,8 +48,8 @@ fn main() -> std::io::Result<()> {
     let db_path = get_database_path();
 
     println!("🚀 Data Worker Starting...");
-    println!("   Socket: {}", socket_path);
-    println!("   Database: {}", db_path);
+    println!("   Socket: {socket_path}");
+    println!("   Database: {db_path}");
 
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
@@ -79,16 +78,11 @@ fn main() -> std::io::Result<()> {
     let processor_stats = stats.clone();
     let processor_shutdown = shutdown_signal.clone();
     let processor_thread = thread::spawn(move || {
-        processor::process_data_queue(
-            data_rx,
-            processor_pool,
-            processor_stats,
-            processor_shutdown,
-        );
+        processor::process_data_queue(data_rx, processor_pool, processor_stats, processor_shutdown);
     });
     println!("✅ Processor thread spawned");
 
-    println!("🎧 Listening for connections on {}...", socket_path);
+    println!("🎧 Listening for connections on {socket_path}...");
     println!("📡 Ready to process data operations");
     println!();
 
@@ -120,12 +114,12 @@ fn main() -> std::io::Result<()> {
                         stats_clone,
                         shutdown_clone,
                     ) {
-                        eprintln!("❌ Connection handler error: {}", e);
+                        eprintln!("❌ Connection handler error: {e}");
                     }
                 });
             }
             Err(e) => {
-                eprintln!("❌ Failed to accept connection: {}", e);
+                eprintln!("❌ Failed to accept connection: {e}");
             }
         }
     }
@@ -146,30 +140,14 @@ fn main() -> std::io::Result<()> {
 // ============================================================================
 
 /// Get database path from environment or use default
+/// Single source of truth: $HOME/.continuum/data/database.sqlite
 fn get_database_path() -> String {
-    // Try environment variable first
+    // Try environment variable first (matches TypeScript ServerConfig)
     if let Ok(db_path) = env::var("CONTINUUM_DB_PATH") {
         return db_path;
     }
 
-    // Try to find database in .continuum directory structure
+    // Default path: $HOME/.continuum/data/database.sqlite
     let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let continuum_dir = format!("{}/.continuum/sessions", home_dir);
-
-    // Look for continuum.db in session directories
-    if let Ok(entries) = fs::read_dir(&continuum_dir) {
-        for entry in entries.flatten() {
-            let session_path = entry.path();
-            if session_path.is_dir() {
-                // Check for shared/databases/continuum.db
-                let db_path = session_path.join("shared/databases/continuum.db");
-                if db_path.exists() {
-                    return db_path.to_string_lossy().to_string();
-                }
-            }
-        }
-    }
-
-    // Fallback to JTAG default database path
-    ".continuum/jtag/data/database.sqlite".to_string()
+    format!("{home_dir}/.continuum/data/database.sqlite")
 }

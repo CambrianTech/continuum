@@ -9,19 +9,18 @@
 ///
 /// The main thread queues messages here and returns immediately,
 /// freeing the main thread from blocking operations.
-
 use crate::health::StatsHandle;
 use crate::QueuedChat;
 use crate::ShutdownSignal;
-use std::sync::mpsc;
-use std::sync::atomic::Ordering;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 
 /// Debug logging to file (temporary)
 fn debug_log(msg: &str) {
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let log_msg = format!("[{}] {}\n", timestamp, msg);
+    let log_msg = format!("[{timestamp}] {msg}\n");
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -69,14 +68,12 @@ pub fn process_chat_queue(
             Ok(personas_notified) => {
                 debug_log(&format!(
                     "[Processor] Processed message from {} in room {}, notified {} personas",
-                    queued_chat.payload.sender_name,
-                    queued_chat.payload.room_id,
-                    personas_notified
+                    queued_chat.payload.sender_name, queued_chat.payload.room_id, personas_notified
                 ));
             }
             Err(e) => {
-                eprintln!("❌ Processor error: {}", e);
-                debug_log(&format!("[Processor] Error processing message: {}", e));
+                eprintln!("❌ Processor error: {e}");
+                debug_log(&format!("[Processor] Error processing message: {e}"));
 
                 // Record error in stats
                 let mut s = stats.lock().unwrap();
@@ -86,13 +83,12 @@ pub fn process_chat_queue(
 
         // Log throughput every 100 messages
         if processed % 100 == 0 {
-            debug_log(&format!("[Processor] Processed {} chat messages", processed));
+            debug_log(&format!("[Processor] Processed {processed} chat messages"));
         }
     }
 
     debug_log(&format!(
-        "[Processor] Queue drained, processed {} total messages",
-        processed
+        "[Processor] Queue drained, processed {processed} total messages"
     ));
 }
 
@@ -130,7 +126,7 @@ fn process_single_message(queued_chat: &QueuedChat) -> Result<usize, String> {
     std::thread::sleep(std::time::Duration::from_millis(5));
 
     // Placeholder: Return number of personas notified
-    Ok(3)  // Simulated: notified 3 personas
+    Ok(3) // Simulated: notified 3 personas
 }
 
 // ============================================================================
@@ -145,14 +141,14 @@ fn process_single_message(queued_chat: &QueuedChat) -> Result<usize, String> {
 /// - Tool execution results
 /// - Persona memories
 #[allow(dead_code)]
-fn build_rag_context(queued_chat: &QueuedChat) -> Result<RagContext, String> {
+fn build_rag_context(_queued_chat: &QueuedChat) -> Result<RagContext, String> {
     // TODO: Implement RAG context building
     unimplemented!("RAG context building not yet implemented")
 }
 
 /// Identify which personas should be notified about this message
 #[allow(dead_code)]
-fn identify_relevant_personas(queued_chat: &QueuedChat) -> Vec<String> {
+fn identify_relevant_personas(_queued_chat: &QueuedChat) -> Vec<String> {
     // TODO: Implement persona identification
     // Based on:
     // - Room membership
@@ -165,9 +161,9 @@ fn identify_relevant_personas(queued_chat: &QueuedChat) -> Vec<String> {
 /// Call AI APIs to generate responses
 #[allow(dead_code)]
 fn generate_ai_responses(
-    queued_chat: &QueuedChat,
-    context: &RagContext,
-    personas: &[String],
+    _queued_chat: &QueuedChat,
+    _context: &RagContext,
+    _personas: &[String],
 ) -> Result<Vec<PersonaResponse>, String> {
     // TODO: Implement AI API calls
     // - Parallel requests to multiple AI providers
@@ -178,7 +174,7 @@ fn generate_ai_responses(
 
 /// Persist responses to database
 #[allow(dead_code)]
-fn persist_responses(responses: &[PersonaResponse]) -> Result<(), String> {
+fn persist_responses(_responses: &[PersonaResponse]) -> Result<(), String> {
     // TODO: Implement response persistence
     // - Save to chat_messages table
     // - Update persona states

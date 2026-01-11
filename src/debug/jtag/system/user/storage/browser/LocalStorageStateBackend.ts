@@ -4,6 +4,9 @@
  * Used by:
  * - HumanUser in browser (persistent across sessions)
  *
+ * Uses AsyncStorage for non-blocking writes (debounced, requestIdleCallback).
+ * Reads check pending writes first for read-your-writes consistency.
+ *
  * Follows ARCHITECTURE-RULES.md:
  * - Browser-specific code in browser/ directory
  * - No dynamic imports
@@ -15,6 +18,7 @@
 import type { IUserStateStorage } from '../IUserStateStorage';
 import type { UserStateEntity } from '../../../data/entities/UserStateEntity';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
+import { asyncStorage } from '../../../core/browser/AsyncStorage';
 
 /**
  * localStorage storage backend for UserState
@@ -32,6 +36,7 @@ export class LocalStorageStateBackend implements IUserStateStorage {
 
   /**
    * Save UserState to localStorage
+   * Uses asyncStorage for non-blocking writes
    */
   async save(state: UserStateEntity): Promise<{ success: boolean; error?: string }> {
     try {
@@ -42,7 +47,8 @@ export class LocalStorageStateBackend implements IUserStateStorage {
       const key = this.createKey(state.userId, state.deviceId);
       const serialized = JSON.stringify(state);
 
-      localStorage.setItem(key, serialized);
+      // Non-blocking write via asyncStorage
+      asyncStorage.setItem(key, serialized);
 
       return { success: true };
     } catch (error) {
@@ -55,6 +61,7 @@ export class LocalStorageStateBackend implements IUserStateStorage {
 
   /**
    * Load UserState from localStorage
+   * Uses asyncStorage.getItem which checks pending writes first
    */
   async load(userId: UUID, deviceId: string): Promise<UserStateEntity | null> {
     try {
@@ -63,7 +70,7 @@ export class LocalStorageStateBackend implements IUserStateStorage {
       }
 
       const key = this.createKey(userId, deviceId);
-      const serialized = localStorage.getItem(key);
+      const serialized = asyncStorage.getItem(key);
 
       if (!serialized) {
         return null;
@@ -91,6 +98,7 @@ export class LocalStorageStateBackend implements IUserStateStorage {
 
   /**
    * Delete UserState from localStorage
+   * Uses asyncStorage for non-blocking removal
    */
   async delete(userId: UUID, deviceId: string): Promise<{ success: boolean; error?: string }> {
     try {
@@ -99,7 +107,8 @@ export class LocalStorageStateBackend implements IUserStateStorage {
       }
 
       const key = this.createKey(userId, deviceId);
-      localStorage.removeItem(key);
+      // Non-blocking remove via asyncStorage
+      asyncStorage.removeItem(key);
 
       return { success: true };
     } catch (error) {
@@ -131,20 +140,17 @@ export class LocalStorageStateBackend implements IUserStateStorage {
 
   /**
    * Clear all UserState entries from localStorage (useful for testing)
+   * Uses asyncStorage for non-blocking removal
    */
   clearAll(): void {
     if (!this.isAvailable()) {
       return;
     }
 
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key?.startsWith(this.storagePrefix)) {
-        keys.push(key);
-      }
-    }
+    const allKeys = asyncStorage.keys();
+    const keys = allKeys.filter(key => key?.startsWith(this.storagePrefix));
 
-    keys.forEach(key => localStorage.removeItem(key));
+    // Non-blocking remove via asyncStorage
+    keys.forEach(key => asyncStorage.removeItem(key));
   }
 }

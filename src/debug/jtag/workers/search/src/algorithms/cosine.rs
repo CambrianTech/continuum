@@ -6,7 +6,6 @@
 /// Parameters:
 /// - normalize: Whether to L2-normalize vectors (default: true)
 /// - threshold: Minimum similarity to include in results (default: 0.0)
-
 use super::{SearchAlgorithm, SearchInput, SearchOutput};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -121,33 +120,38 @@ impl SearchAlgorithm for CosineAlgorithm {
     /// Primary use is vector_search() called directly with vectors
     fn execute(&self, input: &SearchInput) -> SearchOutput {
         // For text input, use simple term overlap as approximation
-        let query_terms: std::collections::HashSet<_> = input.query
+        let query_terms: std::collections::HashSet<_> = input
+            .query
             .to_lowercase()
             .split_whitespace()
             .map(String::from)
             .collect();
 
-        let scores: Vec<f64> = input.corpus.iter().map(|doc| {
-            let doc_terms: std::collections::HashSet<_> = doc
-                .to_lowercase()
-                .split_whitespace()
-                .map(String::from)
-                .collect();
+        let scores: Vec<f64> = input
+            .corpus
+            .iter()
+            .map(|doc| {
+                let doc_terms: std::collections::HashSet<_> = doc
+                    .to_lowercase()
+                    .split_whitespace()
+                    .map(String::from)
+                    .collect();
 
-            if query_terms.is_empty() || doc_terms.is_empty() {
-                return 0.0;
-            }
+                if query_terms.is_empty() || doc_terms.is_empty() {
+                    return 0.0;
+                }
 
-            // Jaccard similarity as approximation
-            let intersection = query_terms.intersection(&doc_terms).count() as f64;
-            let union = query_terms.union(&doc_terms).count() as f64;
+                // Jaccard similarity as approximation
+                let intersection = query_terms.intersection(&doc_terms).count() as f64;
+                let union = query_terms.union(&doc_terms).count() as f64;
 
-            if union > 0.0 {
-                intersection / union
-            } else {
-                0.0
-            }
-        }).collect();
+                if union > 0.0 {
+                    intersection / union
+                } else {
+                    0.0
+                }
+            })
+            .collect();
 
         let mut ranked: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -177,7 +181,7 @@ impl SearchAlgorithm for CosineAlgorithm {
                 self.threshold = value.as_f64().ok_or("threshold must be float")?;
                 Ok(())
             }
-            _ => Err(format!("Unknown parameter: {}", name)),
+            _ => Err(format!("Unknown parameter: {name}")),
         }
     }
 
@@ -216,9 +220,9 @@ mod tests {
         let input = VectorSearchInput {
             query_vector: vec![1.0, 0.0, 0.0],
             corpus_vectors: vec![
-                vec![1.0, 0.0, 0.0],   // identical = 1.0
-                vec![0.0, 1.0, 0.0],   // orthogonal = 0.0
-                vec![0.7, 0.7, 0.0],   // similar ≈ 0.707
+                vec![1.0, 0.0, 0.0], // identical = 1.0
+                vec![0.0, 1.0, 0.0], // orthogonal = 0.0
+                vec![0.7, 0.7, 0.0], // similar ≈ 0.707
             ],
         };
         let output = alg.vector_search(&input);

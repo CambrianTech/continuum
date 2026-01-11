@@ -1,9 +1,9 @@
 /**
  * Base Message Row Widget - Modular Chat Message Rendering
- * 
+ *
  * Provides common message row functionality (positioning, timestamps, reactions)
  * while allowing specialized content rendering based on message type.
- * 
+ *
  * Architecture: Content Type → Widget Plugin Mapping
  * Each ChatContentType gets its own specialized renderer that extends this base.
  */
@@ -11,6 +11,9 @@
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { ChatMessageEntityHelpers } from './ChatModuleTypes';
 import type { ChatMessagePayload, ChatContentType } from './ChatMessagePayload';
+
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
 /**
  * Message Renderer Interface - Extensible for future widget conversion
@@ -97,7 +100,7 @@ export abstract class BaseMessageRowWidget {
     const userClass = ChatMessageEntityHelpers.getUserPositionClass(message, currentUserId);
     const displayName = ChatMessageEntityHelpers.getDisplayName(message);
 
-    console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
+    verbose() && console.log(`🔧 CLAUDE-RENDER-DEBUG: senderId="${message.senderId}", currentUserId="${currentUserId}", isCurrentUser=${isCurrentUser}, alignment="${alignment}"`);
 
     return `
       <div class="message-row ${alignment}">

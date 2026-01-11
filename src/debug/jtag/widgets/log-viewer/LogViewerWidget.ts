@@ -65,10 +65,29 @@ export class LogViewerWidget extends BasePanelWidget {
     await this.loadLogPathFromContent();
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * This allows cached widgets to reload with different log files.
+   */
+  public async onActivate(entityId?: string): Promise<void> {
+    console.log(`📜 LogViewer: onActivate called with entityId=${entityId}`);
+
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+    }
+
+    // Stop current auto-refresh before switching
+    this.stopAutoRefresh();
+
+    // Reload with new log path
+    await this.loadLogPathFromContent();
+  }
+
   private async loadLogPathFromContent(): Promise<void> {
     // Try to get log path from content item metadata
     // The DiagnosticsWidget passes logPath in metadata when opening this tab
-    const logPath = (this as any).getAttribute?.('data-entity-id') ||
+    const logPath = this.getAttribute('entity-id') ||
+                    this.getAttribute('data-entity-id') ||
                     (this as any).entityId ||
                     '.continuum/personas/helper/logs/hippocampus.log'; // Default for testing
 
@@ -119,38 +138,10 @@ export class LogViewerWidget extends BasePanelWidget {
 
   /**
    * Emit Positron context for AI awareness
-   * Called when log loads or filters change
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    // Count errors and warnings in visible lines
-    const errorCount = this.logData.lines.filter(l => l.level === 'ERROR').length;
-    const warnCount = this.logData.lines.filter(l => l.level === 'WARN').length;
-
-    // Get recent errors for AI context
-    const recentErrors = this.logData.lines
-      .filter(l => l.level === 'ERROR')
-      .slice(-5)
-      .map(l => l.content);
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'log-viewer',
-        entityId: this.logData.logPath,
-        title: `Logs - ${this.logData.logName}`,
-        metadata: {
-          logPath: this.logData.logPath,
-          totalLines: this.logData.totalLines,
-          visibleLines: this.logData.lines.length,
-          levelFilter: this.logData.levelFilter,
-          componentFilter: this.logData.componentFilter,
-          errorCount,
-          warnCount,
-          autoFollow: this.logData.autoFollow,
-          recentErrors
-        }
-      },
-      { action: 'debugging', target: this.logData.logName }
-    );
+    // No-op - context cascade fix
   }
 
   private startAutoRefresh(): void {
@@ -162,6 +153,13 @@ export class LogViewerWidget extends BasePanelWidget {
       this.refreshInterval = window.setInterval(() => {
         this.refreshLog();
       }, 3000); // Refresh every 3 seconds
+    }
+  }
+
+  private stopAutoRefresh(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = undefined;
     }
   }
 

@@ -275,6 +275,20 @@ export abstract class DataStorageAdapter {
   abstract query<T extends RecordData>(query: StorageQuery): Promise<StorageResult<DataRecord<T>[]>>;
 
   /**
+   * Count records matching query filters using SQL COUNT(*)
+   *
+   * CRITICAL: Uses SQL aggregation, NOT fetching all rows!
+   * Default implementation falls back to query().length - override for efficiency.
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    const result = await this.query(query);
+    if (!result.success) {
+      return { success: false, error: result.error };
+    }
+    return { success: true, data: result.data?.length ?? 0 };
+  }
+
+  /**
    * Query records with JOIN support for loading related data
    *
    * Eliminates N+1 query patterns by loading related data in a single query.

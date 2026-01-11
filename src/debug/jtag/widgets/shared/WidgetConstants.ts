@@ -94,6 +94,58 @@ export const DAEMON_NAMES = {
   SESSION: 'session'
 } as const;
 
+// Widget attribute names - SINGLE SOURCE OF TRUTH
+// Use these instead of string literals to avoid 'entity-id' vs 'data-entity-id' bugs
+export const WIDGET_ATTRS = {
+  /** Entity ID - the primary identifier for the widget's data */
+  ENTITY_ID: 'entity-id',
+
+  /** Data entity ID - HTML5 data attribute form (for backwards compatibility) */
+  DATA_ENTITY_ID: 'data-entity-id',
+
+  /** Room attribute - for chat widgets pinned to specific rooms */
+  ROOM: 'room',
+
+  /** Compact mode attribute */
+  COMPACT: 'compact',
+
+  /** Activity ID - for collaborative activities */
+  ACTIVITY_ID: 'activity-id',
+
+  /** Message ID - for message elements */
+  MESSAGE_ID: 'message-id',
+
+  /** Pool ID - for element pooling */
+  POOL_ID: 'data-pool-id',
+} as const;
+
+/**
+ * Get entity ID from a widget element, checking all possible attribute names
+ *
+ * @param element - The widget element to get entity ID from
+ * @returns The entity ID or undefined if not found
+ */
+export function getWidgetEntityId(element: HTMLElement): string | undefined {
+  return element.getAttribute(WIDGET_ATTRS.ENTITY_ID)
+    || element.getAttribute(WIDGET_ATTRS.DATA_ENTITY_ID)
+    || undefined;
+}
+
+/**
+ * Set entity ID on a widget element using the standard attribute name
+ *
+ * @param element - The widget element to set entity ID on
+ * @param entityId - The entity ID to set (or undefined to remove)
+ */
+export function setWidgetEntityId(element: HTMLElement, entityId: string | undefined): void {
+  if (entityId) {
+    element.setAttribute(WIDGET_ATTRS.ENTITY_ID, entityId);
+  } else {
+    element.removeAttribute(WIDGET_ATTRS.ENTITY_ID);
+    element.removeAttribute(WIDGET_ATTRS.DATA_ENTITY_ID);
+  }
+}
+
 // Type exports for strict typing
 export type ThemeName = typeof THEME_NAMES[keyof typeof THEME_NAMES];
 export type DatabaseOperation = typeof DATABASE_OPERATIONS[keyof typeof DATABASE_OPERATIONS];
@@ -104,3 +156,4 @@ export type WidgetChannel = typeof WIDGET_CHANNELS[keyof typeof WIDGET_CHANNELS]
 export type AIPersona = typeof AI_PERSONAS[keyof typeof AI_PERSONAS];
 export type WidgetDirectory = typeof WIDGET_DIRECTORIES[keyof typeof WIDGET_DIRECTORIES];
 export type DaemonName = typeof DAEMON_NAMES[keyof typeof DAEMON_NAMES];
+export type WidgetAttr = typeof WIDGET_ATTRS[keyof typeof WIDGET_ATTRS];

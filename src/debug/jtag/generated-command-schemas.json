@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-06T22:05:05.706Z",
+  "generated": "2026-01-11T02:16:46.805Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -526,6 +526,65 @@
       }
     },
     {
+      "name": "theme",
+      "description": "Theme Command Types - Base types for theme operations\n * \n * Following the same pattern as FileTypes for consistency",
+      "params": {
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "theme/set",
+      "description": "ThemeSet Types - Theme setting command types",
+      "params": {
+        "themeName": {
+          "type": "string",
+          "required": true,
+          "description": "themeName parameter"
+        },
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "theme/list",
+      "description": "ThemeList Types - Theme listing command types",
+      "params": {
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
+        },
+        "includeManifests": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeManifests parameter"
+        },
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "theme/get",
+      "description": "ThemeGet Types - Theme getting command types",
+      "params": {
+        "timestamp": {
+          "type": "string",
+          "required": false,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
       "name": "system/daemons",
       "description": "Daemons Command Types\n *\n * List all registered system daemons with their status",
       "params": {
@@ -538,6 +597,89 @@
           "type": "boolean",
           "required": false,
           "description": "statusOnly parameter"
+        }
+      }
+    },
+    {
+      "name": "state/update",
+      "description": "State Update Types - User-aware entity updates\n *\n * Provides elegant wrapper around data/update with automatic user context injection\n * Following the established state command pattern for simple delegation",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "id parameter"
+        },
+        "data": {
+          "type": "object",
+          "required": true,
+          "description": "data parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
+        }
+      }
+    },
+    {
+      "name": "state/get",
+      "description": "State Get Command - Shared Types\n *\n * Follows data daemon command pattern for elegant entity state management",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "filter": {
+          "type": "object",
+          "required": false,
+          "description": "filter parameter"
+        },
+        "orderBy": {
+          "type": "object",
+          "required": false,
+          "description": "orderBy parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
+        }
+      }
+    },
+    {
+      "name": "state/create",
+      "description": "State Create Command - Shared Types\n *\n * Follows data daemon command pattern for elegant entity state management",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "data": {
+          "type": "object",
+          "required": true,
+          "description": "data parameter"
+        },
+        "id": {
+          "type": "string",
+          "required": false,
+          "description": "id parameter"
+        },
+        "userId": {
+          "type": "string",
+          "required": false,
+          "description": "userId parameter"
         }
       }
     },
@@ -2118,6 +2260,95 @@
       }
     },
     {
+      "name": "file/save",
+      "description": "FileSave Types - Generic Inheritance from File Base Types\n * \n * GENERIC HIERARCHY:\n * FileParams<{content, createDirs}> → FileSaveParams\n * FileResult<{bytesWritten, created}> → FileSaveResult",
+      "params": {
+        "filepath": {
+          "type": "string",
+          "required": true,
+          "description": "filepath parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "createDirs": {
+          "type": "boolean",
+          "required": false,
+          "description": "createDirs parameter"
+        },
+        "encoding": {
+          "type": "string",
+          "required": false,
+          "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "file/mime-type",
+      "description": "File MIME Type Command Types\n * Detects MIME type from file extension or file content",
+      "params": {
+        "filepath": {
+          "type": "string",
+          "required": true,
+          "description": "filepath parameter"
+        },
+        "inspectContent": {
+          "type": "boolean",
+          "required": false,
+          "description": "inspectContent parameter"
+        },
+        "encoding": {
+          "type": "string",
+          "required": false,
+          "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "file/load",
+      "description": "FileLoad Types - Elegant Inheritance from File Base Types\n * \n * INHERITANCE HIERARCHY:\n * FileParams → FileLoadParams (no additional fields - pure inheritance)\n * FileResult → FileLoadResult (adds content, bytesRead)",
+      "params": {
+        "filepath": {
+          "type": "string",
+          "required": true,
+          "description": "filepath parameter"
+        },
+        "encoding": {
+          "type": "string",
+          "required": false,
+          "description": "encoding parameter"
+        }
+      }
+    },
+    {
+      "name": "file/append",
+      "description": "FileAppend Types - Elegant Inheritance from File Base Types\n * \n * INHERITANCE HIERARCHY:\n * FileParams → FileAppendParams (adds content, createIfMissing)\n * FileResult → FileAppendResult (adds bytesAppended, wasCreated)",
+      "params": {
+        "filepath": {
+          "type": "string",
+          "required": true,
+          "description": "filepath parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "createIfMissing": {
+          "type": "boolean",
+          "required": false,
+          "description": "createIfMissing parameter"
+        },
+        "encoding": {
+          "type": "string",
+          "required": false,
+          "description": "encoding parameter"
+        }
+      }
+    },
+    {
       "name": "development/timing",
       "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl\n * Provides percentile analysis (P50/P95/P99) for performance monitoring.",
       "params": {
@@ -3112,6 +3343,67 @@
       "name": "data/list-handles",
       "description": "Data List-Handles Command - Shared Types",
       "params": {}
+    },
+    {
+      "name": "data/list",
+      "description": "Data List Command - Shared Types",
+      "params": {
+        "collection": {
+          "type": "string",
+          "required": true,
+          "description": "collection parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "filter": {
+          "type": "object",
+          "required": false,
+          "description": "filter parameter"
+        },
+        "orderBy": {
+          "type": "object",
+          "required": false,
+          "description": "orderBy parameter"
+        },
+        "convertToDomain": {
+          "type": "boolean",
+          "required": false,
+          "description": "convertToDomain parameter"
+        },
+        "cursor": {
+          "type": "object",
+          "required": false,
+          "description": "cursor parameter"
+        },
+        "value": {
+          "type": "string",
+          "required": true,
+          "description": "value parameter"
+        },
+        "direction": {
+          "type": "string",
+          "required": true,
+          "description": "direction parameter"
+        },
+        "fields": {
+          "type": "array",
+          "required": false,
+          "description": "fields parameter"
+        },
+        "verbose": {
+          "type": "boolean",
+          "required": false,
+          "description": "verbose parameter"
+        },
+        "dbHandle": {
+          "type": "string",
+          "required": false,
+          "description": "dbHandle parameter"
+        }
+      }
     },
     {
       "name": "data/generate-embedding",
@@ -4359,6 +4651,11 @@
           "type": "string",
           "required": true,
           "description": "senderName parameter"
+        },
+        "senderType": {
+          "type": "string",
+          "required": false,
+          "description": "senderType parameter"
         },
         "config": {
           "type": "string",

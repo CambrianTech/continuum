@@ -1,16 +1,14 @@
 /**
  * SettingsNavWidget - Navigation for settings sections
  *
- * Shows settings navigation in the left sidebar when Settings is open.
- * Emits events to coordinate with SettingsWidget in center panel.
- *
- * Structure:
- * - public/settings-nav-widget.html - Template container
- * - public/settings-nav-widget.scss - Styles (compiled to .css)
- * - SettingsNavWidget.ts - Logic (this file)
+ * MIGRATED TO ReactiveWidget:
+ * - Lit's reactive properties (@reactive)
+ * - Declarative templates (html``)
+ * - Automatic DOM diffing
+ * - Declarative event handlers (@click)
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import { ReactiveWidget, html, css, reactive, type TemplateResult } from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 
 export type SettingsSection = 'providers' | 'appearance' | 'account' | 'about';
@@ -23,93 +21,114 @@ export interface SettingsSectionChangedPayload {
   section: SettingsSection;
 }
 
-export class SettingsNavWidget extends BaseWidget {
-  private currentSection: SettingsSection = 'providers';
+interface NavItem {
+  id: SettingsSection;
+  icon: string;
+  label: string;
+}
 
-  constructor() {
-    super({
-      widgetName: 'SettingsNavWidget',
-      template: 'settings-nav-widget.html',
-      styles: 'settings-nav-widget.css',
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: false,
-      enableScreenshots: false
-    });
-  }
+const NAV_SECTIONS: NavItem[] = [
+  { id: 'providers', icon: '🤖', label: 'AI Providers' },
+  { id: 'appearance', icon: '🎨', label: 'Appearance' },
+  { id: 'account', icon: '👤', label: 'Account' },
+  { id: 'about', icon: 'ℹ️', label: 'About' }
+];
 
-  /**
-   * Override path resolution - directory is 'settings-nav' (kebab-case)
-   */
-  protected resolveResourcePath(filename: string): string {
-    return `widgets/settings-nav/public/${filename}`;
-  }
+export class SettingsNavWidget extends ReactiveWidget {
+  // Reactive state - changes trigger re-render automatically
+  @reactive() private currentSection: SettingsSection = 'providers';
 
-  protected async onWidgetInitialize(): Promise<void> {
+  private _eventCleanup?: () => void;
+
+  static override styles = css`
+    :host {
+      display: block;
+    }
+
+    .settings-nav {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs, 4px);
+      padding: var(--spacing-sm, 8px);
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm, 8px);
+      padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
+      border-radius: var(--border-radius-sm, 4px);
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+      color: var(--text-secondary, #aaa);
+    }
+
+    .nav-item:hover {
+      background-color: var(--hover-background, rgba(255, 255, 255, 0.05));
+    }
+
+    .nav-item.active {
+      background-color: var(--active-background, rgba(0, 200, 255, 0.1));
+      color: var(--text-primary, #fff);
+      border-left: 2px solid var(--accent-color, #00c8ff);
+    }
+
+    .nav-icon {
+      font-size: 1.1em;
+    }
+
+    .nav-label {
+      font-size: 0.9em;
+    }
+  `;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
     console.log('📋 SettingsNavWidget: Initializing...');
 
     // Listen for section changes from SettingsWidget (bidirectional sync)
-    Events.subscribe(SETTINGS_NAV_EVENTS.SECTION_CHANGED, (payload: SettingsSectionChangedPayload) => {
-      if (payload.section !== this.currentSection) {
-        this.currentSection = payload.section;
-        this.updateActiveState();
-      }
-    });
-  }
-
-  protected async renderWidget(): Promise<void> {
-    // Inject loaded template and styles into shadow DOM
-    if (this.shadowRoot && (this.templateHTML || this.templateCSS)) {
-      const styleTag = this.templateCSS ? `<style>${this.templateCSS}</style>` : '';
-      this.shadowRoot.innerHTML = styleTag + (this.templateHTML || '');
-    }
-
-    // Generate nav items dynamically
-    this.renderNavItems();
-    this.setupEventListeners();
-  }
-
-  private renderNavItems(): void {
-    const sections: { id: SettingsSection; icon: string; label: string }[] = [
-      { id: 'providers', icon: '🤖', label: 'AI Providers' },
-      { id: 'appearance', icon: '🎨', label: 'Appearance' },
-      { id: 'account', icon: '👤', label: 'Account' },
-      { id: 'about', icon: 'ℹ️', label: 'About' }
-    ];
-
-    const navItemsContainer = this.shadowRoot?.querySelector('.nav-items');
-    if (!navItemsContainer) return;
-
-    navItemsContainer.innerHTML = sections.map(s => `
-      <div class="nav-item ${this.currentSection === s.id ? 'active' : ''}" data-section="${s.id}">
-        <span class="nav-icon">${s.icon}</span>
-        <span class="nav-label">${s.label}</span>
-      </div>
-    `).join('');
-  }
-
-  private setupEventListeners(): void {
-    this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        const section = (e.currentTarget as HTMLElement).dataset.section as SettingsSection;
-        if (section && section !== this.currentSection) {
-          this.currentSection = section;
-          this.updateActiveState();
-          Events.emit(SETTINGS_NAV_EVENTS.SECTION_CHANGED, { section } as SettingsSectionChangedPayload);
+    this._eventCleanup = Events.subscribe(
+      SETTINGS_NAV_EVENTS.SECTION_CHANGED,
+      (payload: SettingsSectionChangedPayload) => {
+        if (payload.section !== this.currentSection) {
+          this.currentSection = payload.section; // Triggers re-render
         }
-      });
-    });
+      }
+    );
   }
 
-  private updateActiveState(): void {
-    this.shadowRoot?.querySelectorAll('.nav-item').forEach(item => {
-      const section = (item as HTMLElement).dataset.section;
-      item.classList.toggle('active', section === this.currentSection);
-    });
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
+  override disconnectedCallback(): void {
+    this._eventCleanup?.();
     console.log('🧹 SettingsNavWidget: Cleanup complete');
+    super.disconnectedCallback();
+  }
+
+  private handleSectionClick(section: SettingsSection): void {
+    if (section !== this.currentSection) {
+      this.currentSection = section; // Triggers re-render
+      Events.emit(SETTINGS_NAV_EVENTS.SECTION_CHANGED, { section } as SettingsSectionChangedPayload);
+    }
+  }
+
+  private renderNavItem(item: NavItem): TemplateResult {
+    const isActive = this.currentSection === item.id;
+    return html`
+      <div
+        class="nav-item ${isActive ? 'active' : ''}"
+        @click=${() => this.handleSectionClick(item.id)}
+      >
+        <span class="nav-icon">${item.icon}</span>
+        <span class="nav-label">${item.label}</span>
+      </div>
+    `;
+  }
+
+  override render(): TemplateResult {
+    return html`
+      <div class="settings-nav">
+        ${NAV_SECTIONS.map(item => this.renderNavItem(item))}
+      </div>
+    `;
   }
 }
 

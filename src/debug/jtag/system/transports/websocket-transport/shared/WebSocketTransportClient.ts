@@ -23,6 +23,17 @@ import { JTAG_WEBSOCKET_READY_STATE, JTAG_WEBSOCKET_EVENTS } from './WebSocketIn
 import { isJTAGSessionHandshake, isJTAGMessage } from './JTAGWebSocketTypes';
 import { Events } from '../../../core/shared/Events';
 
+// Verbose logging helper (works in both browser and server)
+const verbose = () => {
+  if (typeof window !== 'undefined') {
+    return (window as any).JTAG_VERBOSE === true;
+  }
+  if (typeof process !== 'undefined') {
+    return process.env.JTAG_VERBOSE === '1';
+  }
+  return false;
+};
+
 // WebSocket specific configuration shared between client and server
 export interface WebSocketConfig {
   reconnectAttempts?: number;
@@ -67,7 +78,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
   protected setupWebSocketEvents(socket: JTAGUniversalWebSocket, clientId: string): void {
     // Connection opened - consistent addEventListener pattern
     socket.addEventListener('open', (event: JTAGWebSocketOpenEvent) => {
-      console.log(`✅ ${this.name || 'websocket'}: Connected`);
+      verbose() && console.log(`✅ ${this.name || 'websocket'}: Connected`);
       this.connected = true;
       this.reconnectAttempt = 0; // Reset reconnection counter on successful connect
       this.manualDisconnect = false; // Reset manual disconnect flag
@@ -81,7 +92,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
 
       // Flush queued messages after reconnection
       if (this.messageQueue.length > 0) {
-        console.log(`📤 ${this.name}: Flushing ${this.messageQueue.length} queued messages`);
+        verbose() && console.log(`📤 ${this.name}: Flushing ${this.messageQueue.length} queued messages`);
         const queue = [...this.messageQueue];
         this.messageQueue = [];
         for (const message of queue) {
@@ -126,9 +137,9 @@ export abstract class WebSocketTransportClient extends TransportBase {
       // Only log on FIRST disconnect, not during reconnection attempts
       if (!this.isReconnecting && this.reconnectAttempt === 0) {
         if (event.code === 1006) {
-          console.log(`🔴 ${this.name || 'websocket'}: Connection lost (timeout/abnormal close)`);
+          verbose() && console.log(`🔴 ${this.name || 'websocket'}: Connection lost (timeout/abnormal close)`);
         } else {
-          console.log(`🔴 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
+          verbose() && console.log(`🔴 ${this.name || 'websocket'}: Connection closed (code: ${event.code})`);
         }
       }
 
@@ -172,7 +183,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
     if (this.sessionId && this.config.sessionHandshake) {
       const handshake = this.createSessionHandshake();
       this.sendWebSocketMessage(socket, handshake);
-      console.log(`🤝 ${this.name || 'websocket'}: Sent session handshake with sessionId: ${this.sessionId}`);
+      verbose() && console.log(`🤝 ${this.name || 'websocket'}: Sent session handshake with sessionId: ${this.sessionId}`);
     }
   }
 
@@ -224,7 +235,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
    */
   protected handleSessionHandshake(message: any): void {
     const payload = message.payload as Record<string, unknown> | undefined;
-    console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${payload?.sessionId}`);
+    verbose() && console.log(`🤝 ${this.name}: Received session handshake with sessionId: ${payload?.sessionId}`);
   }
 
   /**
@@ -238,7 +249,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
         // Throttle logging to avoid spam (max once per second)
         const now = Date.now();
         if (now - this.lastErrorLog > 1000) {
-          console.log(`🔄 ${this.name}: Queueing message during reconnection (${this.messageQueue.length} queued)`);
+          verbose() && console.log(`🔄 ${this.name}: Queueing message during reconnection (${this.messageQueue.length} queued)`);
           this.lastErrorLog = now;
         }
         return;
@@ -296,13 +307,13 @@ export abstract class WebSocketTransportClient extends TransportBase {
     // Emit to router's eventSystem (for router internals like ResponseCorrelator)
     if (this.eventSystem) {
       this.eventSystem.emit(eventName, eventData);
-      console.log(`✅ ${this.name}: Emitted ${eventName} to router eventSystem (${eventSystemType})`);
+      verbose() && console.log(`✅ ${this.name}: Emitted ${eventName} to router eventSystem (${eventSystemType})`);
     }
 
     // ALSO emit to global Events singleton (for widgets like ContinuumEmoterWidget)
     // TODO ARCHITECTURAL DEBT: Unify event systems - router should use global Events
     Events.emit(eventName, eventData);
-    console.log(`✅ ${this.name}: Emitted ${eventName} to global Events singleton`);
+    verbose() && console.log(`✅ ${this.name}: Emitted ${eventName} to global Events singleton`);
   }
 
   /**
@@ -371,7 +382,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
 
     // Only log on first connect, not during reconnection attempts
     if (!this.isReconnecting) {
-      console.log(`🔗 ${this.name}: Connecting to ${url}`);
+      verbose() && console.log(`🔗 ${this.name}: Connecting to ${url}`);
     }
 
     return new Promise((resolve, reject) => {
@@ -384,7 +395,7 @@ export abstract class WebSocketTransportClient extends TransportBase {
         
         // Add Promise resolution/rejection to the consistent event handlers
         const handleOpen = (event: JTAGWebSocketOpenEvent): void => {
-          console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
+          verbose() && console.log(`✅ ${this.name}: Handler compliance enforced by TypeScript`);
           this.socket!.removeEventListener('error', handleError);
           resolve();
         };
@@ -482,12 +493,12 @@ export abstract class WebSocketTransportClient extends TransportBase {
   private async attemptReconnect(): Promise<void> {
     try {
       await this.reconnect();
-      console.log(`✅ ${this.name || 'websocket'}: Reconnection successful`);
+      verbose() && console.log(`✅ ${this.name || 'websocket'}: Reconnection successful`);
       this.reconnectAttempt = 0; // Reset on successful reconnect
     } catch (error) {
       // Only log on FIRST failure, then stay silent during polling
       if (this.reconnectAttempt === 0) {
-        console.log(`🔴 ${this.name || 'websocket'}: Connection lost, attempting to reconnect...`);
+        verbose() && console.log(`🔴 ${this.name || 'websocket'}: Connection lost, attempting to reconnect...`);
       }
 
       this.isReconnecting = false; // Reset to stop queueing messages

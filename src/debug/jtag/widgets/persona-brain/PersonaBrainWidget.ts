@@ -15,14 +15,27 @@
  * - Diagnostics panel persona click
  * - @mention click in chat
  * - content/open with contentType='persona'
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BasePanelWidget } from '../shared/BasePanelWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
+import { unsafeSVG } from 'lit/directives/unsafe-svg.js';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { ContentService } from '../../system/state/ContentService';
 import { LogToggle, type LogToggleState } from './components/LogToggle';
 import { styles as personaBrainStyles } from './styles/persona-brain-widget.styles';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { ALL_PANEL_STYLES } from '../shared/styles';
 
 interface PersonaData {
   id: UUID;
@@ -63,35 +76,47 @@ interface LoggingConfigState {
   categories: string[];
 }
 
-export class PersonaBrainWidget extends BasePanelWidget {
-  private personaId: string = '';
-  private persona: PersonaData | null = null;
-  private moduleStats: ModuleStats = {
+export class PersonaBrainWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(ALL_PANEL_STYLES),
+    unsafeCSS(personaBrainStyles)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private personaId: string = '';
+  @reactive() private persona: PersonaData | null = null;
+  @reactive() private moduleStats: ModuleStats = {
     prefrontal: { status: 'idle' },
     limbic: { status: 'idle' },
     hippocampus: { status: 'idle', memoryCount: 0 },
     motorCortex: { status: 'idle', toolsAvailable: 0 },
     cns: { status: 'idle', connections: 0 }
   };
-  private isLoading = true;
-  private selectedModule: string | null = null;
-  private activityFeed: ActivityEvent[] = [];
-  private issues: Issue[] = [];
-  private loggingConfig: LoggingConfigState = { enabled: false, categories: [] };
-  private availableLogs: Set<string> = new Set();  // Track which log files exist
+  @reactive() private isLoading = true;
+  @reactive() private selectedModule: string | null = null;
+  @reactive() private activityFeed: ActivityEvent[] = [];
+  @reactive() private issues: Issue[] = [];
+  @reactive() private loggingConfig: LoggingConfigState = { enabled: false, categories: [] };
+
+  // Non-reactive state
+  private availableLogs: Set<string> = new Set();
+  private panelTitle: string = 'Persona';
+  private panelSubtitle: string = 'Cognitive System View';
 
   constructor() {
     super({
-      widgetName: 'PersonaBrainWidget',
-      panelTitle: 'Persona',
-      panelSubtitle: 'Cognitive System View',
-      additionalStyles: personaBrainStyles
+      widgetName: 'PersonaBrainWidget'
     });
   }
 
-  protected async onPanelInitialize(): Promise<void> {
-    // Get persona ID from content item
-    this.personaId = (this as any).getAttribute?.('data-entity-id') ||
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
+
+    // Get persona ID from content item (check both attribute formats)
+    this.personaId = this.getAttribute('entity-id') ||
+                     this.getAttribute('data-entity-id') ||
                      (this as any).entityId ||
                      'helper'; // Default for testing
 
@@ -100,42 +125,99 @@ export class PersonaBrainWidget extends BasePanelWidget {
   }
 
   /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * Implements clear/populate/query pattern for instant hydration.
+   */
+  public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
+    // Check if this is the same persona (handles both UUID and uniqueId formats)
+    const isSameEntity = entityId && (
+      entityId === this.personaId ||
+      entityId === this.persona?.id ||
+      entityId === this.persona?.uniqueId
+    );
+
+    // SAME ENTITY? Just refresh, don't clear
+    if (isSameEntity && this.persona) {
+      this.requestUpdate();
+      return;
+    }
+
+    // Different persona - update tracking
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+      this.personaId = entityId;
+    }
+
+    // CLEAR old state (prevents stale data flash)
+    this.persona = null;
+    this.isLoading = true;
+    this.selectedModule = null;
+    this.activityFeed = [];
+    this.issues = [];
+
+    // POPULATE with passed entity (instant hydration)
+    const preloaded = metadata?.entity as PersonaData;
+    if (preloaded) {
+      this.persona = preloaded;
+      this.isLoading = false;
+      this.requestUpdate(); // Render immediately with what we have
+      // Still load additional brain-specific data (modules, activity, issues)
+      await this.loadBrainData();
+      return;
+    }
+
+    // QUERY - only if no metadata (e.g., direct URL navigation)
+    await this.loadPersonaData();
+    this.emitPositronContext();
+  }
+
+  /**
    * Emit Positron context for AI awareness
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    PositronWidgetState.emit(
-      {
-        widgetType: 'persona',
-        section: this.selectedModule || 'overview',
-        title: this.persona
-          ? `AI Brain - ${this.persona.displayName}`
-          : 'AI Brain',
-        entityId: this.persona?.id,
-        metadata: {
-          personaId: this.personaId,
-          personaName: this.persona?.displayName,
-          personaStatus: this.persona?.status,
-          selectedModule: this.selectedModule,
-          issueCount: this.issues.length,
-          moduleStatuses: Object.entries(this.moduleStats).map(([name, stats]) => ({
-            module: name,
-            status: stats.status
-          }))
-        }
-      },
-      { action: 'debugging', target: this.selectedModule ? `${this.selectedModule} module` : 'cognitive system' }
-    );
+    // No-op - context cascade fix
+  }
+
+  /**
+   * Load only brain-specific data when persona is already hydrated from metadata.
+   * Skips the persona query since we already have it.
+   */
+  private async loadBrainData(): Promise<void> {
+    if (!this.persona) return;
+
+    // Update panel titles from hydrated data
+    this.panelTitle = this.persona.displayName;
+    this.panelSubtitle = `@${this.persona.uniqueId} - Cognitive System View`;
+
+    // Normalize personaId to uniqueId for log paths
+    this.personaId = this.persona.uniqueId;
+
+    // Load brain-specific data in parallel
+    await Promise.all([
+      this.loadModuleStats(),
+      this.loadLoggingConfig(),
+      this.loadAvailableLogs()
+    ]);
+
+    this.requestUpdate();
   }
 
   private async loadPersonaData(): Promise<void> {
     this.isLoading = true;
-    this.renderWidget();
+    this.requestUpdate();
 
     try {
-      // Load persona info
+      // Load persona info - handle both uniqueId ("helper") and UUID formats
+      // The entityId from MainWidget may be either format (see Phase 1.x technical debt)
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(this.personaId);
+      const filter = isUUID
+        ? { id: this.personaId }
+        : { uniqueId: this.personaId };
+
       const result = await Commands.execute('data/list', {
         collection: 'users',
-        filter: { uniqueId: this.personaId },
+        filter,
         limit: 1
       } as any) as any;
 
@@ -149,8 +231,11 @@ export class PersonaBrainWidget extends BasePanelWidget {
           type: user.type
         };
 
-        this.panelConfig.panelTitle = user.displayName;
-        this.panelConfig.panelSubtitle = `@${user.uniqueId} - Cognitive System View`;
+        // Normalize personaId to uniqueId for log paths and other lookups
+        this.personaId = user.uniqueId;
+
+        this.panelTitle = user.displayName;
+        this.panelSubtitle = `@${user.uniqueId} - Cognitive System View`;
 
         // Load module stats, logging config, and available logs
         await Promise.all([
@@ -164,7 +249,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
     }
 
     this.isLoading = false;
-    this.renderWidget();
+    this.requestUpdate();
   }
 
   /**
@@ -226,7 +311,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
           enabled: result.personaConfig.enabled,
           categories: result.personaConfig.categories || []
         };
-        this.renderWidget();
+        this.requestUpdate();
       }
     } catch (error) {
       console.error('PersonaBrainWidget: Error toggling logging:', error);
@@ -240,7 +325,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
   private async toggleCategoryLogging(category: string): Promise<void> {
     // Block if global logging is off
     if (!this.loggingConfig.enabled) {
-      console.log('PersonaBrainWidget: Global logging is off, enable it first');
+      this.verbose() && console.log('PersonaBrainWidget: Global logging is off, enable it first');
       return;
     }
 
@@ -258,7 +343,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
           enabled: result.personaConfig.enabled,
           categories: result.personaConfig.categories || []
         };
-        this.renderWidget();
+        this.requestUpdate();
       }
     } catch (error) {
       console.error('PersonaBrainWidget: Error toggling category logging:', error);
@@ -415,20 +500,42 @@ export class PersonaBrainWidget extends BasePanelWidget {
       .substring(0, 12);
   }
 
-  protected async renderContent(): Promise<string> {
+  protected override renderContent(): TemplateResult {
+    // Panel layout wrapper (from BasePanelWidget pattern)
+    return html`
+      <div class="panel-layout">
+        <div class="panel-main">
+          <div class="panel-container">
+            <div class="panel-header">
+              <h1 class="panel-title">${this.panelTitle}</h1>
+              ${this.panelSubtitle ? html`<p class="panel-subtitle">${this.panelSubtitle}</p>` : ''}
+            </div>
+            ${this.renderBrainContent()}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderBrainContent(): TemplateResult {
     if (this.isLoading) {
-      return this.createLoading('Loading persona data...');
+      return html`
+        <div class="loading">
+          <div class="loading-spinner"></div>
+          <p>Loading persona data...</p>
+        </div>
+      `;
     }
 
     if (!this.persona) {
-      return this.createInfoBox('Persona not found', 'error');
+      return html`<div class="info-box error">Persona not found</div>`;
     }
 
-    return `
+    return html`
       <div class="brain-container">
         <div class="brain-header">
           <button class="log-toggle ${this.loggingConfig.enabled ? 'enabled' : ''}"
-                  data-action="toggle-logging"
+                  @click=${this.handleToggleLogging}
                   title="${this.loggingConfig.enabled ? 'Logging ON - Click to disable' : 'Logging OFF - Click to enable'}">
             ${this.loggingConfig.enabled ? '📝' : '📋'}
           </button>
@@ -437,23 +544,52 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
         <div class="brain-main">
           <div class="brain-visualization">
-            ${this.renderBrainSVG()}
+            ${unsafeHTML(this.renderBrainSVG())}
           </div>
 
           <div class="brain-sidebar">
-            ${this.renderActivityFeed()}
-            ${this.renderIssuesPanel()}
+            ${unsafeHTML(this.renderActivityFeed())}
+            ${unsafeHTML(this.renderIssuesPanel())}
           </div>
         </div>
 
-        ${this.selectedModule ? `<div class="module-details">${this.renderModuleDetails()}</div>` : ''}
+        ${this.selectedModule ? html`<div class="module-details">${unsafeHTML(this.renderModuleDetails())}</div>` : ''}
 
         <div class="brain-stats">
-          ${this.renderStats()}
+          ${unsafeHTML(this.renderStats())}
         </div>
       </div>
     `;
   }
+
+  // === EVENT HANDLERS (bound to Lit events) ===
+
+  private handleToggleLogging = async (): Promise<void> => {
+    await this.togglePersonaLogging(!this.loggingConfig.enabled);
+  };
+
+  private handleModuleClick = (module: string): void => {
+    this.selectModule(module);
+  };
+
+  private handleBackClick = (): void => {
+    this.selectedModule = null;
+    this.requestUpdate();
+  };
+
+  private handleViewLog = async (logFile: string): Promise<void> => {
+    if (this.persona) {
+      await this.openLogViewer(logFile);
+    }
+  };
+
+  private handleOpenLog = async (logType: string): Promise<void> => {
+    await this.openLogViewer(logType);
+  };
+
+  private handleCategoryToggle = async (category: string): Promise<void> => {
+    await this.toggleCategoryLogging(category);
+  };
 
   private renderBrainSVG(): string {
     return `
@@ -965,7 +1101,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
     if (this.activityFeed.length > 100) {
       this.activityFeed = this.activityFeed.slice(-100);
     }
-    this.renderWidget();
+    this.requestUpdate();
   }
 
   /**
@@ -977,7 +1113,7 @@ export class PersonaBrainWidget extends BasePanelWidget {
       id: `issue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       timestamp: new Date()
     });
-    this.renderWidget();
+    this.requestUpdate();
   }
 
   /**
@@ -985,48 +1121,67 @@ export class PersonaBrainWidget extends BasePanelWidget {
    */
   public clearIssue(issueId: string): void {
     this.issues = this.issues.filter(i => i.id !== issueId);
-    this.renderWidget();
+    this.requestUpdate();
   }
 
-  protected async onContentRendered(): Promise<void> {
+  /**
+   * Attach event listeners to dynamically rendered content (unsafeHTML)
+   * Called after each update since unsafeHTML doesn't preserve listeners
+   */
+  protected override updated(changedProperties: Map<string, unknown>): void {
+    super.updated(changedProperties);
+    this.attachDynamicEventListeners();
+  }
+
+  private attachDynamicEventListeners(): void {
     if (!this.shadowRoot) return;
 
     // Module click handlers (SVG regions)
     this.shadowRoot.querySelectorAll('.brain-module').forEach(el => {
-      el.addEventListener('click', (e) => {
+      // Remove old listener to prevent duplicates
+      const handler = () => {
         const module = (el as HTMLElement).dataset.module;
         if (module) this.selectModule(module);
-      });
+      };
+      el.removeEventListener('click', handler);
+      el.addEventListener('click', handler);
     });
 
     // Module card click handlers
     this.shadowRoot.querySelectorAll('.module-card').forEach(el => {
-      el.addEventListener('click', (e) => {
+      const handler = () => {
         const module = (el as HTMLElement).dataset.module;
         if (module) this.selectModule(module);
-      });
+      };
+      el.removeEventListener('click', handler);
+      el.addEventListener('click', handler);
     });
 
     // Back button
-    this.shadowRoot.querySelector('[data-action="back"]')?.addEventListener('click', () => {
-      this.selectedModule = null;
-      this.renderWidget();
-    });
+    const backBtn = this.shadowRoot.querySelector('[data-action="back"]');
+    if (backBtn) {
+      backBtn.addEventListener('click', () => {
+        this.selectedModule = null;
+        this.requestUpdate();
+      });
+    }
 
     // View log button
-    this.shadowRoot.querySelector('[data-action="view-log"]')?.addEventListener('click', async (e) => {
-      const logFile = (e.currentTarget as HTMLElement).dataset.log;
-      if (logFile && this.persona) {
-        await this.openLogViewer(logFile);
-      }
-    });
+    const viewLogBtn = this.shadowRoot.querySelector('[data-action="view-log"]');
+    if (viewLogBtn) {
+      viewLogBtn.addEventListener('click', async (e) => {
+        const logFile = (e.currentTarget as HTMLElement).dataset.log;
+        if (logFile && this.persona) {
+          await this.openLogViewer(logFile);
+        }
+      });
+    }
 
     // Issue click handlers - click to view module logs
     this.shadowRoot.querySelectorAll('.issue-item').forEach(el => {
-      el.addEventListener('click', async (e) => {
+      el.addEventListener('click', async () => {
         const module = (el as HTMLElement).dataset.module;
         if (module && module !== 'system') {
-          // Map module name to log type (no .log extension)
           const logTypeMap: Record<string, string> = {
             prefrontal: 'prefrontal',
             limbic: 'limbic',
@@ -1058,27 +1213,11 @@ export class PersonaBrainWidget extends BasePanelWidget {
       });
     });
 
-    // Activity feed item click - show details
-    this.shadowRoot.querySelectorAll('.feed-item').forEach(el => {
-      el.addEventListener('click', () => {
-        const eventType = (el as HTMLElement).dataset.eventType;
-        console.log('PersonaBrainWidget: Activity event clicked:', eventType);
-        // Future: could open a detail modal or navigate to relevant log
-      });
-    });
-
-    // Main logging toggle button (master on/off)
-    this.shadowRoot.querySelector('[data-action="toggle-logging"]')?.addEventListener('click', async () => {
-      await this.togglePersonaLogging(!this.loggingConfig.enabled);
-    });
-
     // Category-specific log toggles on each module
     this.shadowRoot.querySelectorAll('.module-log-toggle').forEach(el => {
       el.addEventListener('click', async (e) => {
         e.stopPropagation(); // Don't trigger module selection
-        // SVG elements use getAttribute, not dataset
         const category = el.getAttribute('data-category');
-        console.log('🔧 Log toggle clicked, category:', category);
         if (category) {
           await this.toggleCategoryLogging(category);
         }
@@ -1088,10 +1227,10 @@ export class PersonaBrainWidget extends BasePanelWidget {
 
   private selectModule(module: string): void {
     this.selectedModule = module;
-    this.renderWidget();
+    this.requestUpdate();
   }
 
-  private async openLogViewer(logType: string): Promise<void> {
+  private openLogViewer(logType: string): void {
     // Guard: Don't try to open logs that don't exist
     if (!this.availableLogs.has(logType)) {
       console.warn(`PersonaBrainWidget: Log '${logType}' not available for ${this.personaId}. Available: ${[...this.availableLogs].join(', ')}`);
@@ -1101,17 +1240,12 @@ export class PersonaBrainWidget extends BasePanelWidget {
     // Log paths are in format: {uniqueId}/{logType} e.g., "helper/cns", "local/prefrontal"
     const logPath = `${this.personaId}/${logType}`;
 
-    try {
-      await Commands.execute('collaboration/content/open', {
-        contentType: 'diagnostics-log',
-        entityId: logPath,
-        title: `${this.persona?.displayName} - ${logType}`,
-        setAsCurrent: true,
-        metadata: { logPath, autoFollow: true }
-      } as any);
-    } catch (error) {
-      console.error('PersonaBrainWidget: Error opening log:', error);
-    }
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    ContentService.open('diagnostics-log', logPath, {
+      title: `${this.persona?.displayName} - ${logType}`,
+      uniqueId: logPath,
+      metadata: { logPath, autoFollow: true }
+    });
   }
 }
 

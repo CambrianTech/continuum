@@ -8,13 +8,14 @@
 
 import { writeFileSync } from 'fs';
 import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
+import { getDatabasePath } from '../system/config/ServerConfig';
 
 async function exportCurrentData() {
   console.log('📦 Exporting current database data using ORM...');
 
   try {
-    // Create DataService
-    const dataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    // Create DataService - use single source of truth for db path
+    const dataService = await DataServiceFactory.createSQLiteOnly(getDatabasePath());
 
     console.log('🔧 Initializing DataService...');
     const initResult = await dataService.initialize();

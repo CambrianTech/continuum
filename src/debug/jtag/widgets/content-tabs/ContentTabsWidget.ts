@@ -1,54 +1,44 @@
 /**
- * ContentTabsWidget - Dynamic content tabs for navigation
+ * ContentTabsWidget - React-style subscriber to global content state
  *
- * Displays content tabs based on current context (rooms, threads, pages).
- * Emits tab-clicked events for parent widget to handle navigation.
+ * ARCHITECTURE:
+ * 1. Subscribes to contentState (global singleton)
+ * 2. Renders tabs from contentState.openItems
+ * 3. On click: updates contentState → triggers re-render
+ * 4. On close: updates contentState → triggers re-render
+ *
+ * NO events, NO parent calls, just shared state.
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
-import { Events } from '../../system/core/shared/Events';
-import { Commands } from '../../system/core/shared/Commands';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
+import { contentState, type ContentStateData } from '../../system/state/ContentStateService';
+import { ContentService } from '../../system/state/ContentService';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 
 export interface TabInfo {
   id: string;
   label: string;
   active: boolean;
   closeable?: boolean;
-  /** Entity ID (e.g., room UUID for chat content) */
   entityId?: string;
-  /** Content type (e.g., 'chat', 'settings') */
+  uniqueId?: string;  // Human-readable ID for URLs
   contentType?: string;
 }
 
-export class ContentTabsWidget extends BaseWidget {
-  private tabs: TabInfo[] = [];
-
-  constructor() {
-    super({
-      widgetName: 'ContentTabsWidget',
-      template: undefined,  // Inline template
-      styles: undefined,     // Inline styles
-      enableAI: false,
-      enableDatabase: false,
-      enableRouterEvents: false,
-      enableScreenshots: false
-    });
-  }
-
-  protected async onWidgetInitialize(): Promise<void> {
-    console.log('📋 ContentTabsWidget: Initializing content tabs...');
-
-    // Subscribe to tab updates from parent or router
-    Events.subscribe('tabs:update', (tabs: TabInfo[]) => {
-      this.tabs = tabs;
-      this.renderWidget();
-    });
-
-    console.log('✅ ContentTabsWidget: Initialized');
-  }
-
-  protected async renderWidget(): Promise<void> {
-    const styles = `
+export class ContentTabsWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(`
       .content-tabs-container {
         display: flex;
         gap: 0;
@@ -56,16 +46,14 @@ export class ContentTabsWidget extends BaseWidget {
         flex: 1;
         overflow-x: auto;
         overflow-y: hidden;
-        /* Extend tabs below the header border to overlap it */
         margin-bottom: -1px;
         padding-bottom: 1px;
-        /* Hide scrollbar but keep scrollable */
-        scrollbar-width: none;  /* Firefox */
-        -ms-overflow-style: none;  /* IE/Edge */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
       }
 
       .content-tabs-container::-webkit-scrollbar {
-        display: none;  /* Chrome/Safari - hide scrollbar */
+        display: none;
       }
 
       .content-tab {
@@ -95,7 +83,6 @@ export class ContentTabsWidget extends BaseWidget {
       }
 
       .content-tab.active {
-        /* Active tab connects to content below */
         background: rgba(15, 20, 25, 0.95);
         border-color: var(--border-accent, rgba(0, 212, 255, 0.4));
         border-bottom-color: transparent;
@@ -128,150 +115,95 @@ export class ContentTabsWidget extends BaseWidget {
         font-size: 12px;
         font-style: italic;
       }
-    `;
+    `)
+  ] as CSSResultGroup;
 
-    const template = `
-      <div class="content-tabs-container">
-        ${this.getTabsHTML()}
-      </div>
-    `;
+  // Reactive state
+  @reactive() private tabs: TabInfo[] = [];
 
-    this.shadowRoot!.innerHTML = `
-      <style>${styles}</style>
-      ${template}
-    `;
-
-    // Add event listeners after DOM is created
-    this.setupEventListeners();
-
-    console.log('✅ ContentTabsWidget: Rendered with', this.tabs.length, 'tabs');
-  }
-
-  /**
-   * Generate tabs HTML
-   */
-  private getTabsHTML(): string {
-    if (this.tabs.length === 0) {
-      return '<div class="empty-state">No content tabs</div>';
-    }
-
-    return this.tabs.map(tab => `
-      <div
-        class="content-tab ${tab.active ? 'active' : ''}"
-        data-tab-id="${tab.id}"
-      >
-        <span class="tab-label">${tab.label}</span>
-        ${tab.closeable ? '<span class="tab-close" data-close-tab="${tab.id}">×</span>' : ''}
-      </div>
-    `).join('');
-  }
-
-  /**
-   * Setup event listeners for tabs - direct listeners on each element
-   */
-  private setupEventListeners(): void {
-    console.log('📋 ContentTabsWidget.setupEventListeners: Setting up direct click listeners');
-
-    // Add click listener to each tab directly
-    const tabs = this.shadowRoot?.querySelectorAll('.content-tab');
-    if (!tabs || tabs.length === 0) {
-      console.warn('📋 ContentTabsWidget: No tabs found for event listeners');
-      return;
-    }
-
-    tabs.forEach((tabElement) => {
-      const tab = tabElement as HTMLElement;
-      const tabId = tab.dataset.tabId;
-
-      console.log('📋 ContentTabsWidget: Adding click listener to tab:', tabId);
-
-      tab.addEventListener('click', (event) => {
-        const target = event.target as HTMLElement;
-        console.log('🔥 TAB CLICKED! tabId:', tabId, 'target:', target.tagName, target.className);
-
-        // Check if close button was clicked
-        if (target.classList.contains('tab-close') || target.hasAttribute('data-close-tab')) {
-          if (tabId) {
-            this.handleTabClose(tabId);
-          }
-          event.stopPropagation();
-          return;
-        }
-
-        // Handle tab selection
-        if (tabId) {
-          this.handleTabClick(tabId);
-        }
-      });
+  constructor() {
+    super({
+      widgetName: 'ContentTabsWidget'
     });
+  }
 
-    console.log('📋 ContentTabsWidget: Added listeners to', tabs.length, 'tabs');
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
+
+    // Subscribe to global contentState - React pattern
+    this.createMountEffect(() => {
+      const unsubscribe = contentState.subscribe((state) => {
+        this.updateFromContentState(state);
+      });
+      return () => unsubscribe();
+    });
   }
 
   /**
-   * Handle tab click
+   * Update from global contentState - the ONLY source of truth
    */
-  private handleTabClick(tabId: string): void {
-    console.log('🔥 ContentTabsWidget.handleTabClick CALLED with tabId:', tabId);
-    console.log('🔥 ContentTabsWidget: this.tabs has', this.tabs.length, 'items:', this.tabs.map(t => ({id: t.id, label: t.label})));
+  private updateFromContentState(state: ContentStateData): void {
+    // Convert to TabInfo format
+    this.tabs = state.openItems.map(item => ({
+      id: item.id,
+      label: item.title || item.type,
+      active: item.id === state.currentItemId,
+      closeable: true,
+      entityId: item.entityId,
+      uniqueId: item.uniqueId,  // For human-readable URLs
+      contentType: item.type
+    }));
+    this.requestUpdate();
+  }
 
-    // Find the full tab data
-    const tab = this.tabs.find(t => t.id === tabId);
-    if (!tab) {
-      console.warn('📋 ContentTabsWidget: Tab not found:', tabId, '- available tabs:', this.tabs.map(t => t.id));
-      return;
+  // === Render ===
+
+  protected override renderContent(): TemplateResult {
+    if (this.tabs.length === 0) {
+      return html`
+        <div class="content-tabs-container">
+          <div class="empty-state">No content tabs</div>
+        </div>
+      `;
     }
 
-    console.log('📋 ContentTabsWidget: Tab clicked:', tabId, 'entityId:', tab.entityId, 'type:', tab.contentType);
+    return html`
+      <div class="content-tabs-container">
+        ${this.tabs.map(tab => html`
+          <div class="content-tab ${tab.active ? 'active' : ''}"
+               @click=${(e: Event) => this.handleTabClick(e, tab)}>
+            <span class="tab-label">${tab.label}</span>
+            ${tab.closeable ? html`
+              <span class="tab-close" @click=${(e: Event) => this.handleTabClose(e, tab)}>×</span>
+            ` : ''}
+          </div>
+        `)}
+      </div>
+    `;
+  }
 
-    // Emit event with full tab data for parent widget
-    const tabData = {
-      tabId: tab.id,
-      label: tab.label,
-      entityId: tab.entityId,
-      contentType: tab.contentType
-    };
+  // === Event Handlers ===
 
-    // DEBUG: Call ping command to verify click is working (visible in server logs)
-    Commands.execute('ping', {}).then(r => console.log('🔥 TAB CLICK VERIFIED via ping:', r));
-
-    Events.emit('tabs:clicked', tabData);
-
-    // Also dispatch DOM event with full tab data
-    this.dispatchEvent(new CustomEvent('tab-clicked', {
-      bubbles: true,
-      composed: true,
-      detail: tabData
-    }));
+  /**
+   * Handle tab click - delegate to ContentService
+   */
+  private handleTabClick(event: Event, tab: TabInfo): void {
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
+    }
+    ContentService.switchTo(tab.id);
   }
 
   /**
-   * Handle tab close
+   * Handle tab close - delegate to ContentService
    */
-  private handleTabClose(tabId: string): void {
-    console.log('📋 ContentTabsWidget: Tab close requested:', tabId);
+  private handleTabClose(event: Event, tab: TabInfo): void {
+    event.stopPropagation(); // Don't trigger tab click
 
-    // Emit event for parent widget to handle close logic
-    Events.emit('tabs:close', { tabId });
-
-    // Also dispatch DOM event
-    this.dispatchEvent(new CustomEvent('tab-closed', {
-      bubbles: true,
-      composed: true,
-      detail: { tabId }
-    }));
-  }
-
-  /**
-   * Public API: Update tabs from parent widget
-   */
-  public updateTabs(tabs: TabInfo[]): void {
-    this.tabs = tabs;
-    this.renderWidget();
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 ContentTabsWidget: Cleanup complete');
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
+    }
+    ContentService.close(tab.id);
   }
 }
 

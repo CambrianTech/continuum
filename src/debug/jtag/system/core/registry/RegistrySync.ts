@@ -47,31 +47,37 @@ export async function syncRegistryState(): Promise<RegistryState | null> {
     }
   }
   
+  const verbose = process.env.JTAG_VERBOSE === '1';
+
   if (registries.length === 0) {
-    console.log('📋 Registry Sync: No registries found');
+    if (verbose) console.log('📋 Registry Sync: No registries found');
     return null;
   }
-  
+
   // Find the most recent registry (source of truth)
-  const mostRecent = registries.reduce((latest, current) => 
+  const mostRecent = registries.reduce((latest, current) =>
     current.lastUpdate > latest.lastUpdate ? current : latest
   );
-  
-  console.log(`🔄 Registry Sync: Using ${mostRecent.location} as source of truth (${new Date(mostRecent.lastUpdate).toISOString()})`);
-  
+
+  if (verbose) {
+    console.log(`🔄 Registry Sync: Using ${mostRecent.location} as source of truth (${new Date(mostRecent.lastUpdate).toISOString()})`);
+  }
+
   // Propagate the most recent state to all locations
   for (const location of REGISTRY_LOCATIONS) {
     try {
       await ensureDirectoryExists(path.dirname(location));
       await fs.writeFile(location, JSON.stringify(mostRecent.state, null, 2), 'utf-8');
-      console.log(`✅ Registry Sync: Synchronized ${location}`);
+      if (verbose) console.log(`✅ Registry Sync: Synchronized ${location}`);
     } catch (error) {
       console.warn(`⚠️  Registry Sync: Could not write ${location}: ${error}`);
     }
   }
-  
+
   const processCount = Object.keys(mostRecent.state.processes).length;
-  console.log(`🎯 Registry Sync: Synchronized ${processCount} processes across all locations`);
+  if (verbose) {
+    console.log(`🎯 Registry Sync: Synchronized ${processCount} processes across all locations`);
+  }
   
   return mostRecent.state;
 }

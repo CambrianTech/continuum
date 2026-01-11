@@ -11,6 +11,10 @@ export class ReactiveState<T extends Record<string, any>> {
   private state: T;
   private watchers = new Map<keyof T, Set<StateChangeHandler<any>>>();
 
+  // Async notification batching - prevents synchronous cascades
+  private _pendingNotifications = new Map<keyof T, { newValue: T[keyof T], oldValue: T[keyof T] }>();
+  private _notifyScheduled = false;
+
   constructor(initialState: T) {
     // Create proxy to intercept property changes
     this.state = new Proxy(initialState, {
@@ -58,10 +62,37 @@ export class ReactiveState<T extends Record<string, any>> {
     Object.assign(this.state, changes);
   }
 
+  /**
+   * Queue notification for batched async delivery.
+   * Multiple changes within same microtask are coalesced.
+   * Prevents synchronous cascades that can cause infinite loops.
+   */
   private notifyWatchers<K extends keyof T>(property: K, newValue: T[K], oldValue: T[K]): void {
-    const handlers = this.watchers.get(property);
-    if (handlers) {
-      handlers.forEach(handler => handler(newValue, oldValue));
+    // Queue notification (overwrites previous if same property changed multiple times)
+    this._pendingNotifications.set(property, { newValue, oldValue } as { newValue: T[keyof T], oldValue: T[keyof T] });
+
+    // Schedule single batch flush
+    if (!this._notifyScheduled) {
+      this._notifyScheduled = true;
+      queueMicrotask(() => {
+        this._notifyScheduled = false;
+        this.flushNotifications();
+      });
+    }
+  }
+
+  /**
+   * Flush all pending notifications in a single batch.
+   */
+  private flushNotifications(): void {
+    const batch = new Map(this._pendingNotifications);
+    this._pendingNotifications.clear();
+
+    for (const [property, { newValue, oldValue }] of batch) {
+      const handlers = this.watchers.get(property);
+      if (handlers) {
+        handlers.forEach(handler => handler(newValue, oldValue));
+      }
     }
   }
 }

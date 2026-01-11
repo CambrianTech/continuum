@@ -3,12 +3,13 @@
  */
 
 import { type ThemeParams, type ThemeResult, type ThemeManifest, createThemeParams, createThemeResult } from '../../shared/ThemeTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface ThemeGetParams extends ThemeParams {
-  // No additional parameters needed - gets current theme
+/** Theme get command parameters - gets current theme */
+export interface ThemeGetParams extends CommandParams {
+  readonly timestamp?: string;
 }
 
 export const createThemeGetParams = (

@@ -1809,11 +1809,13 @@ Local → InferenceGrpcClient → Rust worker
 Cloud → HTTP APIs (Together, Fireworks, etc.)
 ```
 
-### MILESTONE 6: Persona Self-Improvement (NEXT)
-- [ ] Persona can search for adapters matching current task
-- [ ] Persona can try adapter temporarily (A/B comparison)
-- [ ] Persona can adopt adapter into genome
-- [ ] Persona config stores genome (adapter stack)
+### MILESTONE 6: Persona Self-Improvement (IN PROGRESS)
+- [x] `adapter/search` - Search HuggingFace/local for adapters ✅ 2026-01-08
+- [x] `adapter/try` - A/B test with temporary adapter loading ✅ 2026-01-08
+- [x] `adapter/adopt` - Add adapter to persona's genome ✅ 2026-01-08
+- [x] Genome storage (GenomeEntity with layers) ✅ 2026-01-08
+- [ ] Persona AUTONOMOUSLY searches for adapters (triggered by task needs)
+- [ ] Persona AUTONOMOUSLY evaluates adapters (self-directed A/B tests)
 - [ ] **GOAL: personas autonomously improve themselves**
 
 ### MILESTONE 7: Full Personas

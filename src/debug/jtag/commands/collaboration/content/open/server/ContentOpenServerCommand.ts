@@ -17,6 +17,7 @@ import { Events } from '@system/core/shared/Events';
 import { generateUUID, type UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
+import { RoutingService } from '@system/routing/RoutingService';
 
 export class ContentOpenServerCommand extends ContentOpenCommand {
 
@@ -30,7 +31,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       const userId = params.userId;
 
       // 1. Load user's UserStateEntity from database
-      const listResult = await Commands.execute<DataListParams<UserStateEntity>, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: 'user_states',
         filter: { userId },
         limit: 1
@@ -47,50 +48,67 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       const userState = Object.assign(new UserStateEntity(), listResult.items[0]);
 
-      // 2. Generate unique ID for the content item
+      // 2. Resolve entityId to canonical UUID, uniqueId, and display name
+      //    URL might use "general" but DB stores UUID "5e71a0c8-..."
+      let canonicalEntityId = params.entityId;
+      let resolvedUniqueId: string | undefined;
+      let resolvedDisplayName: string | undefined;
+      if (params.entityId) {
+        const resolved = await RoutingService.resolve(params.contentType, params.entityId);
+        if (resolved) {
+          canonicalEntityId = resolved.id;
+          resolvedUniqueId = resolved.uniqueId;
+          resolvedDisplayName = resolved.displayName;
+        }
+      }
+
+      // 3. Generate unique ID for the content item
       const contentItemId = generateUUID();
 
-      // 3. Derive title if not provided (for singletons like settings/help/theme)
-      const title = params.title || this.deriveTitle(params.contentType);
+      // 4. Derive title: prefer params.title, then resolved displayName, then fallback
+      const title = params.title || resolvedDisplayName || this.deriveTitle(params.contentType);
 
-      // 4. Add content item using UserStateEntity method
+      // 5. Add content item using UserStateEntity method (uses canonical UUID for deduplication)
       userState.addContentItem({
         id: contentItemId,
         type: params.contentType,
-        entityId: params.entityId,
+        entityId: canonicalEntityId,
+        uniqueId: resolvedUniqueId,  // Store for fast URL building without async resolution
         title,
         subtitle: params.subtitle,
         priority: params.priority || 'normal',
         metadata: params.metadata
       });
 
-      // 5. Optionally set as current item (default: true)
+      // 6. Optionally set as current item (default: true)
       const setAsCurrent = params.setAsCurrent !== false; // Default to true
       if (setAsCurrent) {
         userState.setCurrentContent(contentItemId);
       }
 
-      // 6. Save updated userState to database
+      // 7. Save updated userState to database
       await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
         collection: 'user_states',
         id: userState.id,
         data: userState
       });
 
-      // 7. Emit content:opened event for widgets to respond to
+      // 8. Emit content:opened event for widgets to respond to
+      //    Include both UUID (for DB) and uniqueId (for URLs)
       const event: ContentOpenedEvent = {
         contentItemId,
         contentType: params.contentType,
-        entityId: params.entityId,
-        title,  // Use derived title
+        entityId: canonicalEntityId,  // UUID for database lookups
+        uniqueId: resolvedUniqueId,   // Human-readable for URLs (e.g., "general")
+        title,
         userId,
         currentItemId: userState.contentState.currentItemId,
-        setAsCurrent  // Include so browser knows to switch view
+        setAsCurrent
       };
 
       await Events.emit(this.context, 'content:opened', event);
 
-      // 8. Return success result
+      // 9. Return success result
       return transformPayload(params, {
         success: true,
         contentItemId,

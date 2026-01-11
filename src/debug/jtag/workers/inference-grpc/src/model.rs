@@ -1,22 +1,23 @@
+use candle_core::{DType, Device, Tensor};
+use candle_nn::VarBuilder;
+use candle_transformers::generation::LogitsProcessor;
+use candle_transformers::models::llama::{
+    Cache, Config as LlamaModelConfig, Llama, LlamaConfig, LlamaEosToks,
+};
+use hf_hub::{api::sync::Api, Repo, RepoType};
+use log::{debug, info};
+use rand::Rng;
 /**
  * Model Loading and Text Generation
  *
  * Handles downloading models from HuggingFace Hub, loading them into
  * Candle, and generating text with the loaded model.
  */
-
 use std::collections::HashMap;
 use std::time::Instant;
-use candle_core::{DType, Device, Tensor};
-use candle_nn::VarBuilder;
-use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::llama::{LlamaConfig, Config as LlamaModelConfig, Llama, Cache, LlamaEosToks};
-use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
-use log::{info, debug};
-use rand::Rng;
 
-use crate::lora::{LoRAWeights, merge_lora_weight, map_lora_name_to_model_name};
+use crate::lora::{map_lora_name_to_model_name, merge_lora_weight, LoRAWeights};
 
 /// Model state containing loaded model, tokenizer, and cache
 pub struct ModelState {
@@ -44,7 +45,17 @@ impl ModelState {
         model_id: String,
         weight_paths: Vec<std::path::PathBuf>,
     ) -> Self {
-        Self { model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id, weight_paths }
+        Self {
+            model,
+            cache,
+            tokenizer,
+            device,
+            eos_token_ids,
+            dtype,
+            config,
+            model_id,
+            weight_paths,
+        }
     }
 
     pub fn clear_cache(&mut self) {
@@ -62,8 +73,10 @@ pub fn generate_text(
 ) -> Result<(String, usize), String> {
     let start = Instant::now();
 
-    let encoding = state.tokenizer.encode(prompt, true)
-        .map_err(|e| format!("Tokenization failed: {}", e))?;
+    let encoding = state
+        .tokenizer
+        .encode(prompt, true)
+        .map_err(|e| format!("Tokenization failed: {e}"))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
     let prompt_len = prompt_tokens.len();
 
@@ -86,41 +99,52 @@ pub fn generate_text(
         };
 
         let input = Tensor::new(&input_tokens[..], &state.device)
-            .map_err(|e| format!("Tensor creation failed: {}", e))?
+            .map_err(|e| format!("Tensor creation failed: {e}"))?
             .unsqueeze(0)
-            .map_err(|e| format!("Unsqueeze failed: {}", e))?;
+            .map_err(|e| format!("Unsqueeze failed: {e}"))?;
 
         let pos = if i == 0 { 0 } else { all_tokens.len() - 1 };
-        let logits = state.model.forward(&input, pos, &mut state.cache)
-            .map_err(|e| format!("Forward pass failed: {}", e))?;
+        let logits = state
+            .model
+            .forward(&input, pos, &mut state.cache)
+            .map_err(|e| format!("Forward pass failed: {e}"))?;
 
         if i == 0 {
             debug!("Raw logits shape: {:?}", logits.dims());
         }
 
         let last_logits = if logits.dims().len() == 2 {
-            logits.squeeze(0)
-                .map_err(|e| format!("Squeeze batch failed: {}", e))?
+            logits
+                .squeeze(0)
+                .map_err(|e| format!("Squeeze batch failed: {e}"))?
         } else if logits.dims().len() == 3 {
-            let logits_2d = logits.squeeze(0)
-                .map_err(|e| format!("Squeeze batch failed: {}", e))?;
+            let logits_2d = logits
+                .squeeze(0)
+                .map_err(|e| format!("Squeeze batch failed: {e}"))?;
             if logits_2d.dims()[0] > 1 {
-                logits_2d.get(logits_2d.dims()[0] - 1)
-                    .map_err(|e| format!("Get last logits failed: {}", e))?
+                logits_2d
+                    .get(logits_2d.dims()[0] - 1)
+                    .map_err(|e| format!("Get last logits failed: {e}"))?
             } else {
-                logits_2d.squeeze(0)
-                    .map_err(|e| format!("Squeeze seq failed: {}", e))?
+                logits_2d
+                    .squeeze(0)
+                    .map_err(|e| format!("Squeeze seq failed: {e}"))?
             }
         } else {
             return Err(format!("Unexpected logits shape: {:?}", logits.dims()));
         };
 
         if i == 0 {
-            debug!("Logits shape: {:?}, dtype: {:?}", last_logits.dims(), last_logits.dtype());
+            debug!(
+                "Logits shape: {:?}, dtype: {:?}",
+                last_logits.dims(),
+                last_logits.dtype()
+            );
         }
 
-        let next_token = logits_processor.sample(&last_logits)
-            .map_err(|e| format!("Sampling failed: {}", e))?;
+        let next_token = logits_processor
+            .sample(&last_logits)
+            .map_err(|e| format!("Sampling failed: {e}"))?;
 
         if state.eos_token_ids.contains(&next_token) {
             break;
@@ -130,11 +154,17 @@ pub fn generate_text(
     }
 
     let generated_tokens = &all_tokens[prompt_len..];
-    let output_text = state.tokenizer.decode(generated_tokens, true)
-        .map_err(|e| format!("Decode failed: {}", e))?;
+    let output_text = state
+        .tokenizer
+        .decode(generated_tokens, true)
+        .map_err(|e| format!("Decode failed: {e}"))?;
 
     let duration = start.elapsed();
-    info!("📝 Generated {} tokens in {:?}", generated_tokens.len(), duration);
+    info!(
+        "📝 Generated {} tokens in {:?}",
+        generated_tokens.len(),
+        duration
+    );
 
     Ok((output_text, generated_tokens.len()))
 }
@@ -142,22 +172,24 @@ pub fn generate_text(
 /// Download model weights, handling both single file and sharded models
 fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<std::path::PathBuf>, String> {
     if let Ok(path) = repo.get("model.safetensors") {
-        info!("  Weights (single file): {:?}", path);
+        info!("  Weights (single file): {path:?}");
         return Ok(vec![path]);
     }
 
     if let Ok(index_path) = repo.get("model.safetensors.index.json") {
         info!("  Found sharded weights index");
         let index_str = std::fs::read_to_string(&index_path)
-            .map_err(|e| format!("Failed to read index: {}", e))?;
-        let index: serde_json::Value = serde_json::from_str(&index_str)
-            .map_err(|e| format!("Failed to parse index: {}", e))?;
+            .map_err(|e| format!("Failed to read index: {e}"))?;
+        let index: serde_json::Value =
+            serde_json::from_str(&index_str).map_err(|e| format!("Failed to parse index: {e}"))?;
 
-        let weight_map = index.get("weight_map")
+        let weight_map = index
+            .get("weight_map")
             .and_then(|v| v.as_object())
             .ok_or("Invalid index format: no weight_map")?;
 
-        let mut shard_files: Vec<String> = weight_map.values()
+        let mut shard_files: Vec<String> = weight_map
+            .values()
             .filter_map(|v| v.as_str())
             .map(|s| s.to_string())
             .collect();
@@ -168,8 +200,9 @@ fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<std::path::
 
         let mut paths = Vec::new();
         for shard in &shard_files {
-            let path = repo.get(shard)
-                .map_err(|e| format!("Failed to get shard {}: {}", shard, e))?;
+            let path = repo
+                .get(shard)
+                .map_err(|e| format!("Failed to get shard {shard}: {e}"))?;
             paths.push(path);
         }
 
@@ -189,8 +222,10 @@ fn parse_eos_tokens(eos: &Option<LlamaEosToks>) -> Vec<u32> {
 }
 
 /// Load a model by HuggingFace model ID
-pub fn load_model_by_id(model_id: &str) -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
-    info!("📥 Loading {}...", model_id);
+pub fn load_model_by_id(
+    model_id: &str,
+) -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
+    info!("📥 Loading {model_id}...");
     let start = Instant::now();
 
     // Device selection: CUDA > Metal > CPU
@@ -222,7 +257,7 @@ pub fn load_model_by_id(model_id: &str) -> Result<ModelState, Box<dyn std::error
         Device::Cpu
     }
 
-    info!("  Device: {:?}", device);
+    info!("  Device: {device:?}");
 
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
@@ -235,41 +270,54 @@ pub fn load_model_by_id(model_id: &str) -> Result<ModelState, Box<dyn std::error
     let config_path = repo.get("config.json")?;
     let tokenizer_path = repo.get("tokenizer.json")?;
 
-    let weight_paths = download_weights(&repo)
-        .map_err(|e| format!("Failed to download weights: {}", e))?;
+    let weight_paths =
+        download_weights(&repo).map_err(|e| format!("Failed to download weights: {e}"))?;
 
     let config_str = std::fs::read_to_string(&config_path)?;
     let llama_config: LlamaConfig = serde_json::from_str(&config_str)?;
-    info!("  Config: vocab_size={}, hidden_size={}, layers={}",
-        llama_config.vocab_size, llama_config.hidden_size, llama_config.num_hidden_layers);
+    info!(
+        "  Config: vocab_size={}, hidden_size={}, layers={}",
+        llama_config.vocab_size, llama_config.hidden_size, llama_config.num_hidden_layers
+    );
 
     let use_flash_attn = false;
     let config = llama_config.into_config(use_flash_attn);
 
     let eos_token_ids = parse_eos_tokens(&config.eos_token_id);
-    info!("  EOS token IDs: {:?}", eos_token_ids);
+    info!("  EOS token IDs: {eos_token_ids:?}");
 
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
+        .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
 
     let dtype = match &device {
         Device::Metal(_) => DType::BF16,
         _ => DType::F32,
     };
-    info!("  Dtype: {:?}", dtype);
+    info!("  Dtype: {dtype:?}");
 
-    info!("  Loading model weights from {} file(s)...", weight_paths.len());
-    let vb = unsafe {
-        VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)?
-    };
+    info!(
+        "  Loading model weights from {} file(s)...",
+        weight_paths.len()
+    );
+    let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
 
     let model = Llama::load(vb, &config)?;
     let cache = Cache::new(true, dtype, &config, &device)?;
 
     let duration = start.elapsed();
-    info!("✅ Model loaded in {:?}", duration);
+    info!("✅ Model loaded in {duration:?}");
 
-    Ok(ModelState::new(model, cache, tokenizer, device, eos_token_ids, dtype, config, model_id.to_string(), weight_paths))
+    Ok(ModelState::new(
+        model,
+        cache,
+        tokenizer,
+        device,
+        eos_token_ids,
+        dtype,
+        config,
+        model_id.to_string(),
+        weight_paths,
+    ))
 }
 
 /// Load default model from environment variable
@@ -294,7 +342,10 @@ pub fn rebuild_with_lora_from_paths(
 ) -> Result<Llama, Box<dyn std::error::Error + Send + Sync>> {
     use safetensors::SafeTensors;
 
-    info!("🔄 Rebuilding model with {} LoRA layers merged", lora_weights.len());
+    info!(
+        "🔄 Rebuilding model with {} LoRA layers merged",
+        lora_weights.len()
+    );
     let start = Instant::now();
 
     // Load all base weights into memory
@@ -311,27 +362,33 @@ pub fn rebuild_with_lora_from_paths(
             // Convert to Candle tensor
             let tensor = match st_dtype {
                 safetensors::Dtype::F32 => {
-                    let data: Vec<f32> = tensor_view.data().chunks(4)
+                    let data: Vec<f32> = tensor_view
+                        .data()
+                        .chunks(4)
                         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                         .collect();
                     Tensor::from_vec(data, shape.as_slice(), device)?
                 }
                 safetensors::Dtype::F16 => {
-                    let data: Vec<half::f16> = tensor_view.data().chunks(2)
+                    let data: Vec<half::f16> = tensor_view
+                        .data()
+                        .chunks(2)
                         .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
                         .collect();
                     let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
                     Tensor::from_vec(f32_data, shape.as_slice(), device)?
                 }
                 safetensors::Dtype::BF16 => {
-                    let data: Vec<half::bf16> = tensor_view.data().chunks(2)
+                    let data: Vec<half::bf16> = tensor_view
+                        .data()
+                        .chunks(2)
                         .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
                         .collect();
                     let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
                     Tensor::from_vec(f32_data, shape.as_slice(), device)?
                 }
                 _ => {
-                    info!("  ⚠ Skipping unsupported dtype: {:?} for {}", st_dtype, name);
+                    info!("  ⚠ Skipping unsupported dtype: {st_dtype:?} for {name}");
                     continue;
                 }
             };
@@ -360,24 +417,24 @@ pub fn rebuild_with_lora_from_paths(
                 Ok(merged) => {
                     all_tensors.insert(model_name.clone(), merged);
                     merged_count += 1;
-                    debug!("  ✓ Merged: {} → {}", lora_name, model_name);
+                    debug!("  ✓ Merged: {lora_name} → {model_name}");
                 }
                 Err(e) => {
-                    info!("  ⚠ Failed to merge {}: {}", lora_name, e);
+                    info!("  ⚠ Failed to merge {lora_name}: {e}");
                     failed_count += 1;
                 }
             }
         } else {
-            debug!("  ⚠ No base weight for: {} (mapped to {})", lora_name, model_name);
+            debug!("  ⚠ No base weight for: {lora_name} (mapped to {model_name})");
             failed_count += 1;
         }
     }
 
     if failed_count > 0 {
-        info!("  ⚠ {} LoRA layers failed to merge", failed_count);
+        info!("  ⚠ {failed_count} LoRA layers failed to merge");
     }
 
-    info!("  Merged {} LoRA layers into base weights", merged_count);
+    info!("  Merged {merged_count} LoRA layers into base weights");
 
     // Build VarBuilder from merged tensors
     let vb = VarBuilder::from_tensors(all_tensors, dtype, device);
@@ -386,7 +443,7 @@ pub fn rebuild_with_lora_from_paths(
     let model = Llama::load(vb, config)?;
 
     let duration = start.elapsed();
-    info!("✅ Model rebuilt with LoRA in {:?}", duration);
+    info!("✅ Model rebuilt with LoRA in {duration:?}");
 
     Ok(model)
 }
@@ -412,7 +469,11 @@ pub fn rebuild_with_stacked_lora(
     use safetensors::SafeTensors;
 
     let total_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
-    info!("🧬 Rebuilding model with {} adapters ({} total LoRA layers)", adapters.len(), total_layers);
+    info!(
+        "🧬 Rebuilding model with {} adapters ({} total LoRA layers)",
+        adapters.len(),
+        total_layers
+    );
     let start = Instant::now();
 
     // Load all base weights into memory
@@ -428,20 +489,26 @@ pub fn rebuild_with_stacked_lora(
 
             let tensor = match st_dtype {
                 safetensors::Dtype::F32 => {
-                    let data: Vec<f32> = tensor_view.data().chunks(4)
+                    let data: Vec<f32> = tensor_view
+                        .data()
+                        .chunks(4)
                         .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                         .collect();
                     Tensor::from_vec(data, shape.as_slice(), device)?
                 }
                 safetensors::Dtype::F16 => {
-                    let data: Vec<half::f16> = tensor_view.data().chunks(2)
+                    let data: Vec<half::f16> = tensor_view
+                        .data()
+                        .chunks(2)
                         .map(|b| half::f16::from_le_bytes([b[0], b[1]]))
                         .collect();
                     let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
                     Tensor::from_vec(f32_data, shape.as_slice(), device)?
                 }
                 safetensors::Dtype::BF16 => {
-                    let data: Vec<half::bf16> = tensor_view.data().chunks(2)
+                    let data: Vec<half::bf16> = tensor_view
+                        .data()
+                        .chunks(2)
                         .map(|b| half::bf16::from_le_bytes([b[0], b[1]]))
                         .collect();
                     let f32_data: Vec<f32> = data.iter().map(|x| x.to_f32()).collect();
@@ -467,8 +534,12 @@ pub fn rebuild_with_stacked_lora(
     let mut failed_count = 0;
 
     for adapter in adapters {
-        info!("  Applying adapter '{}' (scale={}, {} layers)",
-              adapter.adapter_id, adapter.scale, adapter.weights.len());
+        info!(
+            "  Applying adapter '{}' (scale={}, {} layers)",
+            adapter.adapter_id,
+            adapter.scale,
+            adapter.weights.len()
+        );
 
         for (lora_name, lora) in &adapter.weights {
             let model_name = map_lora_name_to_model_name(lora_name);
@@ -488,7 +559,7 @@ pub fn rebuild_with_stacked_lora(
                         merged_count += 1;
                     }
                     Err(e) => {
-                        debug!("  ⚠ Failed to merge {}: {}", lora_name, e);
+                        debug!("  ⚠ Failed to merge {lora_name}: {e}");
                         failed_count += 1;
                     }
                 }
@@ -499,10 +570,14 @@ pub fn rebuild_with_stacked_lora(
     }
 
     if failed_count > 0 {
-        info!("  ⚠ {} LoRA layers failed to merge", failed_count);
+        info!("  ⚠ {failed_count} LoRA layers failed to merge");
     }
 
-    info!("  Merged {} LoRA layers from {} adapters", merged_count, adapters.len());
+    info!(
+        "  Merged {} LoRA layers from {} adapters",
+        merged_count,
+        adapters.len()
+    );
 
     // Build VarBuilder from merged tensors
     let vb = VarBuilder::from_tensors(all_tensors, dtype, device);
@@ -511,7 +586,7 @@ pub fn rebuild_with_stacked_lora(
     let model = Llama::load(vb, config)?;
 
     let duration = start.elapsed();
-    info!("✅ Genome applied in {:?}", duration);
+    info!("✅ Genome applied in {duration:?}");
 
     Ok(model)
 }

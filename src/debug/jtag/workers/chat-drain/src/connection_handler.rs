@@ -5,21 +5,20 @@
 /// - shutdown → graceful shutdown (universal protocol)
 /// - status → diagnostics (universal protocol)
 /// - process-chat → queue for background processing (domain-specific)
-
 use crate::health::{self, StatsHandle};
 use crate::messages::*;
 use crate::QueuedChat;
 use crate::ShutdownSignal;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 
 /// Debug logging to file (temporary)
 fn debug_log(msg: &str) {
     use std::fs::OpenOptions;
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let log_msg = format!("[{}] {}\n", timestamp, msg);
+    let log_msg = format!("[{timestamp}] {msg}\n");
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -73,7 +72,7 @@ pub fn handle_client(
         // Parse and route message
         match parse_message(line) {
             Ok((msg_type, msg_id)) => {
-                println!("✅ Parsed request: type={}, id={}", msg_type, msg_id);
+                println!("✅ Parsed request: type={msg_type}, id={msg_id}");
                 handle_message(
                     line,
                     &msg_type,
@@ -85,7 +84,7 @@ pub fn handle_client(
                 )?;
             }
             Err(e) => {
-                eprintln!("❌ Failed to parse request: {}", e);
+                eprintln!("❌ Failed to parse request: {e}");
                 send_parse_error(line, &mut writer, &e)?;
             }
         }
@@ -142,11 +141,7 @@ fn handle_message(
 // ============================================================================
 
 /// Handle ping request (health check)
-fn handle_ping(
-    line: &str,
-    stats: &StatsHandle,
-    writer: &mut UnixStream,
-) -> std::io::Result<()> {
+fn handle_ping(line: &str, stats: &StatsHandle, writer: &mut UnixStream) -> std::io::Result<()> {
     let request: JTAGRequest<serde_json::Value> =
         serde_json::from_str(line).expect("Failed to parse ping");
 
@@ -155,11 +150,7 @@ fn handle_ping(
         health::generate_ping_result(&s)
     };
 
-    let response = JTAGResponse::success(
-        request.id.clone(),
-        request.r#type.clone(),
-        ping_result,
-    );
+    let response = JTAGResponse::success(request.id.clone(), request.r#type.clone(), ping_result);
     send_response(&response, writer)?;
 
     println!("✅ Sent ping response");
@@ -179,15 +170,12 @@ fn handle_shutdown(
     shutdown_signal.store(true, Ordering::Relaxed);
 
     let shutdown_result = health::ShutdownResult {
-        queue_drained: 0,  // TODO: Track actual queue size
-        shutdown_time_ms: 0,  // Will be calculated by main thread
+        queue_drained: 0,    // TODO: Track actual queue size
+        shutdown_time_ms: 0, // Will be calculated by main thread
     };
 
-    let response = JTAGResponse::success(
-        request.id.clone(),
-        request.r#type.clone(),
-        shutdown_result,
-    );
+    let response =
+        JTAGResponse::success(request.id.clone(), request.r#type.clone(), shutdown_result);
     send_response(&response, writer)?;
 
     println!("✅ Shutdown initiated");
@@ -196,11 +184,7 @@ fn handle_shutdown(
 }
 
 /// Handle status request (detailed diagnostics)
-fn handle_status(
-    line: &str,
-    stats: &StatsHandle,
-    writer: &mut UnixStream,
-) -> std::io::Result<()> {
+fn handle_status(line: &str, stats: &StatsHandle, writer: &mut UnixStream) -> std::io::Result<()> {
     let request: JTAGRequest<health::StatusPayload> =
         serde_json::from_str(line).expect("Failed to parse status");
 
@@ -209,11 +193,7 @@ fn handle_status(
         health::generate_status_result(&s, request.payload.verbose)
     };
 
-    let response = JTAGResponse::success(
-        request.id.clone(),
-        request.r#type.clone(),
-        status_result,
-    );
+    let response = JTAGResponse::success(request.id.clone(), request.r#type.clone(), status_result);
     send_response(&response, writer)?;
 
     println!("✅ Sent status response");
@@ -238,11 +218,8 @@ fn handle_process_chat(
     if let Err(e) = chat_tx.send(QueuedChat {
         payload: request.payload.clone(),
     }) {
-        eprintln!("❌ Failed to queue chat message: {}", e);
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Queue send failed: {}", e),
-        ));
+        eprintln!("❌ Failed to queue chat message: {e}");
+        return Err(std::io::Error::other(format!("Queue send failed: {e}")));
     }
 
     // Update stats
@@ -255,14 +232,11 @@ fn handle_process_chat(
     let process_result = ChatProcessResult {
         message_id: uuid::Uuid::new_v4().to_string(),
         processed_at: chrono::Utc::now().timestamp_millis() as u64,
-        personas_notified: 0,  // Will be updated by processor
+        personas_notified: 0, // Will be updated by processor
     };
 
-    let response = JTAGResponse::success(
-        request.id.clone(),
-        request.r#type.clone(),
-        process_result,
-    );
+    let response =
+        JTAGResponse::success(request.id.clone(), request.r#type.clone(), process_result);
     send_response(&response, writer)?;
 
     println!("✅ Chat message queued for processing");
@@ -271,12 +245,12 @@ fn handle_process_chat(
 
 /// Handle unknown message type
 fn handle_unknown(msg_type: &str, msg_id: &str, writer: &mut UnixStream) -> std::io::Result<()> {
-    eprintln!("❌ Unknown message type: {}", msg_type);
+    eprintln!("❌ Unknown message type: {msg_type}");
     let error_response = JTAGResponse::<serde_json::Value>::error(
         msg_id.to_string(),
         msg_type.to_string(),
         serde_json::Value::Null,
-        format!("Unknown message type: {}", msg_type),
+        format!("Unknown message type: {msg_type}"),
         JTAGErrorType::Validation,
     );
     send_response(&error_response, writer)
@@ -292,7 +266,7 @@ fn send_response<T: serde::Serialize>(
     writer: &mut UnixStream,
 ) -> std::io::Result<()> {
     let json = serde_json::to_string(response).expect("Failed to serialize response");
-    writeln!(writer, "{}", json)?;
+    writeln!(writer, "{json}")?;
     writer.flush()
 }
 
@@ -308,7 +282,7 @@ fn send_parse_error(
                 id.to_string(),
                 "unknown".to_string(),
                 serde_json::Value::Null,
-                format!("Parse error: {}", error),
+                format!("Parse error: {error}"),
                 JTAGErrorType::Validation,
             );
             send_response(&error_response, writer)?;

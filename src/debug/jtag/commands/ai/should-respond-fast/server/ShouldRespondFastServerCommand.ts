@@ -95,13 +95,15 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
           conversationContext: 0,
           isQuestion: 0,
           unansweredQuestion: 0,
-          roomActivity: 0
+          roomActivity: 0,
+          humanMessage: 0
         },
         signals: {
           wasMentioned: false,
           matchedKeywords: [],
           isQuestion: false,
-          recentlyActive: false
+          recentlyActive: false,
+          isHumanMessage: false
         },
         reasoning: 'Error occurred during evaluation'
       };
@@ -149,14 +151,16 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       conversationContext: 0,
       isQuestion: 0,
       unansweredQuestion: 0,
-      roomActivity: 0
+      roomActivity: 0,
+      humanMessage: 0
     };
 
     const signals = {
       wasMentioned: false,
       matchedKeywords: [] as string[],
       isQuestion: false,
-      recentlyActive: false
+      recentlyActive: false,
+      isHumanMessage: false
     };
 
     // 1. Direct mention detection
@@ -209,6 +213,16 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       console.log(`📈 High room activity: ${roomActivity} messages in 5min`);
     }
 
+    // 6. Human message detection - humans deserve responses!
+    // senderType passed from caller OR detected from senderId lookup
+    const isHumanMessage = params.senderType === 'human' ||
+      (!params.senderType && await this.isHumanSender(params.senderId));
+    if (isHumanMessage) {
+      scoreBreakdown.humanMessage = config.weights.humanMessage;
+      signals.isHumanMessage = true;
+      console.log(`👤 Message is from HUMAN - priority boost!`);
+    }
+
     // Calculate total score
     const score =
       scoreBreakdown.directMention +
@@ -216,7 +230,8 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       scoreBreakdown.conversationContext +
       scoreBreakdown.isQuestion +
       scoreBreakdown.unansweredQuestion +
-      scoreBreakdown.roomActivity;
+      scoreBreakdown.roomActivity +
+      scoreBreakdown.humanMessage;
 
     return { score, scoreBreakdown, signals };
   }
@@ -317,6 +332,35 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
   }
 
   /**
+   * Check if sender is a human (not AI persona, agent, or system)
+   */
+  private async isHumanSender(senderId: string): Promise<boolean> {
+    if (!senderId) return false;
+
+    try {
+      const result = await Commands.execute<DataListParams, DataListResult<any>>(DATA_COMMANDS.LIST, {
+        collection: 'users',
+        filter: { id: senderId },
+        limit: 1
+      });
+
+      if (result.success && result.items && result.items.length > 0) {
+        const user = result.items[0];
+        const userType = user.userType || user.type || '';
+        // Human types: 'human', 'owner', 'admin', 'user' (or empty - default is human)
+        const isHuman = ['human', 'owner', 'admin', 'user', ''].includes(userType.toLowerCase());
+        return isHuman;
+      }
+
+      // If can't find user, assume not human (safer for AI response filtering)
+      return false;
+    } catch (error) {
+      console.warn('⚠️ Failed to check sender type:', error);
+      return false;
+    }
+  }
+
+  /**
    * Build result object
    */
   private buildResult(
@@ -341,13 +385,15 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
         conversationContext: 0,
         isQuestion: 0,
         unansweredQuestion: 0,
-        roomActivity: 0
+        roomActivity: 0,
+        humanMessage: 0
       },
       signals: extra.signals ?? {
         wasMentioned: false,
         matchedKeywords: [],
         isQuestion: false,
-        recentlyActive: false
+        recentlyActive: false,
+        isHumanMessage: false
       },
       reasoning: extra.reasoning
     };

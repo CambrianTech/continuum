@@ -184,7 +184,7 @@ export class ClaudePlugin extends AgentDetectionPlugin {
   
   onDetected(): void {
     // Optional: Set up Claude-specific logging, rate limiting, etc.
-    if (process.env.JTAG_VERBOSE === 'true') {
+    if (process.env.JTAG_VERBOSE === '1') {
       console.log(`🤖 Claude Code detected (v${process.env.CLAUDE_VERSION || 'unknown'})`);
     }
   }

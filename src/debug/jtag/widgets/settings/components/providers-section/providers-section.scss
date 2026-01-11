@@ -1,0 +1,390 @@
+/**
+ * Providers Section Styles
+ *
+ * Styles for the AI Providers settings section component.
+ * Extracted from settings.scss for component decomposition.
+ *
+ * Compiled to providers-section.styles.ts by compile-sass.ts
+ */
+
+@use '../../../shared/styles/variables' as *;
+@use '../../../shared/styles/mixins' as *;
+
+:host {
+  display: block;
+  width: 100%;
+}
+
+// Section Header
+.providers-header {
+  margin-bottom: $spacing-xl;
+}
+
+.providers-title {
+  font-size: 24px;
+  font-weight: 600;
+  color: $color-primary;
+  margin: 0 0 $spacing-sm 0;
+}
+
+.providers-subtitle {
+  color: $color-text-dim;
+  font-size: 14px;
+}
+
+// Info Box
+.info-box {
+  background: rgba($color-primary, 0.1);
+  border: 1px solid rgba($color-primary, 0.3);
+  border-radius: $border-radius-lg;
+  padding: $spacing-md $spacing-lg;
+  margin-bottom: $spacing-xl;
+  font-size: 13px;
+  color: $color-text;
+
+  a {
+    color: $color-primary;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+.storage-note {
+  display: block;
+  margin-top: $spacing-sm;
+  font-size: 11px;
+  color: $color-text-muted;
+
+  code {
+    color: rgba($color-primary, 0.8);
+    background: rgba($color-primary, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    user-select: all;
+  }
+}
+
+// Provider Category Section
+.provider-category {
+  @include hud-panel;
+  padding: $spacing-xl;
+  margin-bottom: $spacing-lg;
+
+  &.local-highlight {
+    background: rgba($color-success, 0.1);
+    border-color: rgba($color-success, 0.3);
+
+    .category-title {
+      color: $color-success;
+    }
+  }
+}
+
+.category-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: $color-primary;
+  margin: 0 0 $spacing-lg 0;
+  padding-bottom: $spacing-sm;
+  border-bottom: 1px solid rgba($color-primary, 0.2);
+}
+
+.category-intro {
+  font-size: 13px;
+  color: $color-text-dim;
+  margin-bottom: $spacing-lg;
+  line-height: 1.5;
+
+  a {
+    color: $color-success;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+// Provider Entry
+.provider-entry {
+  margin-bottom: $spacing-lg;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.provider-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: $spacing-xs;
+}
+
+.provider-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: $color-primary;
+}
+
+.provider-actions {
+  display: flex;
+  align-items: center;
+  gap: $spacing-md;
+}
+
+.provider-links {
+  display: flex;
+  gap: $spacing-sm;
+}
+
+.provider-link {
+  font-size: 11px;
+  color: $color-primary;
+  text-decoration: none;
+  padding: 2px $spacing-sm;
+  border: 1px solid rgba($color-primary, 0.3);
+  border-radius: $border-radius-md;
+  transition: all $transition-normal;
+
+  &:hover {
+    background: rgba($color-primary, 0.1);
+    border-color: rgba($color-primary, 0.6);
+  }
+}
+
+// Config Label
+.config-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: $spacing-xs;
+}
+
+.config-key {
+  font-family: $font-mono;
+  font-size: 13px;
+  color: $color-primary;
+}
+
+.config-description {
+  font-size: 12px;
+  color: $color-text-muted;
+}
+
+// Input Row
+.input-row {
+  display: flex;
+  gap: $spacing-sm;
+  align-items: center;
+}
+
+.config-input {
+  flex: 1;
+  padding: 10px $spacing-md;
+  background: $bg-darker;
+  border: 1px solid rgba($color-primary, 0.3);
+  border-radius: $border-radius-md;
+  color: $color-text;
+  font-family: $font-mono;
+  font-size: 14px;
+  box-sizing: border-box;
+
+  &:focus {
+    outline: none;
+    border-color: $color-primary;
+    box-shadow: 0 0 0 2px rgba($color-primary, 0.2);
+  }
+
+  &::placeholder {
+    color: rgba(255, 255, 255, 0.3);
+  }
+}
+
+// Buttons
+.btn-test {
+  padding: 10px $spacing-lg;
+  background: rgba($color-primary, 0.1);
+  border: 1px solid rgba($color-primary, 0.3);
+  border-radius: $border-radius-md;
+  color: $color-primary;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all $transition-normal;
+  white-space: nowrap;
+
+  &:hover:not(:disabled) {
+    background: rgba($color-primary, 0.2);
+    border-color: rgba($color-primary, 0.6);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  &.testing {
+    color: $color-text-dim;
+  }
+}
+
+.btn-refresh {
+  background: none;
+  border: none;
+  color: rgba($color-primary, 0.6);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px $spacing-xs;
+  margin-left: $spacing-xs;
+  border-radius: 3px;
+  transition: all $transition-normal;
+
+  &:hover {
+    color: $color-primary;
+    background: rgba($color-primary, 0.1);
+  }
+}
+
+// Status Indicators
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-xs;
+  font-size: 11px;
+  padding: 2px $spacing-sm;
+  border-radius: 10px;
+}
+
+.status-configured {
+  background: rgba($color-success, 0.15);
+  color: $color-success;
+}
+
+.status-not-set {
+  background: rgba(255, 255, 255, 0.1);
+  color: $color-text-muted;
+}
+
+// Test Status
+.test-status {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+  margin-top: $spacing-xs;
+  font-size: 12px;
+  padding: $spacing-xs $spacing-sm;
+  border-radius: $border-radius-md;
+
+  &.operational {
+    background: rgba($color-success, 0.1);
+    color: $color-success;
+  }
+
+  &.invalid {
+    background: rgba($color-error, 0.1);
+    color: $color-error;
+  }
+
+  &.out-of-funds {
+    background: rgba($color-warning, 0.1);
+    color: $color-warning;
+  }
+
+  &.rate-limited {
+    background: rgba($color-warning, 0.1);
+    color: $color-warning;
+  }
+
+  &.error {
+    background: rgba($color-error, 0.1);
+    color: $color-error;
+  }
+
+  &.testing {
+    background: rgba($color-primary, 0.1);
+    color: $color-primary;
+  }
+}
+
+.response-time {
+  opacity: 0.6;
+  font-size: 11px;
+}
+
+.status-action {
+  margin-left: $spacing-sm;
+  color: $color-primary;
+  text-decoration: none;
+  font-size: 11px;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.status-action-hint {
+  margin-left: $spacing-sm;
+  opacity: 0.7;
+  font-size: 11px;
+}
+
+// Save Section
+.save-section {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: $spacing-md;
+  margin-top: $spacing-xl;
+  padding-top: $spacing-lg;
+  border-top: 1px solid rgba($color-primary, 0.2);
+}
+
+.btn {
+  padding: 10px $spacing-xl;
+  border-radius: $border-radius-lg;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all $transition-normal;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, $color-primary, rgba($color-primary, 0.7));
+  border: none;
+  color: $color-text;
+
+  &:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+  }
+}
+
+.btn-secondary {
+  background: transparent;
+  border: 1px solid rgba($color-primary, 0.4);
+  color: $color-primary;
+
+  &:hover {
+    background: rgba($color-primary, 0.1);
+  }
+}
+
+// Status Messages
+.status-message {
+  padding: $spacing-sm $spacing-lg;
+  border-radius: $border-radius-md;
+  font-size: 13px;
+}
+
+.status-saved {
+  background: rgba($color-success, 0.1);
+  color: $color-success;
+}
+
+.status-error {
+  background: rgba($color-error, 0.1);
+  color: $color-error;
+}

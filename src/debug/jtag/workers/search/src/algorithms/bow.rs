@@ -2,7 +2,6 @@
 ///
 /// Simple term overlap scoring with optional case sensitivity and stopwords.
 /// Fast O(n*m) where n=query terms, m=doc terms.
-
 use super::{SearchAlgorithm, SearchInput, SearchOutput};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -56,17 +55,15 @@ impl BowAlgorithm {
 impl Default for BowAlgorithm {
     fn default() -> Self {
         let stopwords: HashSet<String> = [
-            "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "must", "shall", "can", "need", "dare",
-            "ought", "used", "to", "of", "in", "for", "on", "with", "at", "by",
-            "from", "as", "into", "through", "during", "before", "after",
-            "above", "below", "between", "under", "again", "further", "then",
-            "once", "here", "there", "when", "where", "why", "how", "all",
-            "each", "few", "more", "most", "other", "some", "such", "no", "nor",
-            "not", "only", "own", "same", "so", "than", "too", "very", "just",
-            "and", "but", "if", "or", "because", "until", "while", "this",
-            "that", "these", "those", "it", "its",
+            "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has",
+            "had", "do", "does", "did", "will", "would", "could", "should", "may", "might", "must",
+            "shall", "can", "need", "dare", "ought", "used", "to", "of", "in", "for", "on", "with",
+            "at", "by", "from", "as", "into", "through", "during", "before", "after", "above",
+            "below", "between", "under", "again", "further", "then", "once", "here", "there",
+            "when", "where", "why", "how", "all", "each", "few", "more", "most", "other", "some",
+            "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "just",
+            "and", "but", "if", "or", "because", "until", "while", "this", "that", "these",
+            "those", "it", "its",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -117,18 +114,15 @@ impl SearchAlgorithm for BowAlgorithm {
     fn set_param(&mut self, name: &str, value: Value) -> Result<(), String> {
         match name {
             "case_insensitive" => {
-                self.case_insensitive = value
-                    .as_bool()
-                    .ok_or("case_insensitive must be bool")?;
+                self.case_insensitive = value.as_bool().ok_or("case_insensitive must be bool")?;
                 Ok(())
             }
             "min_term_length" => {
-                self.min_term_length = value
-                    .as_u64()
-                    .ok_or("min_term_length must be uint")? as usize;
+                self.min_term_length =
+                    value.as_u64().ok_or("min_term_length must be uint")? as usize;
                 Ok(())
             }
-            _ => Err(format!("Unknown parameter: {}", name)),
+            _ => Err(format!("Unknown parameter: {name}")),
         }
     }
 

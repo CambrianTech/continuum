@@ -74,7 +74,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
     };
 
     // Save to database using data/create command
-    const createResult = await Commands.execute<DataCreateParams<TestExecutionEntity>, DataCreateResult>(DATA_COMMANDS.CREATE, {
+    const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
       collection: TestExecutionEntity.collection,
       data: execution,
       id: testId,
@@ -160,7 +160,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
    * Helper to update test status in database
    */
   private async updateTestStatus(testId: string, updates: Partial<TestExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams<TestExecutionEntity>, CommandResult>(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, CommandResult>(DATA_COMMANDS.UPDATE, {
       collection: TestExecutionEntity.collection,
       id: testId,
       data: {

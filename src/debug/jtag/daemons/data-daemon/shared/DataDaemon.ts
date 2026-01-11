@@ -959,6 +959,26 @@ export class DataDaemon {
   }
 
   /**
+   * Count records matching query filters using SQL COUNT(*) - CLEAN INTERFACE
+   *
+   * CRITICAL: Uses SQL aggregation, NOT fetching all rows!
+   * For efficiency, always use count() instead of query().length when
+   * you only need the count.
+   */
+  static async count(query: StorageQuery): Promise<StorageResult<number>> {
+    if (!DataDaemon.sharedInstance || !DataDaemon.context) {
+      throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
+    }
+
+    const adapter = DataDaemon.sharedInstance.adapter;
+    if (!adapter) {
+      throw new Error('DataDaemon adapter not initialized');
+    }
+
+    return await adapter.count(query);
+  }
+
+  /**
    * Query with JOINs for optimal loading - CLEAN INTERFACE
    *
    * Uses queryWithJoin for loading related data in a single query (4.5x faster than N+1).

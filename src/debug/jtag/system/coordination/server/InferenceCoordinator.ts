@@ -253,11 +253,24 @@ class InferenceCoordinatorImpl {
       console.log(`🎰 InferenceCoordinator: Auto-thinned ${evicted} stale entries from ${slotKey}`);
     }
 
-    // Rule 0: @mentioned always gets through (explicit user request)
+    // Rule 0: @mentioned PRIORITY - but still respect hardware limits
+    // CRITICAL FIX: @mentioned must STILL respect local-inference maxConcurrent
+    // because the Rust gRPC backend can only process 1 request at a time (write lock)
+    // Allowing multiple @mentioned to bypass causes 90s timeout cascade
+    let skipOtherChecks = false;
     if (options?.isMentioned) {
-      console.log(`🎰 InferenceCoordinator: ${personaId} PRIORITY (@mentioned) for ${slotKey}`);
-      // Skip all limits for mentioned personas - they get immediate access
-    } else {
+      // For local-inference: respect maxConcurrent even for @mentioned
+      if (isLocal && slots.length >= limits.maxConcurrent) {
+        console.log(`🎰 InferenceCoordinator: ${personaId} @mentioned but local-inference at capacity (${slots.length}/${limits.maxConcurrent}) - DENIED`);
+        return false;  // Cannot bypass hardware limits
+      } else {
+        console.log(`🎰 InferenceCoordinator: ${personaId} PRIORITY (@mentioned) for ${slotKey}`);
+        skipOtherChecks = true;  // Skip other checks for mentioned personas
+      }
+    }
+
+    // Non-mentioned personas (and @mentioned local that was denied above) go through full checks
+    if (!skipOtherChecks) {
       // Rule 1: CARD DEALING - Max 1 response per persona per message
       if (this.hasPersonaRespondedToMessage(personaId, messageId)) {
         console.log(`🎰 InferenceCoordinator: ${personaId} denied - already responded to ${messageId.slice(0, 8)} (card dealing: 1 per persona)`);

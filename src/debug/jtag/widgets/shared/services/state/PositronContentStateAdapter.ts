@@ -19,6 +19,7 @@ import { Events } from '@system/core/shared/Events';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { UserStateEntity, ContentItem, ContentType, ContentPriority } from '@system/data/entities/UserStateEntity';
 import type { ContentOpenedEvent } from '@commands/collaboration/content/open/shared/ContentOpenTypes';
+import { contentState } from '@system/state/ContentStateService';
 
 /**
  * Event data structures (match server-emitted events)
@@ -86,6 +87,11 @@ export class PositronContentStateAdapter {
   private config: PositronContentStateAdapterConfig;
   private subscribed = false;
 
+  // Deduplication: Track recently processed content to prevent rapid-fire handling
+  // Key: "contentType:entityId", Value: timestamp of last processing
+  private recentlyProcessed: Map<string, number> = new Map();
+  private static readonly DEDUP_WINDOW_MS = 500; // Skip duplicates within 500ms
+
   constructor(
     getUserState: () => UserStateEntity | undefined,
     config: PositronContentStateAdapterConfig
@@ -105,12 +111,48 @@ export class PositronContentStateAdapter {
       return;
     }
 
-    Events.subscribe('content:opened', this.handleContentOpened.bind(this));
-    Events.subscribe('content:closed', this.handleContentClosed.bind(this));
-    Events.subscribe('content:switched', this.handleContentSwitched.bind(this));
+    // Wrap handlers to run off main thread - prevents blocking during tab operations
+    const offMainThread = (handler: (data: unknown) => void) => {
+      return (data: unknown) => {
+        if ('requestIdleCallback' in window) {
+          (window as any).requestIdleCallback(() => handler(data), { timeout: 100 });
+        } else {
+          queueMicrotask(() => handler(data));
+        }
+      };
+    };
+
+    Events.subscribe('content:opened', offMainThread(this.handleContentOpened.bind(this)));
+    Events.subscribe('content:closed', offMainThread(this.handleContentClosed.bind(this)));
+    Events.subscribe('content:switched', offMainThread(this.handleContentSwitched.bind(this)));
 
     this.subscribed = true;
-    console.log(`${this.name}: Subscribed to content events (Positron pattern)`);
+  }
+
+  /**
+   * Check if this content was recently processed (deduplication)
+   */
+  private isDuplicateEvent(contentType: string, entityId?: string): boolean {
+    const key = `${contentType}:${entityId || 'singleton'}`;
+    const lastProcessed = this.recentlyProcessed.get(key);
+    const now = Date.now();
+
+    if (lastProcessed && (now - lastProcessed) < PositronContentStateAdapter.DEDUP_WINDOW_MS) {
+      return true; // Skip - processed too recently
+    }
+
+    // Update timestamp
+    this.recentlyProcessed.set(key, now);
+
+    // Clean up old entries (keep map small)
+    if (this.recentlyProcessed.size > 50) {
+      const cutoff = now - PositronContentStateAdapter.DEDUP_WINDOW_MS;
+      for (const [k, v] of this.recentlyProcessed) {
+        if (v < cutoff) this.recentlyProcessed.delete(k);
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -118,9 +160,22 @@ export class PositronContentStateAdapter {
    * Adds new content item to local state without DB refetch
    */
   private handleContentOpened(eventData: unknown): void {
-    console.log(`${this.name}: Received content:opened event`, eventData);
-
     const data = eventData as ContentOpenedEvent & { setAsCurrent?: boolean };
+
+    // DEDUPLICATION: Skip if we just processed this same content
+    if (this.isDuplicateEvent(data.contentType, data.entityId)) {
+      return;
+    }
+
+    // CRITICAL: Check ContentStateService singleton FIRST for optimistic items
+    // ContentService.open() adds items there, but this adapter was checking userState
+    const singletonItem = contentState.findItem(data.contentType, data.entityId);
+    if (singletonItem && data.contentItemId && singletonItem.id !== data.contentItemId) {
+      // Update temp ID to real ID in the singleton (prevents tab flickering)
+      contentState.updateItemId(singletonItem.id as UUID, data.contentItemId);
+      // NOTE: Don't return early - still need to notify UI below
+    }
+
     const userState = this.getUserState();
 
     // Fallback if state not available
@@ -130,7 +185,7 @@ export class PositronContentStateAdapter {
       return;
     }
 
-    // Check if content already exists in openItems
+    // Check if content already exists in userState openItems
     const existingItem = userState.contentState.openItems.find(
       item => item.id === data.contentItemId ||
               (item.type === data.contentType && item.entityId === data.entityId)
@@ -142,19 +197,39 @@ export class PositronContentStateAdapter {
         id: data.contentItemId,
         type: data.contentType,
         entityId: data.entityId,
+        uniqueId: data.uniqueId,  // Human-readable ID for URLs
         title: data.title || data.contentType,
         lastAccessedAt: new Date(),
         priority: 'normal' as ContentPriority
       };
       userState.contentState.openItems.push(newItem);
-      console.log(`${this.name}: Added new tab to local state: ${newItem.title}`);
     } else if (existingItem) {
       // Update lastAccessedAt for existing item
       existingItem.lastAccessedAt = new Date();
-      console.log(`${this.name}: Updated existing tab: ${existingItem.title}`);
+
+      // CRITICAL: Update temp ID to server's real ID BEFORE setting currentItemId
+      // This prevents tab flickering where currentItemId points to non-existent ID
+      if (data.contentItemId && existingItem.id !== data.contentItemId) {
+        // Track if this was the current item (with temp ID)
+        const wasCurrentItem = userState.contentState.currentItemId === existingItem.id;
+        existingItem.id = data.contentItemId;
+        // Immediately update currentItemId if it was pointing to the old temp ID
+        if (wasCurrentItem) {
+          userState.contentState.currentItemId = data.contentItemId;
+        }
+      }
+
+      // Update uniqueId if it was missing
+      if (data.uniqueId && !existingItem.uniqueId) {
+        existingItem.uniqueId = data.uniqueId;
+      }
+      // Fix title if it was incorrectly set to UUID (migration for old data)
+      if (data.title && existingItem.title === existingItem.entityId) {
+        existingItem.title = data.title;
+      }
     }
 
-    // Set as current if requested
+    // Set as current if requested (ID already updated above if existingItem matched)
     if (data.setAsCurrent && data.contentItemId) {
       userState.contentState.currentItemId = data.contentItemId;
     }
@@ -162,11 +237,11 @@ export class PositronContentStateAdapter {
     // Notify UI to re-render from local state (no DB fetch!)
     this.config.onStateChange();
 
-    // Switch view if requested
+    // Switch view if requested - use uniqueId for URLs, entityId for views
     if (data.setAsCurrent && data.contentType) {
-      console.log(`${this.name}: Switching to new ${data.contentType} content`);
       this.config.onViewSwitch?.(data.contentType, data.entityId);
-      this.config.onUrlUpdate?.(data.contentType, data.entityId);
+      // Use uniqueId for human-readable URLs, fall back to entityId
+      this.config.onUrlUpdate?.(data.contentType, data.uniqueId || data.entityId);
     }
   }
 
@@ -175,8 +250,6 @@ export class PositronContentStateAdapter {
    * Removes content item from local state without DB refetch
    */
   private handleContentClosed(eventData: unknown): void {
-    console.log(`${this.name}: Received content:closed event`, eventData);
-
     const data = eventData as ContentClosedEventData;
     const userState = this.getUserState();
 
@@ -188,22 +261,35 @@ export class PositronContentStateAdapter {
     }
 
     if (data.contentItemId) {
+      // Check if we're closing the current item
+      const wasCurrentItem = userState.contentState.currentItemId === data.contentItemId;
+
       // Remove closed item from local state (Positron: state drives UI)
       userState.contentState.openItems = userState.contentState.openItems.filter(
         item => item.id !== data.contentItemId
       );
-      console.log(`${this.name}: Removed closed tab from local state`);
+
+      // Find the new current item
+      let newCurrentItem: ContentItem | undefined;
 
       // Update currentItemId if provided
       if (data.currentItemId) {
         userState.contentState.currentItemId = data.currentItemId;
+        newCurrentItem = userState.contentState.openItems.find(item => item.id === data.currentItemId);
       } else if (userState.contentState.openItems.length > 0) {
         // Fallback to most recent item if current was closed
-        userState.contentState.currentItemId = userState.contentState.openItems[
-          userState.contentState.openItems.length - 1
-        ].id;
+        newCurrentItem = userState.contentState.openItems[userState.contentState.openItems.length - 1];
+        userState.contentState.currentItemId = newCurrentItem.id;
       } else {
         userState.contentState.currentItemId = undefined;
+      }
+
+      // If we closed the current item, switch view to the new current
+      if (wasCurrentItem && newCurrentItem) {
+        this.config.onViewSwitch?.(newCurrentItem.type, newCurrentItem.entityId);
+        // Use uniqueId from content item for human-readable URLs
+        const urlId = newCurrentItem.uniqueId || newCurrentItem.entityId;
+        this.config.onUrlUpdate?.(newCurrentItem.type, urlId);
       }
     }
 
@@ -216,8 +302,6 @@ export class PositronContentStateAdapter {
    * Updates current item in local state without DB refetch
    */
   private handleContentSwitched(eventData: unknown): void {
-    console.log(`${this.name}: Received content:switched event`, eventData);
-
     const data = eventData as ContentSwitchedEventData;
     const userState = this.getUserState();
 
@@ -231,7 +315,6 @@ export class PositronContentStateAdapter {
     // Update currentItemId in local state (Positron: state drives UI)
     if (data.currentItemId) {
       userState.contentState.currentItemId = data.currentItemId;
-      console.log(`${this.name}: Set current tab in local state: ${data.currentItemId}`);
     }
 
     // Update lastAccessedAt for the switched-to item
@@ -245,12 +328,13 @@ export class PositronContentStateAdapter {
     // Notify UI to re-render from local state (no DB fetch!)
     this.config.onStateChange();
 
-    // Switch view
-    if (data.contentType) {
-      console.log(`${this.name}: Switching view to ${data.contentType}`);
-      this.config.onViewSwitch?.(data.contentType, data.entityId);
-      this.config.onUrlUpdate?.(data.contentType, data.entityId);
-    }
+    // NOTE: We intentionally do NOT call onViewSwitch() here.
+    // View switching is handled optimistically by click handlers.
+    // Calling it here would cause race conditions when multiple tabs are clicked rapidly,
+    // as the server events arrive async and would re-switch views unexpectedly.
+    //
+    // If multi-tab sync is needed (switching from another browser tab), that should be
+    // implemented separately with source tracking (e.g., sessionId comparison).
   }
 
   /**

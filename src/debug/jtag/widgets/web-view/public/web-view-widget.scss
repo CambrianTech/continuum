@@ -4,8 +4,8 @@
  * Uses shared SCSS variables for consistent theming
  */
 
-@import '../../shared/styles/variables';
-@import '../../shared/styles/mixins';
+@use '../../shared/styles/variables' as *;
+@use '../../shared/styles/mixins' as *;
 
 :host {
   display: block;

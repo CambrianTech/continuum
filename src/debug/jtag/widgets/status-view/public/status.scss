@@ -1,0 +1,52 @@
+/**
+ * Status Indicators - SCSS
+ * Connection status badges with cyberpunk glow effects
+ */
+
+@use '../../shared/styles/variables' as *;
+
+.status {
+  padding: $spacing-sm - 2px $spacing-md;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-block;
+  min-width: 100px;
+  text-align: center;
+  border: 1px solid;
+
+  // Connected state - green glow
+  &.connected {
+    background: linear-gradient(135deg, rgba($color-success, 0.1), rgba(0, 200, 80, 0.1));
+    color: $color-success;
+    border-color: $color-success-dark;
+    @include glow($color-success-dark, 15px);
+  }
+
+  // Disconnected state - pink/magenta glow
+  &.disconnected {
+    $disconnected-color: #ff0096;
+    background: linear-gradient(135deg, rgba($disconnected-color, 0.1), rgba(200, 0, 120, 0.1));
+    color: $disconnected-color;
+    border-color: rgba($disconnected-color, 0.3);
+    box-shadow: 0 0 15px rgba($disconnected-color, 0.2);
+  }
+
+  // Warning state - orange glow
+  &.warning {
+    background: linear-gradient(135deg, rgba($color-warning, 0.1), rgba(200, 130, 0, 0.1));
+    color: $color-warning;
+    border-color: $color-warning-dark;
+    @include glow($color-warning-dark, 15px);
+  }
+
+  // Error state - red glow
+  &.error {
+    background: linear-gradient(135deg, rgba($color-error, 0.1), rgba(200, 60, 60, 0.1));
+    color: $color-error;
+    border-color: $color-error-dark;
+    @include glow($color-error-dark, 15px);
+  }
+}

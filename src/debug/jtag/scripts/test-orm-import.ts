@@ -6,13 +6,14 @@
  */
 
 import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
+import { getDatabasePath } from '../system/config/ServerConfig';
 
 async function testOrmImport() {
   console.log('🧪 Testing ORM import functionality manually...');
 
   try {
-    // Create DataService
-    const dataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    // Create DataService - use single source of truth for db path
+    const dataService = await DataServiceFactory.createSQLiteOnly(getDatabasePath());
 
     console.log('🔧 Initializing DataService...');
     const initResult = await dataService.initialize();

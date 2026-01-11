@@ -4,11 +4,10 @@
 /// - Unix socket listener
 /// - Algorithm registry with factory pattern
 /// - OpenCV-style algorithm interface
-
 mod algorithms;
 
-use algorithms::{AlgorithmRegistry, SearchAlgorithm, SearchInput, SearchOutput};
 use algorithms::cosine::{CosineAlgorithm, VectorSearchInput};
+use algorithms::{AlgorithmRegistry, SearchAlgorithm, SearchInput, SearchOutput};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -102,19 +101,17 @@ impl SearchWorker {
                 }),
             },
 
-            Request::AlgorithmParams { algorithm } => {
-                match self.registry.create(&algorithm) {
-                    Some(algo) => Response::Ok {
-                        data: json!({
-                            "algorithm": algorithm,
-                            "params": algo.param_names()
-                        }),
-                    },
-                    None => Response::Error {
-                        message: format!("Unknown algorithm: {}", algorithm),
-                    },
-                }
-            }
+            Request::AlgorithmParams { algorithm } => match self.registry.create(&algorithm) {
+                Some(algo) => Response::Ok {
+                    data: json!({
+                        "algorithm": algorithm,
+                        "params": algo.param_names()
+                    }),
+                },
+                None => Response::Error {
+                    message: format!("Unknown algorithm: {algorithm}"),
+                },
+            },
 
             Request::Search {
                 algorithm,
@@ -126,7 +123,7 @@ impl SearchWorker {
                 let algo_result = if params.is_empty() {
                     self.registry
                         .create(&algorithm)
-                        .ok_or_else(|| format!("Unknown algorithm: {}", algorithm))
+                        .ok_or_else(|| format!("Unknown algorithm: {algorithm}"))
                 } else {
                     self.registry.create_with_params(&algorithm, &params)
                 };
@@ -197,10 +194,10 @@ fn handle_connection(stream: UnixStream, worker: Arc<SearchWorker>) -> std::io::
             Ok(req) => req,
             Err(e) => {
                 let err_response = Response::Error {
-                    message: format!("Parse error: {}", e),
+                    message: format!("Parse error: {e}"),
                 };
                 let json = serde_json::to_string(&err_response)?;
-                writeln!(writer, "{}", json)?;
+                writeln!(writer, "{json}")?;
                 writer.flush()?;
                 continue;
             }
@@ -208,7 +205,7 @@ fn handle_connection(stream: UnixStream, worker: Arc<SearchWorker>) -> std::io::
 
         let response = worker.handle_request(request);
         let response_json = serde_json::to_string(&response)?;
-        writeln!(writer, "{}", response_json)?;
+        writeln!(writer, "{response_json}")?;
         writer.flush()?;
     }
 
@@ -234,7 +231,7 @@ fn main() -> std::io::Result<()> {
     }
 
     println!("🔍 Search Worker starting...");
-    println!("📡 Socket: {}", socket_path);
+    println!("📡 Socket: {socket_path}");
 
     let worker = Arc::new(SearchWorker::new());
     println!("✅ Algorithm registry initialized");
@@ -249,11 +246,11 @@ fn main() -> std::io::Result<()> {
                 let worker_clone = worker.clone();
                 thread::spawn(move || {
                     if let Err(e) = handle_connection(stream, worker_clone) {
-                        eprintln!("Connection error: {}", e);
+                        eprintln!("Connection error: {e}");
                     }
                 });
             }
-            Err(e) => eprintln!("Accept error: {}", e),
+            Err(e) => eprintln!("Accept error: {e}"),
         }
     }
 

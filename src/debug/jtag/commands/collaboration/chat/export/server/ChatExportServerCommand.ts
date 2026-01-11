@@ -88,7 +88,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
     }
 
     // Query messages using data/list command
-    const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: collection,
@@ -149,7 +149,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
    */
   private async findRoom(roomIdOrName: string, params: ChatExportParams): Promise<{ id: import('@system/core/types/CrossPlatformUUID').UUID; entity: RoomEntity }> {
     // Query all rooms using data/list command
-    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,

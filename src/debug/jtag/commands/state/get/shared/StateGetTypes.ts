@@ -4,18 +4,27 @@
  * Follows data daemon command pattern for elegant entity state management
  */
 
-import type { JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
-export interface StateGetParams<T extends BaseEntity = BaseEntity> extends JTAGPayload {
+/** State get command parameters */
+export interface StateGetParams extends CommandParams {
+  /** Collection name to query */
   readonly collection: string;
+  /** Maximum number of items to return */
   readonly limit?: number;
+  /** Filter criteria */
   readonly filter?: Record<string, any>;
+  /** Sort order */
   readonly orderBy?: { field: string; direction: 'asc' | 'desc' }[];
-  readonly userId?: UUID; // Auto-inject current user context
+  /** User ID for context filtering */
+  readonly userId?: UUID;
 }
+
+// Generic version for internal type safety (not exported for schema)
+interface StateGetParamsGeneric<T extends BaseEntity = BaseEntity> extends StateGetParams {}
 
 export interface StateGetResult<T extends BaseEntity> extends JTAGPayload {
   readonly success: boolean;
@@ -26,14 +35,14 @@ export interface StateGetResult<T extends BaseEntity> extends JTAGPayload {
   readonly error?: string;
 }
 
-export const createStateGetParams = <T extends BaseEntity>(
+export const createStateGetParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<StateGetParams<T>, 'context' | 'sessionId'>
-): StateGetParams<T> => createPayload(context, sessionId, data);
+  data: Omit<StateGetParams, 'context' | 'sessionId'>
+): StateGetParams => createPayload(context, sessionId, data);
 
 export const createStateGetResult = <T extends BaseEntity>(
-  params: StateGetParams<T>,
+  params: StateGetParams,
   differences: Omit<Partial<StateGetResult<T>>, 'context' | 'sessionId'>
 ): StateGetResult<T> => transformPayload(params, {
   success: false,

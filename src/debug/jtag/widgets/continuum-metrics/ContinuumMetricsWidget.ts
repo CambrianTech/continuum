@@ -1,266 +1,208 @@
 /**
  * ContinuumMetrics Widget - AI Performance Dashboard
- * Shows mini charts for: requests, tokens/sec, latency, cost
+ * Clean, simple design with 4 metric sparklines
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { AI_DECISION_EVENTS } from '../../system/events/shared/AIDecisionEvents';
 import { AIGenerationEntity } from '../../system/data/entities/AIGenerationEntity';
-import type { AICostParams, AICostResult } from '../../commands/ai/cost/shared/AICostTypes';
+// Types imported but cast to any due to browser-server communication
+import { styles } from './public/continuum-metrics.styles';
 
-interface MetricsData {
-  totalGenerations: number;
-  totalTokens: number;
+interface TimeSeriesPoint {
+  timestamp: string;
+  cost: number;
+  generations: number;
+  tokens: number;
   avgResponseTime: number;
-  totalCost: number;
-  timeRange: string;
-  timeSeries?: Array<{
-    timestamp: string;
-    cost: number;
-    generations: number;
-    tokens: number;
-    avgResponseTime: number;
-  }>;
 }
 
-export class ContinuumMetricsWidget extends BaseWidget {
-  private currentMetric: string = 'requests';  // Match the default in template
-  private currentTimeRange: string = '24h';
-  private metricsData: MetricsData | null = null;
-  private chartInterval: string = '1h';  // Chart granularity
+export class ContinuumMetricsWidget extends ReactiveWidget {
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(styles)
+  ] as CSSResultGroup;
+
+  @reactive() private timeRange: string = '7d';
+  @reactive() private timeSeries: TimeSeriesPoint[] = [];
+  @reactive() private summary: {
+    requests: number;
+    tokens: number;
+    latency: number;
+    cost: number;
+  } = { requests: 0, tokens: 0, latency: 0, cost: 0 };
 
   constructor() {
-    console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor called');
-    super({
-      widgetId: 'continuum-metrics-widget',
-      widgetName: 'ContinuumMetricsWidget',
-      styles: 'continuum-metrics.css',
-      template: 'continuum-metrics.html',
-      enableAI: false,
-      enableDatabase: true,  // Enable to receive ai_generations database events
-      enableRouterEvents: false,
-      enableScreenshots: false
-    });
-    console.log('🔧 WIDGET-DEBUG-' + Date.now() + ': ContinuumMetricsWidget constructor completed');
+    super({ widgetName: 'ContinuumMetricsWidget' });
   }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    this.subscribeToAIEvents();
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
 
-    // Spawn async data fetch (don't block initialization)
-    this.fetchMetricsData().catch(error => {
-      console.error('❌ ContinuumMetrics: Failed to fetch initial data:', error);
-    });
-  }
-
-  protected async renderWidget(): Promise<void> {
-    const styles = this.templateCSS ?? '/* No styles loaded */';
-    const template = this.templateHTML ?? '<div>Loading...</div>';
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-
-    this.shadowRoot.innerHTML = `
-      <style>${styles}</style>
-      ${templateString}
-    `;
-
-    // Setup controls after shadowRoot populated
-    this.setupFilterControls();
-    this.setupChartClick();
-  }
-
-  protected async onWidgetCleanup(): Promise<void> {
-    console.log('📊 ContinuumMetrics: Cleaning up...');
-  }
-
-  /**
-   * Subscribe to AI events for real-time metrics updates
-   */
-  private subscribeToAIEvents(): void {
-    // Update metrics whenever an AI generates a response (cost/tokens change)
-    Events.subscribe(AI_DECISION_EVENTS.POSTED, () => {
-      this.fetchMetricsData();
+    this.createMountEffect(() => {
+      const unsubs = [
+        Events.subscribe(AI_DECISION_EVENTS.POSTED, () => this.fetchData()),
+        Events.subscribe(`data:${AIGenerationEntity.collection}:created`, () => this.fetchData())
+      ];
+      return () => unsubs.forEach(u => u());
     });
 
-    // Also subscribe to database events for AI generation tracking
-    const dbEvent = `data:${AIGenerationEntity.collection}:created`;
-    Events.subscribe(dbEvent, () => {
-      this.fetchMetricsData();
-    });
+    // Auto-detect best time range based on data distribution
+    await this.autoDetectTimeRange();
   }
 
-  /**
-   * Setup filter dropdown handlers
-   */
-  private setupFilterControls(): void {
-    const metricSelect = this.shadowRoot?.querySelector('.metric-select') as HTMLSelectElement;
-    const timeSelect = this.shadowRoot?.querySelector('.time-select') as HTMLSelectElement;
+  private async autoDetectTimeRange(): Promise<void> {
+    // Fetch 7d data to analyze distribution
+    const result = await Commands.execute('ai/cost', {
+      startTime: '7d',
+      includeTimeSeries: true,
+      interval: '1h',
+      includeBreakdown: false
+    } as any) as any;
 
-    if (metricSelect) {
-      metricSelect.addEventListener('change', () => {
-        this.updateMetric(metricSelect.value);
-      });
-    }
-
-    if (timeSelect) {
-      timeSelect.addEventListener('change', () => {
-        this.updateTimeRange(timeSelect.value);
-      });
-    }
-  }
-
-  /**
-   * Setup click handler for chart expansion
-   */
-  private setupChartClick(): void {
-    const chartArea = this.shadowRoot?.querySelector('.chart-area');
-    if (chartArea) {
-      chartArea.addEventListener('click', () => {
-        console.log('📊 ContinuumMetrics: Chart clicked - expand to full view');
-        // TODO: Emit event to open full metrics view
-      });
-    }
-  }
-
-  /**
-   * Fetch metrics data from ai/cost command
-   */
-  private async fetchMetricsData(): Promise<void> {
-    try {
-      const result = await Commands.execute<AICostParams, AICostResult>('ai/cost', {
-        startTime: this.currentTimeRange,
-        includeTimeSeries: true,  // Request time-series data for chart
-        interval: this.chartInterval,
-        includeBreakdown: false
-      });
-
-      if (result?.success && result.summary) {
-        this.metricsData = {
-          totalGenerations: result.summary.totalGenerations,
-          totalTokens: result.summary.totalTokens,
-          avgResponseTime: result.summary.avgResponseTime,
-          totalCost: result.summary.totalCost,
-          timeRange: result.summary.timeRange?.duration || this.currentTimeRange,
-          timeSeries: result.timeSeries  // Store time-series for chart rendering
-        };
-
-        // Update metric display
-        this.updateMetricDisplay();
-
-        // Render chart with time-series data
-        this.renderChart();
-      }
-    } catch (error) {
-      console.error('❌ ContinuumMetrics: Failed to fetch data:', error);
-    }
-  }
-
-  /**
-   * Render SVG chart from time-series data
-   */
-  private renderChart(): void {
-    if (!this.metricsData?.timeSeries) return;
-
-    const chartSvg = this.shadowRoot?.querySelector('.chart-svg');
-    if (!chartSvg) return;
-
-    const timeSeries = this.metricsData.timeSeries;
-    const values = timeSeries.map(point => {
-      switch (this.currentMetric) {
-        case 'requests': return point.generations;
-        case 'tokens': return point.tokens;
-        case 'cost': return point.cost * 1000; // Scale up for visibility
-        case 'latency': return point.avgResponseTime / 1000; // Convert ms to seconds
-        default: return point.generations;
-      }
-    });
-
-    // Find min/max for scaling
-    const maxValue = Math.max(...values, 1);  // Avoid divide by zero
-    const minValue = Math.min(...values, 0);
-    const range = maxValue - minValue || 1;
-
-    // Generate SVG polyline points (x: 0-100, y: 0-30)
-    const points = values.map((value, index) => {
-      const x = (index / (values.length - 1 || 1)) * 100;
-      const y = 30 - ((value - minValue) / range) * 30;  // Invert Y axis
-      return `${x},${y}`;
-    }).join(' ');
-
-    // Update polyline
-    const polyline = chartSvg.querySelector('.chart-line');
-    if (polyline) {
-      polyline.setAttribute('points', points);
-    }
-  }
-
-  /**
-   * Update displayed metric
-   */
-  private updateMetric(metric: string): void {
-    console.log('📊 ContinuumMetrics: Update metric:', metric);
-    this.currentMetric = metric;
-    this.updateMetricDisplay();
-    this.renderChart();  // Re-render chart for new metric
-  }
-
-  /**
-   * Update metric display based on current metric selection
-   */
-  private updateMetricDisplay(): void {
-    if (!this.metricsData) return;
-
-    const title = this.shadowRoot?.querySelector('.metric-title') as HTMLElement;
-    const value = this.shadowRoot?.querySelector('.metric-value') as HTMLElement;
-
-    if (!title || !value) {
-      console.warn('⚠️ ContinuumMetrics: DOM elements not found');
+    if (!result?.success || !result.timeSeries?.length) {
+      await this.fetchData();
       return;
     }
 
-    switch (this.currentMetric) {
-      case 'requests':
-        title.textContent = 'REQUESTS';
-        value.textContent = this.metricsData.totalGenerations.toString();
-        break;
-      case 'tokens':
-        title.textContent = 'TOKENS';
-        value.textContent = this.formatNumber(this.metricsData.totalTokens);
-        break;
-      case 'latency':
-        title.textContent = 'LATENCY';
-        value.textContent = `${(this.metricsData.avgResponseTime / 1000).toFixed(2)}s`;
-        break;
-      case 'cost':
-        title.textContent = 'COST';
-        value.textContent = `$${this.metricsData.totalCost.toFixed(2)}`;
-        break;
+    // Find where the activity is concentrated
+    const now = Date.now();
+    const hourMs = 3600000;
+    const timeSeries = result.timeSeries as TimeSeriesPoint[];
+
+    // Count activity in each time window
+    let last1h = 0, last6h = 0, last24h = 0, total = 0;
+
+    for (const point of timeSeries) {
+      const age = now - new Date(point.timestamp).getTime();
+      const activity = point.generations;
+      total += activity;
+
+      if (age <= hourMs) last1h += activity;
+      if (age <= 6 * hourMs) last6h += activity;
+      if (age <= 24 * hourMs) last24h += activity;
     }
-  }
 
-  /**
-   * Format large numbers with K/M suffixes
-   */
-  private formatNumber(num: number): string {
-    if (num >= 1000000) {
-      return `${(num / 1000000).toFixed(1)}M`;
-    } else if (num >= 1000) {
-      return `${(num / 1000).toFixed(1)}K`;
+    // Choose the smallest range that contains most of the activity
+    if (total > 0) {
+      if (last1h / total >= 0.7) {
+        this.timeRange = '1h';
+      } else if (last6h / total >= 0.7) {
+        this.timeRange = '6h';
+      } else if (last24h / total >= 0.7) {
+        this.timeRange = '24h';
+      } else {
+        this.timeRange = '7d';
+      }
     }
-    return num.toString();
+
+    // Now fetch with the optimal range
+    await this.fetchData();
   }
 
-  /**
-   * Update time range
-   */
-  private async updateTimeRange(range: string): Promise<void> {
-    console.log('📊 ContinuumMetrics: Update time range:', range);
-    this.currentTimeRange = range;
-    await this.fetchMetricsData();
+  protected override renderContent(): TemplateResult {
+    return html`
+      <div class="metrics-panel">
+        <div class="metrics-header">
+          <span class="title">AI Performance</span>
+          <select class="time-select" @change=${this.onTimeChange}>
+            ${['1h', '6h', '24h', '7d'].map(t => html`
+              <option value="${t}" ?selected=${this.timeRange === t}>${t}</option>
+            `)}
+          </select>
+        </div>
+
+        <div class="chart-container">
+          <svg viewBox="0 0 200 80" preserveAspectRatio="none">
+            <polyline stroke="#00d4ff" stroke-width="2" fill="none" opacity="0.8"
+              points="${this.getPathPoints(p => p.generations)}" />
+            <polyline stroke="#ff6b6b" stroke-width="2" fill="none" opacity="0.8"
+              points="${this.getPathPoints(p => p.tokens / 1000)}" />
+            <polyline stroke="#ffd700" stroke-width="2" fill="none" opacity="0.8"
+              points="${this.getPathPoints(p => p.avgResponseTime / 1000)}" />
+            <polyline stroke="#4ade80" stroke-width="2" fill="none" opacity="0.8"
+              points="${this.getPathPoints(p => p.cost * 100)}" />
+          </svg>
+        </div>
+
+        <div class="legend">
+          ${this.renderLegendItem('Req', '#00d4ff', this.summary.requests.toString())}
+          ${this.renderLegendItem('Tok', '#ff6b6b', this.formatNumber(this.summary.tokens))}
+          ${this.renderLegendItem('Lat', '#ffd700', `${(this.summary.latency / 1000).toFixed(1)}s`)}
+          ${this.renderLegendItem('Cost', '#4ade80', `$${this.summary.cost.toFixed(2)}`)}
+        </div>
+      </div>
+    `;
   }
 
-  protected resolveResourcePath(filename: string): string {
-    return `widgets/continuum-metrics/public/${filename}`;
+  private getPathPoints(getValue: (p: TimeSeriesPoint) => number): string {
+    if (!this.timeSeries.length) return '2,40 198,40';
+
+    const values = this.timeSeries.map(getValue);
+    const max = Math.max(...values, 0.001);
+    const min = Math.min(...values, 0);
+    const range = max - min || 1;
+
+    return values.map((v, i) => {
+      const x = (i / Math.max(values.length - 1, 1)) * 196 + 2;
+      const y = 75 - ((v - min) / range) * 65;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  }
+
+  private renderLegendItem(label: string, color: string, value: string): TemplateResult {
+    return html`
+      <div class="legend-item">
+        <span class="dot" style="background:${color}"></span>
+        <span class="label">${label}</span>
+        <span class="value" style="color:${color}">${value}</span>
+      </div>
+    `;
+  }
+
+
+  private formatNumber(n: number): string {
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return n.toString();
+  }
+
+  private onTimeChange = async (e: Event) => {
+    this.timeRange = (e.target as HTMLSelectElement).value;
+    await this.fetchData();
+  };
+
+  private async fetchData(): Promise<void> {
+    try {
+      const result = await Commands.execute('ai/cost', {
+        startTime: this.timeRange,
+        includeTimeSeries: true,
+        interval: '1h',
+        includeBreakdown: false
+      } as any) as any;
+
+      if (result?.success && result.summary) {
+        this.timeSeries = result.timeSeries || [];
+        this.summary = {
+          requests: result.summary.totalGenerations ?? 0,
+          tokens: result.summary.totalTokens ?? 0,
+          latency: result.summary.avgResponseTime ?? 0,
+          cost: result.summary.totalCost ?? 0
+        };
+        console.log('ContinuumMetrics: summary', this.summary);
+        this.requestUpdate();
+      }
+    } catch (e) {
+      console.error('ContinuumMetrics fetch error:', e);
+    }
   }
 }

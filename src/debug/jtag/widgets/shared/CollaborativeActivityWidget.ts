@@ -200,7 +200,7 @@ export abstract class CollaborativeActivityWidget<
   // ─────────────────────────────────────────────────────────────────
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log(`🎯 ${this.constructor.name}: Initializing collaborative activity...`);
+    this.verbose() && console.log(`🎯 ${this.constructor.name}: Initializing collaborative activity...`);
 
     // Load current user info
     await this.loadUserInfo();
@@ -210,7 +210,7 @@ export abstract class CollaborativeActivityWidget<
       this.subscribeToOperationEvents();
     }
 
-    console.log(`✅ ${this.constructor.name}: Ready for collaboration`);
+    this.verbose() && console.log(`✅ ${this.constructor.name}: Ready for collaboration`);
   }
 
   async disconnectedCallback(): Promise<void> {
@@ -234,7 +234,7 @@ export abstract class CollaborativeActivityWidget<
       if (result.success && result.user) {
         this._userId = result.user.id;
         this._userName = result.user.displayName || 'Unknown';
-        console.log(`🎯 ${this.constructor.name}: User identified as ${this._userName}`);
+        this.verbose() && console.log(`🎯 ${this.constructor.name}: User identified as ${this._userName}`);
       }
     } catch (err) {
       console.warn(`🎯 ${this.constructor.name}: Could not get user info`);
@@ -269,7 +269,7 @@ export abstract class CollaborativeActivityWidget<
       ) as OperationListResult<TEntity>;
 
       if (result.success && result.operations) {
-        console.log(`🎯 ${this.constructor.name}: Loading ${result.operations.length} operations`);
+        this.verbose() && console.log(`🎯 ${this.constructor.name}: Loading ${result.operations.length} operations`);
         this.operations = result.operations;
 
         // Track loaded IDs
@@ -367,7 +367,7 @@ export abstract class CollaborativeActivityWidget<
         // Don't render our own operations (we applied them locally)
         if (eventData.operation.creatorId === this._userId) return;
 
-        console.log(`🎯 ${this.constructor.name}: Received operation from ${eventData.operation.creatorName}`);
+        this.verbose() && console.log(`🎯 ${this.constructor.name}: Received operation from ${eventData.operation.creatorName}`);
 
         // Apply the remote operation
         this.operations.push(eventData.operation);

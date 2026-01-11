@@ -7,15 +7,14 @@
 ///
 /// The main thread queues operations here and returns immediately,
 /// freeing the main thread from blocking database I/O.
-
 use crate::database::{self, DbPool};
 use crate::health::StatsHandle;
 use crate::messages::*;
 use crate::ShutdownSignal;
-use std::sync::atomic::Ordering;
-use std::sync::mpsc;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
 
 // ============================================================================
 // Queued Data Operation (internal type)
@@ -38,7 +37,7 @@ pub enum QueuedDataOp {
 /// Debug logging to file (temporary)
 fn debug_log(msg: &str) {
     let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let log_msg = format!("[{}] {}\n", timestamp, msg);
+    let log_msg = format!("[{timestamp}] {msg}\n");
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -92,20 +91,28 @@ pub fn process_data_queue(
                 payload,
                 response_tx,
             } => {
-                debug_log(&format!("[Processor] Processing SQL query: {}", payload.sql));
-                let result = database::with_retry(|| database::execute_query(&db_pool, payload.clone()));
+                debug_log(&format!(
+                    "[Processor] Processing SQL query: {}",
+                    payload.sql
+                ));
+                let result =
+                    database::with_retry(|| database::execute_query(&db_pool, payload.clone()));
                 let _ = response_tx.send((request_id, result.clone()));
-                result.map(|_| ()).map_err(|e| e)
+                result.map(|_| ())
             }
             QueuedDataOp::Execute {
                 request_id,
                 payload,
                 response_tx,
             } => {
-                debug_log(&format!("[Processor] Processing SQL statement: {}", payload.sql));
-                let result = database::with_retry(|| database::execute_statement(&db_pool, payload.clone()));
+                debug_log(&format!(
+                    "[Processor] Processing SQL statement: {}",
+                    payload.sql
+                ));
+                let result =
+                    database::with_retry(|| database::execute_statement(&db_pool, payload.clone()));
                 let _ = response_tx.send((request_id, result.clone()));
-                result.map(|_| ()).map_err(|e| e)
+                result.map(|_| ())
             }
         };
 
@@ -115,8 +122,8 @@ pub fn process_data_queue(
                 // Success already recorded when queued
             }
             Err(e) => {
-                eprintln!("❌ Processor error: {}", e);
-                debug_log(&format!("[Processor] Error: {}", e));
+                eprintln!("❌ Processor error: {e}");
+                debug_log(&format!("[Processor] Error: {e}"));
 
                 let mut s = stats.lock().unwrap();
                 s.record_error();
@@ -125,12 +132,13 @@ pub fn process_data_queue(
 
         // Log throughput every 100 operations
         if processed % 100 == 0 {
-            debug_log(&format!("[Processor] Processed {} data operations", processed));
+            debug_log(&format!(
+                "[Processor] Processed {processed} data operations"
+            ));
         }
     }
 
     debug_log(&format!(
-        "[Processor] Queue drained, processed {} total operations",
-        processed
+        "[Processor] Queue drained, processed {processed} total operations"
     ));
 }

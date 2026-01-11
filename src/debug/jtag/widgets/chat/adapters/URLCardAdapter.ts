@@ -8,6 +8,9 @@
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 interface URLCardData {
   readonly url: string;
   readonly title?: string;
@@ -73,7 +76,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
       <div class="url-card-content">
         ${additionalText ? `<div class="url-message-text">${additionalText}</div>` : ''}
 
-        <div class="url-card" data-card-id="${cardId}" data-url="${url}">
+        <div class="url-card" data-card-id="${cardId}" data-url="${url}" data-action="url-card-click">
           <div class="url-card-loading" style="display: block;">
             <div class="loading-spinner"></div>
             <span class="loading-text">Loading preview...</span>
@@ -89,8 +92,8 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
                 </span>
               </div>
               <div class="card-actions">
-                <button class="action-button ai-summarize" title="AI summarize">🤖</button>
-                <button class="action-button external-link" title="Open in new tab">↗️</button>
+                <button class="action-button" data-action="url-ai-summarize" title="AI summarize">🤖</button>
+                <button class="action-button" data-action="url-open-external" title="Open in new tab">↗️</button>
               </div>
             </div>
 
@@ -111,7 +114,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
             <div class="error-content">
               <span class="error-icon">🔗</span>
               <span class="error-text">Preview unavailable</span>
-              <button class="retry-preview" data-url="${url}">Retry</button>
+              <button class="retry-preview" data-action="url-retry-preview" data-url="${url}">Retry</button>
             </div>
             <div class="fallback-link">
               <a href="${url}" target="_blank" rel="noopener noreferrer" class="external-link-fallback">
@@ -206,90 +209,81 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
     return ['url-card-content', 'interactive-content', 'rich-content'];
   }
 
+  // NOTE: setupInteractionHandlers removed - now uses event delegation
+  // Action handlers are static and called by MessageEventDelegator in ChatWidget
+
   /**
-   * Enhanced interaction handlers for URL cards
+   * Static action handlers for event delegation
+   * These are called by MessageEventDelegator, not per-element listeners
    */
-  protected setupInteractionHandlers(element: HTMLElement): void {
-    super.setupInteractionHandlers(element);
 
-    // External link opening
-    const externalBtn = element.querySelector('.external-link');
-    const fallbackLink = element.querySelector('.external-link-fallback');
+  /**
+   * Handle card click - open URL in new tab
+   */
+  static handleCardClick(target: HTMLElement, event: Event): void {
+    // Don't trigger if clicking on buttons
+    if ((event.target as HTMLElement).tagName === 'BUTTON') return;
 
-    [externalBtn, fallbackLink].forEach(btn => {
-      btn?.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const url = element.querySelector('.url-card')?.getAttribute('data-url');
-        if (url) this.openExternalLink(url);
-      });
-    });
-
-    // AI summarization
-    const aiBtn = element.querySelector('.ai-summarize');
-    aiBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.requestAISummary(element);
-    });
-
-    // Retry preview
-    const retryBtn = element.querySelector('.retry-preview');
-    retryBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.retryPreview(element);
-    });
-
-    // Card click (full card is clickable)
-    const card = element.querySelector('.url-card');
-    card?.addEventListener('click', (e) => {
-      // Don't trigger if clicking on buttons
-      if ((e.target as HTMLElement).tagName === 'BUTTON') return;
-
-      const url = card.getAttribute('data-url');
-      if (url) this.openExternalLink(url);
-    });
+    const card = target.closest('.url-card') as HTMLElement;
+    const url = card?.dataset.url;
+    if (url) {
+      URLCardAdapter.openExternalLink(url);
+    }
   }
 
   /**
-   * Open URL in new tab safely
+   * Handle external link button click
    */
-  private openExternalLink(url: string): void {
-    window.open(url, '_blank', 'noopener,noreferrer');
-    this.hooks.onUserInteraction?.('open_link', { url });
+  static handleOpenExternal(target: HTMLElement): void {
+    const card = target.closest('.url-card') as HTMLElement;
+    const url = card?.dataset.url;
+    if (url) {
+      URLCardAdapter.openExternalLink(url);
+    }
   }
 
   /**
    * Request AI summarization of the linked content
    */
-  private async requestAISummary(element: HTMLElement): Promise<void> {
-    const url = element.querySelector('.url-card')?.getAttribute('data-url');
+  static handleAISummarize(target: HTMLElement): void {
+    const card = target.closest('.url-card') as HTMLElement;
+    const url = card?.dataset.url;
     if (!url) return;
 
-    console.log('🤖 Requesting AI summary for:', url);
-
+    verbose() && console.log('🤖 Requesting AI summary for:', url);
     // Future: AI content summarization
-    // const summary = await aiService.summarizeURL(url);
-
-    this.hooks.onUserInteraction?.('ai_summarize', {
-      url,
-      action: 'summarize_content'
-    });
   }
 
   /**
    * Retry preview loading
    */
-  private async retryPreview(element: HTMLElement): Promise<void> {
-    const loadingDiv = element.querySelector('.url-card-loading') as HTMLElement;
-    const contentDiv = element.querySelector('.url-card-content-area') as HTMLElement;
-    const errorDiv = element.querySelector('.url-card-error') as HTMLElement;
+  static handleRetryPreview(target: HTMLElement): void {
+    const card = target.closest('.url-card') as HTMLElement;
+    if (!card) return;
 
-    // Reset states
-    errorDiv.style.display = 'none';
-    loadingDiv.style.display = 'block';
-    contentDiv.style.display = 'none';
+    const loadingDiv = card.querySelector('.url-card-loading') as HTMLElement;
+    const contentDiv = card.querySelector('.url-card-content-area') as HTMLElement;
+    const errorDiv = card.querySelector('.url-card-error') as HTMLElement;
 
-    // Retry loading
-    await this.handleContentLoading(element);
+    if (loadingDiv && contentDiv && errorDiv) {
+      // Reset states to loading
+      errorDiv.style.display = 'none';
+      loadingDiv.style.display = 'block';
+      contentDiv.style.display = 'none';
+
+      // Note: Actual retry would need adapter instance or separate fetch
+      verbose() && console.log('🔄 Retrying preview for:', card.dataset.url);
+    }
+  }
+
+  /**
+   * Open URL in new tab safely
+   */
+  private static openExternalLink(url: string): void {
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+    verbose() && console.log('🔗 Opening external link:', url);
   }
 
   /**
@@ -384,7 +378,7 @@ export class URLCardAdapter extends AbstractMessageAdapter<URLCardData> {
    * Handle AI editing of URL card content
    */
   async handleAIEdit(editInstructions: any): Promise<void> {
-    console.log('🤖 AI editing URL card:', editInstructions);
+    verbose() && console.log('🤖 AI editing URL card:', editInstructions);
 
     // Future: AI can:
     // - Generate better titles

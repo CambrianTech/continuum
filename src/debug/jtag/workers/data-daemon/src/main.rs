@@ -12,7 +12,6 @@
 /// 3. SQLite: Single writer queue (serialized writes, parallel reads)
 /// 4. Postgres: Connection pool (full concurrency)
 /// 5. Return results via Unix socket
-
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -162,9 +161,7 @@ enum Request {
 
     /// Get blob storage statistics
     #[serde(rename = "blob/stats")]
-    BlobStats {
-        base_path: Option<String>,
-    },
+    BlobStats { base_path: Option<String> },
 
     /// Execute a raw SQL query with optional JOIN support
     /// Returns raw query results - caller does any transformation
@@ -255,7 +252,7 @@ fn detect_storage_type(path: &Path) -> StorageType {
             .unwrap_or("");
 
         if let Ok(output) = Command::new("diskutil")
-            .args(&["info", &format!("/Volumes/{}", volume_name)])
+            .args(["info", &format!("/Volumes/{volume_name}")])
             .output()
         {
             let info = String::from_utf8_lossy(&output.stdout);
@@ -294,30 +291,30 @@ fn get_sqlite_pragmas(storage: StorageType, multi_writer: bool) -> String {
         // Skip locking_mode (would conflict with TypeScript)
         "PRAGMA synchronous=NORMAL; \
          PRAGMA temp_store=MEMORY; \
-         PRAGMA busy_timeout=5000;".to_string()
+         PRAGMA busy_timeout=5000;"
+            .to_string()
     } else {
         // Single-writer mode: Can set everything
         match storage {
-            StorageType::InternalSSD => {
-                "PRAGMA journal_mode=WAL; \
+            StorageType::InternalSSD => "PRAGMA journal_mode=WAL; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA temp_store=MEMORY; \
                  PRAGMA locking_mode=EXCLUSIVE; \
-                 PRAGMA busy_timeout=5000;".to_string()
-            }
-            StorageType::ExternalSSD => {
-                "PRAGMA journal_mode=WAL; \
+                 PRAGMA busy_timeout=5000;"
+                .to_string(),
+            StorageType::ExternalSSD => "PRAGMA journal_mode=WAL; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA wal_autocheckpoint=1000; \
                  PRAGMA temp_store=MEMORY; \
-                 PRAGMA busy_timeout=5000;".to_string()
-            }
+                 PRAGMA busy_timeout=5000;"
+                .to_string(),
             StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
                 "PRAGMA journal_mode=DELETE; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA temp_store=MEMORY; \
                  PRAGMA locking_mode=EXCLUSIVE; \
-                 PRAGMA busy_timeout=5000;".to_string()
+                 PRAGMA busy_timeout=5000;"
+                    .to_string()
             }
         }
     }
@@ -337,7 +334,7 @@ struct SqliteStrategy {
 #[allow(dead_code)]
 struct WriteOperation {
     query: String,
-    params: Value,  // Reserved for parameterized queries
+    params: Value, // Reserved for parameterized queries
 }
 
 /// Compute cosine similarity between two vectors
@@ -472,25 +469,27 @@ impl SqliteStrategy {
         // Detect storage type by sampling system
         let storage_type = detect_storage_type(Path::new(&connection_path));
 
-        println!("🔍 Detected storage type: {:?} for {}", storage_type, connection_path);
+        println!("🔍 Detected storage type: {storage_type:?} for {connection_path}");
 
         // Check for WAL artifacts before opening (indicates prior WAL mode usage)
-        let wal_path = format!("{}-wal", connection_path);
-        let shm_path = format!("{}-shm", connection_path);
+        let wal_path = format!("{connection_path}-wal");
+        let shm_path = format!("{connection_path}-shm");
         if Path::new(&wal_path).exists() || Path::new(&shm_path).exists() {
-            println!("⚠️  WAL artifacts exist for {} - prior connection may have crashed", connection_path);
+            println!(
+                "⚠️  WAL artifacts exist for {connection_path} - prior connection may have crashed"
+            );
         }
 
         // Open connection
         let conn = rusqlite::Connection::open(&connection_path)
-            .map_err(|e| format!("Failed to open SQLite: {}", e))?;
+            .map_err(|e| format!("Failed to open SQLite: {e}"))?;
 
         // Configure with multi_writer=true since TypeScript (better-sqlite3) may have the database open
         // SKIP journal_mode and locking_mode changes - they require exclusive access
         // SKIP checkpoint - also requires exclusive access when other connections exist
         let pragmas = get_sqlite_pragmas(storage_type, true);
         conn.execute_batch(&pragmas)
-            .map_err(|e| format!("Failed to configure SQLite: {}", e))?;
+            .map_err(|e| format!("Failed to configure SQLite: {e}"))?;
 
         let mode_desc = match storage_type {
             StorageType::InternalSSD => "WAL mode - internal SSD optimized",
@@ -498,7 +497,7 @@ impl SqliteStrategy {
             _ => "DELETE mode - SD card/HDD reliable",
         };
 
-        println!("✅ SQLite adapter opened: {} ({})", connection_path, mode_desc);
+        println!("✅ SQLite adapter opened: {connection_path} ({mode_desc})");
 
         Ok(Self {
             connection_path,
@@ -519,8 +518,9 @@ impl SqliteStrategy {
             let conn = self.connection.lock().unwrap();
 
             // Execute write (simplified - would need proper query building)
-            let rows_affected = conn.execute(&write_op.query, [])
-                .map_err(|e| format!("SQLite write failed: {}", e))?;
+            let rows_affected = conn
+                .execute(&write_op.query, [])
+                .map_err(|e| format!("SQLite write failed: {e}"))?;
 
             results.push(json!({ "rows_affected": rows_affected }));
         }
@@ -534,8 +534,9 @@ impl ConcurrencyStrategy for SqliteStrategy {
         // Reads can run in parallel (WAL mode allows this)
         let conn = self.connection.lock().unwrap();
 
-        let mut stmt = conn.prepare(query)
-            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let mut stmt = conn
+            .prepare(query)
+            .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
         let column_count = stmt.column_count();
 
@@ -546,19 +547,21 @@ impl ConcurrencyStrategy for SqliteStrategy {
 
         let mut rows = Vec::new();
 
-        let row_iter = stmt.query_map([], |row| {
-            let mut row_data = serde_json::Map::new();
-            for (i, column_name) in column_names.iter().enumerate() {
-                let value: Result<String, _> = row.get(i);
-                if let Ok(v) = value {
-                    row_data.insert(column_name.clone(), json!(v));
+        let row_iter = stmt
+            .query_map([], |row| {
+                let mut row_data = serde_json::Map::new();
+                for (i, column_name) in column_names.iter().enumerate() {
+                    let value: Result<String, _> = row.get(i);
+                    if let Ok(v) = value {
+                        row_data.insert(column_name.clone(), json!(v));
+                    }
                 }
-            }
-            Ok(Value::Object(row_data))
-        }).map_err(|e| format!("Query execution failed: {}", e))?;
+                Ok(Value::Object(row_data))
+            })
+            .map_err(|e| format!("Query execution failed: {e}"))?;
 
         for row in row_iter {
-            rows.push(row.map_err(|e| format!("Row parse error: {}", e))?);
+            rows.push(row.map_err(|e| format!("Row parse error: {e}"))?);
         }
 
         Ok(json!({ "items": rows, "count": rows.len() }))
@@ -587,33 +590,33 @@ impl ConcurrencyStrategy for SqliteStrategy {
 
         // Query embeddings from the collection
         // Embeddings are stored as BLOB in the 'embedding' column
-        let query = format!(
-            "SELECT id, embedding FROM {} WHERE embedding IS NOT NULL",
-            collection
-        );
+        let query = format!("SELECT id, embedding FROM {collection} WHERE embedding IS NOT NULL");
 
-        let mut stmt = conn.prepare(&query)
-            .map_err(|e| format!("Failed to prepare vector query: {}", e))?;
+        let mut stmt = conn
+            .prepare(&query)
+            .map_err(|e| format!("Failed to prepare vector query: {e}"))?;
 
         // Collect all vectors first (need to release connection lock before parallel work)
         let mut corpus: Vec<(String, Vec<f64>)> = Vec::new();
 
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            // Try BLOB first, then TEXT (JSON array)
-            let embedding: Vec<f64> = if let Ok(blob) = row.get::<_, Vec<u8>>(1) {
-                blob_to_f64_vec(&blob)
-            } else if let Ok(text) = row.get::<_, String>(1) {
-                // Parse JSON array: "[0.1, 0.2, ...]"
-                serde_json::from_str(&text).unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            Ok((id, embedding))
-        }).map_err(|e| format!("Vector query failed: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                // Try BLOB first, then TEXT (JSON array)
+                let embedding: Vec<f64> = if let Ok(blob) = row.get::<_, Vec<u8>>(1) {
+                    blob_to_f64_vec(&blob)
+                } else if let Ok(text) = row.get::<_, String>(1) {
+                    // Parse JSON array: "[0.1, 0.2, ...]"
+                    serde_json::from_str(&text).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                Ok((id, embedding))
+            })
+            .map_err(|e| format!("Vector query failed: {e}"))?;
 
         for row in rows {
-            let (id, embedding) = row.map_err(|e| format!("Row error: {}", e))?;
+            let (id, embedding) = row.map_err(|e| format!("Row error: {e}"))?;
             if !embedding.is_empty() {
                 corpus.push((id, embedding));
             }
@@ -674,15 +677,19 @@ impl ConcurrencyStrategy for SqliteStrategy {
 
         // Optimized path: fetch full records for top-k IDs in a single query
         // Build IN clause with top-k IDs
-        let id_list: Vec<String> = top_k.iter().map(|(id, _)| format!("'{}'", id.replace("'", "''"))).collect();
+        let id_list: Vec<String> = top_k
+            .iter()
+            .map(|(id, _)| format!("'{}'", id.replace("'", "''")))
+            .collect();
         let full_query = format!(
             "SELECT * FROM {} WHERE id IN ({})",
             collection,
             id_list.join(", ")
         );
 
-        let mut full_stmt = conn.prepare(&full_query)
-            .map_err(|e| format!("Failed to prepare full record query: {}", e))?;
+        let mut full_stmt = conn
+            .prepare(&full_query)
+            .map_err(|e| format!("Failed to prepare full record query: {e}"))?;
 
         // Get column names
         let column_count = full_stmt.column_count();
@@ -693,31 +700,36 @@ impl ConcurrencyStrategy for SqliteStrategy {
         // Fetch all records into a map by ID
         let mut records_by_id: HashMap<String, Value> = HashMap::new();
 
-        let record_rows = full_stmt.query_map([], |row| {
-            let mut row_data = serde_json::Map::new();
-            for (i, column_name) in column_names.iter().enumerate() {
-                // Skip embedding column entirely (large, not needed in results)
-                if column_name == "embedding" {
-                    continue;
+        let record_rows = full_stmt
+            .query_map([], |row| {
+                let mut row_data = serde_json::Map::new();
+                for (i, column_name) in column_names.iter().enumerate() {
+                    // Skip embedding column entirely (large, not needed in results)
+                    if column_name == "embedding" {
+                        continue;
+                    }
+                    // Try to get as different types
+                    if let Ok(v) = row.get::<_, String>(i) {
+                        row_data.insert(column_name.clone(), json!(v));
+                    } else if let Ok(v) = row.get::<_, i64>(i) {
+                        row_data.insert(column_name.clone(), json!(v));
+                    } else if let Ok(v) = row.get::<_, f64>(i) {
+                        row_data.insert(column_name.clone(), json!(v));
+                    } else if let Ok(v) = row.get::<_, Vec<u8>>(i) {
+                        row_data.insert(
+                            column_name.clone(),
+                            json!(format!("[BLOB {} bytes]", v.len())),
+                        );
+                    } else {
+                        row_data.insert(column_name.clone(), Value::Null);
+                    }
                 }
-                // Try to get as different types
-                if let Ok(v) = row.get::<_, String>(i) {
-                    row_data.insert(column_name.clone(), json!(v));
-                } else if let Ok(v) = row.get::<_, i64>(i) {
-                    row_data.insert(column_name.clone(), json!(v));
-                } else if let Ok(v) = row.get::<_, f64>(i) {
-                    row_data.insert(column_name.clone(), json!(v));
-                } else if let Ok(v) = row.get::<_, Vec<u8>>(i) {
-                    row_data.insert(column_name.clone(), json!(format!("[BLOB {} bytes]", v.len())));
-                } else {
-                    row_data.insert(column_name.clone(), Value::Null);
-                }
-            }
-            Ok(Value::Object(row_data))
-        }).map_err(|e| format!("Full record query failed: {}", e))?;
+                Ok(Value::Object(row_data))
+            })
+            .map_err(|e| format!("Full record query failed: {e}"))?;
 
         for row_result in record_rows {
-            let row = row_result.map_err(|e| format!("Row error: {}", e))?;
+            let row = row_result.map_err(|e| format!("Row error: {e}"))?;
             if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
                 records_by_id.insert(id.to_string(), row);
             }
@@ -750,17 +762,20 @@ impl ConcurrencyStrategy for SqliteStrategy {
         // Process any remaining writes before closing
         let queue_size = self.writer_queue.lock().unwrap().len();
         if queue_size > 0 {
-            println!("⚠️  Closing SQLite adapter with {} pending writes", queue_size);
+            println!("⚠️  Closing SQLite adapter with {queue_size} pending writes");
         }
 
         // Checkpoint WAL if using WAL mode (ensure data persistence)
-        if matches!(self.storage_type, StorageType::InternalSSD | StorageType::ExternalSSD) {
+        if matches!(
+            self.storage_type,
+            StorageType::InternalSSD | StorageType::ExternalSSD
+        ) {
             let conn = self.connection.lock().unwrap();
             println!("📝 Checkpointing WAL before close...");
 
             // TRUNCATE mode: checkpoint and delete WAL files
             conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-                .map_err(|e| format!("Failed to checkpoint WAL on close: {}", e))?;
+                .map_err(|e| format!("Failed to checkpoint WAL on close: {e}"))?;
 
             println!("✅ WAL checkpointed successfully");
         }
@@ -828,16 +843,16 @@ impl ConcurrencyStrategy for JsonStrategy {
         let file_path = self.base_path.join(query);
 
         let locks = self.file_locks.lock().unwrap();
-        let file_lock = locks.get(&file_path)
+        let file_lock = locks
+            .get(&file_path)
             .ok_or_else(|| "File not found".to_string())?;
 
         let _guard = file_lock.lock().unwrap();
 
-        let content = fs::read_to_string(&file_path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
+        let content =
+            fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {e}"))?;
 
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse JSON: {}", e))
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {e}"))
     }
 
     fn execute_write(&self, query: &str, params: &Value) -> Result<Value, String> {
@@ -845,16 +860,16 @@ impl ConcurrencyStrategy for JsonStrategy {
         let file_path = self.base_path.join(query);
 
         let mut locks = self.file_locks.lock().unwrap();
-        let file_lock = locks.entry(file_path.clone())
+        let file_lock = locks
+            .entry(file_path.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())));
 
         let _guard = file_lock.lock().unwrap();
 
         let content = serde_json::to_string_pretty(params)
-            .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
+            .map_err(|e| format!("Failed to serialize JSON: {e}"))?;
 
-        fs::write(&file_path, content)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
+        fs::write(&file_path, content).map_err(|e| format!("Failed to write file: {e}"))?;
 
         Ok(json!({ "success": true }))
     }
@@ -898,7 +913,11 @@ impl AdapterRegistry {
     }
 
     /// Register an adapter, reusing cached connection if available
-    fn register_with_cache(&self, adapter_type: AdapterType, path: &str) -> Result<AdapterHandle, String> {
+    fn register_with_cache(
+        &self,
+        adapter_type: AdapterType,
+        path: &str,
+    ) -> Result<AdapterHandle, String> {
         // Serialize all opens to prevent concurrent pragma configuration
         let _open_guard = self.open_lock.lock().unwrap();
 
@@ -910,22 +929,16 @@ impl AdapterRegistry {
                 let handle = AdapterHandle::new();
                 let mut adapters = self.adapters.lock().unwrap();
                 adapters.insert(handle, (adapter_type.clone(), existing.clone()));
-                println!("♻️  Reusing cached adapter for: {} → {:?}", path, handle);
+                println!("♻️  Reusing cached adapter for: {path} → {handle:?}");
                 return Ok(handle);
             }
         }
 
         // Create new adapter (still under open_lock)
         let strategy: Arc<dyn ConcurrencyStrategy> = match adapter_type {
-            AdapterType::Sqlite => {
-                Arc::new(SqliteStrategy::new(path.to_string())?)
-            }
-            AdapterType::Postgres => {
-                Arc::new(PostgresStrategy {})
-            }
-            AdapterType::Json => {
-                Arc::new(JsonStrategy::new(path.to_string())?)
-            }
+            AdapterType::Sqlite => Arc::new(SqliteStrategy::new(path.to_string())?),
+            AdapterType::Postgres => Arc::new(PostgresStrategy {}),
+            AdapterType::Json => Arc::new(JsonStrategy::new(path.to_string())?),
         };
 
         // Cache the new adapter
@@ -941,23 +954,30 @@ impl AdapterRegistry {
             adapters.insert(handle, (adapter_type.clone(), strategy));
         }
 
-        println!("📝 Registered new adapter: {} → {:?}", path, handle);
+        println!("📝 Registered new adapter: {path} → {handle:?}");
         Ok(handle)
     }
 
     /// Execute a read operation on an adapter
     fn execute_read(&self, handle: AdapterHandle, query: &str) -> Result<Value, String> {
         let adapters = self.adapters.lock().unwrap();
-        let (_, strategy) = adapters.get(&handle)
-            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        let (_, strategy) = adapters
+            .get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {handle:?}"))?;
         strategy.execute_read(query)
     }
 
     /// Execute a write operation on an adapter
-    fn execute_write(&self, handle: AdapterHandle, query: &str, params: &Value) -> Result<Value, String> {
+    fn execute_write(
+        &self,
+        handle: AdapterHandle,
+        query: &str,
+        params: &Value,
+    ) -> Result<Value, String> {
         let adapters = self.adapters.lock().unwrap();
-        let (_, strategy) = adapters.get(&handle)
-            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        let (_, strategy) = adapters
+            .get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {handle:?}"))?;
         strategy.execute_write(query, params)
     }
 
@@ -972,8 +992,9 @@ impl AdapterRegistry {
         include_data: bool,
     ) -> Result<Value, String> {
         let adapters = self.adapters.lock().unwrap();
-        let (_, strategy) = adapters.get(&handle)
-            .ok_or_else(|| format!("Adapter not found: {:?}", handle))?;
+        let (_, strategy) = adapters
+            .get(&handle)
+            .ok_or_else(|| format!("Adapter not found: {handle:?}"))?;
         strategy.vector_search(collection, query_vector, k, threshold, include_data)
     }
 
@@ -981,10 +1002,10 @@ impl AdapterRegistry {
         let mut adapters = self.adapters.lock().unwrap();
         if let Some((adapter_type, strategy)) = adapters.remove(&handle) {
             strategy.close()?;
-            println!("🗑️  Closed adapter: {:?} with handle {:?}", adapter_type, handle);
+            println!("🗑️  Closed adapter: {adapter_type:?} with handle {handle:?}");
             Ok(())
         } else {
-            Err(format!("Adapter not found: {:?}", handle))
+            Err(format!("Adapter not found: {handle:?}"))
         }
     }
 }
@@ -1009,54 +1030,85 @@ impl RustDataDaemon {
         match request {
             Request::Ping => Response::Pong { uptime_seconds: 0 },
 
-            Request::AdapterOpen { config } => {
-                match self.open_adapter(config) {
-                    Ok(handle) => Response::Ok {
-                        data: json!({ "handle": handle })
-                    },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::AdapterOpen { config } => match self.open_adapter(config) {
+                Ok(handle) => Response::Ok {
+                    data: json!({ "handle": handle }),
+                },
+                Err(e) => Response::Error { message: e },
+            },
 
-            Request::AdapterClose { handle } => {
-                match self.registry.close(handle) {
-                    Ok(_) => Response::Ok {
-                        data: json!({ "closed": true })
-                    },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::AdapterClose { handle } => match self.registry.close(handle) {
+                Ok(_) => Response::Ok {
+                    data: json!({ "closed": true }),
+                },
+                Err(e) => Response::Error { message: e },
+            },
 
-            Request::DataList { handle, collection, limit, offset, filter, order_by } => {
-                match self.data_list(handle, &collection, limit, offset, filter.as_ref(), order_by.as_ref()) {
+            Request::DataList {
+                handle,
+                collection,
+                limit,
+                offset,
+                filter,
+                order_by,
+            } => {
+                match self.data_list(
+                    handle,
+                    &collection,
+                    limit,
+                    offset,
+                    filter.as_ref(),
+                    order_by.as_ref(),
+                ) {
                     Ok(data) => Response::Ok { data },
                     Err(e) => Response::Error { message: e },
                 }
             }
 
-            Request::DataCreate { handle, collection, data } => {
-                match self.data_create(handle, &collection, &data) {
-                    Ok(result) => Response::Ok { data: result },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::DataCreate {
+                handle,
+                collection,
+                data,
+            } => match self.data_create(handle, &collection, &data) {
+                Ok(result) => Response::Ok { data: result },
+                Err(e) => Response::Error { message: e },
+            },
 
-            Request::DataDelete { handle, collection, id } => {
-                match self.data_delete(handle, &collection, &id) {
-                    Ok(result) => Response::Ok { data: result },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::DataDelete {
+                handle,
+                collection,
+                id,
+            } => match self.data_delete(handle, &collection, &id) {
+                Ok(result) => Response::Ok { data: result },
+                Err(e) => Response::Error { message: e },
+            },
 
-            Request::DataUpdate { handle, collection, id, data } => {
-                match self.data_update(handle, &collection, &id, &data) {
-                    Ok(result) => Response::Ok { data: result },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::DataUpdate {
+                handle,
+                collection,
+                id,
+                data,
+            } => match self.data_update(handle, &collection, &id, &data) {
+                Ok(result) => Response::Ok { data: result },
+                Err(e) => Response::Error { message: e },
+            },
 
-            Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
-                match self.vector_search(handle, &collection, &query_vector, k, threshold, include_data) {
+            Request::VectorSearch {
+                handle,
+                collection,
+                query_vector,
+                k,
+                threshold,
+                include_data,
+            } => {
+                match self.vector_search(
+                    handle,
+                    &collection,
+                    &query_vector,
+                    k,
+                    threshold,
+                    include_data,
+                ) {
                     Ok(data) => Response::Ok { data },
                     Err(e) => Response::Error { message: e },
                 }
@@ -1078,37 +1130,41 @@ impl RustDataDaemon {
 
             Request::BlobExists { hash, base_path } => {
                 match self.blob_exists(&hash, base_path.as_deref()) {
-                    Ok(exists) => Response::Ok { data: json!({ "exists": exists }) },
+                    Ok(exists) => Response::Ok {
+                        data: json!({ "exists": exists }),
+                    },
                     Err(e) => Response::Error { message: e },
                 }
             }
 
             Request::BlobDelete { hash, base_path } => {
                 match self.blob_delete(&hash, base_path.as_deref()) {
-                    Ok(deleted) => Response::Ok { data: json!({ "deleted": deleted }) },
+                    Ok(deleted) => Response::Ok {
+                        data: json!({ "deleted": deleted }),
+                    },
                     Err(e) => Response::Error { message: e },
                 }
             }
 
-            Request::BlobStats { base_path } => {
-                match self.blob_stats(base_path.as_deref()) {
-                    Ok(stats) => Response::Ok { data: stats },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::BlobStats { base_path } => match self.blob_stats(base_path.as_deref()) {
+                Ok(stats) => Response::Ok { data: stats },
+                Err(e) => Response::Error { message: e },
+            },
 
-            Request::DataQuery { handle, sql } => {
-                match self.data_query(handle, &sql) {
-                    Ok(data) => Response::Ok { data },
-                    Err(e) => Response::Error { message: e },
-                }
-            }
+            Request::DataQuery { handle, sql } => match self.data_query(handle, &sql) {
+                Ok(data) => Response::Ok { data },
+                Err(e) => Response::Error { message: e },
+            },
         }
     }
 
     /// Timed version of handle_request that fills in timing phases
     /// Returns (response, result_count) for metrics
-    fn handle_request_timed(&self, timer: &mut RequestTimer, request: Request) -> (Response, Option<usize>) {
+    fn handle_request_timed(
+        &self,
+        timer: &mut RequestTimer,
+        request: Request,
+    ) -> (Response, Option<usize>) {
         let route_start = Instant::now();
 
         match request {
@@ -1125,8 +1181,13 @@ impl RustDataDaemon {
 
                 match result {
                     Ok(handle) => {
-                        timer.set_adapter_handle(&format!("{:?}", handle));
-                        (Response::Ok { data: json!({ "handle": handle }) }, None)
+                        timer.set_adapter_handle(&format!("{handle:?}"));
+                        (
+                            Response::Ok {
+                                data: json!({ "handle": handle }),
+                            },
+                            None,
+                        )
                     }
                     Err(e) => {
                         timer.set_error(&e);
@@ -1136,14 +1197,19 @@ impl RustDataDaemon {
             }
 
             Request::AdapterClose { handle } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
                 let execute_start = Instant::now();
                 let result = self.registry.close(handle);
                 timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
 
                 match result {
-                    Ok(_) => (Response::Ok { data: json!({ "closed": true }) }, None),
+                    Ok(_) => (
+                        Response::Ok {
+                            data: json!({ "closed": true }),
+                        },
+                        None,
+                    ),
                     Err(e) => {
                         timer.set_error(&e);
                         (Response::Error { message: e }, None)
@@ -1151,16 +1217,34 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::DataList { handle, collection, limit, offset, filter, order_by } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+            Request::DataList {
+                handle,
+                collection,
+                limit,
+                offset,
+                filter,
+                order_by,
+            } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.set_collection(&collection);
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
-                let result = self.data_list_timed(timer, handle, &collection, limit, offset, filter.as_ref(), order_by.as_ref());
+                let result = self.data_list_timed(
+                    timer,
+                    handle,
+                    &collection,
+                    limit,
+                    offset,
+                    filter.as_ref(),
+                    order_by.as_ref(),
+                );
 
                 match result {
                     Ok(data) => {
-                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        let count = data
+                            .get("count")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c as usize);
                         (Response::Ok { data }, count)
                     }
                     Err(e) => {
@@ -1170,8 +1254,12 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::DataCreate { handle, collection, data } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+            Request::DataCreate {
+                handle,
+                collection,
+                data,
+            } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.set_collection(&collection);
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
@@ -1186,8 +1274,12 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::DataDelete { handle, collection, id } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+            Request::DataDelete {
+                handle,
+                collection,
+                id,
+            } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.set_collection(&collection);
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
@@ -1202,8 +1294,13 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::DataUpdate { handle, collection, id, data } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+            Request::DataUpdate {
+                handle,
+                collection,
+                id,
+                data,
+            } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.set_collection(&collection);
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
@@ -1218,18 +1315,35 @@ impl RustDataDaemon {
                 }
             }
 
-            Request::VectorSearch { handle, collection, query_vector, k, threshold, include_data } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+            Request::VectorSearch {
+                handle,
+                collection,
+                query_vector,
+                k,
+                threshold,
+                include_data,
+            } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.set_collection(&collection);
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
                 let execute_start = Instant::now();
-                let result = self.vector_search(handle, &collection, &query_vector, k, threshold, include_data);
+                let result = self.vector_search(
+                    handle,
+                    &collection,
+                    &query_vector,
+                    k,
+                    threshold,
+                    include_data,
+                );
                 timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
 
                 match result {
                     Ok(data) => {
-                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        let count = data
+                            .get("count")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c as usize);
                         (Response::Ok { data }, count)
                     }
                     Err(e) => {
@@ -1277,7 +1391,12 @@ impl RustDataDaemon {
                 timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
 
                 match result {
-                    Ok(exists) => (Response::Ok { data: json!({ "exists": exists }) }, None),
+                    Ok(exists) => (
+                        Response::Ok {
+                            data: json!({ "exists": exists }),
+                        },
+                        None,
+                    ),
                     Err(e) => {
                         timer.set_error(&e);
                         (Response::Error { message: e }, None)
@@ -1292,7 +1411,12 @@ impl RustDataDaemon {
                 timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
 
                 match result {
-                    Ok(deleted) => (Response::Ok { data: json!({ "deleted": deleted }) }, Some(if deleted { 1 } else { 0 })),
+                    Ok(deleted) => (
+                        Response::Ok {
+                            data: json!({ "deleted": deleted }),
+                        },
+                        Some(if deleted { 1 } else { 0 }),
+                    ),
                     Err(e) => {
                         timer.set_error(&e);
                         (Response::Error { message: e }, None)
@@ -1316,7 +1440,7 @@ impl RustDataDaemon {
             }
 
             Request::DataQuery { handle, sql } => {
-                timer.set_adapter_handle(&format!("{:?}", handle));
+                timer.set_adapter_handle(&format!("{handle:?}"));
                 timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
 
                 let execute_start = Instant::now();
@@ -1325,7 +1449,10 @@ impl RustDataDaemon {
 
                 match result {
                     Ok(data) => {
-                        let count = data.get("count").and_then(|c| c.as_u64()).map(|c| c as usize);
+                        let count = data
+                            .get("count")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c as usize);
                         (Response::Ok { data }, count)
                     }
                     Err(e) => {
@@ -1341,7 +1468,8 @@ impl RustDataDaemon {
         // Use register_with_cache to:
         // 1. Serialize all opens (prevents concurrent pragma configuration)
         // 2. Reuse existing adapters for same database path
-        self.registry.register_with_cache(config.adapter_type, &config.connection_string)
+        self.registry
+            .register_with_cache(config.adapter_type, &config.connection_string)
     }
 
     /// List entities from a collection with filtering and pagination
@@ -1356,18 +1484,21 @@ impl RustDataDaemon {
         order_by: Option<&Vec<OrderBy>>,
     ) -> Result<Value, String> {
         // Build SELECT query
-        let mut query = format!("SELECT * FROM {}", collection);
+        let mut query = format!("SELECT * FROM {collection}");
 
         // Add WHERE clause from filter
         if let Some(filter_obj) = filter {
             if let Some(obj) = filter_obj.as_object() {
-                let conditions: Vec<String> = obj.iter()
+                let conditions: Vec<String> = obj
+                    .iter()
                     .filter_map(|(key, value)| {
                         match value {
-                            Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
-                            Value::Number(n) => Some(format!("{} = {}", key, n)),
+                            Value::String(s) => {
+                                Some(format!("{} = '{}'", key, s.replace("'", "''")))
+                            }
+                            Value::Number(n) => Some(format!("{key} = {n}")),
                             Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
-                            Value::Null => Some(format!("{} IS NULL", key)),
+                            Value::Null => Some(format!("{key} IS NULL")),
                             _ => None, // Skip complex nested objects for now
                         }
                     })
@@ -1383,7 +1514,8 @@ impl RustDataDaemon {
         // Add ORDER BY
         if let Some(orders) = order_by {
             if !orders.is_empty() {
-                let order_clauses: Vec<String> = orders.iter()
+                let order_clauses: Vec<String> = orders
+                    .iter()
                     .map(|o| format!("{} {}", o.field, o.direction.to_uppercase()))
                     .collect();
                 query.push_str(" ORDER BY ");
@@ -1393,13 +1525,13 @@ impl RustDataDaemon {
 
         // Add LIMIT and OFFSET
         if let Some(lim) = limit {
-            query.push_str(&format!(" LIMIT {}", lim));
+            query.push_str(&format!(" LIMIT {lim}"));
         }
         if let Some(off) = offset {
-            query.push_str(&format!(" OFFSET {}", off));
+            query.push_str(&format!(" OFFSET {off}"));
         }
 
-        println!("📋 DataList query: {}", query);
+        println!("📋 DataList query: {query}");
         self.registry.execute_read(handle, &query)
     }
 
@@ -1411,12 +1543,14 @@ impl RustDataDaemon {
         collection: &str,
         data: &Value,
     ) -> Result<Value, String> {
-        let obj = data.as_object()
+        let obj = data
+            .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
         // Build INSERT query
         let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        let values: Vec<String> = obj.values()
+        let values: Vec<String> = obj
+            .values()
             .map(|v| match v {
                 Value::String(s) => format!("'{}'", s.replace("'", "''")),
                 Value::Number(n) => n.to_string(),
@@ -1424,7 +1558,12 @@ impl RustDataDaemon {
                 Value::Null => "NULL".to_string(),
                 Value::Array(_) | Value::Object(_) => {
                     // Serialize complex types as JSON strings
-                    format!("'{}'", serde_json::to_string(v).unwrap_or_default().replace("'", "''"))
+                    format!(
+                        "'{}'",
+                        serde_json::to_string(v)
+                            .unwrap_or_default()
+                            .replace("'", "''")
+                    )
                 }
             })
             .collect();
@@ -1436,7 +1575,7 @@ impl RustDataDaemon {
             values.join(", ")
         );
 
-        println!("➕ DataCreate query: {}", query);
+        println!("➕ DataCreate query: {query}");
         self.registry.execute_write(handle, &query, data)
     }
 
@@ -1448,9 +1587,13 @@ impl RustDataDaemon {
         collection: &str,
         id: &str,
     ) -> Result<Value, String> {
-        let query = format!("DELETE FROM {} WHERE id = '{}'", collection, id.replace("'", "''"));
+        let query = format!(
+            "DELETE FROM {} WHERE id = '{}'",
+            collection,
+            id.replace("'", "''")
+        );
 
-        println!("🗑️  DataDelete query: {}", query);
+        println!("🗑️  DataDelete query: {query}");
         self.registry.execute_write(handle, &query, &json!({}))
     }
 
@@ -1463,11 +1606,13 @@ impl RustDataDaemon {
         id: &str,
         data: &Value,
     ) -> Result<Value, String> {
-        let obj = data.as_object()
+        let obj = data
+            .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
         // Build SET clauses
-        let set_clauses: Vec<String> = obj.iter()
+        let set_clauses: Vec<String> = obj
+            .iter()
             .filter(|(key, _)| *key != "id") // Don't update id
             .map(|(key, value)| {
                 let val_str = match value {
@@ -1477,10 +1622,15 @@ impl RustDataDaemon {
                     Value::Null => "NULL".to_string(),
                     Value::Array(_) | Value::Object(_) => {
                         // Serialize complex types as JSON strings
-                        format!("'{}'", serde_json::to_string(value).unwrap_or_default().replace("'", "''"))
+                        format!(
+                            "'{}'",
+                            serde_json::to_string(value)
+                                .unwrap_or_default()
+                                .replace("'", "''")
+                        )
                     }
                 };
-                format!("{} = {}", key, val_str)
+                format!("{key} = {val_str}")
             })
             .collect();
 
@@ -1495,7 +1645,7 @@ impl RustDataDaemon {
             id.replace("'", "''")
         );
 
-        println!("✏️  DataUpdate query: {}", query);
+        println!("✏️  DataUpdate query: {query}");
         self.registry.execute_write(handle, &query, data)
     }
 
@@ -1517,10 +1667,15 @@ impl RustDataDaemon {
 
         println!(
             "🔍 VectorSearch: collection={}, k={}, threshold={:.3}, query_dim={}, include_data={}",
-            collection, k, threshold, query_vector.len(), include_data
+            collection,
+            k,
+            threshold,
+            query_vector.len(),
+            include_data
         );
 
-        self.registry.vector_search(handle, collection, query_vector, k, threshold, include_data)
+        self.registry
+            .vector_search(handle, collection, query_vector, k, threshold, include_data)
     }
 
     // ========================================================================
@@ -1540,19 +1695,18 @@ impl RustDataDaemon {
         // Query build phase
         let query_build_start = Instant::now();
 
-        let mut query = format!("SELECT * FROM {}", collection);
+        let mut query = format!("SELECT * FROM {collection}");
 
         if let Some(filter_obj) = filter {
             if let Some(obj) = filter_obj.as_object() {
-                let conditions: Vec<String> = obj.iter()
-                    .filter_map(|(key, value)| {
-                        match value {
-                            Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
-                            Value::Number(n) => Some(format!("{} = {}", key, n)),
-                            Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
-                            Value::Null => Some(format!("{} IS NULL", key)),
-                            _ => None,
-                        }
+                let conditions: Vec<String> = obj
+                    .iter()
+                    .filter_map(|(key, value)| match value {
+                        Value::String(s) => Some(format!("{} = '{}'", key, s.replace("'", "''"))),
+                        Value::Number(n) => Some(format!("{key} = {n}")),
+                        Value::Bool(b) => Some(format!("{} = {}", key, if *b { 1 } else { 0 })),
+                        Value::Null => Some(format!("{key} IS NULL")),
+                        _ => None,
                     })
                     .collect();
 
@@ -1565,7 +1719,8 @@ impl RustDataDaemon {
 
         if let Some(orders) = order_by {
             if !orders.is_empty() {
-                let order_clauses: Vec<String> = orders.iter()
+                let order_clauses: Vec<String> = orders
+                    .iter()
                     .map(|o| format!("{} {}", o.field, o.direction.to_uppercase()))
                     .collect();
                 query.push_str(" ORDER BY ");
@@ -1574,10 +1729,10 @@ impl RustDataDaemon {
         }
 
         if let Some(lim) = limit {
-            query.push_str(&format!(" LIMIT {}", lim));
+            query.push_str(&format!(" LIMIT {lim}"));
         }
         if let Some(off) = offset {
-            query.push_str(&format!(" OFFSET {}", off));
+            query.push_str(&format!(" OFFSET {off}"));
         }
 
         timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
@@ -1600,18 +1755,25 @@ impl RustDataDaemon {
         // Query build phase
         let query_build_start = Instant::now();
 
-        let obj = data.as_object()
+        let obj = data
+            .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
         let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        let values: Vec<String> = obj.values()
+        let values: Vec<String> = obj
+            .values()
             .map(|v| match v {
                 Value::String(s) => format!("'{}'", s.replace("'", "''")),
                 Value::Number(n) => n.to_string(),
                 Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
                 Value::Null => "NULL".to_string(),
                 Value::Array(_) | Value::Object(_) => {
-                    format!("'{}'", serde_json::to_string(v).unwrap_or_default().replace("'", "''"))
+                    format!(
+                        "'{}'",
+                        serde_json::to_string(v)
+                            .unwrap_or_default()
+                            .replace("'", "''")
+                    )
                 }
             })
             .collect();
@@ -1642,7 +1804,11 @@ impl RustDataDaemon {
     ) -> Result<Value, String> {
         // Query build phase
         let query_build_start = Instant::now();
-        let query = format!("DELETE FROM {} WHERE id = '{}'", collection, id.replace("'", "''"));
+        let query = format!(
+            "DELETE FROM {} WHERE id = '{}'",
+            collection,
+            id.replace("'", "''")
+        );
         timer.record.query_build_ns = query_build_start.elapsed().as_nanos() as u64;
 
         // Execute phase
@@ -1664,10 +1830,12 @@ impl RustDataDaemon {
         // Query build phase
         let query_build_start = Instant::now();
 
-        let obj = data.as_object()
+        let obj = data
+            .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        let set_clauses: Vec<String> = obj.iter()
+        let set_clauses: Vec<String> = obj
+            .iter()
             .filter(|(key, _)| *key != "id")
             .map(|(key, value)| {
                 let val_str = match value {
@@ -1676,10 +1844,15 @@ impl RustDataDaemon {
                     Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
                     Value::Null => "NULL".to_string(),
                     Value::Array(_) | Value::Object(_) => {
-                        format!("'{}'", serde_json::to_string(value).unwrap_or_default().replace("'", "''"))
+                        format!(
+                            "'{}'",
+                            serde_json::to_string(value)
+                                .unwrap_or_default()
+                                .replace("'", "''")
+                        )
                     }
                 };
-                format!("{} = {}", key, val_str)
+                format!("{key} = {val_str}")
             })
             .collect();
 
@@ -1724,36 +1897,36 @@ impl RustDataDaemon {
         let hex = hash.strip_prefix("sha256:").unwrap_or(hash);
         let shard = &hex[..2.min(hex.len())];
         let filename = &hex[2.min(hex.len())..];
-        base.join(shard).join(format!("{}.blob", filename))
+        base.join(shard).join(format!("{filename}.blob"))
     }
 
     /// Store JSON data as compressed blob, return content hash
     fn blob_store(&self, data: &Value, base_path: Option<&str>) -> Result<Value, String> {
         use flate2::write::GzEncoder;
         use flate2::Compression;
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         use std::io::Write as IoWrite;
 
         let base = self.get_blob_base_path(base_path);
 
         // Serialize to JSON
-        let json = serde_json::to_string(data)
-            .map_err(|e| format!("JSON serialize failed: {}", e))?;
+        let json =
+            serde_json::to_string(data).map_err(|e| format!("JSON serialize failed: {e}"))?;
         let original_size = json.len();
 
         // Compute SHA256 hash
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
         let hash_bytes = hasher.finalize();
-        let hash = format!("sha256:{:x}", hash_bytes);
+        let hash = format!("sha256:{hash_bytes:x}");
 
         // Get file path
         let file_path = self.get_blob_path(&base, &hash);
 
         // Check if already exists (deduplication)
         if file_path.exists() {
-            let metadata = fs::metadata(&file_path)
-                .map_err(|e| format!("Failed to stat blob: {}", e))?;
+            let metadata =
+                fs::metadata(&file_path).map_err(|e| format!("Failed to stat blob: {e}"))?;
             return Ok(json!({
                 "hash": hash,
                 "size": original_size,
@@ -1765,24 +1938,24 @@ impl RustDataDaemon {
 
         // Ensure directory exists
         if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create blob dir: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create blob dir: {e}"))?;
         }
 
         // Compress with gzip
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(json.as_bytes())
-            .map_err(|e| format!("Compression failed: {}", e))?;
-        let compressed = encoder.finish()
-            .map_err(|e| format!("Compression finish failed: {}", e))?;
+        encoder
+            .write_all(json.as_bytes())
+            .map_err(|e| format!("Compression failed: {e}"))?;
+        let compressed = encoder
+            .finish()
+            .map_err(|e| format!("Compression finish failed: {e}"))?;
         let compressed_size = compressed.len();
 
         // Write atomically (write to temp, then rename)
         let temp_path = file_path.with_extension("tmp");
         fs::write(&temp_path, &compressed)
-            .map_err(|e| format!("Failed to write temp blob: {}", e))?;
-        fs::rename(&temp_path, &file_path)
-            .map_err(|e| format!("Failed to rename blob: {}", e))?;
+            .map_err(|e| format!("Failed to write temp blob: {e}"))?;
+        fs::rename(&temp_path, &file_path).map_err(|e| format!("Failed to rename blob: {e}"))?;
 
         Ok(json!({
             "hash": hash,
@@ -1802,22 +1975,22 @@ impl RustDataDaemon {
         let file_path = self.get_blob_path(&base, hash);
 
         if !file_path.exists() {
-            return Err(format!("Blob not found: {}", hash));
+            return Err(format!("Blob not found: {hash}"));
         }
 
         // Read compressed data
-        let compressed = fs::read(&file_path)
-            .map_err(|e| format!("Failed to read blob: {}", e))?;
+        let compressed = fs::read(&file_path).map_err(|e| format!("Failed to read blob: {e}"))?;
 
         // Decompress
         let mut decoder = GzDecoder::new(&compressed[..]);
         let mut json_str = String::new();
-        decoder.read_to_string(&mut json_str)
-            .map_err(|e| format!("Decompression failed: {}", e))?;
+        decoder
+            .read_to_string(&mut json_str)
+            .map_err(|e| format!("Decompression failed: {e}"))?;
 
         // Parse JSON
-        let data: Value = serde_json::from_str(&json_str)
-            .map_err(|e| format!("JSON parse failed: {}", e))?;
+        let data: Value =
+            serde_json::from_str(&json_str).map_err(|e| format!("JSON parse failed: {e}"))?;
 
         Ok(data)
     }
@@ -1838,8 +2011,7 @@ impl RustDataDaemon {
             return Ok(false);
         }
 
-        fs::remove_file(&file_path)
-            .map_err(|e| format!("Failed to delete blob: {}", e))?;
+        fs::remove_file(&file_path).map_err(|e| format!("Failed to delete blob: {e}"))?;
         Ok(true)
     }
 
@@ -1860,24 +2032,23 @@ impl RustDataDaemon {
         let mut shard_count = 0u64;
 
         // Walk shard directories
-        let entries = fs::read_dir(&base)
-            .map_err(|e| format!("Failed to read blob dir: {}", e))?;
+        let entries = fs::read_dir(&base).map_err(|e| format!("Failed to read blob dir: {e}"))?;
 
         for entry in entries {
-            let entry = entry.map_err(|e| format!("Dir entry error: {}", e))?;
+            let entry = entry.map_err(|e| format!("Dir entry error: {e}"))?;
             let path = entry.path();
 
             if path.is_dir() {
                 shard_count += 1;
 
-                let files = fs::read_dir(&path)
-                    .map_err(|e| format!("Failed to read shard dir: {}", e))?;
+                let files =
+                    fs::read_dir(&path).map_err(|e| format!("Failed to read shard dir: {e}"))?;
 
                 for file in files {
-                    let file = file.map_err(|e| format!("File entry error: {}", e))?;
+                    let file = file.map_err(|e| format!("File entry error: {e}"))?;
                     let file_path = file.path();
 
-                    if file_path.extension().map_or(false, |e| e == "blob") {
+                    if file_path.extension().is_some_and(|e| e == "blob") {
                         total_blobs += 1;
                         if let Ok(metadata) = fs::metadata(&file_path) {
                             total_bytes += metadata.len();
@@ -1902,11 +2073,7 @@ impl RustDataDaemon {
     /// Execute a raw SQL SELECT query
     /// Returns raw results - caller handles any transformation
     /// Security: Only SELECT queries allowed (checked before execution)
-    fn data_query(
-        &self,
-        handle: AdapterHandle,
-        sql: &str,
-    ) -> Result<Value, String> {
+    fn data_query(&self, handle: AdapterHandle, sql: &str) -> Result<Value, String> {
         // Security check: only allow SELECT queries
         let sql_upper = sql.trim().to_uppercase();
         if !sql_upper.starts_with("SELECT") {
@@ -1914,14 +2081,18 @@ impl RustDataDaemon {
         }
 
         // Reject dangerous patterns
-        if sql_upper.contains("DROP ") || sql_upper.contains("DELETE ") ||
-           sql_upper.contains("UPDATE ") || sql_upper.contains("INSERT ") ||
-           sql_upper.contains("ALTER ") || sql_upper.contains("CREATE ") ||
-           sql_upper.contains("; ") {
+        if sql_upper.contains("DROP ")
+            || sql_upper.contains("DELETE ")
+            || sql_upper.contains("UPDATE ")
+            || sql_upper.contains("INSERT ")
+            || sql_upper.contains("ALTER ")
+            || sql_upper.contains("CREATE ")
+            || sql_upper.contains("; ")
+        {
             return Err("Query contains disallowed SQL keywords".to_string());
         }
 
-        println!("📊 DataQuery: {}", sql);
+        println!("📊 DataQuery: {sql}");
         self.registry.execute_read(handle, sql)
     }
 }
@@ -1953,7 +2124,7 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
         let request: Request = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Parse error: {}", e);
+                eprintln!("Parse error: {e}");
                 METRICS.request_end();
                 continue;
             }
@@ -1993,7 +2164,7 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
 
         // Socket write phase
         let write_start = Instant::now();
-        writeln!(writer, "{}", response_json)?;
+        writeln!(writer, "{response_json}")?;
         writer.flush()?;
         timer.record.socket_write_ns = write_start.elapsed().as_nanos() as u64;
 
@@ -2032,7 +2203,7 @@ fn main() -> std::io::Result<()> {
     }
 
     println!("🦀 RustDataDaemon starting...");
-    println!("📡 Worker socket: {}", worker_socket);
+    println!("📡 Worker socket: {worker_socket}");
     println!("📊 Timing log: /tmp/jtag-data-daemon-timing.jsonl");
 
     let daemon = Arc::new(RustDataDaemon::new());
@@ -2049,11 +2220,11 @@ fn main() -> std::io::Result<()> {
                 let daemon_clone = daemon.clone();
                 thread::spawn(move || {
                     if let Err(e) = handle_connection(stream, daemon_clone) {
-                        eprintln!("Connection error: {}", e);
+                        eprintln!("Connection error: {e}");
                     }
                 });
             }
-            Err(e) => eprintln!("Accept error: {}", e),
+            Err(e) => eprintln!("Accept error: {e}"),
         }
     }
 

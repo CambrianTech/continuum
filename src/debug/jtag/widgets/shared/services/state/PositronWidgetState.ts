@@ -29,6 +29,9 @@
 
 import { Events } from '@system/core/shared/Events';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * Widget context - what's currently displayed in the center
  */
@@ -175,7 +178,7 @@ class PositronWidgetStateService {
     // This ensures AI RAG context includes widget state
     this.bridgeToServer();
 
-    console.log('🧠 PositronWidgetState: Context updated', {
+    verbose() && console.log('🧠 PositronWidgetState: Context updated', {
       widgetType: widget.widgetType,
       section: widget.section,
       interaction: interaction?.action
@@ -206,17 +209,17 @@ class PositronWidgetStateService {
     if (!this.currentContext) return;
 
     try {
-      console.log('🧠 PositronWidgetState: Bridging context to server...');
+      verbose() && console.log('🧠 PositronWidgetState: Bridging context to server...');
       const { Commands } = await import('../../../../system/core/shared/Commands');
       const sessionId = await this.getSessionId();
 
-      console.log('🧠 PositronWidgetState: Calling widget-state command with session:', sessionId);
+      verbose() && console.log('🧠 PositronWidgetState: Calling widget-state command with session:', sessionId);
       const result = await Commands.execute('development/debug/widget-state', {
         setContext: this.currentContext,
         contextSessionId: sessionId
       } as any);
 
-      console.log('🧠 PositronWidgetState: Bridge result:', result);
+      verbose() && console.log('🧠 PositronWidgetState: Bridge result:', result);
     } catch (error) {
       console.error('🧠 PositronWidgetState: Bridge to server failed:', error);
     }
@@ -418,7 +421,7 @@ class PositronWidgetStateService {
     }
 
     this.eventMetrics.lastEmitLatency = performance.now() - start;
-    console.log(`🔄 PositronWidgetState: ${widgetType}:${event} → ${eventSubs.size} subscribers (${this.eventMetrics.lastEmitLatency.toFixed(1)}ms)`);
+    verbose() && console.log(`🔄 PositronWidgetState: ${widgetType}:${event} → ${eventSubs.size} subscribers (${this.eventMetrics.lastEmitLatency.toFixed(1)}ms)`);
   }
 
   /**
@@ -447,14 +450,14 @@ class PositronWidgetStateService {
 
     widgetSubs.get(event)!.add(handler);
 
-    console.log(`🔗 PositronWidgetState: Subscribed to ${widgetType}:${event} (total: ${widgetSubs.get(event)!.size})`);
+    verbose() && console.log(`🔗 PositronWidgetState: Subscribed to ${widgetType}:${event} (total: ${widgetSubs.get(event)!.size})`);
 
     // Return unsubscribe function
     return () => {
       const subs = this.widgetEventSubscribers.get(widgetType)?.get(event);
       if (subs) {
         subs.delete(handler);
-        console.log(`🔓 PositronWidgetState: Unsubscribed from ${widgetType}:${event} (remaining: ${subs.size})`);
+        verbose() && console.log(`🔓 PositronWidgetState: Unsubscribed from ${widgetType}:${event} (remaining: ${subs.size})`);
       }
     };
   }
@@ -472,7 +475,7 @@ class PositronWidgetStateService {
         subs.delete(sub.handler);
       }
     }
-    console.log(`🧹 PositronWidgetState: Cleaned up ${subscriptions.length} subscriptions`);
+    verbose() && console.log(`🧹 PositronWidgetState: Cleaned up ${subscriptions.length} subscriptions`);
   }
 
   /**

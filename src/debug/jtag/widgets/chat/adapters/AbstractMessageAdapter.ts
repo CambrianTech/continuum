@@ -9,6 +9,9 @@
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { ChatContentType } from '../shared/ChatMessagePayload';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export interface AdapterRenderOptions {
   readonly enableIntersectionObserver?: boolean;
   readonly lazyLoadContent?: boolean;
@@ -204,22 +207,25 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
    */
   protected setupIntersectionObserver(element: HTMLElement): void {
     // Future: Implement lazy loading with intersection observer
-    console.log(`🔄 Setting up intersection observer for ${this.contentType}`);
+    verbose() && console.log(`🔄 Setting up intersection observer for ${this.contentType}`);
   }
 
   /**
    * Set up user interaction handlers
+   *
+   * NOTE: We NO LONGER add per-element event listeners here.
+   * Instead, use data-action attributes in your HTML and register handlers
+   * with the MessageEventDelegator in ChatWidget.
+   *
+   * This prevents memory leaks when message elements are removed from DOM.
+   * The delegator uses event bubbling from a single listener on the container.
+   *
+   * Example HTML: <button data-action="fullscreen">View</button>
+   * Example delegator: delegator.onAction('fullscreen', handler)
    */
-  protected setupInteractionHandlers(element: HTMLElement): void {
-    if (!this.options.enableInteractions) return;
-
-    element.addEventListener('click', (e) => {
-      this.hooks.onUserInteraction?.('click', {
-        contentType: this.contentType,
-        target: e.target,
-        contentData: this.contentData
-      });
-    });
+  protected setupInteractionHandlers(_element: HTMLElement): void {
+    // NO-OP: Event delegation handles this via MessageEventDelegator
+    // Subclasses should NOT add addEventListener to dynamic message elements
   }
 
   /**
@@ -236,7 +242,7 @@ export abstract class AbstractMessageAdapter<TContentData = any> {
   async handleAIEdit(editInstructions: any): Promise<void> {
     if (!this.options.aiEditingEnabled) return;
 
-    console.log(`🤖 AI editing ${this.contentType}:`, editInstructions);
+    verbose() && console.log(`🤖 AI editing ${this.contentType}:`, editInstructions);
     this.hooks.onAIEdit?.(editInstructions);
   }
 }

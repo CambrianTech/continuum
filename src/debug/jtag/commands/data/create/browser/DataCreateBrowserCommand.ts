@@ -9,6 +9,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import { DataCreateCommand } from '../shared/DataCreateCommand';
 import type { DataCreateParams, DataCreateResult } from '../shared/DataCreateTypes';
 import { LocalStorageDataBackend } from '../../../../daemons/data-daemon/browser/LocalStorageDataBackend';
+import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
 export class DataCreateBrowserCommand extends DataCreateCommand {
 
@@ -31,14 +32,15 @@ export class DataCreateBrowserCommand extends DataCreateCommand {
 
     try {
       console.log(`🗄️ DataCreateBrowser: Calling LocalStorageDataBackend.create()...`);
-      const result = await LocalStorageDataBackend.create(params.collection, params.data);
+      // Cast to BaseEntity - at runtime, data will have entity structure
+      const result = await LocalStorageDataBackend.create(params.collection, params.data as BaseEntity);
       console.log(`🗄️ DataCreateBrowser: LocalStorageDataBackend.create() returned:`, result);
 
       return {
         context: params.context,
         sessionId: params.sessionId,
         success: result.success,
-        data: result.success ? params.data : undefined,
+        data: result.success ? params.data as BaseEntity : undefined,
         error: result.error,
         timestamp: new Date().toISOString()
       };

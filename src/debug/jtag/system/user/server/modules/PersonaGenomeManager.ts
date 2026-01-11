@@ -92,7 +92,7 @@ export class PersonaGenomeManager {
       entity.genomeId = genomeId;
 
       // Persist to database
-      const result = await client.daemons.commands.execute<DataUpdateParams<UserEntity>, DataUpdateResult<UserEntity>>(DATA_COMMANDS.UPDATE, {
+      const result = await client.daemons.commands.execute<DataUpdateParams, DataUpdateResult<UserEntity>>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.USERS,
         id: entity.id,
         data: { genomeId },

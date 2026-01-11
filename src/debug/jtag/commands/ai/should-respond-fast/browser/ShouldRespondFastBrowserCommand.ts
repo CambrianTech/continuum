@@ -29,13 +29,15 @@ export class ShouldRespondFastBrowserCommand extends ShouldRespondFastCommand {
         conversationContext: 0,
         isQuestion: 0,
         unansweredQuestion: 0,
-        roomActivity: 0
+        roomActivity: 0,
+        humanMessage: 0
       },
       signals: {
         wasMentioned: false,
         matchedKeywords: [],
         isQuestion: false,
-        recentlyActive: false
+        recentlyActive: false,
+        isHumanMessage: false
       },
       reasoning: 'Command not available in browser'
     };

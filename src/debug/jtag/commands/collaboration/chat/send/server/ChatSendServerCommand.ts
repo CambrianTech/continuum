@@ -89,7 +89,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     // 4. Store message using data/create command (proper delegation)
     // data/create handles validation, storage, and event broadcast
-    const createResult = await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
+    const createResult = await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(
       DATA_COMMANDS.CREATE,
       {
         collection: ChatMessageEntity.collection,
@@ -126,7 +126,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     console.log('🔧 findRoom START', { roomIdOrName });
 
     // Query all rooms using data/list command
-    const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: RoomEntity.collection,
@@ -164,7 +164,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
    * Find user by ID
    */
   private async findUserById(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
-    const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: UserEntity.collection,
@@ -201,7 +201,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     // If user exists in database, return it
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: UserEntity.collection,

@@ -21,6 +21,7 @@ import type { DataListParams, DataListResult } from '../../commands/data/list/sh
 import type { RoomEntity } from '../data/entities/RoomEntity';
 import type { UserEntity } from '../data/entities/UserEntity';
 import type { UUID } from '../core/types/CrossPlatformUUID';
+import { entityCache } from '../state/EntityCacheService';
 
 /**
  * UUID regex pattern
@@ -52,16 +53,29 @@ class RoutingServiceImpl {
   /**
    * Resolve a room identifier (uniqueId or UUID) to its UUID
    * Returns null if not found
+   *
+   * Resolution order (Positronic cache-first):
+   * 1. Local resolution cache (fast, TTL-based)
+   * 2. EntityCacheService (unified entity cache)
+   * 3. Database query (populates both caches)
    */
   async resolveRoom(identifier: string): Promise<ResolvedEntity | null> {
-    // Check cache first
+    // 1. Check local resolution cache first
     const cached = this.getFromCache(this.roomCache, identifier);
     if (cached) return cached;
 
+    // 2. Check EntityCacheService (Positronic: single source of truth)
+    const fromEntityCache = this.resolveRoomFromEntityCache(identifier);
+    if (fromEntityCache) {
+      this.addToCache(this.roomCache, identifier, fromEntityCache);
+      return fromEntityCache;
+    }
+
     try {
+      // 3. Database query - populate both caches
       // If already a UUID, look up directly
       if (isUUID(identifier)) {
-        const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+        const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
           DATA_COMMANDS.LIST,
           {
             collection: 'rooms',
@@ -72,6 +86,9 @@ class RoutingServiceImpl {
 
         if (result.success && result.items?.[0]) {
           const room = result.items[0];
+          // Populate EntityCacheService
+          entityCache.populate<RoomEntity>('rooms', [room]);
+
           const resolved: ResolvedEntity = {
             id: room.id as UUID,
             uniqueId: room.uniqueId || room.id,
@@ -84,7 +101,7 @@ class RoutingServiceImpl {
       }
 
       // Look up by uniqueId
-      const result = await Commands.execute<DataListParams<RoomEntity>, DataListResult<RoomEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: 'rooms',
@@ -95,6 +112,9 @@ class RoutingServiceImpl {
 
       if (result.success && result.items?.[0]) {
         const room = result.items[0];
+        // Populate EntityCacheService
+        entityCache.populate<RoomEntity>('rooms', [room]);
+
         const resolved: ResolvedEntity = {
           id: room.id as UUID,
           uniqueId: room.uniqueId || room.id,
@@ -115,18 +135,61 @@ class RoutingServiceImpl {
   }
 
   /**
+   * Try to resolve room from EntityCacheService (instant, no DB query)
+   */
+  private resolveRoomFromEntityCache(identifier: string): ResolvedEntity | null {
+    // Check if it's a UUID - try direct lookup
+    if (isUUID(identifier)) {
+      const room = entityCache.get<RoomEntity>('rooms', identifier);
+      if (room) {
+        return {
+          id: room.id as UUID,
+          uniqueId: room.uniqueId || room.id,
+          displayName: room.displayName || room.name || room.uniqueId || room.id
+        };
+      }
+    }
+
+    // Try to find by uniqueId in cached rooms
+    const rooms = entityCache.getAll<RoomEntity>('rooms');
+    const room = rooms.find(r => r.uniqueId === identifier);
+    if (room) {
+      return {
+        id: room.id as UUID,
+        uniqueId: room.uniqueId || room.id,
+        displayName: room.displayName || room.name || room.uniqueId || room.id
+      };
+    }
+
+    return null;
+  }
+
+  /**
    * Resolve a user identifier (uniqueId or UUID) to its UUID
    * Returns null if not found
+   *
+   * Resolution order (Positronic cache-first):
+   * 1. Local resolution cache (fast, TTL-based)
+   * 2. EntityCacheService (unified entity cache)
+   * 3. Database query (populates both caches)
    */
   async resolveUser(identifier: string): Promise<ResolvedEntity | null> {
-    // Check cache first
+    // 1. Check local resolution cache first
     const cached = this.getFromCache(this.userCache, identifier);
     if (cached) return cached;
 
+    // 2. Check EntityCacheService (Positronic: single source of truth)
+    const fromEntityCache = this.resolveUserFromEntityCache(identifier);
+    if (fromEntityCache) {
+      this.addToCache(this.userCache, identifier, fromEntityCache);
+      return fromEntityCache;
+    }
+
     try {
+      // 3. Database query - populate both caches
       // If already a UUID, look up directly
       if (isUUID(identifier)) {
-        const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+        const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
           DATA_COMMANDS.LIST,
           {
             collection: 'users',
@@ -137,6 +200,9 @@ class RoutingServiceImpl {
 
         if (result.success && result.items?.[0]) {
           const user = result.items[0];
+          // Populate EntityCacheService
+          entityCache.populate<UserEntity>('users', [user]);
+
           const resolved: ResolvedEntity = {
             id: user.id as UUID,
             uniqueId: user.uniqueId || user.id,
@@ -149,7 +215,7 @@ class RoutingServiceImpl {
       }
 
       // Look up by uniqueId
-      const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
         DATA_COMMANDS.LIST,
         {
           collection: 'users',
@@ -160,6 +226,9 @@ class RoutingServiceImpl {
 
       if (result.success && result.items?.[0]) {
         const user = result.items[0];
+        // Populate EntityCacheService
+        entityCache.populate<UserEntity>('users', [user]);
+
         const resolved: ResolvedEntity = {
           id: user.id as UUID,
           uniqueId: user.uniqueId || user.id,
@@ -177,6 +246,36 @@ class RoutingServiceImpl {
       console.error(`❌ RoutingService: Error resolving user ${identifier}:`, error);
       return null;
     }
+  }
+
+  /**
+   * Try to resolve user from EntityCacheService (instant, no DB query)
+   */
+  private resolveUserFromEntityCache(identifier: string): ResolvedEntity | null {
+    // Check if it's a UUID - try direct lookup
+    if (isUUID(identifier)) {
+      const user = entityCache.get<UserEntity>('users', identifier);
+      if (user) {
+        return {
+          id: user.id as UUID,
+          uniqueId: user.uniqueId || user.id,
+          displayName: user.displayName || user.uniqueId || user.id
+        };
+      }
+    }
+
+    // Try to find by uniqueId in cached users
+    const users = entityCache.getAll<UserEntity>('users');
+    const user = users.find(u => u.uniqueId === identifier);
+    if (user) {
+      return {
+        id: user.id as UUID,
+        uniqueId: user.uniqueId || user.id,
+        displayName: user.displayName || user.uniqueId || user.id
+      };
+    }
+
+    return null;
   }
 
   /**

@@ -8,6 +8,17 @@
 import { Events } from '../../../system/core/shared/Events';
 import { getDataEventName, type CrudOperation } from '../../../system/core/shared/EventConstants';
 
+// Verbose logging helper (works in both browser and server)
+const verbose = () => {
+  if (typeof window !== 'undefined') {
+    return (window as any).JTAG_VERBOSE === true;
+  }
+  if (typeof process !== 'undefined') {
+    return process.env.JTAG_VERBOSE === '1';
+  }
+  return false;
+};
+
 /**
  * CRUD operation actions
  * Re-export from EventConstants for backward compatibility
@@ -54,7 +65,7 @@ export function subscribeToAllCrudEvents<T>(
   collection: string,
   handler: CrudEventHandler<T>
 ): () => void {
-  console.log(`🎧 DataEventUtils: Setting up universal CRUD subscription for ${collection}`);
+  verbose() && console.log(`🎧 DataEventUtils: Setting up universal CRUD subscription for ${collection}`);
 
   // Subscribe to individual CRUD events until wildcard infrastructure is complete
   const unsubscribeFunctions: (() => void)[] = [];
@@ -92,7 +103,7 @@ export function subscribeToAllCrudEvents<T>(
   // Return function that unsubscribes from all
   return () => {
     unsubscribeFunctions.forEach(unsubscribe => unsubscribe());
-    console.log(`🔌 DataEventUtils: Unsubscribed from all CRUD events for ${collection}`);
+    verbose() && console.log(`🔌 DataEventUtils: Unsubscribed from all CRUD events for ${collection}`);
   };
 }
 
@@ -109,7 +120,7 @@ export function subscribeToSpecificCrudEvent<T>(
 ): () => void {
   const eventName = getDataEventName(collection, action);
 
-  console.log(`🎧 DataEventUtils: Setting up specific CRUD subscription for ${eventName}`);
+  verbose() && console.log(`🎧 DataEventUtils: Setting up specific CRUD subscription for ${eventName}`);
 
   return Events.subscribe<T>(eventName, handler);
 }
@@ -126,14 +137,14 @@ export function subscribeToSelectedCrudEvents<T>(
   actions: CrudAction[],
   handler: CrudEventHandler<T>
 ): () => void {
-  console.log(`🎧 DataEventUtils: Setting up selective CRUD subscription for ${collection}:${actions.join('|')}`);
+  verbose() && console.log(`🎧 DataEventUtils: Setting up selective CRUD subscription for ${collection}:${actions.join('|')}`);
 
   const unsubscribeFunctions: (() => void)[] = [];
 
   actions.forEach(action => {
     const eventName = getDataEventName(collection, action);
     const unsubscribe = Events.subscribe<T>(eventName, (eventData: T) => {
-      console.log(`🔥 DataEventUtils: Selective CRUD event received - ${collection}.${action}`, eventData);
+      verbose() && console.log(`🔥 DataEventUtils: Selective CRUD event received - ${collection}.${action}`, eventData);
 
       try {
         handler(eventData, action);
@@ -148,7 +159,7 @@ export function subscribeToSelectedCrudEvents<T>(
   // Return function that unsubscribes from all
   return () => {
     unsubscribeFunctions.forEach(unsubscribe => unsubscribe());
-    console.log(`🔌 DataEventUtils: Unsubscribed from selective CRUD events ${collection}:${actions.join('|')}`);
+    verbose() && console.log(`🔌 DataEventUtils: Unsubscribed from selective CRUD events ${collection}:${actions.join('|')}`);
   };
 }
 
@@ -179,7 +190,7 @@ export function createEntityCrudHandler<T extends { id: string }>(
         scroller.remove(entity.id);
         break;
       case 'truncated':
-        console.log(`🧹 DataEventUtils: Clearing scroller for ${collection} (truncated)`);
+        verbose() && console.log(`🧹 DataEventUtils: Clearing scroller for ${collection} (truncated)`);
         if (scroller.clear) {
           scroller.clear();
         } else {

@@ -123,7 +123,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
     }
 
     // Store in database using data/create command
-    await Commands.execute<DataCreateParams<DecisionEntity>, DataCreateResult<DecisionEntity>>(
+    await Commands.execute<DataCreateParams, DataCreateResult<DecisionEntity>>(
       DATA_COMMANDS.CREATE,
       {
         collection: DecisionEntity.collection,
@@ -153,7 +153,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
     const uniqueId = identity.uniqueId;
 
     // Find user by uniqueId in database using Commands.execute
-    const result = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(
+    const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: UserEntity.collection,

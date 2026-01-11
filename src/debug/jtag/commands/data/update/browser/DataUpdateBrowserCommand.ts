@@ -1,7 +1,9 @@
 /**
- * Data Update Command - Browser Implementation
+ * Data Update Command - Browser Implementation (LOCAL-FIRST)
  *
- * Handles localStorage updates when backend=browser, delegates to server otherwise
+ * ALL updates use offline-first storage:
+ * 1. Update localStorage immediately (instant UI)
+ * 2. Sync to server in background
  */
 
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
@@ -18,38 +20,50 @@ export class DataUpdateBrowserCommand extends DataUpdateCommand<BaseEntity> {
     super('data-update', context, subpath, commander);
   }
 
-  protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
-    console.log(`🔄 BROWSER: Updating ${params.collection}/${params.id} in localStorage`);
+  async execute(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
+    const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
+    // 1. Update localStorage immediately
+    const localResult = await this.updateLocal(params);
+    verbose && console.log(`⚡ data/update: LOCAL ${params.collection}/${params.id}`);
+
+    // 2. Sync to server in background (fire-and-forget)
+    this.remoteExecute(params).catch(err => {
+      console.warn(`data/update: Server sync failed for ${params.collection}/${params.id}:`, err);
+    });
+
+    return localResult;
+  }
+
+  private async updateLocal(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     try {
-      const result = await LocalStorageDataBackend.update(params.collection, params.id, params.data);
+      // Try update first
+      let result = await LocalStorageDataBackend.update(params.collection, params.id, params.data);
 
-      if (result.success) {
-        // Read back the updated entity
-        const readResult = await LocalStorageDataBackend.read(params.collection, params.id);
-        return createDataUpdateResultFromParams(params, {
-          success: true,
-          data: readResult.entity,
-          found: true,
-          id: params.id
-        });
-      } else {
-        return createDataUpdateResultFromParams(params, {
-          success: false,
-          found: false,
-          id: params.id,
-          error: result.error ?? 'Update failed'
-        });
+      if (!result.success) {
+        // Create if doesn't exist
+        const entity = { id: params.id, ...params.data };
+        await LocalStorageDataBackend.create(params.collection, entity as any);
       }
-    } catch (error) {
-      console.error(`❌ BROWSER: Failed to update ${params.collection}/${params.id}:`, error);
 
+      const readResult = await LocalStorageDataBackend.read(params.collection, params.id);
+      return createDataUpdateResultFromParams(params, {
+        success: true,
+        data: readResult.entity,
+        found: true,
+        id: params.id
+      });
+    } catch (error) {
       return createDataUpdateResultFromParams(params, {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : 'Update failed',
         found: false,
         id: params.id
       });
     }
+  }
+
+  protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
+    return this.updateLocal(params);
   }
 }

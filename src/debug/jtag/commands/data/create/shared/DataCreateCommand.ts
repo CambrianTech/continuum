@@ -18,7 +18,7 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
  * Handles backend routing, subclasses implement storage operations
  */
 export abstract class DataCreateCommand<T extends BaseEntity = BaseEntity>
-  extends BaseDataCommand<DataCreateParams<T>, DataCreateResult<T>> {
+  extends BaseDataCommand<DataCreateParams, DataCreateResult<T>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('data-create', context, subpath, commander);
@@ -28,5 +28,5 @@ export abstract class DataCreateCommand<T extends BaseEntity = BaseEntity>
    * Abstract method for data create operation
    * Environment-specific implementations handle their appropriate backend
    */
-  protected abstract executeDataCommand(params: DataCreateParams<T>): Promise<DataCreateResult<T>>;
+  protected abstract executeDataCommand(params: DataCreateParams): Promise<DataCreateResult<T>>;
 }

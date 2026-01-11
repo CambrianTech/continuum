@@ -9,6 +9,9 @@ import type { JTAGMessage } from '../../../core/types/JTAGTypes';
 import type { WebSocket as WSWebSocket } from 'ws';
 import { JTAGMessageTypes } from '../../../core/types/JTAGTypes';
 
+// Verbose logging helper for server
+const verbose = () => process.env.JTAG_VERBOSE === '1';
+
 export interface WebSocketClientConnection {
   socket: WSWebSocket;
   clientId: string;
@@ -107,7 +110,7 @@ export class WebSocketResponseRouter {
       }
       
       this.clientIdToConnection.delete(clientId);
-      console.log(`🔌 WebSocketResponseRouter: Unregistered client ${clientId}`);
+      verbose() && console.log(`🔌 WebSocketResponseRouter: Unregistered client ${clientId}`);
     }
   }
 

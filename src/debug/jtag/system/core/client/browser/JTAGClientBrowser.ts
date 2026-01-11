@@ -47,6 +47,9 @@ import { Events } from '../../shared/Events';
 import { startConnectionMonitoring } from './ConnectionMonitor';
 import { initializeFaviconManager } from './FaviconManager';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 // NOTE: Command types are now dynamically discovered, no need for hardcoded imports
 
 // Commands interface now provided by shared JTAGClient base class via dynamic discovery
@@ -85,11 +88,11 @@ export class JTAGClientBrowser extends JTAGClient {
     try {
       const storedSessionId = sessionStorage.getItem(JTAGClientBrowser.SESSION_STORAGE_KEY);
       if (storedSessionId) {
-        console.log(`🏷️ JTAGClientBrowser: Loaded session from sessionStorage: ${storedSessionId}`);
+        verbose() && console.log(`🏷️ JTAGClientBrowser: Loaded session from sessionStorage: ${storedSessionId}`);
         return storedSessionId as UUID;
       } else {
         // No session stored - will be assigned by server on connection
-        console.log(`🏷️ JTAGClientBrowser: No session in storage, will be assigned by server`);
+        verbose() && console.log(`🏷️ JTAGClientBrowser: No session in storage, will be assigned by server`);
         return SYSTEM_SCOPES.UNKNOWN_SESSION; // Bootstrap session until server assigns real session
       }
     } catch (error) {
@@ -105,7 +108,7 @@ export class JTAGClientBrowser extends JTAGClient {
     try {
       this._sessionId = sessionId;
       sessionStorage.setItem(JTAGClientBrowser.SESSION_STORAGE_KEY, sessionId);
-      console.log(`🏷️ JTAGClientBrowser: Updated session and stored in sessionStorage: ${sessionId}`);
+      verbose() && console.log(`🏷️ JTAGClientBrowser: Updated session and stored in sessionStorage: ${sessionId}`);
     } catch (error) {
       console.warn(`⚠️ JTAGClientBrowser: Failed to save session to sessionStorage`, error);
       // Still update the in-memory value even if sessionStorage fails
@@ -156,7 +159,7 @@ export class JTAGClientBrowser extends JTAGClient {
       const eventName = payload.eventName;
       const eventData = payload.data;
 
-      console.log(`📥 JTAGClientBrowser: Received event '${eventName}' via WebSocket`);
+      verbose() && console.log(`📥 JTAGClientBrowser: Received event '${eventName}' via WebSocket`);
 
       // 1. Dispatch DOM event for widget subscriptions (Events.subscribe uses document.addEventListener in browser)
       const domEvent = new CustomEvent(eventName, {
@@ -168,7 +171,7 @@ export class JTAGClientBrowser extends JTAGClient {
       // 2. Trigger internal subscription Maps (wildcard, elegant, exact-match patterns)
       Events.checkWildcardSubscriptions(eventName, eventData);
 
-      console.log(`✅ JTAGClientBrowser: Dispatched '${eventName}' to DOM and internal subscribers`);
+      verbose() && console.log(`✅ JTAGClientBrowser: Dispatched '${eventName}' to DOM and internal subscribers`);
 
       return this.createEventAcknowledgment();
     }
@@ -254,7 +257,7 @@ export class JTAGClientBrowser extends JTAGClient {
     try {
       const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
       const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
-      console.log(`🔍 JTAGClientBrowser: Retrieved stored userId: ${identity.userId.slice(0, 8)}...`);
+      verbose() && console.log(`🔍 JTAGClientBrowser: Retrieved stored userId: ${identity.userId.slice(0, 8)}...`);
       return identity.userId;
     } catch (error) {
       console.error(`❌ JTAGClientBrowser: Failed to get stored userId:`, error);
@@ -269,7 +272,7 @@ export class JTAGClientBrowser extends JTAGClient {
     try {
       const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
       await BrowserDeviceIdentity.upgradeToAuthenticated(userId);
-      console.log(`✅ JTAGClientBrowser: Stored citizen identity (userId: ${userId.slice(0, 8)}...) to localStorage`);
+      verbose() && console.log(`✅ JTAGClientBrowser: Stored citizen identity (userId: ${userId.slice(0, 8)}...) to localStorage`);
     } catch (error) {
       console.error(`❌ JTAGClientBrowser: Failed to store userId:`, error);
     }
@@ -308,13 +311,13 @@ export class JTAGClientBrowser extends JTAGClient {
    */
   private async initializeUserState(): Promise<void> {
     try {
-      console.log('🔧 JTAGClientBrowser: Initializing UserState...');
+      verbose() && console.log('🔧 JTAGClientBrowser: Initializing UserState...');
 
       // Get persistent device identity (encrypted in localStorage)
       const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
       const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
 
-      console.log(`🔧 JTAGClientBrowser: Using device ${identity.deviceId.substring(0, 12)}... user ${identity.userId.substring(0, 8)}...`);
+      verbose() && console.log(`🔧 JTAGClientBrowser: Using device ${identity.deviceId.substring(0, 12)}... user ${identity.userId.substring(0, 8)}...`);
 
       // Try to load existing UserState from localStorage
       const { LocalStorageDataBackend } = await import('../../../../daemons/data-daemon/browser/LocalStorageDataBackend');
@@ -324,7 +327,7 @@ export class JTAGClientBrowser extends JTAGClient {
         key.startsWith('continuum-entity-UserState:')
       );
 
-      console.log(`🔧 JTAGClientBrowser: Found ${allKeys.length} UserState entities in localStorage`);
+      verbose() && console.log(`🔧 JTAGClientBrowser: Found ${allKeys.length} UserState entities in localStorage`);
 
       // Try to find matching UserState for this deviceId
       let foundUserState = null;
@@ -335,7 +338,7 @@ export class JTAGClientBrowser extends JTAGClient {
             const parsed = JSON.parse(data);
             if (parsed.entity?.deviceId === identity.deviceId) {
               foundUserState = parsed.entity;
-              console.log(`✅ JTAGClientBrowser: Found existing UserState ${foundUserState.id.substring(0, 8)}...`);
+              verbose() && console.log(`✅ JTAGClientBrowser: Found existing UserState ${foundUserState.id.substring(0, 8)}...`);
               break;
             }
           }
@@ -348,10 +351,10 @@ export class JTAGClientBrowser extends JTAGClient {
         // Use existing UserState
         this.userStateId = foundUserState.id;
         const themeInfo = foundUserState.preferences?.theme || 'unknown';
-        console.log(`✅ JTAGClientBrowser: Loaded UserState ${foundUserState.id.substring(0, 8)}... (theme: ${themeInfo})`);
+        verbose() && console.log(`✅ JTAGClientBrowser: Loaded UserState ${foundUserState.id.substring(0, 8)}... (theme: ${themeInfo})`);
       } else {
         // Create new UserState with defaults
-        console.log('🔧 JTAGClientBrowser: No existing UserState found, creating new one');
+        verbose() && console.log('🔧 JTAGClientBrowser: No existing UserState found, creating new one');
 
         const { generateUUID } = await import('../../types/CrossPlatformUUID');
         this.userStateId = generateUUID();
@@ -376,7 +379,7 @@ export class JTAGClientBrowser extends JTAGClient {
         const result = await LocalStorageDataBackend.create('UserState', newUserState);
 
         if (result.success) {
-          console.log(`✅ JTAGClientBrowser: Created new UserState ${this.userStateId.substring(0, 8)}...`);
+          verbose() && console.log(`✅ JTAGClientBrowser: Created new UserState ${this.userStateId.substring(0, 8)}...`);
         } else {
           console.error(`❌ JTAGClientBrowser: Failed to create UserState:`, result.error);
           this.userStateId = null;
@@ -402,7 +405,7 @@ export class JTAGClientBrowser extends JTAGClient {
       if (consoleDaemon) {
         // Type assertion is safe here since we verified instanceof ConsoleDaemon
         (consoleDaemon as ConsoleDaemon).setSessionIdProvider(() => this.sessionId);
-        console.log(`🏷️ JTAGClientBrowser: Updated ConsoleDaemon to use client session: ${this.sessionId}`);
+        verbose() && console.log(`🏷️ JTAGClientBrowser: Updated ConsoleDaemon to use client session: ${this.sessionId}`);
       } else {
         console.warn(`⚠️ JTAGClientBrowser: No ConsoleDaemon found in local system`);
       }
@@ -437,7 +440,7 @@ export function updateWebSocketTransport(transport: WebSocket | null): void {
   // Attach immediate close/error handlers for instant disconnect detection
   if (transport) {
     transport.onclose = () => {
-      console.log('🔌 JTAGClientBrowser: WebSocket closed - emitting immediate disconnect');
+      verbose() && console.log('🔌 JTAGClientBrowser: WebSocket closed - emitting immediate disconnect');
       Events.emit('connection:status', {
         connected: false,
         state: 'disconnected',
@@ -447,7 +450,7 @@ export function updateWebSocketTransport(transport: WebSocket | null): void {
     };
 
     transport.onerror = () => {
-      console.log('⚠️ JTAGClientBrowser: WebSocket error - emitting immediate disconnect');
+      verbose() && console.log('⚠️ JTAGClientBrowser: WebSocket error - emitting immediate disconnect');
       Events.emit('connection:status', {
         connected: false,
         state: 'disconnected',

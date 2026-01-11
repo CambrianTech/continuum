@@ -1,11 +1,21 @@
 /**
- * MainPanel - Main Content Area Widget
- * 
+ * MainWidget - Main Content Area Widget
+ *
  * Contains content header with tabs, version info, status buttons,
  * and the main content view that displays different page widgets.
+ *
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
+ * Widget caching preserves child widget state during tab switches.
  */
 
-import { BaseWidget } from '../shared/BaseWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { ContentInfoManager, ContentInfo } from './shared/ContentTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
@@ -15,66 +25,79 @@ import type { StateContentCloseParams, StateContentCloseResult } from '../../com
 import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
 import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import type { ContentType, ContentPriority, ContentItem } from '../../system/data/entities/UserStateEntity';
-import { DEFAULT_ROOMS } from '../../system/data/domains/DefaultEntities';
+import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { RoutingService } from '../../system/routing/RoutingService';
 import { pageState } from '../../system/state/PageStateService';
-// Theme loading removed - handled by ContinuumWidget
+import { contentState } from '../../system/state/ContentStateService';
+import { styles as MAIN_STYLES } from './public/main-panel.styles';
 
-export class MainWidget extends BaseWidget {
-  private currentPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`; // Current open room/path
-  private contentManager: ContentInfoManager;
+export class MainWidget extends ReactiveWidget {
+  // Static styles using compiled SCSS
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(MAIN_STYLES)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private currentPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
+
+  // Non-reactive state (internal tracking)
+  private contentManager!: ContentInfoManager;
   private currentContent: ContentInfo | null = null;
-  private contentStateAdapter: PositronContentStateAdapter;
-
-  // Guard against infinite re-render loops
+  private contentStateAdapter!: PositronContentStateAdapter;
   private currentViewType: string | null = null;
   private currentViewEntityId: string | undefined = undefined;
 
+  // Widget cache - persist widgets instead of destroying them on tab switch
+  private widgetCache = new Map<string, HTMLElement>();
+
   constructor() {
     super({
-      widgetName: 'MainWidget',
-      template: 'main-panel.html',
-      styles: 'main-panel.css',
-      enableAI: false,
-      enableDatabase: true, // Enable database for room/content management
-      enableRouterEvents: true,
-      enableScreenshots: false
+      widgetName: 'MainWidget'
     });
+  }
 
+  // === LIFECYCLE ===
+
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
+    this.log('Initializing main content panel...');
+
+    // User context loaded automatically by ReactiveWidget.connectedCallback()
     // Initialize content manager with widget context
     this.contentManager = new ContentInfoManager(this);
 
     // Initialize Positron content state adapter
-    // This handles content:opened/closed/switched events with proper state management
+    const offMainThread = (fn: () => void, timeout = 500) => {
+      if ('requestIdleCallback' in window) {
+        (window as any).requestIdleCallback(fn, { timeout });
+      } else {
+        setTimeout(fn, 0);
+      }
+    };
+
     this.contentStateAdapter = new PositronContentStateAdapter(
       () => this.userState,
       {
         name: 'MainWidget',
-        onStateChange: () => this.updateContentTabs(),
-        onViewSwitch: (contentType, entityId) => this.switchContentView(contentType, entityId),
-        onUrlUpdate: (contentType, entityId) => {
-          const newPath = buildContentPath(contentType, entityId);
-          this.updateUrl(newPath);
+        onStateChange: () => offMainThread(() => this.syncUserStateToContentState(), 1000),
+        onViewSwitch: (contentType, entityId) => offMainThread(() => this.switchContentView(contentType, entityId)),
+        onUrlUpdate: (contentType, identifier) => {
+          queueMicrotask(() => {
+            const newPath = buildContentPath(contentType, identifier);
+            this.updateUrl(newPath);
+          });
         },
-        onFallback: () => this.refreshTabsFromDatabase('fallback')
+        onFallback: () => offMainThread(() => this.refreshTabsFromDatabase('fallback'), 2000)
       }
     );
-  }
 
-  protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎯 MainPanel: Initializing main content panel...');
-
-    // Load recipe layouts early so ContentTypeRegistry can use them
-    // This enables dynamic, recipe-driven content type → widget mapping
+    // Load recipe layouts early
     await initializeRecipeLayouts();
-
-    // Theme CSS is loaded by ContinuumWidget (parent) in onWidgetInitialize
-    // Don't load again here - it would remove base.css variables
 
     // Initialize content tabs
     await this.initializeContentTabs();
@@ -82,26 +105,59 @@ export class MainWidget extends BaseWidget {
     // Listen to header controls events
     this.setupHeaderControlsListeners();
 
-    // Listen for content:opened events to refresh tabs
+    // Subscribe to content events
     this.subscribeToContentEvents();
 
-    // Setup URL routing (back/forward navigation)
+    // Setup URL routing
     this.setupUrlRouting();
 
-    // PHASE 3BIS: Track tab visibility for temperature
+    // Track tab visibility for temperature
     this.setupVisibilityTracking();
 
-    console.log('✅ MainPanel: Main panel initialized');
+    this.log('Main panel initialized');
   }
 
-  /**
-   * Setup URL-based routing for bookmarks and back/forward
-   */
+  // === RENDER ===
+
+  protected override renderContent(): TemplateResult {
+    return html`
+      <div class="main-container">
+        <!-- Header Controls Row -->
+        <div class="header-controls-row">
+          <header-controls-widget></header-controls-widget>
+        </div>
+
+        <!-- Tabs Row -->
+        <div class="content-tabs-row">
+          <content-tabs-widget></content-tabs-widget>
+        </div>
+
+        <!-- Main Content View - widgets injected by switchContentView() -->
+        <div class="content-view"></div>
+
+        <!-- Footer -->
+        <div class="content-footer">
+          <div class="footer-links">
+            <a href="#tos">Terms of Service</a>
+            <a href="#privacy">Privacy Policy</a>
+            <a href="#about">About</a>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // === URL ROUTING ===
+
   private setupUrlRouting(): void {
     // Handle browser back/forward
-    window.addEventListener('popstate', (event) => {
-      const path = event.state?.path || window.location.pathname;
-      this.navigateToPath(path);
+    this.createMountEffect(() => {
+      const handler = (event: PopStateEvent) => {
+        const path = event.state?.path || window.location.pathname;
+        this.navigateToPath(path);
+      };
+      window.addEventListener('popstate', handler);
+      return () => window.removeEventListener('popstate', handler);
     });
 
     // Initialize from current URL
@@ -111,250 +167,130 @@ export class MainWidget extends BaseWidget {
     const defaultPath = `/chat/${ROOM_UNIQUE_IDS.GENERAL}`;
     if (!initialPath || initialPath === '/' || initialPath === '/chat' || initialPath === '/chat/') {
       initialPath = defaultPath;
-      // Update URL without triggering navigation
       window.history.replaceState({ path: initialPath }, '', initialPath);
-      console.log(`🔗 MainPanel: Redirected to default route: ${initialPath}`);
+      this.log(`Redirected to default route: ${initialPath}`);
     }
 
     this.currentPath = initialPath;
-    // Parse and load the content
     const { type, entityId } = parseContentPath(initialPath);
-    console.log(`🔗 MainPanel: Initial route: ${type}/${entityId || 'default'}`);
+    this.log(`Initial route: ${type}/${entityId || 'default'}`);
 
-    // URL → PageState → Widget (in that order)
     // Delay slightly to let the DOM render first
     setTimeout(async () => {
-      // 1. Resolve entity for proper display name
       const resolved = entityId
         ? await RoutingService.resolve(type, entityId)
         : undefined;
 
-      // 2. Set page state FIRST (single source of truth for widgets)
-      pageState.setContent(type, entityId, resolved || undefined);
-
-      // 3. Ensure tab exists in UserState
-      await this.ensureTabForContent(type, entityId);
-
-      // 4. For chat, emit ROOM_SELECTED for other listeners
-      if (type === 'chat' && entityId && resolved) {
-        Events.emit(UI_EVENTS.ROOM_SELECTED, {
-          roomId: resolved.id,
-          roomName: resolved.displayName,
-          uniqueId: resolved.uniqueId
-        });
-      }
-
-      // 5. THEN create widget (reads from pageState)
-      this.switchContentView(type, entityId);
+      const canonicalEntityId = resolved?.id || entityId;
+      pageState.setContent(type, canonicalEntityId, resolved || undefined);
+      await this.ensureTabForContent(type, canonicalEntityId);
+      this.switchContentView(type, canonicalEntityId);
     }, 100);
   }
 
-  /**
-   * Ensure a tab exists for the given content type and entityId
-   * Creates tab if it doesn't exist, selects it if it does
-   */
   private async ensureTabForContent(contentType: string, entityId?: string): Promise<void> {
-    // Check if tab already exists
     const existingTab = this.userState?.contentState?.openItems?.find(
       item => item.type === contentType && item.entityId === entityId
     );
 
     if (existingTab) {
-      // Tab exists - just make sure it's current
-      if (this.userState?.contentState) {
-        this.userState.contentState.currentItemId = existingTab.id;
-      }
-      this.updateContentTabs();
-      return;
-    }
-
-    // Create tab via content/open command
-    const userId = this.userState?.userId;
-    if (userId) {
-      // Get title from entityId or content type
-      const title = entityId
-        ? entityId.charAt(0).toUpperCase() + entityId.slice(1)
-        : contentType.charAt(0).toUpperCase() + contentType.slice(1);
-
-      try {
-        await Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+      const userId = this.userState?.userId;
+      if (userId) {
+        Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
           userId: userId as UUID,
-          contentType: contentType as ContentType,
-          entityId: entityId,
-          title: title,
-          setAsCurrent: true
-        });
-        // Refresh tabs from DB
-        await this.loadUserContext();
-        await this.updateContentTabs();
-        console.log(`📋 MainPanel: Created tab for ${contentType}/${entityId || 'default'}`);
-      } catch (err) {
-        console.error(`Failed to create tab for ${contentType}:`, err);
+          contentItemId: existingTab.id as UUID
+        }).catch(err => console.error('Failed to switch to existing tab:', err));
       }
-    }
-  }
-
-  protected async renderWidget(): Promise<void> {
-    // Use BaseWidget's template and styles system
-    const styles = this.templateCSS || '/* No styles loaded */';
-    const template = this.templateHTML || '<div>No template loaded</div>';
-
-    // Ensure template is a string
-    const templateString = typeof template === 'string' ? template : '<div>Template error</div>';
-
-    this.shadowRoot!.innerHTML = `
-      <style>${styles}</style>
-      ${templateString}
-    `;
-
-    // Add event listeners after DOM is created
-    this.setupEventListeners();
-
-    // Update content tabs widget with current tab data
-    await this.updateContentTabs();
-
-    console.log('✅ MainPanel: Main panel rendered');
-  }
-
-  private setupEventListeners(): void {
-    // Tab click data includes entityId and contentType so we don't need userState lookup
-    type TabClickData = {
-      tabId: string;
-      label?: string;
-      entityId?: string;
-      contentType?: string;
-    };
-
-    // Listen to tab events from content-tabs-widget via DOM events
-    this.addEventListener('tab-clicked', ((event: CustomEvent) => {
-      const tabData: TabClickData = event.detail;
-      console.log('📋 MainWidget: Received tab-clicked DOM event:', tabData.tabId);
-      this.handleTabClick(tabData);
-    }) as EventListener);
-
-    this.addEventListener('tab-closed', ((event: CustomEvent) => {
-      const tabId = event.detail.tabId;
-      this.handleTabClose(tabId);
-    }) as EventListener);
-
-    // Also listen via Events system (more reliable across shadow DOM)
-    Events.subscribe('tabs:clicked', (data: TabClickData) => {
-      console.log('📋 MainWidget: Received tabs:clicked event:', data.tabId);
-      this.handleTabClick(data);
-    });
-
-    Events.subscribe('tabs:close', (data: { tabId: string }) => {
-      this.handleTabClose(data.tabId);
-    });
-  }
-
-  /**
-   * Handle tab click - switch to that content
-   * Uses tab data passed from ContentTabsWidget (no userState lookup needed)
-   */
-  private async handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): Promise<void> {
-    console.log('🔥 MainWidget.handleTabClick CALLED with:', tabData);
-
-    const { tabId, label, entityId, contentType } = tabData;
-
-    console.log(`📋 MainPanel.handleTabClick: tabId="${tabId}", entityId="${entityId}", type="${contentType}"`);
-
-    // If missing entityId, try to look up from userState as fallback
-    let resolvedEntityId = entityId;
-    let resolvedContentType = contentType;
-
-    if (!resolvedEntityId || !resolvedContentType) {
-      console.warn(`⚠️ MainPanel: Tab missing entityId/contentType, looking up in userState...`);
-      const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
-      if (contentItem) {
-        resolvedEntityId = contentItem.entityId;
-        resolvedContentType = contentItem.type;
-        console.log(`📋 MainPanel: Found in userState - entityId="${resolvedEntityId}", type="${resolvedContentType}"`);
-      } else {
-        console.error(`❌ MainPanel: Tab not found in userState either:`, tabId);
-        return;
-      }
-    }
-
-    // Already the current tab? Skip
-    if (this.userState?.contentState?.currentItemId === tabId) {
-      console.log('📋 MainPanel: Tab already current, skipping');
       return;
     }
 
-    // IMPORTANT: Persist to database FIRST, before any events that might refresh from DB
     const userId = this.userState?.userId;
     if (userId) {
-      // Fire and forget - but do it BEFORE emitting events
-      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
         userId: userId as UUID,
-        contentItemId: tabId as UUID
-      }).catch(err => console.error('Failed to persist tab switch:', err));
+        contentType: contentType as ContentType,
+        entityId: entityId,
+        setAsCurrent: true
+      }).catch(err => console.error(`Failed to create tab for ${contentType}:`, err));
+
+      this.log(`Creating tab for ${contentType}/${entityId || 'default'}`);
     }
-
-    // Update local state immediately (optimistic UI)
-    if (this.userState?.contentState) {
-      this.userState.contentState.currentItemId = tabId;
-    }
-
-    // Resolve entity and set page state FIRST
-    const resolved = resolvedEntityId
-      ? await RoutingService.resolve(resolvedContentType, resolvedEntityId)
-      : undefined;
-    pageState.setContent(resolvedContentType, resolvedEntityId, resolved || undefined);
-
-    // Update tab highlighting
-    this.updateContentTabs();
-
-    // Switch content view to the correct widget type
-    this.switchContentView(resolvedContentType, resolvedEntityId);
-
-    // Update URL (bookmarkable)
-    const newPath = buildContentPath(resolvedContentType, resolvedEntityId);
-    this.updateUrl(newPath);
-
-    // Emit appropriate event based on content type
-    if (resolvedContentType === 'chat' && resolvedEntityId && resolved) {
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: resolved.id,
-        roomName: resolved.displayName || label || 'Chat',
-        uniqueId: resolved.uniqueId  // For URL building
-      });
-    }
-
-    console.log(`📋 MainPanel: Switched to ${resolvedContentType} tab "${label}"`);
   }
+
+  // === CONTENT VIEW SWITCHING ===
 
   /**
    * Switch content view to render the appropriate widget
-   * NOTE: Does NOT emit ROOM_SELECTED - caller is responsible for that to avoid loops
-   * Emits RIGHT_PANEL_CONFIGURE to update right panel based on content type's layout
+   *
+   * Widget caching with hide/show instead of destroy/recreate:
+   * - Widgets are created once and cached
+   * - Tab switching = hide old widget, show new widget (instant)
+   * - State changes via direct method call, NOT attribute setting
    */
   private switchContentView(contentType: string, entityId?: string): void {
-    // GUARD: Prevent infinite re-render loops by checking if already showing this content
+    // GUARD: Prevent infinite re-render loops
     if (this.currentViewType === contentType && this.currentViewEntityId === entityId) {
-      console.log(`🔄 MainPanel: Already showing ${contentType}/${entityId || 'default'}, skipping re-render`);
       return;
     }
 
-    const contentView = this.shadowRoot?.querySelector('.content-view');
+    const contentView = this.shadowRoot?.querySelector('.content-view') as HTMLElement;
     if (!contentView) return;
-
-    // Track what we're rendering to prevent loops
-    this.currentViewType = contentType;
-    this.currentViewEntityId = entityId;
 
     const widgetTag = getWidgetForType(contentType);
 
-    // Create widget element with entity context
-    // Use data-entity-id for widgets to read (standard HTML data attribute)
-    const widgetHtml = entityId
-      ? `<${widgetTag} data-entity-id="${entityId}"></${widgetTag}>`
-      : `<${widgetTag}></${widgetTag}>`;
+    // Update tracking state
+    this.currentViewType = contentType;
+    this.currentViewEntityId = entityId;
 
-    contentView.innerHTML = widgetHtml;
+    // === HIDE all cached widgets and notify them ===
+    this.widgetCache.forEach((widget, tag) => {
+      if (widget.style.display !== 'none') {
+        widget.style.display = 'none';
+        if ('onDeactivate' in widget && typeof (widget as any).onDeactivate === 'function') {
+          (widget as any).onDeactivate();
+        }
+        this.log(`Deactivated ${tag}`);
+      }
+    });
 
-    // Emit right panel configuration based on content type's layout
+    // === GET OR CREATE widget ===
+    let widget = this.widgetCache.get(widgetTag);
+
+    if (!widget) {
+      const existingInDom = contentView.querySelector(widgetTag) as HTMLElement;
+      if (existingInDom) {
+        widget = existingInDom;
+        this.widgetCache.set(widgetTag, widget);
+        this.log(`Cached existing ${widgetTag} from template`);
+      } else {
+        widget = document.createElement(widgetTag);
+        widget.style.display = 'none';
+        contentView.appendChild(widget);
+        this.widgetCache.set(widgetTag, widget);
+        this.log(`Created and cached ${widgetTag}`);
+      }
+    }
+
+    // === ACTIVATE widget (show + notify) ===
+    widget.style.display = '';
+
+    // Look up ContentItem to get metadata (may contain pre-loaded entity)
+    const contentItem = contentState.findItem(contentType, entityId);
+    const metadata = contentItem?.metadata;
+
+    if ('onActivate' in widget && typeof (widget as any).onActivate === 'function') {
+      (widget as any).onActivate(entityId, metadata);
+    } else if ('setEntityId' in widget && typeof (widget as any).setEntityId === 'function') {
+      (widget as any).setEntityId(entityId);
+    } else {
+      if (entityId) {
+        widget.setAttribute('entity-id', entityId);
+      } else {
+        widget.removeAttribute('entity-id');
+      }
+    }
+
+    // Emit right panel configuration
     const rightPanelConfig = getRightPanelConfig(contentType);
     Events.emit(UI_EVENTS.RIGHT_PANEL_CONFIGURE, {
       widget: rightPanelConfig?.widget || null,
@@ -363,7 +299,7 @@ export class MainWidget extends BaseWidget {
       contentType: contentType
     });
 
-    // Emit Positron widget state for AI awareness
+    // Emit Positron widget state
     PositronWidgetState.emit({
       widgetType: contentType,
       entityId: entityId,
@@ -374,12 +310,9 @@ export class MainWidget extends BaseWidget {
       }
     });
 
-    console.log(`🔄 MainPanel: Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}, rightPanel: ${rightPanelConfig ? rightPanelConfig.room : 'hidden'}`);
+    this.log(`Rendered ${widgetTag} for ${contentType}${entityId ? ` (${entityId})` : ''}`);
   }
 
-  /**
-   * Update browser URL without full page reload
-   */
   private updateUrl(path: string): void {
     if (this.currentPath !== path) {
       this.currentPath = path;
@@ -387,74 +320,93 @@ export class MainWidget extends BaseWidget {
     }
   }
 
-  /**
-   * Handle tab close - remove from openItems
-   */
-  private async handleTabClose(tabId: string): Promise<void> {
+  // === TAB HANDLERS ===
+
+  private async handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): Promise<void> {
+    const { tabId, label, entityId, contentType } = tabData;
+
+    let resolvedEntityId = entityId;
+    let resolvedContentType = contentType;
+    let urlId = entityId;  // For URL - prefer uniqueId over UUID
+
+    // Always look up contentItem to get uniqueId for human-readable URLs
     const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
-    if (!contentItem) return;
 
-    // Remove from local state immediately (optimistic UI)
-    if (this.userState?.contentState) {
-      this.userState.contentState.openItems = this.userState.contentState.openItems.filter(item => item.id !== tabId);
-
-      // If we closed the current tab, switch to the first remaining tab
-      if (this.userState.contentState.currentItemId === tabId) {
-        const firstItem = this.userState.contentState.openItems[0];
-        if (firstItem) {
-          this.userState.contentState.currentItemId = firstItem.id;
-          // Switch to the correct content view based on content type
-          this.switchContentView(firstItem.type, firstItem.entityId);
-          // Update URL
-          const newPath = buildContentPath(firstItem.type, firstItem.entityId);
-          this.updateUrl(newPath);
-          // Only emit ROOM_SELECTED for chat content
-          if (firstItem.type === 'chat' && firstItem.entityId) {
-            // Resolve uniqueId → UUID for consistent room identification
-            RoutingService.resolveRoom(firstItem.entityId).then(resolved => {
-              if (resolved) {
-                Events.emit(UI_EVENTS.ROOM_SELECTED, {
-                  roomId: resolved.id,
-                  roomName: resolved.displayName || firstItem.title,
-                  uniqueId: resolved.uniqueId  // For URL building
-                });
-              } else {
-                Events.emit(UI_EVENTS.ROOM_SELECTED, {
-                  roomId: firstItem.entityId,
-                  roomName: firstItem.title,
-                  uniqueId: firstItem.entityId
-                });
-              }
-            });
-          }
-        } else {
-          // No tabs left - open default chat room instead of empty state
-          const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
-          const defaultPath = `/chat/${defaultRoom}`;
-          console.log(`📋 MainPanel: All tabs closed, opening default ${defaultPath}`);
-          this.openContentTab('chat', 'General');
-          // Navigate to default room
-          this.currentPath = defaultPath;
-          this.updateUrl(defaultPath);
-          this.switchContentView('chat', defaultRoom);
-          // Emit ROOM_SELECTED for chat widget
-          RoutingService.resolveRoom(defaultRoom).then(resolved => {
-            if (resolved) {
-              Events.emit(UI_EVENTS.ROOM_SELECTED, {
-                roomId: resolved.id,
-                roomName: resolved.displayName || 'General',
-                uniqueId: defaultRoom
-              });
-            }
-          });
-        }
+    if (!resolvedEntityId || !resolvedContentType) {
+      console.warn(`⚠️ MainPanel: Tab missing entityId/contentType, looking up in userState...`);
+      if (contentItem) {
+        resolvedEntityId = contentItem.entityId;
+        resolvedContentType = contentItem.type;
+        this.log(`Found in userState - entityId="${resolvedEntityId}", type="${resolvedContentType}"`);
+      } else {
+        console.error(`❌ MainPanel: Tab not found in userState either:`, tabId);
+        return;
       }
     }
 
-    // Update tabs immediately
-    this.updateContentTabs();
+    // Use uniqueId for URL if available (human-readable like "general" vs UUID)
+    if (contentItem?.uniqueId) {
+      urlId = contentItem.uniqueId;
+    }
 
-    // Persist to server in background (don't await)
+    if (this.userState?.contentState?.currentItemId === tabId) {
+      this.log('Tab already current, skipping');
+      return;
+    }
+
+    // === OPTIMISTIC UPDATE: Switch view IMMEDIATELY (no blocking) ===
+    contentState.setCurrent(tabId as UUID);
+    pageState.setContent(resolvedContentType, resolvedEntityId, undefined);
+    this.switchContentView(resolvedContentType, resolvedEntityId);
+
+    const newPath = buildContentPath(resolvedContentType, urlId);
+    this.updateUrl(newPath);
+
+    this.log(`Switched to ${resolvedContentType} tab "${label}"`);
+
+    // === BACKGROUND: Persist to server and resolve entity metadata ===
+    const userId = this.userState?.userId;
+    if (userId) {
+      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+        userId: userId as UUID,
+        contentItemId: tabId as UUID
+      }).catch(err => console.error('Failed to persist tab switch:', err));
+    }
+
+    // Resolve entity metadata in background (for pageState enrichment, not blocking UI)
+    if (resolvedEntityId) {
+      RoutingService.resolve(resolvedContentType, resolvedEntityId)
+        .then(resolved => {
+          if (resolved) {
+            pageState.setContent(resolvedContentType, resolvedEntityId, resolved);
+          }
+        })
+        .catch(err => console.warn('Failed to resolve entity metadata:', err));
+    }
+  }
+
+  private async handleTabClose(tabId: string): Promise<void> {
+    const contentItem = contentState.openItems.find(item => item.id === tabId);
+    if (!contentItem) return;
+
+    const wasCurrentItem = contentState.currentItemId === tabId;
+    contentState.removeItem(tabId as UUID);
+
+    if (wasCurrentItem) {
+      const newCurrent = contentState.currentItem;
+      if (newCurrent) {
+        pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
+        this.switchContentView(newCurrent.type, newCurrent.entityId);
+        const urlId = newCurrent.uniqueId || newCurrent.entityId;
+        this.updateUrl(buildContentPath(newCurrent.type, urlId));
+      } else {
+        const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
+        pageState.setContent('chat', defaultRoom, undefined);
+        this.switchContentView('chat', defaultRoom);
+        this.updateUrl(`/chat/${defaultRoom}`);
+      }
+    }
+
     const userId = this.userState?.userId;
     if (userId) {
       Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
@@ -463,387 +415,236 @@ export class MainWidget extends BaseWidget {
       }).catch(err => console.error('Failed to persist tab close:', err));
     }
 
-    console.log(`📋 MainPanel: Closed tab "${contentItem.title}"`);
+    this.log(`Closed tab "${contentItem.title}"`);
   }
 
-  private switchToTab(tabName: string): void {
-    // Remove active class from all tabs
-    this.shadowRoot?.querySelectorAll('.content-tab').forEach(tab => {
-      tab.classList.remove('active');
-    });
+  // === NAVIGATION ===
 
-    // Add active class to selected tab
-    const selectedTab = this.shadowRoot?.querySelector(`[data-tab="${tabName}"]`);
-    selectedTab?.classList.add('active');
-
-    // Update content view based on tab
-    this.updateContentView(tabName);
-    
-    console.log(`📄 MainPanel: Switched to tab: ${tabName}`);
-  }
-
-  private updateContentView(tabName: string): void {
-    const contentView = this.shadowRoot?.querySelector('.content-view');
-    if (!contentView) return;
-
-    // Get the widget for this content type from registry
-    const widget = getWidgetForType(tabName);
-    contentView.innerHTML = `<${widget}></${widget}>`;
-  }
-
-  /**
-   * Navigate to a different path (e.g., /chat/academy, /chat/user-123)
-   */
   async navigateToPath(newPath: string): Promise<void> {
     const { type, entityId } = parseContentPath(newPath);
 
-    // Check if room exists, create if needed (especially for user chats)
     if (type === 'chat' && entityId) {
       await this.ensureRoomExists(entityId);
     }
 
-    // Update current path
     this.currentPath = newPath;
 
-    // 1. Resolve entity for display name
     const resolved = entityId
       ? await RoutingService.resolve(type, entityId)
       : undefined;
 
-    // 2. Set page state FIRST (single source of truth)
     pageState.setContent(type, entityId, resolved || undefined);
-
-    // 3. Ensure a tab exists for this URL
     await this.ensureTabForContent(type, entityId);
-
-    // 4. Switch content view
     this.switchContentView(type, entityId);
 
-    // 5. For chat, emit ROOM_SELECTED for other listeners
-    if (type === 'chat' && entityId && resolved) {
-      Events.emit(UI_EVENTS.ROOM_SELECTED, {
-        roomId: resolved.id,
-        roomName: resolved.displayName,
-        uniqueId: resolved.uniqueId
-      });
-    }
-
-    console.log(`🔄 MainPanel: Navigated to ${type}/${entityId || 'default'}`);
+    this.log(`Navigated to ${type}/${entityId || 'default'}`);
   }
 
-  /**
-   * Ensure room exists using proper data classes and database daemon
-   */
   private async ensureRoomExists(roomId: string): Promise<void> {
     try {
-      // Use content manager to get or create room
       const content = await this.contentManager.getContentByPath(`/chat/${roomId}`);
-      
+
       if (!content) {
-        // Determine room type based on roomId
         const roomType = roomId.startsWith('user-') ? 'user_chat' : 'private';
         await this.contentManager.createRoom(roomId, roomType);
-        console.log(`🏠 MainPanel: Created new room: ${roomId} (${roomType})`);
+        this.log(`Created new room: ${roomId} (${roomType})`);
       } else {
-        console.log(`✅ MainPanel: Room exists: ${roomId} (${content.displayName})`);
+        this.log(`Room exists: ${roomId} (${content.displayName})`);
       }
     } catch (error) {
       console.error(`❌ MainPanel: Failed to ensure room ${roomId} exists:`, error);
     }
   }
 
-  /**
-   * Subscribe to events for the current path
-   */
-  private async subscribeToPathEvents(path: string): Promise<void> {
-    // Events already have path built in, so just subscribe to this path
-    console.log(`📡 MainPanel: Subscribing to events for path: ${path}`);
-    // The actual event subscription would happen here
-    // For now, just log that we're subscribing to path-based events
-  }
+  // === VISIBILITY TRACKING ===
 
-  /**
-   * PHASE 3BIS: Track tab visibility for temperature
-   */
   private setupVisibilityTracking(): void {
-    document.addEventListener('visibilitychange', async () => {
-      // Extract roomId from currentPath (/chat/general → general)
-      const [, pathType, roomId] = this.currentPath.split('/');
+    this.createMountEffect(() => {
+      const handler = async () => {
+        const [, pathType, roomId] = this.currentPath.split('/');
 
-      if (pathType === 'chat' && roomId) {
-        const present = !document.hidden;
+        if (pathType === 'chat' && roomId) {
+          const present = !document.hidden;
 
-        try {
-          await Commands.execute(COMMANDS.COLLABORATION_ACTIVITY_USER_PRESENT, {
-            activityId: roomId,
-            present
-          } as any);  // Cast to any for new command not yet in type registry
-          console.log(`🌡️ MainPanel: User ${present ? 'present' : 'left'} in room ${roomId}`);
-        } catch (error) {
-          // Silently ignore when disconnected - this is expected
-          const isDisconnected = error instanceof Error &&
-            (error.message.includes('WebSocket not ready') || error.message.includes('WebSocket not connected'));
-          if (!isDisconnected) {
-            console.error('❌ MainPanel: Failed to track visibility:', error);
+          try {
+            await Commands.execute(COMMANDS.COLLABORATION_ACTIVITY_USER_PRESENT, {
+              activityId: roomId,
+              present
+            } as any);
+            this.log(`User ${present ? 'present' : 'left'} in room ${roomId}`);
+          } catch (error) {
+            const isDisconnected = error instanceof Error &&
+              (error.message.includes('WebSocket not ready') || error.message.includes('WebSocket not connected'));
+            if (!isDisconnected) {
+              console.error('❌ MainPanel: Failed to track visibility:', error);
+            }
           }
         }
-      }
+      };
+
+      document.addEventListener('visibilitychange', handler);
+      return () => document.removeEventListener('visibilitychange', handler);
     });
 
-    console.log('👁️ MainPanel: Visibility tracking initialized');
+    this.log('Visibility tracking initialized');
   }
 
-  protected async onWidgetCleanup(): Promise<void> {
-    console.log('🧹 MainPanel: Cleanup complete');
-  }
+  // === CONTENT STATE ===
 
-  /**
-   * Initialize content tabs system
-   */
   private async initializeContentTabs(): Promise<void> {
-    // Set up tab switching logic
-    console.log('📋 MainPanel: Content tabs initialized');
+    if (this.userState?.contentState) {
+      const openItems = this.userState.contentState.openItems || [];
+      const currentItemId = this.userState.contentState.currentItemId;
+      contentState.initialize(openItems, currentItemId);
+      this.log(`Initialized global contentState with ${openItems.length} items`);
+    } else {
+      this.log('No persisted contentState, starting empty');
+      contentState.initialize([], undefined);
+    }
   }
 
-  /**
-   * Setup header controls event listeners
-   */
+  private syncUserStateToContentState(): void {
+    if (!this.userState?.contentState) return;
+
+    const openItems = this.userState.contentState.openItems || [];
+    const currentItemId = this.userState.contentState.currentItemId;
+    contentState.update(openItems, currentItemId);
+    this.log(`Synced ${openItems.length} items from server to global contentState`);
+  }
+
+  // === HEADER CONTROLS ===
+
   private setupHeaderControlsListeners(): void {
-    // Listen to theme-clicked event - opens Theme tab with integrated AI chat
-    this.addEventListener('theme-clicked', () => {
-      console.log('🎨 MainPanel: Theme button clicked - opening Theme tab');
-      // Opens theme-widget with embedded chat for AI assistance
-      // The Theme room (DEFAULT_ROOMS.THEME) provides the chat backend
-      this.openContentTab('theme', 'Theme');
+    this.createMountEffect(() => {
+      const themeHandler = () => {
+        this.log('Theme button clicked - opening Theme tab');
+        this.openContentTab('theme', 'Theme');
+      };
+
+      const settingsHandler = () => {
+        this.log('Settings button clicked - opening Settings tab');
+        this.openContentTab('settings', 'Settings');
+      };
+
+      const helpHandler = () => {
+        this.log('Help button clicked - opening Help tab');
+        this.openContentTab('help', 'Help');
+      };
+
+      const browserHandler = () => {
+        this.log('Browser button clicked - opening Browser tab');
+        this.openContentTab('browser', 'Browser');
+      };
+
+      this.addEventListener('theme-clicked', themeHandler);
+      this.addEventListener('settings-clicked', settingsHandler);
+      this.addEventListener('help-clicked', helpHandler);
+      this.addEventListener('browser-clicked', browserHandler);
+
+      return () => {
+        this.removeEventListener('theme-clicked', themeHandler);
+        this.removeEventListener('settings-clicked', settingsHandler);
+        this.removeEventListener('help-clicked', helpHandler);
+        this.removeEventListener('browser-clicked', browserHandler);
+      };
     });
 
-    // Listen to settings-clicked event - opens Settings tab with integrated AI chat
-    this.addEventListener('settings-clicked', () => {
-      console.log('⚙️ MainPanel: Settings button clicked - opening Settings tab');
-      // Opens settings-widget with embedded chat for AI assistance
-      // The Settings room (DEFAULT_ROOMS.SETTINGS) provides the chat backend
-      this.openContentTab('settings', 'Settings');
-    });
-
-    // Listen to help-clicked event - opens Help tab with integrated AI chat
-    this.addEventListener('help-clicked', () => {
-      console.log('❓ MainPanel: Help button clicked - opening Help tab');
-      // Opens help-widget with embedded chat for AI assistance
-      // The Help room (DEFAULT_ROOMS.HELP) provides the chat backend
-      this.openContentTab('help', 'Help');
-    });
-
-    // Listen to browser-clicked event - opens Browser tab
-    this.addEventListener('browser-clicked', () => {
-      console.log('🌐 MainPanel: Browser button clicked - opening Browser tab');
-      this.openContentTab('browser', 'Browser');
-    });
-
-    console.log('🔗 MainPanel: Header controls listeners registered');
+    this.log('Header controls listeners registered');
   }
 
-  /**
-   * Subscribe to content events (opened, closed, switched) and room selection
-   */
+  // === CONTENT EVENTS ===
+
   private subscribeToContentEvents(): void {
-    // Use Positron adapter for content:opened/closed/switched events
-    // This delegates to PositronContentStateAdapter which updates local state
-    // directly from event data instead of refetching from DB
     this.contentStateAdapter.subscribeToEvents();
 
-    // IMPORTANT: Also listen for ROOM_SELECTED as reliable backup
-    // RoomListWidget emits this and it definitely works (sidebar highlights change)
-    Events.subscribe(UI_EVENTS.ROOM_SELECTED, async (data: { roomId: string; roomName: string; uniqueId?: string }) => {
-      console.log('📋 MainPanel: Received ROOM_SELECTED event:', data.roomName);
-
-      // Only switch to chat if we're currently viewing chat content
-      // Don't override settings/help/theme when sidebar highlights a room
-      const { type: currentType } = parseContentPath(this.currentPath);
-      if (currentType !== 'chat') {
-        console.log(`📋 MainPanel: Ignoring ROOM_SELECTED - currently on ${currentType}, not chat`);
-        return;
-      }
-
-      // Update URL for room selection (bookmarkable deep links)
-      // Use uniqueId for human-readable URLs, fall back to roomId if not available
-      const urlIdentifier = data.uniqueId || data.roomId;
-      const newPath = buildContentPath('chat', urlIdentifier);
-      this.updateUrl(newPath);
-
-      // CRITICAL: Set pageState BEFORE creating widget - ChatWidget reads from pageState
-      // Resolve entity for proper display name
-      const resolved = await RoutingService.resolve('chat', urlIdentifier);
-      pageState.setContent('chat', urlIdentifier, resolved || { id: data.roomId, displayName: data.roomName, uniqueId: urlIdentifier });
-
-      // Switch to the selected chat room (use uniqueId for content view)
-      this.switchContentView('chat', urlIdentifier);
-
-      // Small delay to let the content/open command complete first
-      setTimeout(() => this.refreshTabsFromDatabase('ROOM_SELECTED'), 100);
+    this.createMountEffect(() => {
+      const unsubscribe = pageState.subscribe((state) => {
+        if (state?.contentType) {
+          if (state.contentType !== this.currentViewType ||
+              state.entityId !== this.currentViewEntityId) {
+            this.switchContentView(state.contentType, state.entityId);
+          }
+        }
+      });
+      return () => unsubscribe();
     });
 
-    console.log('🔗 MainPanel: Subscribed to content events and ROOM_SELECTED');
+    this.log('Subscribed to content events and pageState');
   }
 
-  /**
-   * Refresh tabs by fetching from database
-   * Used as fallback when Positron local state isn't available
-   */
   private async refreshTabsFromDatabase(source: string): Promise<void> {
     try {
-      console.log(`📋 MainPanel: Refreshing tabs from DB (${source})...`);
+      this.log(`Refreshing tabs from DB (${source})...`);
       await this.loadUserContext();
-      await this.updateContentTabs();
-      console.log(`✅ MainPanel: Tabs refreshed from DB (${source}), now ${this.userState?.contentState?.openItems?.length} items`);
+      this.syncUserStateToContentState();
+      this.log(`Tabs refreshed from DB (${source}), now ${contentState.openItems.length} items`);
     } catch (error) {
       console.error(`❌ MainPanel: Error refreshing tabs from DB (${source}):`, error);
     }
   }
 
-  /**
-   * Load content information for current path
-   */
   private async loadCurrentContent(): Promise<void> {
     try {
       this.currentContent = await this.contentManager.getContentByPath(this.currentPath);
-      console.log(`📄 MainPanel: Loaded content info for ${this.currentPath}:`, this.currentContent?.displayName);
+      this.log(`Loaded content info for ${this.currentPath}: ${this.currentContent?.displayName}`);
     } catch (error) {
       console.error(`❌ MainPanel: Failed to load content for ${this.currentPath}:`, error);
       this.currentContent = null;
     }
   }
 
-  /**
-   * Update content tabs widget with current tab data
-   */
-  private async updateContentTabs(): Promise<void> {
-    const tabsWidget = this.shadowRoot?.querySelector('content-tabs-widget');
-    if (!tabsWidget) {
-      console.warn('⚠️ MainPanel: ContentTabsWidget not found in shadow root');
+  switchToPage(pageName: string): void {
+    this.log(`Switching to page: ${pageName}`);
+  }
+
+  private openContentTab(contentType: string, title: string): void {
+    const userId = this.userState?.userId;
+    if (!userId) {
+      console.error('❌ MainPanel: Cannot open tab - userState not loaded');
       return;
     }
 
-    // Read tabs from userState.contentState.openItems
-    const tabs = [];
-
-    if (this.userState?.contentState?.openItems) {
-      // Map content items to tab format with full data for click handling
-      for (const item of this.userState.contentState.openItems) {
-        const tabData = {
-          id: item.id,
-          label: item.title,
-          active: item.id === this.userState.contentState.currentItemId,
-          closeable: true,
-          entityId: item.entityId,
-          contentType: item.type
-        };
-        console.log('📋 MainWidget.updateContentTabs: Creating tab:', tabData.label, 'entityId:', tabData.entityId, 'type:', tabData.contentType);
-        tabs.push(tabData);
-      }
-    } else {
-      // Fallback: show current room as single tab if userState not loaded yet
-      if (!this.currentContent) {
-        await this.loadCurrentContent();
-      }
-
-      if (this.currentContent) {
-        const displayName = this.currentContent.displayName || this.currentContent.name;
-        tabs.push({
-          id: this.currentContent.id,
-          label: displayName,
-          active: true,
-          closeable: false
-        });
-      } else {
-        // Final fallback for loading states
-        const [, pathType, roomId] = this.currentPath.split('/');
-        const fallbackName = roomId ? roomId.charAt(0).toUpperCase() + roomId.slice(1) : 'Chat';
-
-        tabs.push({
-          id: roomId || 'default',
-          label: fallbackName,
-          active: true,
-          closeable: false
-        });
-      }
-    }
-
-    // Call updateTabs method on the widget
-    (tabsWidget as any).updateTabs(tabs);
-
-    console.log('📋 MainPanel: Updated content tabs:', tabs.length, 'tabs from', this.userState?.contentState ? 'userState' : 'fallback');
-  }
-
-  /**
-   * Switch to a different content page
-   */
-  switchToPage(pageName: string): void {
-    console.log(`📄 MainPanel: Switching to page: ${pageName}`);
-    // Will update the content view to show different widgets
-  }
-
-  /**
-   * Open a content tab (e.g., settings, help) or switch to it if already open
-   */
-  private openContentTab(contentType: string, title: string): void {
-    // Check if tab already exists
-    const existingTab = this.userState?.contentState?.openItems?.find(
-      item => item.type === contentType
-    );
+    const existingTab = contentState.findItem(contentType, undefined);
 
     if (existingTab) {
-      // Tab exists - just switch to it with full data
-      this.handleTabClick({
-        tabId: existingTab.id,
-        label: existingTab.title,
-        entityId: existingTab.entityId,
-        contentType: existingTab.type
-      });
+      contentState.setCurrent(existingTab.id);
+      pageState.setContent(contentType, existingTab.entityId, undefined);
+      this.switchContentView(contentType, existingTab.entityId);
+      const urlId = existingTab.uniqueId || existingTab.entityId;
+      this.updateUrl(buildContentPath(contentType, urlId));
+
+      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+        userId: userId as UUID,
+        contentItemId: existingTab.id as UUID
+      }).catch(err => console.error('Failed to persist tab switch:', err));
+
+      this.log(`Switched to existing ${contentType} tab`);
       return;
     }
 
-    // Create new tab in local state with all required properties
-    const newTabId = `${contentType}-${Date.now()}` as UUID;
-    const newTab = {
-      id: newTabId,
+    const newItem = contentState.addItem({
       type: contentType as ContentType,
+      entityId: undefined,
       title: title,
-      lastAccessedAt: new Date(),
       priority: 'normal' as ContentPriority
-    };
+    }, true);
 
-    // Add to openItems (optimistic UI)
-    if (this.userState?.contentState) {
-      this.userState.contentState.openItems.push(newTab);
-      this.userState.contentState.currentItemId = newTabId;
-    }
-
-    // Set page state FIRST (single source of truth)
-    // Content types like settings/help/theme don't have entityIds
     pageState.setContent(contentType, undefined, undefined);
+    this.switchContentView(contentType, undefined);
+    this.updateUrl(buildContentPath(contentType, undefined));
 
-    // Update tabs UI
-    this.updateContentTabs();
+    Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+      userId: userId as UUID,
+      contentType: contentType as ContentType,
+      title: title,
+      setAsCurrent: true
+    }).then(result => {
+      if (result?.contentItemId) {
+        contentState.updateItemId(newItem.id, result.contentItemId);
+      }
+    }).catch(err => console.error(`Failed to open ${contentType} tab:`, err));
 
-    // Switch to the new content view
-    this.switchContentView(contentType);
-
-    // Update URL
-    const newPath = buildContentPath(contentType);
-    this.updateUrl(newPath);
-
-    // PERSIST to database - singletons like settings have no entityId
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId: userId as UUID,
-        contentType: contentType as ContentType,
-        title: title,
-        setAsCurrent: true
-      }).catch(err => console.error(`Failed to persist ${contentType} tab:`, err));
-    }
-
-    console.log(`📋 MainPanel: Opened new ${contentType} tab`);
+    this.log(`Opened new ${contentType} tab with optimistic update`);
   }
 }
 

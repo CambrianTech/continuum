@@ -10,6 +10,7 @@
  */
 
 import { DataServiceFactory } from '../system/data/services/DataServiceFactory';
+import { getDatabasePath } from '../system/config/ServerConfig';
 import { writeFileSync } from 'fs';
 
 async function createSeedDataViaCommands() {
@@ -18,7 +19,7 @@ async function createSeedDataViaCommands() {
   try {
     // First, clear existing data to start fresh
     console.log('\n🧹 Clearing existing data...');
-    const dataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    const dataService = await DataServiceFactory.createSQLiteOnly(getDatabasePath());
 
     const initResult = await dataService.initialize();
     if (!initResult.success) {
@@ -38,7 +39,7 @@ async function createSeedDataViaCommands() {
     // We don't have user creation commands yet, so let's create them via DataService
     // (This is realistic - real systems would have user registration commands)
 
-    const cleanDataService = await DataServiceFactory.createSQLiteOnly('.continuum/database/continuum.db');
+    const cleanDataService = await DataServiceFactory.createSQLiteOnly(getDatabasePath());
     await cleanDataService.initialize();
 
     // Create foundational users

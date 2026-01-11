@@ -13,6 +13,10 @@ import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { ContentService } from '../../system/state/ContentService';
+
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
 interface PersonaInfo {
   uniqueId: string;
@@ -55,26 +59,8 @@ export class DiagnosticsWidget extends BasePanelWidget {
    * Emit Positron context for AI awareness
    */
   private emitPositronContext(): void {
-    const selectedPersonaInfo = this.selectedPersona
-      ? this.personas.find(p => p.uniqueId === this.selectedPersona)
-      : null;
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'diagnostics',
-        section: this.selectedPersona ? 'persona-logs' : 'persona-list',
-        title: this.selectedPersona
-          ? `Diagnostics - ${selectedPersonaInfo?.displayName || this.selectedPersona}`
-          : 'System Diagnostics',
-        entityId: this.selectedPersona || undefined,
-        metadata: {
-          personaCount: this.personas.length,
-          selectedPersona: this.selectedPersona,
-          onlinePersonas: this.personas.filter(p => p.status === 'online').length
-        }
-      },
-      { action: 'debugging', target: this.selectedPersona ? 'persona logs' : 'system health' }
-    );
+    // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
+    // Widgets should RECEIVE state, not emit it (avoid cascade)
   }
 
   private async loadPersonas(): Promise<void> {
@@ -279,31 +265,28 @@ export class DiagnosticsWidget extends BasePanelWidget {
     this.renderWidget();
   }
 
-  private async openLogTab(logPath: string, logName: string): Promise<void> {
-    console.log(`DiagnosticsWidget: Opening log tab for ${logPath}`);
+  private openLogTab(logPath: string, logName: string): void {
+    verbose() && console.log(`DiagnosticsWidget: Opening log tab for ${logPath}`);
 
-    // TODO: Implement opening log as a new tab
-    // This will use the content/open command to create a new tab with a log viewer
-    try {
-      await Commands.execute('collaboration/content/open', {
-        contentType: 'diagnostics-log',
-        entityId: logPath,
-        title: logName,
-        setAsCurrent: true,
-        metadata: {
-          logPath,
-          autoFollow: true
-        }
-      } as any);
-    } catch (error) {
-      console.error('DiagnosticsWidget: Error opening log tab:', error);
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
     }
+
+    ContentService.open('diagnostics-log', logPath, {
+      title: logName,
+      uniqueId: logPath,
+      metadata: {
+        logPath,
+        autoFollow: true
+      }
+    });
   }
 
   private async handleDetailAction(action: string): Promise<void> {
     if (!this.selectedPersona) return;
 
-    console.log(`DiagnosticsWidget: Action ${action} for ${this.selectedPersona}`);
+    verbose() && console.log(`DiagnosticsWidget: Action ${action} for ${this.selectedPersona}`);
 
     switch (action) {
       case 'view-memory':

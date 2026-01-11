@@ -513,4 +513,118 @@ export class SqliteQueryExecutor {
       return 0;
     }
   }
+
+  /**
+   * Count records matching query filters using SQL COUNT(*)
+   * CRITICAL: Uses SQL aggregation, NOT fetching all rows!
+   */
+  async count(query: StorageQuery): Promise<StorageResult<number>> {
+    try {
+      const tableName = SqlNamingConverter.toTableName(query.collection);
+      const params: any[] = [];
+      let sql = `SELECT COUNT(*) as count FROM ${tableName}`;
+
+      // Build WHERE clause from filters (same logic as buildSchemaSelectQuery)
+      const whereClauses: string[] = [];
+
+      if (query.filter) {
+        for (const [field, filter] of Object.entries(query.filter)) {
+          const columnName = SqlNamingConverter.toSnakeCase(field);
+
+          if (typeof filter === 'object' && filter !== null && !Array.isArray(filter)) {
+            for (const [operator, value] of Object.entries(filter)) {
+              switch (operator) {
+                case '$eq':
+                  whereClauses.push(`${columnName} = ?`);
+                  params.push(value);
+                  break;
+                case '$ne':
+                  whereClauses.push(`${columnName} != ?`);
+                  params.push(value);
+                  break;
+                case '$gt':
+                  whereClauses.push(`${columnName} > ?`);
+                  params.push(value);
+                  break;
+                case '$gte':
+                  whereClauses.push(`${columnName} >= ?`);
+                  params.push(value);
+                  break;
+                case '$lt':
+                  whereClauses.push(`${columnName} < ?`);
+                  params.push(value);
+                  break;
+                case '$lte':
+                  whereClauses.push(`${columnName} <= ?`);
+                  params.push(value);
+                  break;
+                case '$in':
+                  if (Array.isArray(value) && value.length > 0) {
+                    const placeholders = value.map(() => '?').join(',');
+                    whereClauses.push(`${columnName} IN (${placeholders})`);
+                    params.push(...value);
+                  }
+                  break;
+                case '$nin':
+                  if (Array.isArray(value) && value.length > 0) {
+                    const placeholders = value.map(() => '?').join(',');
+                    whereClauses.push(`${columnName} NOT IN (${placeholders})`);
+                    params.push(...value);
+                  }
+                  break;
+                case '$exists':
+                  if (value) {
+                    whereClauses.push(`${columnName} IS NOT NULL`);
+                  } else {
+                    whereClauses.push(`${columnName} IS NULL`);
+                  }
+                  break;
+                case '$contains':
+                  whereClauses.push(`${columnName} LIKE ?`);
+                  params.push(`%${value}%`);
+                  break;
+              }
+            }
+          } else {
+            whereClauses.push(`${columnName} = ?`);
+            params.push(filter);
+          }
+        }
+      }
+
+      if (whereClauses.length > 0) {
+        sql += ` WHERE ${whereClauses.join(' AND ')}`;
+      }
+
+      // Add time range filter
+      if (query.timeRange) {
+        const timeFilters: string[] = [];
+        if (query.timeRange.start) {
+          timeFilters.push('created_at >= ?');
+          params.push(query.timeRange.start);
+        }
+        if (query.timeRange.end) {
+          timeFilters.push('created_at <= ?');
+          params.push(query.timeRange.end);
+        }
+        if (timeFilters.length > 0) {
+          if (whereClauses.length > 0) {
+            sql += ` AND ${timeFilters.join(' AND ')}`;
+          } else {
+            sql += ` WHERE ${timeFilters.join(' AND ')}`;
+          }
+        }
+      }
+
+      const result = await this.executor.runSql(sql, params);
+      const count = result[0]?.count ?? 0;
+
+      log.debug(`[COUNT] ${query.collection}: ${count} records`);
+
+      return { success: true, data: count };
+    } catch (error: any) {
+      log.error(`Count failed for ${query.collection}:`, error.message);
+      return { success: false, error: error.message };
+    }
+  }
 }

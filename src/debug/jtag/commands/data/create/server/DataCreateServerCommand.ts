@@ -61,12 +61,14 @@ export class DataCreateServerCommand extends DataCreateCommand {
 
       // Use handle's emitEvents preference (can be overridden by params.suppressEvents)
       const suppressEvents = params.suppressEvents ?? !shouldEmitEvents;
-      entity = await tempDaemon.create(collection, params.data, operationContext, suppressEvents);
+      // Cast to BaseEntity - at runtime, data will have entity structure
+      entity = await tempDaemon.create(collection, params.data as BaseEntity, operationContext, suppressEvents);
     } else {
       // Default operation: use DataDaemon (backward compatible)
       // Events are emitted by DataDaemon.store() via universal Events system
       // TODO: Pass suppressEvents flag to DataDaemon.store()
-      entity = await DataDaemon.store(collection, params.data);
+      // Cast to BaseEntity - at runtime, data will have entity structure
+      entity = await DataDaemon.store(collection, params.data as BaseEntity);
     }
 
     return createDataCreateResultFromParams(params, {

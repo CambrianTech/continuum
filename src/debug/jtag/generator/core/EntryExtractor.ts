@@ -52,7 +52,10 @@ export class EntryExtractor {
       // Check if file exports the expected class
       const exportPattern = new RegExp(`export\\s+class\\s+${className}\\b`);
       if (!exportPattern.test(content)) {
-        console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
+        // Only log skipped base classes in verbose mode - they're expected
+        if (process.env.JTAG_VERBOSE === '1') {
+          console.warn(`⚠️  Skipping ${filePath}: No export for class ${className}`);
+        }
         return null;
       }
 

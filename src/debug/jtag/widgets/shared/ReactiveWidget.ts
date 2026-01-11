@@ -29,21 +29,83 @@
  * ```
  */
 
-import { LitElement, html, css, type TemplateResult, type CSSResultGroup, type PropertyDeclaration } from 'lit';
+import { LitElement, html, css, unsafeCSS, type TemplateResult, type CSSResultGroup, type PropertyDeclaration } from 'lit';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
+import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 import { PositronWidgetState, type InteractionHint } from './services/state/PositronWidgetState';
 import { widgetStateRegistry, type WidgetStateSlice } from '../../system/state/WidgetStateRegistry';
 import type { ReactiveStore } from '../../system/state/ReactiveStore';
+import { COLLECTIONS } from '../../system/shared/Constants';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import { entityCache, type CacheChange } from '../../system/state/EntityCacheService';
+
+/**
+ * Cleanup function returned by effects
+ */
+export type EffectCleanup = () => void;
+
+/**
+ * Effect handler function - can return cleanup
+ */
+export type EffectHandler<T> = (value: T, prevValue: T | undefined) => void | EffectCleanup;
+
+/**
+ * Selector function to extract dependencies from widget
+ */
+export type DependencySelector<W, T> = (widget: W) => T;
+
+/**
+ * Configuration for useCollection - React-like data fetching hook
+ */
+export interface UseCollectionConfig<T extends BaseEntity> {
+  /** Collection name (e.g., 'chat_messages', 'users') */
+  collection: string;
+  /** Filter function to select entities (runs on cached data) */
+  filter?: (entity: T) => boolean;
+  /** Sort function for ordering results */
+  sort?: (a: T, b: T) => number;
+  /** Maximum entities to return */
+  limit?: number;
+  /** Called when data changes - receives filtered/sorted entities */
+  onData: (entities: T[]) => void;
+  /** Called when loading state changes */
+  onLoading?: (loading: boolean) => void;
+  /** Called on error */
+  onError?: (error: Error) => void;
+  /** Database query filter (for initial load) */
+  dbFilter?: Record<string, unknown>;
+  /** Database query orderBy (for initial load) */
+  dbOrderBy?: Array<{ field: string; direction: 'asc' | 'desc' }>;
+  /** Skip initial database load (use cache only) */
+  cacheOnly?: boolean;
+}
+
+/**
+ * Return type for useCollection - control handle
+ */
+export interface UseCollectionHandle {
+  /** Unsubscribe and clean up */
+  unsubscribe: () => void;
+  /** Force refresh from database */
+  refresh: () => Promise<void>;
+  /** Update filter dynamically */
+  setFilter: (filter: ((entity: BaseEntity) => boolean) | undefined) => void;
+  /** Get current cached count */
+  count: () => number;
+}
 
 // Re-export Lit utilities for subclasses
-export { html, css, type TemplateResult, type CSSResultGroup };
+export { html, css, unsafeCSS, type TemplateResult, type CSSResultGroup };
 export type { InteractionHint };
 
 /**
  * Property decorator that works with TC39 standard decorators
  * Use: @reactive() myProp = initialValue;
+ * NOTE: Must call requestUpdate() after changing state until decorator is fixed
  */
 export function reactive(options?: PropertyDeclaration) {
   return function(target: undefined, context: ClassFieldDecoratorContext) {
@@ -142,10 +204,25 @@ export abstract class ReactiveWidget extends LitElement {
   private commandCache = new Map<string, CachedValue<unknown>>();
 
   /**
+   * User state cache - loaded via loadUserContext()
+   */
+  protected _userState?: UserStateEntity;
+
+  /**
    * Widget state store for Positronic state system
    * Enables automatic RAG context injection
    */
   private _widgetStateStore?: ReactiveStore<WidgetStateSlice>;
+
+  /**
+   * Active effects with their selectors, handlers, and cleanup functions
+   */
+  private _effects: Array<{
+    selector: (widget: ReactiveWidget) => unknown;
+    handler: EffectHandler<unknown>;
+    prevValue: unknown;
+    cleanup?: EffectCleanup;
+  }> = [];
 
   constructor(config: Partial<ReactiveWidgetConfig> = {}) {
     super();
@@ -170,6 +247,13 @@ export abstract class ReactiveWidget extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.log('Connected to DOM');
+
+    // Auto-load user context (non-blocking)
+    this.loadUserContext().catch(err => {
+      // Silent fail - user context is optional for some widgets
+      this.log('User context load failed (may be expected):', err);
+    });
+
     this.onConnect();
   }
 
@@ -181,10 +265,55 @@ export abstract class ReactiveWidget extends LitElement {
     super.disconnectedCallback();
     this.log('Disconnected from DOM');
 
+    // Clean up all effects
+    this.disposeEffects();
+
+    // Clean up collection subscriptions
+    this.disposeCollectionHandles();
+
     // Clean up widget state registration
     this.unregisterWidgetState();
 
     this.onDisconnect();
+  }
+
+  /**
+   * Clean up all collection handles and entity subscriptions
+   */
+  private disposeCollectionHandles(): void {
+    for (const handle of this._collectionHandles) {
+      try {
+        handle.unsubscribe();
+      } catch (e) {
+        console.error(`${this.config.widgetName}: Collection handle cleanup error:`, e);
+      }
+    }
+    this._collectionHandles = [];
+
+    for (const unsubscribe of this._entityUnsubscribers) {
+      try {
+        unsubscribe();
+      } catch (e) {
+        console.error(`${this.config.widgetName}: Entity unsubscribe error:`, e);
+      }
+    }
+    this._entityUnsubscribers = [];
+  }
+
+  /**
+   * Clean up all effects
+   */
+  private disposeEffects(): void {
+    for (const effect of this._effects) {
+      if (effect.cleanup) {
+        try {
+          effect.cleanup();
+        } catch (e) {
+          console.error(`${this.config.widgetName}: Effect cleanup error:`, e);
+        }
+      }
+    }
+    this._effects = [];
   }
 
   /**
@@ -205,12 +334,352 @@ export abstract class ReactiveWidget extends LitElement {
     if (this.config.debug) {
       this.log(`Updated: ${[...changedProperties.keys()].join(', ')}`);
     }
+
+    // Run effects when any property changes
+    if (changedProperties.size > 0) {
+      this.runEffects();
+    }
+  }
+
+  /**
+   * Run all effects, checking for dependency changes
+   */
+  private runEffects(): void {
+    for (const effect of this._effects) {
+      try {
+        const currentValue = effect.selector(this);
+
+        // Check if dependencies changed
+        if (!this.shallowEqual(currentValue, effect.prevValue)) {
+          // Run cleanup from previous execution
+          if (effect.cleanup) {
+            effect.cleanup();
+            effect.cleanup = undefined;
+          }
+
+          // Run the effect handler
+          const cleanup = effect.handler(currentValue, effect.prevValue);
+          if (typeof cleanup === 'function') {
+            effect.cleanup = cleanup;
+          }
+
+          // Store current value for next comparison
+          effect.prevValue = currentValue;
+
+          if (this.config.debug) {
+            this.log(`Effect triggered:`, { prev: effect.prevValue, current: currentValue });
+          }
+        }
+      } catch (e) {
+        console.error(`${this.config.widgetName}: Effect error:`, e);
+      }
+    }
+  }
+
+  /**
+   * Shallow equality check for effect dependency comparison
+   */
+  private shallowEqual<T>(a: T, b: T): boolean {
+    if (a === b) return true;
+    if (a === null || b === null) return false;
+    if (typeof a !== 'object' || typeof b !== 'object') return false;
+
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length) return false;
+      return a.every((v, i) => v === b[i]);
+    }
+
+    const keysA = Object.keys(a) as (keyof T)[];
+    const keysB = Object.keys(b) as (keyof T)[];
+    if (keysA.length !== keysB.length) return false;
+
+    return keysA.every(key => a[key] === b[key]);
   }
 
   // Hooks for subclasses (cleaner than overriding lifecycle methods)
   protected onConnect(): void {}
   protected onDisconnect(): void {}
   protected onFirstRender(): void {}
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EFFECTS - React-like side effect management
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Create an effect that runs when dependencies change (like React useEffect)
+   *
+   * Call in onFirstRender() or onConnect() to set up side effects.
+   * Effects run after every render where their dependencies changed.
+   *
+   * @param selector - Function that returns dependencies (runs on every render)
+   * @param handler - Function that runs when dependencies change
+   * @returns Dispose function to remove the effect
+   *
+   * @example
+   * ```typescript
+   * class MyChatWidget extends ReactiveWidget {
+   *   @reactive() roomId: string | null = null;
+   *
+   *   protected onFirstRender() {
+   *     // Effect: load messages when roomId changes
+   *     this.createEffect(
+   *       (w) => w.roomId,
+   *       (roomId) => {
+   *         if (roomId) this.loadMessages(roomId);
+   *       }
+   *     );
+   *   }
+   *
+   *   switchRoom(id: string) {
+   *     this.roomId = id;  // Effect runs automatically
+   *   }
+   * }
+   * ```
+   */
+  protected createEffect<T>(
+    selector: DependencySelector<this, T>,
+    handler: EffectHandler<T>
+  ): EffectCleanup {
+    // Get initial value
+    const initialValue = selector(this);
+
+    // Create effect entry - cast selector to avoid 'this' type issues
+    const effect = {
+      selector: selector as unknown as (widget: ReactiveWidget) => unknown,
+      handler: handler as EffectHandler<unknown>,
+      prevValue: undefined as unknown, // Will trigger on first run
+      cleanup: undefined as EffectCleanup | undefined
+    };
+
+    this._effects.push(effect);
+
+    // Run effect immediately with initial value
+    try {
+      const cleanup = handler(initialValue, undefined);
+      if (typeof cleanup === 'function') {
+        effect.cleanup = cleanup;
+      }
+      effect.prevValue = initialValue;
+    } catch (e) {
+      console.error(`${this.config.widgetName}: Initial effect error:`, e);
+    }
+
+    // Return dispose function
+    return () => {
+      const index = this._effects.indexOf(effect);
+      if (index >= 0) {
+        if (effect.cleanup) {
+          effect.cleanup();
+        }
+        this._effects.splice(index, 1);
+      }
+    };
+  }
+
+  /**
+   * Create an effect that only runs once (like React useEffect with empty deps)
+   *
+   * @param handler - Function that runs once on first render
+   * @returns Dispose function
+   */
+  protected createMountEffect(handler: () => void | EffectCleanup): EffectCleanup {
+    let hasRun = false;
+    let cleanup: EffectCleanup | undefined;
+
+    return this.createEffect(
+      () => null, // Constant dependency
+      () => {
+        if (!hasRun) {
+          hasRun = true;
+          cleanup = handler() ?? undefined;
+        }
+        return cleanup;
+      }
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DATA SUBSCRIPTION - React-like data fetching with EntityCacheService
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Subscribe to a collection with automatic caching, event handling, and DB loading
+   *
+   * This is the primary way widgets should access entity data. It:
+   * 1. Subscribes to EntityCacheService for real-time updates
+   * 2. Loads initial data from DB if cache is empty
+   * 3. Filters and sorts data before delivering to callback
+   * 4. Handles cleanup automatically on widget disconnect
+   *
+   * @example
+   * ```typescript
+   * class MyChatWidget extends ReactiveWidget {
+   *   private messagesHandle?: UseCollectionHandle;
+   *
+   *   protected onFirstRender() {
+   *     this.messagesHandle = this.useCollection<ChatMessageEntity>({
+   *       collection: 'chat_messages',
+   *       filter: m => m.roomId === this.currentRoomId,
+   *       sort: (a, b) => a.timestamp.localeCompare(b.timestamp),
+   *       limit: 50,
+   *       dbFilter: { roomId: this.currentRoomId },
+   *       dbOrderBy: [{ field: 'timestamp', direction: 'desc' }],
+   *       onData: (messages) => {
+   *         this.messages = messages;
+   *         this.requestUpdate();
+   *       },
+   *       onLoading: (loading) => this.loading = loading
+   *     });
+   *   }
+   *
+   *   switchRoom(newRoomId: string) {
+   *     // Update filter - triggers refresh automatically
+   *     this.messagesHandle?.setFilter(m => m.roomId === newRoomId);
+   *     this.messagesHandle?.refresh();
+   *   }
+   * }
+   * ```
+   */
+  protected useCollection<T extends BaseEntity>(
+    config: UseCollectionConfig<T>
+  ): UseCollectionHandle {
+    const {
+      collection,
+      onData,
+      onLoading,
+      onError,
+      dbFilter,
+      dbOrderBy,
+      cacheOnly = false,
+      limit
+    } = config;
+
+    // Mutable filter/sort (can be updated via handle)
+    let currentFilter = config.filter;
+    let currentSort = config.sort;
+
+    // Process and deliver entities to callback
+    const deliverData = (entities: T[]) => {
+      let result = entities;
+
+      // Apply filter
+      if (currentFilter) {
+        result = result.filter(currentFilter);
+      }
+
+      // Apply sort
+      if (currentSort) {
+        result = [...result].sort(currentSort);
+      }
+
+      // Apply limit
+      if (limit && result.length > limit) {
+        result = result.slice(0, limit);
+      }
+
+      onData(result);
+    };
+
+    // Subscribe to cache changes
+    const unsubscribe = entityCache.subscribe<T>(
+      collection,
+      (entities: T[], _change: CacheChange<T>) => {
+        deliverData(entities);
+      }
+    );
+
+    // Load from database if cache is empty or explicit refresh needed
+    const loadFromDB = async () => {
+      if (cacheOnly) return;
+
+      const cachedCount = entityCache.count(collection);
+
+      // Only load if cache appears empty for this collection
+      // (subscribe already delivered cached data if present)
+      if (cachedCount === 0 || dbFilter) {
+        onLoading?.(true);
+        try {
+          const result = await this.executeCommand<DataListParams, DataListResult<T>>(
+            DATA_COMMANDS.LIST,
+            {
+              collection,
+              filter: dbFilter,
+              orderBy: dbOrderBy,
+              limit: limit ? limit * 2 : 100 // Load extra for filtering headroom
+            }
+          );
+
+          if (result.success && result.items) {
+            // Populate cache - this triggers subscriber with fresh data
+            // Spread to convert readonly array to mutable
+            entityCache.populate(collection, [...result.items]);
+          }
+        } catch (err) {
+          onError?.(err instanceof Error ? err : new Error(String(err)));
+        } finally {
+          onLoading?.(false);
+        }
+      }
+    };
+
+    // Initial load
+    loadFromDB();
+
+    // Return control handle
+    const handle: UseCollectionHandle = {
+      unsubscribe: () => {
+        unsubscribe();
+      },
+
+      refresh: async () => {
+        // Clear collection cache to force reload
+        entityCache.clear(collection);
+        await loadFromDB();
+      },
+
+      setFilter: (newFilter) => {
+        currentFilter = newFilter as ((entity: T) => boolean) | undefined;
+        // Re-deliver with new filter
+        const entities = entityCache.getAll<T>(collection);
+        deliverData(entities);
+      },
+
+      count: () => entityCache.count(collection)
+    };
+
+    // Track for cleanup on disconnect
+    this._collectionHandles.push(handle);
+
+    return handle;
+  }
+
+  /**
+   * Subscribe to a single entity with automatic caching
+   *
+   * @example
+   * ```typescript
+   * const unsubscribe = this.useEntity<UserEntity>('users', userId, (user) => {
+   *   this.user = user;
+   *   this.requestUpdate();
+   * });
+   * ```
+   */
+  protected useEntity<T extends BaseEntity>(
+    collection: string,
+    entityId: string,
+    onData: (entity: T | null) => void
+  ): () => void {
+    const unsubscribe = entityCache.subscribeToEntity<T>(collection, entityId, onData);
+
+    // Track for cleanup
+    this._entityUnsubscribers.push(unsubscribe);
+
+    return unsubscribe;
+  }
+
+  // Collection handles for cleanup
+  private _collectionHandles: UseCollectionHandle[] = [];
+  private _entityUnsubscribers: (() => void)[] = [];
 
   // ═══════════════════════════════════════════════════════════════════════════
   // RENDERING - The React-like pattern
@@ -501,6 +970,50 @@ export abstract class ReactiveWidget extends LitElement {
     return client?.user?.entity as UserEntity | undefined;
   }
 
+  /**
+   * Get current user state (lazy load on first access)
+   */
+  protected get userState(): UserStateEntity | undefined {
+    return this._userState;
+  }
+
+  /**
+   * Load user context from database
+   * Called automatically on widget initialization, but can be called manually to refresh
+   */
+  protected async loadUserContext(): Promise<void> {
+    try {
+      const jtagClient = (window as WindowWithJTAG).jtag;
+      const currentUser = jtagClient?.user;
+
+      if (!currentUser) {
+        console.warn(`⚠️ ${this.config.widgetName}: No user in session`);
+        return;
+      }
+
+      // Get userId - works for both BaseUser instances (getter) and plain objects (JSON deserialized)
+      const userId = currentUser.id ?? (currentUser as any).entity?.id;
+
+      if (!userId) {
+        console.warn(`⚠️ ${this.config.widgetName}: User has no id`);
+        return;
+      }
+
+      // Load user state from database
+      const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+        collection: COLLECTIONS.USER_STATES,
+        filter: { userId },
+        limit: 1
+      });
+
+      if (stateResult.success && stateResult.items && stateResult.items.length > 0) {
+        this._userState = stateResult.items[0];
+      }
+    } catch (error) {
+      console.error(`❌ ${this.config.widgetName}: Failed to load user context:`, error);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // UTILITIES
   // ═══════════════════════════════════════════════════════════════════════════
@@ -514,12 +1027,21 @@ export abstract class ReactiveWidget extends LitElement {
   }
 
   /**
-   * Debug logging
+   * Debug logging (uses config.debug flag)
    */
   protected log(...args: unknown[]): void {
     if (this.config.debug) {
       console.log(`🔄 ${this.config.widgetName}:`, ...args);
     }
+  }
+
+  /**
+   * Verbose logging helper for browser widgets
+   * Usage: this.verbose() && console.log('message');
+   * Enable with: window.JTAG_VERBOSE = true
+   */
+  protected verbose(): boolean {
+    return typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
   }
 
   /**

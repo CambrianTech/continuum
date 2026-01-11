@@ -12,18 +12,24 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import * as path from 'path';
 
-// Load proto file
-const PROTO_PATH = path.join(__dirname, '../../../workers/inference-grpc/proto/inference.proto');
+// Lazy-loaded proto to avoid module-level side effects
+// (Required for CLI bundling - proto path breaks when bundled)
+let _inferenceProto: any = null;
 
-const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
-  keepCase: true,
-  longs: String,
-  enums: String,
-  defaults: true,
-  oneofs: true,
-});
-
-const inferenceProto = grpc.loadPackageDefinition(packageDefinition) as any;
+function getInferenceProto(): any {
+  if (!_inferenceProto) {
+    const PROTO_PATH = path.join(__dirname, '../../../workers/inference-grpc/proto/inference.proto');
+    const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
+      keepCase: true,
+      longs: String,
+      enums: String,
+      defaults: true,
+      oneofs: true,
+    });
+    _inferenceProto = grpc.loadPackageDefinition(packageDefinition);
+  }
+  return _inferenceProto;
+}
 
 export interface GenerateResult {
   text: string;
@@ -82,6 +88,7 @@ export class InferenceGrpcClient {
   private static instance: InferenceGrpcClient | null = null;
 
   constructor(address: string = '127.0.0.1:50051') {
+    const inferenceProto = getInferenceProto();
     this.client = new inferenceProto.inference.Inference(
       address,
       grpc.credentials.createInsecure()

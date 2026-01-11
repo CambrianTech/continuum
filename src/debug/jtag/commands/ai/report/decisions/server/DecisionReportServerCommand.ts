@@ -63,7 +63,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
     console.log(`🔍 SERVER: Querying decisions with filter:`, filter);
 
     // Execute data/list command
-    const listResult = await Commands.execute<DataListParams<CoordinationDecisionEntity>, DataListResult<CoordinationDecisionEntity>>(
+    const listResult = await Commands.execute<DataListParams, DataListResult<CoordinationDecisionEntity>>(
       DATA_COMMANDS.LIST,
       {
         collection: COLLECTIONS.COORDINATION_DECISIONS,

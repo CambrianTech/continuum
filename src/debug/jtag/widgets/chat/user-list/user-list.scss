@@ -1,0 +1,615 @@
+/**
+ * User List Widget - SCSS
+ * Discord/Teams style user list with AI status indicators
+ */
+
+@use "sass:map";
+@use '../../shared/styles/variables' as *;
+
+// Hide intelligence bars for cleaner technical aesthetic
+.intelligence-bars {
+  display: none !important;
+}
+
+:host {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;  // Allow shrinking below content
+  overflow: hidden;
+}
+
+.entity-list-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--widget-surface-solid);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-md);
+  color: var(--content-primary);
+  font-family: var(--font-primary);
+  border: 1px solid var(--widget-border);
+  overflow: hidden;
+}
+
+.entity-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: var(--spacing-sm);
+  flex-shrink: 0;
+
+  h3 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--content-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+}
+
+.header-title {
+  color: var(--content-primary);
+  font-weight: 600;
+  font-size: 0.85em;
+  letter-spacing: 0.5px;
+}
+
+.user-count {
+  background: var(--border-subtle);
+  color: var(--content-secondary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+// Filter Chips
+.filter-chips {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 6px var(--spacing-md);
+  flex-shrink: 0;
+}
+
+.filter-group {
+  display: flex;
+  gap: 3px;
+}
+
+.filter-divider {
+  width: 1px;
+  height: 16px;
+  background: rgba(0, 180, 200, 0.2);
+  margin: 0 4px;
+}
+
+.filter-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  height: 22px;
+  padding: 0 6px;
+  background: rgba(0, 40, 60, 0.6);
+  border: 1px solid rgba(0, 180, 200, 0.15);
+  border-radius: 3px;
+  color: rgba(0, 200, 220, 0.5);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 11px;
+  overflow: hidden;
+
+  .chip-icon {
+    font-size: 10px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .chip-label {
+    max-width: 0;
+    opacity: 0;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    transition: max-width 0.2s ease, opacity 0.2s ease, margin 0.2s ease;
+    margin-left: 0;
+  }
+
+  &:hover {
+    background: rgba(0, 60, 80, 0.8);
+    border-color: rgba(0, 200, 220, 0.4);
+    color: rgba(0, 220, 240, 0.9);
+    padding: 0 8px;
+
+    .chip-label {
+      max-width: 50px;
+      opacity: 1;
+      margin-left: 4px;
+    }
+  }
+
+  &.active {
+    background: rgba(0, 180, 200, 0.2);
+    border-color: rgba(0, 220, 240, 0.6);
+    color: rgba(0, 255, 220, 1);
+    box-shadow: 0 0 8px rgba(0, 200, 220, 0.3);
+    padding: 0 8px;
+
+    .chip-label {
+      max-width: 60px;
+      opacity: 1;
+      margin-left: 4px;
+    }
+  }
+
+  // Online status - green theme
+  &[data-filter="online"] {
+    .chip-icon {
+      font-size: 8px;
+    }
+
+    &:hover, &.active {
+      color: #10b981;
+      border-color: rgba(16, 185, 129, 0.5);
+    }
+
+    &.active {
+      box-shadow: 0 0 6px rgba(16, 185, 129, 0.25);
+    }
+  }
+}
+
+// User List
+.user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+
+  // Minimal scrollbar
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: var(--border-subtle);
+    border-radius: 2px;
+
+    &:hover {
+      background: var(--content-secondary);
+    }
+  }
+}
+
+// User Item
+.user-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  background: transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.1s;
+  gap: 12px;
+  flex-shrink: 0;
+  min-height: 56px;
+  position: relative;
+
+  &:hover {
+    background: var(--widget-content-background);
+  }
+
+  &.selected {
+    background: var(--widget-content-background);
+  }
+
+  &.online .status-indicator {
+    background: var(--status-online);
+  }
+}
+
+// Avatar - Discord style with image support
+.user-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+  overflow: visible;
+  position: relative;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  &.has-image {
+    background: transparent;
+  }
+
+  // Rotating arc indicator
+  &::before {
+    content: '';
+    position: absolute;
+    top: -4px;
+    left: -4px;
+    right: -4px;
+    bottom: -4px;
+    border-radius: 50%;
+    opacity: 0;
+    pointer-events: none;
+    border: 3px solid transparent;
+    border-top-color: var(--comet-color, rgba(59, 130, 246, 0.9));
+    border-right-color: var(--comet-color, rgba(59, 130, 246, 0.6));
+    border-bottom-color: transparent;
+    border-left-color: transparent;
+    transition: opacity 0.3s ease;
+  }
+}
+
+// AI Status Animations
+@keyframes comet-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+$ai-statuses: (
+  evaluating: (color: rgba(147, 51, 234, 0.8), speed: 3.5s),
+  responding: (color: rgba(59, 130, 246, 0.8), speed: 3.5s),
+  generating: (color: rgba(16, 185, 129, 0.8), speed: 3.5s),
+  checking: (color: rgba(245, 158, 11, 0.8), speed: 3.5s),
+  error: (color: rgba(239, 68, 68, 0.8), speed: 2.5s)
+);
+
+@each $status, $props in $ai-statuses {
+  .user-item[data-ai-status="#{$status}"] .user-avatar::before {
+    --comet-color: #{map.get($props, color)};
+    opacity: 1;
+    animation: comet-orbit #{map.get($props, speed)} linear infinite;
+  }
+}
+
+.user-item[data-ai-status="passed"] .user-avatar {
+  box-shadow: 0 0 8px rgba(156, 163, 175, 0.2);
+
+  &::before {
+    opacity: 0;
+  }
+}
+
+// User Info
+.user-info {
+  flex: 1 1 auto;
+  display: flex !important;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow: visible;
+}
+
+.user-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--content-primary);
+  overflow: visible;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.user-ai-status {
+  display: none;
+}
+
+.user-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+// Badges - technical monospace style
+.user-type-badge,
+.user-model-badge {
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.7);
+  background: transparent;
+  padding: 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+  font-family: monospace;
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+}
+
+.user-model-badge {
+  margin-left: auto;
+}
+
+.user-model-info {
+  display: none;
+}
+
+.user-speciality {
+  font-size: 12px;
+  color: var(--content-secondary);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+
+.user-last-active {
+  position: absolute;
+  top: 8px;
+  right: 56px;
+  font-size: 10px;
+  color: var(--content-secondary);
+  opacity: 0.6;
+  flex-shrink: 0;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+// Controls
+.user-controls {
+  display: none;
+}
+
+.user-item:hover .user-controls {
+  opacity: 1;
+}
+
+.user-favorite-btn,
+.user-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--content-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  transition: background 0.1s, color 0.1s;
+  line-height: 1;
+
+  &:hover {
+    background: var(--border-subtle);
+    color: var(--content-primary);
+  }
+}
+
+// Status indicator - Discord-style overlay on avatar
+.status-indicator {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--status-offline);
+  border: 2px solid var(--widget-surface-solid);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+// Empty state
+.no-users-message {
+  padding: var(--spacing-xl);
+  text-align: center;
+  color: var(--content-secondary);
+}
+
+.no-content-icon {
+  font-size: 32px;
+  opacity: 0.3;
+  margin-bottom: var(--spacing-sm);
+}
+
+.no-content-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--content-primary);
+  margin: 0 0 var(--spacing-xs) 0;
+}
+
+.no-content-hint {
+  font-size: 12px;
+  color: var(--content-secondary);
+  margin: 0;
+}
+
+// Learning Indicators
+.user-item[data-learning="true"] {
+  border-left: 4px solid $color-success;
+  background: linear-gradient(90deg, rgba($color-success, 0.1) 0%, transparent 20%);
+  animation: learning-glow 2s ease-in-out infinite;
+}
+
+@keyframes learning-glow {
+  0%, 100% {
+    border-left-color: $color-success;
+    box-shadow: -4px 0 12px rgba($color-success, 0.3);
+  }
+  50% {
+    border-left-color: $color-primary;
+    box-shadow: -4px 0 20px rgba($color-primary, 0.5);
+  }
+}
+
+.user-learning-status {
+  display: none;
+}
+
+// Response mode dot
+.response-mode-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--widget-surface-solid);
+  z-index: 3;
+
+  &.free-chat {
+    background: #10b981;
+  }
+
+  &.mention-required {
+    background: #f59e0b;
+  }
+}
+
+// Genome Panel - LoRA Layer Visualization
+.genome-panel {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: rgba(10, 25, 35, 0.9);
+  border: 1px solid rgba(0, 255, 200, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 0 8px rgba(0, 255, 200, 0.15);
+  flex-shrink: 0;
+  margin-left: 8px;
+  height: 32px;
+  align-self: flex-end;
+}
+
+.genome-label {
+  font-size: 7px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.8);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.3);
+  line-height: 1;
+}
+
+.genome-bars {
+  display: flex !important;
+  flex-direction: row !important;
+  gap: 2px !important;
+  align-items: flex-end !important;
+  height: 24px !important;
+  justify-content: center !important;
+}
+
+.genome-layer {
+  width: 4px !important;
+  min-height: 8px !important;
+  border-radius: 1px;
+  border: 1px solid rgba(0, 255, 200, 0.4);
+  transition: height $transition-normal, background $transition-normal;
+  flex-shrink: 0;
+
+  &.active {
+    height: 100% !important;
+    background: linear-gradient(180deg,
+      rgba(0, 255, 200, 0.9) 0%,
+      rgba(0, 220, 255, 0.8) 50%,
+      rgba(0, 180, 255, 0.7) 100%) !important;
+    box-shadow: 0 0 6px rgba(0, 255, 200, 0.6) !important;
+    border-color: rgba(0, 255, 255, 0.8);
+  }
+
+  &.inactive {
+    height: 35% !important;
+    background: rgba(60, 80, 100, 0.5) !important;
+    border-color: rgba(80, 100, 120, 0.6);
+    box-shadow: none;
+  }
+}
+
+.genome-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(0, 255, 200, 0.9);
+  font-family: monospace;
+  text-shadow: 0 0 4px rgba(0, 255, 200, 0.4);
+  white-space: nowrap;
+  line-height: 1;
+}
+
+// Diamond grid
+.genome-diamond {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  transform: rotate(45deg);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.diamond-cell {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  background: rgba(60, 80, 100, 0.3);
+  border: 1px solid rgba(80, 100, 120, 0.4);
+  border-radius: 1px;
+  transition: background $transition-normal, border-color $transition-normal;
+  box-sizing: border-box;
+
+  &.active {
+    background: linear-gradient(135deg,
+      rgba(0, 255, 200, 0.8) 0%,
+      rgba(0, 220, 255, 0.7) 100%);
+    border-color: rgba(0, 255, 255, 0.6);
+    box-shadow: 0 0 4px rgba(0, 255, 200, 0.5);
+  }
+}
+
+// Hover effects for genome
+.user-item:hover {
+  .genome-panel {
+    border-color: rgba(0, 255, 200, 0.6);
+    box-shadow: 0 0 12px rgba(0, 255, 200, 0.25);
+  }
+
+  .genome-layer.active {
+    box-shadow: 0 0 8px rgba(0, 255, 200, 0.8) !important;
+  }
+
+  .diamond-cell.active {
+    box-shadow: 0 0 6px rgba(0, 255, 200, 0.7);
+  }
+}

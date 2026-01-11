@@ -1,0 +1,178 @@
+/**
+ * MainPanel - Main Content Area Styling (SCSS)
+ */
+
+@use '../../shared/styles/variables' as *;
+
+:host {
+  display: flex;
+  flex: 1;
+  height: 100vh;
+  min-width: 0; // Critical: allow to shrink in grid
+  background: var(--main-bg, linear-gradient(135deg, rgba(15, 20, 25, 0.8) 0%, rgba(20, 25, 35, 0.9) 100%));
+}
+
+.main-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0; // Critical: allow to shrink
+  overflow: hidden;
+}
+
+// ========================================
+// Header Controls Row
+// ========================================
+
+.header-controls-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 6px 20px;
+  background: var(--surface-secondary, rgba(10, 15, 20, 0.8));
+  flex-shrink: 0;
+  backdrop-filter: blur(10px);
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.version-info .version-badge {
+  padding: 4px 8px;
+  background: rgba($color-primary, 0.2);
+  border: 1px solid rgba($color-primary, 0.3);
+  border-radius: 12px;
+  font-size: 0.7em;
+  color: var(--accent-color, $color-primary);
+  font-weight: 600;
+}
+
+.status-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.status-button {
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+  transition: all $transition-normal;
+  font-size: 0.8em;
+
+  &:hover {
+    background: rgba($color-primary, 0.1);
+    border-color: rgba($color-primary, 0.3);
+    color: var(--accent-color, $color-primary);
+  }
+}
+
+// ========================================
+// Content Tabs Row
+// ========================================
+
+.content-tabs-row {
+  display: flex;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border-subtle, rgba($color-primary, 0.15));
+  background: var(--surface-secondary, rgba(10, 15, 20, 0.6));
+  flex-shrink: 0;
+  min-width: 0; // Critical: allow to shrink
+  overflow: hidden;
+
+  content-tabs-widget {
+    flex: 1;
+    min-width: 0; // Critical: allow flex item to shrink below content size
+    overflow: hidden;
+  }
+}
+
+.content-tabs {
+  display: flex;
+  gap: 10px;
+}
+
+.content-tab {
+  padding: 8px 16px;
+  border-radius: 6px;
+  background: var(--surface-input, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+  transition: all $transition-normal;
+  font-size: 0.85em;
+  font-weight: 500;
+
+  &:hover {
+    background: var(--surface-hover, rgba(255, 255, 255, 0.12));
+    border-color: var(--accent-color, $color-primary);
+    color: var(--text-primary, rgba(255, 255, 255, 0.9));
+    transform: translateY(-1px);
+  }
+
+  &.active {
+    background: var(--accent-color, $color-primary);
+    border-color: var(--accent-color, $color-primary);
+    color: var(--bg-primary, #000);
+    box-shadow: 0 2px 8px rgba($color-primary, 0.3);
+    font-weight: 600;
+  }
+}
+
+// ========================================
+// Content View
+// ========================================
+
+.content-view {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+  background: var(--surface-primary, rgba(15, 20, 25, 0.95));
+
+  // All widgets expand to fill available space
+  > * {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+}
+
+// ========================================
+// Content Footer
+// ========================================
+
+.content-footer {
+  padding: 10px 20px;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--widget-header-background, rgba(10, 15, 20, 0.3));
+  flex-shrink: 0;
+}
+
+.footer-links {
+  display: flex;
+  gap: 15px;
+  justify-content: center;
+
+  a {
+    color: var(--text-secondary, rgba(255, 255, 255, 0.5));
+    text-decoration: none;
+    font-size: 0.8em;
+    transition: color $transition-normal;
+
+    &:hover {
+      color: var(--accent-color, $color-primary);
+    }
+  }
+}

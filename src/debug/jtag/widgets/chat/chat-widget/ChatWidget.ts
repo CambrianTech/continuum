@@ -3,6 +3,9 @@
  * Eliminates ~300 lines of manual EntityScroller and CRUD event handling
  */
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 import { EntityScrollerWidget } from '../../shared/EntityScrollerWidget';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { ChatMessageEntity, type MediaItem, type MediaType } from '../../../system/data/entities/ChatMessageEntity';
@@ -14,41 +17,94 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
-import { UI_EVENTS } from '../../../system/core/shared/EventConstants';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
 import { DEFAULT_ROOMS, DEFAULT_USERS } from '../../../system/data/domains/DefaultEntities';
 import { AdapterRegistry } from '../adapters/AdapterRegistry';
 import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
+import { MessageEventDelegator } from '../adapters/MessageEventDelegator';
+import { ImageMessageAdapter } from '../adapters/ImageMessageAdapter';
+import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
 import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
 import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
-// MessageComposerWidget removed - using inline HTML instead
+// Signals for React-like state management
+import { createWidgetSignals, watch, type WidgetSignalState, type Dispose } from '@system/signals';
+// EntityCacheService - single source of truth for entity data (Positronic pattern)
+import { entityCache } from '../../../system/state/EntityCacheService';
+
+/**
+ * ChatWidget signal state - React-like reactive state management
+ * Changes to these values automatically trigger UI updates via watch()
+ */
+interface ChatSignalState {
+  roomId: UUID | null;
+  roomUniqueId: string | null;
+  roomName: string;
+  isActiveContent: boolean;
+  totalMessageCount: number;
+  loadedMessageCount: number;
+}
+
+/**
+ * Data needed to render a member chip in the header
+ */
+interface MemberChipData {
+  personaId: UUID;
+  displayName: string;
+  role: string;
+  roleIcon: string;
+  statusEmoji: string;
+  hasError: boolean;
+  hasStatus: boolean;
+}
 
 export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private messageInput?: HTMLTextAreaElement;
-  private currentRoomId: UUID | null = DEFAULT_ROOMS.GENERAL as UUID; // Default to General room
-  private currentRoomName: string = 'General';
+
+  // === SIGNAL-BASED STATE (React-like reactivity) ===
+  private _signals: WidgetSignalState<ChatSignalState>;
+  private _signalDisposers: Dispose[] = []; // Cleanup for watch/effect subscriptions
+
+  // Getters for backward compatibility - read from signals
+  private get currentRoomId(): UUID | null { return this._signals.state.roomId; }
+  private set currentRoomId(v: UUID | null) { this._signals.set('roomId', v); }
+
+  private get currentRoomUniqueId(): string | null { return this._signals.state.roomUniqueId; }
+  private set currentRoomUniqueId(v: string | null) { this._signals.set('roomUniqueId', v); }
+
+  private get currentRoomName(): string { return this._signals.state.roomName; }
+  private set currentRoomName(v: string) { this._signals.set('roomName', v); }
+
+  private get totalMessageCount(): number { return this._signals.state.totalMessageCount; }
+  private set totalMessageCount(v: number) { this._signals.set('totalMessageCount', v); }
+
+  private get loadedMessageCount(): number { return this._signals.state.loadedMessageCount; }
+  private set loadedMessageCount(v: number) { this._signals.set('loadedMessageCount', v); }
+
+  // Non-signal state (doesn't need reactivity)
   private currentRoom: RoomEntity | null = null;
-  private roomMembers: Map<UUID, UserEntity> = new Map(); // Map of userId -> UserEntity
-  private totalMessageCount: number = 0; // Total messages in database (not just loaded)
-  private loadedMessageCount: number = 0; // Number of messages actually loaded so far
-  private adapterRegistry: AdapterRegistry; // Selects adapters per message based on content
-  private aiStatusIndicator: AIStatusIndicator; // Manages AI thinking/responding status indicators
-  private aiStatusContainer?: HTMLElement; // Container for AI status indicators
-  private headerUpdateTimeout?: number; // Debounce timeout for header updates
-  private errorsHidden: boolean = true; // Toggle state for error notifications
-  private pendingAttachments: MediaItem[] = []; // Files attached but not yet sent
-  private isSending: boolean = false; // Guard against duplicate sends
-  private positronUnsubscribe?: () => void; // Cleanup for Positron subscription
-  private positronUpdateDebounce?: number; // Debounce for Positron state updates
+  private roomMembers: Map<UUID, UserEntity> = new Map();
+  private adapterRegistry: AdapterRegistry;
+  private eventDelegator: MessageEventDelegator;
+  private aiStatusIndicator: AIStatusIndicator;
+  private aiStatusContainer?: HTMLElement;
+  private headerUpdateTimeout?: number;
+  private errorsHidden: boolean = true;
+  private pendingAttachments: MediaItem[] = [];
+  private isSending: boolean = false;
+  private positronUnsubscribe?: () => void;
+  private positronUpdateDebounce?: number;
 
   // === REACT-LIKE VISIBILITY STATE ===
-  // Track whether this widget is the currently active/visible content
-  private _isActiveContent: boolean = false; // Whether this is the currently visible chat tab
-  private _isPinnedWidget: boolean = false; // Whether pinned to specific room via attribute
-  private _eventUnsubscribers: Array<() => void> = []; // For cleanup on disconnect
+  private get _isActiveContent(): boolean { return this._signals.state.isActiveContent; }
+  private set _isActiveContent(v: boolean) { this._signals.set('isActiveContent', v); }
+
+  private _isPinnedWidget: boolean = false;
+  private _eventUnsubscribers: Array<() => void> = [];
+  private _pendingMessageTempIds: Set<UUID> = new Set();
+  private _pendingRoomEntity: RoomEntity | null = null;  // For instant hydration
 
   constructor() {
     super({
@@ -61,8 +117,21 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       enableScreenshots: false
     });
 
+    // Initialize signal store with default state (React-like pattern)
+    this._signals = createWidgetSignals<ChatSignalState>({
+      roomId: null,
+      roomUniqueId: null,
+      roomName: 'General',
+      isActiveContent: false,
+      totalMessageCount: 0,
+      loadedMessageCount: 0
+    }, { widgetName: 'ChatWidget' });
+
     // Initialize adapter registry for per-message adapter selection
     this.adapterRegistry = new AdapterRegistry();
+
+    // Initialize event delegator for memory-efficient message interactions
+    this.eventDelegator = new MessageEventDelegator({ verbose: false });
 
     // Initialize AI status indicator manager
     this.aiStatusIndicator = new AIStatusIndicator();
@@ -113,6 +182,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * Implements clear/populate/query pattern for instant hydration.
+   */
+  public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
+    // Store room entity from metadata for instant hydration
+    this._pendingRoomEntity = (metadata?.entity as RoomEntity) || null;
+
+    if (entityId) {
+      await this.switchToRoom(entityId);
+    }
+  }
+
   // === REACT-LIKE VISIBILITY TRACKING ===
 
   /**
@@ -131,7 +213,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (this._isActiveContent === isActive) return;
 
     this._isActiveContent = isActive;
-    console.log(`📨 ChatWidget: ${isActive ? 'ACTIVATED' : 'DEACTIVATED'} (${reason})`);
+    verbose() && console.log(`📨 ChatWidget: ${isActive ? 'ACTIVATED' : 'DEACTIVATED'} (${reason})`);
 
     if (isActive) {
       // When activated, ensure UI is up-to-date
@@ -163,59 +245,76 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
   /**
    * Consolidated room switching logic - single source of truth for room changes.
-   * Called by all room-related events (ROOM_SELECTED, content:opened, content:switched).
+   * Called by pageState subscription and content events (content:opened, content:switched).
    */
-  private async handleRoomSwitch(roomIdOrUniqueId: string, roomName?: string, source?: string): Promise<void> {
+  private async handleRoomSwitch(roomIdOrUniqueId: string, _roomName?: string, _source?: string): Promise<void> {
     // Skip if pinned widget (handled elsewhere)
     if (this._isPinnedWidget) {
-      console.log(`📨 ChatWidget: Ignoring ${source || 'room switch'} - pinned widget`);
       return;
     }
 
-    // Skip if already on this room (compare both ID and uniqueId)
-    if (roomIdOrUniqueId === this.currentRoomId) {
-      console.log(`📨 ChatWidget: Already on room ${roomIdOrUniqueId}, skipping`);
+    // SAME ROOM: Just refresh messages (new messages may have arrived)
+    // This is critical for switching back to a tab - don't skip the refresh!
+    if (roomIdOrUniqueId === this.currentRoomId || roomIdOrUniqueId === this.currentRoomUniqueId) {
+      verbose() && console.log(`📨 ChatWidget: Same room, refreshing messages`);
+      await this.scroller?.refresh();
+      this.updateHeader();
       return;
     }
-
-    console.log(`🏠 ChatWidget: Switching to room "${roomName || roomIdOrUniqueId}" (${source || 'direct'})`);
 
     // Use the full switchToRoom method for proper resolution
     await this.switchToRoom(roomIdOrUniqueId);
   }
 
   private async switchToRoom(roomIdOrName: string): Promise<void> {
-    // Try to find room by uniqueId first, then by ID
+    // Try to use pre-loaded entity from metadata (instant hydration)
     try {
       let roomId: UUID | undefined;
       let roomName: string = roomIdOrName;
+      let roomUniqueId: string = roomIdOrName;
+      let room: RoomEntity | null = null;
 
-      const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
-        collection: 'rooms',
-        filter: { uniqueId: roomIdOrName },
-        limit: 1
-      });
-
-      if (result.success && result.items?.[0]) {
-        const room = result.items[0];
+      // CHECK FOR PRE-LOADED ENTITY (instant hydration)
+      if (this._pendingRoomEntity &&
+          (this._pendingRoomEntity.id === roomIdOrName ||
+           this._pendingRoomEntity.uniqueId === roomIdOrName)) {
+        room = this._pendingRoomEntity;
         roomId = room.id as UUID;
         roomName = room.displayName || room.name || roomIdOrName;
+        roomUniqueId = room.uniqueId || roomIdOrName;
+        this._pendingRoomEntity = null; // Clear after use
       } else {
-        // Try as UUID directly
-        roomId = roomIdOrName as UUID;
+        // QUERY - only if no matching pre-loaded entity
+        const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+          collection: 'rooms',
+          filter: { uniqueId: roomIdOrName },
+          limit: 1
+        });
+
+        if (result.success && result.items?.[0]) {
+          room = result.items[0];
+          roomId = room.id as UUID;
+          roomName = room.displayName || room.name || roomIdOrName;
+          roomUniqueId = room.uniqueId || roomIdOrName;
+        } else {
+          // Try as UUID directly
+          roomId = roomIdOrName as UUID;
+        }
       }
 
-      // Skip if already on this room
+      // SAME ROOM: Refresh messages instead of skipping entirely
+      // New messages may have arrived while viewing other content
       if (roomId === this.currentRoomId) {
-        console.log(`📨 ChatWidget: Already on room ${roomName}, skipping switch`);
+        verbose() && console.log(`📨 ChatWidget: switchToRoom same room, refreshing`);
+        await this.scroller?.refresh();
+        this.updateHeader();
         return;
       }
 
-      console.log(`📨 ChatWidget: Switching to room "${roomName}" (${roomId})`);
-
-      // Update state
+      // Update state - track BOTH UUID and uniqueId for guard comparisons
       this.currentRoomId = roomId;
       this.currentRoomName = roomName;
+      this.currentRoomUniqueId = roomUniqueId;
 
       // Reset counters for new room
       this.totalMessageCount = 0;
@@ -236,16 +335,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Update header with correct count
       this.updateHeader();
 
-      // Emit Positron widget state for AI awareness
-      PositronWidgetState.emit({
-        widgetType: 'chat',
-        entityId: roomId,
-        title: `Chat - ${roomName}`,
-        metadata: {
-          room: roomName,
-          messageCount: this.totalMessageCount
-        }
-      });
+      // NOTE: Removed PositronWidgetState.emit() - MainWidget handles context
+      // Widgets should RECEIVE state, not emit it (avoid cascade)
 
     } catch (error) {
       console.error('ChatWidget: Failed to switch room:', error);
@@ -269,30 +360,45 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         : `<p>${message.content?.text || '(no content)'}</p>`;
 
       const messageElement = globalThis.document.createElement('div');
-      const postingClass = (message.metadata as any)?.posting ? ' posting' : '';
+      // Show pending messages with lower opacity (optimistic update)
+      const postingClass = message.status === 'sending' ? ' posting' : '';
       messageElement.className = `message-row ${isCurrentUser ? 'right' : 'left'}${postingClass}`;
       // CRITICAL: Add entity ID to DOM for testing/debugging (test expects 'message-id')
       messageElement.setAttribute('message-id', message.id);
-      messageElement.innerHTML = `
-        <div class="message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}">
-          <div class="message-header">
-            <span class="sender-name">${senderName}</span>
-            <span class="message-time">${new Date(message.timestamp).toLocaleString()}</span>
-          </div>
-          <div class="message-content">
-            ${contentHtml}
-          </div>
-        </div>
-      `;
+
+      // Build message structure with DOM APIs (no innerHTML for static structure)
+      const bubble = globalThis.document.createElement('div');
+      bubble.className = `message-bubble ${isCurrentUser ? 'current-user' : 'other-user'}`;
+
+      const header = globalThis.document.createElement('div');
+      header.className = 'message-header';
+
+      const senderSpan = globalThis.document.createElement('span');
+      senderSpan.className = 'sender-name';
+      senderSpan.textContent = senderName;
+
+      const timeSpan = globalThis.document.createElement('span');
+      timeSpan.className = 'message-time';
+      timeSpan.textContent = new Date(message.timestamp).toLocaleString();
+
+      header.appendChild(senderSpan);
+      header.appendChild(timeSpan);
+
+      const contentDiv = globalThis.document.createElement('div');
+      contentDiv.className = 'message-content';
+      // Adapter content uses innerHTML - adapters return HTML strings
+      // TODO: Refactor adapters to return DOM elements for full innerHTML elimination
+      contentDiv.innerHTML = contentHtml;
+
+      bubble.appendChild(header);
+      bubble.appendChild(contentDiv);
+      messageElement.appendChild(bubble);
 
       // Initialize adapter content loading (e.g., image load handlers)
       if (adapter && adapter.handleContentLoading) {
-        const contentDiv = messageElement.querySelector('.message-content');
-        if (contentDiv) {
-          adapter.handleContentLoading(contentDiv as HTMLElement).catch((err) => {
-            console.error('Failed to handle content loading:', err);
-          });
-        }
+        adapter.handleContentLoading(contentDiv).catch((err) => {
+          console.error('Failed to handle content loading:', err);
+        });
       }
 
       return messageElement;
@@ -311,14 +417,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         };
       }
 
-      console.log(`🔍 DEBUG: currentRoomId type=${typeof this.currentRoomId}, value="${this.currentRoomId}"`);
-      console.log(`🔍 CURSOR-WIDGET-DEBUG: cursor param=${cursor}, limit=${limit}`);
+      // DEBUG logs removed - were causing WebSocket spam
 
       // CRITICAL: The filter MUST be applied at the database level, not client-side
       // This ensures we only get messages for THIS room, with proper paging/cursors
       // Load NEWEST messages first (DESC) so recent messages appear after refresh
       // EntityScroller + CSS handle display order based on SCROLLER_PRESETS.CHAT direction
-      const result = await Commands.execute<DataListParams<ChatMessageEntity>, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
         filter: {
           roomId: this.currentRoomId,
@@ -334,13 +439,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
 
       // Reduce log spam
-      // console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
+      // verbose() && console.log(`🔧 CLAUDE-DEBUG: Database returned ${result.items.length} messages for room "${this.currentRoomId}", total count: ${result.count}`);
 
       // Store total count from database (not just loaded items)
       this.totalMessageCount = result.count ?? result.items.length;
 
       // Only filter out empty messages, NOT by roomId (database already did that)
       const validMessages = result.items.filter(msg => msg.content?.text?.trim());
+
+      // Populate EntityCacheService with loaded messages (Positronic pattern)
+      // This makes the cache the single source of truth for entity data
+      entityCache.populate<ChatMessageEntity>(ChatMessageEntity.collection, validMessages);
 
       // Calculate if there are more messages to load
       // Update running total of loaded messages
@@ -363,7 +472,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         nextCursor = oldestMessage?.timestamp?.toString();
       }
 
-      console.log(`🔧 CLAUDE-PAGINATION: Loaded ${this.loadedMessageCount}/${this.totalMessageCount} messages, hasMore=${hasMoreMessages} (got ${validMessages.length}/${limit ?? 30}), nextCursor=${nextCursor}`);
+      // PAGINATION log removed - too verbose for hot path
 
       return {
         items: validMessages,
@@ -406,8 +515,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Only add messages that belong to the current room
     const shouldAdd = !!(this.currentRoomId && entity.roomId === this.currentRoomId);
 
-    // CRITICAL: Increment total count when new message is accepted via events
     if (shouldAdd) {
+      // 🚀 OPTIMISTIC UPDATE: Remove temp message when real one arrives
+      // Check if this is from the human user (Joel) and we have pending temp messages
+      if (entity.senderType === 'human' && this._pendingMessageTempIds.size > 0) {
+        // Remove the oldest pending temp message (FIFO order)
+        const tempId = this._pendingMessageTempIds.values().next().value;
+        if (tempId) {
+          this._pendingMessageTempIds.delete(tempId);
+          this.scroller?.remove(tempId);
+        }
+      }
+
+      // CRITICAL: Increment total count when new message is accepted via events
       this.totalMessageCount++;
       this.loadedMessageCount++;
     }
@@ -440,15 +560,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // IMPORTANT: Call parent to setup ChatMessage event subscriptions for real-time updates
     await super.onWidgetInitialize();
 
-    console.log(`📨 ChatWidget: Initializing with React-like visibility tracking...`);
-
     // === STEP 1: Determine widget mode (pinned vs. dynamic) ===
     const roomAttr = this.getAttribute('room');
     this._isPinnedWidget = !!roomAttr;
 
     if (this._isPinnedWidget && roomAttr) {
       // Pinned widget (e.g., right panel) - load specific room, ignore events
-      console.log(`📨 ChatWidget: PINNED to room "${roomAttr}" - will ignore content events`);
       await this.switchToRoom(roomAttr);
       this._isActiveContent = true; // Pinned widgets are always "active"
     } else {
@@ -456,13 +573,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       await this.initializeDynamicWidget();
     }
 
-    // === STEP 2: Load initial room data ===
-    if (this.currentRoomId) {
-      await this.loadRoomData(this.currentRoomId);
-      this.updateHeader();
-    }
+    // NOTE: Step 2 removed - switchToRoom() already calls loadRoomData()
+    // Having it here caused duplicate DB queries (room data loaded twice)
 
-    // === STEP 3: Setup event subscriptions (with cleanup tracking) ===
+    // === STEP 2: Setup event subscriptions (with cleanup tracking) ===
     this.setupContentEventSubscriptions();
     this.setupAIEventSubscriptions();
     this.setupLearningEventSubscriptions();
@@ -485,7 +599,28 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.handleProfileStatusChange(data as { userId: string; status: string; displayName: string });
     });
 
-    console.log(`✅ ChatWidget: Initialized (pinned=${this._isPinnedWidget}, active=${this._isActiveContent})`);
+    // === STEP 5: Setup signal watchers for reactive UI updates ===
+    this.setupSignalWatchers();
+  }
+
+  /**
+   * Setup signal watchers for reactive UI updates (React-like pattern)
+   * These automatically update the UI when signal state changes
+   */
+  private setupSignalWatchers(): void {
+    // Watch totalMessageCount - auto-update header when count changes
+    const countWatcher = watch(
+      this._signals.getSignal('totalMessageCount'),
+      () => this.updateHeader()
+    );
+    this._signalDisposers.push(countWatcher);
+
+    // Watch roomName - auto-update header when room changes
+    const roomWatcher = watch(
+      this._signals.getSignal('roomName'),
+      () => this.updateHeader()
+    );
+    this._signalDisposers.push(roomWatcher);
   }
 
   /**
@@ -499,13 +634,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // 4. Default to General
 
     if (this.pageState?.contentType === 'chat' && this.pageState.entityId) {
-      console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
+      verbose() && console.log(`📨 ChatWidget: Using pageState room="${this.pageState.entityId}"`);
       await this.switchToRoom(this.pageState.entityId);
       this._isActiveContent = true;
     } else {
       const entityIdAttr = this.getAttribute('entity-id') || this.getAttribute('data-entity-id');
       if (entityIdAttr) {
-        console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
+        verbose() && console.log(`📨 ChatWidget: Using entity-id="${entityIdAttr}" from attribute (legacy)`);
         await this.switchToRoom(entityIdAttr);
         this._isActiveContent = true;
       } else {
@@ -517,20 +652,15 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
-   * Setup content-related event subscriptions (ROOM_SELECTED, content:opened, content:switched)
-   * CONSOLIDATED: All three events now use the same handleRoomSwitch method
+   * Setup content-related event subscriptions (content:opened, content:switched)
+   * CONSOLIDATED: All events use the same handleRoomSwitch method
+   * NOTE: ROOM_SELECTED removed - pageState subscription handles room changes
    */
   private setupContentEventSubscriptions(): void {
     // Skip all content events for pinned widgets
     if (this._isPinnedWidget) {
-      console.log(`📨 ChatWidget: Skipping content event subscriptions (pinned widget)`);
       return;
     }
-
-    // ROOM_SELECTED - from sidebar clicks
-    this.subscribeWithCleanup(UI_EVENTS.ROOM_SELECTED, (data: { roomId: string; roomName: string }) => {
-      this.handleRoomSwitch(data.roomId, data.roomName, 'ROOM_SELECTED');
-    });
 
     // content:opened - from content/open command
     this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId: string; title: string }) => {
@@ -550,8 +680,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.setActiveContent(false, `switched to ${data.contentType}`);
       }
     });
-
-    console.log(`📨 ChatWidget: Content event subscriptions active (with cleanup tracking)`);
   }
 
   /**
@@ -575,15 +703,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     aiEventHandler(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data) => this.aiStatusIndicator.onCheckingRedundancy(data));
     aiEventHandler(AI_DECISION_EVENTS.ERROR, (data) => this.aiStatusIndicator.onError(data));
 
-    // POSTED event needs extra logging for debugging
+    // POSTED event - AI finished responding
     this.subscribeWithCleanup(AI_DECISION_EVENTS.POSTED, (data: any) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onPosted(data);
         this.updateHeader();
       }
     });
-
-    console.log(`📨 ChatWidget: AI decision event subscriptions active`);
   }
 
   /**
@@ -601,8 +727,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_ERROR, () => {
       this.removeLearningBorder();
     });
-
-    console.log(`📨 ChatWidget: Learning event subscriptions active`);
   }
 
   /**
@@ -627,7 +751,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.positronUpdateDebounce = setTimeout(() => {
       const member = this.roomMembers.get(profileUserId);
       if (member && member.status !== data.status) {
-        console.log(`🧠 ChatWidget: Profile event - ${member.displayName} status: ${member.status} → ${data.status}`);
+        verbose() && console.log(`🧠 ChatWidget: Profile event - ${member.displayName} status: ${member.status} → ${data.status}`);
 
         // Update the member's status
         member.status = data.status as UserEntity['status'];
@@ -645,7 +769,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * CRITICAL: Must clean up all event subscriptions to prevent memory leaks
    */
   async disconnectedCallback(): Promise<void> {
-    console.log(`🧹 ChatWidget: Cleaning up (${this._eventUnsubscribers.length} event subscriptions)...`);
 
     // Clean up ALL tracked event subscriptions (React-like cleanup pattern)
     for (const unsubscribe of this._eventUnsubscribers) {
@@ -656,6 +779,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
     }
     this._eventUnsubscribers = [];
+
+    // Clean up signal watch/effect subscriptions
+    for (const dispose of this._signalDisposers) {
+      try {
+        dispose();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    this._signalDisposers = [];
+
+    // Dispose the entire signal store (cleans up all internal effects)
+    this._signals.dispose();
 
     // Clean up Positron subscription
     if (this.positronUnsubscribe) {
@@ -675,13 +811,11 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.headerUpdateTimeout = undefined;
     }
 
-    // Reset visibility state
-    this._isActiveContent = false;
+    // Detach event delegator to clean up the single listener
+    this.eventDelegator.detach();
 
     // Call parent cleanup
     await super.disconnectedCallback();
-
-    console.log(`✅ ChatWidget: Cleanup complete`);
   }
 
   /**
@@ -692,7 +826,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (container) {
       container.classList.add('learning-active');
       container.dataset.learningPersona = personaName;
-      console.log(`🧬 ChatWidget: Added learning border for ${personaName}`);
+      verbose() && console.log(`🧬 ChatWidget: Added learning border for ${personaName}`);
     }
   }
 
@@ -704,7 +838,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     if (container) {
       container.classList.remove('learning-active');
       delete container.dataset.learningPersona;
-      console.log(`🧬 ChatWidget: Removed learning border`);
+      verbose() && console.log(`🧬 ChatWidget: Removed learning border`);
     }
   }
 
@@ -757,11 +891,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.aiStatusIndicator.setContainer(this.aiStatusContainer);
       // Set initial display state based on errorsHidden flag
       this.aiStatusContainer.style.display = this.errorsHidden ? 'none' : 'block';
-      console.log(`✅ ChatWidget: AI status container ready`);
+      verbose() && console.log(`✅ ChatWidget: AI status container ready`);
     }
 
     // Setup error toggle handler
     this.setupErrorToggleHandler();
+
+    // Setup member click handlers (for initial HTML-rendered chips)
+    this.setupMemberClickHandlers();
 
     // Cache input element after DOM is rendered
     this.messageInput = this.shadowRoot?.getElementById('messageInput') as HTMLTextAreaElement;
@@ -776,6 +913,24 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       // Apply compact mode if set via attribute
       this.updateCompactMode();
+
+      // === EVENT DELEGATION FOR MEMORY-EFFICIENT MESSAGE INTERACTIONS ===
+      // Attach single listener to container instead of per-element listeners
+      this.eventDelegator.attach(container);
+
+      // Register ImageMessageAdapter action handlers
+      this.eventDelegator.onAction('image-fullscreen', (target) => ImageMessageAdapter.handleFullscreen(target));
+      this.eventDelegator.onAction('image-download', (target) => ImageMessageAdapter.handleDownload(target));
+      this.eventDelegator.onAction('image-ai-describe', (target) => ImageMessageAdapter.handleAIDescribe(target));
+      this.eventDelegator.onAction('image-retry', (target) => ImageMessageAdapter.handleRetry(target));
+
+      // Register URLCardAdapter action handlers
+      this.eventDelegator.onAction('url-card-click', (target, event) => URLCardAdapter.handleCardClick(target, event));
+      this.eventDelegator.onAction('url-open-external', (target) => URLCardAdapter.handleOpenExternal(target));
+      this.eventDelegator.onAction('url-ai-summarize', (target) => URLCardAdapter.handleAISummarize(target));
+      this.eventDelegator.onAction('url-retry-preview', (target) => URLCardAdapter.handleRetryPreview(target));
+
+      verbose() && console.log('✅ ChatWidget: Event delegator attached with action handlers');
     }
   }
 
@@ -785,11 +940,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    */
   private async loadRoomData(roomId: UUID): Promise<void> {
     try {
-      // Load room entity
+      // Load room entity (no backend:'server' - let browser command use localStorage cache)
       const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>(DATA_COMMANDS.READ, {
         collection: RoomEntity.collection,
-        id: roomId,
-        backend: 'server'
+        id: roomId
       });
 
       if (!roomResult?.success || !roomResult.data) {
@@ -798,7 +952,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       }
 
       this.currentRoom = roomResult.data;
-      console.log(`✅ ChatWidget: Loaded room data with ${this.currentRoom?.members?.length ?? 0} members`);
 
       // Load user details for each member
       await this.loadRoomMembers();
@@ -808,31 +961,33 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   /**
-   * Load user entities for all room members
+   * Load user entities for all room members in a single batch query
+   * Optimized: Uses data/list with id filter instead of N individual reads
    */
   private async loadRoomMembers(): Promise<void> {
-    if (!this.currentRoom) return;
+    if (!this.currentRoom || this.currentRoom.members.length === 0) return;
 
     this.roomMembers.clear();
 
-    // Load each member's user entity
-    for (const member of this.currentRoom.members) {
-      try {
-        const userResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
-          collection: UserEntity.collection,
-          id: member.userId,
-          backend: 'server'
-        });
+    // Batch load all members in ONE query (was N+1 queries before)
+    const memberIds = this.currentRoom.members.map(m => m.userId);
 
-        if (userResult?.success && userResult.data) {
-          this.roomMembers.set(member.userId, userResult.data);
+    try {
+      // Uses MongoDB-style $in operator for batch ID lookup
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+        collection: UserEntity.collection,
+        filter: { id: { $in: memberIds } },
+        limit: memberIds.length
+      });
+
+      if (result?.success && result.items) {
+        for (const user of result.items) {
+          this.roomMembers.set(user.id as UUID, user);
         }
-      } catch (error) {
-        console.warn(`⚠️ ChatWidget: Failed to load user ${member.userId}:`, error);
       }
+    } catch (error) {
+      console.warn(`⚠️ ChatWidget: Failed to batch load members:`, error);
     }
-
-    console.log(`✅ ChatWidget: Loaded ${this.roomMembers.size} member details`);
   }
 
   /**
@@ -845,19 +1000,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Get current user's ID from session
       const sessionResult = await Commands.execute<any, any>('session/get-user', {});
       if (!sessionResult?.success || !sessionResult.userId) {
-        console.log('📨 ChatWidget: No user session, using default General room');
+        verbose() && console.log('📨 ChatWidget: No user session, using default General room');
         return;
       }
 
       // Query UserState to get current content item
-      const listResult = await Commands.execute<DataListParams<any>, DataListResult<any>>(DATA_COMMANDS.LIST, {
+      const listResult = await Commands.execute<DataListParams, DataListResult<any>>(DATA_COMMANDS.LIST, {
         collection: 'user_states',
         filter: { userId: sessionResult.userId },
         limit: 1
       });
 
       if (!listResult?.success || !listResult.items?.length) {
-        console.log('📨 ChatWidget: No UserState found, using default General room');
+        verbose() && console.log('📨 ChatWidget: No UserState found, using default General room');
         return;
       }
 
@@ -868,17 +1023,17 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Find the current content item
       const currentItem = openItems.find((item: any) => item.id === currentItemId);
       if (!currentItem) {
-        console.log('📨 ChatWidget: No current content item, using default General room');
+        verbose() && console.log('📨 ChatWidget: No current content item, using default General room');
         return;
       }
 
       // Only use if it's a chat type with an entityId (room ID)
       if (currentItem.type === 'chat' && currentItem.entityId) {
-        console.log(`📨 ChatWidget: Loading room from UserState: "${currentItem.title}" (${currentItem.entityId})`);
+        verbose() && console.log(`📨 ChatWidget: Loading room from UserState: "${currentItem.title}" (${currentItem.entityId})`);
         this.currentRoomId = currentItem.entityId as UUID;
         this.currentRoomName = currentItem.title || 'Chat';
       } else {
-        console.log(`📨 ChatWidget: Current content is "${currentItem.type}", not a chat room`);
+        verbose() && console.log(`📨 ChatWidget: Current content is "${currentItem.type}", not a chat room`);
       }
     } catch (error) {
       console.warn('⚠️ ChatWidget: Error loading from UserState, using default:', error);
@@ -973,6 +1128,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   /**
    * Update the header with current room and member information
    * Debounced to prevent rebuilding on every event
+   *
+   * REFACTORED: Uses targeted DOM updates instead of innerHTML replacement
+   * This preserves event handlers and is more efficient
    */
   private updateHeader(): void {
     // Clear any pending update
@@ -982,17 +1140,217 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Schedule update for next frame
     this.headerUpdateTimeout = setTimeout(() => {
-      const headerElement = this.shadowRoot.querySelector('.entity-list-header');
-      if (headerElement) {
-        headerElement.innerHTML = this.renderHeader();
-        // Reattach handlers after header update
-        this.setupErrorToggleHandler();
-        this.setupMemberClickHandlers();
-      }
+      this.updateHeaderElements();
       // Update the compact status summary line
       this.updateStatusSummary();
       this.headerUpdateTimeout = undefined;
     }, 0) as unknown as number;
+  }
+
+  /**
+   * Targeted DOM updates for header elements
+   * Avoids innerHTML replacement - preserves handlers, more efficient
+   */
+  private updateHeaderElements(): void {
+    const headerElement = this.shadowRoot?.querySelector('.entity-list-header');
+    if (!headerElement) return;
+
+    // Update title text
+    const titleElement = headerElement.querySelector('.header-title');
+    if (titleElement) {
+      const headerText = this.currentRoom?.topic
+        || this.currentRoom?.description
+        || this.currentRoomName;
+      titleElement.textContent = headerText;
+    }
+
+    // Update message count
+    const countElement = headerElement.querySelector('.list-count');
+    if (countElement) {
+      countElement.textContent = String(this.getEntityCount());
+    }
+
+    // Update error toggle button
+    const errorToggle = headerElement.querySelector('#errorToggle') as HTMLButtonElement;
+    if (errorToggle) {
+      const errorCount = this.aiStatusIndicator.getErrorCount();
+      errorToggle.textContent = `Errors 🗑️${errorCount > 0 ? ` (${errorCount})` : ''}`;
+      errorToggle.title = `${this.errorsHidden ? 'Show errors' : 'Hide errors'} ${errorCount > 0 ? `(${errorCount})` : ''}`;
+    }
+
+    // Update members list (rebuild this section only)
+    const membersContainer = headerElement.querySelector('.header-members');
+    if (membersContainer) {
+      this.updateMembersList(membersContainer as HTMLElement);
+    }
+  }
+
+  /**
+   * Update members list with targeted DOM manipulation
+   * Creates/updates member chips without full innerHTML replacement
+   */
+  private updateMembersList(container: HTMLElement): void {
+    // Get or create the members-list div
+    let membersList = container.querySelector('.members-list') as HTMLElement;
+
+    if (!this.currentRoom || this.roomMembers.size === 0) {
+      // Show loading state - use DOM manipulation instead of innerHTML
+      if (!membersList) {
+        const existingContent = container.querySelector('.no-members');
+        if (!existingContent) {
+          container.textContent = ''; // Clear any existing content
+          const loadingSpan = document.createElement('span');
+          loadingSpan.className = 'no-members';
+          loadingSpan.textContent = 'Loading members...';
+          container.appendChild(loadingSpan);
+        }
+      }
+      return;
+    }
+
+    // Create members-list if it doesn't exist
+    if (!membersList) {
+      // Clear container using DOM methods
+      while (container.firstChild) {
+        container.removeChild(container.firstChild);
+      }
+      membersList = document.createElement('div');
+      membersList.className = 'members-list';
+      container.appendChild(membersList);
+    }
+
+    // Build a map of existing chips by persona ID for efficient updates
+    const existingChips = new Map<UUID, HTMLElement>();
+    membersList.querySelectorAll('.member-chip').forEach((chip) => {
+      const personaId = chip.getAttribute('data-persona-id') as UUID;
+      if (personaId) {
+        existingChips.set(personaId, chip as HTMLElement);
+      }
+    });
+
+    // Track which IDs we've processed (to remove stale ones)
+    const processedIds = new Set<UUID>();
+
+    // Update or create chips for each member
+    for (const user of this.roomMembers.values()) {
+      const data = this.buildMemberChipData(user);
+      processedIds.add(data.personaId);
+
+      let chip = existingChips.get(data.personaId);
+
+      if (chip) {
+        this.updateMemberChip(chip, data);
+      } else {
+        chip = this.createMemberChip(data);
+        membersList.appendChild(chip);
+      }
+    }
+
+    // Remove chips for members no longer in the room
+    for (const [personaId, chip] of existingChips) {
+      if (!processedIds.has(personaId)) {
+        chip.remove();
+      }
+    }
+  }
+
+  /**
+   * Build MemberChipData from a UserEntity
+   */
+  private buildMemberChipData(user: UserEntity): MemberChipData {
+    const role = this.getMemberRole(user.id);
+    const statusEmoji = this.aiStatusIndicator.getStatusEmoji(user.id) || '';
+
+    return {
+      personaId: user.id,
+      displayName: user.displayName || 'Unknown',
+      role,
+      roleIcon: role === 'owner' ? '👑' : role === 'admin' ? '⭐' : '',
+      statusEmoji,
+      hasError: statusEmoji === '❌' || statusEmoji === '💸' || statusEmoji === '⏳',
+      hasStatus: statusEmoji !== ''
+    };
+  }
+
+  /**
+   * Create a member chip element from MemberChipData
+   */
+  private createMemberChip(data: MemberChipData): HTMLElement {
+    const chip = document.createElement('div');
+    chip.className = `member-chip${data.hasError ? ' clickable-error' : data.hasStatus ? ' clickable-status' : ''}`;
+    chip.setAttribute('data-persona-id', data.personaId);
+    chip.setAttribute('data-has-error', String(data.hasError));
+    chip.setAttribute('data-has-status', String(data.hasStatus));
+
+    const clickHint = data.hasError ? ' - Click to view error' : data.hasStatus ? ' - Click to view status' : '';
+    chip.title = `${data.displayName} (${data.role})${clickHint}`;
+
+    // Build chip content
+    if (data.roleIcon) {
+      chip.appendChild(document.createTextNode(data.roleIcon));
+    }
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'member-name';
+    nameSpan.textContent = data.displayName;
+    chip.appendChild(nameSpan);
+
+    if (data.statusEmoji) {
+      const statusSpan = document.createElement('span');
+      statusSpan.className = 'member-status';
+      statusSpan.textContent = data.statusEmoji;
+      chip.appendChild(statusSpan);
+    }
+
+    // Add click handler for chips with status
+    if (data.hasStatus) {
+      chip.addEventListener('click', () => {
+        verbose() && console.log(`🔍 ChatWidget: Clicked persona ${data.personaId} (error=${data.hasError})`);
+        this.toggleErrorPanel(true);
+
+        if (this.aiStatusContainer) {
+          const statusElement = this.aiStatusContainer.querySelector(`[data-persona-id="${data.personaId}"]`);
+          if (statusElement) {
+            statusElement.classList.add('flash-highlight');
+            setTimeout(() => statusElement.classList.remove('flash-highlight'), 1000);
+          }
+        }
+      });
+    }
+
+    return chip;
+  }
+
+  /**
+   * Update an existing member chip element from MemberChipData
+   */
+  private updateMemberChip(chip: HTMLElement, data: MemberChipData): void {
+    // Update classes
+    chip.className = `member-chip${data.hasError ? ' clickable-error' : data.hasStatus ? ' clickable-status' : ''}`;
+    chip.setAttribute('data-has-error', String(data.hasError));
+    chip.setAttribute('data-has-status', String(data.hasStatus));
+
+    const clickHint = data.hasError ? ' - Click to view error' : data.hasStatus ? ' - Click to view status' : '';
+    chip.title = `${data.displayName} (${data.role})${clickHint}`;
+
+    // Update name
+    const nameSpan = chip.querySelector('.member-name');
+    if (nameSpan) {
+      nameSpan.textContent = data.displayName;
+    }
+
+    // Update or create status span
+    let statusSpan = chip.querySelector('.member-status') as HTMLElement;
+    if (data.statusEmoji) {
+      if (!statusSpan) {
+        statusSpan = document.createElement('span');
+        statusSpan.className = 'member-status';
+        chip.appendChild(statusSpan);
+      }
+      statusSpan.textContent = data.statusEmoji;
+    } else if (statusSpan) {
+      statusSpan.remove();
+    }
   }
 
   /**
@@ -1050,7 +1408,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       chip.addEventListener('click', () => {
         const personaId = chip.getAttribute('data-persona-id');
         const hasError = chip.getAttribute('data-has-error') === 'true';
-        console.log(`🔍 ChatWidget: Clicked persona ${personaId} (error=${hasError})`);
+        verbose() && console.log(`🔍 ChatWidget: Clicked persona ${personaId} (error=${hasError})`);
 
         // Show the status panel
         this.toggleErrorPanel(true);
@@ -1101,7 +1459,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     this.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        console.log('🔧 ENTER-KEY-PRESSED - text:', this.messageInput?.value, 'attachments:', this.pendingAttachments.length);
         this.sendMessage();
       }
     });
@@ -1137,12 +1494,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private async sendMessage(): Promise<void> {
     // Guard against concurrent sends
     if (this.isSending) {
-      console.log('🔧 SEND-ALREADY-IN-PROGRESS - ignoring duplicate call');
       return;
     }
 
     this.isSending = true;
-    console.log('🔧 SEND-MESSAGE-CALLED-' + Date.now());
 
     if (!this.messageInput) {
       this.isSending = false;
@@ -1150,12 +1505,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     const text = this.messageInput.value.trim();
-    console.log('🔧 MESSAGE-TEXT-LENGTH-' + text.length);
-    console.log('🔧 PENDING-ATTACHMENTS-COUNT-' + this.pendingAttachments.length);
 
     // Must have either text or attachments
     if (!text && this.pendingAttachments.length === 0) {
-      console.log('🔧 SEND-ABORTED-NO-CONTENT');
       return;
     }
 
@@ -1180,17 +1532,21 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     messageEntity.timestamp = new Date();
     messageEntity.reactions = [];
 
-    console.log('🔧 MESSAGE-ENTITY-MEDIA-COUNT-' + (messageEntity.content.media?.length ?? 0));
-    if (messageEntity.content.media && messageEntity.content.media.length > 0) {
-      console.log('🔧 FIRST-MEDIA-ITEM-' + JSON.stringify({
-        type: messageEntity.content.media[0].type,
-        filename: messageEntity.content.media[0].filename,
-        size: messageEntity.content.media[0].size,
-        base64Length: messageEntity.content.media[0].base64?.length ?? 0
-      }));
+    // 🚀 OPTIMISTIC UPDATE: Show message immediately with "sending" state
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).substring(2, 8)}` as UUID;
+    messageEntity.id = tempId;
+    messageEntity.status = 'sending';
+
+    // Add to scroller immediately - CSS will show pending state (lower opacity)
+    if (this.scroller) {
+      this.scroller.add(messageEntity);
+      this.scroller.scrollToEnd();
     }
 
-    // 🚀 OPTIMISTIC UPDATE: Clear input immediately for instant feedback
+    // Track temp ID so we can remove it when real message arrives
+    this._pendingMessageTempIds.add(tempId);
+
+    // Clear input
     this.messageInput.value = '';
     const attachmentCount = this.pendingAttachments.length;
     this.pendingAttachments = [];
@@ -1199,16 +1555,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Reset textarea height to single row
     this.autoGrowTextarea();
 
-    // Send in background without awaiting (non-blocking)
-    // Entity events will update UI when server responds
-    Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+    // Send in background - entity events will add confirmed message
+    Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
       collection: ChatMessageEntity.collection,
       data: messageEntity,
       backend: 'server'
-    }).then(result => {
-      console.log('🔧 COMMAND-RESULT-' + JSON.stringify(result).substring(0, 200));
-      console.log(`✅ Message sent${attachmentCount > 0 ? ` with ${attachmentCount} attachment(s)` : ''}`);
-
+    }).then(() => {
       // Scroll to bottom after message added by event system
       if (this.scroller) {
         this.scroller.scrollToEnd();
@@ -1254,12 +1606,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     try {
-      await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+      await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
         collection: ChatMessageEntity.collection,
         data: messageEntity,
         backend: 'server'
       });
-      console.log('✅ Message sent successfully');
+      // Message sent - scroll handled by entity events
 
       // Scroll to bottom after sending OWN message
       if (this.scroller) {
@@ -1295,8 +1647,6 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     e.preventDefault();
     e.stopPropagation();
 
-    console.log('🔧 DROP-EVENT-FIRED-' + Date.now());
-
     // Remove visual feedback
     const container = this.shadowRoot?.querySelector('.entity-list-container') as HTMLElement;
     if (container) {
@@ -1304,20 +1654,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     const files = e.dataTransfer?.files;
-    console.log('🔧 FILES-DROPPED-COUNT-' + (files?.length ?? 0));
 
     if (files && files.length > 0) {
-      console.log(`📎 Processing ${files.length} dropped file(s)...`);
-
       // Convert all files to MediaItems
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        console.log('🔧 PROCESSING-FILE-' + file.name + '-TYPE-' + file.type + '-SIZE-' + file.size);
         try {
           const mediaItem = await this.fileToMediaItem(file);
           this.pendingAttachments.push(mediaItem);
-          console.log(`✅ Added ${file.name} (${this.formatFileSize(file.size)})`);
-          console.log('🔧 PENDING-ATTACHMENTS-NOW-' + this.pendingAttachments.length);
         } catch (error) {
           console.error(`❌ Failed to process ${file.name}:`, error);
         }

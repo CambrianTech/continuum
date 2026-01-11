@@ -7,66 +7,27 @@
  * Listens to UI_EVENTS.RIGHT_PANEL_CONFIGURE to update room/visibility
  * based on the current content type's recipe layout.
  *
- * Extends BaseSidePanelWidget for consistent panel behavior.
+ * Uses ReactiveWidget with Lit templates for efficient rendering.
  */
 
-import { BaseSidePanelWidget, type SidePanelSide } from '../shared/BaseSidePanelWidget';
+import {
+  ReactiveWidget,
+  html,
+  reactive,
+  unsafeCSS,
+  type TemplateResult,
+  type CSSResultGroup
+} from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 import { UI_EVENTS, type RightPanelConfigPayload } from '../../system/core/shared/EventConstants';
+import { styles as SIDE_PANEL_STYLES } from '../shared/styles/side-panel.styles';
 
-export class RightPanelWidget extends BaseSidePanelWidget {
-  private currentRoom: string = 'help';
-  private isHidden: boolean = false;
-
-  constructor() {
-    super({
-      widgetName: 'RightPanelWidget'
-    });
-  }
-
-  // === Panel Configuration ===
-
-  protected get panelTitle(): string {
-    return 'Assistant';
-  }
-
-  protected get panelIcon(): string {
-    return '🤖';
-  }
-
-  protected get panelSide(): SidePanelSide {
-    return 'right';
-  }
-
-  // === Lifecycle ===
-
-  protected async onPanelInitialize(): Promise<void> {
-    console.log('📋 RightPanelWidget: Initializing...');
-
-    // Listen for layout configuration events from MainWidget
-    Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
-      this.handleLayoutConfig(config);
-    });
-
-    console.log('✅ RightPanelWidget: Initialized with layout event listener');
-  }
-
-  protected async onPanelCleanup(): Promise<void> {
-    // Nothing to clean up - ChatWidget handles its own cleanup
-  }
-
-  // === Content Rendering ===
-
-  protected async renderPanelContent(): Promise<string> {
-    return `
-      <div class="chat-container">
-        <chat-widget compact room="${this.currentRoom}"></chat-widget>
-      </div>
-    `;
-  }
-
-  protected getAdditionalStyles(): string {
-    return `
+export class RightPanelWidget extends ReactiveWidget {
+  // Static styles
+  static override styles = [
+    ReactiveWidget.styles,
+    unsafeCSS(SIDE_PANEL_STYLES),
+    unsafeCSS(`
       :host {
         clip-path: inset(0);
         box-sizing: border-box;
@@ -107,7 +68,92 @@ export class RightPanelWidget extends BaseSidePanelWidget {
         clip-path: inset(0);
         box-sizing: border-box;
       }
+    `)
+  ] as CSSResultGroup;
+
+  // Reactive state
+  @reactive() private currentRoom: string = 'help';
+  @reactive() private isHidden: boolean = false;
+
+  // Non-reactive state (internal)
+  private _eventUnsubscribe?: () => void;
+  private _chatWidgetCache: HTMLElement | null = null;
+
+  constructor() {
+    super({
+      widgetName: 'RightPanelWidget'
+    });
+  }
+
+  // === Panel Configuration ===
+
+  protected get panelTitle(): string {
+    return 'Assistant';
+  }
+
+  protected get panelIcon(): string {
+    return '🤖';
+  }
+
+  protected get panelSide(): 'left' | 'right' {
+    return 'right';
+  }
+
+  protected get collapseChar(): string {
+    return '»';
+  }
+
+  // === Lifecycle ===
+
+  protected override async onFirstRender(): Promise<void> {
+    super.onFirstRender();
+    this.log('Initializing...');
+
+    // Listen for layout configuration events from MainWidget
+    this.createMountEffect(() => {
+      const unsubscribe = Events.subscribe(UI_EVENTS.RIGHT_PANEL_CONFIGURE, (config: RightPanelConfigPayload) => {
+        this.handleLayoutConfig(config);
+      });
+      return () => unsubscribe();
+    });
+
+    this.log('Initialized with layout event listener');
+  }
+
+  // === Render ===
+
+  protected override renderContent(): TemplateResult {
+    return html`
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">${this.panelIcon}</span>
+          <span>${this.panelTitle}</span>
+        </div>
+        <button class="collapse-btn" title="Collapse panel" @click=${this.handleCollapse}>
+          ${this.collapseChar}
+        </button>
+      </div>
+      <div class="panel-content">
+        <div class="chat-container">
+          ${this.renderChatWidget()}
+        </div>
+      </div>
     `;
+  }
+
+  /**
+   * Render the chat widget - cached to preserve state across room changes
+   * Only recreates if room changes (handled via attribute update)
+   */
+  private renderChatWidget(): HTMLElement {
+    if (!this._chatWidgetCache) {
+      const chatWidget = document.createElement('chat-widget');
+      chatWidget.setAttribute('compact', '');
+      chatWidget.setAttribute('room', this.currentRoom);
+      this._chatWidgetCache = chatWidget;
+      this.log(`Created chat-widget for room '${this.currentRoom}'`);
+    }
+    return this._chatWidgetCache;
   }
 
   // === Layout Configuration ===
@@ -117,13 +163,14 @@ export class RightPanelWidget extends BaseSidePanelWidget {
    * Updates room and visibility based on content type's recipe
    */
   private handleLayoutConfig(config: RightPanelConfigPayload): void {
-    console.log(`📋 RightPanelWidget: Received layout config for ${config.contentType}:`, config);
+    this.log(`Received layout config for ${config.contentType}:`, config);
 
     if (config.widget === null) {
       // Hide the panel
       this.isHidden = true;
       this.collapse();
-      console.log(`📋 RightPanelWidget: Hiding panel for ${config.contentType}`);
+      this.requestUpdate();
+      this.log(`Hiding panel for ${config.contentType}`);
     } else {
       // Show the panel with configured room
       this.isHidden = false;
@@ -132,7 +179,8 @@ export class RightPanelWidget extends BaseSidePanelWidget {
       if (this.currentRoom !== newRoom) {
         this.currentRoom = newRoom;
         this.updateEmbeddedChat();
-        console.log(`📋 RightPanelWidget: Switched to room '${newRoom}' for ${config.contentType}`);
+        this.requestUpdate();
+        this.log(`Switched to room '${newRoom}' for ${config.contentType}`);
       }
 
       // Expand if it was hidden before
@@ -143,9 +191,40 @@ export class RightPanelWidget extends BaseSidePanelWidget {
   }
 
   private updateEmbeddedChat(): void {
-    const chatWidget = this.shadowRoot?.querySelector('chat-widget');
-    if (chatWidget) {
-      chatWidget.setAttribute('room', this.currentRoom);
+    if (this._chatWidgetCache) {
+      this._chatWidgetCache.setAttribute('room', this.currentRoom);
+    }
+  }
+
+  // === Collapse/Expand via PanelResizer ===
+
+  private handleCollapse = (): void => {
+    const continuumWidget = document.querySelector('continuum-widget');
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector(
+        `panel-resizer[side="${this.panelSide}"]`
+      ) as any;
+      resizer?.toggle?.();
+    }
+  };
+
+  private collapse(): void {
+    const continuumWidget = document.querySelector('continuum-widget');
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector(
+        `panel-resizer[side="${this.panelSide}"]`
+      ) as any;
+      resizer?.collapse?.();
+    }
+  }
+
+  private expand(): void {
+    const continuumWidget = document.querySelector('continuum-widget');
+    if (continuumWidget?.shadowRoot) {
+      const resizer = continuumWidget.shadowRoot.querySelector(
+        `panel-resizer[side="${this.panelSide}"]`
+      ) as any;
+      resizer?.expand?.();
     }
   }
 }

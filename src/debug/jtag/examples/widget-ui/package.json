@@ -1,7 +1,7 @@
 {
   "name": "@continuum/jtag-widget-ui",
-  "version": "1.0.464",
-  "description": "JTAG Widget UI - Standalone Widget Development Environment",
+  "version": "1.0.465",
+  "description": "JTAG Widget UI - Positron Widget System (Vite + Signals)",
   "main": "dist/index.js",
   "scripts": {
     "start": "npm run build && npm run dev",
@@ -11,15 +11,21 @@
     "clean:all": "npm run clean:ports && npm run clean:dist && npm run clean:modules",
     "build": "npm run build:server && npm run build:browser",
     "build:server": "npx tsc src/minimal-server.ts --outDir dist --rootDir src --target ES2020 --module ES2020 --moduleResolution node --skipLibCheck --esModuleInterop",
-    "build:browser": "node build-browser.js",
+    "build:browser": "vite build",
+    "build:browser:esbuild": "node build-browser.js",
     "version:bump": "npm version patch --no-git-tag-version",
-    "dev": "npx tsx src/minimal-server.ts"
+    "dev": "npx tsx src/minimal-server.ts",
+    "dev:vite": "vite --port 9100",
+    "preview:vite": "vite preview --port 9100"
   },
   "dependencies": {
-    "@continuum/jtag": "file:../.."
+    "@continuum/jtag": "file:../..",
+    "@preact/signals-core": "^1.12.1",
+    "vite": "^7.3.0"
   },
   "devDependencies": {
     "esbuild": "^0.19.12",
+    "sass": "^1.97.2",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3",
     "ws": "^8.18.3"

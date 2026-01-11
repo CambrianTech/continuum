@@ -12,12 +12,16 @@ import { COGNITION_EVENTS, type StageCompleteEvent } from '../../system/conversa
 import { OrbStateManager, type ConnectionStatus, type HealthState } from './OrbStateManager';
 import { TRANSPORT_EVENTS } from '../../system/transports/shared/TransportEvents';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 export class ContinuumEmoterWidget extends BaseWidget {
   private connectionStatus: ConnectionStatus = 'initializing';
   private health: HealthState = 'unknown';
   private maxMessages: number;
   private healthCheckInterval?: NodeJS.Timeout;
   private orbManager: OrbStateManager | null = null;
+  private _eventUnsubscribers: Array<() => void> = [];
 
   constructor(maxMessages: number = 100) {
     super({
@@ -34,7 +38,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎭 ContinuumEmoter: Initializing...');
+    verbose() && console.log('🎭 ContinuumEmoter: Initializing...');
 
     this.subscribeToTransportEvents();  // Listen for instant connection state changes
     this.subscribeToAIEvents();
@@ -42,13 +46,19 @@ export class ContinuumEmoterWidget extends BaseWidget {
     this.subscribeToEmotionEvents();
 
     // Add test message to verify scroller works
-    console.log('🎭 ContinuumEmoter: Adding test message...');
+    verbose() && console.log('🎭 ContinuumEmoter: Adding test message...');
     this.addStatusMessage('System: initialized');
 
-    console.log('✅ ContinuumEmoter: Initialized');
+    verbose() && console.log('✅ ContinuumEmoter: Initialized');
   }
 
   protected override async onWidgetCleanup(): Promise<void> {
+    // Unsubscribe from ALL events to prevent memory leaks
+    for (const unsub of this._eventUnsubscribers) {
+      try { unsub(); } catch (e) { verbose() && console.warn('Unsubscribe error:', e); }
+    }
+    this._eventUnsubscribers = [];
+
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
     }
@@ -59,78 +69,70 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Subscribe to AI decision events for status feed
    */
   private subscribeToAIEvents(): void {
-    //console.log('🎭 ContinuumEmoter: Subscribing to AI events...');
-    //console.log('🎭 ContinuumEmoter: Event constants:', AI_DECISION_EVENTS);
-
-    Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: thinking...`);
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: responding`);
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: passed`);
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: generating...`);
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: checking...`);
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: { personaId: string; personaName?: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: posted ✓`);
-    });
-
-    Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string; personaName?: string; error: string }) => {
-      this.addStatusMessage(`${data.personaName ?? 'AI'}: error ✗`);
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(AI_DECISION_EVENTS.EVALUATING, (data: { personaId: string; personaName?: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: thinking...`);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.DECIDED_RESPOND, (data: { personaId: string; personaName?: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: responding`);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.DECIDED_SILENT, (data: { personaId: string; personaName?: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: passed`);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.GENERATING, (data: { personaId: string; personaName?: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: generating...`);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data: { personaId: string; personaName?: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: checking...`);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.POSTED, (data: { personaId: string; personaName?: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: posted ✓`);
+      }),
+      Events.subscribe(AI_DECISION_EVENTS.ERROR, (data: { personaId: string; personaName?: string; error: string }) => {
+        this.addStatusMessage(`${data.personaName ?? 'AI'}: error ✗`);
+      })
+    );
   }
 
   /**
    * Subscribe to cognition pipeline events
    */
   private subscribeToCognitionEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to cognition events...');
-    console.log('🎭 ContinuumEmoter: COGNITION_EVENTS constant:', COGNITION_EVENTS);
+    verbose() && console.log('🎭 ContinuumEmoter: Subscribing to cognition events...');
 
-    Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
-      // Show stage completion in status feed
-      const statusIcon = data.metrics.status === 'fast' ? '⚡' :
-                        data.metrics.status === 'normal' ? '✓' :
-                        data.metrics.status === 'slow' ? '⏱️' : '🐌';
-
-      this.addStatusMessage(`${statusIcon} ${data.stage}: ${data.metrics.durationMs}ms`);
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(COGNITION_EVENTS.STAGE_COMPLETE, (data: StageCompleteEvent) => {
+        const statusIcon = data.metrics.status === 'fast' ? '⚡' :
+                          data.metrics.status === 'normal' ? '✓' :
+                          data.metrics.status === 'slow' ? '⏱️' : '🐌';
+        this.addStatusMessage(`${statusIcon} ${data.stage}: ${data.metrics.durationMs}ms`);
+      })
+    );
   }
 
   /**
    * Subscribe to emotion events (emoji + color overlay)
    */
   private subscribeToEmotionEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to emotion events...');
+    verbose() && console.log('🎭 ContinuumEmoter: Subscribing to emotion events...');
 
-    Events.subscribe('continuum:emotion', (data: { emoji: string; color: string; duration: number }) => {
-      this.showEmotion(data.emoji, data.color, data.duration);
-    });
-
-    // Subscribe to continuum:status events for persistent orb color changes
-    Events.subscribe('continuum:status', (data: {
-      emoji?: string;
-      color?: string;
-      message?: string;
-      clear?: boolean;
-      priority?: string;
-      source?: string;
-      timestamp?: number;
-      autoRevertAt?: number;
-    }) => {
-      this.handleStatusUpdate(data);
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe('continuum:emotion', (data: { emoji: string; color: string; duration: number }) => {
+        this.showEmotion(data.emoji, data.color, data.duration);
+      }),
+      Events.subscribe('continuum:status', (data: {
+        emoji?: string;
+        color?: string;
+        message?: string;
+        clear?: boolean;
+        priority?: string;
+        source?: string;
+        timestamp?: number;
+        autoRevertAt?: number;
+      }) => {
+        this.handleStatusUpdate(data);
+      })
+    );
   }
 
   /**
@@ -227,21 +229,18 @@ export class ContinuumEmoterWidget extends BaseWidget {
    * Subscribe to transport events for instant connection state updates
    */
   private subscribeToTransportEvents(): void {
-    console.log('🎭 ContinuumEmoter: Subscribing to transport events...');
-    console.log(`🎭 ContinuumEmoter: DISCONNECTED event name = "${TRANSPORT_EVENTS.DISCONNECTED}"`);
-    console.log(`🎭 ContinuumEmoter: CONNECTED event name = "${TRANSPORT_EVENTS.CONNECTED}"`);
+    verbose() && console.log('🎭 ContinuumEmoter: Subscribing to transport events...');
 
-    // Listen for instant disconnection
-    Events.subscribe(TRANSPORT_EVENTS.DISCONNECTED, () => {
-      console.log('🔴 ContinuumEmoter: Received DISCONNECTED event');
-      this.updateStatus('disconnected', 'error');
-    });
-
-    // Listen for instant reconnection
-    Events.subscribe(TRANSPORT_EVENTS.CONNECTED, () => {
-      console.log('🟢 ContinuumEmoter: Received CONNECTED event');
-      this.updateStatus('connected', 'healthy');
-    });
+    this._eventUnsubscribers.push(
+      Events.subscribe(TRANSPORT_EVENTS.DISCONNECTED, () => {
+        verbose() && console.log('🔴 ContinuumEmoter: Received DISCONNECTED event');
+        this.updateStatus('disconnected', 'error');
+      }),
+      Events.subscribe(TRANSPORT_EVENTS.CONNECTED, () => {
+        verbose() && console.log('🟢 ContinuumEmoter: Received CONNECTED event');
+        this.updateStatus('connected', 'healthy');
+      })
+    );
 
     // Start with assumption of connected (will be corrected by first DISCONNECTED if needed)
     this.updateStatus('connected', 'healthy');

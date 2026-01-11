@@ -522,7 +522,7 @@ ${result.error || 'Unknown error'}
     message.reactions = [];
 
     // Store via Commands system (universal pattern)
-    await Commands.execute<DataCreateParams<ChatMessageEntity>, DataCreateResult<ChatMessageEntity>>(
+    await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(
       DATA_COMMANDS.CREATE,
       {
         collection: ChatMessageEntity.collection,

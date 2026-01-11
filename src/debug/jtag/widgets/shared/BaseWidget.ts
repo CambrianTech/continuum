@@ -159,6 +159,15 @@ export abstract class BaseWidget extends HTMLElement {
   private _widgetStateStore?: ReactiveStore<WidgetStateSlice>;
 
   /**
+   * Verbose logging helper for browser widgets
+   * Usage: this.verbose() && console.log('message');
+   * Enable with: window.JTAG_VERBOSE = true
+   */
+  protected verbose(): boolean {
+    return typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+  }
+
+  /**
    * Get current page state (content type, entity ID, resolved entity)
    * Part of scoped state architecture - see docs/SCOPED-STATE-ARCHITECTURE.md
    */
@@ -196,7 +205,7 @@ export abstract class BaseWidget extends HTMLElement {
       .replace(/^-/, '');
 
     this._widgetStateStore = widgetStateRegistry.register(widgetType, initialData);
-    console.log(`🧠 ${this.config.widgetName}: Registered with Positronic state system`);
+    this.verbose() && console.log(`🧠 ${this.config.widgetName}: Registered with Positronic state system`);
   }
 
   /**
@@ -333,36 +342,66 @@ export abstract class BaseWidget extends HTMLElement {
     }
   }
 
-  async connectedCallback(): Promise<void> {
+  connectedCallback(): void {
+    // GUARD: Prevent double-initialization (causes subscription leaks)
+    if (this.state.isInitialized) {
+      return;
+    }
+
+    // REACT PATTERN: Render loading state IMMEDIATELY, don't block
+    this.renderLoadingState();
+
+    // Fire async initialization WITHOUT blocking render
+    this.initializeAsync();
+  }
+
+  /**
+   * Render loading state immediately - no blocking
+   */
+  private renderLoadingState(): void {
+    if (this.shadowRoot) {
+      this.shadowRoot.innerHTML = `
+        <style>
+          :host {
+            display: block;
+            width: 100%;
+            height: 100%;
+          }
+          .widget-loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: var(--text-secondary, #888);
+            font-size: 14px;
+          }
+        </style>
+        <div class="widget-loading">Loading...</div>
+      `;
+    }
+  }
+
+  /**
+   * Async initialization - runs in background after loading state renders
+   */
+  private async initializeAsync(): Promise<void> {
     try {
-      // Reduce log spam - only log errors
-      // console.log(`🎨 ${this.config.widgetName}: BaseWidget initialization starting...`);
-
-      // 1. Connect to daemon systems (abstracted) WAS DEAD CODE
-      //await this.initializeDaemonConnections();
-
-      // 2. Load user context (currentUser and userState)
+      // 1. Load user context (currentUser and userState)
       await this.loadUserContext();
 
-      // 3. Restore persisted state (abstracted) - removed unused persistence system
-
-      // 4. Load external resources (template & styles)
+      // 2. Load external resources (template & styles)
       await this.loadResources();
 
-      // 5. Let subclass initialize its specific logic
+      // 3. Let subclass initialize its specific logic
       await this.onWidgetInitialize();
 
-      // 6. Render UI (subclass-specific but with base support)
+      // 4. Render UI (subclass-specific but with base support)
       await this.renderWidget();
-
-      // 7. Setup event coordination (abstracted) 3600000
-      //await this.initializeEventSystem();
 
       this.state.isInitialized = true;
       this.state.isConnected = true;
 
-      // console.log(`✅ ${this.config.widgetName}: BaseWidget initialization complete`);
-      
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Initialization failed:`, error);
       this.handleInitializationError(error);
@@ -370,17 +409,15 @@ export abstract class BaseWidget extends HTMLElement {
   }
 
   async disconnectedCallback(): Promise<void> {
-    console.log(`🎨 ${this.config.widgetName}: BaseWidget cleanup starting...`);
-    
     // Let subclass clean up first
     await this.onWidgetCleanup();
-    
+
     // Persist final state
     await this.persistCurrentState();
-    
+
     // Disconnect from daemons
     this.disconnectFromDaemons();
-    
+
     // Clean up event listeners
     this.eventEmitter.clear();
     this.operationCache.clear();
@@ -401,8 +438,9 @@ export abstract class BaseWidget extends HTMLElement {
       this._widgetStateStore = undefined;
     }
 
+    // Reset state for potential re-initialization
     this.state.isConnected = false;
-    console.log(`✅ ${this.config.widgetName}: BaseWidget cleanup complete`);
+    this.state.isInitialized = false;
   }
 
   // === ABSTRACT METHODS - Subclasses must implement ===
@@ -497,7 +535,7 @@ export abstract class BaseWidget extends HTMLElement {
     if (!this.config.performanceMonitoring) return;
     
     const duration = performance.now() - startTime;
-    console.log(`⚡ ${this.config.widgetName}: ${operation} took ${duration.toFixed(2)}ms`);
+    this.verbose() && console.log(`⚡ ${this.config.widgetName}: ${operation} took ${duration.toFixed(2)}ms`);
   }
 
   /**
@@ -577,7 +615,7 @@ export abstract class BaseWidget extends HTMLElement {
     const resourcePath = this.resolveResourcePath(filename);
     const emoji = resourceType === 'template' ? '📄' : '🎨';
     
-    console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
+    this.verbose() && console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
       const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
@@ -748,18 +786,18 @@ export abstract class BaseWidget extends HTMLElement {
     this.dispatcherEventTypes ??= new Set();
     this.dispatcherEventTypes.add(eventName);
 
-    console.log(`🔗 BaseWidget: Setting up event dispatcher for ${eventName}`);
+    this.verbose() && console.log(`🔗 BaseWidget: Setting up event dispatcher for ${eventName}`);
 
     // Listen for server-originated events via the JTAG event system
     // These events come from EventsDaemon when server emits events
     document.addEventListener(eventName, (event: Event) => {
       const customEvent = event as Event & { detail: ChatEventDataFor<T> };
-      console.log(`🔥 EVENT-DISPATCHER: Received server event ${eventName}:`, customEvent.detail);
+      this.verbose() && console.log(`🔥 EVENT-DISPATCHER: Received server event ${eventName}:`, customEvent.detail);
       
       // Dispatch to all registered widget handlers
       const handlers = this.eventEmitter.get(eventName);
       if (handlers && handlers.length > 0) {
-        console.log(`🔗 EVENT-DISPATCHER: Dispatching ${eventName} to ${handlers.length} widget handlers`);
+        this.verbose() && console.log(`🔗 EVENT-DISPATCHER: Dispatching ${eventName} to ${handlers.length} widget handlers`);
         handlers.forEach(handler => {
           try {
             handler(customEvent.detail);
@@ -772,7 +810,7 @@ export abstract class BaseWidget extends HTMLElement {
       }
     });
     
-    console.log(`✅ BaseWidget: Event dispatcher ready for ${eventName}`);
+    this.verbose() && console.log(`✅ BaseWidget: Event dispatcher ready for ${eventName}`);
   }
 
   /**
@@ -783,18 +821,18 @@ export abstract class BaseWidget extends HTMLElement {
       // Check if system is already ready - window.jtag should be set when system initializes
       const jtagClient = (window as WindowWithJTAG).jtag;
       if (jtagClient?.commands) {
-        console.log(`✅ BaseWidget: JTAG system already ready for ${this.config.widgetName}`);
+        this.verbose() && console.log(`✅ BaseWidget: JTAG system already ready for ${this.config.widgetName}`);
         resolve();
         return;
       }
 
-      console.log(`⏳ BaseWidget: Waiting for JTAG system to be ready for ${this.config.widgetName}`);
+      this.verbose() && console.log(`⏳ BaseWidget: Waiting for JTAG system to be ready for ${this.config.widgetName}`);
 
       // Simple polling - check every 100ms for window.jtag to be set by system initialization
       const checkReady = (): void => {
         const jtag = (window as WindowWithJTAG).jtag;
         if (jtag?.commands) {
-          console.log(`✅ BaseWidget: JTAG system ready for ${this.config.widgetName}`);
+          this.verbose() && console.log(`✅ BaseWidget: JTAG system ready for ${this.config.widgetName}`);
           resolve();
         } else {
           setTimeout(checkReady, 100);

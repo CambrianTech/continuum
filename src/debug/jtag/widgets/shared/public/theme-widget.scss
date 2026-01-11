@@ -5,8 +5,8 @@
  * Uses shared SCSS variables for consistent theming.
  */
 
-@import '../styles/variables';
-@import '../styles/mixins';
+@use '../styles/variables' as *;
+@use '../styles/mixins' as *;
 
 :host {
   display: flex;

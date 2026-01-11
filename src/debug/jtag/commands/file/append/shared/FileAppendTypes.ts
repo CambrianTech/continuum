@@ -7,13 +7,20 @@
  */
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '../../shared/FileTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface FileAppendParams extends FileParams {
+/** File append command parameters */
+export interface FileAppendParams extends CommandParams {
+  /** Path to the file to append to */
+  readonly filepath: string;
+  /** Content to append */
   readonly content: string;
+  /** Create the file if it doesn't exist */
   readonly createIfMissing?: boolean;
+  /** File encoding */
+  readonly encoding?: string;
 }
 
 export const createFileAppendParams = (

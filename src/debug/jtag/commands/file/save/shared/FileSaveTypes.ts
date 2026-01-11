@@ -7,13 +7,20 @@
  */
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '../../shared/FileTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface FileSaveParams extends FileParams {
+/** File save command parameters */
+export interface FileSaveParams extends CommandParams {
+  /** Path to save the file */
+  readonly filepath: string;
+  /** Content to write to the file */
   readonly content: string | Buffer;
+  /** Create parent directories if they don't exist */
   readonly createDirs?: boolean;
+  /** File encoding */
+  readonly encoding?: string;
 }
 
 export const createFileSaveParams = (

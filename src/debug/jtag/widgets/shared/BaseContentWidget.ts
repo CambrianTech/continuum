@@ -97,7 +97,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Override BaseWidget initialization to add content management
    */
   protected async onWidgetInitialize(): Promise<void> {
-    console.log(`🎯 ${this.config.widgetName}: Initializing content management...`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Initializing content management...`);
 
     try {
       // Initialize content service (this would get from JTAGClient in real implementation)
@@ -114,7 +114,7 @@ export abstract class BaseContentWidget extends BaseWidget {
       // Let subclass initialize its content-specific logic
       await this.onContentInitialize();
 
-      console.log(`✅ ${this.config.widgetName}: Content management initialized`);
+      this.verbose() && console.log(`✅ ${this.config.widgetName}: Content management initialized`);
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Content initialization failed:`, error);
       throw error;
@@ -125,7 +125,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Override BaseWidget cleanup to handle content cleanup
    */
   protected async onWidgetCleanup(): Promise<void> {
-    console.log(`🎯 ${this.config.widgetName}: Cleaning up content management...`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Cleaning up content management...`);
 
     try {
       // Persist current content state
@@ -140,7 +140,7 @@ export abstract class BaseContentWidget extends BaseWidget {
       this.contentState.availableContent = [];
       this.contentState.currentContent = undefined;
 
-      console.log(`✅ ${this.config.widgetName}: Content cleanup complete`);
+      this.verbose() && console.log(`✅ ${this.config.widgetName}: Content cleanup complete`);
     } catch (error) {
       console.error(`❌ ${this.config.widgetName}: Content cleanup failed:`, error);
     }
@@ -278,7 +278,7 @@ export abstract class BaseContentWidget extends BaseWidget {
   private async initializeContentService(): Promise<void> {
     // In real implementation, this would get ContentService from JTAGClient
     // For now, we'll prepare the interface
-    console.log(`🎯 ${this.config.widgetName}: Content service would be initialized here`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Content service would be initialized here`);
 
     // TODO: Get from JTAGClient when service integration is complete
     // const client = await JTAGClient.sharedInstance;
@@ -289,7 +289,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Set up event listeners for content changes
    */
   private setupContentEventListeners(): void {
-    console.log(`🎯 ${this.config.widgetName}: Setting up content event listeners...`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Setting up content event listeners...`);
 
     // Listen for global content events
     document.addEventListener('content:switched', (event: Event) => {
@@ -312,7 +312,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Handle incoming content events
    */
   private async handleContentEvent(eventName: ContentEventName, data: ContentEventData): Promise<void> {
-    console.log(`🎯 ${this.config.widgetName}: Received content event ${eventName}:`, data);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Received content event ${eventName}:`, data);
 
     // Check if this content is relevant to this widget
     if (!this.supportsContentType(data.contentItem.type)) {
@@ -383,7 +383,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Load initial content based on user state
    */
   private async loadInitialContent(): Promise<void> {
-    console.log(`🎯 ${this.config.widgetName}: Loading initial content...`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Loading initial content...`);
 
     // TODO: In real implementation, load from ContentService
     // For now, we'll prepare the interface
@@ -408,7 +408,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Persist current content state
    */
   private async persistContentState(): Promise<void> {
-    console.log(`🎯 ${this.config.widgetName}: Persisting content state...`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Persisting content state...`);
 
     // Store content state in widget data
     await this.storeData('content_state', {
@@ -423,7 +423,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    */
   private async syncContentState(): Promise<void> {
     // TODO: Implement when ContentService integration is complete
-    console.log(`🎯 ${this.config.widgetName}: Content state sync would happen here`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Content state sync would happen here`);
   }
 
   /**
@@ -438,7 +438,7 @@ export abstract class BaseContentWidget extends BaseWidget {
    * Render empty state when no content is available
    */
   private async renderEmptyState(): Promise<void> {
-    console.log(`🎯 ${this.config.widgetName}: Rendering empty state...`);
+    this.verbose() && console.log(`🎯 ${this.config.widgetName}: Rendering empty state...`);
 
     // Default empty state - subclasses should override
     this.shadowRoot.innerHTML = `

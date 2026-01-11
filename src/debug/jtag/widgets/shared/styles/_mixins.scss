@@ -4,7 +4,7 @@
  * Reusable style patterns for widgets
  */
 
-@import 'variables';
+@use 'variables' as *;
 
 // === HUD Panel ===
 @mixin hud-panel {

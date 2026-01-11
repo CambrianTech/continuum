@@ -62,16 +62,14 @@ export interface LayoutConfig {
  *
  * Persistent widgets (priority order - top to bottom):
  * 1. continuum-emoter-widget: HAL 9000 system status indicator
- * 2. cognition-histogram-widget: Pipeline stages
- * 3. continuum-metrics-widget: Requests dashboard
- * 4. user-list-widget: Users & Agents
+ * 2. continuum-metrics-widget: Unified AI performance (requests, tokens, latency, cost, pipeline)
+ * 3. user-list-widget: Users & Agents
  */
 export const GLOBAL_LAYOUT: LayoutConfig = {
   widgets: [
     // AI system indicators - top of sidebar
     { widget: 'continuum-emoter-widget', position: 'left', order: -100, persistent: true },
-    { widget: 'cognition-histogram-widget', position: 'left', order: -90, persistent: true },
-    { widget: 'continuum-metrics-widget', position: 'left', order: -80, persistent: true },
+    { widget: 'continuum-metrics-widget', position: 'left', order: -90, persistent: true },
     // Users & Agents - persistent, after Rooms (which is order 0)
     { widget: 'user-list-widget', position: 'left', order: 10, persistent: true }
   ]

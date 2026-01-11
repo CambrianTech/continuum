@@ -14,6 +14,9 @@ import type { TransportSendResult } from '../../shared/TransportTypes';
 import type { ITransportAdapter } from '../../shared/TransportBase';
 import { WebSocketResponseRouter } from './WebSocketResponseRouter';
 
+// Verbose logging helper for server
+const verbose = () => process.env.JTAG_VERBOSE === '1';
+
 // Server-specific WebSocket configuration with typed inheritance
 export interface WebSocketServerConfig extends WebSocketConfig {
   port: number;
@@ -93,7 +96,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
       this.connected = true;
       
       this.server.on('connection', (ws: WSWebSocket) => {
-        console.log(`🔗 ${this.name}: New client connected`);
+        verbose() && console.log(`🔗 ${this.name}: New client connected`);
         
         this.clients.add(ws);
         const clientId = this.generateClientId('ws');
@@ -143,7 +146,7 @@ export class WebSocketTransportServer extends WebSocketTransportClient implement
         });
         
         ws.on('close', () => {
-          console.log(`🔌 ${this.name}: Client disconnected`);
+          verbose() && console.log(`🔌 ${this.name}: Client disconnected`);
           this.clients.delete(ws);
           
           // Unregister client from response router

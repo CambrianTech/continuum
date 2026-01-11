@@ -331,18 +331,66 @@ export function createScroller<T extends BaseEntity>(
     container.addEventListener('scroll', onUserScroll, { passive: true });
   }
 
+  // Track entities added via real-time events (not from DB load)
+  // These should NOT be removed during diff since they're newer than DB
+  const eventAddedIds = new Set<string>();
+
+  // Diff-based DOM update - only add new items, NEVER remove event-added items
+  // CRITICAL FIX: DB results are stale compared to real-time events.
+  // Event-added entities must be preserved during refresh.
+  const diffAndUpdateDOM = (newItems: readonly T[]): void => {
+    const newItemsById = new Map<string, T>();
+    for (const item of newItems) {
+      const id = item.id ?? (item as Record<string, unknown>).messageId as string ?? 'unknown';
+      newItemsById.set(id, item);
+    }
+
+    // Get existing entity IDs in DOM
+    const existingIds = new Set(entityManager.getAll().map(e =>
+      e.id ?? (e as Record<string, unknown>).messageId as string ?? 'unknown'
+    ));
+    const newIds = new Set(newItemsById.keys());
+
+    // FIXED: Only remove entities that were from PREVIOUS DB load, NOT event-added ones
+    // Event-added entities are more recent than DB and must be preserved
+    for (const id of existingIds) {
+      if (!newIds.has(id) && !eventAddedIds.has(id)) {
+        // This entity was from a previous DB load and is no longer in DB results
+        // Safe to remove (probably deleted or filtered out)
+        entityManager.remove(id);
+        const element = container.querySelector(`[data-entity-id="${id}"]`);
+        if (element) {
+          element.remove();
+        }
+      }
+      // If eventAddedIds.has(id) - KEEP IT, it came from real-time event
+    }
+
+    // Add new entities (addEntitiesToDOM handles duplicates)
+    const itemsToAdd: T[] = [];
+    for (const item of newItems) {
+      const id = item.id ?? (item as Record<string, unknown>).messageId as string ?? 'unknown';
+      if (!existingIds.has(id)) {
+        itemsToAdd.push(item);
+      }
+      // If entity is now in DB, it's no longer "event-only" - remove from tracking
+      eventAddedIds.delete(id);
+    }
+
+    if (itemsToAdd.length > 0) {
+      addEntitiesToDOM(itemsToAdd);
+    }
+  };
+
   // The clean API object
   const scroller: EntityScroller<T> = {
-    // Load initial data
+    // Load initial data - uses diffing to preserve existing elements
     async load(): Promise<void> {
       if (isLoading) return;
 
       isLoading = true;
       try {
         const result = await load(undefined, config.pageSize);
-
-        entityManager.clear();
-        container.innerHTML = '';
 
         if (result.items.length > 0) {
           // For Discord/Slack pattern: DB returns DESC (newest→oldest)
@@ -351,18 +399,25 @@ export function createScroller<T extends BaseEntity>(
             ? [...result.items].reverse()
             : result.items;
 
-          addEntitiesToDOM(itemsToAdd);
+          // Use diff-based update instead of clearing everything
+          diffAndUpdateDOM(itemsToAdd);
+
           hasMoreItems = result.hasMore;
           cursor = result.nextCursor;
 
           // For newest-first (chat), scroll to bottom to show latest messages
-          // DON'T use requestAnimationFrame - just scroll directly
           if (config.direction === 'newest-first') {
             scrollToEnd('instant');
           }
-
-          // Observer will activate lazily when user scrolls (event-driven)
-          // No need to setup observer here - it activates on scroll events
+        } else {
+          // No items - clear if we had items before
+          if (entityManager.count() > 0) {
+            entityManager.clear();
+            // Remove all entity elements but keep sentinel
+            const entityElements = container.querySelectorAll('[data-entity-id]');
+            entityElements.forEach(el => el.remove());
+          }
+          hasMoreItems = false;
         }
       } catch (error) {
         console.error('❌ EntityScroller: Error during load():', error);
@@ -448,6 +503,9 @@ export function createScroller<T extends BaseEntity>(
         existingElement.remove();
       }
 
+      // CRITICAL: Track this as event-added so it survives diff during refresh
+      eventAddedIds.add(entityId);
+
       // Add entity - insert in correct timestamp order for messages
       insertEntityInOrder(entity);
     },
@@ -488,6 +546,9 @@ export function createScroller<T extends BaseEntity>(
 
       // CHECK SCROLL POSITION BEFORE ADDING (critical: must check before DOM changes)
       const wasAtBottom = config.autoScroll?.enabled && isNearEnd();
+
+      // CRITICAL: Track this as event-added so it survives diff during refresh
+      eventAddedIds.add(entityId);
 
       // Add entity - insert in correct timestamp order
       insertEntityInOrder(entity);
@@ -531,7 +592,10 @@ export function createScroller<T extends BaseEntity>(
 
     clear(): void {
       entityManager.clear();
-      container.innerHTML = '';
+      eventAddedIds.clear(); // Clear event tracking on full clear
+      // Remove entity elements but preserve sentinel and structure
+      const entityElements = container.querySelectorAll('[data-entity-id]');
+      entityElements.forEach(el => el.remove());
       hasMoreItems = true;
       cursor = undefined;
     },

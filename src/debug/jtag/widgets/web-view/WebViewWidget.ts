@@ -15,6 +15,10 @@ import { ReactiveWidget, html, css } from '../shared/ReactiveWidget';
 import type { TemplateResult, CSSResultGroup } from '../shared/ReactiveWidget';
 import { Events } from '../../system/core/shared/Events';
 import type { ConnectionStatus } from '../../system/core/client/browser/ConnectionMonitor';
+import { asyncStorage } from '../../system/core/browser/AsyncStorage';
+
+// Verbose logging helper for browser (standalone since ReactiveWidget != BaseWidget)
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
 const STORAGE_KEY = 'webview-widget-url';
 
@@ -281,16 +285,16 @@ export class WebViewWidget extends ReactiveWidget {
     window.addEventListener('message', this.boundHandleShimMessage);
 
     // Check for pending navigation URL (set by navigate command before widget mounted)
-    const pendingUrl = localStorage.getItem('webview:pending-url');
+    const pendingUrl = asyncStorage.getItem('webview:pending-url');
     if (pendingUrl) {
-      console.log(`🌐 WebViewWidget: Found pending URL: ${pendingUrl}`);
-      localStorage.removeItem('webview:pending-url');
+      verbose() && console.log(`🌐 WebViewWidget: Found pending URL: ${pendingUrl}`);
+      asyncStorage.removeItem('webview:pending-url');
       this.navigateToUrl(pendingUrl);
       return;  // Skip restoring saved URL - use pending instead
     }
 
     // Restore saved URL (from previous session)
-    const savedUrl = localStorage.getItem(STORAGE_KEY);
+    const savedUrl = asyncStorage.getItem(STORAGE_KEY);
     if (savedUrl) {
       this.urlInput = savedUrl;
       this.loadUrl();
@@ -308,23 +312,23 @@ export class WebViewWidget extends ReactiveWidget {
    * Captures screenshot of current state before clearing iframe.
    */
   private async handleConnectionStatus(status: ConnectionStatus): Promise<void> {
-    console.log(`🔌 WebViewWidget: Connection status changed - connected: ${status.connected}, proxyUrl: ${!!this.proxyUrl}, isServerDisconnected: ${this.isServerDisconnected}`);
+    verbose() && console.log(`🔌 WebViewWidget: Connection status changed - connected: ${status.connected}, proxyUrl: ${!!this.proxyUrl}, isServerDisconnected: ${this.isServerDisconnected}`);
 
     if (!status.connected && this.proxyUrl) {
       // Server disconnected - capture screenshot and STOP iframe to prevent request flood
-      console.log('⏸️ WebViewWidget: Server disconnected, freezing iframe...');
+      verbose() && console.log('⏸️ WebViewWidget: Server disconnected, freezing iframe...');
 
       const iframe = this.shadowRoot?.querySelector('.browser-frame') as HTMLIFrameElement;
       if (iframe?.contentWindow) {
         // STEP 1: Tell the shim to stop proxying (immediate, before any captures)
-        console.log('🛑 WebViewWidget: Signaling shim to stop proxy requests');
+        verbose() && console.log('🛑 WebViewWidget: Signaling shim to stop proxy requests');
         iframe.contentWindow.postMessage({ type: 'jtag-shim-freeze' }, '*');
 
         // STEP 2: Capture freeze frame while page content still exists (quick, 500ms timeout)
         await this.captureFreeze();
 
         // STEP 3: Clear iframe to absolutely stop all network activity
-        console.log('🛑 WebViewWidget: Setting iframe src to about:blank');
+        verbose() && console.log('🛑 WebViewWidget: Setting iframe src to about:blank');
         iframe.src = 'about:blank';
       }
 
@@ -335,10 +339,10 @@ export class WebViewWidget extends ReactiveWidget {
       // Update Positronic state
       this.updateWidgetState({ isServerDisconnected: true });
 
-      console.log('❄️ WebViewWidget: Iframe frozen, request flood prevented');
+      verbose() && console.log('❄️ WebViewWidget: Iframe frozen, request flood prevented');
     } else if (status.connected && this.isServerDisconnected) {
       // Server reconnected - restore iframe
-      console.log('▶️ WebViewWidget: Server reconnected, restoring iframe');
+      verbose() && console.log('▶️ WebViewWidget: Server reconnected, restoring iframe');
       this.isServerDisconnected = false;
       this.frozenScreenshot = '';  // Clear frozen state
 
@@ -389,7 +393,7 @@ export class WebViewWidget extends ReactiveWidget {
 
       if (result.success && result.data?.dataUrl) {
         this.frozenScreenshot = result.data.dataUrl;
-        console.log('📸 WebViewWidget: Freeze frame captured');
+        verbose() && console.log('📸 WebViewWidget: Freeze frame captured');
       }
     } catch {
       // Silent fail - we'll show the disconnect overlay anyway
@@ -435,7 +439,7 @@ export class WebViewWidget extends ReactiveWidget {
     const actualUrl = this.extractActualUrl(proxiedUrl);
     if (!actualUrl) return;
 
-    console.log(`🔗 WebViewWidget: URL changed in iframe to ${actualUrl}`);
+    verbose() && console.log(`🔗 WebViewWidget: URL changed in iframe to ${actualUrl}`);
 
     // Update state
     this.currentUrl = actualUrl;
@@ -443,8 +447,8 @@ export class WebViewWidget extends ReactiveWidget {
     this.pageTitle = pageTitle || '';
     this.siteName = this.extractSiteName(actualUrl, pageTitle);
 
-    // Persist for next session
-    localStorage.setItem(STORAGE_KEY, actualUrl);
+    // Persist for next session (non-blocking via asyncStorage)
+    asyncStorage.setItem(STORAGE_KEY, actualUrl);
 
     // Update Positronic state for RAG context
     this.updateWidgetState({
@@ -494,7 +498,7 @@ export class WebViewWidget extends ReactiveWidget {
    */
   public navigateToUrl(url: string): void {
     if (!url) return;
-    console.log(`🌐 WebViewWidget: navigateToUrl called with ${url}`);
+    verbose() && console.log(`🌐 WebViewWidget: navigateToUrl called with ${url}`);
     this.urlInput = url;
     this.loadUrl();
     // Force Lit to re-render in case reactive update doesn't trigger
@@ -593,7 +597,7 @@ export class WebViewWidget extends ReactiveWidget {
   private async handleIframeLoad(): Promise<void> {
     this.isLoading = false;
     this.loadError = '';
-    console.log(`✅ WebViewWidget: iframe loaded for ${this.currentUrl}`);
+    verbose() && console.log(`✅ WebViewWidget: iframe loaded for ${this.currentUrl}`);
 
     // Update Positronic state
     this.updateWidgetState({ isLoading: false });
@@ -684,7 +688,7 @@ export class WebViewWidget extends ReactiveWidget {
    */
   private updateTabTitle(): void {
     // For now just log - tab system needs to listen for this
-    console.log(`📑 WebViewWidget: Tab title would be "${this.siteName}" - "${this.pageTitle}"`);
+    verbose() && console.log(`📑 WebViewWidget: Tab title would be "${this.siteName}" - "${this.pageTitle}"`);
   }
 
   private handleIframeError(): void {
@@ -712,13 +716,13 @@ export class WebViewWidget extends ReactiveWidget {
     this.isLoading = true;
     this.siteName = this.extractSiteName(url, '');
 
-    // Persist URL for next session
-    localStorage.setItem(STORAGE_KEY, url);
+    // Persist URL for next session (non-blocking via asyncStorage)
+    asyncStorage.setItem(STORAGE_KEY, url);
 
     // Create proxy URL
     this.proxyUrl = '/proxy/' + encodeURIComponent(url);
 
-    console.log(`🌐 WebViewWidget: Loading ${url} via proxy, urlInput=${this.urlInput}, isLoading=${this.isLoading}`);
+    verbose() && console.log(`🌐 WebViewWidget: Loading ${url} via proxy, urlInput=${this.urlInput}, isLoading=${this.isLoading}`);
 
     // Update Positronic state for RAG context
     this.updateWidgetState({
@@ -784,7 +788,7 @@ export class WebViewWidget extends ReactiveWidget {
         });
 
         if (result && this.isLoading) {
-          console.log('✅ WebViewWidget: Load detected via shim ping (fallback)');
+          verbose() && console.log('✅ WebViewWidget: Load detected via shim ping (fallback)');
           this.isLoading = false;
           await this.queryPageInfo();
         }

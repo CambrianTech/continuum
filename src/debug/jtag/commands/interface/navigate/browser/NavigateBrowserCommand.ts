@@ -25,6 +25,7 @@ import { type NavigateParams, type NavigateResult, createNavigateResult } from '
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import { NavigateCommand } from '../shared/NavigateCommand';
 import { Events } from '@system/core/shared/Events';
+import { asyncStorage } from '@system/core/browser/AsyncStorage';
 
 export class NavigateBrowserCommand extends NavigateCommand {
   
@@ -111,7 +112,8 @@ export class NavigateBrowserCommand extends NavigateCommand {
 
     // Store pending URL in localStorage for WebViewWidget to pick up on mount
     // This handles the case where the widget isn't mounted yet when we emit the event
-    localStorage.setItem('webview:pending-url', params.url);
+    // Non-blocking via asyncStorage
+    asyncStorage.setItem('webview:pending-url', params.url);
 
     // First switch to Browser tab by emitting content:opened event
     // This follows the same pattern as RoomListWidget, UserListWidget etc.

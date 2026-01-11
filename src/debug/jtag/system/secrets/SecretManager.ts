@@ -55,16 +55,38 @@ export class SecretManager {
   }
 
   /**
+   * Check if verbose logging is enabled (static helper for common pattern)
+   * Works in both browser and server environments
+   *
+   * Server: Checks process.env.JTAG_VERBOSE for truthy values (1, true, yes, on)
+   * Browser: Checks window.JTAG_VERBOSE for boolean true
+   */
+  static isVerbose(): boolean {
+    if (typeof window !== 'undefined') {
+      return (window as any).JTAG_VERBOSE === true;
+    }
+    if (typeof process !== 'undefined' && process.env?.JTAG_VERBOSE) {
+      const value = process.env.JTAG_VERBOSE.toLowerCase().trim();
+      return ['1', 'true', 'yes', 'on'].includes(value);
+    }
+    return false;
+  }
+
+  /**
    * Initialize secrets from config.env
    * Called once during server startup
    */
   async initialize(): Promise<void> {
     if (this.isInitialized) {
-      console.log('🔐 SecretManager: Already initialized');
+      if (process.env.JTAG_VERBOSE === '1') {
+        console.log('🔐 SecretManager: Already initialized');
+      }
       return;
     }
 
-    console.log('🔐 SecretManager: Initializing secrets...');
+    if (process.env.JTAG_VERBOSE === '1') {
+      console.log('🔐 SecretManager: Initializing secrets...');
+    }
 
     // Load from ~/.continuum/config.env (primary source)
     await this.loadFromHomeConfig();
@@ -76,7 +98,9 @@ export class SecretManager {
     await this.loadFromProjectEnv();
 
     this.isInitialized = true;
-    console.log(`✅ SecretManager: Loaded ${this.secrets.size} secrets`);
+    if (process.env.JTAG_VERBOSE === '1') {
+      console.log(`✅ SecretManager: Loaded ${this.secrets.size} secrets`);
+    }
   }
 
   /**
@@ -85,13 +109,13 @@ export class SecretManager {
    */
   initializeSync(): void {
     if (this.isInitialized) {
-      if (process.env.JTAG_VERBOSE === 'true') {
+      if (process.env.JTAG_VERBOSE === '1') {
         console.log('🔐 SecretManager: Already initialized');
       }
       return;
     }
 
-    if (process.env.JTAG_VERBOSE === 'true') {
+    if (process.env.JTAG_VERBOSE === '1') {
       console.log('🔐 SecretManager: Initializing secrets (sync)...');
     }
 
@@ -105,7 +129,7 @@ export class SecretManager {
     this.loadFromProjectEnvSync();
 
     this.isInitialized = true;
-    if (process.env.JTAG_VERBOSE === 'true') {
+    if (process.env.JTAG_VERBOSE === '1') {
       console.log(`✅ SecretManager: Loaded ${this.secrets.size} secrets`);
     }
   }
@@ -145,6 +169,34 @@ export class SecretManager {
    */
   has(key: string): boolean {
     return this.secrets.has(key);
+  }
+
+  /**
+   * Get config value as boolean
+   * Accepts: 1, true, yes, on (case-insensitive) → true
+   * Accepts: 0, false, no, off, '' (case-insensitive) → false
+   * Returns defaultValue if key not found
+   */
+  getBoolean(key: string, defaultValue = false): boolean {
+    const value = this.secrets.get(key);
+    if (value === undefined) {
+      return defaultValue;
+    }
+    const normalized = value.toLowerCase().trim();
+    return ['1', 'true', 'yes', 'on'].includes(normalized);
+  }
+
+  /**
+   * Get config value as number
+   * Returns defaultValue if key not found or not a valid number
+   */
+  getNumber(key: string, defaultValue = 0): number {
+    const value = this.secrets.get(key);
+    if (value === undefined) {
+      return defaultValue;
+    }
+    const parsed = parseFloat(value);
+    return isNaN(parsed) ? defaultValue : parsed;
   }
 
   /**
@@ -240,7 +292,7 @@ export class SecretManager {
 
     try {
       if (!fs.existsSync(configPath)) {
-        if (process.env.JTAG_VERBOSE === 'true') {
+        if (process.env.JTAG_VERBOSE === '1') {
           console.log(`ℹ️  SecretManager: No config.env found at ${configPath}`);
         }
         return;
@@ -249,7 +301,7 @@ export class SecretManager {
       const content = fs.readFileSync(configPath, 'utf-8');
       this.parseEnvFile(content, 'home-config');
 
-      if (process.env.JTAG_VERBOSE === 'true') {
+      if (process.env.JTAG_VERBOSE === '1') {
         console.log(`✅ SecretManager: Loaded secrets from ${configPath}`);
       }
     } catch (error) {
@@ -305,7 +357,7 @@ export class SecretManager {
       const content = fs.readFileSync(projectEnvPath, 'utf-8');
       this.parseEnvFile(content, 'project-env');
 
-      if (process.env.JTAG_VERBOSE === 'true') {
+      if (process.env.JTAG_VERBOSE === '1') {
         console.log(`✅ SecretManager: Loaded secrets from .env`);
       }
     } catch (error) {

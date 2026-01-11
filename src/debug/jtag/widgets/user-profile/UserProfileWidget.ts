@@ -21,8 +21,10 @@ import type { DataReadParams, DataReadResult } from '../../commands/data/read/sh
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { DataDeleteParams, DataDeleteResult } from '../../commands/data/delete/shared/DataDeleteTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
-import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
+import { ContentService } from '../../system/state/ContentService';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { getWidgetEntityId } from '../shared/WidgetConstants';
 
 export class UserProfileWidget extends BaseWidget {
   private user: UserEntity | null = null;
@@ -49,12 +51,54 @@ export class UserProfileWidget extends BaseWidget {
   }
 
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('UserProfile: Initializing...');
+    this.verbose() && console.log('UserProfile: Initializing...');
+    await this.loadUser();
+  }
+
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * Implements clear/populate/query pattern for instant hydration.
+   */
+  public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
+    this.verbose() && console.log(`UserProfile: onActivate called with entityId=${entityId}`);
+
+    // Store entityId as attribute for loadUser to find
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+    } else {
+      this.removeAttribute('entity-id');
+    }
+
+    // SAME ENTITY? Just refresh deltas
+    if (this.user && (this.user.id === entityId || this.user.uniqueId === entityId)) {
+      this.verbose() && console.log('UserProfile: Same entity, refreshing deltas');
+      await this.loadUser(); // Query for updates
+      return;
+    }
+
+    // DIFFERENT ENTITY - clear old state
+    this.user = null;
+    this.loading = true;
+    this.error = null;
+
+    // POPULATE with passed entity (instant hydration)
+    const preloaded = metadata?.entity as UserEntity;
+    if (preloaded) {
+      this.user = preloaded;
+      this.loading = false;
+      this.renderWidget(); // Render immediately with what we have
+      this.verbose() && console.log('UserProfile: Instant hydration from metadata');
+      return; // No need to query - we have the full entity
+    }
+
+    // QUERY - only if no metadata (e.g., direct URL navigation)
     await this.loadUser();
   }
 
   private async loadUser(): Promise<void> {
-    const entityId = this.getAttribute('data-entity-id');
+    // Use helper function for consistent attribute handling
+    const entityId = getWidgetEntityId(this) || this.pageState?.entityId;
+
     if (!entityId) {
       this.error = 'No user specified';
       this.loading = false;
@@ -73,7 +117,7 @@ export class UserProfileWidget extends BaseWidget {
         this.user = result.data;
       } else {
         // Try finding by uniqueId
-        const listResult = await Commands.execute<DataListParams<UserEntity>, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+        const listResult = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
           collection: 'users',
           filter: { uniqueId: entityId },
           limit: 1
@@ -96,26 +140,11 @@ export class UserProfileWidget extends BaseWidget {
 
   /**
    * Emit Positron context for AI awareness
+   * NOTE: Removed PositronWidgetState.emit() - MainWidget handles context.
+   * KEPT: emitWidgetEvent for widget-to-widget communication (ChatWidget listens)
    */
   private emitPositronContext(): void {
     if (!this.user) return;
-
-    PositronWidgetState.emit(
-      {
-        widgetType: 'profile',
-        section: this.user.type,
-        title: `Profile - ${this.user.displayName}`,
-        entityId: this.user.id,
-        metadata: {
-          userType: this.user.type,
-          userName: this.user.displayName,
-          userStatus: this.user.status,
-          isAI: this.user.type === 'persona' || this.user.type === 'agent',
-          hasModelConfig: !!this.user.modelConfig
-        }
-      },
-      { action: 'viewing', target: `${this.user.type} profile` }
-    );
 
     // Emit widget event for reactive subscriptions (ChatWidget listens to this)
     PositronWidgetState.emitWidgetEvent('profile', 'status:changed', {
@@ -170,39 +199,33 @@ export class UserProfileWidget extends BaseWidget {
       // Emit event so user list can refresh
       Events.emit('data:users:deleted', { id: this.user.id });
 
-      // Navigate back to chat
-      Events.emit('content:opened', {
-        contentType: 'chat',
-        entityId: 'general',
+      // OPTIMISTIC: Navigate back to chat instantly
+      if (this.userState?.userId) {
+        ContentService.setUserId(this.userState.userId as UUID);
+      }
+      ContentService.open('chat', 'general', {
         title: 'General',
-        setAsCurrent: true
+        uniqueId: 'general'
       });
     } catch (err) {
       console.error('Failed to delete user:', err);
     }
   }
 
-  private async openCognition(): Promise<void> {
+  private openCognition(): void {
     if (!this.user) return;
 
-    Events.emit('content:opened', {
-      contentType: 'persona',
-      entityId: this.user.uniqueId || this.user.id,
-      title: `${this.user.displayName} - Brain`,
-      setAsCurrent: true
-    });
-
-    // Persist to server
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId,
-        contentType: 'persona',
-        entityId: this.user.uniqueId || this.user.id,
-        title: `${this.user.displayName} - Brain`,
-        setAsCurrent: true
-      }).catch(console.error);
+    // OPTIMISTIC: Use ContentService for instant tab creation
+    if (this.userState?.userId) {
+      ContentService.setUserId(this.userState.userId as UUID);
     }
+
+    const entityId = this.user.uniqueId || this.user.id;
+    ContentService.open('persona', entityId, {
+      title: `${this.user.displayName} - Brain`,
+      uniqueId: entityId,
+      metadata: { entity: this.user }  // Pass full entity for instant hydration
+    });
   }
 
   protected async renderWidget(): Promise<void> {
@@ -359,7 +382,7 @@ export class UserProfileWidget extends BaseWidget {
   }
 
   protected async onWidgetCleanup(): Promise<void> {
-    console.log('UserProfile: Cleanup complete');
+    this.verbose() && console.log('UserProfile: Cleanup complete');
   }
 }
 

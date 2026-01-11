@@ -21,7 +21,7 @@ import * as path from 'path';
 
 // Check for verbose flag EARLY to control module initialization logging
 if (process.argv.includes('--verbose')) {
-  process.env.JTAG_VERBOSE = 'true';
+  process.env.JTAG_VERBOSE = '1';
 }
 
 // CRITICAL: Initialize SecretManager to load config.env into process.env SYNCHRONOUSLY
@@ -269,7 +269,7 @@ async function main() {
 
     // Set environment variable for modules to check verbose mode
     if (behavior.logLevel === 'verbose') {
-      process.env.JTAG_VERBOSE = 'true';
+      process.env.JTAG_VERBOSE = '1';
     }
 
     // Suppress ALL output unless verbose mode

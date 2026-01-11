@@ -11,13 +11,15 @@ import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { BaseDataParams, BaseDataResult } from '../../shared/BaseDataTypes';
 import { createBaseDataParams } from '../../shared/BaseDataTypes';
 
-/**
- * Data Update Parameters
- */
-export interface DataUpdateParams<T extends BaseEntity = BaseEntity> extends BaseDataParams {
+/** Data update command parameters */
+export interface DataUpdateParams extends BaseDataParams {
+  /** ID of entity to update */
   readonly id: UUID;
-  readonly data: Partial<T>;
+  /** Update data */
+  readonly data: Record<string, any>;
+  /** Output format */
   readonly format?: 'json' | 'yaml' | 'table';
+  /** Increment version on update */
   readonly incrementVersion?: boolean;
 }
 
@@ -35,11 +37,11 @@ export interface DataUpdateResult<T extends BaseEntity = BaseEntity> extends Bas
 /**
  * Factory function for creating DataUpdateParams
  */
-export const createDataUpdateParams = <T extends BaseEntity = BaseEntity>(
+export const createDataUpdateParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataUpdateParams<T>, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
-): DataUpdateParams<T> => {
+  data: Omit<DataUpdateParams, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
+): DataUpdateParams => {
   const baseParams = createBaseDataParams(context, sessionId, {
     collection: data.collection,
     backend: data.backend

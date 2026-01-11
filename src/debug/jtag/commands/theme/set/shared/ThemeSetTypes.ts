@@ -3,12 +3,15 @@
  */
 
 import { type ThemeParams, type ThemeResult, createThemeParams, createThemeResult } from '../../shared/ThemeTypes';
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 
-export interface ThemeSetParams extends ThemeParams {
+/** Theme set command parameters */
+export interface ThemeSetParams extends CommandParams {
+  /** Name of the theme to set */
   readonly themeName: string;
+  readonly timestamp?: string;
 }
 
 export const createThemeSetParams = (

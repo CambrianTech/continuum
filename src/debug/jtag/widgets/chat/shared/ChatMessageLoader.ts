@@ -9,6 +9,9 @@ import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessag
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { LoadResult } from '../../shared/InfiniteScrollTypes';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 // Constants
 const COLLECTIONS = {
   CHAT_MESSAGES: 'chat_messages'
@@ -30,7 +33,7 @@ export class ChatMessageLoader {
     cursor?: string,
     pageSize = 20
   ): Promise<LoadResult<ChatMessageEntity>> {
-    console.log('📚 ChatMessageLoader: Loading messages', { roomId, cursor, pageSize });
+    verbose() && console.log('📚 ChatMessageLoader: Loading messages', { roomId, cursor, pageSize });
 
     const result = await this.executeCommand(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.CHAT_MESSAGES,

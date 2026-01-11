@@ -28,10 +28,10 @@ use uuid::Uuid;
 pub struct TimingRecord {
     // Identity
     pub request_id: String,
-    pub timestamp_ms: u64,  // Unix timestamp for correlation
+    pub timestamp_ms: u64, // Unix timestamp for correlation
 
     // Request info
-    pub request_type: String,      // "list", "create", "update", "delete", "ping", etc.
+    pub request_type: String, // "list", "create", "update", "delete", "ping", etc.
     pub collection: Option<String>,
     pub adapter_handle: Option<String>,
 
@@ -47,7 +47,7 @@ pub struct TimingRecord {
 
     // Derived totals
     pub total_ns: u64,
-    pub handle_ns: u64,  // route + query_build + lock_wait + execute
+    pub handle_ns: u64, // route + query_build + lock_wait + execute
 
     // Context
     pub concurrent_requests: usize,
@@ -89,8 +89,11 @@ impl TimingRecord {
 
     pub fn finalize(&mut self) {
         self.handle_ns = self.route_ns + self.query_build_ns + self.lock_wait_ns + self.execute_ns;
-        self.total_ns = self.socket_read_ns + self.parse_ns + self.handle_ns +
-                        self.serialize_ns + self.socket_write_ns;
+        self.total_ns = self.socket_read_ns
+            + self.parse_ns
+            + self.handle_ns
+            + self.serialize_ns
+            + self.socket_write_ns;
     }
 }
 
@@ -307,7 +310,7 @@ impl MetricsCollector {
         if let Ok(mut file_guard) = self.log_file.lock() {
             if let Some(ref mut file) = *file_guard {
                 if let Ok(json) = serde_json::to_string(&timing) {
-                    let _ = writeln!(file, "{}", json);
+                    let _ = writeln!(file, "{json}");
                 }
             }
         }
@@ -368,10 +371,12 @@ impl MetricsCollector {
         let total: Vec<u64> = records.iter().map(|r| r.total_ns).collect();
 
         // Group by request type
-        let mut by_type: std::collections::HashMap<String, Vec<u64>> = std::collections::HashMap::new();
+        let mut by_type: std::collections::HashMap<String, Vec<u64>> =
+            std::collections::HashMap::new();
         for r in records.iter() {
-            by_type.entry(r.request_type.clone())
-                .or_insert_with(Vec::new)
+            by_type
+                .entry(r.request_type.clone())
+                .or_default()
                 .push(r.total_ns);
         }
 
@@ -399,7 +404,10 @@ impl MetricsCollector {
     /// Print summary to stdout
     pub fn print_summary(&self) {
         let metrics = self.aggregate();
-        println!("\n📊 TIMING SUMMARY (last {} requests)", metrics.total_requests);
+        println!(
+            "\n📊 TIMING SUMMARY (last {} requests)",
+            metrics.total_requests
+        );
         println!("═══════════════════════════════════════════════════════");
 
         fn format_ns(ns: u64) -> String {
@@ -410,55 +418,73 @@ impl MetricsCollector {
             } else if ns >= 1_000 {
                 format!("{:.2}µs", ns as f64 / 1_000.0)
             } else {
-                format!("{}ns", ns)
+                format!("{ns}ns")
             }
         }
 
         println!("Phase         │ P50        │ P95        │ P99        │");
         println!("──────────────┼────────────┼────────────┼────────────┤");
-        println!("socket_read   │ {:>10} │ {:>10} │ {:>10} │",
+        println!(
+            "socket_read   │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.socket_read.p50_ns),
             format_ns(metrics.socket_read.p95_ns),
-            format_ns(metrics.socket_read.p99_ns));
-        println!("parse         │ {:>10} │ {:>10} │ {:>10} │",
+            format_ns(metrics.socket_read.p99_ns)
+        );
+        println!(
+            "parse         │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.parse.p50_ns),
             format_ns(metrics.parse.p95_ns),
-            format_ns(metrics.parse.p99_ns));
-        println!("query_build   │ {:>10} │ {:>10} │ {:>10} │",
+            format_ns(metrics.parse.p99_ns)
+        );
+        println!(
+            "query_build   │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.query_build.p50_ns),
             format_ns(metrics.query_build.p95_ns),
-            format_ns(metrics.query_build.p99_ns));
-        println!("lock_wait     │ {:>10} │ {:>10} │ {:>10} │",
+            format_ns(metrics.query_build.p99_ns)
+        );
+        println!(
+            "lock_wait     │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.lock_wait.p50_ns),
             format_ns(metrics.lock_wait.p95_ns),
-            format_ns(metrics.lock_wait.p99_ns));
-        println!("execute       │ {:>10} │ {:>10} │ {:>10} │",
+            format_ns(metrics.lock_wait.p99_ns)
+        );
+        println!(
+            "execute       │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.execute.p50_ns),
             format_ns(metrics.execute.p95_ns),
-            format_ns(metrics.execute.p99_ns));
-        println!("serialize     │ {:>10} │ {:>10} │ {:>10} │",
+            format_ns(metrics.execute.p99_ns)
+        );
+        println!(
+            "serialize     │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.serialize.p50_ns),
             format_ns(metrics.serialize.p95_ns),
-            format_ns(metrics.serialize.p99_ns));
-        println!("socket_write  │ {:>10} │ {:>10} │ {:>10} │",
+            format_ns(metrics.serialize.p99_ns)
+        );
+        println!(
+            "socket_write  │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.socket_write.p50_ns),
             format_ns(metrics.socket_write.p95_ns),
-            format_ns(metrics.socket_write.p99_ns));
+            format_ns(metrics.socket_write.p99_ns)
+        );
         println!("──────────────┼────────────┼────────────┼────────────┤");
-        println!("TOTAL         │ {:>10} │ {:>10} │ {:>10} │",
+        println!(
+            "TOTAL         │ {:>10} │ {:>10} │ {:>10} │",
             format_ns(metrics.total.p50_ns),
             format_ns(metrics.total.p95_ns),
-            format_ns(metrics.total.p99_ns));
+            format_ns(metrics.total.p99_ns)
+        );
         println!("═══════════════════════════════════════════════════════\n");
 
         if !metrics.by_type.is_empty() {
             println!("By Request Type:");
             for (req_type, stats) in &metrics.by_type {
-                println!("  {:12} │ P50: {:>10} │ P95: {:>10} │ count: {}",
+                println!(
+                    "  {:12} │ P50: {:>10} │ P95: {:>10} │ count: {}",
                     req_type,
                     format_ns(stats.p50_ns),
                     format_ns(stats.p95_ns),
-                    stats.count);
+                    stats.count
+                );
             }
             println!();
         }

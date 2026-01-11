@@ -90,6 +90,16 @@ import type { SessionCreateResult } from '../../../../commands/session/create/sh
 import type { IConnectionBroker, ConnectionParams } from '../../connection-broker/shared/ConnectionBrokerTypes';
 import { ConnectionBroker } from '../../connection-broker/shared/ConnectionBroker';
 import { DEFAULT_USER_UNIQUE_IDS } from '../../../data/domains/DefaultEntities';
+
+// Verbose logging utility - only logs when JTAG_VERBOSE=1 (Node.js) or window.JTAG_VERBOSE (browser)
+const verbose = (message: string, ...args: unknown[]) => {
+  const isVerbose = (typeof process !== 'undefined' && process.env?.JTAG_VERBOSE === '1') ||
+                    (typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true);
+  if (isVerbose) {
+    console.log(message, ...args);
+  }
+};
+
 /**
  * JTAGClient connection options
  */
@@ -318,7 +328,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     
     // Handle cross-environment event messages - delegate to server's routing system
     if (JTAGMessageTypes.isEvent(message)) {
-      console.log(`🌉 JTAGClient: Delegating event to server router (client doesn't route)`);
+      verbose(`🌉 JTAGClient: Delegating event to server router (client doesn't route)`);
       // JTAGClient is a dumb transport pipe - server handles all routing
       return {
         success: true,
@@ -355,7 +365,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     // Store provided sessionId for use throughout initialization
     const providedSessionId = options?.sessionId;
     if (providedSessionId) {
-      console.log(`🎯 JTAGClient: Provided sessionId: ${providedSessionId}`);
+      verbose(`🎯 JTAGClient: Provided sessionId: ${providedSessionId}`);
     }
 
     // Store connection context for agent detection
@@ -366,7 +376,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     this.connectionMetadata.localSystemAvailable = !!localSystem;
     
     if (localSystem) {
-      console.log('🏠 JTAGClient: Using local system connection');
+      verbose('🏠 JTAGClient: Using local system connection');
       this.systemInstance = localSystem;
       this.connectionMetadata.connectionType = 'local';
       this.connectionMetadata.reason = 'Local system instance available';
@@ -377,13 +387,13 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       this.connectionMetadata.connectionType = 'remote';
       this.connectionMetadata.reason = 'No local system available - using Connection Broker';
       
-      console.log('🔗 JTAGClient: Using Connection Broker for intelligent connection management');
+      verbose('🔗 JTAGClient: Using Connection Broker for intelligent connection management');
       
       const broker = await this.getConnectionBroker();
       
       // Create connection parameters from client options with proper TypeScript typing
       const effectiveSessionId = providedSessionId ?? this.sessionId;
-      console.log(`🔧 JTAGClient: Connection with sessionId: ${effectiveSessionId} (provided: ${providedSessionId}, current: ${this.sessionId})`);
+      verbose(`🔧 JTAGClient: Connection with sessionId: ${effectiveSessionId} (provided: ${providedSessionId}, current: ${this.sessionId})`);
       
       const connectionParams: ConnectionParams = {
         protocols: [
@@ -416,13 +426,13 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       
       // providedSessionId is already available from the method scope
       
-      console.log(`✅ JTAGClient: ${connectionResult.strategy} connection established on port ${connectionResult.server.port}`);
+      verbose(`✅ JTAGClient: ${connectionResult.strategy} connection established on port ${connectionResult.server.port}`);
       
       this.connection = this.createRemoteConnection();
     }
 
     // Universal session management - works for both local and remote
-    console.log('🏷️ JTAGClient: Requesting session from SessionDaemon...');
+    verbose('🏷️ JTAGClient: Requesting session from SessionDaemon...');
 
     // SECURITY: CLI clients use ephemeral sessions, browser clients use shared sessions
     const isEphemeralClient = this.context.environment === 'server'; // Server-side JTAGClient = CLI client
@@ -431,11 +441,11 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
     let targetSessionId: UUID;
     if (providedSessionId) {
       targetSessionId = providedSessionId;
-      console.log(`🔄 JTAGClient: Using provided sessionId: ${providedSessionId}`);
+      verbose(`🔄 JTAGClient: Using provided sessionId: ${providedSessionId}`);
     } else {
       // Use UNKNOWN_SESSION marker - let SessionDaemon assign the shared session ID
       targetSessionId = SYSTEM_SCOPES.UNKNOWN_SESSION;
-      console.log(`🎯 JTAGClient: Requesting shared session assignment from SessionDaemon`);
+      verbose(`🎯 JTAGClient: Requesting shared session assignment from SessionDaemon`);
     }
 
     // Detect if this is an AI agent based on connection context
@@ -448,7 +458,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       ? agentInfo.name
       : (isEphemeralClient ? 'CLI Client' : 'Anonymous User');
 
-    console.log(`🔍 JTAGClient: Detected category=${category}, displayName=${displayName}, isAgent=${isAgent}`);
+    verbose(`🔍 JTAGClient: Detected category=${category}, displayName=${displayName}, isAgent=${isAgent}`);
 
     // Get stored userId from browser (if available) for citizen persistence
     const storedUserId = await this.getStoredUserId();
@@ -461,7 +471,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       ? agentInfo.name.toLowerCase().replace(/\s+/g, '-')
       : (isEphemeralClient ? DEFAULT_USER_UNIQUE_IDS.CLI_CLIENT : DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
 
-    console.log(`🔑 JTAGClient: Computed uniqueId="${uniqueId}" for ${displayName} (isEphemeralClient=${isEphemeralClient}, isAgent=${isAgent})`);
+    verbose(`🔑 JTAGClient: Computed uniqueId="${uniqueId}" for ${displayName} (isEphemeralClient=${isEphemeralClient}, isAgent=${isAgent})`);
 
     // Enhance connectionContext with uniqueId for lookup
     const enhancedConnectionContext = this.connectionContext
@@ -592,7 +602,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         includeSignature: true
       });
 
-      console.log('📋 JTAGClient: Discovering available commands...');
+      verbose('📋 JTAGClient: Discovering available commands...');
       const listResult = await this.connection.executeCommand('list', listParams) as ListResult;
       
       if (listResult.success) {
@@ -687,7 +697,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       throw new Error('Transport not connected');
     }
 
-    console.log(`📤 JTAGClient: Sending message to ${message.endpoint}`);
+    verbose(`📤 JTAGClient: Sending message to ${message.endpoint}`);
     await this.systemTransport.send(message);
   }
 
@@ -724,16 +734,21 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       console.warn(`⚠️ JTAGClient: Requested ${environment} but using ${context.environment} context`);
     }
 
-    console.log(`🔄 JTAGClient: Connecting to ${context.environment} system with secure configuration...`);
+    verbose(`🔄 JTAGClient: Connecting to ${context.environment} system with secure configuration...`);
     
     const client = new this(context);
     await client.initialize(options);
     
-    console.log('✅ JTAGClient: Connection established');
-    
-    // 🔑 BOOTSTRAP: Call list() to discover commands and return result for CLI
-    console.log('🔄 JTAGClient: Discovering available commands...');
-    const listResult = await client.commands.list();
+    verbose('✅ JTAGClient: Connection established');
+
+    // Use already-discovered commands from initialize() - no need for second network call
+    const listResult = {
+      context: client.context,
+      sessionId: client.sessionId,
+      success: true,
+      commands: Array.from(client.discoveredCommands.values()),
+      totalCount: client.discoveredCommands.size
+    };
     
     // console.log(`✅ JTAGClient: ${JTAG_BOOTSTRAP_MESSAGES.BOOTSTRAP_COMPLETE_PREFIX} ${listResult.totalCount} commands`);
     
@@ -763,14 +778,14 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Disconnect the client and cleanup resources
    */
   public async disconnect(destroySession?: boolean): Promise<void> {
-    console.log('🔌 JTAGClient: Disconnecting...');
+    verbose('🔌 JTAGClient: Disconnecting...');
     
     // Smart default: Don't destroy shared sessions, do destroy private sessions
     const shouldDestroySession = destroySession ?? !this._session?.isShared;
     
     // Only destroy real sessions, not bootstrap sessions (UNKNOWN_SESSION)
     if (this._session && this._session.sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION && shouldDestroySession) {
-      console.log(`🧹 JTAGClient: Destroying session ${this._session.sessionId} on disconnect (shared: ${this._session.isShared})`);
+      verbose(`🧹 JTAGClient: Destroying session ${this._session.sessionId} on disconnect (shared: ${this._session.isShared})`);
       
       try {
         const destroyParams: SessionDestroyParams = {
@@ -780,26 +795,26 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         };
         const destroyResult = await this.commands['session/destroy'](destroyParams) as SessionDestroyResult;
         
-        console.log(`✅ JTAGClient: Session destroyed successfully:`, destroyResult.success);
+        verbose(`✅ JTAGClient: Session destroyed successfully:`, destroyResult.success);
       } catch (error) {
         console.error(`❌ JTAGClient: Failed to destroy session:`, error);
         // Continue disconnect even if session destroy fails
       }
     } else if (this._session && this._session.sessionId !== SYSTEM_SCOPES.UNKNOWN_SESSION) {
-      console.log(`🔄 JTAGClient: Preserving shared session ${this._session.sessionId} on disconnect (shared: ${this._session.isShared})`);
+      verbose(`🔄 JTAGClient: Preserving shared session ${this._session.sessionId} on disconnect (shared: ${this._session.isShared})`);
     }
     
     if (this.systemTransport) {
       await this.systemTransport.disconnect();
-      console.log('✅ JTAGClient: Transport disconnected');
+      verbose('✅ JTAGClient: Transport disconnected');
     } else {
-      console.log('ℹ️ JTAGClient: No transport to disconnect (local connection)');
+      verbose('ℹ️ JTAGClient: No transport to disconnect (local connection)');
     }
     
     // Cleanup Connection Broker if we created one
     if (this.connectionBroker && this.connectionBroker instanceof ConnectionBroker) {
       await this.connectionBroker.shutdown();
-      console.log('✅ JTAGClient: Connection Broker shut down');
+      verbose('✅ JTAGClient: Connection Broker shut down');
     }
   }
 
@@ -825,6 +840,15 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Private helper for sharedInstance getter
    */
   private static getRegisteredClient(key: string): JTAGClient | undefined {
+    return this.clientRegistry.get(key);
+  }
+
+  /**
+   * Synchronous check for registered client - NO POLLING
+   * Used by Events.emit to avoid 5-second timeout on server-side Form 1 calls
+   * Returns immediately with client or undefined (never waits)
+   */
+  static getRegisteredClientSync(key: string): JTAGClient | undefined {
     return this.clientRegistry.get(key);
   }
 
@@ -1011,7 +1035,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         store: async <T extends JTAGPayload>(key: string, value: T): Promise<void> => {
           try {
             // TODO: Implement data storage through DataDaemon
-            console.log(`💾 JTAG daemon data.store ${key}:`, value);
+            verbose(`💾 JTAG daemon data.store ${key}:`, value);
             throw new Error('Data storage not yet implemented');
           } catch (error) {
             console.error(`❌ JTAG daemon data.store failed:`, error);
@@ -1101,7 +1125,7 @@ export class RemoteConnection implements JTAGConnection {
       throw new Error('No transport available for remote command execution');
     }
 
-    console.log(`📤 RemoteConnection: Sending command '${commandName}' with correlation ${correlationId}`);
+    verbose(`📤 RemoteConnection: Sending command '${commandName}' with correlation ${correlationId}`);
     const sendResult: TransportSendResult = await transport.send(requestMessage);
 
     if (!sendResult.success) {

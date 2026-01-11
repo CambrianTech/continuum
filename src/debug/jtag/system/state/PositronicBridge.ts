@@ -15,6 +15,9 @@
 
 import { positronicContext } from './PositronicRAGContext';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * PositronicBridge - Singleton that bridges browser state to server RAG
  */
@@ -29,34 +32,34 @@ class PositronicBridgeImpl {
    * Call this once when the browser app starts (e.g., in ContinuumWidget or main entry)
    */
   initialize(): void {
-    console.log('🌉 PositronicBridge.initialize: Starting...');
+    verbose() && console.log('🌉 PositronicBridge.initialize: Starting...');
     if (this._initialized) {
-      console.log('🌉 PositronicBridge: Already initialized');
+      verbose() && console.log('🌉 PositronicBridge: Already initialized');
       return;
     }
 
     this._initialized = true;
-    console.log('🌉 PositronicBridge.initialize: Set initialized flag');
+    verbose() && console.log('🌉 PositronicBridge.initialize: Set initialized flag');
 
     try {
       // Subscribe to all state changes with debouncing
-      console.log('🌉 PositronicBridge.initialize: About to subscribe to changes...');
+      verbose() && console.log('🌉 PositronicBridge.initialize: About to subscribe to changes...');
       this._unsubscribe = positronicContext.subscribeToChanges(() => {
         this.emitRAGContext();
       }, 500); // 500ms debounce to avoid flooding
-      console.log('🌉 PositronicBridge.initialize: Subscribed to changes');
+      verbose() && console.log('🌉 PositronicBridge.initialize: Subscribed to changes');
     } catch (error) {
       console.error('🌉 PositronicBridge.initialize: Failed to subscribe:', error);
     }
 
-    console.log('🌉 PositronicBridge: Initialized - bridging state to server RAG');
+    verbose() && console.log('🌉 PositronicBridge: Initialized - bridging state to server RAG');
 
     // DIAGNOSTIC: Immediately try to store a test string to verify Commands works
     this.testBridgeConnection();
 
     // Emit initial context after a short delay to ensure client is connected
     setTimeout(() => {
-      console.log('🌉 PositronicBridge.initialize: Timeout fired, calling emitRAGContext');
+      verbose() && console.log('🌉 PositronicBridge.initialize: Timeout fired, calling emitRAGContext');
       this.emitRAGContext();
     }, 1000);
   }
@@ -98,7 +101,7 @@ class PositronicBridgeImpl {
    * This helps diagnose if Commands.execute() is working
    */
   private async testBridgeConnection(): Promise<void> {
-    console.log('🌉 PositronicBridge.testBridgeConnection: Starting test...');
+    verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Starting test...');
     this.showDiagnostic('Test starting...');
 
     // Store test results on window for debugging
@@ -117,27 +120,27 @@ class PositronicBridgeImpl {
     await this.waitForConnection(10000);
     testResults.waitedForConnection = true;
     this.showDiagnostic('Connection ready');
-    console.log('🌉 PositronicBridge.testBridgeConnection: Connection wait complete');
+    verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Connection wait complete');
 
     try {
       this.showDiagnostic('Importing Commands...');
       const { Commands } = await import('../core/shared/Commands');
       testResults.commandsImported = true;
       this.showDiagnostic('Commands imported');
-      console.log('🌉 PositronicBridge.testBridgeConnection: Commands imported successfully');
+      verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Commands imported successfully');
 
       // First verify basic command routing works
       this.showDiagnostic('Testing ping...');
-      console.log('🌉 PositronicBridge.testBridgeConnection: Testing with ping command...');
+      verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Testing with ping command...');
       const pingResult = await Commands.execute('ping', {} as any);
       testResults.pingSucceeded = true;
       this.showDiagnostic('Ping succeeded!');
-      console.log('🌉 PositronicBridge.testBridgeConnection: Ping succeeded!', JSON.stringify(pingResult).slice(0, 100));
+      verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Ping succeeded!', JSON.stringify(pingResult).slice(0, 100));
 
       // Now test the actual RAG string storage
       this.showDiagnostic('Storing RAG string...');
       const testString = `## Test RAG String\nGenerated at: ${new Date().toISOString()}\nSource: PositronicBridge.testBridgeConnection`;
-      console.log('🌉 PositronicBridge.testBridgeConnection: About to call widget-state command...');
+      verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: About to call widget-state command...');
 
       const result = await Commands.execute('development/debug/widget-state', {
         setRAGString: testString,
@@ -146,7 +149,7 @@ class PositronicBridgeImpl {
 
       testResults.ragStringStored = true;
       this.showDiagnostic('SUCCESS! RAG stored');
-      console.log('🌉 PositronicBridge.testBridgeConnection: SUCCESS!', result);
+      verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: SUCCESS!', result);
     } catch (error) {
       testResults.error = error instanceof Error ? error.message : String(error);
       this.showDiagnostic(`FAILED: ${testResults.error}`, true);
@@ -169,44 +172,44 @@ class PositronicBridgeImpl {
         // JTAGClient.sharedInstance checks for globalThis.jtag?.commands
         const jtag = (globalThis as any).jtag;
         if (typeof globalThis !== 'undefined' && jtag?.commands) {
-          console.log('🌉 PositronicBridge.waitForConnection: Client connected with commands!');
+          verbose() && console.log('🌉 PositronicBridge.waitForConnection: Client connected with commands!');
           return;
         }
         // Log what we found
         if (jtag && !jtag.commands) {
-          console.log('🌉 PositronicBridge.waitForConnection: jtag exists but no commands yet');
+          verbose() && console.log('🌉 PositronicBridge.waitForConnection: jtag exists but no commands yet');
         }
       } catch (e) {
         // Ignore errors during check
       }
 
       if ((Date.now() - startTime) % 1000 < checkInterval) {
-        console.log(`🌉 PositronicBridge.waitForConnection: Waiting... (${Date.now() - startTime}ms)`);
+        verbose() && console.log(`🌉 PositronicBridge.waitForConnection: Waiting... (${Date.now() - startTime}ms)`);
       }
       await new Promise(resolve => setTimeout(resolve, checkInterval));
     }
 
-    console.log('🌉 PositronicBridge.waitForConnection: Timeout - proceeding anyway');
+    verbose() && console.log('🌉 PositronicBridge.waitForConnection: Timeout - proceeding anyway');
   }
 
   /**
    * Emit current RAG context to server via Commands
    */
   private emitRAGContext(): void {
-    console.log('🌉 PositronicBridge.emitRAGContext: called');
+    verbose() && console.log('🌉 PositronicBridge.emitRAGContext: called');
     const ragString = positronicContext.toRAGString();
-    console.log(`🌉 PositronicBridge.emitRAGContext: ragString length=${ragString.length}, preview="${ragString.slice(0, 50)}..."`);
+    verbose() && console.log(`🌉 PositronicBridge.emitRAGContext: ragString length=${ragString.length}, preview="${ragString.slice(0, 50)}..."`);
 
     // Avoid duplicate emissions
     if (ragString === this._lastRAGString) {
-      console.log('🌉 PositronicBridge.emitRAGContext: skipping duplicate');
+      verbose() && console.log('🌉 PositronicBridge.emitRAGContext: skipping duplicate');
       return;
     }
     this._lastRAGString = ragString;
 
     // Only emit if we have meaningful content
     if (!ragString || ragString.trim().length === 0) {
-      console.log('🌉 PositronicBridge.emitRAGContext: skipping empty');
+      verbose() && console.log('🌉 PositronicBridge.emitRAGContext: skipping empty');
       return;
     }
 
@@ -224,9 +227,9 @@ class PositronicBridgeImpl {
    * Execute the bridge command to store RAG string on server
    */
   private async executeBridgeCommand(ragString: string): Promise<void> {
-    console.log(`🌉 PositronicBridge.executeBridgeCommand: Starting, length=${ragString.length}`);
+    verbose() && console.log(`🌉 PositronicBridge.executeBridgeCommand: Starting, length=${ragString.length}`);
     try {
-      console.log(`🌉 PositronicBridge: Bridging RAG context to server (${ragString.length} chars)`);
+      verbose() && console.log(`🌉 PositronicBridge: Bridging RAG context to server (${ragString.length} chars)`);
 
       // Dynamic import to avoid circular dependencies
       const { Commands } = await import('../core/shared/Commands');
@@ -237,7 +240,7 @@ class PositronicBridgeImpl {
         contextSessionId: sessionId
       } as any);
 
-      console.log(`🌉 PositronicBridge: RAG context stored for session ${sessionId.slice(0, 8)}`);
+      verbose() && console.log(`🌉 PositronicBridge: RAG context stored for session ${sessionId.slice(0, 8)}`);
     } catch (error) {
       console.error('🌉 PositronicBridge: Bridge to server failed:', error);
     }

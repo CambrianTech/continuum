@@ -69,12 +69,12 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
   }
 
   protected override async onWidgetInitialize(): Promise<void> {
-    console.log(`🔧 EntityScrollerWidget: Initializing ${this.constructor.name}...`);
+    this.verbose() && console.log(`🔧 EntityScrollerWidget: Initializing ${this.constructor.name}...`);
 
     // Setup event subscriptions first - EntityScroller will be set up after template renders
     await this.setupEntityEventSubscriptions();
 
-    console.log(`✅ EntityScrollerWidget: Initialized ${this.constructor.name}`);
+    this.verbose() && console.log(`✅ EntityScrollerWidget: Initialized ${this.constructor.name}`);
   }
 
   /**
@@ -103,7 +103,7 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
 
     // Load initial data
     await this.scroller.load();
-    console.log(`✅ ${this.constructor.name}: Initialized EntityScroller with automatic deduplication`);
+    this.verbose() && console.log(`✅ ${this.constructor.name}: Initialized EntityScroller with automatic deduplication`);
 
     // Update count after initial load
     this.updateEntityCount();
@@ -131,11 +131,11 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
    * Unified CRUD event subscriptions with filtering hooks for subclass control
    */
   private async setupEntityEventSubscriptions(): Promise<void> {
-    console.log(`🔧 ${this.constructor.name}: Setting up CRUD event subscriptions...`);
+    this.verbose() && console.log(`🔧 ${this.constructor.name}: Setting up CRUD event subscriptions...`);
 
     try {
       const collection = this.getEntityCollection();
-      console.log(`🎧 ${this.constructor.name}: Setting up unified CRUD subscriptions for ${collection}`);
+      this.verbose() && console.log(`🎧 ${this.constructor.name}: Setting up unified CRUD subscriptions for ${collection}`);
 
       // Single subscription for ALL CRUD operations (create, update, delete)
       // Now with filtering hooks for subclass control
@@ -164,14 +164,14 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
             }
           },
           clear: () => {
-            console.log(`🧹 ${this.constructor.name}: Clearing all entities (truncated)`);
+            this.verbose() && console.log(`🧹 ${this.constructor.name}: Clearing all entities (truncated)`);
             this.scroller?.clear();
             this.updateEntityCount();
           }
         }
       );
 
-      console.log(`✅ ${this.constructor.name}: CRUD subscriptions active with filtering hooks`);
+      this.verbose() && console.log(`✅ ${this.constructor.name}: CRUD subscriptions active with filtering hooks`);
     } catch (error) {
       console.error(`❌ ${this.constructor.name}: Failed to set up event subscriptions:`, error);
     }
@@ -198,6 +198,6 @@ export abstract class EntityScrollerWidget<T extends BaseEntity> extends EntityL
     this.scroller?.destroy();
     this.scroller = undefined;
 
-    console.log(`🧹 ${this.constructor.name}: EntityScroller cleanup complete`);
+    this.verbose() && console.log(`🧹 ${this.constructor.name}: EntityScroller cleanup complete`);
   }
 }

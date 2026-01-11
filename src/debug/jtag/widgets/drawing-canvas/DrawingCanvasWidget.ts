@@ -28,6 +28,9 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ACTIVITY_UNIQUE_IDS } from '../../system/data/constants/ActivityConstants';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
+// Verbose logging helper for browser
+const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
 /**
  * Result from user/get-me command
  */
@@ -88,6 +91,7 @@ export class DrawingCanvasWidget extends BaseWidget {
   private _userId: UUID | null = null;
   private _userName: string = 'Unknown';
   private strokeEventUnsubscribe: (() => void) | null = null;
+  private aiDrawUnsubscribe: (() => void) | null = null;
   private loadedStrokeIds = new Set<string>(); // Prevent re-rendering same stroke
 
   constructor() {
@@ -119,14 +123,30 @@ export class DrawingCanvasWidget extends BaseWidget {
     this._activityId = id;
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * This allows cached widgets to reload with different canvas activities.
+   */
+  public async onActivate(entityId?: string): Promise<void> {
+    console.log(`🎨 DrawingCanvas: onActivate called with entityId=${entityId}`);
+
+    if (entityId) {
+      this.setAttribute('entity-id', entityId);
+      this._activityId = entityId as UUID;
+    }
+
+    // Reload strokes for the new canvas
+    await this.loadStrokes();
+  }
+
   protected async onWidgetInitialize(): Promise<void> {
-    console.log('🎨 DrawingCanvas: Initializing collaborative canvas...');
+    verbose() && console.log('🎨 DrawingCanvas: Initializing collaborative canvas...');
 
     // Get current user info for stroke attribution
     await this.loadUserInfo();
 
     // Subscribe to AI draw requests
-    Events.subscribe(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data: any) => {
+    this.aiDrawUnsubscribe = Events.subscribe(DRAWING_CANVAS_EVENTS.AI_DRAW_REQUEST, (data: any) => {
       this.handleAIDrawRequest(data);
     });
 
@@ -139,31 +159,15 @@ export class DrawingCanvasWidget extends BaseWidget {
     // Note: loadStrokes is called from setupCanvas after ctx is ready
     // This is because renderWidget runs AFTER onWidgetInitialize
 
-    console.log('✅ DrawingCanvas: Ready for collaborative drawing');
+    verbose() && console.log('✅ DrawingCanvas: Ready for collaborative drawing');
   }
 
   /**
    * Emit Positron context for AI awareness
-   * Called on initialization and after significant canvas changes
+   * NOTE: Removed emit - MainWidget handles context. Widgets should RECEIVE, not emit.
    */
   private emitPositronContext(): void {
-    PositronWidgetState.emit({
-      widgetType: 'drawing-canvas',
-      title: 'Collaborative Canvas',
-      entityId: this.activityId || undefined,
-      metadata: {
-        activityId: this.activityId,
-        strokeCount: this.loadedStrokeIds.size,
-        currentTool: this.currentTool,
-        brushColor: this.brushSettings.color,
-        brushSize: this.brushSettings.size,
-        description: `Collaborative canvas with ${this.loadedStrokeIds.size} strokes. Users and AIs can draw together.`
-      }
-    }, {
-      action: 'viewing',
-      target: 'canvas',
-      details: `Viewing canvas ${this.activityId} with ${this.loadedStrokeIds.size} strokes`
-    });
+    // No-op - context cascade fix
   }
 
   /**
@@ -175,7 +179,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       if (result.success && result.user) {
         this._userId = result.user.id;
         this._userName = result.user.displayName || 'Unknown';
-        console.log(`🎨 DrawingCanvas: User identified as ${this._userName}`);
+        verbose() && console.log(`🎨 DrawingCanvas: User identified as ${this._userName}`);
       }
     } catch (err) {
       console.warn('🎨 DrawingCanvas: Could not get user info, using session ID');
@@ -203,7 +207,7 @@ export class DrawingCanvasWidget extends BaseWidget {
         // Don't render our own strokes (we drew them locally)
         if (data.stroke.creatorId === this._userId) return;
 
-        console.log(`🎨 DrawingCanvas: Received stroke from ${data.stroke.creatorName}`);
+        verbose() && console.log(`🎨 DrawingCanvas: Received stroke from ${data.stroke.creatorName}`);
         this.renderRemoteStroke(data.stroke);
         this.loadedStrokeIds.add(data.strokeId);
       }
@@ -226,7 +230,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       );
 
       if (result.success && result.strokes) {
-        console.log(`🎨 DrawingCanvas: Loading ${result.strokes.length} strokes`);
+        verbose() && console.log(`🎨 DrawingCanvas: Loading ${result.strokes.length} strokes`);
         for (const stroke of result.strokes) {
           if (!this.loadedStrokeIds.has(stroke.id)) {
             this.renderRemoteStroke(stroke);
@@ -532,10 +536,10 @@ export class DrawingCanvasWidget extends BaseWidget {
 
       // Load existing strokes now that ctx is ready
       if (this.activityId) {
-        console.log(`🎨 DrawingCanvas: Loading strokes for canvas ${this.activityId}`);
+        verbose() && console.log(`🎨 DrawingCanvas: Loading strokes for canvas ${this.activityId}`);
         this.loadStrokes();
       } else {
-        console.log('🎨 DrawingCanvas: No activityId - strokes will not persist');
+        verbose() && console.log('🎨 DrawingCanvas: No activityId - strokes will not persist');
       }
     }
   }
@@ -814,7 +818,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       if (result.success && result.strokeId) {
         // Mark as loaded so we don't re-render when event comes back
         this.loadedStrokeIds.add(result.strokeId);
-        console.log(`🎨 DrawingCanvas: Saved stroke ${result.strokeId}`);
+        verbose() && console.log(`🎨 DrawingCanvas: Saved stroke ${result.strokeId}`);
 
         // Update Positron context so AIs know canvas changed
         this.emitPositronContext();
@@ -900,7 +904,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       timestamp: Date.now()
     });
 
-    console.log('📷 DrawingCanvas: Captured for AI vision');
+    verbose() && console.log('📷 DrawingCanvas: Captured for AI vision');
     return base64;
   }
 
@@ -948,7 +952,7 @@ export class DrawingCanvasWidget extends BaseWidget {
     }
 
     this.saveToHistory();
-    console.log(`🎨 DrawingCanvas: ${personaName || 'AI'} drew ${tool} at (${startX}, ${startY})`);
+    verbose() && console.log(`🎨 DrawingCanvas: ${personaName || 'AI'} drew ${tool} at (${startX}, ${startY})`);
   }
 
   protected async onWidgetCleanup(): Promise<void> {
@@ -958,9 +962,15 @@ export class DrawingCanvasWidget extends BaseWidget {
       this.strokeEventUnsubscribe = null;
     }
 
+    // Unsubscribe from AI draw events
+    if (this.aiDrawUnsubscribe) {
+      this.aiDrawUnsubscribe();
+      this.aiDrawUnsubscribe = null;
+    }
+
     // Clear loaded stroke IDs
     this.loadedStrokeIds.clear();
 
-    console.log('🎨 DrawingCanvas: Cleaned up collaborative canvas');
+    verbose() && console.log('🎨 DrawingCanvas: Cleaned up collaborative canvas');
   }
 }
