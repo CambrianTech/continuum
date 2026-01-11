@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-11T00:52:32.338Z",
+  "generated": "2026-01-11T02:16:46.805Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4651,6 +4651,11 @@
           "type": "string",
           "required": true,
           "description": "senderName parameter"
+        },
+        "senderType": {
+          "type": "string",
+          "required": false,
+          "description": "senderType parameter"
         },
         "config": {
           "type": "string",
