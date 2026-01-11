@@ -973,6 +973,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     const memberIds = this.currentRoom.members.map(m => m.userId);
 
     try {
+      // Uses MongoDB-style $in operator for batch ID lookup
       const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
         collection: UserEntity.collection,
         filter: { id: { $in: memberIds } },

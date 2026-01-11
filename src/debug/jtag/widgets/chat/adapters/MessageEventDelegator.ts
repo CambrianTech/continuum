@@ -91,8 +91,8 @@ export class MessageEventDelegator {
   private handleClick(event: Event): void {
     const target = event.target as HTMLElement;
 
-    // Find closest element with data-action attribute
-    const actionElement = target.closest('[data-action]') as HTMLElement;
+    // Find closest element with data-action attribute, scoped to message-row boundary
+    const actionElement = target.closest('.message-row [data-action], [data-action]') as HTMLElement;
     if (!actionElement) return;
 
     const action = actionElement.dataset.action;

@@ -55,7 +55,7 @@ export class ContinuumEmoterWidget extends BaseWidget {
   protected override async onWidgetCleanup(): Promise<void> {
     // Unsubscribe from ALL events to prevent memory leaks
     for (const unsub of this._eventUnsubscribers) {
-      try { unsub(); } catch { /* ignore */ }
+      try { unsub(); } catch (e) { verbose() && console.warn('Unsubscribe error:', e); }
     }
     this._eventUnsubscribers = [];
 

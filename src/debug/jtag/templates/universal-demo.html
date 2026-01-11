@@ -146,24 +146,23 @@
         let jtagSystem = null;
         let activeExample = null;
         let exampleConfig = null;
+        let jtag = null;
 
-        // Wait for ES module to load and export jtag
-        async function waitForJtag(maxWait = 5000) {
-            const start = Date.now();
-            while (typeof jtag === 'undefined' && Date.now() - start < maxWait) {
-                await new Promise(r => setTimeout(r, 50));
+        // Load JTAG module via dynamic import (more efficient than polling)
+        async function loadJtagModule() {
+            const module = await import('/dist/index.js');
+            const jtagExport = module.jtag || module.default;
+            if (!jtagExport) {
+                throw new Error('JTAG export not found in module');
             }
-            if (typeof jtag === 'undefined') {
-                throw new Error('JTAG module failed to load');
-            }
-            return jtag;
+            return jtagExport;
         }
 
         // Initialize JTAG system
         async function initializeJTAG() {
             try {
-                log('core', '🔌 Waiting for JTAG module...');
-                await waitForJtag();
+                log('core', '🔌 Loading JTAG module...');
+                jtag = await loadJtagModule();
                 log('core', '🔌 Connecting to JTAG system...');
                 const connection = await jtag.connect();
                 jtagSystem = connection.client || connection;

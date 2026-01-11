@@ -389,7 +389,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
     // CRITICAL: Also update DOM directly for cached elements
     // EntityScroller doesn't re-render existing items when state changes
-    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${personaId}"]`) as HTMLElement;
+    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${CSS.escape(personaId)}"]`) as HTMLElement;
     if (userElement) {
       if (phase === null) {
         userElement.removeAttribute('data-ai-status');
@@ -411,7 +411,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     this.learningStatuses = newMap;
 
     // CRITICAL: Also update DOM directly for cached elements
-    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${personaId}"]`) as HTMLElement;
+    const userElement = this.shadowRoot?.querySelector(`[data-user-id="${CSS.escape(personaId)}"]`) as HTMLElement;
     if (userElement) {
       if (isLearning) {
         userElement.setAttribute('data-learning', 'true');
