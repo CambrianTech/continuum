@@ -423,6 +423,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // This ensures we only get messages for THIS room, with proper paging/cursors
       // Load NEWEST messages first (DESC) so recent messages appear after refresh
       // EntityScroller + CSS handle display order based on SCROLLER_PRESETS.CHAT direction
+      // CRITICAL: backend='server' ensures we always fetch fresh data, not stale localStorage cache
       const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
         filter: {
@@ -431,6 +432,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // Load NEWEST first
         limit: limit ?? 30, // Default page size matches SCROLLER_PRESETS.CHAT
+        backend: 'stale-while-revalidate', // Show cached instantly, refresh with server data
         ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'before' } }) // 'before' = older than cursor for DESC queries
       });
 

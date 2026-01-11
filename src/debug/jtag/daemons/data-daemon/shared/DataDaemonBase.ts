@@ -55,9 +55,9 @@ export abstract class DataDaemonBase extends DaemonBase {
   protected abstract initialize(): Promise<void>;
   
   /**
-   * Handle incoming data operation messages
+   * Process incoming data operation messages
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const payload = message.payload as DataOperationPayload;
     
     try {

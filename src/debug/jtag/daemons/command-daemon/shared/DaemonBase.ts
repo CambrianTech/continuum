@@ -1,8 +1,15 @@
 /**
  * Base Daemon - Abstract foundation for all JTAG daemons
- * 
+ *
  * Provides common daemon functionality while enforcing proper separation of concerns.
  * All daemons inherit from this to ensure consistent architecture.
+ *
+ * LIFECYCLE:
+ *   CREATED → STARTING → READY (or FAILED) → STOPPED
+ *
+ * STARTUP QUEUE:
+ *   Messages arriving during STARTING state are queued and processed once READY.
+ *   This ensures no messages are lost during daemon initialization.
  */
 
 import { JTAGModule } from '../../../system/core/shared/JTAGModule';
@@ -11,6 +18,41 @@ import {JTAGMessageFactory, useEnvironment} from '../../../system/core/types/JTA
 import type { JTAGRouter, MessageSubscriber } from '../../../system/core/router/shared/JTAGRouter';
 import { type RouterResult } from '../../../system/core/router/shared/RouterTypes';
 import { type BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
+
+// ============================================================================
+// Lifecycle Types
+// ============================================================================
+
+/**
+ * Daemon lifecycle states
+ */
+export enum DaemonLifecycleState {
+  CREATED = 'created',     // Constructor complete, not registered
+  STARTING = 'starting',   // Registered with router, initialize() running
+  READY = 'ready',         // Fully initialized, accepting messages
+  FAILED = 'failed',       // initialize() threw an error
+  STOPPED = 'stopped'      // shutdown() called
+}
+
+/**
+ * Queued message during startup
+ */
+interface QueuedDaemonMessage {
+  message: JTAGMessage;
+  resolve: (response: BaseResponsePayload) => void;
+  reject: (error: Error) => void;
+  queuedAt: number;
+  timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Queue configuration for startup buffering
+ */
+export interface DaemonQueueConfig {
+  maxQueueSize: number;    // Default: 100
+  queueTimeout: number;    // Default: 30000 (30s)
+  dropOldest: boolean;     // Default: true (overflow behavior)
+}
 
 export interface DaemonEntry {
   name: string;
@@ -40,6 +82,46 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   private unsubscribeFunctions: (() => void)[] = [];
   private intervals: Map<string, ReturnType<typeof setInterval>> = new Map();
 
+  // ============================================================================
+  // Lifecycle State & Startup Queue
+  // ============================================================================
+
+  /** Current lifecycle state */
+  private _lifecycleState: DaemonLifecycleState = DaemonLifecycleState.CREATED;
+
+  /** Queue for messages arriving during initialization */
+  private readonly startupQueue: QueuedDaemonMessage[] = [];
+
+  /** Error that caused initialization to fail (if any) */
+  private initializationError?: Error;
+
+  /** Queue configuration - override in subclass to customize */
+  protected readonly queueConfig: DaemonQueueConfig = {
+    maxQueueSize: 100,
+    queueTimeout: 30000,  // 30 seconds
+    dropOldest: true
+  };
+
+  /** Get current lifecycle state */
+  get lifecycleState(): DaemonLifecycleState {
+    return this._lifecycleState;
+  }
+
+  /** Check if daemon is ready to process messages */
+  get isReady(): boolean {
+    return this._lifecycleState === DaemonLifecycleState.READY;
+  }
+
+  /** Check if daemon failed to initialize */
+  get isFailed(): boolean {
+    return this._lifecycleState === DaemonLifecycleState.FAILED;
+  }
+
+  /** Get current startup queue size (for metrics) */
+  get startupQueueSize(): number {
+    return this.startupQueue.length;
+  }
+
   constructor(name: string, context: JTAGContext, router: JTAGRouter) {
     super(name, context);
     this.router = router;
@@ -60,13 +142,42 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
 
   /**
    * Initialize daemon - called explicitly after construction to allow subpath access
+   *
+   * LIFECYCLE: CREATED → STARTING → READY (or FAILED)
+   *
+   * Messages arriving during STARTING are queued and processed once READY.
    */
   async initializeDaemon(): Promise<void> {
-    // Register with router using subpath
+    // Transition: CREATED → STARTING
+    this._lifecycleState = DaemonLifecycleState.STARTING;
+
+    // Register with router IMMEDIATELY (can receive messages now - they'll queue)
     this.router.registerSubscriber(this.subpath, this);
-    
-    // Initialize daemon-specific functionality
-    await this.initialize();
+
+    try {
+      // Initialize daemon-specific functionality (may take time)
+      await this.initialize();
+
+      // Transition: STARTING → READY
+      this._lifecycleState = DaemonLifecycleState.READY;
+
+      // Drain queued messages
+      await this.flushStartupQueue();
+
+      // Emit ready event for health monitoring
+      this.emitReady();
+
+    } catch (error) {
+      // Transition: STARTING → FAILED
+      this._lifecycleState = DaemonLifecycleState.FAILED;
+      this.initializationError = error instanceof Error ? error : new Error(String(error));
+
+      // Reject all queued messages
+      this.rejectQueuedMessages(this.initializationError);
+
+      // Re-throw so caller knows initialization failed
+      throw error;
+    }
   }
 
   /**
@@ -76,16 +187,159 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   protected abstract initialize(): Promise<void>;
 
   /**
-   * Handle incoming messages (MessageSubscriber interface)
-   * Each daemon implements its own message handling logic
+   * Process a message - SUBCLASSES MUST IMPLEMENT THIS
+   * (Previously called handleMessage - renamed to allow base class lifecycle management)
    */
-  abstract handleMessage(message: JTAGMessage): Promise<BaseResponsePayload>;
+  protected abstract processMessage(message: JTAGMessage): Promise<BaseResponsePayload>;
+
+  /**
+   * Handle incoming messages (MessageSubscriber interface)
+   *
+   * Routes messages based on lifecycle state:
+   * - READY: Process immediately
+   * - STARTING: Queue for later
+   * - FAILED/STOPPED: Return error
+   */
+  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+    // FAST PATH: Daemon is ready, process immediately
+    if (this._lifecycleState === DaemonLifecycleState.READY) {
+      return await this.processMessage(message);
+    }
+
+    // QUEUE PATH: Daemon is starting, queue for later
+    if (this._lifecycleState === DaemonLifecycleState.STARTING) {
+      return await this.queueMessageForStartup(message);
+    }
+
+    // FAILED PATH: Daemon failed to initialize
+    if (this._lifecycleState === DaemonLifecycleState.FAILED) {
+      // Cast to include error - will be preserved at runtime
+      return {
+        success: false,
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        sessionId: this.context.uuid,
+        error: `Daemon ${this.name} failed to initialize: ${this.initializationError?.message}`
+      } as BaseResponsePayload & { error: string };
+    }
+
+    // STOPPED or CREATED: Should not receive messages
+    return {
+      success: false,
+      timestamp: new Date().toISOString(),
+      context: this.context,
+      sessionId: this.context.uuid,
+      error: `Daemon ${this.name} is not running (state: ${this._lifecycleState})`
+    } as BaseResponsePayload & { error: string };
+  }
 
   /**
    * Get endpoint (MessageSubscriber interface)
    */
   get endpoint(): string {
     return this.subpath;
+  }
+
+  // ============================================================================
+  // Startup Queue Methods
+  // ============================================================================
+
+  /**
+   * Queue a message for processing once initialization completes
+   */
+  private async queueMessageForStartup(message: JTAGMessage): Promise<BaseResponsePayload> {
+    return new Promise((resolve, reject) => {
+      // Check queue capacity
+      if (this.startupQueue.length >= this.queueConfig.maxQueueSize) {
+        if (this.queueConfig.dropOldest) {
+          // Drop oldest message to make room
+          const dropped = this.startupQueue.shift();
+          if (dropped) {
+            if (dropped.timeoutId) clearTimeout(dropped.timeoutId);
+            dropped.reject(new Error('Message dropped due to startup queue overflow'));
+            this.log.warn(`Dropped oldest queued message due to overflow (queue size: ${this.queueConfig.maxQueueSize})`);
+          }
+        } else {
+          // Reject new message
+          reject(new Error(`Daemon ${this.name} startup queue full (${this.queueConfig.maxQueueSize})`));
+          return;
+        }
+      }
+
+      // Set timeout for this message
+      const timeoutId = setTimeout(() => {
+        const index = this.startupQueue.findIndex(q => q.message === message);
+        if (index !== -1) {
+          const queued = this.startupQueue.splice(index, 1)[0];
+          queued.reject(new Error(`Queued message timed out after ${this.queueConfig.queueTimeout}ms`));
+        }
+      }, this.queueConfig.queueTimeout);
+
+      // Add to queue
+      this.startupQueue.push({
+        message,
+        resolve,
+        reject,
+        queuedAt: Date.now(),
+        timeoutId
+      });
+
+      this.log.debug(`Queued message for ${message.endpoint} (queue size: ${this.startupQueue.length})`);
+    });
+  }
+
+  /**
+   * Process all queued messages after initialization completes
+   */
+  private async flushStartupQueue(): Promise<void> {
+    if (this.startupQueue.length === 0) return;
+
+    this.log.info(`Flushing ${this.startupQueue.length} queued message(s)`);
+
+    // Process in FIFO order
+    while (this.startupQueue.length > 0) {
+      const queued = this.startupQueue.shift()!;
+
+      // Clear timeout
+      if (queued.timeoutId) clearTimeout(queued.timeoutId);
+
+      try {
+        const response = await this.processMessage(queued.message);
+        queued.resolve(response);
+      } catch (error) {
+        queued.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+  }
+
+  /**
+   * Reject all queued messages when initialization fails
+   */
+  private rejectQueuedMessages(error: Error): void {
+    while (this.startupQueue.length > 0) {
+      const queued = this.startupQueue.shift()!;
+      if (queued.timeoutId) clearTimeout(queued.timeoutId);
+      queued.reject(error);
+    }
+  }
+
+  /**
+   * Emit ready event for health monitoring integration
+   */
+  private emitReady(): void {
+    try {
+      // Dynamic import to avoid circular dependency
+      if (typeof window !== 'undefined') return;
+
+      const { Events } = require('../../../system/core/shared/Events');
+      Events.emit('system:daemon:ready', {
+        daemon: this.name,
+        subpath: this.subpath,
+        timestamp: Date.now()
+      });
+    } catch {
+      // Ignore - Events module may not be available
+    }
   }
 
 

@@ -54,9 +54,9 @@ export abstract class HealthDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming health messages
+   * Process incoming health messages
    */
-  async handleMessage(message: JTAGMessage): Promise<HealthResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<HealthResponse> {
     const healthPayload = message.payload as HealthPayload;
     
     try {

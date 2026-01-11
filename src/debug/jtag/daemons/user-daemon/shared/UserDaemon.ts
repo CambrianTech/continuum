@@ -116,9 +116,9 @@ export abstract class UserDaemon extends DaemonBase {
   }
 
   /**
-   * Handle user daemon messages
+   * Process user daemon messages
    */
-  async handleMessage(message: JTAGMessage): Promise<UserDaemonResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<UserDaemonResponse> {
     const payload = message.payload as unknown as UserDaemonPayload;
 
     switch (payload.type) {

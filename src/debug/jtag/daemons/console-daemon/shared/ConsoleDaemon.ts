@@ -320,9 +320,9 @@ export abstract class ConsoleDaemon extends DaemonBase {
 
 
   /**
-   * Handle incoming messages (from MessageSubscriber interface)
+   * Process incoming messages
    */
-  async handleMessage(message: JTAGMessage): Promise<ConsoleResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<ConsoleResponse> {
     try {
       const consolePayload = message.payload as ConsolePayload;
       

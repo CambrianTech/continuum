@@ -166,9 +166,9 @@ export abstract class EventsDaemon extends DaemonBase {
   }
 
   /**
-   * Handle event bridge messages from other contexts
+   * Process event bridge messages from other contexts
    */
-  async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
     // Check payload type - events route to 'events' endpoint but have type 'event-bridge'
     const payload = message.payload as EventBridgePayload;
 

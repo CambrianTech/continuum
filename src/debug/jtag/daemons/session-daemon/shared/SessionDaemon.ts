@@ -42,10 +42,10 @@ export abstract class SessionDaemon extends DaemonBase {
 
 
   /**
-   * Handle incoming session messages - base implementation forwards to server
+   * Process incoming session messages - base implementation forwards to server
    * SessionDaemonServer overrides this to provide actual session management
    */
-  async handleMessage(message: JTAGMessage): Promise<SessionResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<SessionResponse> {
     console.log(`📨 ${this.toString()}: Forwarding session message to server`);
     
     // Base implementation forwards to server via router.postMessage

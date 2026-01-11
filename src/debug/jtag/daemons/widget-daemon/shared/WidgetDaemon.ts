@@ -71,9 +71,9 @@ export abstract class WidgetDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming JTAG messages (minimal - widgets don't receive messages)
+   * Process incoming JTAG messages (minimal - widgets don't receive messages)
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     console.log(`WidgetDaemon: Received message to ${message.endpoint}`);
     return {
       success: true,

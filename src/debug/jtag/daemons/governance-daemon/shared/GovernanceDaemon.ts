@@ -47,9 +47,9 @@ export abstract class GovernanceDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming governance messages (currently unused - scheduler-based)
+   * Process incoming governance messages (currently unused - scheduler-based)
    */
-  async handleMessage(message: JTAGMessage): Promise<any> {
+  protected async processMessage(message: JTAGMessage): Promise<any> {
     // Governance daemon is scheduler-based, not message-based
     // This method exists to satisfy DaemonBase contract
     return { success: false, error: 'Governance daemon does not handle messages' };

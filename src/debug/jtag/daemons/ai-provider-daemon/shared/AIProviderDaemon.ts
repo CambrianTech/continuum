@@ -94,9 +94,9 @@ export class AIProviderDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming messages
+   * Process incoming messages
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const payload = message.payload as AIProviderPayload;
 
     try {

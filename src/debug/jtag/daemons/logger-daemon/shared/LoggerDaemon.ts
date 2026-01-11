@@ -38,9 +38,9 @@ export abstract class LoggerDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming messages
+   * Process incoming messages
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const payload = message.payload as LoggerDaemonPayload;
 
     try {

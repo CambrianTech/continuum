@@ -76,9 +76,9 @@ export abstract class ArchiveDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming messages
+   * Process incoming messages
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     const payload = message.payload as ArchiveDaemonPayload;
 
     try {

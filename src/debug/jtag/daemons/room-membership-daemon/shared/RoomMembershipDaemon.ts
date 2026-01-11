@@ -30,10 +30,10 @@ export abstract class RoomMembershipDaemon extends DaemonBase {
   abstract initialize(): Promise<void>;
 
   /**
-   * Handle messages - RoomMembershipDaemon is event-driven, not message-driven
+   * Process messages - RoomMembershipDaemon is event-driven, not message-driven
    * All actions happen via event subscriptions (data:users:created, etc.)
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     // RoomMembershipDaemon doesn't handle messages - it's purely event-driven
     return {
       context: message.payload.context,

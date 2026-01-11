@@ -271,8 +271,8 @@ export class SessionDaemonServer extends SessionDaemon {
     return parts.slice(sessionIndex + 1).join('/') as SessionOperation;
   }
 
-  // Only source of truth in all daemons is here:  handleMessage(message: JTAGMessage): Promise<JTAGResponsePayload>
-  async handleMessage(message: JTAGMessage): Promise<SessionResponse> {
+  // Only source of truth in all daemons is here: processMessage(message: JTAGMessage): Promise<JTAGResponsePayload>
+  protected async processMessage(message: JTAGMessage): Promise<SessionResponse> {
       // console.debug(`📨 ${this.toString()}: Handling message to ${message.endpoint}`);
       
       // Extract session operation from endpoint (similar to CommandDaemon pattern)
