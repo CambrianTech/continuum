@@ -362,10 +362,16 @@ export abstract class BaseWidget extends HTMLElement {
     if (this.shadowRoot) {
       this.shadowRoot.innerHTML = `
         <style>
+          :host {
+            display: block;
+            width: 100%;
+            height: 100%;
+          }
           .widget-loading {
             display: flex;
             align-items: center;
             justify-content: center;
+            width: 100%;
             height: 100%;
             color: var(--text-secondary, #888);
             font-size: 14px;
