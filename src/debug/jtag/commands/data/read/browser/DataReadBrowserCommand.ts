@@ -23,6 +23,18 @@ export class DataReadBrowserCommand extends DataReadCommand<BaseEntity> {
 
   async execute(params: DataReadParams): Promise<DataReadResult<BaseEntity>> {
     const verbose = typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+    const backend = (params as any).backend ?? 'auto';
+
+    // If backend is 'server', skip localStorage entirely
+    if (backend === 'server') {
+      verbose && console.log(`📡 data/read: SERVER-ONLY ${params.collection}/${params.id} (backend=server)`);
+      const serverResult = await this.remoteExecute<DataReadParams, DataReadResult<BaseEntity>>(params);
+      // Still cache the result for future reads
+      if (serverResult.success && serverResult.found && serverResult.data) {
+        LocalStorageDataBackend.create(params.collection, serverResult.data).catch(() => {});
+      }
+      return serverResult;
+    }
 
     // 1. Try localStorage first (instant)
     const localResult = await this.readLocal(params);

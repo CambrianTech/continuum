@@ -286,10 +286,12 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this._pendingRoomEntity = null; // Clear after use
       } else {
         // QUERY - only if no matching pre-loaded entity
+        // Use server backend to ensure fresh data (localStorage may have stale/incomplete data)
         const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
           collection: 'rooms',
           filter: { uniqueId: roomIdOrName },
-          limit: 1
+          limit: 1,
+          backend: 'server'
         });
 
         if (result.success && result.items?.[0]) {
