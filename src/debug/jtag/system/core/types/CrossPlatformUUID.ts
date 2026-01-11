@@ -97,13 +97,16 @@ export function createPseudoUUID(input: string): UUID {
  * Generate deterministic UUID from string input
  * Creates consistent UUIDs for the same input string across all sessions
  * Perfect for seeding data with consistent IDs based on entity names
+ *
+ * UUID format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx (8-4-4-4-12)
  */
 export function stringToUUID(input: string): UUID {
   // Create multiple hash values from the input string for UUID segments
-  const hashes = [];
+  const hashes: number[] = [];
 
-  // Generate 4 different hash values using different algorithms
-  for (let seed = 0; seed < 4; seed++) {
+  // Generate 5 different hash values using different seeds
+  // We need 5 because the last segment needs 12 hex chars (requires 2 hashes combined)
+  for (let seed = 0; seed < 5; seed++) {
     let hash = seed;
     for (let i = 0; i < input.length; i++) {
       const char = input.charCodeAt(i);
@@ -114,14 +117,17 @@ export function stringToUUID(input: string): UUID {
   }
 
   // Convert hashes to hex segments for UUID format
-  const segments = hashes.map(hash =>
-    hash.toString(16).padStart(8, '0').slice(0, 8)
-  );
+  const hex = (h: number, len: number) => h.toString(16).padStart(len, '0').slice(0, len);
 
-  // Build UUID string with proper RFC 4122 v4 format
-  const uuid = `${segments[0]}-${segments[1].slice(0, 4)}-4${segments[1].slice(5, 8)}-${(parseInt(segments[2].slice(0, 1), 16) & 0x3 | 0x8).toString(16)}${segments[2].slice(1, 4)}-${segments[3]}`;
+  // Build UUID string with proper RFC 4122 v4 format (8-4-4-4-12)
+  const seg1 = hex(hashes[0], 8);                                    // 8 chars
+  const seg2 = hex(hashes[1], 4);                                    // 4 chars
+  const seg3 = '4' + hex(hashes[2], 3);                              // 4 chars (version 4)
+  const variant = ((hashes[3] & 0x3) | 0x8).toString(16);            // variant bits
+  const seg4 = variant + hex(hashes[3] >> 4, 3);                     // 4 chars
+  const seg5 = hex(hashes[4], 8) + hex(hashes[0] ^ hashes[1], 4);    // 12 chars (combine two hashes)
 
-  return uuid as UUID;
+  return `${seg1}-${seg2}-${seg3}-${seg4}-${seg5}` as UUID;
 }
 
 /**

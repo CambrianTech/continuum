@@ -686,11 +686,13 @@ export class SystemOrchestrator extends EventEmitter {
     }
 
     // Check if browser is already connected using ping
+    let browserConnected = false;
     try {
       const { stdout } = await execAsync('./jtag ping');
       const pingResponse = JSON.parse(stdout);
 
       if (pingResponse.success && pingResponse.browser) {
+        browserConnected = true;
         console.log('🔄 Browser already connected - triggering reload to pick up new code');
 
         // Trigger reload in browser
@@ -703,22 +705,19 @@ export class SystemOrchestrator extends EventEmitter {
           try {
             await execAsync('./jtag development/exec --code="location.reload()"');
           } catch (reloadError) {
-            console.warn('⚠️ Browser reload failed - may need manual refresh');
+            console.warn('⚠️ Browser reload failed - will open browser');
+            browserConnected = false; // Force open since reload failed
           }
         }
-
-        await milestoneEmitter.completeMilestone(
-          SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
-          this.currentEntryPoint
-        );
-        return true;
       }
     } catch (error) {
       // Ping failed or no browser - proceed with launch
       console.debug('🔍 No browser connected - will launch new tab');
     }
 
-    console.debug('🌐 Launching browser...');
+    // ALWAYS open browser to ensure user sees something
+    // Even if connected, opening the URL will focus the existing tab
+    console.log('🌐 Opening browser...');
 
     // CRITICAL FIX: Browser only launches AFTER server ready milestone
     const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();

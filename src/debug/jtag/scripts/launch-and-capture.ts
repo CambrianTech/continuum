@@ -622,7 +622,7 @@ async function main(): Promise<void> {
         console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
         console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
 
-        // Check if browser is connected via ping, then refresh or open
+        // Check if browser is connected via ping, then refresh AND open
         console.log('🔄 Checking browser connection...');
         try {
           const browserUrl = `http://localhost:${httpPort}/`;
@@ -651,24 +651,14 @@ async function main(): Promise<void> {
           if (pingResult.browserConnected) {
             // Browser is connected - refresh it
             console.log('🔄 Browser connected, refreshing...');
-            exec('./jtag interface/navigate', { timeout: 5000 }, (error, stdout) => {
-              if (!error) {
-                try {
-                  const result = JSON.parse(stdout);
-                  if (result.success) {
-                    console.log('✅ Browser refreshed');
-                  }
-                } catch {
-                  // Ignore parse errors
-                }
-              }
-            });
-          } else {
-            // No browser connected - open one
-            console.log('🌐 No browser connected, opening...');
-            spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
-            console.log(`✅ Browser opened: ${browserUrl}`);
+            exec('./jtag interface/navigate', { timeout: 5000 }, () => {});
           }
+
+          // ALWAYS open browser to ensure user sees something
+          // Opening the URL will focus existing tab or open new one
+          console.log('🌐 Opening browser...');
+          spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
+          console.log(`✅ Browser opened: ${browserUrl}`);
         } catch {
           // Browser sync is best-effort, don't fail startup
         }

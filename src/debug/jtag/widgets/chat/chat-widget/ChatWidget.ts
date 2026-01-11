@@ -942,12 +942,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Load room data and member information
    */
   private async loadRoomData(roomId: UUID): Promise<void> {
+    console.log(`🔍 ChatWidget.loadRoomData: Loading room ${roomId}`);
     try {
-      // Load room entity (no backend:'server' - let browser command use localStorage cache)
+      // Load room entity - use server backend to ensure we get full data with members
       const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>(DATA_COMMANDS.READ, {
         collection: RoomEntity.collection,
-        id: roomId
+        id: roomId,
+        backend: 'server'
       });
+
+      console.log(`🔍 ChatWidget.loadRoomData: Result success=${roomResult?.success}, hasData=${!!roomResult?.data}, memberCount=${roomResult?.data?.members?.length ?? 0}`);
 
       if (!roomResult?.success || !roomResult.data) {
         console.error(`❌ ChatWidget: Failed to load room data for ${roomId}`);
@@ -968,25 +972,31 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Optimized: Uses data/list with id filter instead of N individual reads
    */
   private async loadRoomMembers(): Promise<void> {
+    console.log(`🔍 ChatWidget.loadRoomMembers: currentRoom=${!!this.currentRoom}, memberCount=${this.currentRoom?.members?.length ?? 0}`);
     if (!this.currentRoom || this.currentRoom.members.length === 0) return;
 
     this.roomMembers.clear();
 
     // Batch load all members in ONE query (was N+1 queries before)
     const memberIds = this.currentRoom.members.map(m => m.userId);
+    console.log(`🔍 ChatWidget.loadRoomMembers: Loading ${memberIds.length} members:`, memberIds.slice(0, 3));
 
     try {
       // Uses MongoDB-style $in operator for batch ID lookup
+      // Must use server backend - localStorage doesn't support $in operator
       const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
         collection: UserEntity.collection,
         filter: { id: { $in: memberIds } },
-        limit: memberIds.length
+        limit: memberIds.length,
+        backend: 'server'
       });
 
+      console.log(`🔍 ChatWidget.loadRoomMembers: Result success=${result?.success}, itemCount=${result?.items?.length ?? 0}`);
       if (result?.success && result.items) {
         for (const user of result.items) {
           this.roomMembers.set(user.id as UUID, user);
         }
+        console.log(`✅ ChatWidget.loadRoomMembers: Loaded ${this.roomMembers.size} members`);
       }
     } catch (error) {
       console.warn(`⚠️ ChatWidget: Failed to batch load members:`, error);
