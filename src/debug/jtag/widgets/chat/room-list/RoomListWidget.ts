@@ -136,7 +136,11 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
   // === ROOM SELECTION ===
   private selectRoom(room: RoomEntity): void {
     const roomId = room.id as UUID;
-    if (this.currentRoomId === roomId) return;
+
+    // Skip only if already viewing this chat room
+    if (pageState.contentType === 'chat' && pageState.entityId === roomId) {
+      return;
+    }
 
     this.currentRoomId = roomId;
 
@@ -149,7 +153,8 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     ContentService.open('chat', roomId, {
       title: room.displayName || room.name,
       subtitle: room.topic,
-      uniqueId: room.uniqueId || room.name || roomId
+      uniqueId: room.uniqueId || room.name || roomId,
+      metadata: { entity: room }  // Pass full entity for instant hydration
     });
   }
 

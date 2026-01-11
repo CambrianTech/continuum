@@ -452,7 +452,8 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
     ContentService.open('profile', entityId, {
       title,
-      uniqueId: entityId
+      uniqueId: entityId,
+      metadata: { entity: userEntity }  // Pass full entity for instant hydration
     });
   }
 

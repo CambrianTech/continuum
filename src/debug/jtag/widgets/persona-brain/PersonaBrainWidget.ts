@@ -126,12 +126,9 @@ export class PersonaBrainWidget extends ReactiveWidget {
 
   /**
    * Called by MainWidget when this widget is activated with a new entityId.
-   * This allows cached widgets to reload with different personas.
-   *
-   * OPTIMIZATION: Only reload if entityId actually changed. When switching
-   * back to the same persona, preserve cached state for instant display.
+   * Implements clear/populate/query pattern for instant hydration.
    */
-  public async onActivate(entityId?: string): Promise<void> {
+  public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
     // Check if this is the same persona (handles both UUID and uniqueId formats)
     const isSameEntity = entityId && (
       entityId === this.personaId ||
@@ -139,25 +136,37 @@ export class PersonaBrainWidget extends ReactiveWidget {
       entityId === this.persona?.uniqueId
     );
 
+    // SAME ENTITY? Just refresh, don't clear
     if (isSameEntity && this.persona) {
-      // Same persona, already loaded - just trigger re-render
       this.requestUpdate();
       return;
     }
 
-    // Different persona - update and reload
+    // Different persona - update tracking
     if (entityId) {
       this.setAttribute('entity-id', entityId);
       this.personaId = entityId;
     }
 
-    // Reset state and reload for new persona
+    // CLEAR old state (prevents stale data flash)
     this.persona = null;
     this.isLoading = true;
     this.selectedModule = null;
     this.activityFeed = [];
     this.issues = [];
 
+    // POPULATE with passed entity (instant hydration)
+    const preloaded = metadata?.entity as PersonaData;
+    if (preloaded) {
+      this.persona = preloaded;
+      this.isLoading = false;
+      this.requestUpdate(); // Render immediately with what we have
+      // Still load additional brain-specific data (modules, activity, issues)
+      await this.loadBrainData();
+      return;
+    }
+
+    // QUERY - only if no metadata (e.g., direct URL navigation)
     await this.loadPersonaData();
     this.emitPositronContext();
   }
@@ -168,6 +177,30 @@ export class PersonaBrainWidget extends ReactiveWidget {
    */
   private emitPositronContext(): void {
     // No-op - context cascade fix
+  }
+
+  /**
+   * Load only brain-specific data when persona is already hydrated from metadata.
+   * Skips the persona query since we already have it.
+   */
+  private async loadBrainData(): Promise<void> {
+    if (!this.persona) return;
+
+    // Update panel titles from hydrated data
+    this.panelTitle = this.persona.displayName;
+    this.panelSubtitle = `@${this.persona.uniqueId} - Cognitive System View`;
+
+    // Normalize personaId to uniqueId for log paths
+    this.personaId = this.persona.uniqueId;
+
+    // Load brain-specific data in parallel
+    await Promise.all([
+      this.loadModuleStats(),
+      this.loadLoggingConfig(),
+      this.loadAvailableLogs()
+    ]);
+
+    this.requestUpdate();
   }
 
   private async loadPersonaData(): Promise<void> {

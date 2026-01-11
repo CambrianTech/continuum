@@ -19,6 +19,7 @@ import { Events } from '@system/core/shared/Events';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { UserStateEntity, ContentItem, ContentType, ContentPriority } from '@system/data/entities/UserStateEntity';
 import type { ContentOpenedEvent } from '@commands/collaboration/content/open/shared/ContentOpenTypes';
+import { contentState } from '@system/state/ContentStateService';
 
 /**
  * Event data structures (match server-emitted events)
@@ -166,6 +167,15 @@ export class PositronContentStateAdapter {
       return;
     }
 
+    // CRITICAL: Check ContentStateService singleton FIRST for optimistic items
+    // ContentService.open() adds items there, but this adapter was checking userState
+    const singletonItem = contentState.findItem(data.contentType, data.entityId);
+    if (singletonItem && data.contentItemId && singletonItem.id !== data.contentItemId) {
+      // Update temp ID to real ID in the singleton (prevents tab flickering)
+      contentState.updateItemId(singletonItem.id as UUID, data.contentItemId);
+      // NOTE: Don't return early - still need to notify UI below
+    }
+
     const userState = this.getUserState();
 
     // Fallback if state not available
@@ -175,7 +185,7 @@ export class PositronContentStateAdapter {
       return;
     }
 
-    // Check if content already exists in openItems
+    // Check if content already exists in userState openItems
     const existingItem = userState.contentState.openItems.find(
       item => item.id === data.contentItemId ||
               (item.type === data.contentType && item.entityId === data.entityId)

@@ -80,6 +80,12 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   // Safe mode: skip all adapters, use base model only
   private safeMode: boolean = false;
 
+  // Circuit breaker: track consecutive timeouts to fail fast
+  private consecutiveTimeouts: number = 0;
+  private lastTimeoutAt: number = 0;
+  private static readonly CIRCUIT_BREAKER_THRESHOLD = 2;  // Open after 2 consecutive timeouts
+  private static readonly CIRCUIT_BREAKER_COOLDOWN_MS = 60000;  // 60 seconds to recover
+
   constructor() {
     super();
     this.client = InferenceGrpcClient.sharedInstance();
@@ -245,7 +251,58 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     this.client.close();
   }
 
+  /**
+   * Check if circuit breaker is open (should fail fast)
+   */
+  private isCircuitOpen(): boolean {
+    if (this.consecutiveTimeouts >= CandleGrpcAdapter.CIRCUIT_BREAKER_THRESHOLD) {
+      // Check if cooldown has passed
+      const timeSinceLastTimeout = Date.now() - this.lastTimeoutAt;
+      if (timeSinceLastTimeout < CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS) {
+        return true;  // Circuit still open
+      }
+      // Cooldown passed, reset circuit (half-open state → try one request)
+      verbose(`[CandleGrpcAdapter] ⚡ Circuit breaker cooldown passed, resetting`);
+      this.consecutiveTimeouts = 0;
+    }
+    return false;
+  }
+
+  /**
+   * Record a timeout failure for circuit breaker
+   */
+  private recordTimeout(): void {
+    this.consecutiveTimeouts++;
+    this.lastTimeoutAt = Date.now();
+    console.warn(`[CandleGrpcAdapter] ⚡ Circuit breaker: ${this.consecutiveTimeouts}/${CandleGrpcAdapter.CIRCUIT_BREAKER_THRESHOLD} timeouts`);
+    if (this.consecutiveTimeouts >= CandleGrpcAdapter.CIRCUIT_BREAKER_THRESHOLD) {
+      console.warn(`[CandleGrpcAdapter] ⚡ Circuit breaker OPEN - failing fast for ${CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`);
+    }
+  }
+
+  /**
+   * Record a successful request (reset circuit breaker)
+   */
+  private recordSuccess(): void {
+    if (this.consecutiveTimeouts > 0) {
+      verbose(`[CandleGrpcAdapter] ⚡ Circuit breaker reset after successful request`);
+      this.consecutiveTimeouts = 0;
+    }
+  }
+
   async healthCheck(): Promise<HealthStatus> {
+    // Check circuit breaker state first
+    if (this.isCircuitOpen()) {
+      return {
+        status: 'unhealthy',
+        apiAvailable: false,
+        responseTime: 0,
+        errorRate: 1,
+        lastChecked: Date.now(),
+        message: `Circuit breaker open: ${this.consecutiveTimeouts} consecutive timeouts`,
+      };
+    }
+
     try {
       const start = Date.now();
       await this.client.ping();
@@ -296,6 +353,11 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     const startTime = Date.now();
     const requestId = request.requestId || randomUUID();
 
+    // CIRCUIT BREAKER: Fail fast if we've had too many consecutive timeouts
+    if (this.isCircuitOpen()) {
+      throw new Error(`CandleGrpcAdapter: Circuit breaker open - local inference unavailable (cooldown ${CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s)`);
+    }
+
     // Track queue depth for logging
     this.queueDepth++;
     if (this.queueDepth > 1) {
@@ -309,6 +371,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       // Check if we've been waiting too long
       if (Date.now() - startTime > CandleGrpcAdapter.MAX_WAIT_TIME_MS) {
         this.queueDepth--;
+        this.recordTimeout();  // Track for circuit breaker
         throw new Error(`CandleGrpcAdapter: Timeout waiting for slot (${CandleGrpcAdapter.MAX_WAIT_TIME_MS / 1000}s)`);
       }
     }
@@ -450,6 +513,9 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         modelRequested: request.model || 'llama3.2:3b',
       };
 
+      // Success! Reset circuit breaker
+      this.recordSuccess();
+
       return {
         text: result.text,
         finishReason: 'stop',
@@ -461,6 +527,11 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         routing,
       };
     } catch (err) {
+      // Track generation errors (not just queue timeouts) for circuit breaker
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      if (errorMsg.includes('timeout') || errorMsg.includes('UNAVAILABLE') || errorMsg.includes('connection')) {
+        this.recordTimeout();
+      }
       console.error(`[CandleGrpcAdapter] Generate failed:`, err);
       throw err;
     } finally {

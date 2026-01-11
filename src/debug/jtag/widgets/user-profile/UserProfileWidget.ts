@@ -57,9 +57,9 @@ export class UserProfileWidget extends BaseWidget {
 
   /**
    * Called by MainWidget when this widget is activated with a new entityId.
-   * This allows cached widgets to reload with different entities.
+   * Implements clear/populate/query pattern for instant hydration.
    */
-  public async onActivate(entityId?: string): Promise<void> {
+  public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
     this.verbose() && console.log(`UserProfile: onActivate called with entityId=${entityId}`);
 
     // Store entityId as attribute for loadUser to find
@@ -69,10 +69,29 @@ export class UserProfileWidget extends BaseWidget {
       this.removeAttribute('entity-id');
     }
 
-    // Reset state and reload
+    // SAME ENTITY? Just refresh deltas
+    if (this.user && (this.user.id === entityId || this.user.uniqueId === entityId)) {
+      this.verbose() && console.log('UserProfile: Same entity, refreshing deltas');
+      await this.loadUser(); // Query for updates
+      return;
+    }
+
+    // DIFFERENT ENTITY - clear old state
     this.user = null;
     this.loading = true;
     this.error = null;
+
+    // POPULATE with passed entity (instant hydration)
+    const preloaded = metadata?.entity as UserEntity;
+    if (preloaded) {
+      this.user = preloaded;
+      this.loading = false;
+      this.renderWidget(); // Render immediately with what we have
+      this.verbose() && console.log('UserProfile: Instant hydration from metadata');
+      return; // No need to query - we have the full entity
+    }
+
+    // QUERY - only if no metadata (e.g., direct URL navigation)
     await this.loadUser();
   }
 
@@ -204,7 +223,8 @@ export class UserProfileWidget extends BaseWidget {
     const entityId = this.user.uniqueId || this.user.id;
     ContentService.open('persona', entityId, {
       title: `${this.user.displayName} - Brain`,
-      uniqueId: entityId
+      uniqueId: entityId,
+      metadata: { entity: this.user }  // Pass full entity for instant hydration
     });
   }
 

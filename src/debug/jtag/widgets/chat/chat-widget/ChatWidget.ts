@@ -104,6 +104,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private _isPinnedWidget: boolean = false;
   private _eventUnsubscribers: Array<() => void> = [];
   private _pendingMessageTempIds: Set<UUID> = new Set();
+  private _pendingRoomEntity: RoomEntity | null = null;  // For instant hydration
 
   constructor() {
     super({
@@ -181,6 +182,19 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
   }
 
+  /**
+   * Called by MainWidget when this widget is activated with a new entityId.
+   * Implements clear/populate/query pattern for instant hydration.
+   */
+  public async onActivate(entityId?: string, metadata?: Record<string, unknown>): Promise<void> {
+    // Store room entity from metadata for instant hydration
+    this._pendingRoomEntity = (metadata?.entity as RoomEntity) || null;
+
+    if (entityId) {
+      await this.switchToRoom(entityId);
+    }
+  }
+
   // === REACT-LIKE VISIBILITY TRACKING ===
 
   /**
@@ -250,24 +264,39 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   }
 
   private async switchToRoom(roomIdOrName: string): Promise<void> {
-    // Try to find room by uniqueId first, then by ID
+    // Try to use pre-loaded entity from metadata (instant hydration)
     try {
       let roomId: UUID | undefined;
       let roomName: string = roomIdOrName;
+      let roomUniqueId: string = roomIdOrName;
+      let room: RoomEntity | null = null;
 
-      const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
-        collection: 'rooms',
-        filter: { uniqueId: roomIdOrName },
-        limit: 1
-      });
-
-      if (result.success && result.items?.[0]) {
-        const room = result.items[0];
+      // CHECK FOR PRE-LOADED ENTITY (instant hydration)
+      if (this._pendingRoomEntity &&
+          (this._pendingRoomEntity.id === roomIdOrName ||
+           this._pendingRoomEntity.uniqueId === roomIdOrName)) {
+        room = this._pendingRoomEntity;
         roomId = room.id as UUID;
         roomName = room.displayName || room.name || roomIdOrName;
+        roomUniqueId = room.uniqueId || roomIdOrName;
+        this._pendingRoomEntity = null; // Clear after use
       } else {
-        // Try as UUID directly
-        roomId = roomIdOrName as UUID;
+        // QUERY - only if no matching pre-loaded entity
+        const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+          collection: 'rooms',
+          filter: { uniqueId: roomIdOrName },
+          limit: 1
+        });
+
+        if (result.success && result.items?.[0]) {
+          room = result.items[0];
+          roomId = room.id as UUID;
+          roomName = room.displayName || room.name || roomIdOrName;
+          roomUniqueId = room.uniqueId || roomIdOrName;
+        } else {
+          // Try as UUID directly
+          roomId = roomIdOrName as UUID;
+        }
       }
 
       // Skip if already on this room
@@ -278,12 +307,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Update state - track BOTH UUID and uniqueId for guard comparisons
       this.currentRoomId = roomId;
       this.currentRoomName = roomName;
-      // Track uniqueId if we resolved it, otherwise use the input
-      if (result.success && result.items?.[0]?.uniqueId) {
-        this.currentRoomUniqueId = result.items[0].uniqueId;
-      } else {
-        this.currentRoomUniqueId = roomIdOrName;
-      }
+      this.currentRoomUniqueId = roomUniqueId;
 
       // Reset counters for new room
       this.totalMessageCount = 0;

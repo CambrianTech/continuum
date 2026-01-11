@@ -274,8 +274,12 @@ export class MainWidget extends ReactiveWidget {
     // === ACTIVATE widget (show + notify) ===
     widget.style.display = '';
 
+    // Look up ContentItem to get metadata (may contain pre-loaded entity)
+    const contentItem = contentState.findItem(contentType, entityId);
+    const metadata = contentItem?.metadata;
+
     if ('onActivate' in widget && typeof (widget as any).onActivate === 'function') {
-      (widget as any).onActivate(entityId);
+      (widget as any).onActivate(entityId, metadata);
     } else if ('setEntityId' in widget && typeof (widget as any).setEntityId === 'function') {
       (widget as any).setEntityId(entityId);
     } else {
