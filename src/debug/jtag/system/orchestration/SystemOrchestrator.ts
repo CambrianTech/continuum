@@ -715,22 +715,24 @@ export class SystemOrchestrator extends EventEmitter {
       console.debug('🔍 No browser connected - will launch new tab');
     }
 
-    // ALWAYS open browser to ensure user sees something
-    // Even if connected, opening the URL will focus the existing tab
-    console.log('🌐 Opening browser...');
+    // Only open browser if not already connected
+    // Opening localhost:9000 creates a NEW tab, doesn't focus existing
+    if (!browserConnected) {
+      console.log('🌐 Opening browser...');
+      const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
 
-    // CRITICAL FIX: Browser only launches AFTER server ready milestone
-    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-
-    try {
-      spawn('open', [browserUrl], {
-        detached: true,
-        stdio: 'ignore'
-      }).unref();
-      console.log(`✅ Browser launched: ${browserUrl}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to auto-open browser: ${error}`);
-      console.debug(`👉 Manually open: ${browserUrl}`);
+      try {
+        spawn('open', [browserUrl], {
+          detached: true,
+          stdio: 'ignore'
+        }).unref();
+        console.log(`✅ Browser launched: ${browserUrl}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to auto-open browser: ${error}`);
+        console.debug(`👉 Manually open: ${browserUrl}`);
+      }
+    } else {
+      console.log('✅ Browser already connected - skipped opening new tab');
     }
 
     await milestoneEmitter.completeMilestone(

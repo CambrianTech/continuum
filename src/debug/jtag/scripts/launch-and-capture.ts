@@ -603,14 +603,13 @@ async function main(): Promise<void> {
     
     // Skip server check if requested or in certain modes
     if (CONFIG.checkExisting && !CONFIG.skipHealthCheck) {
-      if (CONFIG.verbose) console.log('🔍 Checking for existing server...');
-      
+      console.log('🔍 Checking for existing server...');
+
       const serverStatus = await checkExistingServer();
-      
-      if (CONFIG.verbose || behavior.showStatusOnExisting) {
-        console.log(serverStatus.message);
-      }
-      
+
+      console.log(`📊 Server check: isHealthy=${serverStatus.isHealthy}, tmux=${serverStatus.tmuxRunning}, ports=${serverStatus.portsActive}`);
+      console.log(serverStatus.message);
+
       // Development mode: show status and exit if healthy
       if (serverStatus.isHealthy && !CONFIG.forceRestart && behavior.exitOnHealthy) {
         const instanceConfig = loadInstanceConfigForContext();
@@ -649,16 +648,14 @@ async function main(): Promise<void> {
           });
 
           if (pingResult.browserConnected) {
-            // Browser is connected - refresh it
+            // Browser is connected - just refresh it
             console.log('🔄 Browser connected, refreshing...');
             exec('./jtag interface/navigate', { timeout: 5000 }, () => {});
+          } else {
+            // No browser connected - open new tab
+            console.log('🌐 Opening browser...');
+            spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
           }
-
-          // ALWAYS open browser to ensure user sees something
-          // Opening the URL will focus existing tab or open new one
-          console.log('🌐 Opening browser...');
-          spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
-          console.log(`✅ Browser opened: ${browserUrl}`);
         } catch {
           // Browser sync is best-effort, don't fail startup
         }

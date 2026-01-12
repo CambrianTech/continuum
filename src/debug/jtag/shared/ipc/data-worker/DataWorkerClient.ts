@@ -17,7 +17,7 @@
  *
  * // Open database handle
  * const { handle, storageType, pragmaMode } = await client.openDatabase({
- *   filename: '/Users/joel/.continuum/data/database.sqlite',
+ *   filename: '~/.continuum/data/database.sqlite',
  *   adapterType: 'sqlite',
  *   storageType: 'auto-detect'
  * });

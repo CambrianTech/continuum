@@ -24,6 +24,43 @@ export interface ContentItem {
   metadata?: Record<string, unknown>; // Type-specific metadata (scroll position, filters, etc.)
 }
 
+/**
+ * Check if two ContentItems represent the same logical content.
+ * Matches by type AND (entityId OR uniqueId OR both undefined for singletons).
+ *
+ * IMPORTANT: Same uniqueId = same logical entity, even if entityIds differ.
+ * This handles inconsistent call sites where entityId might be UUID or uniqueId string.
+ *
+ * @param a First content item (or partial with type/entityId/uniqueId)
+ * @param b Second content item (or partial with type/entityId/uniqueId)
+ * @returns true if they represent the same content
+ */
+export function contentItemsMatch(
+  a: Pick<ContentItem, 'type'> & Partial<Pick<ContentItem, 'entityId' | 'uniqueId'>>,
+  b: Pick<ContentItem, 'type'> & Partial<Pick<ContentItem, 'entityId' | 'uniqueId'>>
+): boolean {
+  // Different types = different content
+  if (a.type !== b.type) return false;
+
+  // Singleton content (no entityId or uniqueId) - match by type only
+  // e.g., settings, help, theme tabs that have no associated entity
+  const aIssingleton = !a.entityId && !a.uniqueId;
+  const bIsSingleton = !b.entityId && !b.uniqueId;
+  if (aIssingleton && bIsSingleton) return true;
+
+  // Same entityId = same content
+  if (a.entityId && b.entityId && a.entityId === b.entityId) return true;
+
+  // Same uniqueId = same content (handles UUID vs uniqueId string mismatch)
+  if (a.uniqueId && b.uniqueId && a.uniqueId === b.uniqueId) return true;
+
+  // Cross-match: entityId matches uniqueId (handles case where one side used uniqueId as entityId)
+  if (a.entityId && b.uniqueId && a.entityId === b.uniqueId) return true;
+  if (a.uniqueId && b.entityId && a.uniqueId === b.entityId) return true;
+
+  return false;
+}
+
 export interface ContentState {
   openItems: ContentItem[];  // Array of open content tabs
   currentItemId?: UUID;      // Currently focused content item
@@ -200,13 +237,13 @@ export class UserStateEntity extends BaseEntity {
 
   /**
    * Add a new content item to the user's open tabs
-   * Deduplicates by entityId (e.g., roomId) - clicking same room just switches focus
+   * Deduplicates using contentItemsMatch() - clicking same room just switches focus
    * Tabs maintain insertion order - like VSCode, not MRU
    */
   addContentItem(item: Omit<ContentItem, 'lastAccessedAt'>): void {
-    // Check if this entity is already open (by entityId, not content item id)
+    // Check if this entity is already open using centralized matching
     const existingItem = this.contentState.openItems.find(
-      existing => existing.entityId === item.entityId && existing.type === item.type
+      existing => contentItemsMatch(existing, item)
     );
 
     if (existingItem) {
