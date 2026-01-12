@@ -39,7 +39,7 @@ fn get_num_workers() -> usize {
             if line.starts_with("INFERENCE_WORKERS=") {
                 if let Some(value) = line.strip_prefix("INFERENCE_WORKERS=") {
                     if let Ok(n) = value.parse::<usize>() {
-                        return n.max(1).min(8); // Clamp to 1-8
+                        return n.clamp(1, 8); // Clamp to 1-8
                     }
                 }
             }
@@ -52,7 +52,7 @@ fn get_num_workers() -> usize {
     if let Ok(mem) = sys_info {
         let total_gb = mem.total as f64 / (1024.0 * 1024.0);
         let workers = ((total_gb - 4.0) / 2.0).floor() as usize; // Reserve 4GB for system
-        return workers.max(1).min(4); // 1-4 workers
+        return workers.clamp(1, 4); // 1-4 workers
     }
 
     // Default: 2 workers
@@ -109,18 +109,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Determine number of workers for concurrent inference
     let num_workers = get_num_workers();
-    info!("  Workers: {} (INFERENCE_WORKERS env or auto-detected)", num_workers);
+    info!("  Workers: {num_workers} (INFERENCE_WORKERS env or auto-detected)");
 
     // Load model based on mode
     // Default: worker pool with quantized models for concurrent inference
     let service = match mode {
         InferenceMode::Auto | InferenceMode::Quantized => {
             // Try to create worker pool for concurrent quantized inference
-            info!("🏭 Creating worker pool with {} quantized models...", num_workers);
+            info!("🏭 Creating worker pool with {num_workers} quantized models...");
 
             match WorkerPool::new(num_workers).await {
                 Ok(pool) => {
-                    info!("✅ Worker pool ready ({} concurrent inference slots)", num_workers);
+                    info!("✅ Worker pool ready ({num_workers} concurrent inference slots)");
                     InferenceService::new_with_pool(pool)
                 }
                 Err(e) => {

@@ -176,18 +176,15 @@ pub fn merge_lora_weight(
 ///   model.layers.0.self_attn.q_proj.weight
 pub fn map_lora_name_to_model_name(lora_name: &str) -> String {
     // Strip "base_model." prefix (only once, not repeatedly)
-    let cleaned = if lora_name.starts_with("base_model.") {
-        &lora_name["base_model.".len()..]
-    } else {
-        lora_name
-    };
+    let cleaned = lora_name
+        .strip_prefix("base_model.")
+        .unwrap_or(lora_name);
 
     // Strip ONE extra "model." if there are two (e.g., "model.model.layers" -> "model.layers")
-    let cleaned = if cleaned.starts_with("model.model.") {
-        &cleaned["model.".len()..]
-    } else {
-        cleaned
-    };
+    let cleaned = cleaned
+        .strip_prefix("model.model.")
+        .map(|s| format!("model.{s}"))
+        .unwrap_or_else(|| cleaned.to_string());
 
     // Add .weight suffix if not present
     if cleaned.ends_with(".weight") {

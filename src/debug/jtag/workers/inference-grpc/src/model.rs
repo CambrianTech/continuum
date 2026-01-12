@@ -34,30 +34,6 @@ pub struct ModelState {
 }
 
 impl ModelState {
-    pub fn new(
-        model: Llama,
-        cache: Cache,
-        tokenizer: Tokenizer,
-        device: Device,
-        eos_token_ids: Vec<u32>,
-        dtype: DType,
-        config: LlamaModelConfig,
-        model_id: String,
-        weight_paths: Vec<std::path::PathBuf>,
-    ) -> Self {
-        Self {
-            model,
-            cache,
-            tokenizer,
-            device,
-            eos_token_ids,
-            dtype,
-            config,
-            model_id,
-            weight_paths,
-        }
-    }
-
     pub fn clear_cache(&mut self) {
         self.cache = Cache::new(true, self.dtype, &self.config, &self.device)
             .expect("Failed to recreate cache");
@@ -307,7 +283,7 @@ pub fn load_model_by_id(
     let duration = start.elapsed();
     info!("✅ Model loaded in {duration:?}");
 
-    Ok(ModelState::new(
+    Ok(ModelState {
         model,
         cache,
         tokenizer,
@@ -315,9 +291,9 @@ pub fn load_model_by_id(
         eos_token_ids,
         dtype,
         config,
-        model_id.to_string(),
+        model_id: model_id.to_string(),
         weight_paths,
-    ))
+    })
 }
 
 /// Load default model from environment variable

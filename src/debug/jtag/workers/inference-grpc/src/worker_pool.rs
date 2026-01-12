@@ -1,15 +1,13 @@
-/**
- * Worker Pool for Concurrent Inference
- *
- * Manages multiple model instances for parallel inference.
- * Each worker has its own model + KV cache, enabling true concurrency.
- *
- * Architecture:
- * - N workers, each with own QuantizedModelState
- * - Request channel distributes work to available workers
- * - Response channels return results to callers
- * - Semaphore tracks available workers
- */
+//! Worker Pool for Concurrent Inference
+//!
+//! Manages multiple model instances for parallel inference.
+//! Each worker has its own model + KV cache, enabling true concurrency.
+//!
+//! Architecture:
+//! - N workers, each with own QuantizedModelState
+//! - Request channel distributes work to available workers
+//! - Response channels return results to callers
+//! - Semaphore tracks available workers
 
 use log::info;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,7 +56,7 @@ impl PoolStats {
 /// Worker pool managing multiple model instances
 pub struct WorkerPool {
     request_tx: mpsc::Sender<InferenceRequest>,
-    pub stats: Arc<PoolStats>,
+    stats: Arc<PoolStats>, // Used internally by workers, not exposed
     pub num_workers: usize,
     pub available: Arc<Semaphore>,
 }
@@ -69,7 +67,7 @@ impl WorkerPool {
     /// Memory usage: ~2GB per worker for quantized model
     /// Recommended: 3-4 workers for 8GB limit
     pub async fn new(num_workers: usize) -> Result<Self, String> {
-        info!("🏭 Creating worker pool with {} workers...", num_workers);
+        info!("🏭 Creating worker pool with {num_workers} workers...");
         let start = Instant::now();
 
         // Channel for distributing requests (bounded to prevent memory explosion)
@@ -87,7 +85,7 @@ impl WorkerPool {
 
             tokio::spawn(async move {
                 // Each worker loads its own model instance
-                info!("  Worker {}: Loading model...", worker_id);
+                info!("  Worker {worker_id}: Loading model...");
                 let load_start = Instant::now();
 
                 let mut model_state = match load_default_quantized() {
@@ -100,7 +98,7 @@ impl WorkerPool {
                         state
                     }
                     Err(e) => {
-                        info!("  Worker {}: Failed to load model: {}", worker_id, e);
+                        info!("  Worker {worker_id}: Failed to load model: {e}");
                         return;
                     }
                 };
@@ -113,7 +111,7 @@ impl WorkerPool {
                         match rx_guard.recv().await {
                             Some(req) => req,
                             None => {
-                                info!("  Worker {}: Channel closed, shutting down", worker_id);
+                                info!("  Worker {worker_id}: Channel closed, shutting down");
                                 return;
                             }
                         }
@@ -193,7 +191,7 @@ impl WorkerPool {
             .available
             .acquire()
             .await
-            .map_err(|e| format!("Semaphore error: {}", e))?;
+            .map_err(|e| format!("Semaphore error: {e}"))?;
 
         // Create response channel
         let (response_tx, response_rx) = oneshot::channel();
@@ -209,7 +207,7 @@ impl WorkerPool {
         self.request_tx
             .send(request)
             .await
-            .map_err(|e| format!("Failed to send request: {}", e))?;
+            .map_err(|e| format!("Failed to send request: {e}"))?;
 
         // Note: permit is NOT dropped here - worker will release it after processing
         std::mem::forget(_permit);
@@ -217,18 +215,24 @@ impl WorkerPool {
         Ok(response_rx)
     }
 
-    /// Get current pool statistics
-    pub fn get_stats(&self) -> (u64, u64, u64, u64) {
+    /// Get number of available workers
+    pub fn available_workers(&self) -> usize {
+        self.available.available_permits()
+    }
+
+    /// Get pool statistics
+    ///
+    /// Returns snapshot of current stats:
+    /// - requests_completed: Total requests processed
+    /// - requests_pending: Currently in-flight requests
+    /// - total_tokens_generated: Sum of all generated tokens
+    /// - total_inference_ms: Sum of all inference time
+    pub fn stats(&self) -> (u64, u64, u64, u64) {
         (
             self.stats.requests_completed.load(Ordering::SeqCst),
             self.stats.requests_pending.load(Ordering::SeqCst),
             self.stats.total_tokens_generated.load(Ordering::SeqCst),
             self.stats.total_inference_ms.load(Ordering::SeqCst),
         )
-    }
-
-    /// Get number of available workers
-    pub fn available_workers(&self) -> usize {
-        self.available.available_permits()
     }
 }

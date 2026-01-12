@@ -100,6 +100,7 @@ fn parse_message(line: &str) -> Result<(String, String), serde_json::Error> {
 // ============================================================================
 
 /// Route message to appropriate handler based on type.
+#[allow(clippy::too_many_arguments)]
 fn handle_message(
     line: &str,
     msg_type: &str,

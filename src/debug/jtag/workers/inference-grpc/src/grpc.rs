@@ -94,7 +94,7 @@ impl InferenceService {
     /// Falls back to BF16 single-instance when LoRA adapters are needed.
     pub fn new_with_pool(pool: WorkerPool) -> Self {
         let num_workers = pool.num_workers;
-        info!("🏭 InferenceService using worker pool ({} workers)", num_workers);
+        info!("🏭 InferenceService using worker pool ({num_workers} workers)");
         Self {
             state: Arc::new(RwLock::new(None)),
             quantized_state: Arc::new(RwLock::new(None)),
@@ -107,11 +107,6 @@ impl InferenceService {
     /// Check if we're in quantized mode (pool or single instance)
     pub async fn is_quantized(&self) -> bool {
         self.worker_pool.is_some() || self.quantized_state.read().await.is_some()
-    }
-
-    /// Check if we have a worker pool
-    pub fn has_pool(&self) -> bool {
-        self.worker_pool.is_some()
     }
 }
 
@@ -145,7 +140,7 @@ impl Inference for InferenceService {
         let prompt = req.prompt;
         let max_tokens = req.max_tokens.max(10) as usize;
         let temperature = if req.temperature > 0.0 {
-            req.temperature as f64
+            req.temperature
         } else {
             0.7
         };
@@ -186,7 +181,7 @@ impl Inference for InferenceService {
                 let stats = stats.clone();
                 let available = pool.available_workers();
 
-                info!("🏭 Using worker pool ({} available workers)", available);
+                info!("🏭 Using worker pool ({available} available workers)");
 
                 tokio::spawn(async move {
                     let start = Instant::now();
@@ -253,7 +248,7 @@ impl Inference for InferenceService {
                 let mut q_guard = quantized_arc.write().await;
                 match q_guard.as_mut() {
                     Some(q_state) => {
-                        generate_text_quantized(q_state, &prompt, max_tokens, temperature as f64)
+                        generate_text_quantized(q_state, &prompt, max_tokens, temperature)
                     }
                     None => Err("Quantized model not available".to_string()),
                 }
@@ -997,13 +992,36 @@ impl Inference for InferenceService {
             .map(|a| a.adapter_id.clone())
             .collect();
 
+        // Use pool stats when available (more accurate - tracks actual worker activity)
+        // Fall back to gRPC-level stats when no pool
+        let (requests_completed, requests_pending) = if let Some(pool) = &self.worker_pool {
+            let (completed, pending, tokens, time_ms) = pool.stats();
+            // Log additional metrics for observability
+            if completed > 0 {
+                let tokens_per_sec = if time_ms > 0 {
+                    (tokens as f64 / time_ms as f64) * 1000.0
+                } else {
+                    0.0
+                };
+                info!(
+                    "Pool stats: {completed} requests, {tokens} tokens, {tokens_per_sec:.1} tok/s"
+                );
+            }
+            (completed as i32, pending as i32)
+        } else {
+            (
+                self.stats.requests_completed.load(Ordering::SeqCst) as i32,
+                self.stats.requests_pending.load(Ordering::SeqCst) as i32,
+            )
+        };
+
         Ok(Response::new(StatusResponse {
             healthy: state.is_some(),
             current_model,
             memory_used_bytes: 0,
             memory_total_bytes: 0,
-            requests_pending: self.stats.requests_pending.load(Ordering::SeqCst) as i32,
-            requests_completed: self.stats.requests_completed.load(Ordering::SeqCst) as i32,
+            requests_pending,
+            requests_completed,
             active_adapters,
         }))
     }

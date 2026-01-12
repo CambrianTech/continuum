@@ -229,7 +229,7 @@ enum StorageType {
     InternalSSD,
     ExternalSSD,
     SDCard,
-    HDD,
+    Hdd,
     Unknown,
 }
 
@@ -267,8 +267,8 @@ fn detect_storage_type(path: &Path) -> StorageType {
                 return StorageType::ExternalSSD;
             }
 
-            // Assume HDD if not SSD
-            return StorageType::HDD;
+            // Assume spinning disk if not SSD
+            return StorageType::Hdd;
         }
 
         // Default to SD card for /Volumes if detection fails (conservative)
@@ -308,7 +308,7 @@ fn get_sqlite_pragmas(storage: StorageType, multi_writer: bool) -> String {
                  PRAGMA temp_store=MEMORY; \
                  PRAGMA busy_timeout=5000;"
                 .to_string(),
-            StorageType::SDCard | StorageType::HDD | StorageType::Unknown => {
+            StorageType::SDCard | StorageType::Hdd | StorageType::Unknown => {
                 "PRAGMA journal_mode=DELETE; \
                  PRAGMA synchronous=NORMAL; \
                  PRAGMA temp_store=MEMORY; \
@@ -895,8 +895,11 @@ impl ConcurrencyStrategy for JsonStrategy {
 // Adapter Registry - with path-based caching for concurrent access
 // ============================================================================
 
+/// Maps adapter handles to their type and concurrency strategy
+type AdapterMap = HashMap<AdapterHandle, (AdapterType, Arc<dyn ConcurrencyStrategy>)>;
+
 struct AdapterRegistry {
-    adapters: Arc<Mutex<HashMap<AdapterHandle, (AdapterType, Arc<dyn ConcurrencyStrategy>)>>>,
+    adapters: Arc<Mutex<AdapterMap>>,
     /// Cache: database path → shared adapter (prevents concurrent opens of same DB)
     path_cache: Arc<Mutex<HashMap<String, Arc<dyn ConcurrencyStrategy>>>>,
     /// Serializes adapter opening to prevent concurrent SQLite pragma configuration
@@ -1682,6 +1685,7 @@ impl RustDataDaemon {
     // Timed versions of data operations (captures query_build, lock_wait, execute)
     // ========================================================================
 
+    #[allow(clippy::too_many_arguments)]
     fn data_list_timed(
         &self,
         timer: &mut RequestTimer,
