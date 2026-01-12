@@ -53,6 +53,9 @@ export abstract class ServerDaemonBase extends DaemonBase {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+
+    // Call base class cleanup (subscriptions, intervals, lifecycle state)
+    await super.shutdown();
   }
 
   // ===========================================================================

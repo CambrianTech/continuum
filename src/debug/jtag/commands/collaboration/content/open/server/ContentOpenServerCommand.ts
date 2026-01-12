@@ -50,14 +50,22 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
 
       // 2. Resolve entityId to canonical UUID, uniqueId, and display name
       //    URL might use "general" but DB stores UUID "5e71a0c8-..."
+      //    Prefer params.uniqueId if already provided (MainWidget passes resolved entity info)
       let canonicalEntityId = params.entityId;
-      let resolvedUniqueId: string | undefined;
+      let resolvedUniqueId: string | undefined = params.uniqueId;
       let resolvedDisplayName: string | undefined;
-      if (params.entityId) {
+      if (params.entityId && !params.uniqueId) {
+        // Only resolve if uniqueId not already provided
         const resolved = await RoutingService.resolve(params.contentType, params.entityId);
         if (resolved) {
           canonicalEntityId = resolved.id;
           resolvedUniqueId = resolved.uniqueId;
+          resolvedDisplayName = resolved.displayName;
+        }
+      } else if (params.entityId && params.uniqueId) {
+        // uniqueId already provided - just resolve display name if needed
+        const resolved = await RoutingService.resolve(params.contentType, params.entityId);
+        if (resolved) {
           resolvedDisplayName = resolved.displayName;
         }
       }

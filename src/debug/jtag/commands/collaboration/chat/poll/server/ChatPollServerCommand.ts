@@ -8,8 +8,8 @@ import { ChatPollCommand } from '../shared/ChatPollCommand';
 import type { ChatPollParams, ChatPollResult } from '../shared/ChatPollTypes';
 import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
-import type { RoomEntity } from '@system/data/entities/RoomEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 
 export class ChatPollServerCommand extends ChatPollCommand {
 
@@ -19,18 +19,13 @@ export class ChatPollServerCommand extends ChatPollCommand {
 
   protected async executeChatPoll(params: ChatPollParams): Promise<ChatPollResult> {
     try {
-      // Resolve room name to roomId if provided
+      // Resolve room identifier (single source of truth: RoutingService)
       let roomId: UUID | undefined = params.roomId;
 
       if (params.room && !roomId) {
-        const roomsResult = await DataDaemon.query<RoomEntity>({
-          collection: 'rooms',
-          filter: { name: params.room },
-          limit: 1
-        });
-
-        if (roomsResult.success && roomsResult.data && roomsResult.data.length > 0) {
-          roomId = roomsResult.data[0].id;
+        const resolved = await resolveRoomIdentifier(params.room);
+        if (resolved) {
+          roomId = resolved.id;
         }
       }
 

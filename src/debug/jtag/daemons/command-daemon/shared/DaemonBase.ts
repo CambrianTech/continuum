@@ -641,6 +641,12 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
   async shutdown(): Promise<void> {
     this.log.info(`🔄 ${this.toString()}: Shutting down...`);
 
+    // Transition: * → STOPPED
+    this._lifecycleState = DaemonLifecycleState.STOPPED;
+
+    // Reject any queued messages (they won't be processed)
+    this.rejectQueuedMessages(new Error(`Daemon ${this.name} is shutting down`));
+
     // Call subclass cleanup first
     await this.cleanup();
 

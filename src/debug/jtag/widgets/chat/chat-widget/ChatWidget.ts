@@ -285,14 +285,24 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         roomUniqueId = room.uniqueId || roomIdOrName;
         this._pendingRoomEntity = null; // Clear after use
       } else {
-        // QUERY - only if no matching pre-loaded entity
+        // QUERY - try uniqueId first, then UUID
         // Use server backend to ensure fresh data (localStorage may have stale/incomplete data)
-        const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+        let result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
           collection: 'rooms',
           filter: { uniqueId: roomIdOrName },
           limit: 1,
           backend: 'server'
         });
+
+        // If not found by uniqueId, try by UUID
+        if (!result.success || !result.items?.[0]) {
+          result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+            collection: 'rooms',
+            filter: { id: roomIdOrName },
+            limit: 1,
+            backend: 'server'
+          });
+        }
 
         if (result.success && result.items?.[0]) {
           room = result.items[0];
@@ -300,7 +310,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           roomName = room.displayName || room.name || roomIdOrName;
           roomUniqueId = room.uniqueId || roomIdOrName;
         } else {
-          // Try as UUID directly
+          // Room not found - use identifier as-is (will fail gracefully)
+          verbose() && console.warn(`ChatWidget: Room not found: ${roomIdOrName}`);
           roomId = roomIdOrName as UUID;
         }
       }
@@ -593,8 +604,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.setActiveContent(isNowActive, 'pageState change');
 
         // If chat became active and room changed, switch to it
+        // Use uniqueId (human-readable) when available, fall back to entityId (UUID)
         if (isNowActive && newState?.entityId && newState.entityId !== this.currentRoomId) {
-          this.handleRoomSwitch(newState.entityId, newState.resolved?.displayName, 'pageState');
+          const roomIdentifier = newState.resolved?.uniqueId || newState.entityId;
+          this.handleRoomSwitch(roomIdentifier, newState.resolved?.displayName, 'pageState');
         }
       });
     }
@@ -668,18 +681,26 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     // content:opened - from content/open command
-    this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId: string; title: string }) => {
-      if (data.contentType === 'chat' && data.entityId) {
-        this.setActiveContent(true, 'content:opened');
-        this.handleRoomSwitch(data.entityId, data.title, 'content:opened');
+    // Use uniqueId (human-readable like "general") when available, fall back to entityId (UUID)
+    this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId?: string; uniqueId?: string; title?: string }) => {
+      if (data.contentType === 'chat') {
+        const roomIdentifier = data.uniqueId || data.entityId;
+        if (roomIdentifier) {
+          this.setActiveContent(true, 'content:opened');
+          this.handleRoomSwitch(roomIdentifier, data.title, 'content:opened');
+        }
       }
     });
 
     // content:switched - from tab clicks
-    this.subscribeWithCleanup('content:switched', (data: { contentType?: string; entityId?: string; title?: string }) => {
-      if (data.contentType === 'chat' && data.entityId) {
-        this.setActiveContent(true, 'content:switched');
-        this.handleRoomSwitch(data.entityId, data.title, 'content:switched');
+    // Use uniqueId when available for proper room lookup
+    this.subscribeWithCleanup('content:switched', (data: { contentType?: string; entityId?: string; uniqueId?: string; title?: string }) => {
+      if (data.contentType === 'chat') {
+        const roomIdentifier = data.uniqueId || data.entityId;
+        if (roomIdentifier) {
+          this.setActiveContent(true, 'content:switched');
+          this.handleRoomSwitch(roomIdentifier, data.title, 'content:switched');
+        }
       } else if (data.contentType && data.contentType !== 'chat') {
         // User switched to non-chat content - we're no longer active
         this.setActiveContent(false, `switched to ${data.contentType}`);

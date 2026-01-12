@@ -126,6 +126,35 @@ class RoutingServiceImpl {
         return resolved;
       }
 
+      // 4. Query by name (legacy support for commands using room name)
+      const nameResult = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
+        DATA_COMMANDS.LIST,
+        {
+          collection: 'rooms',
+          filter: { name: identifier },
+          limit: 1
+        }
+      );
+
+      if (nameResult.success && nameResult.items?.[0]) {
+        const room = nameResult.items[0];
+        // Populate EntityCacheService
+        entityCache.populate<RoomEntity>('rooms', [room]);
+
+        const resolved: ResolvedEntity = {
+          id: room.id as UUID,
+          uniqueId: room.uniqueId || room.id,
+          displayName: room.displayName || room.name || room.uniqueId || room.id
+        };
+        this.addToCache(this.roomCache, identifier, resolved);
+        // Also cache by UUID and uniqueId for faster future lookups
+        this.addToCache(this.roomCache, room.id, resolved);
+        if (room.uniqueId) {
+          this.addToCache(this.roomCache, room.uniqueId, resolved);
+        }
+        return resolved;
+      }
+
       console.warn(`🔍 RoutingService: Room not found: ${identifier}`);
       return null;
     } catch (error) {
@@ -368,3 +397,43 @@ export const RoutingService = new RoutingServiceImpl();
 
 // Export type for external use
 export { isUUID };
+
+/**
+ * ========================================
+ * SERVER-SIDE CONVENIENCE FUNCTIONS
+ * ========================================
+ * These are the SINGLE SOURCE OF TRUTH for identifier resolution.
+ * ALL server commands should use these - NO custom resolution logic!
+ */
+
+/**
+ * Resolve a room identifier to its canonical UUID, uniqueId, and displayName.
+ *
+ * THIS IS THE SINGLE SOURCE OF TRUTH for room resolution.
+ * DO NOT write custom resolution logic in commands - use this function.
+ *
+ * @param identifier - Room uniqueId (e.g., "general"), UUID, or name
+ * @returns ResolvedEntity with id (UUID), uniqueId, displayName, or null if not found
+ *
+ * @example
+ * const resolved = await resolveRoomIdentifier('general');
+ * if (!resolved) return { success: false, error: 'Room not found' };
+ * const roomId = resolved.id;  // UUID for database
+ * const roomName = resolved.displayName;  // "General" for display
+ */
+export async function resolveRoomIdentifier(identifier: string): Promise<ResolvedEntity | null> {
+  return RoutingService.resolveRoom(identifier);
+}
+
+/**
+ * Resolve a user identifier to its canonical UUID, uniqueId, and displayName.
+ *
+ * THIS IS THE SINGLE SOURCE OF TRUTH for user resolution.
+ * DO NOT write custom resolution logic in commands - use this function.
+ *
+ * @param identifier - User uniqueId (e.g., "joel"), UUID, or name
+ * @returns ResolvedEntity with id (UUID), uniqueId, displayName, or null if not found
+ */
+export async function resolveUserIdentifier(identifier: string): Promise<ResolvedEntity | null> {
+  return RoutingService.resolveUser(identifier);
+}
