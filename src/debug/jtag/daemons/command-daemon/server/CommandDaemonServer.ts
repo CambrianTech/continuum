@@ -25,6 +25,23 @@ export class CommandDaemonServer extends CommandDaemon {
 
   protected override get commandEntries(): CommandEntry[] { return SERVER_COMMANDS; }
 
+  /**
+   * Override initialize to register to globalThis EARLY
+   * This allows other daemons (like UserDaemon) to access CommandDaemon
+   * during their initialization, before JTAGSystem.daemons is populated.
+   */
+  protected override async initialize(): Promise<void> {
+    // First, do the normal command registration
+    await super.initialize();
+
+    // Register to globalThis IMMEDIATELY after commands are ready
+    // This is critical for daemon initialization order - UserDaemon needs
+    // CommandDaemon during its initializeDeferred(), which runs before
+    // JTAGSystem.daemons array is populated by setupDaemons()
+    (globalThis as any).__JTAG_COMMAND_DAEMON__ = this;
+    this.log.info('✅ CommandDaemonServer: Registered to globalThis for early access');
+  }
+
   protected override createCommand(entry: CommandEntry, context: JTAGContext, subpath: string): CommandBase<CommandParams, CommandResult> | null {
       return new entry.commandClass(context, subpath, this);
   }

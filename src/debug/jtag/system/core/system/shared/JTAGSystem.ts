@@ -262,8 +262,21 @@ export abstract class JTAGSystem extends JTAGBase {
   /**
    * Implementation of abstract method from JTAGBase
    * Provides command source from CommandDaemon
+   *
+   * NOTE: This method checks globalThis FIRST because CommandDaemon registers
+   * itself there during its initialize() phase. This is critical because:
+   * - UserDaemon's initializeDeferred() needs CommandDaemon
+   * - But this.daemons is only populated AFTER orchestrator.startAll() returns
+   * - globalThis provides early access during daemon initialization
    */
   public getCommandsInterface(): CommandsInterface {
+    // Check globalThis first - available during daemon initialization
+    // CommandDaemonServer registers itself here in its initialize() method
+    if (typeof process !== 'undefined' && (globalThis as any).__JTAG_COMMAND_DAEMON__) {
+      return (globalThis as any).__JTAG_COMMAND_DAEMON__.commands;
+    }
+
+    // Fall back to checking daemons array (populated after orchestrator returns)
     const commandDaemon = this.daemons.find(d => d instanceof CommandDaemon);
     if (!commandDaemon) {
       throw new Error('CommandDaemon not available');

@@ -4,12 +4,9 @@
 /// which mirrors shared/ipc/JTAGProtocol.ts on the TypeScript side.
 use serde::{Deserialize, Serialize};
 
-// Import shared JTAGProtocol types
-#[path = "../../shared/jtag_protocol.rs"]
-mod jtag_protocol;
-
-// Re-export JTAG protocol types for library users
-pub use jtag_protocol::{JTAGErrorType, JTAGRequest, JTAGResponse};
+// Re-export JTAG protocol types from logger_client to avoid duplicate_mod warning
+// logger_client already includes and re-exports jtag_protocol types
+pub use super::logger_client::{JTAGErrorType, JtagRequest as JTAGRequest, JTAGResponse};
 
 // ============================================================================
 // Training-Specific Types (owned by training worker)
