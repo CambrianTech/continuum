@@ -102,25 +102,15 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       getSecret('FIREWORKS_API_KEY'),
     ]);
 
-    // STEP 2: Register LOCAL adapters first (Candle, Ollama, Sentinel) - these are critical
-    // Candle gRPC adapter (native Rust inference)
+    // STEP 2: Register LOCAL adapter - Candle gRPC (native Rust inference)
+    // NO FALLBACK: If Candle fails, we FAIL. No silent degradation to Ollama.
+    // Ollama is NOT registered - Candle is the ONLY local inference path.
     const candlePromise = (async () => {
-      try {
-        const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
-        const adapter = new CandleGrpcAdapter();
-        await adapter.initialize();
-        await this.registerAdapter(adapter, { priority: 105, enabled: true });
-        this.log.info('✅ Candle gRPC adapter registered');
-      } catch (error) {
-        this.log.warn(`Candle gRPC not available: ${error instanceof Error ? error.message : 'unknown'}`);
-      }
-    })();
-
-    // Ollama adapter (local, free, private)
-    const ollamaPromise = (async () => {
-      const { OllamaAdapter } = await import('../adapters/ollama/shared/OllamaAdapter');
-      await this.registerAdapter(new OllamaAdapter(), { priority: 100, enabled: true });
-      this.log.info('✅ Ollama adapter registered');
+      const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
+      const adapter = new CandleGrpcAdapter();
+      await adapter.initialize();
+      await this.registerAdapter(adapter, { priority: 105, enabled: true });
+      this.log.info('✅ Candle gRPC adapter registered (Ollama disabled - Candle is the only local path)');
     })();
 
     // Sentinel adapter (if configured)
@@ -169,8 +159,9 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       })(),
     ].filter(Boolean) as Promise<void>[];
 
-    // Wait for ALL adapters to register (local + cloud in parallel)
-    await Promise.allSettled([candlePromise, ollamaPromise, sentinelPromise, ...cloudAdapters]);
+    // Wait for ALL adapters to register (Candle + Sentinel + cloud in parallel)
+    // NO OLLAMA - Candle is the only local inference path
+    await Promise.allSettled([candlePromise, sentinelPromise, ...cloudAdapters]);
 
     // Call base initialization
     await super['initialize']();

@@ -1,16 +1,16 @@
 /**
  * CandleGrpcAdapter - Local inference via gRPC
  *
- * Smart adapter with LoRA compatibility detection:
- * - Reads adapter manifests for proper scale (α/r)
- * - Detects garbage output and auto-blocklists bad adapters
- * - Falls back to safe mode (base model) on adapter failure
- * - Tracks model corruption state and auto-reloads
+ * SIMPLE DESIGN:
+ * 1. Send request to gRPC server
+ * 2. Wait for response
+ * 3. Return response
+ *
+ * NO circuit breakers. NO safe mode. NO garbage detection.
+ * If it fails, it fails loudly. No "protective" nonsense.
  */
 
 import { randomUUID } from 'crypto';
-import { existsSync, readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import type {
   TextGenerationRequest,
@@ -23,34 +23,6 @@ import type {
 } from '../../../shared/AIProviderTypesV2';
 import { InferenceGrpcClient } from '../../../../../system/core/services/InferenceGrpcClient';
 
-// Adapter manifest structure (from HuggingFace PEFT format)
-interface AdapterManifest {
-  alpha: number;
-  base_model: string;
-  peft_type: string;
-  rank: number;
-  repo_id: string;
-  target_modules: string[];
-}
-
-// Compatibility check result
-interface CompatibilityResult {
-  compatible: boolean;
-  scale: number;  // Proper scale = alpha / rank
-  warnings: string[];
-  errors: string[];
-}
-
-// Our base model identifier
-const BASE_MODEL_ID = 'unsloth/Llama-3.2-3B-Instruct';
-
-// Verbose logging utility - only logs when JTAG_VERBOSE=1
-const verbose = (message: string, ...args: unknown[]) => {
-  if (process.env.JTAG_VERBOSE === '1') {
-    console.log(message, ...args);
-  }
-};
-
 export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'candle';
   readonly providerName = 'Candle (gRPC)';
@@ -58,251 +30,22 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
 
   private client: InferenceGrpcClient;
 
-  // Serial execution: only one request at a time
-  // The Rust gRPC server is single-threaded, so we must wait for each request to complete
-  private inFlight: boolean = false;
-  private queueDepth: number = 0;
-  // Timeout for waiting in queue. With InferenceCoordinator limiting to 1 concurrent,
-  // wait should never exceed ~15-20s. Set to 30s for safety margin.
-  // If hitting this timeout, InferenceCoordinator coordination is likely broken.
-  private static readonly MAX_WAIT_TIME_MS = 30000; // 30 seconds max wait
-
-  // Track currently applied adapters (for genome integration)
-  private appliedAdapters: Set<string> = new Set();
-
-  // Blocklist for adapters that produce garbage output
-  // Persisted across requests until model is reloaded
-  private blockedAdapters: Set<string> = new Set();
-
-  // Track if model is corrupted (adapter produced garbage)
-  private modelCorrupted: boolean = false;
-
-  // Safe mode: skip all adapters, use base model only
-  private safeMode: boolean = false;
-
-  // Circuit breaker: track consecutive timeouts to fail fast
-  private consecutiveTimeouts: number = 0;
-  private lastTimeoutAt: number = 0;
-  private static readonly CIRCUIT_BREAKER_THRESHOLD = 2;  // Open after 2 consecutive timeouts
-  private static readonly CIRCUIT_BREAKER_COOLDOWN_MS = 60000;  // 60 seconds to recover
-
   constructor() {
     super();
     this.client = InferenceGrpcClient.sharedInstance();
-    this.baseTimeout = 120000; // 2 minutes
-  }
-
-  /**
-   * Read adapter manifest and check compatibility with our base model
-   */
-  private checkAdapterCompatibility(adapterPath: string): CompatibilityResult {
-    const adapterDir = dirname(adapterPath);
-    const manifestPath = resolve(adapterDir, 'manifest.json');
-
-    const result: CompatibilityResult = {
-      compatible: true,
-      scale: 1.0,
-      warnings: [],
-      errors: [],
-    };
-
-    // Try to read manifest
-    if (!existsSync(manifestPath)) {
-      result.warnings.push('No manifest.json - using default scale=1.0');
-      return result;
-    }
-
-    try {
-      const manifest: AdapterManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-
-      // Calculate proper LoRA scale (alpha / rank)
-      if (manifest.rank && manifest.alpha) {
-        result.scale = manifest.alpha / manifest.rank;
-        verbose(`[CandleGrpcAdapter] 🧬 Adapter scale: α=${manifest.alpha} / r=${manifest.rank} = ${result.scale.toFixed(2)}`);
-      }
-
-      // Check base model compatibility
-      const baseModel = manifest.base_model?.toLowerCase() || '';
-
-      // Check for quantized adapters (4bit, bnb) - likely incompatible with BF16 model
-      if (baseModel.includes('4bit') || baseModel.includes('bnb')) {
-        result.errors.push(`Adapter trained on quantized model (${manifest.base_model}) - incompatible with BF16`);
-        result.compatible = false;
-      }
-      // Check for meta-llama vs unsloth mismatch
-      else if (baseModel.includes('meta-llama') && !baseModel.includes('unsloth')) {
-        // meta-llama and unsloth versions SHOULD be compatible (same architecture)
-        // but may have different weight initializations
-        result.warnings.push(`Adapter trained on meta-llama, we use unsloth (may work)`);
-      }
-      // Check for completely different model
-      else if (!baseModel.includes('llama') && !baseModel.includes('3.2') && !baseModel.includes('3b')) {
-        result.errors.push(`Adapter trained on different model: ${manifest.base_model}`);
-        result.compatible = false;
-      }
-
-      // Warn about extreme scale values
-      if (result.scale > 10) {
-        result.warnings.push(`Very high scale (${result.scale.toFixed(1)}) - may amplify errors`);
-      } else if (result.scale < 0.1) {
-        result.warnings.push(`Very low scale (${result.scale.toFixed(2)}) - may have no effect`);
-      }
-
-    } catch (err) {
-      result.warnings.push(`Could not parse manifest: ${err instanceof Error ? err.message : err}`);
-    }
-
-    return result;
-  }
-
-  /**
-   * Detect garbage output patterns that indicate adapter corruption
-   */
-  private detectGarbageOutput(text: string): boolean {
-    // Pattern 1: [/xxx] brackets pattern (seen with Legal adapter)
-    if (/\[\/[^\]]*\]/.test(text)) return true;
-
-    // Pattern 2: Excessive brackets
-    const bracketCount = (text.match(/\[/g) || []).length;
-    if (bracketCount > 5 && bracketCount > text.length / 20) return true;
-
-    // Pattern 3: Random Unicode outside expected ranges (Arabic in English context)
-    const unexpectedUnicode = text.match(/[\u0600-\u06FF\u0900-\u097F\u4E00-\u9FFF]/g);
-    if (unexpectedUnicode && unexpectedUnicode.length > 3) return true;
-
-    // Pattern 4: Repetitive nonsense
-    if (/(.{2,10})\1{4,}/.test(text)) return true;
-
-    // Pattern 5: Mostly special characters
-    const specialChars = (text.match(/[^\w\s.,!?'"()-]/g) || []).length;
-    if (text.length > 20 && specialChars / text.length > 0.3) return true;
-
-    return false;
-  }
-
-  /**
-   * Enter safe mode - skip adapters and reload base model
-   */
-  async enterSafeMode(reason: string): Promise<void> {
-    console.warn(`[CandleGrpcAdapter] ⚠️  ENTERING SAFE MODE: ${reason}`);
-    this.safeMode = true;
-    this.modelCorrupted = false;
-
-    // Try to reload base model
-    try {
-      console.log(`[CandleGrpcAdapter] 🔄 Reloading base model...`);
-      await this.client.unloadModel();
-      await this.client.loadModel(BASE_MODEL_ID);
-      this.appliedAdapters.clear();
-      console.log(`[CandleGrpcAdapter] ✅ Base model reloaded, safe mode active`);
-    } catch (err) {
-      console.error(`[CandleGrpcAdapter] ❌ Failed to reload model:`, err);
-    }
-  }
-
-  /**
-   * Exit safe mode and allow adapter loading again
-   * Call this after fixing adapter issues
-   */
-  exitSafeMode(): void {
-    console.log(`[CandleGrpcAdapter] ✅ Exiting safe mode, adapters enabled`);
-    this.safeMode = false;
-  }
-
-  /**
-   * Clear blocklist for specific adapter (e.g., after scale fix)
-   */
-  unblockAdapter(adapterName: string): void {
-    if (this.blockedAdapters.has(adapterName)) {
-      this.blockedAdapters.delete(adapterName);
-      console.log(`[CandleGrpcAdapter] ✅ Unblocked adapter: ${adapterName}`);
-    }
-  }
-
-  /**
-   * Get current adapter status for debugging
-   */
-  getAdapterStatus(): {
-    safeMode: boolean;
-    modelCorrupted: boolean;
-    appliedAdapters: string[];
-    blockedAdapters: string[];
-  } {
-    return {
-      safeMode: this.safeMode,
-      modelCorrupted: this.modelCorrupted,
-      appliedAdapters: [...this.appliedAdapters],
-      blockedAdapters: [...this.blockedAdapters],
-    };
+    this.baseTimeout = 300000; // 5 minutes - let it complete
   }
 
   async initialize(): Promise<void> {
-    // Test connection
-    try {
-      const pong = await this.client.ping();
-      verbose(`[CandleGrpcAdapter] Connected: ${pong.message}`);
-    } catch (err) {
-      console.error(`[CandleGrpcAdapter] Failed to connect:`, err);
-      throw err;
-    }
+    const pong = await this.client.ping();
+    console.log(`[CandleGrpcAdapter] Connected: ${pong.message}`);
   }
 
   async shutdown(): Promise<void> {
     this.client.close();
   }
 
-  /**
-   * Check if circuit breaker is open (should fail fast)
-   */
-  private isCircuitOpen(): boolean {
-    if (this.consecutiveTimeouts >= CandleGrpcAdapter.CIRCUIT_BREAKER_THRESHOLD) {
-      // Check if cooldown has passed
-      const timeSinceLastTimeout = Date.now() - this.lastTimeoutAt;
-      if (timeSinceLastTimeout < CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS) {
-        return true;  // Circuit still open
-      }
-      // Cooldown passed, reset circuit (half-open state → try one request)
-      verbose(`[CandleGrpcAdapter] ⚡ Circuit breaker cooldown passed, resetting`);
-      this.consecutiveTimeouts = 0;
-    }
-    return false;
-  }
-
-  /**
-   * Record a timeout failure for circuit breaker
-   */
-  private recordTimeout(): void {
-    this.consecutiveTimeouts++;
-    this.lastTimeoutAt = Date.now();
-    console.warn(`[CandleGrpcAdapter] ⚡ Circuit breaker: ${this.consecutiveTimeouts}/${CandleGrpcAdapter.CIRCUIT_BREAKER_THRESHOLD} timeouts`);
-    if (this.consecutiveTimeouts >= CandleGrpcAdapter.CIRCUIT_BREAKER_THRESHOLD) {
-      console.warn(`[CandleGrpcAdapter] ⚡ Circuit breaker OPEN - failing fast for ${CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`);
-    }
-  }
-
-  /**
-   * Record a successful request (reset circuit breaker)
-   */
-  private recordSuccess(): void {
-    if (this.consecutiveTimeouts > 0) {
-      verbose(`[CandleGrpcAdapter] ⚡ Circuit breaker reset after successful request`);
-      this.consecutiveTimeouts = 0;
-    }
-  }
-
   async healthCheck(): Promise<HealthStatus> {
-    // Check circuit breaker state first
-    if (this.isCircuitOpen()) {
-      return {
-        status: 'unhealthy',
-        apiAvailable: false,
-        responseTime: 0,
-        errorRate: 1,
-        lastChecked: Date.now(),
-        message: `Circuit breaker open: ${this.consecutiveTimeouts} consecutive timeouts`,
-      };
-    }
-
     try {
       const start = Date.now();
       await this.client.ping();
@@ -326,7 +69,6 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   }
 
   async getAvailableModels(): Promise<ModelInfo[]> {
-    // Return fake models for now
     return [
       {
         id: 'llama3.2:3b',
@@ -341,7 +83,6 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   }
 
   async restartProvider(): Promise<void> {
-    // Close and reconnect
     this.client.close();
     this.client = InferenceGrpcClient.sharedInstance();
     await this.initialize();
@@ -353,196 +94,60 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     const startTime = Date.now();
     const requestId = request.requestId || randomUUID();
 
-    // CIRCUIT BREAKER: Fail fast if we've had too many consecutive timeouts
-    if (this.isCircuitOpen()) {
-      throw new Error(`CandleGrpcAdapter: Circuit breaker open - local inference unavailable (cooldown ${CandleGrpcAdapter.CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s)`);
-    }
+    // Format prompt
+    const prompt = this.formatMessagesAsLlama32(request);
 
-    // NOTE: InferenceCoordinator already limits local-inference to 1 concurrent request.
-    // We trust that coordination happened upstream and proceed directly to inference.
-    // No busy-wait queue here - that caused timeout cascades when multiple requests
-    // got past InferenceCoordinator but hit this adapter's internal queue.
+    // Cap tokens reasonably
+    const maxTokens = Math.min(request.maxTokens || 150, 200);
 
-    // Track for metrics only (not blocking)
-    this.queueDepth++;
-    verbose(`[CandleGrpcAdapter] Processing request (queue depth: ${this.queueDepth})`);
+    // Extract persona context for per-persona logging in Rust
+    const personaId = request.personaContext?.uniqueId || '';
+    const personaName = request.personaContext?.displayName || 'unknown';
 
-    this.inFlight = true;
+    console.log(`[CandleGrpcAdapter] [${personaName}] Generate: prompt=${prompt.length} chars, maxTokens=${maxTokens}`);
 
-    // Track adapters applied for this request
-    const adaptersAppliedThisRequest: string[] = [];
+    // Just call the gRPC server and wait - includes persona info for Rust logging
+    const result = await this.client.generate('Llama-3.2-3B-Instruct', prompt, {
+      maxTokens,
+      temperature: request.temperature,
+      timeoutMs: this.baseTimeout,
+      personaId,
+      personaName,
+    });
 
-    try {
-      // GENOME INTEGRATION: Load adapters from request if provided
-      // This enables PersonaGenome to specify which LoRA skills should be active
-      if (request.activeAdapters && request.activeAdapters.length > 0) {
-        // Check for safe mode or corrupted model
-        if (this.safeMode) {
-          verbose(`[CandleGrpcAdapter] 🧬 SAFE MODE: Skipping ${request.activeAdapters.length} adapters`);
-        } else if (this.modelCorrupted) {
-          verbose(`[CandleGrpcAdapter] 🧬 MODEL CORRUPTED: Entering safe mode`);
-          await this.enterSafeMode('Model corrupted by previous adapter');
-        } else {
-          verbose(`[CandleGrpcAdapter] 🧬 Loading ${request.activeAdapters.length} adapters from request`);
+    const responseTime = Date.now() - startTime;
 
-          for (const adapter of request.activeAdapters) {
-            // Skip blocked adapters
-            if (this.blockedAdapters.has(adapter.name)) {
-              console.warn(`[CandleGrpcAdapter] 🧬 ⛔ Skipping blocked adapter: ${adapter.name}`);
-              continue;
-            }
+    const usage: UsageMetrics = {
+      inputTokens: Math.ceil(prompt.length / 4),
+      outputTokens: result.tokens,
+      totalTokens: Math.ceil(prompt.length / 4) + result.tokens,
+      estimatedCost: 0,
+    };
 
-            // Skip already applied adapters
-            if (this.appliedAdapters.has(adapter.name)) {
-              verbose(`[CandleGrpcAdapter] 🧬 Adapter ${adapter.name} already loaded`);
-              adaptersAppliedThisRequest.push(adapter.name);
-              continue;
-            }
+    const routing: RoutingInfo = {
+      provider: this.providerId,
+      isLocal: true,
+      routingReason: 'explicit_provider',
+      adaptersApplied: [],
+      modelRequested: request.model || 'llama3.2:3b',
+    };
 
-            // Resolve absolute path
-            const absolutePath = resolve(adapter.path);
-            if (!existsSync(absolutePath)) {
-              console.warn(`[CandleGrpcAdapter] 🧬 Skipping adapter ${adapter.name}: file not found at ${absolutePath}`);
-              continue;
-            }
+    console.log(`[CandleGrpcAdapter] [${personaName}] Complete: ${result.tokens} tokens in ${responseTime}ms`);
 
-            // Check adapter compatibility and get proper scale
-            const compatibility = this.checkAdapterCompatibility(absolutePath);
-
-            if (!compatibility.compatible) {
-              console.warn(`[CandleGrpcAdapter] 🧬 ⛔ Adapter ${adapter.name} INCOMPATIBLE:`);
-              compatibility.errors.forEach(err => console.warn(`     ❌ ${err}`));
-              this.blockedAdapters.add(adapter.name);
-              continue;
-            }
-
-            // Log warnings but proceed
-            compatibility.warnings.forEach(warn => console.warn(`[CandleGrpcAdapter] 🧬 ⚠️  ${adapter.name}: ${warn}`));
-
-            try {
-              // Load adapter with PROPER scale from manifest (α/r)
-              verbose(`[CandleGrpcAdapter] 🧬 Loading adapter ${adapter.name} with scale=${compatibility.scale.toFixed(2)}...`);
-              const loadResult = await this.client.loadAdapter(adapter.name, absolutePath, {
-                scale: compatibility.scale,  // Use calculated scale, NOT hardcoded 1.0
-                merge: true,  // Merge weights into model
-              });
-
-              if (loadResult.success) {
-                this.appliedAdapters.add(adapter.name);
-                adaptersAppliedThisRequest.push(adapter.name);
-                verbose(`[CandleGrpcAdapter] 🧬 ✅ Adapter ${adapter.name} loaded in ${loadResult.loadTimeMs}ms`);
-              } else {
-                console.warn(`[CandleGrpcAdapter] 🧬 ❌ Failed to load adapter ${adapter.name}: ${loadResult.error}`);
-              }
-            } catch (loadErr) {
-              console.warn(`[CandleGrpcAdapter] 🧬 ❌ Error loading adapter ${adapter.name}:`, loadErr);
-            }
-          }
-        }
-      }
-
-      // Convert messages to prompt and truncate to prevent OOM
-      // Llama 3.2 3B has 128K context but we limit to 8K chars (~2K tokens) for memory safety
-      const MAX_PROMPT_CHARS = 8000;
-      let prompt = this.formatMessagesAsLlama32(request);
-      if (prompt.length > MAX_PROMPT_CHARS) {
-        verbose(`[CandleGrpcAdapter] Truncating prompt from ${prompt.length} to ${MAX_PROMPT_CHARS} chars`);
-        prompt = prompt.slice(-MAX_PROMPT_CHARS); // Keep the most recent context
-      }
-
-      // Cap maxTokens to prevent queue starvation
-      // Local inference ~14 tok/sec, so 150 tokens = ~10 seconds
-      const requestedTokens = request.maxTokens || 200;
-      const maxTokens = Math.min(requestedTokens, 150);
-
-      // SINGLE MODEL ROUTING: All requests go to the loaded model
-      // The gRPC server loads Llama-3.2-3B-Instruct
-      const modelId = 'Llama-3.2-3B-Instruct';
-
-      verbose(`[CandleGrpcAdapter] Generate: model=${modelId}, prompt=${prompt.length} chars, maxTokens=${maxTokens}, queue=${this.queueDepth}, adapters=[${adaptersAppliedThisRequest.join(',')}]`);
-
-      const result = await this.client.generate(modelId, prompt, {
-        maxTokens,
-        temperature: request.temperature,
-        timeoutMs: this.baseTimeout,
-      });
-
-      const responseTime = Date.now() - startTime;
-
-      // GARBAGE DETECTION: Check if adapter corrupted the output
-      if (adaptersAppliedThisRequest.length > 0 && this.detectGarbageOutput(result.text)) {
-        console.error(`[CandleGrpcAdapter] 🚨 GARBAGE OUTPUT DETECTED!`);
-        console.error(`[CandleGrpcAdapter] 🚨 Output preview: "${result.text.slice(0, 100)}..."`);
-        console.error(`[CandleGrpcAdapter] 🚨 Adapters applied: ${adaptersAppliedThisRequest.join(', ')}`);
-
-        // Blocklist all adapters that were applied in this request
-        for (const adapterName of adaptersAppliedThisRequest) {
-          this.blockedAdapters.add(adapterName);
-          console.error(`[CandleGrpcAdapter] 🚨 BLOCKLISTED adapter: ${adapterName}`);
-        }
-
-        // Mark model as corrupted - next request will trigger safe mode
-        this.modelCorrupted = true;
-
-        // Return error response instead of garbage
-        throw new Error(`Adapter produced garbage output. Adapters ${adaptersAppliedThisRequest.join(', ')} have been blocklisted. Model will reload in safe mode on next request.`);
-      }
-
-      const usage: UsageMetrics = {
-        inputTokens: Math.ceil(prompt.length / 4), // rough estimate
-        outputTokens: result.tokens,
-        totalTokens: Math.ceil(prompt.length / 4) + result.tokens,
-        estimatedCost: 0, // local = free
-      };
-
-      const routing: RoutingInfo = {
-        provider: this.providerId,
-        isLocal: true,
-        routingReason: 'explicit_provider',
-        adaptersApplied: adaptersAppliedThisRequest,
-        modelRequested: request.model || 'llama3.2:3b',
-      };
-
-      // Success! Reset circuit breaker
-      this.recordSuccess();
-
-      return {
-        text: result.text,
-        finishReason: 'stop',
-        model: request.model || 'llama3.2:3b',
-        provider: this.providerId,
-        usage,
-        responseTime,
-        requestId,
-        routing,
-      };
-    } catch (err) {
-      // Track generation errors (not just queue timeouts) for circuit breaker
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      if (errorMsg.includes('timeout') || errorMsg.includes('UNAVAILABLE') || errorMsg.includes('connection')) {
-        this.recordTimeout();
-      }
-      console.error(`[CandleGrpcAdapter] Generate failed:`, err);
-      throw err;
-    } finally {
-      // Always release the lock and decrement queue depth
-      this.inFlight = false;
-      this.queueDepth--;
-    }
+    return {
+      text: result.text,
+      finishReason: 'stop',
+      model: request.model || 'llama3.2:3b',
+      provider: this.providerId,
+      usage,
+      responseTime,
+      requestId,
+      routing,
+    };
   }
 
   /**
    * Format chat messages using Llama 3.2 chat template
-   *
-   * Llama 3.2 uses special tokens:
-   * - <|begin_of_text|> at the start
-   * - <|start_header_id|>role<|end_header_id|> before each message
-   * - <|eot_id|> at the end of each message
-   *
-   * Example:
-   * <|begin_of_text|><|start_header_id|>system<|end_header_id|>
-   * You are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>
-   * What is 2+2?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
    */
   private formatMessagesAsLlama32(request: TextGenerationRequest): string {
     if (!request.messages || request.messages.length === 0) {
@@ -556,7 +161,6 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       parts.push(`<|start_header_id|>${role}<|end_header_id|>\n\n${msg.content}<|eot_id|>`);
     }
 
-    // Add the assistant header to prompt the model to generate
     parts.push('<|start_header_id|>assistant<|end_header_id|>\n\n');
 
     return parts.join('');

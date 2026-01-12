@@ -85,6 +85,14 @@ pub fn generate_text(
             .forward(&input, pos, &mut state.cache)
             .map_err(|e| format!("Forward pass failed: {e}"))?;
 
+        // CRITICAL: Synchronize GPU after each forward pass to prevent command buffer accumulation
+        // Without this, Metal command buffers queue up faster than GPU can process them,
+        // causing memory to explode (1M+ buffers, 25GB+ RAM, swap thrashing)
+        state
+            .device
+            .synchronize()
+            .map_err(|e| format!("GPU sync failed: {e}"))?;
+
         if i == 0 {
             debug!("Raw logits shape: {:?}", logits.dims());
         }
@@ -128,6 +136,13 @@ pub fn generate_text(
 
         all_tokens.push(next_token);
     }
+
+    // Final GPU sync to ensure all work is complete before returning
+    // This allows GPU memory to be fully reclaimed
+    state
+        .device
+        .synchronize()
+        .map_err(|e| format!("Final GPU sync failed: {e}"))?;
 
     let generated_tokens = &all_tokens[prompt_len..];
     let output_text = state

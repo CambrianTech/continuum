@@ -566,9 +566,9 @@ export class AIProviderDaemon extends DaemonBase {
     // This MUST be checked BEFORE model detection to avoid routing Groq's
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (preferredProvider) {
-      // LOCAL PROVIDER ALIASING: Route local providers to Candle for speed
-      // Candle (Rust) is 10-100x faster than Ollama for the same models
-      const localProviders = ['ollama', 'local', 'llamacpp'];
+      // LOCAL PROVIDER ALIASING: Route local providers to Candle
+      // Candle is the ONLY local inference path - Ollama is NOT registered
+      const localProviders = ['local', 'llamacpp', 'ollama']; // ollama kept for backward compat naming only
       if (localProviders.includes(preferredProvider)) {
         const candleReg = this.adapters.get('candle');
         if (candleReg && candleReg.enabled) {
@@ -579,12 +579,18 @@ export class AIProviderDaemon extends DaemonBase {
             isLocal: true,
           };
         }
+        // NO FALLBACK: If candle not available, FAIL - don't silently use something else
+        throw new AIProviderError(
+          `Local provider '${preferredProvider}' requested but Candle adapter not available`,
+          'daemon',
+          'CANDLE_NOT_AVAILABLE'
+        );
       }
 
       // Try to use the explicit provider
       const registration = this.adapters.get(preferredProvider);
       if (registration && registration.enabled) {
-        const isLocal = ['candle', 'ollama', 'local', 'llamacpp'].includes(preferredProvider);
+        const isLocal = ['candle', 'local', 'llamacpp'].includes(preferredProvider);
         this.log.info(`🎯 AIProviderDaemon: Using explicit provider '${preferredProvider}' (explicit_provider)`);
         return {
           adapter: registration.adapter,
@@ -593,8 +599,13 @@ export class AIProviderDaemon extends DaemonBase {
         };
       }
 
-      // preferredProvider specified but not available - log warning
-      this.log.warn(`⚠️ AIProviderDaemon: Preferred provider '${preferredProvider}' not available, falling back`);
+      // preferredProvider specified but not available - FAIL, don't silently use something else
+      throw new AIProviderError(
+        `Preferred provider '${preferredProvider}' not available`,
+        'daemon',
+        'PROVIDER_NOT_AVAILABLE',
+        { preferredProvider }
+      );
     }
 
     // 2. LOCAL MODEL DETECTION: Route local models to Candle when NO preferredProvider

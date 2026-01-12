@@ -38,6 +38,8 @@ message GenerateRequest {
   string prompt = 2;
   int32 max_tokens = 3;
   double temperature = 4;
+  string persona_id = 5;    // Optional: persona making the request (for per-persona logging)
+  string persona_name = 6;  // Optional: human-readable persona name
 }
 
 message GenerateResponse {

@@ -59,9 +59,11 @@ mkdir -p .continuum/jtag/logs/system
 # Kill existing workers and clean sockets (same as stop-workers.sh)
 echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"
 # Use process substitution to avoid subshell (backgrounded processes survive)
-while read -r worker_name; do
-  pkill -f "${worker_name}-worker" || true
-done < <(jq -r '.workers[].name' "$CONFIG_FILE")
+# Use binary name from config (single source of truth)
+while read -r binary_path; do
+  binary_name=$(basename "$binary_path")
+  pkill -f "$binary_name" || true
+done < <(jq -r '.workers[].binary' "$CONFIG_FILE")
 
 # Give processes time to die and release sockets (macOS needs more time, especially on external drives)
 sleep 2.0
@@ -109,7 +111,8 @@ while read -r worker; do
   if [ "$worker_type" = "tcp" ]; then
     # TCP worker (e.g., gRPC server) - no socket argument
     # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
-    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+    # Each TCP worker gets its own log file for better segregation
+    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
     WORKER_PID=$!
     disown $WORKER_PID
 
@@ -121,7 +124,7 @@ while read -r worker; do
       fi
       if [ $i -eq 40 ]; then
         echo -e "${RED}❌ ${name} failed to start (port $port not listening after 20s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -50 .continuum/jtag/logs/system/rust-worker.log${NC}"
+        echo -e "${YELLOW}💡 Try: tail -50 .continuum/jtag/logs/system/${name}.log${NC}"
         # Don't exit - let other workers start
       fi
       sleep 0.5
@@ -183,6 +186,7 @@ ALL_RUNNING=true
 
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
+  binary_name=$(basename "$(echo "$worker" | jq -r '.binary')")
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   port=$(echo "$worker" | jq -r '.port // empty')
 
@@ -192,7 +196,7 @@ while read -r worker; do
       ALL_RUNNING=false
     fi
   else
-    if ! pgrep -f "${name}" > /dev/null; then
+    if ! pgrep -f "$binary_name" > /dev/null; then
       echo -e "${RED}❌ ${name} not running${NC}"
       ALL_RUNNING=false
     fi
@@ -205,6 +209,7 @@ if [ "$ALL_RUNNING" = true ]; then
   # Show status
   while read -r worker; do
     name=$(echo "$worker" | jq -r '.name')
+    binary_name=$(basename "$(echo "$worker" | jq -r '.binary')")
     socket=$(echo "$worker" | jq -r '.socket // empty')
     port=$(echo "$worker" | jq -r '.port // empty')
     worker_type=$(echo "$worker" | jq -r '.type // "socket"')
@@ -213,7 +218,7 @@ if [ "$ALL_RUNNING" = true ]; then
       pid=$(lsof -i :$port -sTCP:LISTEN -t 2>/dev/null | head -1)
       echo -e "   ${name}: PID $pid (port $port)"
     else
-      pid=$(pgrep -f "${name}" | head -1)
+      pid=$(pgrep -f "$binary_name" | head -1)
       echo -e "   ${name}: PID $pid ($socket)"
     fi
   done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")

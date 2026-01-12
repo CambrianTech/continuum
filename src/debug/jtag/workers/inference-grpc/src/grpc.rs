@@ -144,6 +144,13 @@ impl Inference for InferenceService {
         } else {
             0.7
         };
+        // Per-persona tracking (optional fields)
+        let persona_name = if req.persona_name.is_empty() {
+            "unknown".to_string()
+        } else {
+            req.persona_name
+        };
+        let _persona_id = req.persona_id; // May be empty (for future per-persona logging)
 
         // Determine which backend to use:
         // 1. Worker pool (concurrent quantized) - best for high throughput
@@ -162,7 +169,8 @@ impl Inference for InferenceService {
         };
 
         info!(
-            "🔮 Generate: model={}, prompt={} chars, max_tokens={}, temp={:.2}, backend={}",
+            "🔮 Generate [{}]: model={}, prompt={} chars, max_tokens={}, temp={:.2}, backend={}",
+            persona_name,
             model_id,
             prompt.len(),
             max_tokens,
