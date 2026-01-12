@@ -5,7 +5,7 @@
  * and builds human-readable URLs from entities.
  *
  * Key principle: URLs use uniqueId for readability, database uses UUID.
- *   /chat/general → UUID lookup → 5e71a0c8-0303-4eb8-a478-3a121248
+ *   /chat/general → UUID lookup → 5e71a0c8-3038-4647-83a1-27631d385d72
  *
  * Usage:
  *   // Resolve identifier to UUID

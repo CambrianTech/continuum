@@ -184,6 +184,22 @@ export class MainWidget extends ReactiveWidget {
    * Resolves identifier (could be uniqueId like "general" or UUID) to canonical form
    */
   private async openContentFromUrl(contentType: string, identifier?: string): Promise<void> {
+    // 0. Ensure ContentService has userId for persistence
+    // Wait briefly for userState if not yet loaded (race condition with loadUserContext)
+    let userId = this.userState?.userId;
+    if (!userId) {
+      // Wait up to 500ms for userState to load
+      for (let i = 0; i < 5 && !userId; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        userId = this.userState?.userId;
+      }
+    }
+    if (userId) {
+      ContentService.setUserId(userId as UUID);
+    } else {
+      console.warn('⚠️ MainWidget: userState not loaded, content will not persist to database');
+    }
+
     // 1. Resolve identifier to canonical UUID, uniqueId, displayName
     const resolved = identifier
       ? await RoutingService.resolve(contentType, identifier)
@@ -384,13 +400,23 @@ export class MainWidget extends ReactiveWidget {
   // === CONTENT STATE ===
 
   private async initializeContentTabs(): Promise<void> {
-    if (this.userState?.contentState) {
-      const openItems = this.userState.contentState.openItems || [];
-      const currentItemId = this.userState.contentState.currentItemId;
+    // Wait for userState to load (race condition with loadUserContext)
+    let userStateLoaded = this.userState?.contentState;
+    if (!userStateLoaded) {
+      // Wait up to 1 second for userState to load
+      for (let i = 0; i < 10 && !userStateLoaded; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        userStateLoaded = this.userState?.contentState;
+      }
+    }
+
+    if (userStateLoaded) {
+      const openItems = this.userState!.contentState.openItems || [];
+      const currentItemId = this.userState!.contentState.currentItemId;
       contentState.initialize(openItems, currentItemId);
       this.log(`Initialized global contentState with ${openItems.length} items`);
     } else {
-      this.log('No persisted contentState, starting empty');
+      this.log('⚠️ UserState not loaded after 1s, starting with empty tabs');
       contentState.initialize([], undefined);
     }
   }
