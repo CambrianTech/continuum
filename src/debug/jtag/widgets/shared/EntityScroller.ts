@@ -425,8 +425,13 @@ export function createScroller<T extends BaseEntity>(
           cursor = result.nextCursor;
 
           // For newest-first (chat), scroll to bottom to show latest messages
+          // Use double-rAF to ensure DOM is fully laid out before scrolling
           if (config.direction === 'newest-first') {
-            scrollToEnd('instant');
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                scrollToEnd('instant');
+              });
+            });
           }
         } else {
           // No items - clear if we had items before
