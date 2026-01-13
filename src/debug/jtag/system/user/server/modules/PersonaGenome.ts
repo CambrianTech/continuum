@@ -19,7 +19,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { LoRAAdapter, type LoRAAdapterState } from './LoRAAdapter';
-import { randomUUID } from 'crypto';
+import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 /**
@@ -167,7 +167,7 @@ export class PersonaGenome {
     ollamaModelName?: string;
   }): void {
     const adapter = new LoRAAdapter({
-      id: randomUUID() as UUID,
+      id: generateUUID() as UUID,
       name: config.name,
       domain: config.domain,
       path: config.path,
