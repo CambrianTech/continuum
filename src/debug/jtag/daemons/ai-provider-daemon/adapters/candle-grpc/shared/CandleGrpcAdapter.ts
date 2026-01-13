@@ -175,17 +175,73 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
 
   /**
    * Format chat messages using Llama 3.2 chat template
+   *
+   * Includes automatic truncation to fit within model context window:
+   * - Llama 3.2 3B has 8K token context (~32K chars)
+   * - We target 24K chars max to leave room for response
+   * - Truncation preserves system prompt + recent messages
    */
   private formatMessagesAsLlama32(request: TextGenerationRequest): string {
     if (!request.messages || request.messages.length === 0) {
       return '';
     }
 
+    // Target 24K chars max (leaves ~8K chars / 2K tokens for response)
+    const MAX_PROMPT_CHARS = 24000;
     const parts: string[] = ['<|begin_of_text|>'];
 
+    // Format all messages first
+    const formattedMessages: { role: string; content: string; formatted: string }[] = [];
     for (const msg of request.messages) {
       const role = msg.role === 'assistant' ? 'assistant' : msg.role === 'system' ? 'system' : 'user';
-      parts.push(`<|start_header_id|>${role}<|end_header_id|>\n\n${msg.content}<|eot_id|>`);
+      // Handle both string and ContentPart[] message content
+      const contentStr = typeof msg.content === 'string'
+        ? msg.content
+        : msg.content.map(p => p.type === 'text' ? p.text : '[media]').join('\n');
+      const formatted = `<|start_header_id|>${role}<|end_header_id|>\n\n${contentStr}<|eot_id|>`;
+      formattedMessages.push({ role, content: contentStr, formatted });
+    }
+
+    // Calculate current size
+    let totalChars = formattedMessages.reduce((sum, m) => sum + m.formatted.length, 0);
+    totalChars += 50; // Overhead for begin/end tokens
+
+    // If under limit, use all messages
+    if (totalChars <= MAX_PROMPT_CHARS) {
+      for (const msg of formattedMessages) {
+        parts.push(msg.formatted);
+      }
+    } else {
+      // Truncation strategy: keep system prompt + last N messages
+      const systemMsgs = formattedMessages.filter(m => m.role === 'system');
+      const nonSystemMsgs = formattedMessages.filter(m => m.role !== 'system');
+
+      // Add system messages first (usually small)
+      let charBudget = MAX_PROMPT_CHARS - 50; // Reserve for tokens
+      for (const msg of systemMsgs) {
+        if (msg.formatted.length <= charBudget) {
+          parts.push(msg.formatted);
+          charBudget -= msg.formatted.length;
+        }
+      }
+
+      // Add recent non-system messages from the end (most relevant)
+      const recentMsgs: string[] = [];
+      for (let i = nonSystemMsgs.length - 1; i >= 0 && charBudget > 0; i--) {
+        const msg = nonSystemMsgs[i];
+        if (msg.formatted.length <= charBudget) {
+          recentMsgs.unshift(msg.formatted);
+          charBudget -= msg.formatted.length;
+        } else {
+          // Truncate the oldest message we're including if needed
+          const truncated = msg.formatted.slice(0, charBudget);
+          recentMsgs.unshift(truncated + '...[truncated]<|eot_id|>');
+          break;
+        }
+      }
+      parts.push(...recentMsgs);
+
+      console.log(`[CandleGrpcAdapter] Truncated prompt from ${totalChars} to ${parts.join('').length} chars`);
     }
 
     parts.push('<|start_header_id|>assistant<|end_header_id|>\n\n');
