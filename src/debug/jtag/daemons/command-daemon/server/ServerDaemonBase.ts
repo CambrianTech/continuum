@@ -53,6 +53,9 @@ export abstract class ServerDaemonBase extends DaemonBase {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+
+    // Call base class cleanup (subscriptions, intervals, lifecycle state)
+    await super.shutdown();
   }
 
   // ===========================================================================
@@ -159,10 +162,22 @@ export abstract class ServerDaemonBase extends DaemonBase {
 
   /**
    * Get metrics snapshot (if metrics enabled)
+   * Includes lifecycle state and startup queue size from DaemonBase
    */
   getMetrics() {
+    // Always include lifecycle metrics
+    const baseMetrics = {
+      lifecycleState: this.lifecycleState,
+      startupQueueSize: this.startupQueueSize,
+      isReady: this.isReady,
+      isFailed: this.isFailed
+    };
+
     if (!this.metrics) {
-      return null;
+      return {
+        ...baseMetrics,
+        healthState: this.healthState ? { ...this.healthState } : null
+      };
     }
 
     return {
@@ -170,6 +185,7 @@ export abstract class ServerDaemonBase extends DaemonBase {
         this.requestQueue?.size ?? 0,
         (this.semaphore?.maxPermits ?? 0) - (this.semaphore?.available ?? 0)
       ),
+      ...baseMetrics,
       healthState: this.healthState ? { ...this.healthState } : null
     };
   }

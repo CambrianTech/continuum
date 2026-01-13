@@ -25,9 +25,9 @@ export class SessionDaemonBrowser extends SessionDaemon {
   }
 
   /**
-   * Override handleMessage for browser to properly await server response
+   * Override processMessage for browser to properly await server response
    */
-  async handleMessage(message: JTAGMessage): Promise<SessionResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<SessionResponse> {
     console.log(`📨 ${this.toString()}: Forwarding session message to server`);
     
     // Forward to server and await full response with session data

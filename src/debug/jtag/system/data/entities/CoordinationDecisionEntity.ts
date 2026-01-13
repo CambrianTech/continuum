@@ -10,7 +10,7 @@
  * 3. Meta-Learning - Companion AIs learn from human overrides
  * 4. Cross-Domain Transfer - Same pattern works everywhere
  *
- * See: /Volumes/FlashGordon/cambrian/continuum/docs/COORDINATION-DECISION-ARCHITECTURE.md
+ * See: docs/COORDINATION-DECISION-ARCHITECTURE.md
  */
 
 import { BaseEntity } from './BaseEntity';

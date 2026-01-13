@@ -9,6 +9,7 @@
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import { isUUID } from '@system/routing/RoutingService';
 
 /**
  * Parameters for writing to a room wall
@@ -254,11 +255,10 @@ export interface WallDiffResult extends CommandResult {
 
 /**
  * Helper: Detect if room identifier is UUID or name
+ * Delegates to RoutingService isUUID for single source of truth
  */
 export function isRoomUUID(room: UUID | string): room is UUID {
-  // UUIDv4 pattern: 8-4-4-4-12 hex digits
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  return uuidPattern.test(room);
+  return isUUID(room);
 }
 
 /**

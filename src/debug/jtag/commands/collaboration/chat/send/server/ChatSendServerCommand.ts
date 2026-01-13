@@ -9,7 +9,6 @@ import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatSendCommand } from '../shared/ChatSendCommand';
 import type { ChatSendParams, ChatSendResult } from '../shared/ChatSendTypes';
-import { RoomEntity } from '@system/data/entities/RoomEntity';
 import { UserEntity } from '@system/data/entities/UserEntity';
 import { ChatMessageEntity, type MediaItem } from '@system/data/entities/ChatMessageEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -17,6 +16,7 @@ import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
+import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 
 export class ChatSendServerCommand extends ChatSendCommand {
 
@@ -27,9 +27,12 @@ export class ChatSendServerCommand extends ChatSendCommand {
   protected async executeChatSend(params: ChatSendParams): Promise<ChatSendResult> {
     console.log('🔧 ChatSendServerCommand.executeChatSend START', { room: params.room });
 
-    // 1. Find room
-    const room = await this.findRoom(params.room || 'general', params);
-    console.log('🔧 ChatSendServerCommand.executeChatSend ROOM FOUND', { roomId: room.id, roomName: room.entity.name });
+    // 1. Find room (single source of truth: RoutingService)
+    const resolved = await resolveRoomIdentifier(params.room || 'general');
+    if (!resolved) {
+      throw new Error(`Room not found: ${params.room || 'general'}`);
+    }
+    console.log('🔧 ChatSendServerCommand.executeChatSend ROOM FOUND', { roomId: resolved.id, roomName: resolved.displayName });
 
     // 2. Get sender - auto-detect caller identity (Claude Code, Joel, etc.)
     const sender = params.senderId
@@ -39,7 +42,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     // 3. Create message entity
     const messageEntity = new ChatMessageEntity();
-    messageEntity.roomId = room.id;  // Use DataRecord.id, not entity.id
+    messageEntity.roomId = resolved.id;  // From RoutingService resolution
     messageEntity.senderId = sender.id;  // sender is also DataRecord with .id
     console.log('🔧 ChatSendServerCommand.executeChatSend MESSAGE ENTITY', { roomId: messageEntity.roomId, senderId: messageEntity.senderId });
     messageEntity.senderName = sender.entity.displayName;
@@ -108,56 +111,15 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // 5. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
     const shortId = storedEntity.id.slice(-6);
 
-    console.log(`✅ Message sent: #${shortId} to ${room.entity.name}`);
+    console.log(`✅ Message sent: #${shortId} to ${resolved.displayName}`);
 
     return transformPayload(params, {
       success: true,
-      message: `Message sent to ${room.entity.name} (#${shortId})`,
+      message: `Message sent to ${resolved.displayName} (#${shortId})`,
       messageEntity: storedEntity,
       shortId: shortId,
-      roomId: room.id
+      roomId: resolved.id
     });
-  }
-
-  /**
-   * Find room by ID or name
-   */
-  private async findRoom(roomIdOrName: string, params: ChatSendParams): Promise<{ id: UUID; entity: RoomEntity }> {
-    console.log('🔧 findRoom START', { roomIdOrName });
-
-    // Query all rooms using data/list command
-    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
-        collection: RoomEntity.collection,
-        filter: {},
-        context: params.context,
-        sessionId: params.sessionId
-      }
-    );
-
-    console.log('🔧 findRoom QUERY RESULT', {
-      success: result.success,
-      recordCount: result.items?.length || 0
-    });
-
-    if (!result.success || !result.items) {
-      throw new Error('Failed to query rooms');
-    }
-
-    // Find by ID or name
-    const room = result.items.find((r: RoomEntity) =>
-      r.id === roomIdOrName || r.name === roomIdOrName
-    );
-
-    if (!room) {
-      const roomNames = result.items.map((r: RoomEntity) => r.name).join(', ');
-      console.log('🔧 findRoom NOT FOUND', { roomIdOrName, availableRooms: roomNames });
-      throw new Error(`Room not found: ${roomIdOrName}. Available: ${roomNames}`);
-    }
-
-    console.log('🔧 findRoom FOUND', { roomId: room.id, roomName: room.name });
-    return { id: room.id, entity: room };
   }
 
   /**

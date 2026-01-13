@@ -220,10 +220,13 @@ export class UserProfileWidget extends BaseWidget {
       ContentService.setUserId(this.userState.userId as UUID);
     }
 
-    const entityId = this.user.uniqueId || this.user.id;
+    // IMPORTANT: entityId is always UUID for database lookups
+    // uniqueId is human-readable string for URLs
+    const entityId = this.user.id;  // Always UUID
+    const uniqueId = this.user.uniqueId || this.user.id;  // Human-readable, fallback to UUID
     ContentService.open('persona', entityId, {
       title: `${this.user.displayName} - Brain`,
-      uniqueId: entityId,
+      uniqueId,  // Human-readable uniqueId for URLs
       metadata: { entity: this.user }  // Pass full entity for instant hydration
     });
   }

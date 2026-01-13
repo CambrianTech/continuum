@@ -62,12 +62,12 @@ const PROVIDER_GROUPS: Record<string, string> = {
 };
 
 const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimits> = {
-  // LOCAL INFERENCE GROUP: All share same serial gRPC backend
-  // Only 1 concurrent for non-mentioned. @mentioned personas bypass this limit.
+  // LOCAL INFERENCE GROUP: Worker pool with multiple model instances
+  // Default 3 concurrent to match auto-detected workers (can be configured via INFERENCE_WORKERS)
   'local-inference': {
-    maxConcurrent: 1,      // 1 for non-mentioned; @mentioned bypass this
-    staggerDelayMs: 100,   // Minimal stagger
-    cooldownMs: 500        // Wait between requests
+    maxConcurrent: 3,      // Worker pool handles concurrent requests
+    staggerDelayMs: 50,    // Minimal stagger with pool
+    cooldownMs: 200        // Reduced cooldown with concurrent capacity
   },
   'anthropic': {
     maxConcurrent: 15,     // API rate limits are generous
@@ -106,8 +106,9 @@ const DEFAULT_PROVIDER_LIMITS: Record<string, ProviderLimits> = {
 // Maximum responders per message (across all providers)
 const MAX_RESPONDERS_PER_MESSAGE = 5;
 
-// Reserved slots for local-inference (guaranteed seat at table)
-const RESERVED_LOCAL_INFERENCE_SLOTS = 1;  // 1 of 5 slots reserved for local-inference
+// Reserved slots for local-inference (guaranteed seats at table)
+// With worker pool, local-inference can handle multiple concurrent requests
+const RESERVED_LOCAL_INFERENCE_SLOTS = 2;  // 2 of 5 slots reserved for local-inference
 const MAX_CLOUD_RESPONDERS = MAX_RESPONDERS_PER_MESSAGE - RESERVED_LOCAL_INFERENCE_SLOTS;
 
 // Stale request timeout - kick requests waiting too long (RTOS preemption)

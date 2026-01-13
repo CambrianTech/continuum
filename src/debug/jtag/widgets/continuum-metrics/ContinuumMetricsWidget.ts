@@ -198,7 +198,7 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
           latency: result.summary.avgResponseTime ?? 0,
           cost: result.summary.totalCost ?? 0
         };
-        console.log('ContinuumMetrics: summary', this.summary);
+        // Debug logging removed - was flooding console
         this.requestUpdate();
       }
     } catch (e) {

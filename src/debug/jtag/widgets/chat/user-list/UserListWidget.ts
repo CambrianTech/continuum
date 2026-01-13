@@ -439,10 +439,13 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   }
 
   private openUserProfile(userEntity: UserEntity): void {
-    const entityId = userEntity.uniqueId || userEntity.id;
+    // IMPORTANT: entityId is always UUID for database lookups
+    // uniqueId is human-readable string for URLs ("together" not UUID)
+    const entityId = userEntity.id;  // Always UUID
+    const uniqueId = userEntity.uniqueId || userEntity.id;  // Human-readable, fallback to UUID
     const title = userEntity.displayName || 'User Profile';
 
-    verbose() && console.log(`👤 UserListWidget: Opening profile for ${title} (${entityId})`);
+    verbose() && console.log(`👤 UserListWidget: Opening profile for ${title} (entityId=${entityId}, uniqueId=${uniqueId})`);
 
     // OPTIMISTIC: Use ContentService for instant tab creation
     // ContentService handles: tab creation, view switch, URL update, server persist
@@ -452,7 +455,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
 
     ContentService.open('profile', entityId, {
       title,
-      uniqueId: entityId,
+      uniqueId,  // Human-readable uniqueId for URLs
       metadata: { entity: userEntity }  // Pass full entity for instant hydration
     });
   }

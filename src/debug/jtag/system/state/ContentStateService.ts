@@ -25,6 +25,7 @@
 
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import type { ContentItem, ContentType, ContentPriority } from '../data/entities/UserStateEntity';
+import { contentItemsMatch } from '../data/entities/UserStateEntity';
 
 /**
  * Content state structure
@@ -164,10 +165,9 @@ class ContentStateServiceImpl {
       lastAccessedAt: new Date()
     };
 
-    // Check if already exists by type+entityId
-    const existing = this.state.openItems.find(
-      i => i.type === newItem.type && i.entityId === newItem.entityId
-    );
+    // Check if already exists using centralized matching function
+    // (handles entityId/uniqueId mismatches from inconsistent call sites)
+    const existing = this.state.openItems.find(i => contentItemsMatch(i, newItem));
 
     if (existing) {
       // Update existing and set as current

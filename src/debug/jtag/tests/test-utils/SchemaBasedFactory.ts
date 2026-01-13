@@ -221,8 +221,10 @@ function createCompleteEntityData(collection: string, timestamp: number, overrid
     case 'ChatMessage':
     case 'chat_messages':  // Support both entity class name and collection name
       // Mirror the exact successful seeding structure
+      // NOTE: roomId should be provided by test or looked up dynamically
+      // The default UUID here is for schema validation only, NOT for actual database tests
       return {
-        roomId: overrides.roomId || "5e71a0c8-0303-4eb8-a478-3a121248", // Use actual seeded room ID
+        roomId: overrides.roomId || "5e71a0c8-3038-4647-83a1-27631d385d72", // Default UUID format for schema validation
         senderId: overrides.senderId || "002350cc-0031-408d-8040-004f000f", // Use actual seeded user ID
         senderName: overrides.senderName || "Test Sender",
         senderType: overrides.senderType || "user",  // senderType is required

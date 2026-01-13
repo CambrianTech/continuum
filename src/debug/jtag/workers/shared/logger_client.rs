@@ -24,6 +24,10 @@ use std::os::unix::net::UnixStream;
 mod jtag_protocol;
 use jtag_protocol::JTAGRequest;
 
+// Re-export JTAG protocol types for other modules to use
+// This avoids duplicate_mod warnings when multiple files need these types
+pub use jtag_protocol::{JTAGErrorType, JTAGRequest as JtagRequest, JTAGResponse};
+
 // ============================================================================
 // Logger-Specific Types (minimal subset for logging)
 // ============================================================================

@@ -32,6 +32,14 @@ export interface DataListParams extends CommandParams {
   readonly verbose?: boolean;
   /** Database handle for multi-database operations */
   readonly dbHandle?: DbHandle;
+  /**
+   * Backend preference for browser commands:
+   * - 'server': Always fetch from server (use for real-time data)
+   * - 'local': Only use localStorage, don't fall back to server
+   * - 'auto': (default) Try local first, fall back to server if empty
+   * - 'stale-while-revalidate': Return cached immediately, fetch fresh in background
+   */
+  readonly backend?: 'server' | 'local' | 'auto' | 'stale-while-revalidate';
 }
 
 export interface DataListResult<T extends BaseEntity> extends JTAGPayload {

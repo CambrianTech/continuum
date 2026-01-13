@@ -71,9 +71,9 @@ export abstract class ProxyDaemon extends DaemonBase {
   protected abstract executeProxy(request: ProxyRequest): Promise<ProxyResponse>;
 
   /**
-   * Handle incoming JTAG messages
+   * Process incoming JTAG messages
    */
-  async handleMessage(message: JTAGMessage): Promise<any> {
+  protected async processMessage(message: JTAGMessage): Promise<any> {
     const payload = message.payload as any;
     
     switch (payload.command) {

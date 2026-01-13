@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-11T02:16:46.805Z",
+  "generated": "2026-01-13T22:58:29.652Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3402,6 +3402,11 @@
           "type": "string",
           "required": false,
           "description": "dbHandle parameter"
+        },
+        "backend": {
+          "type": "string",
+          "required": false,
+          "description": "backend parameter"
         }
       }
     },
@@ -3973,6 +3978,11 @@
           "type": "string",
           "required": false,
           "description": "entityId parameter"
+        },
+        "uniqueId": {
+          "type": "string",
+          "required": false,
+          "description": "uniqueId parameter"
         },
         "title": {
           "type": "string",

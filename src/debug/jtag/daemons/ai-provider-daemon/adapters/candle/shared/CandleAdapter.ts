@@ -11,7 +11,7 @@
  * AIProviderDaemon - higher-level code doesn't know if it's Candle, Ollama, or API.
  */
 
-import { randomUUID } from 'crypto';
+import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import type {
   TextGenerationRequest,
@@ -107,7 +107,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     request: TextGenerationRequest
   ): Promise<TextGenerationResponse> {
     const startTime = Date.now();
-    const requestId = request.requestId || randomUUID();
+    const requestId = request.requestId || generateUUID();
 
     this.log(request, 'info', `🔧 TRACE-1: generateTextImpl START (requestId=${requestId.slice(0,8)})`);
 

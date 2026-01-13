@@ -23,7 +23,7 @@
 
 import * as net from 'net';
 import * as fs from 'fs';
-import { randomUUID } from 'crypto';
+import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
 import {
   WorkerRequest,
   WorkerResponse,
@@ -269,7 +269,7 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
     }
 
     const request: WorkerRequest<TReq> = {
-      id: randomUUID(),
+      id: generateUUID(),
       type,
       timestamp: new Date().toISOString(),
       payload,

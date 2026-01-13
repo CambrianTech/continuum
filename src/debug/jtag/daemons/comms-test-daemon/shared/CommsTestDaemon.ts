@@ -51,9 +51,9 @@ export abstract class CommsTestDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming messages
+   * Process incoming messages
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     // For now, just return success - we're using direct method calls
     return {
       context: message.payload.context,

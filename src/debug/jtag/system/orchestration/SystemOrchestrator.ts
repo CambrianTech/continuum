@@ -686,16 +686,18 @@ export class SystemOrchestrator extends EventEmitter {
     }
 
     // Check if browser is already connected using ping
+    let browserConnected = false;
     try {
       const { stdout } = await execAsync('./jtag ping');
       const pingResponse = JSON.parse(stdout);
 
       if (pingResponse.success && pingResponse.browser) {
+        browserConnected = true;
         console.log('🔄 Browser already connected - triggering reload to pick up new code');
 
-        // Navigate to root to reload with new code
+        // Trigger reload in browser
         try {
-          await execAsync('./jtag interface/navigate --path="/"');
+          await execAsync('./jtag interface/navigate');
           console.log('✅ Browser reloaded');
         } catch (navError) {
           console.warn('⚠️ Could not navigate browser, trying page reload');
@@ -703,35 +705,34 @@ export class SystemOrchestrator extends EventEmitter {
           try {
             await execAsync('./jtag development/exec --code="location.reload()"');
           } catch (reloadError) {
-            console.warn('⚠️ Browser reload failed - may need manual refresh');
+            console.warn('⚠️ Browser reload failed - will open browser');
+            browserConnected = false; // Force open since reload failed
           }
         }
-
-        await milestoneEmitter.completeMilestone(
-          SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
-          this.currentEntryPoint
-        );
-        return true;
       }
     } catch (error) {
       // Ping failed or no browser - proceed with launch
       console.debug('🔍 No browser connected - will launch new tab');
     }
 
-    console.debug('🌐 Launching browser...');
+    // Only open browser if not already connected
+    // Opening localhost:9000 creates a NEW tab, doesn't focus existing
+    if (!browserConnected) {
+      console.log('🌐 Opening browser...');
+      const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
 
-    // CRITICAL FIX: Browser only launches AFTER server ready milestone
-    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-
-    try {
-      spawn('open', [browserUrl], {
-        detached: true,
-        stdio: 'ignore'
-      }).unref();
-      console.log(`✅ Browser launched: ${browserUrl}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to auto-open browser: ${error}`);
-      console.debug(`👉 Manually open: ${browserUrl}`);
+      try {
+        spawn('open', [browserUrl], {
+          detached: true,
+          stdio: 'ignore'
+        }).unref();
+        console.log(`✅ Browser launched: ${browserUrl}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to auto-open browser: ${error}`);
+        console.debug(`👉 Manually open: ${browserUrl}`);
+      }
+    } else {
+      console.log('✅ Browser already connected - skipped opening new tab');
     }
 
     await milestoneEmitter.completeMilestone(

@@ -10,6 +10,27 @@ NC='\033[0m' # No Color
 
 CONFIG_FILE="$(dirname "$0")/workers-config.json"
 
+# Memory limit helper - converts "8G" to bytes for ulimit
+parse_memory_limit() {
+  local limit="$1"
+  local default="$2"
+
+  if [ -z "$limit" ] || [ "$limit" = "null" ]; then
+    limit="$default"
+  fi
+
+  # Extract number and unit
+  local num=$(echo "$limit" | sed 's/[^0-9]//g')
+  local unit=$(echo "$limit" | sed 's/[0-9]//g' | tr '[:lower:]' '[:upper:]')
+
+  case "$unit" in
+    G) echo $((num * 1024 * 1024));; # KB for ulimit -v
+    M) echo $((num * 1024));;
+    K) echo "$num";;
+    *) echo $((4 * 1024 * 1024));; # Default 4GB
+  esac
+}
+
 # Source config.env to get API keys (HF_TOKEN, etc.) for workers
 if [ -f "$HOME/.continuum/config.env" ]; then
   set -a  # Auto-export all variables
@@ -38,9 +59,11 @@ mkdir -p .continuum/jtag/logs/system
 # Kill existing workers and clean sockets (same as stop-workers.sh)
 echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"
 # Use process substitution to avoid subshell (backgrounded processes survive)
-while read -r worker_name; do
-  pkill -f "${worker_name}-worker" || true
-done < <(jq -r '.workers[].name' "$CONFIG_FILE")
+# Use binary name from config (single source of truth)
+while read -r binary_path; do
+  binary_name=$(basename "$binary_path")
+  pkill -f "$binary_name" || true
+done < <(jq -r '.workers[].binary' "$CONFIG_FILE")
 
 # Give processes time to die and release sockets (macOS needs more time, especially on external drives)
 sleep 2.0
@@ -63,6 +86,9 @@ sleep 1.0
 declare -a WORKER_PIDS=()
 declare -a WORKER_NAMES=()
 
+# Get default memory limit from config
+DEFAULT_MEM_LIMIT=$(jq -r '.memoryLimits.default // "4G"' "$CONFIG_FILE")
+
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
   binary=$(echo "$worker" | jq -r '.binary')
@@ -70,16 +96,23 @@ while read -r worker; do
   port=$(echo "$worker" | jq -r '.port // empty')
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   description=$(echo "$worker" | jq -r '.description')
+  mem_limit=$(echo "$worker" | jq -r '.memoryLimit // empty')
 
   # Get args array (may be empty)
   args=$(echo "$worker" | jq -r '.args[]?' || echo "")
 
+  # Calculate memory limit in KB for ulimit
+  MEM_LIMIT_KB=$(parse_memory_limit "$mem_limit" "$DEFAULT_MEM_LIMIT")
+
   echo -e "${YELLOW}🚀 Starting ${name}...${NC}"
   echo -e "   ${description}"
+  echo -e "   Memory limit: ${mem_limit:-$DEFAULT_MEM_LIMIT} (${MEM_LIMIT_KB} KB)"
 
   if [ "$worker_type" = "tcp" ]; then
     # TCP worker (e.g., gRPC server) - no socket argument
-    nohup "$binary" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
+    # Each TCP worker gets its own log file for better segregation
+    (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
     WORKER_PID=$!
     disown $WORKER_PID
 
@@ -91,22 +124,23 @@ while read -r worker; do
       fi
       if [ $i -eq 40 ]; then
         echo -e "${RED}❌ ${name} failed to start (port $port not listening after 20s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -50 .continuum/jtag/logs/system/rust-worker.log${NC}"
+        echo -e "${YELLOW}💡 Try: tail -50 .continuum/jtag/logs/system/${name}.log${NC}"
         # Don't exit - let other workers start
       fi
       sleep 0.5
     done
   else
     # Unix socket worker (original behavior)
+    # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     if [ -z "$args" ]; then
-      nohup "$binary" "$socket" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
     else
       # Convert newline-separated args to array
       arg_array=()
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      nohup "$binary" "$socket" "${arg_array[@]}" >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
     fi
 
     WORKER_PID=$!
@@ -152,6 +186,7 @@ ALL_RUNNING=true
 
 while read -r worker; do
   name=$(echo "$worker" | jq -r '.name')
+  binary_name=$(basename "$(echo "$worker" | jq -r '.binary')")
   worker_type=$(echo "$worker" | jq -r '.type // "socket"')
   port=$(echo "$worker" | jq -r '.port // empty')
 
@@ -161,7 +196,7 @@ while read -r worker; do
       ALL_RUNNING=false
     fi
   else
-    if ! pgrep -f "${name}" > /dev/null; then
+    if ! pgrep -f "$binary_name" > /dev/null; then
       echo -e "${RED}❌ ${name} not running${NC}"
       ALL_RUNNING=false
     fi
@@ -174,6 +209,7 @@ if [ "$ALL_RUNNING" = true ]; then
   # Show status
   while read -r worker; do
     name=$(echo "$worker" | jq -r '.name')
+    binary_name=$(basename "$(echo "$worker" | jq -r '.binary')")
     socket=$(echo "$worker" | jq -r '.socket // empty')
     port=$(echo "$worker" | jq -r '.port // empty')
     worker_type=$(echo "$worker" | jq -r '.type // "socket"')
@@ -182,7 +218,7 @@ if [ "$ALL_RUNNING" = true ]; then
       pid=$(lsof -i :$port -sTCP:LISTEN -t 2>/dev/null | head -1)
       echo -e "   ${name}: PID $pid (port $port)"
     else
-      pid=$(pgrep -f "${name}" | head -1)
+      pid=$(pgrep -f "$binary_name" | head -1)
       echo -e "   ${name}: PID $pid ($socket)"
     fi
   done < <(jq -c '.workers[] | select(.enabled != false)' "$CONFIG_FILE")

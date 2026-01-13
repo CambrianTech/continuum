@@ -20,7 +20,7 @@
  * const handle = await Commands.execute('data/open', {
  *   adapter: 'rust',
  *   config: {
- *     filename: '/Users/joel/.continuum/data/test-rust.sqlite',
+ *     filename: '~/.continuum/data/test-rust.sqlite',
  *     storageType: 'auto-detect'  // or explicit: 'internal-ssd', 'sd-card'
  *   }
  * });

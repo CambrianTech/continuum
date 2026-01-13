@@ -75,13 +75,13 @@ export class EventsDaemonServer extends EventsDaemon implements IEventSubscripti
   }
 
   /**
-   * Override handleMessage to ensure server-side events are ALWAYS emitted locally
+   * Override processMessage to ensure server-side events are ALWAYS emitted locally
    * This fixes PersonaUser event subscriptions (they run in same context as DataDaemon)
    */
-  async handleMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<EventBridgeResponse> {
     const payload = message.payload as EventBridgePayload;
 
-    const result = await super.handleMessage(message);
+    const result = await super.processMessage(message);
 
     // CRITICAL FIX: For event-bridge messages, ALWAYS emit locally on server
     // PersonaUsers run in same server context as DataDaemon, so without this,

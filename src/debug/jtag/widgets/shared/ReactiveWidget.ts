@@ -986,6 +986,8 @@ export abstract class ReactiveWidget extends LitElement {
       const jtagClient = (window as WindowWithJTAG).jtag;
       const currentUser = jtagClient?.user;
 
+      console.log(`🔍 ${this.config.widgetName}.loadUserContext: hasJtagClient=${!!jtagClient}, hasUser=${!!currentUser}`);
+
       if (!currentUser) {
         console.warn(`⚠️ ${this.config.widgetName}: No user in session`);
         return;
@@ -993,18 +995,23 @@ export abstract class ReactiveWidget extends LitElement {
 
       // Get userId - works for both BaseUser instances (getter) and plain objects (JSON deserialized)
       const userId = currentUser.id ?? (currentUser as any).entity?.id;
+      console.log(`🔍 ${this.config.widgetName}.loadUserContext: userId=${userId?.slice?.(0, 8) || 'null'}`);
 
       if (!userId) {
         console.warn(`⚠️ ${this.config.widgetName}: User has no id`);
         return;
       }
 
-      // Load user state from database
+      // Load user state from database - ALWAYS from server to get fresh contentState
+      // localStorage cache may have stale openItems from previous sessions
       const stateResult = await this.executeCommand<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.USER_STATES,
         filter: { userId },
-        limit: 1
+        limit: 1,
+        backend: 'server'  // Bypass localStorage cache for fresh data
       });
+
+      console.log(`🔍 ${this.config.widgetName}.loadUserContext: Query result - success=${stateResult.success}, items=${stateResult.items?.length || 0}, hasContentState=${!!stateResult.items?.[0]?.contentState}, openItems=${stateResult.items?.[0]?.contentState?.openItems?.length || 0}`);
 
       if (stateResult.success && stateResult.items && stateResult.items.length > 0) {
         this._userState = stateResult.items[0];

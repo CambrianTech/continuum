@@ -4,6 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
  * gRPC Service Implementation
  *
  * Implements the Inference trait for the gRPC server.
+ *
+ * Supports two modes:
+ * 1. Worker Pool (quantized) - Multiple model instances for concurrent inference
+ * 2. Single Instance (BF16) - For LoRA adapter support
  */
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,6 +31,7 @@ use crate::model::{
     GenomeAdapter, ModelState,
 };
 use crate::quantized_model::{generate_text_quantized, QuantizedModelState};
+use crate::worker_pool::WorkerPool;
 
 /// Server statistics tracking
 pub struct ServerStats {
@@ -46,27 +51,30 @@ impl ServerStats {
 /// Main gRPC service struct
 /// Supports both full-precision (BF16) and quantized (GGUF Q4) models
 pub struct InferenceService {
-    /// Full-precision model state (BF16)
+    /// Full-precision model state (BF16) - for LoRA support
     pub state: Arc<RwLock<Option<ModelState>>>,
-    /// Quantized model state (GGUF Q4_K_M)
+    /// Quantized model state (GGUF Q4_K_M) - single instance fallback
     pub quantized_state: Arc<RwLock<Option<QuantizedModelState>>>,
+    /// Worker pool for concurrent quantized inference
+    pub worker_pool: Option<Arc<WorkerPool>>,
     pub stats: Arc<ServerStats>,
     pub adapters: Arc<RwLock<Vec<LoadedAdapter>>>,
 }
 
 impl InferenceService {
-    /// Create service with full-precision model only
+    /// Create service with full-precision model only (for LoRA support)
     #[allow(dead_code)]
     pub fn new(state: Option<ModelState>) -> Self {
         Self {
             state: Arc::new(RwLock::new(state)),
             quantized_state: Arc::new(RwLock::new(None)),
+            worker_pool: None,
             stats: Arc::new(ServerStats::new()),
             adapters: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Create service with either full-precision or quantized model
+    /// Create service with single quantized model (legacy, fallback)
     pub fn new_with_quantized(
         state: Option<ModelState>,
         quantized: Option<QuantizedModelState>,
@@ -74,14 +82,31 @@ impl InferenceService {
         Self {
             state: Arc::new(RwLock::new(state)),
             quantized_state: Arc::new(RwLock::new(quantized)),
+            worker_pool: None,
             stats: Arc::new(ServerStats::new()),
             adapters: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Check if we're in quantized mode
+    /// Create service with worker pool for concurrent quantized inference
+    ///
+    /// This is the recommended mode for high-throughput scenarios.
+    /// Falls back to BF16 single-instance when LoRA adapters are needed.
+    pub fn new_with_pool(pool: WorkerPool) -> Self {
+        let num_workers = pool.num_workers;
+        info!("🏭 InferenceService using worker pool ({num_workers} workers)");
+        Self {
+            state: Arc::new(RwLock::new(None)),
+            quantized_state: Arc::new(RwLock::new(None)),
+            worker_pool: Some(Arc::new(pool)),
+            stats: Arc::new(ServerStats::new()),
+            adapters: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Check if we're in quantized mode (pool or single instance)
     pub async fn is_quantized(&self) -> bool {
-        self.quantized_state.read().await.is_some()
+        self.worker_pool.is_some() || self.quantized_state.read().await.is_some()
     }
 }
 
@@ -119,25 +144,109 @@ impl Inference for InferenceService {
         } else {
             0.7
         };
+        // Per-persona tracking (optional fields)
+        let persona_name = if req.persona_name.is_empty() {
+            "unknown".to_string()
+        } else {
+            req.persona_name
+        };
+        let _persona_id = req.persona_id; // May be empty (for future per-persona logging)
 
-        // Check if we're using quantized model
-        let is_quantized = self.quantized_state.read().await.is_some();
+        // Determine which backend to use:
+        // 1. Worker pool (concurrent quantized) - best for high throughput
+        // 2. Single quantized instance - fallback
+        // 3. BF16 with LoRA - for adapter support
+        let has_pool = self.worker_pool.is_some();
+        let has_adapters = !self.adapters.read().await.is_empty();
+        let has_bf16 = self.state.read().await.is_some();
+
+        let backend = if has_pool && !has_adapters {
+            "pool"
+        } else if has_bf16 {
+            "bf16"
+        } else {
+            "quantized"
+        };
 
         info!(
-            "🔮 Generate: model={}, prompt={} chars, max_tokens={}, temp={:.2}, quantized={}",
+            "🔮 Generate [{}]: model={}, prompt={} chars, max_tokens={}, temp={:.2}, backend={}",
+            persona_name,
             model_id,
             prompt.len(),
             max_tokens,
             temperature,
-            is_quantized
+            backend
         );
 
         let (tx, rx) = mpsc::channel(32);
+        let stats = self.stats.clone();
+        stats.requests_pending.fetch_add(1, Ordering::SeqCst);
+
+        // Use worker pool for concurrent quantized inference
+        if let Some(pool) = &self.worker_pool {
+            if !has_adapters {
+                let pool = pool.clone();
+                let stats = stats.clone();
+                let available = pool.available_workers();
+
+                info!("🏭 Using worker pool ({available} available workers)");
+
+                tokio::spawn(async move {
+                    let start = Instant::now();
+
+                    // Submit to pool and wait for response
+                    let result = match pool.submit(prompt.clone(), max_tokens, temperature).await {
+                        Ok(rx) => match rx.await {
+                            Ok(resp) => {
+                                if let Some(err) = resp.error {
+                                    Err(err)
+                                } else {
+                                    info!(
+                                        "✅ Worker {} completed: {} tokens in {}ms",
+                                        resp.worker_id, resp.tokens, resp.duration_ms
+                                    );
+                                    Ok((resp.text, resp.tokens))
+                                }
+                            }
+                            Err(_) => Err("Worker response channel closed".to_string()),
+                        },
+                        Err(e) => Err(e),
+                    };
+
+                    let duration = start.elapsed().as_millis() as i32;
+                    stats.requests_pending.fetch_sub(1, Ordering::SeqCst);
+                    stats.requests_completed.fetch_add(1, Ordering::SeqCst);
+
+                    let response = match result {
+                        Ok((text, tokens)) => GenerateResponse {
+                            response: Some(generate_response::Response::Complete(Complete {
+                                text,
+                                tokens: tokens as i32,
+                                duration_ms: duration,
+                            })),
+                        },
+                        Err(e) => GenerateResponse {
+                            response: Some(generate_response::Response::Complete(Complete {
+                                text: format!("ERROR: {e}"),
+                                tokens: 0,
+                                duration_ms: duration,
+                            })),
+                        },
+                    };
+
+                    if tx.send(Ok(response)).await.is_err() {
+                        info!("⚠️ Failed to send response, client gone");
+                    }
+                });
+
+                return Ok(Response::new(ReceiverStream::new(rx)));
+            }
+        }
+
+        // Fallback to single-instance mode (quantized or BF16 with LoRA)
         let state_arc = self.state.clone();
         let quantized_arc = self.quantized_state.clone();
-        let stats = self.stats.clone();
-
-        stats.requests_pending.fetch_add(1, Ordering::SeqCst);
+        let is_quantized = self.quantized_state.read().await.is_some();
 
         tokio::spawn(async move {
             let start = Instant::now();
@@ -162,6 +271,8 @@ impl Inference for InferenceService {
             };
 
             let duration = start.elapsed().as_millis() as i32;
+            stats.requests_pending.fetch_sub(1, Ordering::SeqCst);
+            stats.requests_completed.fetch_add(1, Ordering::SeqCst);
 
             let response = match result {
                 Ok((text, tokens)) => GenerateResponse {
@@ -179,9 +290,6 @@ impl Inference for InferenceService {
                     })),
                 },
             };
-
-            stats.requests_pending.fetch_sub(1, Ordering::SeqCst);
-            stats.requests_completed.fetch_add(1, Ordering::SeqCst);
 
             if tx.send(Ok(response)).await.is_err() {
                 info!("⚠️ Failed to send response, client gone");
@@ -892,13 +1000,36 @@ impl Inference for InferenceService {
             .map(|a| a.adapter_id.clone())
             .collect();
 
+        // Use pool stats when available (more accurate - tracks actual worker activity)
+        // Fall back to gRPC-level stats when no pool
+        let (requests_completed, requests_pending) = if let Some(pool) = &self.worker_pool {
+            let (completed, pending, tokens, time_ms) = pool.stats();
+            // Log additional metrics for observability
+            if completed > 0 {
+                let tokens_per_sec = if time_ms > 0 {
+                    (tokens as f64 / time_ms as f64) * 1000.0
+                } else {
+                    0.0
+                };
+                info!(
+                    "Pool stats: {completed} requests, {tokens} tokens, {tokens_per_sec:.1} tok/s"
+                );
+            }
+            (completed as i32, pending as i32)
+        } else {
+            (
+                self.stats.requests_completed.load(Ordering::SeqCst) as i32,
+                self.stats.requests_pending.load(Ordering::SeqCst) as i32,
+            )
+        };
+
         Ok(Response::new(StatusResponse {
             healthy: state.is_some(),
             current_model,
             memory_used_bytes: 0,
             memory_total_bytes: 0,
-            requests_pending: self.stats.requests_pending.load(Ordering::SeqCst) as i32,
-            requests_completed: self.stats.requests_completed.load(Ordering::SeqCst) as i32,
+            requests_pending,
+            requests_completed,
             active_adapters,
         }))
     }

@@ -11,6 +11,7 @@ import { PersonaUser, type PersonaUserData } from '../../domain/user/PersonaUser
 import { SystemUser } from '../../domain/user/SystemUser';
 import { BaseUser } from '../../domain/user/BaseUser';
 import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUUID';
+import { DEFAULT_USERS } from '../../system/data/domains/DefaultEntities';
 import type { BaseUserDataWithRelationships } from '../../domain/user/UserRelationships';
 import { USER_IDS, USER_CONFIG, COLLECTIONS } from './SeedConstants';
 import { MODEL_IDS } from '../../system/shared/Constants';
@@ -39,8 +40,9 @@ export class UserDataSeed {
    */
   public static generateSeedUsers(): UserSeedData {
     // Create human user with proper domain object
+    // Use DEFAULT_USERS.HUMAN constant directly for single source of truth
     const humanUserData: HumanUserData = {
-      userId: generateUUID(),
+      userId: DEFAULT_USERS.HUMAN,
       sessionId: generateUUID(),
       displayName: USER_CONFIG.HUMAN.DISPLAY_NAME || USER_CONFIG.HUMAN.NAME,
       citizenType: 'human',
@@ -70,7 +72,7 @@ export class UserDataSeed {
 
     // Claude Code - AI Assistant Agent
     const claudeAgentData: AgentUserData = {
-      userId: generateUUID(),
+      userId: DEFAULT_USERS.CLAUDE_CODE,
       sessionId: generateUUID(),
       displayName: USER_CONFIG.CLAUDE.NAME,
       citizenType: 'ai',
@@ -97,7 +99,7 @@ export class UserDataSeed {
 
     // GeneralAI - General Assistant Persona
     const generalPersonaData: PersonaUserData = {
-      userId: generateUUID(),
+      userId: DEFAULT_USERS.GENERAL_AI,
       sessionId: generateUUID(),
       displayName: 'GeneralAI',
       citizenType: 'ai',
@@ -132,7 +134,7 @@ export class UserDataSeed {
 
     // CodeAI - Code Analysis Specialist Agent
     const codeAgentData: AgentUserData = {
-      userId: generateUUID(),
+      userId: DEFAULT_USERS.CODE_AI,
       sessionId: generateUUID(),
       displayName: 'CodeAI',
       citizenType: 'ai',
@@ -161,7 +163,7 @@ export class UserDataSeed {
 
     // PlannerAI - Strategic Planning Assistant Agent
     const plannerAgentData: AgentUserData = {
-      userId: generateUUID(),
+      userId: DEFAULT_USERS.PLANNER_AI,
       sessionId: generateUUID(),
       displayName: 'PlannerAI',
       citizenType: 'ai',
@@ -190,7 +192,7 @@ export class UserDataSeed {
 
     // Auto Route - Smart Agent Selection Agent
     const autoRouteAgentData: AgentUserData = {
-      userId: generateUUID(),
+      userId: DEFAULT_USERS.AUTO_ROUTE,
       sessionId: generateUUID(),
       displayName: 'Auto Route',
       citizenType: 'ai',

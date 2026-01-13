@@ -37,10 +37,10 @@ export abstract class TrainingDaemon extends DaemonBase {
   abstract initialize(): Promise<void>;
 
   /**
-   * Handle messages - TrainingDaemon is event-driven, not message-driven
+   * Process messages - TrainingDaemon is event-driven, not message-driven
    * All actions happen via event subscriptions (chat:message:sent, etc.)
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     // TrainingDaemon doesn't handle messages - it's purely event-driven
     return {
       context: message.payload.context,

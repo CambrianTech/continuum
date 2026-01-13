@@ -7,7 +7,7 @@
 
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import { cognitionStorage, type WorkingMemoryEntry } from './InMemoryCognitionStorage';
-import { randomUUID } from 'crypto';
+import { generateUUID } from '../../../../../core/types/CrossPlatformUUID';
 
 export interface RecallQuery {
   domain?: string | null;  // null = global
@@ -43,7 +43,7 @@ export class WorkingMemoryManager {
 
     const entry: WorkingMemoryEntry = {
       ...memory,
-      id: randomUUID() as UUID,
+      id: generateUUID() as UUID,
       personaId: this.personaId,
       createdAt: Date.now(),
       lastAccessedAt: Date.now()

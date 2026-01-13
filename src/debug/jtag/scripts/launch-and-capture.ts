@@ -603,14 +603,13 @@ async function main(): Promise<void> {
     
     // Skip server check if requested or in certain modes
     if (CONFIG.checkExisting && !CONFIG.skipHealthCheck) {
-      if (CONFIG.verbose) console.log('🔍 Checking for existing server...');
-      
+      console.log('🔍 Checking for existing server...');
+
       const serverStatus = await checkExistingServer();
-      
-      if (CONFIG.verbose || behavior.showStatusOnExisting) {
-        console.log(serverStatus.message);
-      }
-      
+
+      console.log(`📊 Server check: isHealthy=${serverStatus.isHealthy}, tmux=${serverStatus.tmuxRunning}, ports=${serverStatus.portsActive}`);
+      console.log(serverStatus.message);
+
       // Development mode: show status and exit if healthy
       if (serverStatus.isHealthy && !CONFIG.forceRestart && behavior.exitOnHealthy) {
         const instanceConfig = loadInstanceConfigForContext();
@@ -622,29 +621,43 @@ async function main(): Promise<void> {
         console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
         console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
 
-        // Refresh browser to ensure it has latest code
-        console.log('🔄 Refreshing browser to sync with latest build...');
+        // Check if browser is connected via ping, then refresh AND open
+        console.log('🔄 Checking browser connection...');
         try {
-          const refreshResult = await new Promise<{ success: boolean }>((resolve) => {
-            exec('./jtag interface/navigate', { timeout: 5000 }, (error, stdout) => {
+          const browserUrl = `http://localhost:${httpPort}/`;
+
+          // Check ping to see if browser is connected
+          const pingResult = await new Promise<{ browserConnected: boolean; browserUrl?: string }>((resolve) => {
+            exec('./jtag ping', { timeout: 5000 }, (error, stdout) => {
               if (error) {
-                console.log('⚠️ Browser refresh skipped (browser may not be connected)');
-                resolve({ success: false });
+                resolve({ browserConnected: false });
               } else {
                 try {
                   const result = JSON.parse(stdout);
-                  if (result.success) {
-                    console.log('✅ Browser refreshed');
-                  }
-                  resolve(result);
+                  // Browser is connected if ping returns browser info
+                  const connected = result.browser && result.browser.type === 'browser';
+                  resolve({
+                    browserConnected: connected,
+                    browserUrl: result.browser?.url
+                  });
                 } catch {
-                  resolve({ success: false });
+                  resolve({ browserConnected: false });
                 }
               }
             });
           });
+
+          if (pingResult.browserConnected) {
+            // Browser is connected - just refresh it
+            console.log('🔄 Browser connected, refreshing...');
+            exec('./jtag interface/navigate', { timeout: 5000 }, () => {});
+          } else {
+            // No browser connected - open new tab
+            console.log('🌐 Opening browser...');
+            spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
+          }
         } catch {
-          // Browser refresh is best-effort, don't fail startup
+          // Browser sync is best-effort, don't fail startup
         }
 
         if (behavior.showCommands) {

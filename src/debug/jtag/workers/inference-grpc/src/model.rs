@@ -34,30 +34,6 @@ pub struct ModelState {
 }
 
 impl ModelState {
-    pub fn new(
-        model: Llama,
-        cache: Cache,
-        tokenizer: Tokenizer,
-        device: Device,
-        eos_token_ids: Vec<u32>,
-        dtype: DType,
-        config: LlamaModelConfig,
-        model_id: String,
-        weight_paths: Vec<std::path::PathBuf>,
-    ) -> Self {
-        Self {
-            model,
-            cache,
-            tokenizer,
-            device,
-            eos_token_ids,
-            dtype,
-            config,
-            model_id,
-            weight_paths,
-        }
-    }
-
     pub fn clear_cache(&mut self) {
         self.cache = Cache::new(true, self.dtype, &self.config, &self.device)
             .expect("Failed to recreate cache");
@@ -109,6 +85,14 @@ pub fn generate_text(
             .forward(&input, pos, &mut state.cache)
             .map_err(|e| format!("Forward pass failed: {e}"))?;
 
+        // CRITICAL: Synchronize GPU after each forward pass to prevent command buffer accumulation
+        // Without this, Metal command buffers queue up faster than GPU can process them,
+        // causing memory to explode (1M+ buffers, 25GB+ RAM, swap thrashing)
+        state
+            .device
+            .synchronize()
+            .map_err(|e| format!("GPU sync failed: {e}"))?;
+
         if i == 0 {
             debug!("Raw logits shape: {:?}", logits.dims());
         }
@@ -152,6 +136,13 @@ pub fn generate_text(
 
         all_tokens.push(next_token);
     }
+
+    // Final GPU sync to ensure all work is complete before returning
+    // This allows GPU memory to be fully reclaimed
+    state
+        .device
+        .synchronize()
+        .map_err(|e| format!("Final GPU sync failed: {e}"))?;
 
     let generated_tokens = &all_tokens[prompt_len..];
     let output_text = state
@@ -307,7 +298,7 @@ pub fn load_model_by_id(
     let duration = start.elapsed();
     info!("✅ Model loaded in {duration:?}");
 
-    Ok(ModelState::new(
+    Ok(ModelState {
         model,
         cache,
         tokenizer,
@@ -315,9 +306,9 @@ pub fn load_model_by_id(
         eos_token_ids,
         dtype,
         config,
-        model_id.to_string(),
+        model_id: model_id.to_string(),
         weight_paths,
-    ))
+    })
 }
 
 /// Load default model from environment variable

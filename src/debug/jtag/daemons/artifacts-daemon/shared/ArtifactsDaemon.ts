@@ -115,9 +115,9 @@ export abstract class ArtifactsDaemon extends DaemonBase {
   }
 
   /**
-   * Handle incoming artifacts messages (MessageSubscriber interface)
+   * Process incoming artifacts messages
    */
-  async handleMessage(message: JTAGMessage): Promise<ArtifactsResponse> {
+  protected async processMessage(message: JTAGMessage): Promise<ArtifactsResponse> {
     const artifactsPayload = message.payload as ArtifactsPayload;
     
     try {

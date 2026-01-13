@@ -10,6 +10,7 @@
 
 import { execSync } from 'child_process';
 import { join } from 'path';
+import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 
 // Import entity collection constants (no magic strings!)
@@ -87,4 +88,39 @@ if (hadErrors) {
 }
 
 console.log('\n✅ All database tables cleared with verification');
+
+// Clear session metadata files to prevent stale entityIds from persisting
+// BUG PREVENTION: Session metadata stores entityIds that become invalid after reseed
+// If not cleared, browser will try to load rooms using old UUIDs that no longer exist
+console.log('\n🧹 Clearing session metadata files...');
+const exampleDirs = ['examples/widget-ui', 'examples/test-bench'];
+const projectRoot = join(__dirname, '..');
+
+for (const exampleDir of exampleDirs) {
+  const metadataDir = join(projectRoot, exampleDir, '.continuum/jtag/sessions');
+  const metadataPath = join(metadataDir, 'metadata.json');
+
+  try {
+    // Ensure directory exists
+    if (!existsSync(metadataDir)) {
+      mkdirSync(metadataDir, { recursive: true });
+    }
+
+    const emptyMetadata = {
+      projectContext: join(projectRoot, exampleDir),
+      sessions: [],
+      lastUpdated: new Date().toISOString(),
+      version: "1.0.0"
+    };
+
+    writeFileSync(metadataPath, JSON.stringify(emptyMetadata, null, 2));
+    console.log(`   ✅ Cleared: ${metadataPath}`);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.warn(`   ⚠️ Could not clear ${metadataPath}: ${errorMessage}`);
+    // Don't fail the whole script for metadata clearing - it's cleanup, not critical
+  }
+}
+
+console.log('\n✅ Data clear complete');
 process.exit(0);

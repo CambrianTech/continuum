@@ -266,39 +266,20 @@ export class SystemMetricsCollector {
 
   private async countCommands(): Promise<number> {
     try {
-      // Use WorkingDirConfig for per-project isolation
-      const continuumPath = WorkingDirConfig.getContinuumPath();
-      
-      // Self-healing: Try multiple log locations in order of preference  
-      const logPatterns = [
-        // 1. Try currentUser logs first (symlinked to active user session)
-        path.join(continuumPath, 'jtag', 'currentUser', 'logs', 'browser-console-log.log'),
-        // 2. Fallback to system session logs (use shell glob expansion)
-        `"${continuumPath}/jtag/sessions/system/*/logs/browser-console-log.log"`,
-        // 3. Fallback to any user session logs (use shell glob expansion)
-        `"${continuumPath}/jtag/sessions/user/*/logs/browser-console-log.log"`
-      ];
-      
-      for (const logPattern of logPatterns) {
-        try {
-          // Get all bootstrap messages and take the LAST one (most recent)
-          const { stdout } = await execAsync(`grep -F "Bootstrap complete! Discovered" ${logPattern} 2>/dev/null | grep "commands" || echo ""`);
-          
-          if (stdout.trim()) {
-            // Split lines and get the last match
-            const lines = stdout.trim().split('\n');
-            const lastLine = lines[lines.length - 1];
-            const match = lastLine.match(JTAG_LOG_PATTERNS.COMMAND_COUNT_PATTERN);
-            const count = match ? parseInt(match[1]) : 0;
-            if (count > 0) {
-              return count;
-            }
-          }
-        } catch {
-          // Try next location
+      // Use ./jtag ping to get the actual command count from the server
+      // This is more reliable than parsing browser logs
+      const jtagPath = path.join(process.cwd(), 'jtag');
+      const { stdout } = await execAsync(`${jtagPath} ping`, { timeout: 5000 });
+
+      // Extract JSON from output (may have log lines before it)
+      const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const result = JSON.parse(jsonMatch[0]);
+        if (result.success && result.server?.health?.commandsRegistered) {
+          return result.server.health.commandsRegistered;
         }
       }
-      
+
       return 0;
     } catch {
       return 0;

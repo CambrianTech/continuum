@@ -21,11 +21,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { UI_EVENTS } from '../../system/core/shared/EventConstants';
 import { COMMANDS } from '../../shared/generated-command-constants';
-import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
-import type { StateContentSwitchParams, StateContentSwitchResult } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
-import type { ContentOpenParams, ContentOpenResult } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
-import type { ContentType, ContentPriority } from '../../system/data/entities/UserStateEntity';
 import { ROOM_UNIQUE_IDS } from '../../system/data/constants/RoomConstants';
 import { getWidgetForType, buildContentPath, parseContentPath, getRightPanelConfig, initializeRecipeLayouts } from './shared/ContentTypeRegistry';
 import { PositronContentStateAdapter } from '../shared/services/state/PositronContentStateAdapter';
@@ -33,6 +29,7 @@ import { PositronWidgetState } from '../shared/services/state/PositronWidgetStat
 import { RoutingService } from '../../system/routing/RoutingService';
 import { pageState } from '../../system/state/PageStateService';
 import { contentState } from '../../system/state/ContentStateService';
+import { ContentService } from '../../system/state/ContentService';
 import { styles as MAIN_STYLES } from './public/main-panel.styles';
 
 export class MainWidget extends ReactiveWidget {
@@ -177,44 +174,60 @@ export class MainWidget extends ReactiveWidget {
 
     // Delay slightly to let the DOM render first
     setTimeout(async () => {
-      const resolved = entityId
-        ? await RoutingService.resolve(type, entityId)
-        : undefined;
-
-      const canonicalEntityId = resolved?.id || entityId;
-      pageState.setContent(type, canonicalEntityId, resolved || undefined);
-      await this.ensureTabForContent(type, canonicalEntityId);
-      this.switchContentView(type, canonicalEntityId);
+      // Use ContentService for centralized content/tab/URL management
+      await this.openContentFromUrl(type, entityId);
     }, 100);
   }
 
-  private async ensureTabForContent(contentType: string, entityId?: string): Promise<void> {
+  /**
+   * Open content from URL - uses ContentService (centralized)
+   * Resolves identifier (could be uniqueId like "general" or UUID) to canonical form
+   */
+  private async openContentFromUrl(contentType: string, identifier?: string): Promise<void> {
+    // 0. Ensure ContentService has userId for persistence
+    // Wait briefly for userState if not yet loaded (race condition with loadUserContext)
+    let userId = this.userState?.userId;
+    if (!userId) {
+      // Wait up to 500ms for userState to load
+      for (let i = 0; i < 5 && !userId; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        userId = this.userState?.userId;
+      }
+    }
+    if (userId) {
+      ContentService.setUserId(userId as UUID);
+    } else {
+      console.warn('⚠️ MainWidget: userState not loaded, content will not persist to database');
+    }
+
+    // 1. Resolve identifier to canonical UUID, uniqueId, displayName
+    const resolved = identifier
+      ? await RoutingService.resolve(contentType, identifier)
+      : undefined;
+
+    const canonicalEntityId = resolved?.id || identifier;
+
+    // 2. Check for existing tab with this entityId
     const existingTab = this.userState?.contentState?.openItems?.find(
-      item => item.type === contentType && item.entityId === entityId
+      item => item.type === contentType && item.entityId === canonicalEntityId
     );
 
     if (existingTab) {
-      const userId = this.userState?.userId;
-      if (userId) {
-        Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
-          userId: userId as UUID,
-          contentItemId: existingTab.id as UUID
-        }).catch(err => console.error('Failed to switch to existing tab:', err));
-      }
+      // Tab exists - just switch to it via ContentService
+      ContentService.switchTo(existingTab.id);
+      this.switchContentView(contentType, canonicalEntityId);
       return;
     }
 
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-        userId: userId as UUID,
-        contentType: contentType as ContentType,
-        entityId: entityId,
-        setAsCurrent: true
-      }).catch(err => console.error(`Failed to create tab for ${contentType}:`, err));
+    // 3. No existing tab - create via ContentService (centralized)
+    ContentService.open(contentType, canonicalEntityId, {
+      uniqueId: resolved?.uniqueId || identifier,
+      title: resolved?.displayName,
+      setAsCurrent: true
+    });
 
-      this.log(`Creating tab for ${contentType}/${entityId || 'default'}`);
-    }
+    this.switchContentView(contentType, canonicalEntityId);
+    this.log(`Opened ${contentType}/${resolved?.uniqueId || identifier || 'default'}`);
   }
 
   // === CONTENT VIEW SWITCHING ===
@@ -320,104 +333,6 @@ export class MainWidget extends ReactiveWidget {
     }
   }
 
-  // === TAB HANDLERS ===
-
-  private async handleTabClick(tabData: { tabId: string; label?: string; entityId?: string; contentType?: string }): Promise<void> {
-    const { tabId, label, entityId, contentType } = tabData;
-
-    let resolvedEntityId = entityId;
-    let resolvedContentType = contentType;
-    let urlId = entityId;  // For URL - prefer uniqueId over UUID
-
-    // Always look up contentItem to get uniqueId for human-readable URLs
-    const contentItem = this.userState?.contentState?.openItems?.find(item => item.id === tabId);
-
-    if (!resolvedEntityId || !resolvedContentType) {
-      console.warn(`⚠️ MainPanel: Tab missing entityId/contentType, looking up in userState...`);
-      if (contentItem) {
-        resolvedEntityId = contentItem.entityId;
-        resolvedContentType = contentItem.type;
-        this.log(`Found in userState - entityId="${resolvedEntityId}", type="${resolvedContentType}"`);
-      } else {
-        console.error(`❌ MainPanel: Tab not found in userState either:`, tabId);
-        return;
-      }
-    }
-
-    // Use uniqueId for URL if available (human-readable like "general" vs UUID)
-    if (contentItem?.uniqueId) {
-      urlId = contentItem.uniqueId;
-    }
-
-    if (this.userState?.contentState?.currentItemId === tabId) {
-      this.log('Tab already current, skipping');
-      return;
-    }
-
-    // === OPTIMISTIC UPDATE: Switch view IMMEDIATELY (no blocking) ===
-    contentState.setCurrent(tabId as UUID);
-    pageState.setContent(resolvedContentType, resolvedEntityId, undefined);
-    this.switchContentView(resolvedContentType, resolvedEntityId);
-
-    const newPath = buildContentPath(resolvedContentType, urlId);
-    this.updateUrl(newPath);
-
-    this.log(`Switched to ${resolvedContentType} tab "${label}"`);
-
-    // === BACKGROUND: Persist to server and resolve entity metadata ===
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
-        userId: userId as UUID,
-        contentItemId: tabId as UUID
-      }).catch(err => console.error('Failed to persist tab switch:', err));
-    }
-
-    // Resolve entity metadata in background (for pageState enrichment, not blocking UI)
-    if (resolvedEntityId) {
-      RoutingService.resolve(resolvedContentType, resolvedEntityId)
-        .then(resolved => {
-          if (resolved) {
-            pageState.setContent(resolvedContentType, resolvedEntityId, resolved);
-          }
-        })
-        .catch(err => console.warn('Failed to resolve entity metadata:', err));
-    }
-  }
-
-  private async handleTabClose(tabId: string): Promise<void> {
-    const contentItem = contentState.openItems.find(item => item.id === tabId);
-    if (!contentItem) return;
-
-    const wasCurrentItem = contentState.currentItemId === tabId;
-    contentState.removeItem(tabId as UUID);
-
-    if (wasCurrentItem) {
-      const newCurrent = contentState.currentItem;
-      if (newCurrent) {
-        pageState.setContent(newCurrent.type, newCurrent.entityId, undefined);
-        this.switchContentView(newCurrent.type, newCurrent.entityId);
-        const urlId = newCurrent.uniqueId || newCurrent.entityId;
-        this.updateUrl(buildContentPath(newCurrent.type, urlId));
-      } else {
-        const defaultRoom = ROOM_UNIQUE_IDS.GENERAL;
-        pageState.setContent('chat', defaultRoom, undefined);
-        this.switchContentView('chat', defaultRoom);
-        this.updateUrl(`/chat/${defaultRoom}`);
-      }
-    }
-
-    const userId = this.userState?.userId;
-    if (userId) {
-      Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
-        userId: userId as UUID,
-        contentItemId: tabId as UUID
-      }).catch(err => console.error('Failed to persist tab close:', err));
-    }
-
-    this.log(`Closed tab "${contentItem.title}"`);
-  }
-
   // === NAVIGATION ===
 
   async navigateToPath(newPath: string): Promise<void> {
@@ -429,15 +344,8 @@ export class MainWidget extends ReactiveWidget {
 
     this.currentPath = newPath;
 
-    const resolved = entityId
-      ? await RoutingService.resolve(type, entityId)
-      : undefined;
-
-    pageState.setContent(type, entityId, resolved || undefined);
-    await this.ensureTabForContent(type, entityId);
-    this.switchContentView(type, entityId);
-
-    this.log(`Navigated to ${type}/${entityId || 'default'}`);
+    // Use centralized method - one logical decision, one place
+    await this.openContentFromUrl(type, entityId);
   }
 
   private async ensureRoomExists(roomId: string): Promise<void> {
@@ -492,13 +400,30 @@ export class MainWidget extends ReactiveWidget {
   // === CONTENT STATE ===
 
   private async initializeContentTabs(): Promise<void> {
-    if (this.userState?.contentState) {
-      const openItems = this.userState.contentState.openItems || [];
-      const currentItemId = this.userState.contentState.currentItemId;
+    // Wait for userState to load (race condition with loadUserContext)
+    let userStateLoaded = this.userState?.contentState;
+    console.log(`🔍 initializeContentTabs: Initial check - hasUserState=${!!this.userState}, hasContentState=${!!userStateLoaded}`);
+
+    if (!userStateLoaded) {
+      // Wait up to 2 seconds for userState to load (increased from 1s)
+      for (let i = 0; i < 20 && !userStateLoaded; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        userStateLoaded = this.userState?.contentState;
+        if (i === 9) {
+          console.log(`🔍 initializeContentTabs: Still waiting (${i*100}ms) - hasUserState=${!!this.userState}, hasContentState=${!!userStateLoaded}`);
+        }
+      }
+    }
+
+    if (userStateLoaded) {
+      const openItems = this.userState!.contentState.openItems || [];
+      const currentItemId = this.userState!.contentState.currentItemId;
+      console.log(`✅ initializeContentTabs: Found ${openItems.length} items, currentItemId=${currentItemId}`);
       contentState.initialize(openItems, currentItemId);
       this.log(`Initialized global contentState with ${openItems.length} items`);
     } else {
-      this.log('No persisted contentState, starting empty');
+      console.log(`⚠️ initializeContentTabs: UserState not loaded after 2s - userId might be wrong or DB query failed`);
+      this.log('⚠️ UserState not loaded after 2s, starting with empty tabs');
       contentState.initialize([], undefined);
     }
   }
@@ -597,6 +522,10 @@ export class MainWidget extends ReactiveWidget {
     this.log(`Switching to page: ${pageName}`);
   }
 
+  /**
+   * Open a content tab (settings, theme, help, browser)
+   * Delegates to ContentService - single source of truth for content operations
+   */
   private openContentTab(contentType: string, title: string): void {
     const userId = this.userState?.userId;
     if (!userId) {
@@ -604,47 +533,22 @@ export class MainWidget extends ReactiveWidget {
       return;
     }
 
+    // Ensure ContentService has the userId
+    ContentService.setUserId(userId as UUID);
+
+    // Check for existing tab of this type
     const existingTab = contentState.findItem(contentType, undefined);
 
     if (existingTab) {
-      contentState.setCurrent(existingTab.id);
-      pageState.setContent(contentType, existingTab.entityId, undefined);
-      this.switchContentView(contentType, existingTab.entityId);
-      const urlId = existingTab.uniqueId || existingTab.entityId;
-      this.updateUrl(buildContentPath(contentType, urlId));
-
-      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
-        userId: userId as UUID,
-        contentItemId: existingTab.id as UUID
-      }).catch(err => console.error('Failed to persist tab switch:', err));
-
+      // Switch to existing tab via ContentService (single source of truth)
+      ContentService.switchTo(existingTab.id);
       this.log(`Switched to existing ${contentType} tab`);
       return;
     }
 
-    const newItem = contentState.addItem({
-      type: contentType as ContentType,
-      entityId: undefined,
-      title: title,
-      priority: 'normal' as ContentPriority
-    }, true);
-
-    pageState.setContent(contentType, undefined, undefined);
-    this.switchContentView(contentType, undefined);
-    this.updateUrl(buildContentPath(contentType, undefined));
-
-    Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
-      userId: userId as UUID,
-      contentType: contentType as ContentType,
-      title: title,
-      setAsCurrent: true
-    }).then(result => {
-      if (result?.contentItemId) {
-        contentState.updateItemId(newItem.id, result.contentItemId);
-      }
-    }).catch(err => console.error(`Failed to open ${contentType} tab:`, err));
-
-    this.log(`Opened new ${contentType} tab with optimistic update`);
+    // Open new tab via ContentService (single source of truth)
+    ContentService.open(contentType, undefined, { title, setAsCurrent: true });
+    this.log(`Opened new ${contentType} tab`);
   }
 }
 

@@ -83,6 +83,16 @@ export interface ServerStatus {
   activeAdapters: string[];
 }
 
+/**
+ * gRPC client for inference - NO JavaScript queue
+ *
+ * The Rust WorkerPool already has proper concurrent queue management:
+ * - Multiple workers with own models
+ * - Semaphore for backpressure
+ * - Bounded channel
+ *
+ * JavaScript just sends requests to gRPC. Rust handles the queue.
+ */
 export class InferenceGrpcClient {
   private client: any;
   private static instance: InferenceGrpcClient | null = null;
@@ -93,7 +103,7 @@ export class InferenceGrpcClient {
       address,
       grpc.credentials.createInsecure()
     );
-    console.log(`[InferenceGrpcClient] Connected to ${address}`);
+    console.log(`[InferenceGrpcClient] Connected to ${address} (queue handled by Rust WorkerPool)`);
   }
 
   static sharedInstance(): InferenceGrpcClient {
@@ -122,9 +132,14 @@ export class InferenceGrpcClient {
   }
 
   /**
-   * Generate text with streaming progress
+   * Generate text - sends directly to gRPC
    *
-   * @param modelId - Model to use (e.g., "Qwen/Qwen2-1.5B-Instruct")
+   * Queue management is handled by the Rust WorkerPool:
+   * - Semaphore provides backpressure
+   * - Multiple workers handle concurrency
+   * - Bounded channel prevents queue explosion
+   *
+   * @param modelId - Model to use
    * @param prompt - The prompt to generate from
    * @param options - Generation options
    */
@@ -137,15 +152,26 @@ export class InferenceGrpcClient {
       timeoutMs?: number;
       onProgress?: (progress: GenerateProgress) => void;
       signal?: AbortSignal;
+      personaId?: string;   // For per-persona logging in Rust
+      personaName?: string; // Human-readable name for logs
     }
   ): Promise<GenerateResult> {
     return new Promise((resolve, reject) => {
-      const deadline = new Date(Date.now() + (options?.timeoutMs ?? 120000));
+      const personaLabel = options?.personaName || 'unknown';
+      console.log(`[InferenceGrpcClient] [${personaLabel}] Sending to Rust WorkerPool (prompt: ${prompt.length} chars)`);
+      const deadline = new Date(Date.now() + (options?.timeoutMs ?? 300000)); // 5 min
       const maxTokens = options?.maxTokens ?? 100;
       const temperature = options?.temperature ?? 0.7;
 
       const call = this.client.generate(
-        { model_id: modelId, prompt, max_tokens: maxTokens, temperature },
+        {
+          model_id: modelId,
+          prompt,
+          max_tokens: maxTokens,
+          temperature,
+          persona_id: options?.personaId || '',
+          persona_name: options?.personaName || '',
+        },
         { deadline }
       );
 
@@ -164,6 +190,7 @@ export class InferenceGrpcClient {
             tokensTotal: response.progress.tokens_total,
           });
         } else if (response.complete) {
+          console.log(`[InferenceGrpcClient] Complete (${response.complete.tokens} tokens, ${response.complete.duration_ms}ms)`);
           resolve({
             text: response.complete.text,
             tokens: response.complete.tokens,
@@ -173,6 +200,7 @@ export class InferenceGrpcClient {
       });
 
       call.on('error', (err: Error) => {
+        console.log(`[InferenceGrpcClient] Error: ${err.message}`);
         reject(err);
       });
 

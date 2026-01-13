@@ -102,13 +102,23 @@ export function createScroller<T extends BaseEntity>(
   let observerActive = false; // Track whether observer should be running
   let idleTimeout: ReturnType<typeof setTimeout> | undefined;
 
-  // Smart scroll utilities - check if user is near newest content
-  const isNearEnd = (threshold: number = config.autoScroll?.threshold || 100): boolean => {
-    const { scrollTop, scrollHeight, clientHeight } = container;
+  // Latch state: tracks whether user wants to follow new messages
+  // - Latched: auto-scroll to bottom on new content
+  // - Unlatched: user scrolled up to read history, don't interrupt
+  let isLatchedToBottom = true; // Start latched (show newest messages)
 
-    // Discord/Slack pattern: newest at bottom, check distance from bottom
+  // Smart scroll utilities - check if user is near newest content
+  // Uses generous threshold: half viewport or 500px, whichever is larger
+  const isNearEnd = (threshold?: number): boolean => {
+    const { scrollTop, scrollHeight, clientHeight } = container;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    return distanceFromBottom <= threshold;
+
+    // Default threshold: max of config value, half viewport, or 500px
+    // This prevents unlatching when large messages arrive
+    const effectiveThreshold = threshold ??
+      Math.max(config.autoScroll?.threshold || 100, clientHeight * 0.5, 500);
+
+    return distanceFromBottom <= effectiveThreshold;
   };
 
   const scrollToEnd = (behavior: 'smooth' | 'instant' = config.autoScroll?.behavior || 'smooth'): void => {
@@ -119,6 +129,7 @@ export function createScroller<T extends BaseEntity>(
     };
 
     container.scrollTo(scrollOptions);
+    isLatchedToBottom = true; // Re-latch when explicitly scrolling to end
   };
 
   const smartScrollToNewContent = (): void => {
@@ -129,17 +140,16 @@ export function createScroller<T extends BaseEntity>(
     }
   };
 
-  // Handle container resize - always scroll to bottom on resize
+  // Handle container resize - scroll to bottom if latched
   let resizeObserver: ResizeObserver | undefined;
 
   // Setup ResizeObserver for container (works inside shadow DOM)
   // ONLY for chat widgets with autoScroll enabled
   if (config.autoScroll?.enabled) {
     resizeObserver = new ResizeObserver(() => {
-      // Use larger threshold for resize events (new messages growing the container)
-      // This prevents stopping auto-scroll when error messages cause slight scrolls
-      const threshold = 200; // More forgiving than the 10px user scroll threshold
-      if (isNearEnd(threshold)) {
+      // If user is latched to bottom, always scroll to show new content
+      // This prevents large messages from causing unlatch
+      if (isLatchedToBottom) {
         scrollToEnd('instant');
       }
     });
@@ -320,14 +330,23 @@ export function createScroller<T extends BaseEntity>(
       activateObserver();
     }
 
+    // Update latch state based on scroll position
+    // Use tighter threshold (100px) for re-latching via explicit scroll
+    if (config.autoScroll?.enabled) {
+      const nearBottom = isNearEnd(100);
+      isLatchedToBottom = nearBottom;
+    }
+
     // Schedule deactivation after idle period
     idleTimeout = setTimeout(() => {
       deactivateObserver();
     }, IDLE_TIMEOUT_MS);
   };
 
-  // Listen for scroll events ONLY if there's potentially more data to load
-  if (hasMoreItems) {
+  // Listen for scroll events:
+  // - For infinite scroll: only when there's more data to load
+  // - For auto-scroll latch detection: always when autoScroll enabled
+  if (hasMoreItems || config.autoScroll?.enabled) {
     container.addEventListener('scroll', onUserScroll, { passive: true });
   }
 
@@ -406,8 +425,13 @@ export function createScroller<T extends BaseEntity>(
           cursor = result.nextCursor;
 
           // For newest-first (chat), scroll to bottom to show latest messages
+          // Use double-rAF to ensure DOM is fully laid out before scrolling
           if (config.direction === 'newest-first') {
-            scrollToEnd('instant');
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                scrollToEnd('instant');
+              });
+            });
           }
         } else {
           // No items - clear if we had items before

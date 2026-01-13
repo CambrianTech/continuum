@@ -19,10 +19,11 @@ if ! command -v jq &> /dev/null; then
   exit 1
 fi
 
-# Read worker names from config and kill them
-jq -r '.workers[].name' "$CONFIG_FILE" | while read -r worker_name; do
-  echo -e "   Stopping ${worker_name}-worker..."
-  pkill -f "${worker_name}-worker" || true
+# Read worker binary paths from config and kill them
+jq -r '.workers[] | "\(.name)|\(.binary)"' "$CONFIG_FILE" | while IFS='|' read -r worker_name binary_path; do
+  binary_name=$(basename "$binary_path")
+  echo -e "   Stopping ${binary_name}..."
+  pkill -f "$binary_name" || true
 done
 
 # Give processes time to die and flush (macOS needs more time)
@@ -48,12 +49,13 @@ done
 # Extra safety: wait for sockets to be fully removed
 sleep 0.5
 
-# Verify workers are stopped by checking each worker name from config
+# Verify workers are stopped by checking binary names from config
 STILL_RUNNING=false
-jq -r '.workers[].name' "$CONFIG_FILE" | while read -r worker_name; do
-  if pgrep -f "${worker_name}-worker" > /dev/null; then
-    echo -e "${RED}❌ ${worker_name}-worker still running${NC}"
-    pgrep -f "${worker_name}-worker" | while read pid; do
+jq -r '.workers[].binary' "$CONFIG_FILE" | while read -r binary_path; do
+  binary_name=$(basename "$binary_path")
+  if pgrep -f "$binary_name" > /dev/null; then
+    echo -e "${RED}❌ ${binary_name} still running${NC}"
+    pgrep -f "$binary_name" | while read pid; do
       echo -e "   Orphaned PID: $pid"
     done
     STILL_RUNNING=true

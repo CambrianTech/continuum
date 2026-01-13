@@ -16,7 +16,7 @@
  *   type: 'open-database',
  *   timestamp: new Date().toISOString(),
  *   payload: {
- *     filename: '/Users/joel/.continuum/data/database.sqlite',
+ *     filename: '~/.continuum/data/database.sqlite',
  *     storageType: 'auto-detect'
  *   }
  * };

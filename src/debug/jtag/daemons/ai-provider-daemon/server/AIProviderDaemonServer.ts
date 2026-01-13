@@ -73,11 +73,114 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
   }
 
   /**
-   * Server-specific initialization
-   * Initializes base daemon, dynamically loads adapters, and sets up static interface
+   * PHASE 1: Core initialization (BLOCKING)
+   * Registers adapters - the minimum needed to process AI requests.
+   * Health monitoring is deferred to initializeDeferred().
    */
   protected async initialize(): Promise<void> {
-    console.log('🚀🚀🚀 AIProviderDaemonServer INITIALIZE CALLED 🚀🚀🚀');
+    console.log('🚀 AIProviderDaemonServer: CORE init starting...');
+    const coreStart = Date.now();
+
+    // Initialize SecretManager FIRST (adapters depend on it)
+    this.log.info('🔐 AIProviderDaemonServer: Initializing SecretManager...');
+    await initializeSecrets();
+    this.log.info('✅ AIProviderDaemonServer: SecretManager initialized');
+
+    // Register adapters CONCURRENTLY for faster startup
+    // Each adapter registration is independent - no need to wait for others
+    this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters (parallel)...');
+
+    // STEP 1: Load all secrets in parallel (fast)
+    const [sentinelPath, deepseekKey, groqKey, xaiKey, openaiKey, anthropicKey, togetherKey, fireworksKey] = await Promise.all([
+      getSecret('SENTINEL_PATH'),
+      getSecret('DEEPSEEK_API_KEY'),
+      getSecret('GROQ_API_KEY'),
+      getSecret('XAI_API_KEY'),
+      getSecret('OPENAI_API_KEY'),
+      getSecret('ANTHROPIC_API_KEY'),
+      getSecret('TOGETHER_API_KEY'),
+      getSecret('FIREWORKS_API_KEY'),
+    ]);
+
+    // STEP 2: Register LOCAL adapter - Candle gRPC (native Rust inference)
+    // NO FALLBACK: If Candle fails, we FAIL. No silent degradation to Ollama.
+    // Ollama is NOT registered - Candle is the ONLY local inference path.
+    const candlePromise = (async () => {
+      const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
+      const adapter = new CandleGrpcAdapter();
+      await adapter.initialize();
+      await this.registerAdapter(adapter, { priority: 105, enabled: true });
+      this.log.info('✅ Candle gRPC adapter registered (Ollama disabled - Candle is the only local path)');
+    })();
+
+    // Sentinel adapter (if configured)
+    const sentinelPromise = sentinelPath ? (async () => {
+      const { SentinelAdapter } = await import('../adapters/sentinel/shared/SentinelAdapter');
+      await this.registerAdapter(new SentinelAdapter(), { priority: 95, enabled: true });
+      this.log.info('✅ Sentinel adapter registered');
+    })() : Promise.resolve();
+
+    // STEP 3: Register CLOUD adapters in parallel (independent of each other)
+    const cloudAdapters = [
+      deepseekKey && (async () => {
+        const { DeepSeekAdapter } = await import('../adapters/deepseek/shared/DeepSeekAdapter');
+        await this.registerAdapter(new DeepSeekAdapter(deepseekKey), { priority: 90, enabled: true });
+        this.log.info('✅ DeepSeek adapter registered');
+      })(),
+      groqKey && (async () => {
+        const { GroqAdapter } = await import('../adapters/groq/shared/GroqAdapter');
+        await this.registerAdapter(new GroqAdapter(groqKey), { priority: 85, enabled: true });
+        this.log.info('✅ Groq adapter registered');
+      })(),
+      xaiKey && (async () => {
+        const { XAIAdapter } = await import('../adapters/xai/shared/XAIAdapter');
+        await this.registerAdapter(new XAIAdapter(xaiKey), { priority: 83, enabled: true });
+        this.log.info('✅ X.AI (Grok) adapter registered');
+      })(),
+      openaiKey && (async () => {
+        const { OpenAIAdapter } = await import('../adapters/openai/shared/OpenAIAdapter');
+        await this.registerAdapter(new OpenAIAdapter(openaiKey), { priority: 80, enabled: true });
+        this.log.info('✅ OpenAI adapter registered');
+      })(),
+      anthropicKey && (async () => {
+        const { AnthropicAdapter } = await import('../adapters/anthropic/shared/AnthropicAdapter');
+        await this.registerAdapter(new AnthropicAdapter(anthropicKey), { priority: 80, enabled: true });
+        this.log.info('✅ Anthropic adapter registered');
+      })(),
+      togetherKey && (async () => {
+        const { TogetherAIAdapter } = await import('../adapters/together/shared/TogetherAIAdapter');
+        await this.registerAdapter(new TogetherAIAdapter(togetherKey), { priority: 70, enabled: true });
+        this.log.info('✅ Together.ai adapter registered');
+      })(),
+      fireworksKey && (async () => {
+        const { FireworksAdapter } = await import('../adapters/fireworks/shared/FireworksAdapter');
+        await this.registerAdapter(new FireworksAdapter(fireworksKey), { priority: 70, enabled: true });
+        this.log.info('✅ Fireworks adapter registered');
+      })(),
+    ].filter(Boolean) as Promise<void>[];
+
+    // Wait for ALL adapters to register (Candle + Sentinel + cloud in parallel)
+    // NO OLLAMA - Candle is the only local inference path
+    await Promise.allSettled([candlePromise, sentinelPromise, ...cloudAdapters]);
+
+    // Call base initialization
+    await super['initialize']();
+
+    // Initialize static AIProviderDaemon interface (critical for PersonaUsers)
+    AIProviderDaemon.initialize(this);
+
+    const coreMs = Date.now() - coreStart;
+    this.log.info(`✅ AIProviderDaemonServer: CORE init complete (${coreMs}ms) - READY to process requests`);
+    this.log.info(`   Health monitoring will start in background via initializeDeferred()`);
+  }
+
+  /**
+   * PHASE 2: Deferred initialization (NON-BLOCKING)
+   * Starts health monitoring - runs AFTER daemon is READY and accepting messages.
+   */
+  protected async initializeDeferred(): Promise<void> {
+    this.log.info('🔄 AIProviderDaemonServer: DEFERRED init starting (health monitoring)...');
+    const deferredStart = Date.now();
 
     // Enable health monitoring with timing metrics (for performance optimization)
     // Heartbeat every 30 seconds checks for stuck operations
@@ -91,150 +194,8 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         this.healthState.isHealthy = false;
       }
     }, 30000);
-    this.log.info('📊 AIProviderDaemonServer: Health monitoring + metrics enabled');
-
-    // Initialize SecretManager FIRST (adapters depend on it)
-    this.log.info('🔐 AIProviderDaemonServer: Initializing SecretManager...');
-    await initializeSecrets();
-    this.log.info('✅ AIProviderDaemonServer: SecretManager initialized');
-
-    // Register adapters dynamically (server-only code)
-    this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters...');
-
-    // Register Candle gRPC adapter (native Rust inference via gRPC)
-    // Higher priority than Ollama when available - proper RPC, cancellation, no stuck requests
-    try {
-      const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
-      const adapter = new CandleGrpcAdapter();
-      await adapter.initialize();
-      await this.registerAdapter(adapter, {
-        priority: 105, // Higher than Ollama - native Rust is faster
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: Candle gRPC adapter registered (Native Rust inference)');
-    } catch (error) {
-      this.log.warn(`Candle gRPC adapter not available: ${error instanceof Error ? error.message : error}`);
-      // Fall through to Ollama
-    }
-
-    // Register Ollama adapter (local, free, private)
-    // maxConcurrent calculated dynamically based on CPU cores and memory
-    const { OllamaAdapter } = await import('../adapters/ollama/shared/OllamaAdapter');
-    await this.registerAdapter(new OllamaAdapter(), { // Let OllamaAdapter auto-detect optimal concurrency
-      priority: 100, // Highest priority when Candle not available - free and local
-      enabled: true,
-    });
-
-    // Register Sentinel adapter (local, free, private, pre-trained models)
-    // Provides TinyLlama, Phi-2, CodeLlama, DistilGPT2 for PersonaUsers
-
-    const sentinelPath = await getSecret('SENTINEL_PATH'); //Enabled if SENTINEL_PATH is set
-    
-    if (sentinelPath) {
-      const { SentinelAdapter } = await import('../adapters/sentinel/shared/SentinelAdapter');
-      await this.registerAdapter(new SentinelAdapter(), {
-        priority: 95, // High priority - local and free, but slower than Ollama
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: Sentinel adapter registered');
-    }
-
-    // Register cloud adapters if API keys are available
-    // Priority order: Ollama (100) > DeepSeek (90) > Groq (85) > OpenAI/Anthropic (80) > Together/Fireworks (70)
-
-    // DeepSeek: Cheapest SOTA model ($0.27/M tokens vs GPT-4's $3.50/M)
-    const deepseekKey = await getSecret('DEEPSEEK_API_KEY');
-    if (deepseekKey) {
-      const { DeepSeekAdapter } = await import('../adapters/deepseek/shared/DeepSeekAdapter');
-      await this.registerAdapter(new DeepSeekAdapter(deepseekKey), {
-        priority: 90,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: DeepSeek adapter registered');
-    }
-
-    // Groq: Fastest inference (LPU hardware, <100ms latency)
-    const groqKey = await getSecret('GROQ_API_KEY');
-    if (groqKey) {
-      const { GroqAdapter } = await import('../adapters/groq/shared/GroqAdapter');
-      await this.registerAdapter(new GroqAdapter(groqKey), {
-        priority: 85,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: Groq adapter registered');
-    }
-
-    // X.AI: Grok models with advanced reasoning
-    const xaiKey = await getSecret('XAI_API_KEY');
-    if (xaiKey) {
-      const { XAIAdapter } = await import('../adapters/xai/shared/XAIAdapter');
-      await this.registerAdapter(new XAIAdapter(xaiKey), {
-        priority: 83,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: X.AI (Grok) adapter registered');
-    }
-
-    // OpenAI: Premium quality (GPT-4, expensive)
-    const openaiKey = await getSecret('OPENAI_API_KEY');
-    if (openaiKey) {
-      const { OpenAIAdapter } = await import('../adapters/openai/shared/OpenAIAdapter');
-      await this.registerAdapter(new OpenAIAdapter(openaiKey), {
-        priority: 80,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: OpenAI adapter registered');
-    }
-
-    // Anthropic: Best reasoning (Claude 3)
-    const anthropicKey = await getSecret('ANTHROPIC_API_KEY');
-    if (anthropicKey) {
-      const { AnthropicAdapter } = await import('../adapters/anthropic/shared/AnthropicAdapter');
-      await this.registerAdapter(new AnthropicAdapter(anthropicKey), {
-        priority: 80,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: Anthropic adapter registered');
-    }
-
-    // Together.ai: Cheap + diverse models
-    const togetherKey = await getSecret('TOGETHER_API_KEY');
-    if (togetherKey) {
-      const { TogetherAIAdapter } = await import('../adapters/together/shared/TogetherAIAdapter');
-      await this.registerAdapter(new TogetherAIAdapter(togetherKey), {
-        priority: 70,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: Together.ai adapter registered');
-    }
-
-    // Fireworks: Fast inference + coding models
-    const fireworksKey = await getSecret('FIREWORKS_API_KEY');
-    if (fireworksKey) {
-      const { FireworksAdapter } = await import('../adapters/fireworks/shared/FireworksAdapter');
-      await this.registerAdapter(new FireworksAdapter(fireworksKey), {
-        priority: 70,
-        enabled: true,
-      });
-      this.log.info('✅ AIProviderDaemonServer: Fireworks adapter registered');
-    }
-
-    // Call base initialization
-    await super['initialize']();
-
-    // DISABLED: ProcessPool adds 40s overhead - direct Ollama adapter is 132x faster
-    // ProcessPool with HTTP workers → 41s per request
-    // Direct Ollama adapter → 310ms per request
-    this.log.info('🤖 AIProviderDaemonServer: Using direct Ollama adapter (no ProcessPool)');
-
-    // Initialize static AIProviderDaemon interface FIRST (critical for PersonaUsers)
-    // This must happen before health monitoring to prevent race conditions where
-    // PersonaUsers try to call AIProviderDaemon.generateText() before sharedInstance is set
-    AIProviderDaemon.initialize(this);
-    this.log.info('✅ AIProviderDaemonServer: Static daemon interface initialized');
 
     // Initialize adapter health monitoring
-    this.log.info('💓 AIProviderDaemonServer: Initializing adapter health monitoring...');
     const { AdapterHealthMonitor } = await import('./AdapterHealthMonitor');
     const { SystemHealthTicker } = await import('../../system-daemon/server/SystemHealthTicker');
 
@@ -242,7 +203,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     const healthMonitor = AdapterHealthMonitor.getInstance();
     for (const [providerId, registration] of this.adapters) {
       healthMonitor.registerAdapter(registration.adapter);
-      this.log.info(`💚 Registered ${providerId} with health monitor`);
+      this.log.debug(`💚 Registered ${providerId} with health monitor`);
     }
 
     // Initialize health monitor (subscribes to system:health-check:tick events)
@@ -252,9 +213,8 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     const healthTicker = SystemHealthTicker.getInstance();
     await healthTicker.start();
 
-    this.log.info('✅ AIProviderDaemonServer: Adapter health monitoring active');
-
-    this.log.info(`🤖 ${this.toString()}: AI provider daemon server initialized with direct adapters (no ProcessPool)`);
+    const deferredMs = Date.now() - deferredStart;
+    this.log.info(`✅ AIProviderDaemonServer: DEFERRED init complete (${deferredMs}ms) - health monitoring active`);
   }
 
   /**

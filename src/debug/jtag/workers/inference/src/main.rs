@@ -2363,14 +2363,13 @@ async fn handle_client_async(stream: UnixStream, state: Arc<RwLock<WorkerState>>
 
         if is_binary {
             // Handle binary protocol: read prompt bytes, generate, write binary response
-            if let Ok(cmd) = serde_json::from_str::<InferenceCommand>(trimmed) {
-                if let InferenceCommand::GenerateBinary {
-                    model_id,
-                    prompt_length,
-                    max_tokens,
-                    temperature,
-                } = cmd
-                {
+            if let Ok(InferenceCommand::GenerateBinary {
+                model_id,
+                prompt_length,
+                max_tokens,
+                temperature,
+            }) = serde_json::from_str::<InferenceCommand>(trimmed)
+            {
                     // Read binary prompt payload (async)
                     let prompt_result = read_exact_bytes_async(&mut reader, prompt_length)
                         .await
@@ -2452,7 +2451,6 @@ async fn handle_client_async(stream: UnixStream, state: Arc<RwLock<WorkerState>>
                             }
                         }
                     }
-                }
             }
             continue;
         }

@@ -121,6 +121,7 @@ class ContentServiceImpl {
         userId: this.currentUserId,
         contentType: contentType as ContentType,
         entityId: entityId as UUID,
+        uniqueId,  // Human-readable ID for URLs
         title,
         subtitle,
         priority,

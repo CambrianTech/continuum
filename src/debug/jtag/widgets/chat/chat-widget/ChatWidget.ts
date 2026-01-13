@@ -15,6 +15,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
+import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
@@ -284,12 +285,24 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         roomUniqueId = room.uniqueId || roomIdOrName;
         this._pendingRoomEntity = null; // Clear after use
       } else {
-        // QUERY - only if no matching pre-loaded entity
-        const result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+        // QUERY - try uniqueId first, then UUID
+        // Use server backend to ensure fresh data (localStorage may have stale/incomplete data)
+        let result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
           collection: 'rooms',
           filter: { uniqueId: roomIdOrName },
-          limit: 1
+          limit: 1,
+          backend: 'server'
         });
+
+        // If not found by uniqueId, try by UUID
+        if (!result.success || !result.items?.[0]) {
+          result = await this.executeCommand<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+            collection: 'rooms',
+            filter: { id: roomIdOrName },
+            limit: 1,
+            backend: 'server'
+          });
+        }
 
         if (result.success && result.items?.[0]) {
           room = result.items[0];
@@ -297,7 +310,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
           roomName = room.displayName || room.name || roomIdOrName;
           roomUniqueId = room.uniqueId || roomIdOrName;
         } else {
-          // Try as UUID directly
+          // Room not found - use identifier as-is (will fail gracefully)
+          verbose() && console.warn(`ChatWidget: Room not found: ${roomIdOrName}`);
           roomId = roomIdOrName as UUID;
         }
       }
@@ -423,6 +437,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // This ensures we only get messages for THIS room, with proper paging/cursors
       // Load NEWEST messages first (DESC) so recent messages appear after refresh
       // EntityScroller + CSS handle display order based on SCROLLER_PRESETS.CHAT direction
+      // CRITICAL: backend='server' ensures we always fetch fresh data, not stale localStorage cache
       const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
         collection: ChatMessageEntity.collection,
         filter: {
@@ -431,6 +446,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         },
         orderBy: [{ field: 'timestamp', direction: 'desc' }], // Load NEWEST first
         limit: limit ?? 30, // Default page size matches SCROLLER_PRESETS.CHAT
+        backend: 'stale-while-revalidate', // Show cached instantly, refresh with server data
         ...(cursor && { cursor: { field: 'timestamp', value: cursor, direction: 'before' } }) // 'before' = older than cursor for DESC queries
       });
 
@@ -588,8 +604,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
         this.setActiveContent(isNowActive, 'pageState change');
 
         // If chat became active and room changed, switch to it
+        // Use uniqueId (human-readable) when available, fall back to entityId (UUID)
         if (isNowActive && newState?.entityId && newState.entityId !== this.currentRoomId) {
-          this.handleRoomSwitch(newState.entityId, newState.resolved?.displayName, 'pageState');
+          const roomIdentifier = newState.resolved?.uniqueId || newState.entityId;
+          this.handleRoomSwitch(roomIdentifier, newState.resolved?.displayName, 'pageState');
         }
       });
     }
@@ -663,18 +681,26 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     // content:opened - from content/open command
-    this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId: string; title: string }) => {
-      if (data.contentType === 'chat' && data.entityId) {
-        this.setActiveContent(true, 'content:opened');
-        this.handleRoomSwitch(data.entityId, data.title, 'content:opened');
+    // Use uniqueId (human-readable like "general") when available, fall back to entityId (UUID)
+    this.subscribeWithCleanup('content:opened', (data: { contentType: string; entityId?: string; uniqueId?: string; title?: string }) => {
+      if (data.contentType === 'chat') {
+        const roomIdentifier = data.uniqueId || data.entityId;
+        if (roomIdentifier) {
+          this.setActiveContent(true, 'content:opened');
+          this.handleRoomSwitch(roomIdentifier, data.title, 'content:opened');
+        }
       }
     });
 
     // content:switched - from tab clicks
-    this.subscribeWithCleanup('content:switched', (data: { contentType?: string; entityId?: string; title?: string }) => {
-      if (data.contentType === 'chat' && data.entityId) {
-        this.setActiveContent(true, 'content:switched');
-        this.handleRoomSwitch(data.entityId, data.title, 'content:switched');
+    // Use uniqueId when available for proper room lookup
+    this.subscribeWithCleanup('content:switched', (data: { contentType?: string; entityId?: string; uniqueId?: string; title?: string }) => {
+      if (data.contentType === 'chat') {
+        const roomIdentifier = data.uniqueId || data.entityId;
+        if (roomIdentifier) {
+          this.setActiveContent(true, 'content:switched');
+          this.handleRoomSwitch(roomIdentifier, data.title, 'content:switched');
+        }
       } else if (data.contentType && data.contentType !== 'chat') {
         // User switched to non-chat content - we're no longer active
         this.setActiveContent(false, `switched to ${data.contentType}`);
@@ -939,12 +965,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Load room data and member information
    */
   private async loadRoomData(roomId: UUID): Promise<void> {
+    console.log(`🔍 ChatWidget.loadRoomData: Loading room ${roomId}`);
     try {
-      // Load room entity (no backend:'server' - let browser command use localStorage cache)
+      // Load room entity - use server backend to ensure we get full data with members
       const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>(DATA_COMMANDS.READ, {
         collection: RoomEntity.collection,
-        id: roomId
+        id: roomId,
+        backend: 'server'
       });
+
+      console.log(`🔍 ChatWidget.loadRoomData: Result success=${roomResult?.success}, hasData=${!!roomResult?.data}, memberCount=${roomResult?.data?.members?.length ?? 0}`);
 
       if (!roomResult?.success || !roomResult.data) {
         console.error(`❌ ChatWidget: Failed to load room data for ${roomId}`);
@@ -965,25 +995,31 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Optimized: Uses data/list with id filter instead of N individual reads
    */
   private async loadRoomMembers(): Promise<void> {
+    console.log(`🔍 ChatWidget.loadRoomMembers: currentRoom=${!!this.currentRoom}, memberCount=${this.currentRoom?.members?.length ?? 0}`);
     if (!this.currentRoom || this.currentRoom.members.length === 0) return;
 
     this.roomMembers.clear();
 
     // Batch load all members in ONE query (was N+1 queries before)
     const memberIds = this.currentRoom.members.map(m => m.userId);
+    console.log(`🔍 ChatWidget.loadRoomMembers: Loading ${memberIds.length} members:`, memberIds.slice(0, 3));
 
     try {
       // Uses MongoDB-style $in operator for batch ID lookup
+      // Must use server backend - localStorage doesn't support $in operator
       const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
         collection: UserEntity.collection,
         filter: { id: { $in: memberIds } },
-        limit: memberIds.length
+        limit: memberIds.length,
+        backend: 'server'
       });
 
+      console.log(`🔍 ChatWidget.loadRoomMembers: Result success=${result?.success}, itemCount=${result?.items?.length ?? 0}`);
       if (result?.success && result.items) {
         for (const user of result.items) {
           this.roomMembers.set(user.id as UUID, user);
         }
+        console.log(`✅ ChatWidget.loadRoomMembers: Loaded ${this.roomMembers.size} members`);
       }
     } catch (error) {
       console.warn(`⚠️ ChatWidget: Failed to batch load members:`, error);
@@ -1508,12 +1544,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     // Must have either text or attachments
     if (!text && this.pendingAttachments.length === 0) {
+      this.isSending = false;
       return;
     }
 
     // Can't send message without a room selected
     if (!this.currentRoomId) {
       console.warn('Cannot send message: no room selected');
+      this.isSending = false;
       return;
     }
 
@@ -1555,18 +1593,32 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Reset textarea height to single row
     this.autoGrowTextarea();
 
-    // Send in background - entity events will add confirmed message
-    Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-      collection: ChatMessageEntity.collection,
-      data: messageEntity,
-      backend: 'server'
-    }).then(() => {
-      // Scroll to bottom after message added by event system
-      if (this.scroller) {
+    // Use proper chat/send command - it generates proper UUIDs and handles all message setup
+    // ARCHITECTURE: Directly replace temp message with real entity from response
+    // This is deterministic - no relying on events/FIFO matching
+    Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+      message: text,
+      room: this.currentRoomId,
+      senderId: DEFAULT_USERS.HUMAN as UUID,  // Explicitly send as Joel, not browser session identity
+      // Media attachments would need to be file paths for chat/send - TODO: handle properly
+    }).then((result) => {
+      console.log(`📤 ChatWidget: chat/send response:`, JSON.stringify(result, null, 2));
+      console.log(`📤 ChatWidget: Message sent successfully, ID: ${result.messageEntity?.id}, replacing temp: ${tempId}`);
+
+      // CRITICAL: Directly replace temp message with real entity
+      // This is the proper pattern for optimistic UI updates
+      this._pendingMessageTempIds.delete(tempId);
+      if (this.scroller && result.messageEntity) {
+        // Remove temp, add real - scroller handles the swap
+        this.scroller.remove(tempId);
+        this.scroller.add(result.messageEntity);
         this.scroller.scrollToEnd();
       }
     }).catch(error => {
-      console.error('❌ Failed to send message:', error);
+      console.error('Failed to send message:', error);
+      // Remove temp message on failure - show error state
+      this._pendingMessageTempIds.delete(tempId);
+      this.scroller?.remove(tempId);
     });
 
     // Scroll immediately to give responsive feel

@@ -53,9 +53,9 @@ export class LeaseDaemonServer extends DaemonBase implements ILeaseDaemon {
   }
 
   /**
-   * Handle incoming messages
+   * Process incoming messages
    */
-  async handleMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
+  protected async processMessage(message: JTAGMessage): Promise<BaseResponsePayload> {
     this.log.info('Lease daemon received message');
 
     return {
