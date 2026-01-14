@@ -690,7 +690,7 @@ export class ToolRegistry {
       return {
         toolName,
         success: false,
-        error: result.error || 'Command execution failed'
+        error: this.stringifyError(result.error) || 'Command execution failed'
       };
     }
 
@@ -709,6 +709,35 @@ export class ToolRegistry {
       content,
       media  // ← Preserve structured media
     };
+  }
+
+  /**
+   * Convert any error value to a human-readable string
+   * Prevents [object Object] in error messages
+   */
+  private stringifyError(error: unknown): string {
+    if (error === undefined || error === null) {
+      return 'Unknown error';
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === 'object' && error !== null) {
+      const obj = error as Record<string, unknown>;
+      if (typeof obj.message === 'string') return obj.message;
+      if (typeof obj.error === 'string') return obj.error;
+      if (typeof obj.errorMessage === 'string') return obj.errorMessage;
+      try {
+        const str = JSON.stringify(error);
+        return str.length > 500 ? `${str.slice(0, 500)}...` : str;
+      } catch {
+        return 'Error object could not be serialized';
+      }
+    }
+    return String(error);
   }
 
   /**

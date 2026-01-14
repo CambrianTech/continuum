@@ -201,7 +201,10 @@ export class InferenceGrpcClient {
 
       call.on('error', (err: Error) => {
         console.log(`[InferenceGrpcClient] Error: ${err.message}`);
-        reject(err);
+
+        // Enhance error messages for common issues
+        const enhancedError = this.enhanceErrorMessage(err);
+        reject(enhancedError);
       });
 
       call.on('end', () => {
@@ -215,6 +218,69 @@ export class InferenceGrpcClient {
    */
   close(): void {
     this.client.close();
+  }
+
+  /**
+   * Enhance error messages with troubleshooting context
+   * Makes cryptic inference errors more understandable
+   */
+  private enhanceErrorMessage(err: Error): Error {
+    const msg = err.message.toLowerCase();
+
+    // Sampling weight errors (common with bad temperature or logit values)
+    if (msg.includes('weight') && (msg.includes('negative') || msg.includes('invalid') || msg.includes('large'))) {
+      const enhanced = new Error(
+        `Sampling failed: ${err.message}\n\n` +
+        `This usually means:\n` +
+        `• Temperature is too extreme (try 0.3-0.9)\n` +
+        `• Input contains invalid tokens\n` +
+        `• Model produced invalid probability distribution\n\n` +
+        `Try: Lower temperature, shorter prompt, or retry`
+      );
+      enhanced.name = err.name;
+      return enhanced;
+    }
+
+    // OOM errors
+    if (msg.includes('out of memory') || msg.includes('oom') || msg.includes('memory allocation')) {
+      const enhanced = new Error(
+        `Out of memory: ${err.message}\n\n` +
+        `Model requires too much GPU/RAM. Try:\n` +
+        `• Reduce max_tokens\n` +
+        `• Shorter prompt\n` +
+        `• Unload other models/adapters`
+      );
+      enhanced.name = err.name;
+      return enhanced;
+    }
+
+    // Timeout errors
+    if (msg.includes('deadline') || msg.includes('timeout')) {
+      const enhanced = new Error(
+        `Generation timed out: ${err.message}\n\n` +
+        `The model took too long. Try:\n` +
+        `• Reduce max_tokens\n` +
+        `• Shorter prompt\n` +
+        `• Check if server is overloaded`
+      );
+      enhanced.name = err.name;
+      return enhanced;
+    }
+
+    // Connection errors
+    if (msg.includes('connect') || msg.includes('unavailable') || msg.includes('refused')) {
+      const enhanced = new Error(
+        `Cannot connect to inference server: ${err.message}\n\n` +
+        `The gRPC server may not be running. Check:\n` +
+        `• Is the inference-grpc worker running?\n` +
+        `• Is port 50051 available?`
+      );
+      enhanced.name = err.name;
+      return enhanced;
+    }
+
+    // Return original if no enhancement applies
+    return err;
   }
 
   // ========================================================================

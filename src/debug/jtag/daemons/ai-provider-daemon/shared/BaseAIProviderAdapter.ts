@@ -167,7 +167,9 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
       const elapsed = Date.now() - startTime;
       this.consecutiveFailures++;
 
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      // Enhance error messages with troubleshooting context
+      const enhancedError = this.enhanceApiError(error);
+      const errorMessage = enhancedError instanceof Error ? enhancedError.message : String(enhancedError);
       this.log(request, 'error', `❌ ${this.providerName}: Failed (${this.consecutiveFailures}/${this.maxConsecutiveFailures}) after ${elapsed}ms: ${errorMessage}`);
 
       // Check if we should open circuit breaker
@@ -191,8 +193,90 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
         });
       }
 
-      throw error;
+      throw enhancedError;
     }
+  }
+
+  /**
+   * Enhance API errors with troubleshooting context
+   * Makes cryptic provider errors more understandable
+   */
+  protected enhanceApiError(error: unknown): Error {
+    if (!(error instanceof Error)) {
+      return new Error(String(error));
+    }
+
+    const msg = error.message.toLowerCase();
+
+    // Invalid prompt errors
+    if (msg.includes('invalid') && msg.includes('prompt')) {
+      const enhanced = new Error(
+        `Invalid prompt: ${error.message}\n\n` +
+        `Common causes:\n` +
+        `• Empty messages array\n` +
+        `• Missing system/user message\n` +
+        `• Message content is empty or null\n` +
+        `• Special characters not escaped\n\n` +
+        `Fix: Ensure messages array has at least one user message with non-empty content`
+      );
+      enhanced.name = error.name;
+      return enhanced;
+    }
+
+    // Rate limit errors
+    if (msg.includes('rate') && (msg.includes('limit') || msg.includes('exceeded'))) {
+      const enhanced = new Error(
+        `Rate limited: ${error.message}\n\n` +
+        `Too many requests to this provider. Try:\n` +
+        `• Wait a few seconds and retry\n` +
+        `• Use a different AI provider\n` +
+        `• Reduce request frequency`
+      );
+      enhanced.name = error.name;
+      return enhanced;
+    }
+
+    // Authentication errors
+    if (msg.includes('auth') || msg.includes('api key') || msg.includes('unauthorized') || msg.includes('401')) {
+      const enhanced = new Error(
+        `Authentication failed: ${error.message}\n\n` +
+        `Check:\n` +
+        `• Is the API key correct?\n` +
+        `• Is the API key expired?\n` +
+        `• Does the key have required permissions?`
+      );
+      enhanced.name = error.name;
+      return enhanced;
+    }
+
+    // Model not found
+    if (msg.includes('model') && (msg.includes('not found') || msg.includes('does not exist'))) {
+      const enhanced = new Error(
+        `Model not found: ${error.message}\n\n` +
+        `The requested model is unavailable. Check:\n` +
+        `• Is the model name spelled correctly?\n` +
+        `• Is this model available for your API tier?\n` +
+        `• Try a different model`
+      );
+      enhanced.name = error.name;
+      return enhanced;
+    }
+
+    // Context length exceeded
+    if (msg.includes('context') || msg.includes('token') && msg.includes('exceed')) {
+      const enhanced = new Error(
+        `Context length exceeded: ${error.message}\n\n` +
+        `The input is too long. Try:\n` +
+        `• Shorter prompt\n` +
+        `• Summarize conversation history\n` +
+        `• Use a model with larger context window`
+      );
+      enhanced.name = error.name;
+      return enhanced;
+    }
+
+    // Return original if no enhancement applies
+    return error;
   }
 
   /**

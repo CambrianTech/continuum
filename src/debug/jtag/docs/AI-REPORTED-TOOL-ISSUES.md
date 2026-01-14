@@ -138,16 +138,17 @@ Collected from chat feedback on 2026-01-14. These issues were reported by the AI
 
 ## Priority Assessment
 
-| Issue | Severity | Effort | Priority |
-|-------|----------|--------|----------|
-| [object Object] error | High | Low | P0 |
-| Sampling error context | High | Medium | P0 |
-| Adapter endpoint confusion | Medium | Low | P1 |
-| Invalid prompt explanation | Medium | Low | P1 |
-| Unified error handling | High | High | P1 |
-| Missing tool health check | Medium | Medium | P2 |
-| "Did you mean?" | Medium | Medium | P2 |
-| Timeout handling | Medium | Medium | P2 |
+| Issue | Severity | Effort | Priority | Status |
+|-------|----------|--------|----------|--------|
+| [object Object] error | High | Low | P0 | ✅ FIXED |
+| Sampling error context | High | Medium | P0 | ✅ FIXED |
+| Pattern search blocking | High | Low | P0 | ✅ FIXED |
+| Adapter endpoint confusion | Medium | Low | P1 | ✅ FIXED |
+| Invalid prompt explanation | Medium | Low | P1 | ✅ FIXED |
+| Unified error handling | High | High | P1 | 🔄 Partial |
+| Missing tool health check | Medium | Medium | P2 | Pending |
+| "Did you mean?" | Medium | Medium | P2 | Pending |
+| Timeout handling | Medium | Medium | P2 | ✅ FIXED |
 
 ---
 
@@ -169,6 +170,36 @@ They plan to use `collaboration/decision/propose` to formally submit this for vo
 
 ---
 
+## Fixes Applied (2026-01-14)
+
+### [object Object] Error - FIXED
+**Location**: `PersonaToolExecutor.ts`, `ToolRegistry.ts`
+**Fix**: Added `stringifyError()` helper that properly extracts error messages from Error objects, nested error objects, and stringifies unknown types. Prevents `[object Object]` from appearing in error messages.
+
+### Sampling Error Context - FIXED
+**Location**: `InferenceGrpcClient.ts`
+**Fix**: Added `enhanceErrorMessage()` method that detects common error patterns (sampling/weight errors, OOM, timeout, connection) and adds troubleshooting suggestions. Example output now includes:
+- "This usually means: Temperature is too extreme (try 0.3-0.9)"
+- Specific steps to fix each error type
+
+### Pattern Search Blocking - FIXED
+**Location**: `CodeFindServerCommand.ts`
+**Fix**: Changed conceptual query detector from blocking to warning-only. Searches now always run, but include a HINT when the query may be semantic rather than a filename pattern. AIs can now search without being blocked.
+
+### Invalid Prompt Explanation - FIXED
+**Location**: `BaseAIProviderAdapter.ts`
+**Fix**: Added `enhanceApiError()` method that catches common API errors (invalid prompt, rate limit, auth, model not found, context exceeded) and adds clear troubleshooting context with bullet points for common causes and fixes.
+
+### Adapter Test Help - FIXED
+**Location**: `AdapterTestServerCommand.ts`, `AdapterTestTypes.ts`
+**Fix**: Updated help text to correctly document how to check test status using `data/read --collection="test_executions" --id="<testId>"` instead of referencing non-existent `ai/adapter/test/status` command.
+
+### Timeout Errors - FIXED
+**Location**: `InferenceGrpcClient.ts`
+**Fix**: Enhanced timeout errors with suggestions: "Reduce max_tokens, Shorter prompt, Check if server is overloaded"
+
+---
+
 ## Session Log
 
 - **2026-01-14 02:28**: Asked AIs to test ai/context/search and ai/context/slice
@@ -177,3 +208,5 @@ They plan to use `collaboration/decision/propose` to formally submit this for vo
 - **2026-01-14 02:32**: Asked for all tool issues
 - **2026-01-14 02:33**: Multiple AIs reported pattern-search failures
 - **2026-01-14 02:35**: AIs began self-organizing proposal for tool improvements
+- **2026-01-14 02:49**: Deployed fixes for P0/P1 issues (error handling, pattern search, API errors)
+- **2026-01-14 02:50**: Asked AIs to verify fixes work

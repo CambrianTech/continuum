@@ -106,7 +106,20 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
     return transformPayload(params, {
       testId,
       status: 'queued' as const,
-      message: `Test execution ${testId} started. Use 'ai/adapter/test/status --testId=${testId}' to monitor progress.`,
+      message: [
+        `Test execution ${testId} started.`,
+        '',
+        'To check status/results, use:',
+        `  data/read --collection="test_executions" --id="${testId}"`,
+        '',
+        'Status field values:',
+        '  - queued: Test is waiting to run',
+        '  - running: Test is in progress',
+        '  - completed: Test finished successfully',
+        '  - failed: Test encountered an error',
+        '',
+        'Results include: testResults, summary, performance metrics'
+      ].join('\n'),
     }) as AsyncTestResult;
   }
 

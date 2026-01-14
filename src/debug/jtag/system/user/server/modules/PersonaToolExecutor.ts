@@ -545,11 +545,13 @@ ${result.error || 'Unknown error'}
    */
   private generateSummary(
     toolName: string,
-    result: { success: boolean; data: unknown; error?: string }
+    result: { success: boolean; data: unknown; error?: unknown }
   ): string {
     if (!result.success) {
       // Don't truncate error messages - AIs need full context to debug
-      return `Tool '${toolName}' failed: ${result.error || 'Unknown error'}`;
+      // IMPORTANT: Properly stringify error objects to avoid [object Object]
+      const errorMessage = this.stringifyError(result.error);
+      return `Tool '${toolName}' failed: ${errorMessage}`;
     }
 
     // Tool-specific summarization logic
@@ -597,5 +599,60 @@ ${result.error || 'Unknown error'}
     const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
     const preview = dataStr.slice(0, 500);
     return `Tool '${toolName}' completed: ${preview}${dataStr.length > 500 ? '...' : ''}`;
+  }
+
+  /**
+   * Convert any error value to a human-readable string
+   * Prevents [object Object] in error messages
+   *
+   * @param error - Any error value (string, Error, object, etc.)
+   * @returns Human-readable error string
+   */
+  private stringifyError(error: unknown): string {
+    if (error === undefined || error === null) {
+      return 'Unknown error';
+    }
+
+    // Already a string
+    if (typeof error === 'string') {
+      return error;
+    }
+
+    // Error instance
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    // Object with message property (common pattern)
+    if (typeof error === 'object' && error !== null) {
+      const obj = error as Record<string, unknown>;
+
+      // Try common error message properties
+      if (typeof obj.message === 'string') return obj.message;
+      if (typeof obj.error === 'string') return obj.error;
+      if (typeof obj.errorMessage === 'string') return obj.errorMessage;
+      if (typeof obj.msg === 'string') return obj.msg;
+
+      // Nested error object
+      if (obj.error && typeof obj.error === 'object') {
+        const nested = obj.error as Record<string, unknown>;
+        if (typeof nested.message === 'string') return nested.message;
+      }
+
+      // Last resort: stringify the object
+      try {
+        const str = JSON.stringify(error);
+        // Don't return huge objects
+        if (str.length > 500) {
+          return `${str.slice(0, 500)}...`;
+        }
+        return str;
+      } catch {
+        return 'Error object could not be serialized';
+      }
+    }
+
+    // Fallback for primitives
+    return String(error);
   }
 }

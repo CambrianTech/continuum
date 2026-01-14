@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-14T02:24:53.754Z",
+  "generated": "2026-01-14T02:47:20.767Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5649,7 +5649,7 @@
     },
     {
       "name": "ai/adapter/test",
-      "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns UUID immediately, tests run in background.\n * Use ai/adapter/test/status and ai/adapter/test/results to monitor progress.",
+      "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns testId immediately, tests run in background.\n *\n * To check status/results:\n *   data/read --collection=\"test_executions\" --id=\"<testId>\"\n *\n * Status values: queued → running → completed (or failed)",
       "params": {
         "adapter": {
           "type": "string",
