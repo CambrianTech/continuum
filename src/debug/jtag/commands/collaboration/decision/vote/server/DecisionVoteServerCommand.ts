@@ -9,7 +9,8 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DecisionVoteParams, DecisionVoteResult } from '../shared/DecisionVoteTypes';
 import { createDecisionVoteResultFromParams } from '../shared/DecisionVoteTypes';
-import { DecisionEntity } from '@system/data/entities/DecisionEntity';
+import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
+import { COLLECTIONS } from '@system/shared/Constants';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
@@ -39,77 +40,47 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
     const proposal = await this.findProposal(params);
 
     // 4. Validate proposal state
-    if (proposal.status !== 'open') {
+    if (proposal.status !== 'voting') {
       throw new Error(`Proposal ${params.proposalId} is ${proposal.status}, not accepting votes`);
     }
 
-    // Check voting deadline
-    if (proposal.votingDeadline && new Date() > proposal.votingDeadline) {
+    // Check voting deadline (deadline is a unix timestamp number)
+    if (proposal.deadline && Date.now() > proposal.deadline) {
       throw new Error(`Voting deadline has passed for proposal ${params.proposalId}`);
     }
 
     // 5. Validate ranked choices
     this.validateRankedChoices(params.rankedChoices, proposal);
 
-    // 6. Check if user already voted
+    // 6. Check if user already voted (RankedVote interface)
     const existingVoteIndex = proposal.votes.findIndex(v => v.voterId === voter.id);
     if (existingVoteIndex >= 0) {
       // User is changing their vote
       proposal.votes[existingVoteIndex] = {
         voterId: voter.id,
         voterName: voter.entity.displayName,
-        rankedChoices: params.rankedChoices,
-        timestamp: new Date().toISOString(),
-        comment: params.comment
+        rankings: params.rankedChoices,
+        votedAt: Date.now(),
+        reasoning: params.comment
       };
-
-      // Add audit log entry (ensure auditLog exists)
-      if (!proposal.auditLog) {
-        proposal.auditLog = [];
-      }
-      proposal.auditLog.push({
-        timestamp: new Date().toISOString(),
-        userId: voter.id,
-        action: 'vote_changed',
-        details: {
-          rankedChoices: params.rankedChoices,
-          comment: params.comment
-        }
-      });
-
       console.log(`🔄 Vote changed by ${voter.entity.displayName} on proposal ${params.proposalId}`);
     } else {
       // New vote
       proposal.votes.push({
         voterId: voter.id,
         voterName: voter.entity.displayName,
-        rankedChoices: params.rankedChoices,
-        timestamp: new Date().toISOString(),
-        comment: params.comment
+        rankings: params.rankedChoices,
+        votedAt: Date.now(),
+        reasoning: params.comment
       });
-
-      // Add audit log entry (ensure auditLog exists)
-      if (!proposal.auditLog) {
-        proposal.auditLog = [];
-      }
-      proposal.auditLog.push({
-        timestamp: new Date().toISOString(),
-        userId: voter.id,
-        action: 'vote_cast',
-        details: {
-          rankedChoices: params.rankedChoices,
-          comment: params.comment
-        }
-      });
-
       console.log(`✅ Vote cast by ${voter.entity.displayName} on proposal ${params.proposalId}`);
     }
 
     // 7. Update proposal in database
-    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionEntity>>(
+    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(
       DATA_COMMANDS.UPDATE,
       {
-        collection: DecisionEntity.collection,
+        collection: COLLECTIONS.DECISION_PROPOSALS,
         id: proposal.id,
         data: proposal,
         context: params.context,
@@ -133,14 +104,14 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
   }
 
   /**
-   * Find proposal by proposalId
+   * Find proposal by proposalId (which is the entity's `id` field)
    */
-  private async findProposal(params: DecisionVoteParams): Promise<DecisionEntity> {
-    const result = await Commands.execute<DataListParams, DataListResult<DecisionEntity>>(
+  private async findProposal(params: DecisionVoteParams): Promise<DecisionProposalEntity> {
+    const result = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(
       DATA_COMMANDS.LIST,
       {
-        collection: DecisionEntity.collection,
-        filter: { proposalId: params.proposalId },
+        collection: COLLECTIONS.DECISION_PROPOSALS,
+        filter: { id: params.proposalId },
         limit: 1,
         context: params.context,
         sessionId: params.sessionId
@@ -157,7 +128,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
   /**
    * Validate ranked choices against proposal options
    */
-  private validateRankedChoices(rankedChoices: string[], proposal: DecisionEntity): void {
+  private validateRankedChoices(rankedChoices: string[], proposal: DecisionProposalEntity): void {
     // Check each choice is a valid option ID
     const validOptionIds = proposal.options.map(opt => opt.id);
     for (const choiceId of rankedChoices) {
