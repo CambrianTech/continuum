@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/persona/learning/pattern/query",
+  "version": "1.0.0",
+  "description": "Query the collective pattern knowledge base. Search for patterns that might help solve the current problem.",
+  "main": "server/PersonaLearningPatternQueryServerCommand.ts",
+  "types": "shared/PersonaLearningPatternQueryTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/PersonaLearningPatternQueryIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "persona/learning/pattern/query"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

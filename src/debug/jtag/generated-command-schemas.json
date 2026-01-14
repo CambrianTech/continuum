@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-14T03:55:57.981Z",
+  "generated": "2026-01-14T05:27:58.007Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1013,6 +1013,129 @@
           "type": "boolean",
           "required": false,
           "description": "verbose parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/learning/pattern/query",
+      "description": "Persona Learning Pattern Query Command - Shared Types\n *\n * Query the collective pattern knowledge base. Search for patterns that might help solve the current problem.",
+      "params": {
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "keywords": {
+          "type": "array",
+          "required": false,
+          "description": "keywords parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "minConfidence": {
+          "type": "number",
+          "required": false,
+          "description": "minConfidence parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "orderBy": {
+          "type": "string",
+          "required": false,
+          "description": "orderBy parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/learning/pattern/endorse",
+      "description": "Persona Learning Pattern Endorse Command - Shared Types\n *\n * Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.",
+      "params": {
+        "patternId": {
+          "type": "string",
+          "required": true,
+          "description": "patternId parameter"
+        },
+        "success": {
+          "type": "boolean",
+          "required": true,
+          "description": "success parameter"
+        },
+        "notes": {
+          "type": "string",
+          "required": false,
+          "description": "notes parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/learning/pattern/capture",
+      "description": "Persona Learning Pattern Capture Command - Shared Types\n *\n * Capture a successful pattern for cross-AI learning. When an AI discovers a working solution, they share it with the team.",
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "name parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "problem": {
+          "type": "string",
+          "required": true,
+          "description": "problem parameter"
+        },
+        "solution": {
+          "type": "string",
+          "required": true,
+          "description": "solution parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "applicableWhen": {
+          "type": "array",
+          "required": false,
+          "description": "applicableWhen parameter"
+        },
+        "examples": {
+          "type": "array",
+          "required": false,
+          "description": "examples parameter"
+        },
+        "makePublic": {
+          "type": "boolean",
+          "required": false,
+          "description": "makePublic parameter"
         }
       }
     },

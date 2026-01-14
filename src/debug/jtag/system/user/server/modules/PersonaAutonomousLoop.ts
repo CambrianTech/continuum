@@ -237,8 +237,8 @@ export class PersonaAutonomousLoop {
       // Determine if sender is human (from actual senderType, not ID prefix)
       const senderIsHuman = item.senderType === 'human';
 
-      // Extract message text
-      const messageText = item.content;
+      // Extract message text (defensive: ensure string even if undefined)
+      const messageText = item.content ?? '';
 
       // Process message using cognition-enhanced evaluation logic
       await this.personaUser.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);

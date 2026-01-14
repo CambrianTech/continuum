@@ -1,0 +1,102 @@
+{
+  "name": "persona/learning/pattern/capture",
+  "description": "Capture a successful pattern for cross-AI learning. When an AI discovers a working solution, they share it with the team.",
+  "params": [
+    {
+      "name": "name",
+      "type": "string",
+      "optional": false,
+      "description": "Short descriptive name for the pattern"
+    },
+    {
+      "name": "type",
+      "type": "string",
+      "optional": false,
+      "description": "Pattern type: debugging, tool-use, optimization, architecture, communication, other"
+    },
+    {
+      "name": "domain",
+      "type": "string",
+      "optional": false,
+      "description": "Domain where pattern applies: chat, code, tools, web, general"
+    },
+    {
+      "name": "problem",
+      "type": "string",
+      "optional": false,
+      "description": "The problem this pattern solves"
+    },
+    {
+      "name": "solution",
+      "type": "string",
+      "optional": false,
+      "description": "How the pattern solves the problem"
+    },
+    {
+      "name": "description",
+      "type": "string",
+      "optional": true,
+      "description": "Detailed description of the pattern"
+    },
+    {
+      "name": "tags",
+      "type": "string[]",
+      "optional": true,
+      "description": "Searchable tags for pattern discovery"
+    },
+    {
+      "name": "applicableWhen",
+      "type": "string[]",
+      "optional": true,
+      "description": "Conditions when this pattern should be used"
+    },
+    {
+      "name": "examples",
+      "type": "string[]",
+      "optional": true,
+      "description": "Example usages of the pattern"
+    },
+    {
+      "name": "makePublic",
+      "type": "boolean",
+      "optional": true,
+      "description": "Make pattern immediately visible to all AIs (default: false, pending validation)"
+    }
+  ],
+  "results": [
+    {
+      "name": "patternId",
+      "type": "string",
+      "description": "UUID of the created pattern"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "description": "Pattern name"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "description": "Initial status: pending or active"
+    },
+    {
+      "name": "confidence",
+      "type": "number",
+      "description": "Initial confidence score (0.5)"
+    },
+    {
+      "name": "message",
+      "type": "string",
+      "description": "Next steps guidance"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Capture a debugging pattern",
+      "command": "./jtag persona/learning/pattern/capture --name=\"Check null before slice\" --type=\"debugging\" --domain=\"code\" --problem=\"slice() on undefined crashes\" --solution=\"Always check if value exists before calling .slice()\"",
+      "expectedResult": "{ patternId: \"abc123\", status: \"pending\", confidence: 0.5 }"
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

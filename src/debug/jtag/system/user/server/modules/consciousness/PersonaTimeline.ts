@@ -23,6 +23,7 @@ import { RustEmbeddingClient } from '../../../../core/services/RustEmbeddingClie
 import { SimilarityMetrics } from '../../../../../daemons/data-daemon/shared/VectorSearchTypes';
 import { SystemPaths } from '../../../../core/config/SystemPaths';
 import { Commands } from '../../../../core/shared/Commands';
+import { truncate } from '../../../../../shared/utils/StringUtils';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataOpenParams, DataOpenResult } from '../../../../../commands/data/open/shared/DataOpenTypes';
 import type { DataListParams, DataListResult } from '../../../../../commands/data/list/shared/DataListTypes';
@@ -583,7 +584,7 @@ export class PersonaTimeline {
       parts.push(`Before this: Active in ${recentContexts.join(', ')}`);
 
       const lastAction = beforeThis[0];
-      parts.push(`Last action: ${lastAction.content.slice(0, 100)}...`);
+      parts.push(`Last action: ${truncate(lastAction.content, 100)}...`);
     }
 
     if (lastTimeHere) {

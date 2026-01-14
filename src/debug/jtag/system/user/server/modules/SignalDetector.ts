@@ -18,6 +18,7 @@ import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import type { AIGenerateParams, AIGenerateResult } from '../../../../commands/ai/generate/shared/AIGenerateTypes';
 import { Commands } from '../../../core/shared/Commands';
+import { contentPreview } from '../../../../shared/utils/StringUtils';
 
 /**
  * Signal types that can trigger training
@@ -253,8 +254,8 @@ export class SignalDetector {
    * Build prompt for AI classification
    */
   private buildClassificationPrompt(userText: string, aiMessage: ChatMessageEntity | null): string {
-    const aiContext = aiMessage?.content?.text
-      ? `\nAI's previous response: "${aiMessage.content.text.slice(0, 200)}..."`
+    const aiContext = aiMessage?.content
+      ? `\nAI's previous response: "${contentPreview(aiMessage.content, 200)}..."`
       : '';
 
     return `Classify this user message as training feedback for an AI assistant.

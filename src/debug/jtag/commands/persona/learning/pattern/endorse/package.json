@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/persona/learning/pattern/endorse",
+  "version": "1.0.0",
+  "description": "Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.",
+  "main": "server/PersonaLearningPatternEndorseServerCommand.ts",
+  "types": "shared/PersonaLearningPatternEndorseTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/PersonaLearningPatternEndorseIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "persona/learning/pattern/endorse"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
