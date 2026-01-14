@@ -43,7 +43,7 @@ export class LLMAdapter implements IDecisionAdapter {
           includeMemories: false,
           currentMessage: {
             role: 'user',
-            content: context.eventContent,
+            content: context.eventContent ?? '',  // Defensive: handle undefined content
             name: chatMessage.senderName,
             timestamp: Date.now()
           }
@@ -83,7 +83,10 @@ export class LLMAdapter implements IDecisionAdapter {
       // LLM gating requires inference which blocks the single-threaded worker
       // ThermalAdapter + FastPathAdapter provide good enough heuristic gating
       const gatingModelKey = context.gatingModel ?? 'deterministic';
-      const gatingModel = gatingModelMap[gatingModelKey] ?? gatingModelKey; // If not in map, use as literal model name
+      // Check if key exists in map first - null is a valid value meaning "skip LLM"
+      const gatingModel = gatingModelKey in gatingModelMap
+        ? gatingModelMap[gatingModelKey]
+        : gatingModelKey; // If not in map, use as literal model name
 
       // If gatingModel is null (deterministic mode), skip LLM and use heuristics
       if (gatingModel === null) {

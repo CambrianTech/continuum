@@ -43,7 +43,7 @@ export class FastPathAdapter implements IDecisionAdapter {
           includeMemories: false,
           currentMessage: {
             role: 'user',
-            content: context.eventContent,
+            content: context.eventContent ?? '',  // Defensive: handle undefined content
             name: chatMessage.senderName,
             timestamp: Date.now()
           }

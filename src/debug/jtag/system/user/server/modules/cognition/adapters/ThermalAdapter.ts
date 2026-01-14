@@ -180,7 +180,8 @@ export class ThermalAdapter implements IDecisionAdapter {
    * Detect if persona name appears in event content (even without @)
    */
   private detectNameInContent<TEvent extends BaseEntity>(context: DecisionContext<TEvent>): boolean {
-    const content = context.eventContent.toLowerCase();
+    // Defensive: handle undefined eventContent
+    const content = (context.eventContent ?? '').toLowerCase();
     const name = context.personaDisplayName.toLowerCase();
 
     // Check for name in content (case-insensitive)

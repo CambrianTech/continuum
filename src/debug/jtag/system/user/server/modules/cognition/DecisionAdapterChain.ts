@@ -51,7 +51,9 @@ export class DecisionAdapterChain {
     context: DecisionContext<TEvent>
   ): Promise<CognitiveDecision> {
     this.log(`🔗 DecisionAdapterChain: Processing decision for ${context.personaDisplayName}`);
-    this.log(`   Event: ${context.eventContent.slice(0, 60)}...`);
+    // Defensive: eventContent could be undefined if message content was null
+    const eventPreview = context.eventContent?.slice(0, 60) ?? '[no content]';
+    this.log(`   Event: ${eventPreview}...`);
     this.log(`   isMentioned: ${context.isMentioned}, senderIsHuman: ${context.senderIsHuman}`);
 
     for (const adapter of this.adapters) {
@@ -64,7 +66,7 @@ export class DecisionAdapterChain {
 
       // Build decision context metadata for logging
       const decisionContextMetadata: DecisionContextMetadata = {
-        messageText: context.eventContent.slice(0, 200),
+        messageText: context.eventContent?.slice(0, 200) ?? '[no content]',
         priority: 0.8,  // Priority for decision-making
         isMentioned: context.isMentioned,
         senderIsHuman: context.senderIsHuman

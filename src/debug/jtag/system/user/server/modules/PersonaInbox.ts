@@ -107,7 +107,9 @@ export class PersonaInbox {
 
     // Log with type-specific details
     if (isInboxMessage(item)) {
-      this.log(`📬 Enqueued message: ${item.senderId.slice(0, 8)} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
+      // Defensive: handle undefined senderId
+      const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
+      this.log(`📬 Enqueued message: ${senderIdPreview} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     } else if (isInboxTask(item)) {
       this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     }
@@ -170,9 +172,13 @@ export class PersonaInbox {
     if (this.queue.length > 0) {
       const item = this.queue.shift()!;
       if (isInboxMessage(item)) {
-        this.log(`📭 Popped message: ${item.id.slice(0, 8)} (queue=${this.queue.length})`);
+        // Defensive: handle undefined id
+        const idPreview = item.id?.slice(0, 8) ?? '[no-id]';
+        this.log(`📭 Popped message: ${idPreview} (queue=${this.queue.length})`);
       } else if (isInboxTask(item)) {
-        this.log(`📭 Popped task: ${item.taskId.slice(0, 8)} (queue=${this.queue.length})`);
+        // Defensive: handle undefined taskId
+        const taskIdPreview = item.taskId?.slice(0, 8) ?? '[no-taskId]';
+        this.log(`📭 Popped task: ${taskIdPreview} (queue=${this.queue.length})`);
       }
       return item;
     }
@@ -186,9 +192,13 @@ export class PersonaInbox {
           clearInterval(checkInterval);
           const item = this.queue.shift()!;
           if (isInboxMessage(item)) {
-            this.log(`📭 Popped message (after wait): ${item.id.slice(0, 8)} (queue=${this.queue.length})`);
+            // Defensive: handle undefined id
+            const idPreview = item.id?.slice(0, 8) ?? '[no-id]';
+            this.log(`📭 Popped message (after wait): ${idPreview} (queue=${this.queue.length})`);
           } else if (isInboxTask(item)) {
-            this.log(`📭 Popped task (after wait): ${item.taskId.slice(0, 8)} (queue=${this.queue.length})`);
+            // Defensive: handle undefined taskId
+            const taskIdPreview = item.taskId?.slice(0, 8) ?? '[no-taskId]';
+            this.log(`📭 Popped task (after wait): ${taskIdPreview} (queue=${this.queue.length})`);
           }
           resolve(item);
         } else if (Date.now() - startTime > timeoutMs) {

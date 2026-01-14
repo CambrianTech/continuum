@@ -1085,7 +1085,7 @@ export class PersonaMessageEvaluator {
       // PHASE 6: Use Decision Adapter Chain for all decisions
       const context: DecisionContext<ChatMessageEntity> = {
         triggerEvent: message,
-        eventContent: message.content.text,
+        eventContent: message.content?.text ?? '',  // Defensive: handle missing content
         personaId: this.personaUser.id,
         personaDisplayName: this.personaUser.displayName,
         senderIsHuman,
