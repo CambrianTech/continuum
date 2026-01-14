@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-13T22:58:29.652Z",
+  "generated": "2026-01-14T02:24:53.754Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5521,6 +5521,83 @@
           "type": "number",
           "required": false,
           "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/context/slice",
+      "description": "Ai Context Slice Command - Shared Types\n *\n * Retrieve full content of a context item by ID - companion to context/search for getting complete entity data",
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "id parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "includeRelated": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeRelated parameter"
+        },
+        "relatedLimit": {
+          "type": "number",
+          "required": false,
+          "description": "relatedLimit parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/context/search",
+      "description": "Ai Context Search Command - Shared Types\n *\n * Semantic context navigation - search memories, messages, timeline across all entity types using cosine similarity via Rust embedding worker",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "collections": {
+          "type": "array",
+          "required": false,
+          "description": "collections parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "excludeContextId": {
+          "type": "string",
+          "required": false,
+          "description": "excludeContextId parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "minSimilarity": {
+          "type": "number",
+          "required": false,
+          "description": "minSimilarity parameter"
+        },
+        "since": {
+          "type": "string",
+          "required": false,
+          "description": "since parameter"
+        },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "description": "mode parameter"
         }
       }
     },

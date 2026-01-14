@@ -130,8 +130,10 @@ ai-venv/
 continuum.log
 continuum_restart.log
 
-# Generated documentation
+# Generated documentation (but keep docs/ AI files)
 *-AI-*.md
+!src/**/docs/*-AI-*.md
+!docs/*-AI-*.md
 generated-*/
 *.md.backup
 *.md.test-backup

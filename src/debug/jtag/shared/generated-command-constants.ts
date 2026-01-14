@@ -28,6 +28,8 @@ export const COMMANDS = {
   ADAPTER_TRY: 'adapter/try',
   AI_ADAPTER_TEST: 'ai/adapter/test',
   AI_BAG_OF_WORDS: 'ai/bag-of-words',
+  AI_CONTEXT_SEARCH: 'ai/context/search',
+  AI_CONTEXT_SLICE: 'ai/context/slice',
   AI_COST: 'ai/cost',
   AI_DATASET_CREATE: 'ai/dataset/create',
   AI_DATASET_LIST: 'ai/dataset/list',
