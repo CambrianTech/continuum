@@ -174,6 +174,36 @@ export class ToolRegistry {
   // ===========================================================================
 
   /**
+   * Clean and truncate a description for tool listings
+   * Strips JSDoc comment formatting and limits to first sentence or 100 chars
+   */
+  private cleanDescription(desc: string | undefined, maxLength: number = 100): string {
+    if (!desc) return '';
+
+    // Remove JSDoc comment prefixes (e.g., " * ", "* ")
+    let cleaned = desc.replace(/^\s*\*\s*/gm, '').replace(/\n\s*\*\s*/g, ' ');
+
+    // Remove section headers (e.g., "====" lines)
+    cleaned = cleaned.replace(/={3,}/g, '').trim();
+
+    // Get first sentence (up to first period, exclamation, or newline)
+    const firstSentence = cleaned.split(/[.\n!]/)[0];
+    if (firstSentence && firstSentence.length > 10) {
+      cleaned = firstSentence;
+    }
+
+    // Collapse whitespace
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    // Truncate if still too long
+    if (cleaned.length > maxLength) {
+      return cleaned.slice(0, maxLength - 3) + '...';
+    }
+
+    return cleaned;
+  }
+
+  /**
    * Search tools by keyword (matches name and description)
    * Same algorithm as MCP search_tools for consistency
    *
@@ -204,7 +234,7 @@ export class ToolRegistry {
           const toolCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
           results.push({
             name: tool.name,
-            description: tool.description || tool.name,
+            description: this.cleanDescription(tool.description, 120) || tool.name,
             category: toolCategory,
             score,
           });
@@ -274,7 +304,7 @@ export class ToolRegistry {
           const toolCategory = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
           return {
             name: tool.name,
-            description: tool.description,
+            description: this.cleanDescription(tool.description, 120) || tool.name,
             category: toolCategory,
             score: Math.round(r.score * 1000) / 1000,
           };
@@ -332,7 +362,7 @@ export class ToolRegistry {
 
       results.push({
         name: tool.name,
-        description: tool.description || tool.name,
+        description: this.cleanDescription(tool.description, 120) || tool.name,
         category: toolCategory,
       });
     }
@@ -450,7 +480,7 @@ export class ToolRegistry {
         const category = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
         results.push({
           name: tool.name,
-          description: tool.description,
+          description: this.cleanDescription(tool.description, 120) || tool.name,
           category,
           similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimals
         });
