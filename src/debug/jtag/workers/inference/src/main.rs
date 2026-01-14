@@ -1294,6 +1294,9 @@ fn generate_text(
         let pos = if i == 0 { 0 } else { all_tokens.len() - 1 };
         let logits = model.forward(&input, pos)?;
 
+        // GPU sync moved to end of generation - per-token sync is not needed
+        // and doesn't improve throughput (bottleneck is compute, not sync overhead)
+
         // Get last token logits
         let logits = if logits.dims().len() == 3 {
             logits
@@ -1325,6 +1328,12 @@ fn generate_text(
 
         all_tokens.push(next_token);
     }
+
+    // Final GPU sync to ensure all work is complete before returning
+    // This allows GPU memory to be fully reclaimed
+    device
+        .synchronize()
+        .map_err(|e| format!("Final GPU sync failed: {e}"))?;
 
     // Decode generated tokens
     let generated_tokens = &all_tokens[prompt_len..];
