@@ -822,57 +822,35 @@ export class ToolRegistry {
       return 'No tools available.';
     }
 
-    const toolDescriptions = tools.map((tool, index) => {
-      const requiredParams = Object.entries(tool.parameters)
-        .filter(([_, def]) => def.required)
-        .map(([name, def]) => `<${name}>${def.description || name}</${name}>`)
-        .join(' ');
-
-      const optionalParams = Object.entries(tool.parameters)
-        .filter(([_, def]) => !def.required)
-        .map(([name, def]) => `<${name}>${def.description || name}</${name}>`)
-        .join(' ');
-
-      let desc = `${index + 1}. ${tool.name} - ${tool.description}`;
-
-      if (requiredParams) {
-        desc += `\n   Required: ${requiredParams}`;
+    // Group tools by category (first part of name)
+    const categories = new Map<string, string[]>();
+    for (const tool of tools) {
+      const category = tool.name.split('/')[0];
+      if (!categories.has(category)) {
+        categories.set(category, []);
       }
+      categories.get(category)!.push(tool.name);
+    }
 
-      if (optionalParams) {
-        desc += `\n   Optional: ${optionalParams}`;
-      }
+    // Compact list: just names grouped by category
+    const compactList = Array.from(categories.entries())
+      .map(([cat, names]) => `${cat}: ${names.join(', ')}`)
+      .join('\n');
 
-      return desc;
-    }).join('\n\n');
+    // Keep few-shot examples - CRITICAL for small models
+    const examples = `TOOL EXAMPLES:
+<tool name="help"><command>data/list</command></tool>
+<tool name="data/list"><collection>chat_messages</collection><limit>10</limit></tool>
+<tool name="interface/screenshot"></tool>
 
-    // Few-shot examples are CRITICAL for small models (Llama 3.2 3B, etc.)
-    // Without concrete examples, they output "Using the X tool..." instead of actual tool calls
-    const fewShotExamples = `EXAMPLES OF CORRECT TOOL CALLS:
+DO NOT say "I'll use..." - just output the <tool> XML directly.`;
 
-User: "What's my favorite color?"
-You: <tool name="ai/should-respond-fast"><query>What's my favorite color?</query></tool>
+    return `TOOLS (${tools.length} available):
+Format: <tool name="command"><param>value</param></tool>
+Use: <tool name="help"><command>NAME</command></tool> for details
 
-User: "Take a screenshot"
-You: <tool name="interface/screenshot"></tool>
+${compactList}
 
-User: "List the recent chat messages"
-You: <tool name="data/list"><collection>chat_messages</collection><limit>20</limit></tool>
-
-WRONG (DO NOT DO THIS):
-❌ "I'll use the ai/should-respond-fast tool to check..."
-❌ "Using the interface/screenshot tool to capture..."
-❌ "Let me call data/list to fetch messages..."
-
-CORRECT:
-✅ Just output the <tool> XML directly. No explanation needed.`;
-
-    return `AVAILABLE TOOLS:
-Format: <tool name="command/name"><param>value</param></tool>
-
-${fewShotExamples}
-
-TOOL REFERENCE:
-${toolDescriptions}`;
+${examples}`;
   }
 }

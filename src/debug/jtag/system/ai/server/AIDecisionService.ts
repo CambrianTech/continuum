@@ -252,7 +252,8 @@ export class AIDecisionService {
 
     try {
       // Get recent conversation (questions + answers)
-      const recentConversation = context.ragContext.conversationHistory.slice(-10);
+      const conversationHistory = context.ragContext?.conversationHistory ?? [];
+      const recentConversation = conversationHistory.slice(-10);
 
       if (recentConversation.length === 0) {
         // Release slot before early return

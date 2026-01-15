@@ -9,6 +9,15 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DecisionVoteParams, DecisionVoteResult } from '../shared/DecisionVoteTypes';
 import { createDecisionVoteResultFromParams } from '../shared/DecisionVoteTypes';
+
+/**
+ * Extended params with optional callerId/personaId injected by PersonaToolExecutor
+ * These fields are dynamically added for AI tool calls but not part of base schema
+ */
+interface DecisionVoteParamsWithCaller extends DecisionVoteParams {
+  callerId?: UUID;
+  personaId?: UUID;
+}
 import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -28,11 +37,24 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
     // 1. Get voter identity (auto-detect caller)
     const voter = await this.findCallerIdentity(params);
 
-    // 2. Validate params
+    // 2. Parse rankedChoices if passed as JSON string (common from AI tool calls)
+    let rankedChoices = params.rankedChoices;
+    if (typeof rankedChoices === 'string') {
+      try {
+        rankedChoices = JSON.parse(rankedChoices);
+      } catch {
+        throw new Error('rankedChoices must be a valid JSON array of option IDs');
+      }
+    }
+    if (!Array.isArray(rankedChoices)) {
+      throw new Error('rankedChoices must be an array of option IDs');
+    }
+
+    // 3. Validate params
     if (!params.proposalId || params.proposalId.trim().length === 0) {
       throw new Error('Proposal ID is required');
     }
-    if (!params.rankedChoices || params.rankedChoices.length === 0) {
+    if (!rankedChoices || rankedChoices.length === 0) {
       throw new Error('At least one ranked choice is required');
     }
 
@@ -50,7 +72,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
     }
 
     // 5. Validate ranked choices
-    this.validateRankedChoices(params.rankedChoices, proposal);
+    this.validateRankedChoices(rankedChoices, proposal);
 
     // 6. Check if user already voted (RankedVote interface)
     const existingVoteIndex = proposal.votes.findIndex(v => v.voterId === voter.id);
@@ -59,7 +81,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
       proposal.votes[existingVoteIndex] = {
         voterId: voter.id,
         voterName: voter.entity.displayName,
-        rankings: params.rankedChoices,
+        rankings: rankedChoices,
         votedAt: Date.now(),
         reasoning: params.comment
       };
@@ -69,7 +91,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
       proposal.votes.push({
         voterId: voter.id,
         voterName: voter.entity.displayName,
-        rankings: params.rankedChoices,
+        rankings: rankedChoices,
         votedAt: Date.now(),
         reasoning: params.comment
       });
@@ -97,7 +119,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
       proposalId: params.proposalId,
       voterId: voter.id,
       voterName: voter.entity.displayName,
-      rankedChoices: params.rankedChoices,
+      rankedChoices: rankedChoices,
       votedAt: new Date().toISOString(),
       voteCount: proposal.votes.length
     });
@@ -150,11 +172,35 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
   }
 
   /**
-   * Find caller identity using UserIdentityResolver
-   * Auto-detects Claude Code, Joel (human), etc. based on process info
+   * Find caller identity
+   * First checks for callerId/personaId in params (set by PersonaToolExecutor for AI tool calls)
+   * Falls back to UserIdentityResolver for CLI/direct calls
    */
   private async findCallerIdentity(params: DecisionVoteParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // Use UserIdentityResolver to detect calling process
+    // Check if callerId or personaId was injected (AI tool calls)
+    const paramsWithCaller = params as DecisionVoteParamsWithCaller;
+    const injectedCallerId = paramsWithCaller.callerId || paramsWithCaller.personaId;
+
+    if (injectedCallerId) {
+      // Look up user by injected ID
+      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
+        DATA_COMMANDS.LIST,
+        {
+          collection: UserEntity.collection,
+          filter: { id: injectedCallerId },
+          limit: 1,
+          context: params.context,
+          sessionId: params.sessionId
+        }
+      );
+
+      if (result.success && result.items && result.items.length > 0) {
+        const user = result.items[0];
+        return { id: user.id, entity: user };
+      }
+    }
+
+    // Fallback: Use UserIdentityResolver to detect calling process (CLI calls)
     const identity = await UserIdentityResolver.resolve();
 
     // If user exists in database, return it

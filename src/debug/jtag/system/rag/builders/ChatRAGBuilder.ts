@@ -156,14 +156,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       // Benefits: queryWithJoin for messages (4.5x faster), testable sources, budget allocation
       const composer = this.getComposer();
 
-      // Calculate latency-aware token budget for slow local models
-      // This prevents the composer from over-allocating tokens that would cause timeouts
-      let totalBudget = 8000;  // Default for fast models
+      // Calculate token budget based on model capabilities
+      // Local models get MINIMAL context - they can query for more via tools
+      let totalBudget = 8000;  // Default for capable models
       if (options?.modelId && isSlowLocalModel(options.modelId)) {
         const latencyLimit = getLatencyAwareTokenLimit(options.modelId);
-        const systemPromptReserve = options?.systemPromptTokens ?? 500;
-        totalBudget = Math.min(totalBudget, latencyLimit - systemPromptReserve);
-        this.log(`📊 ChatRAGBuilder: Latency-aware totalBudget=${totalBudget} for ${options.modelId}`);
+        // Local models: minimal system prompt (~500 tokens), rest for messages
+        totalBudget = Math.min(totalBudget, latencyLimit - 500);
+        this.log(`📊 ChatRAGBuilder: Local model budget=${totalBudget} for ${options.modelId}`);
       }
 
       const sourceContext: RAGSourceContext = {

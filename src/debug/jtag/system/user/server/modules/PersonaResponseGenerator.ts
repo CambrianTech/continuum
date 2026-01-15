@@ -51,6 +51,8 @@ import { InferenceCoordinator } from '../../../coordination/server/InferenceCoor
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
 import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+import { SystemPaths } from '../../../core/config/SystemPaths';
+import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 
 /**
  * Response generation result
@@ -579,6 +581,36 @@ export class PersonaResponseGenerator {
         this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
       }
 
+      // Inject governance guidance for democratic participation
+      const governanceSection = `\n\n=== DEMOCRATIC GOVERNANCE ===
+You are a citizen of a self-governing AI society. You can participate in collective decisions:
+
+**To propose a decision:**
+<tool_use>
+  <tool_name>collaboration/decision/propose</tool_name>
+  <parameters>
+    <topic>Brief title</topic>
+    <rationale>Why this needs collective input</rationale>
+    <options>["Option A", "Option B", "Option C"]</options>
+  </parameters>
+</tool_use>
+
+**To vote on a proposal:**
+<tool_use>
+  <tool_name>collaboration/decision/vote</tool_name>
+  <parameters>
+    <proposalId>uuid-from-list</proposalId>
+    <rankedChoices>["option-id-1st", "option-id-2nd", "option-id-3rd"]</rankedChoices>
+  </parameters>
+</tool_use>
+
+**To list open proposals:** Use collaboration/decision/list with status="voting"
+
+When you see important decisions that affect the team, consider proposing them for collective vote.
+================================`;
+
+      systemPrompt += governanceSection;
+
       messages.push({
         role: 'system',
         content: systemPrompt
@@ -793,7 +825,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
-        intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
+        intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
+        // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
+        personaContext: {
+          uniqueId: this.personaId,
+          displayName: this.personaName,
+          logDir: SystemPaths.personas.dir(this.personaId)
+        }
       };
 
       // GENOME INTEGRATION: Add active LoRA adapters from PersonaGenome
@@ -927,6 +965,40 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
         if (cleanedResponse !== aiResponse.text.trim()) {
           aiResponse.text = cleanedResponse;
+        }
+
+        // 🔧 PHASE 3.3.5a: GARBAGE DETECTION
+        // Detect and reject garbage output (Unicode garbage, repetition, encoding errors)
+        // This catches model failures that produce gibberish instead of coherent text
+        const garbageCheck = GarbageDetector.isGarbage(aiResponse.text);
+        if (garbageCheck.isGarbage) {
+          this.log(`🗑️ ${this.personaName}: [PHASE 3.3.5a] GARBAGE DETECTED (${garbageCheck.reason}: ${garbageCheck.details})`);
+
+          // Release inference slot
+          InferenceCoordinator.releaseSlot(this.personaId, provider);
+
+          // Emit event to clear UI indicators
+          if (this.client) {
+            await Events.emit<AIDecidedSilentEventData>(
+              DataDaemon.jtagContext!,
+              AI_DECISION_EVENTS.DECIDED_SILENT,
+              {
+                personaId: this.personaId,
+                personaName: this.personaName,
+                roomId: originalMessage.roomId,
+                messageId: originalMessage.id,
+                isHumanMessage: originalMessage.senderType === 'human',
+                timestamp: Date.now(),
+                confidence: garbageCheck.score,
+                reason: `Garbage output detected: ${garbageCheck.reason} - ${garbageCheck.details}`,
+                gatingModel: 'garbage-detector'
+              },
+              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
+            );
+          }
+
+          // Return failure so caller knows this wasn't successful
+          return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${garbageCheck.reason}` };
         }
 
         // 🔧 PHASE 3.3.5b: RESPONSE-LEVEL LOOP DETECTION

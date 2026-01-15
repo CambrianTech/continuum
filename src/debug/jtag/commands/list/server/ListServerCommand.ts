@@ -60,9 +60,15 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
 
   /**
    * Server discovers available commands from the CommandDaemon
+   *
+   * By default returns compact list (just names).
+   * Use includeDescription=true and/or includeSignature=true for full details.
+   * Or use `help <command>` for specific command details.
    */
   async execute(params: JTAGPayload): Promise<ListResult> {
     const listParams = params as ListParams;
+    const includeDescription = listParams.includeDescription ?? false;
+    const includeSignature = listParams.includeSignature ?? false;
 
     // Get commands from CommandDaemon
     const availableCommands = this.commander.commands;
@@ -70,14 +76,23 @@ export class ListServerCommand extends CommandBase<ListParams, ListResult> {
 
     // Convert CommandDaemon commands to CommandSignature format
     for (const [commandName, command] of availableCommands.entries()) {
+      // Compact mode: just name
+      if (!includeDescription && !includeSignature) {
+        commandSignatures.push({
+          name: commandName,
+          description: ''  // Empty for compact
+        });
+        continue;
+      }
+
       // Get command metadata from generated schemas
       const metadata = this.extractCommandMetadata(commandName);
 
       const signature: CommandSignature = {
         name: commandName,
-        description: metadata.description,
-        params: metadata.params,
-        returns: metadata.returns
+        description: includeDescription ? metadata.description : '',
+        params: includeSignature ? metadata.params : undefined,
+        returns: includeSignature ? metadata.returns : undefined
       };
 
       commandSignatures.push(signature);

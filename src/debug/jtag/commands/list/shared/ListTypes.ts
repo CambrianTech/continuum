@@ -60,8 +60,8 @@ export function createListParams(
   return {
     context,
     sessionId,
-    includeDescription: true,
-    includeSignature: true,
+    includeDescription: false,  // Compact by default - use help <cmd> for details
+    includeSignature: false,    // Compact by default - use help <cmd> for details
     ...overrides
   };
 }

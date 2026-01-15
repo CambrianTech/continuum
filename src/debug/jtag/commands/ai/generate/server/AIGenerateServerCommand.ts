@@ -17,6 +17,7 @@ import { ChatRAGBuilder } from '../../../../system/rag/builders/ChatRAGBuilder';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { SystemPaths } from '../../../../system/core/config/SystemPaths';
 
 export class AIGenerateServerCommand extends AIGenerateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -40,6 +41,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
 
         // Find persona if not specified
         let targetPersonaId = params.personaId;
+        let personaDisplayName = 'ai-generate-command'; // Fallback name for tracking
         if (!targetPersonaId) {
           const usersResult = await DataDaemon.query<UserEntity>({
             collection: UserEntity.collection,
@@ -53,6 +55,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
 
           const personaRecord = usersResult.data[0];
           targetPersonaId = personaRecord.id;
+          personaDisplayName = personaRecord.data.displayName;
           console.log(`✅ AI Generate: Using persona "${personaRecord.data.displayName}" (${targetPersonaId.slice(0, 8)})`);
         }
 
@@ -111,13 +114,18 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           content: `IDENTITY REMINDER: You are ${ragContext.identity.name}. Respond naturally with JUST your message - NO name prefix.\n\nCURRENT TIME: ${currentTime}\n\nIMPORTANT: Pay attention to timestamps [HH:MM]. If messages are from hours ago but current question is recent, topic likely changed. Focus on MOST RECENT message.`
         });
 
-        // Build request
+        // Build request with personaContext for proper logging and routing
         request = {
           messages,
           model: params.model || 'llama3.2:1b',
           temperature: params.temperature ?? 0.7,
           maxTokens: params.maxTokens ?? 150,
-          preferredProvider: params.preferredProvider || 'ollama'
+          preferredProvider: params.preferredProvider || 'ollama',
+          personaContext: {
+            uniqueId: targetPersonaId,
+            displayName: ragContext.identity?.name || personaDisplayName,
+            logDir: SystemPaths.personas.dir(targetPersonaId)
+          }
         };
 
       } else if (params.messages) {
