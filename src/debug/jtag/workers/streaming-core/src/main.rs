@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use streaming_core::{
-    EventBus, Handle, Pipeline, PipelineBuilder, PipelineState, StreamEvent,
+    call_server, EventBus, Handle, Pipeline, PipelineBuilder, PipelineState, StreamEvent,
 };
 use tokio::sync::RwLock;
 use tonic::{transport::Server, Status};
@@ -16,6 +16,22 @@ use tracing_subscriber::FmtSubscriber;
 // Voice service (gRPC) - import from library
 #[cfg(feature = "grpc")]
 use streaming_core::voice_service::VoiceServiceImpl;
+
+/// Get gRPC port from environment or default
+fn get_grpc_port() -> u16 {
+    std::env::var("STREAMING_CORE_GRPC_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50052)
+}
+
+/// Get WebSocket call server port from environment or default
+fn get_call_server_port() -> u16 {
+    std::env::var("STREAMING_CORE_WS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50053)
+}
 
 /// Active pipelines managed by the service
 #[allow(dead_code)]
@@ -137,27 +153,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _manager = Arc::new(PipelineManager::new());
 
+    // Start WebSocket call server for live audio
+    let call_port = get_call_server_port();
+    let call_addr = format!("127.0.0.1:{}", call_port);
+    info!("Call WebSocket server starting on ws://{}", call_addr);
+    let call_server_handle = tokio::spawn(async move {
+        if let Err(e) = call_server::start_call_server(&call_addr).await {
+            tracing::error!("Call server error: {}", e);
+        }
+    });
+
     // Start gRPC server with voice service
     #[cfg(feature = "grpc")]
     {
-        let addr = "127.0.0.1:50052".parse()?;
+        let grpc_port = get_grpc_port();
+        let addr = format!("127.0.0.1:{}", grpc_port).parse()?;
         info!("Voice gRPC service listening on {}", addr);
 
         let voice_service = VoiceServiceImpl::new();
 
-        Server::builder()
-            .add_service(voice_service.into_server())
-            .serve(addr)
-            .await?;
+        // Run gRPC server and call server concurrently
+        tokio::select! {
+            result = Server::builder()
+                .add_service(voice_service.into_server())
+                .serve(addr) => {
+                if let Err(e) = result {
+                    tracing::error!("gRPC server error: {}", e);
+                }
+            }
+            _ = call_server_handle => {
+                tracing::warn!("Call server stopped");
+            }
+        }
     }
 
     // Fallback if gRPC not enabled
     #[cfg(not(feature = "grpc"))]
     {
-        info!("gRPC feature not enabled, running in standalone mode");
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-        }
+        info!("gRPC feature not enabled, running WebSocket call server only");
+        let _ = call_server_handle.await;
     }
 
     Ok(())

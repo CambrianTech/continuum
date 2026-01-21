@@ -1,0 +1,351 @@
+/**
+ * AudioStreamClient - WebSocket client for real-time audio streaming
+ *
+ * Connects to the Rust streaming-core call server for:
+ * - Joining/leaving calls
+ * - Streaming microphone audio
+ * - Receiving mix-minus audio (everyone except self)
+ * - Playing back received audio
+ */
+
+/** Message types matching Rust call_server::CallMessage */
+interface JoinMessage {
+  type: 'Join';
+  call_id: string;
+  user_id: string;
+  display_name: string;
+}
+
+interface LeaveMessage {
+  type: 'Leave';
+}
+
+interface AudioMessage {
+  type: 'Audio';
+  data: string; // base64 encoded i16 PCM
+}
+
+interface MuteMessage {
+  type: 'Mute';
+  muted: boolean;
+}
+
+interface MixedAudioMessage {
+  type: 'MixedAudio';
+  data: string; // base64 encoded i16 PCM
+}
+
+interface ParticipantJoinedMessage {
+  type: 'ParticipantJoined';
+  user_id: string;
+  display_name: string;
+}
+
+interface ParticipantLeftMessage {
+  type: 'ParticipantLeft';
+  user_id: string;
+}
+
+type CallMessage =
+  | JoinMessage
+  | LeaveMessage
+  | AudioMessage
+  | MuteMessage
+  | MixedAudioMessage
+  | ParticipantJoinedMessage
+  | ParticipantLeftMessage;
+
+interface AudioStreamClientOptions {
+  /** WebSocket server URL (default: ws://127.0.0.1:50053) */
+  serverUrl?: string;
+  /** Sample rate for audio (default: 16000) */
+  sampleRate?: number;
+  /** Frame size in samples (default: 320 = 20ms at 16kHz) */
+  frameSize?: number;
+  /** Callback when participant joins */
+  onParticipantJoined?: (userId: string, displayName: string) => void;
+  /** Callback when participant leaves */
+  onParticipantLeft?: (userId: string) => void;
+  /** Callback for connection status changes */
+  onConnectionChange?: (connected: boolean) => void;
+}
+
+export class AudioStreamClient {
+  private ws: WebSocket | null = null;
+  private audioContext: AudioContext | null = null;
+  private mediaStream: MediaStream | null = null;
+  private processorNode: ScriptProcessorNode | null = null;
+  private playbackQueue: Float32Array[] = [];
+  private isPlaying = false;
+
+  private serverUrl: string;
+  private sampleRate: number;
+  private frameSize: number;
+  private options: AudioStreamClientOptions;
+
+  private callId: string | null = null;
+  private userId: string | null = null;
+  private displayName: string | null = null;
+
+  constructor(options: AudioStreamClientOptions = {}) {
+    this.serverUrl = options.serverUrl || 'ws://127.0.0.1:50053';
+    this.sampleRate = options.sampleRate || 16000;
+    this.frameSize = options.frameSize || 320;
+    this.options = options;
+  }
+
+  /**
+   * Connect to the call server and join a call
+   */
+  async join(callId: string, userId: string, displayName: string): Promise<void> {
+    this.callId = callId;
+    this.userId = userId;
+    this.displayName = displayName;
+
+    // Create WebSocket connection
+    return new Promise((resolve, reject) => {
+      try {
+        this.ws = new WebSocket(this.serverUrl);
+
+        this.ws.onopen = () => {
+          console.log('AudioStreamClient: Connected to call server');
+          this.options.onConnectionChange?.(true);
+
+          // Send join message
+          const joinMsg: JoinMessage = {
+            type: 'Join',
+            call_id: callId,
+            user_id: userId,
+            display_name: displayName,
+          };
+          this.ws?.send(JSON.stringify(joinMsg));
+          resolve();
+        };
+
+        this.ws.onmessage = (event) => {
+          this.handleMessage(event.data);
+        };
+
+        this.ws.onerror = (error) => {
+          console.error('AudioStreamClient: WebSocket error:', error);
+          reject(error);
+        };
+
+        this.ws.onclose = () => {
+          console.log('AudioStreamClient: Disconnected from call server');
+          this.options.onConnectionChange?.(false);
+          this.cleanup();
+        };
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Leave the current call
+   */
+  leave(): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const leaveMsg: LeaveMessage = { type: 'Leave' };
+      this.ws.send(JSON.stringify(leaveMsg));
+    }
+    this.cleanup();
+  }
+
+  /**
+   * Start streaming microphone audio
+   */
+  async startMicrophone(): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error('Not connected to call server');
+    }
+
+    // Create audio context
+    this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+
+    // Get microphone stream
+    this.mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: this.sampleRate,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+
+    // Create audio processing pipeline
+    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+
+    // Use ScriptProcessorNode to capture audio frames
+    // Note: This is deprecated but AudioWorklet requires more setup
+    this.processorNode = this.audioContext.createScriptProcessor(this.frameSize, 1, 1);
+
+    this.processorNode.onaudioprocess = (event) => {
+      const inputData = event.inputBuffer.getChannelData(0);
+      this.sendAudioFrame(inputData);
+    };
+
+    source.connect(this.processorNode);
+    this.processorNode.connect(this.audioContext.destination);
+
+    console.log('AudioStreamClient: Microphone streaming started');
+  }
+
+  /**
+   * Stop streaming microphone audio
+   */
+  stopMicrophone(): void {
+    if (this.processorNode) {
+      this.processorNode.disconnect();
+      this.processorNode = null;
+    }
+
+    if (this.mediaStream) {
+      this.mediaStream.getTracks().forEach((track) => track.stop());
+      this.mediaStream = null;
+    }
+
+    console.log('AudioStreamClient: Microphone streaming stopped');
+  }
+
+  /**
+   * Set mute status
+   */
+  setMuted(muted: boolean): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const muteMsg: MuteMessage = { type: 'Mute', muted };
+      this.ws.send(JSON.stringify(muteMsg));
+    }
+  }
+
+  /**
+   * Check if connected
+   */
+  get isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Handle incoming WebSocket messages
+   */
+  private handleMessage(data: string): void {
+    try {
+      const msg = JSON.parse(data) as CallMessage;
+
+      switch (msg.type) {
+        case 'MixedAudio':
+          this.handleMixedAudio(msg.data);
+          break;
+        case 'ParticipantJoined':
+          this.options.onParticipantJoined?.(msg.user_id, msg.display_name);
+          break;
+        case 'ParticipantLeft':
+          this.options.onParticipantLeft?.(msg.user_id);
+          break;
+      }
+    } catch (error) {
+      console.error('AudioStreamClient: Failed to parse message:', error);
+    }
+  }
+
+  /**
+   * Send audio frame to server
+   */
+  private sendAudioFrame(samples: Float32Array): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    // Convert Float32 (-1 to 1) to Int16 (-32768 to 32767)
+    const int16Data = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      int16Data[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+    }
+
+    // Encode as base64
+    const bytes = new Uint8Array(int16Data.buffer);
+    const base64 = btoa(String.fromCharCode(...bytes));
+
+    const audioMsg: AudioMessage = { type: 'Audio', data: base64 };
+    this.ws.send(JSON.stringify(audioMsg));
+  }
+
+  /**
+   * Handle received mixed audio
+   */
+  private handleMixedAudio(base64Data: string): void {
+    // Decode base64 to Int16Array
+    const binaryString = atob(base64Data);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    const int16Data = new Int16Array(bytes.buffer);
+
+    // Convert Int16 to Float32
+    const float32Data = new Float32Array(int16Data.length);
+    for (let i = 0; i < int16Data.length; i++) {
+      float32Data[i] = int16Data[i] / 32768;
+    }
+
+    // Queue for playback
+    this.playbackQueue.push(float32Data);
+    this.processPlaybackQueue();
+  }
+
+  /**
+   * Process playback queue
+   */
+  private processPlaybackQueue(): void {
+    if (this.isPlaying || this.playbackQueue.length === 0) return;
+    if (!this.audioContext) {
+      this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+    }
+
+    this.isPlaying = true;
+
+    const playNext = (): void => {
+      const samples = this.playbackQueue.shift();
+      if (!samples || !this.audioContext) {
+        this.isPlaying = false;
+        return;
+      }
+
+      // Create audio buffer
+      const buffer = this.audioContext.createBuffer(1, samples.length, this.sampleRate);
+      buffer.getChannelData(0).set(samples);
+
+      // Play buffer
+      const source = this.audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.audioContext.destination);
+      source.onended = playNext;
+      source.start();
+    };
+
+    playNext();
+  }
+
+  /**
+   * Cleanup resources
+   */
+  private cleanup(): void {
+    this.stopMicrophone();
+
+    if (this.audioContext) {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+
+    this.playbackQueue = [];
+    this.isPlaying = false;
+    this.callId = null;
+    this.userId = null;
+    this.displayName = null;
+  }
+}

@@ -17,6 +17,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import { COMMANDS } from '../../shared/generated-command-constants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { AudioStreamClient } from './AudioStreamClient';
 
 interface Participant {
   userId: UUID;
@@ -46,6 +47,9 @@ export class LiveWidget extends ReactiveWidget {
   // Media streams
   private localStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
+
+  // Audio streaming client (WebSocket to Rust call server)
+  private audioClient: AudioStreamClient | null = null;
 
   // Event subscriptions
   private unsubscribers: Array<() => void> = [];
@@ -248,7 +252,7 @@ export class LiveWidget extends ReactiveWidget {
     }
 
     try {
-      // Join the live session
+      // Join the live session via command (creates/finds room, registers participant)
       const result = await Commands.execute<any, any>(COMMANDS.COLLABORATION_LIVE_JOIN, {
         roomId: this.roomId
       });
@@ -261,14 +265,49 @@ export class LiveWidget extends ReactiveWidget {
         // Subscribe to session events
         this.subscribeToEvents();
 
-        // Request mic access immediately on join
+        // Connect to audio streaming server
+        this.audioClient = new AudioStreamClient({
+          // Port configured via STREAMING_CORE_WS_PORT env var, default 50053
+          serverUrl: `ws://127.0.0.1:${(window as any).__STREAMING_CORE_WS_PORT || 50053}`,
+          onParticipantJoined: (userId, displayName) => {
+            console.log(`LiveWidget: ${displayName} joined the call`);
+            // Add to participants if not already present
+            if (!this.participants.find(p => p.userId === userId)) {
+              this.participants = [...this.participants, {
+                userId: userId as UUID,
+                displayName,
+                micEnabled: true,
+                cameraEnabled: false,
+                screenShareEnabled: false,
+                isSpeaking: false,
+              }];
+            }
+          },
+          onParticipantLeft: (userId) => {
+            console.log(`LiveWidget: ${userId} left the call`);
+            this.participants = this.participants.filter(p => p.userId !== userId);
+          },
+          onConnectionChange: (connected) => {
+            console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
+          },
+        });
+
         try {
-          this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          // Get user info for audio stream
+          const userId = result.userId || 'unknown';
+          const displayName = result.displayName || 'Unknown User';
+
+          // Join audio stream (sessionId is guaranteed non-null here)
+          await this.audioClient.join(result.sessionId, userId, displayName);
+          console.log('LiveWidget: Connected to audio stream');
+
+          // Start microphone streaming
+          await this.audioClient.startMicrophone();
           this.micEnabled = true;
-          console.log('LiveWidget: Mic access granted');
-        } catch (micError) {
-          console.warn('LiveWidget: Mic access denied or unavailable:', micError);
-          // Still joined, just without mic
+          console.log('LiveWidget: Mic streaming started');
+        } catch (audioError) {
+          console.warn('LiveWidget: Audio stream failed:', audioError);
+          // Still joined, just without audio
         }
       }
     } catch (error) {
@@ -278,6 +317,12 @@ export class LiveWidget extends ReactiveWidget {
 
   private async handleLeave(): Promise<void> {
     if (!this.sessionId) return;
+
+    // Disconnect from audio stream first
+    if (this.audioClient) {
+      this.audioClient.leave();
+      this.audioClient = null;
+    }
 
     try {
       await Commands.execute<any, any>(COMMANDS.COLLABORATION_LIVE_LEAVE, {
@@ -320,37 +365,26 @@ export class LiveWidget extends ReactiveWidget {
       })
     );
 
-    // Audio stream (mixed, excludes self)
-    this.unsubscribers.push(
-      Events.subscribe(`live:audio:${this.sessionId}`, (data: any) => {
-        this.playAudioChunk(data.audio, data.sampleRate);
-      })
-    );
+    // Note: Audio streaming is handled directly via WebSocket (AudioStreamClient)
+    // rather than through JTAG events for lower latency
   }
 
   private async toggleMic(): Promise<void> {
     this.micEnabled = !this.micEnabled;
 
-    if (this.micEnabled) {
-      try {
-        this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // TODO: Stream audio to server
-      } catch (error) {
-        console.error('LiveWidget: Failed to get mic:', error);
-        this.micEnabled = false;
+    if (this.audioClient) {
+      if (this.micEnabled) {
+        try {
+          await this.audioClient.startMicrophone();
+        } catch (error) {
+          console.error('LiveWidget: Failed to start mic:', error);
+          this.micEnabled = false;
+        }
+      } else {
+        this.audioClient.stopMicrophone();
       }
-    } else {
-      if (this.localStream) {
-        this.localStream.getAudioTracks().forEach(track => track.stop());
-      }
-    }
-
-    // Notify server
-    if (this.sessionId) {
-      await Commands.execute<any, any>('live/mic', {
-        sessionId: this.sessionId,
-        enabled: this.micEnabled
-      });
+      // Notify server of mute status
+      this.audioClient.setMuted(!this.micEnabled);
     }
   }
 
@@ -408,11 +442,6 @@ export class LiveWidget extends ReactiveWidget {
         enabled: this.screenShareEnabled
       });
     }
-  }
-
-  private playAudioChunk(base64Audio: string, sampleRate: number): void {
-    // Decode and play audio chunk
-    // TODO: Implement audio playback queue
   }
 
   protected override render(): TemplateResult {
