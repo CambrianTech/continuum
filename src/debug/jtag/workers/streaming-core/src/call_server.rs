@@ -14,13 +14,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
+use ts_rs::TS;
 
 /// Message types for call protocol
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// TypeScript types are generated via `cargo test -p streaming-core export_types`
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/CallMessage.ts")]
 #[serde(tag = "type")]
 pub enum CallMessage {
     /// Join a call
-    #[serde(rename = "join")]
     Join {
         call_id: String,
         user_id: String,
@@ -28,38 +30,30 @@ pub enum CallMessage {
     },
 
     /// Leave the call
-    #[serde(rename = "leave")]
     Leave,
 
     /// Audio data (base64 encoded i16 PCM)
-    #[serde(rename = "audio")]
     Audio { data: String },
 
     /// Mute/unmute
-    #[serde(rename = "mute")]
     Mute { muted: bool },
 
     /// Participant joined notification
-    #[serde(rename = "participant_joined")]
     ParticipantJoined {
         user_id: String,
         display_name: String,
     },
 
     /// Participant left notification
-    #[serde(rename = "participant_left")]
     ParticipantLeft { user_id: String },
 
     /// Mixed audio to play (base64 encoded i16 PCM)
-    #[serde(rename = "mixed_audio")]
     MixedAudio { data: String },
 
     /// Error message
-    #[serde(rename = "error")]
     Error { message: String },
 
     /// Call stats
-    #[serde(rename = "stats")]
     Stats {
         participant_count: usize,
         samples_processed: u64,

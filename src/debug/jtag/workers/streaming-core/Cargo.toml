@@ -39,6 +39,9 @@ futures-util.workspace = true
 # Random (for test audio generation)
 rand.workspace = true
 
+# TypeScript type generation
+ts-rs.workspace = true
+
 [build-dependencies]
 tonic-build = "0.11"
 
