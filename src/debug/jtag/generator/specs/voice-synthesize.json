@@ -1,0 +1,93 @@
+{
+  "name": "voice/synthesize",
+  "description": "Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.",
+  "params": [
+    {
+      "name": "text",
+      "type": "string",
+      "optional": false,
+      "description": "Text to synthesize"
+    },
+    {
+      "name": "voice",
+      "type": "string",
+      "optional": true,
+      "description": "Voice ID or name. Defaults to model's default voice."
+    },
+    {
+      "name": "adapter",
+      "type": "string",
+      "optional": true,
+      "description": "TTS adapter: 'kokoro', 'fish-speech', 'f5-tts', 'styletts2', 'xtts-v2'. Defaults to 'kokoro'."
+    },
+    {
+      "name": "speed",
+      "type": "number",
+      "optional": true,
+      "description": "Speech rate multiplier (0.5-2.0). Defaults to 1.0."
+    },
+    {
+      "name": "sampleRate",
+      "type": "number",
+      "optional": true,
+      "description": "Output sample rate in Hz. Defaults to adapter's native rate (usually 24000)."
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "optional": true,
+      "description": "Output format: 'pcm16', 'wav', 'opus'. Defaults to 'pcm16'."
+    },
+    {
+      "name": "stream",
+      "type": "boolean",
+      "optional": true,
+      "description": "Return streaming handle instead of complete audio. Defaults to false."
+    }
+  ],
+  "results": [
+    {
+      "name": "audio",
+      "type": "string",
+      "description": "Base64-encoded audio data (if stream=false)"
+    },
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "Streaming handle for WebSocket subscription (if stream=true)"
+    },
+    {
+      "name": "sampleRate",
+      "type": "number",
+      "description": "Actual sample rate of returned audio"
+    },
+    {
+      "name": "duration",
+      "type": "number",
+      "description": "Audio duration in seconds"
+    },
+    {
+      "name": "adapter",
+      "type": "string",
+      "description": "TTS adapter that was used"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Synthesize text with default voice",
+      "command": "./jtag voice/synthesize --text=\"Hello, how can I help you today?\"",
+      "expectedResult": "{ audio: \"<base64-pcm>\", sampleRate: 24000, duration: 1.8, adapter: \"kokoro\" }"
+    },
+    {
+      "description": "Synthesize with specific voice and adapter",
+      "command": "./jtag voice/synthesize --text=\"Welcome!\" --voice=\"amy\" --adapter=\"kokoro\" --speed=1.1",
+      "expectedResult": "{ audio: \"<base64>\", sampleRate: 24000, duration: 0.6 }"
+    },
+    {
+      "description": "Request streaming audio",
+      "command": "./jtag voice/synthesize --text=\"Long response...\" --stream=true",
+      "expectedResult": "{ handle: \"tts-abc123\", sampleRate: 24000 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

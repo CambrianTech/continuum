@@ -1,0 +1,54 @@
+{
+  "name": "voice/start",
+  "description": "Start voice chat session for real-time audio communication with AI",
+  "params": [
+    {
+      "name": "room",
+      "type": "string",
+      "optional": true,
+      "description": "Room ID or name to join (defaults to 'general')"
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "optional": true,
+      "description": "LLM model to use for responses (defaults to system default)"
+    },
+    {
+      "name": "voice",
+      "type": "string",
+      "optional": true,
+      "description": "TTS voice ID for AI responses"
+    }
+  ],
+  "results": [
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "Session handle (UUID) for correlation"
+    },
+    {
+      "name": "wsUrl",
+      "type": "string",
+      "description": "WebSocket URL to connect for audio streaming"
+    },
+    {
+      "name": "roomId",
+      "type": "string",
+      "description": "Resolved room ID"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Start voice chat in general room",
+      "command": "./jtag voice/start --room=\"general\"",
+      "expectedResult": "{ handle: \"abc-123\", wsUrl: \"ws://localhost:3000/ws/voice?handle=abc-123\" }"
+    },
+    {
+      "description": "Start with specific model",
+      "command": "./jtag voice/start --room=\"general\" --model=\"llama3.2:3b\"",
+      "expectedResult": "{ handle: \"def-456\", wsUrl: \"ws://...\" }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

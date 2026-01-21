@@ -406,6 +406,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
       bubble.appendChild(header);
       bubble.appendChild(contentDiv);
+
       messageElement.appendChild(bubble);
 
       // Initialize adapter content loading (e.g., image load handlers)

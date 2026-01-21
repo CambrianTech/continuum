@@ -1,0 +1,65 @@
+{
+  "name": "voice/transcribe",
+  "description": "Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.",
+  "params": [
+    {
+      "name": "audio",
+      "type": "string",
+      "optional": false,
+      "description": "Base64-encoded audio data (PCM 16-bit, 16kHz mono)"
+    },
+    {
+      "name": "format",
+      "type": "string",
+      "optional": true,
+      "description": "Audio format hint: 'pcm16', 'wav', 'opus' (defaults to 'pcm16')"
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "optional": true,
+      "description": "Language code hint (e.g., 'en', 'es', 'auto'). Defaults to auto-detect."
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "optional": true,
+      "description": "Whisper model size: 'tiny', 'base', 'small', 'medium', 'large'. Defaults to 'base'."
+    }
+  ],
+  "results": [
+    {
+      "name": "text",
+      "type": "string",
+      "description": "Transcribed text"
+    },
+    {
+      "name": "language",
+      "type": "string",
+      "description": "Detected language code"
+    },
+    {
+      "name": "confidence",
+      "type": "number",
+      "description": "Confidence score (0-1)"
+    },
+    {
+      "name": "segments",
+      "type": "object[]",
+      "description": "Word-level timestamps if available: [{word, start, end}]"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Transcribe audio buffer",
+      "command": "./jtag voice/transcribe --audio=\"<base64-pcm-data>\"",
+      "expectedResult": "{ text: \"Hello world\", language: \"en\", confidence: 0.95 }"
+    },
+    {
+      "description": "Transcribe with language hint",
+      "command": "./jtag voice/transcribe --audio=\"<base64>\" --language=\"es\" --model=\"small\"",
+      "expectedResult": "{ text: \"Hola mundo\", language: \"es\", confidence: 0.92 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

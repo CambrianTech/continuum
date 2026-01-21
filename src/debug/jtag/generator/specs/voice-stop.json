@@ -1,0 +1,42 @@
+{
+  "name": "voice/stop",
+  "description": "Stop an active voice chat session",
+  "params": [
+    {
+      "name": "handle",
+      "type": "string",
+      "optional": true,
+      "description": "Session handle to stop (defaults to current session)"
+    }
+  ],
+  "results": [
+    {
+      "name": "stopped",
+      "type": "boolean",
+      "description": "Whether the session was successfully stopped"
+    },
+    {
+      "name": "handle",
+      "type": "string",
+      "description": "Handle of the stopped session"
+    },
+    {
+      "name": "duration",
+      "type": "number",
+      "description": "Session duration in seconds"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Stop current voice session",
+      "command": "./jtag voice/stop",
+      "expectedResult": "{ stopped: true, duration: 120 }"
+    },
+    {
+      "description": "Stop specific session by handle",
+      "command": "./jtag voice/stop --handle=\"abc-123\"",
+      "expectedResult": "{ stopped: true, handle: \"abc-123\", duration: 45 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

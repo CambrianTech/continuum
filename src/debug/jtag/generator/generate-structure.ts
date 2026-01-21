@@ -163,7 +163,9 @@ const STRUCTURE_CONFIG: GeneratorConfig = {
       '**/node_modules/**/*',
       '**/dist/**/*',
       '**/*.test.ts',
-      '**/*.spec.ts'
+      '**/*.spec.ts',
+      // Exclude non-custom-element widget utilities (not extending HTMLElement)
+      'widgets/voice-chat/VoiceChatWidget.ts'
     ]
   },
   
