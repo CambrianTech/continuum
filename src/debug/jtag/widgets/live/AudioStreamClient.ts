@@ -35,6 +35,10 @@ export class AudioStreamClient {
   private playbackQueue: Float32Array[] = [];
   private isPlaying = false;
 
+  // Max queue depth to prevent memory growth in long sessions
+  // At 20ms per frame, 50 frames = 1 second of buffer
+  private static readonly MAX_PLAYBACK_QUEUE = 50;
+
   private serverUrl: string;
   private sampleRate: number;
   private frameSize: number;
@@ -245,7 +249,11 @@ export class AudioStreamClient {
       float32Data[i] = int16Data[i] / 32768;
     }
 
-    // Queue for playback
+    // Queue for playback with bounded size to prevent memory growth
+    if (this.playbackQueue.length >= AudioStreamClient.MAX_PLAYBACK_QUEUE) {
+      // Drop oldest frame to prevent memory growth
+      this.playbackQueue.shift();
+    }
     this.playbackQueue.push(float32Data);
     this.processPlaybackQueue();
   }
