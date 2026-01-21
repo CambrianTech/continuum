@@ -172,19 +172,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let voice_service = VoiceServiceImpl::new();
 
-        // Run gRPC server and call server concurrently
-        tokio::select! {
-            result = Server::builder()
+        // Spawn gRPC server as a separate task (non-blocking)
+        let grpc_handle = tokio::spawn(async move {
+            if let Err(e) = Server::builder()
                 .add_service(voice_service.into_server())
-                .serve(addr) => {
-                if let Err(e) = result {
-                    tracing::error!("gRPC server error: {}", e);
-                }
+                .serve(addr)
+                .await
+            {
+                tracing::error!("gRPC server error: {}", e);
+                // Don't crash - call server can continue running
             }
-            _ = call_server_handle => {
-                tracing::warn!("Call server stopped");
-            }
-        }
+        });
+
+        // Wait for call server (the primary service)
+        // gRPC is optional - if it fails, we still have WebSocket
+        let _ = call_server_handle.await;
+
+        // If call server exits, also stop gRPC
+        grpc_handle.abort();
     }
 
     // Fallback if gRPC not enabled
