@@ -1,0 +1,172 @@
+syntax = "proto3";
+
+package streaming;
+
+// Streaming Core Service
+// Handle-based: methods return handles, events flow separately
+service StreamingService {
+    // Create pipelines (returns handle immediately)
+    rpc CreateVoiceChatPipeline(CreateVoiceChatRequest) returns (CreatePipelineResponse);
+    rpc CreateIvrPipeline(CreateIvrRequest) returns (CreatePipelineResponse);
+    rpc CreateImageGenPipeline(CreateImageGenRequest) returns (CreatePipelineResponse);
+    rpc CreateVideoGenPipeline(CreateVideoGenRequest) returns (CreatePipelineResponse);
+    rpc CreateAvatarPipeline(CreateAvatarRequest) returns (CreatePipelineResponse);
+
+    // Pipeline control
+    rpc StartPipeline(PipelineRequest) returns (PipelineResponse);
+    rpc CancelPipeline(PipelineRequest) returns (PipelineResponse);
+    rpc GetPipelineState(PipelineRequest) returns (PipelineStateResponse);
+
+    // Event stream (server-side streaming)
+    rpc SubscribeEvents(SubscribeEventsRequest) returns (stream StreamEvent);
+
+    // Direct frame injection (for text prompts, etc.)
+    rpc InjectFrame(InjectFrameRequest) returns (InjectFrameResponse);
+}
+
+// Pipeline creation requests
+
+message CreateVoiceChatRequest {
+    // Optional: custom model IDs
+    string stt_model = 1;
+    string llm_model = 2;
+    string tts_model = 3;
+}
+
+message CreateIvrRequest {
+    string stream_sid = 1;  // Twilio stream SID
+    string stt_model = 2;
+    string llm_model = 3;
+    string tts_model = 4;
+}
+
+message CreateImageGenRequest {
+    string model = 1;       // e.g., "sdxl", "flux-schnell"
+    uint32 width = 2;
+    uint32 height = 3;
+    uint32 steps = 4;
+}
+
+message CreateVideoGenRequest {
+    string model = 1;       // e.g., "mochi", "cogvideox"
+    uint32 width = 2;
+    uint32 height = 3;
+    uint32 fps = 4;
+    float duration_sec = 5;
+}
+
+message CreateAvatarRequest {
+    string model = 1;       // e.g., "liveportrait", "sadtalker"
+    bytes reference_image = 2;  // Reference face image
+}
+
+message CreatePipelineResponse {
+    string handle = 1;      // UUIDv4 for correlation
+}
+
+// Pipeline control
+
+message PipelineRequest {
+    string handle = 1;
+}
+
+message PipelineResponse {
+    bool success = 1;
+    string error = 2;
+}
+
+message PipelineStateResponse {
+    string handle = 1;
+    PipelineState state = 2;
+}
+
+enum PipelineState {
+    PIPELINE_STATE_UNKNOWN = 0;
+    PIPELINE_STATE_IDLE = 1;
+    PIPELINE_STATE_RUNNING = 2;
+    PIPELINE_STATE_PAUSED = 3;
+    PIPELINE_STATE_COMPLETED = 4;
+    PIPELINE_STATE_FAILED = 5;
+}
+
+// Events
+
+message SubscribeEventsRequest {
+    string handle = 1;      // Subscribe to specific pipeline, or empty for all
+}
+
+message StreamEvent {
+    string handle = 1;
+    oneof event {
+        StartedEvent started = 2;
+        ProgressEvent progress = 3;
+        FrameReadyEvent frame_ready = 4;
+        CompletedEvent completed = 5;
+        FailedEvent failed = 6;
+        CancelledEvent cancelled = 7;
+    }
+}
+
+message StartedEvent {
+    uint64 timestamp_us = 1;
+}
+
+message ProgressEvent {
+    float progress = 1;     // 0.0 - 1.0
+    string message = 2;
+    uint64 timestamp_us = 3;
+}
+
+message FrameReadyEvent {
+    FrameType frame_type = 1;
+    uint32 slot = 2;        // Ring buffer slot
+    uint64 timestamp_us = 3;
+}
+
+enum FrameType {
+    FRAME_TYPE_UNKNOWN = 0;
+    FRAME_TYPE_AUDIO = 1;
+    FRAME_TYPE_VIDEO = 2;
+    FRAME_TYPE_TEXT = 3;
+    FRAME_TYPE_IMAGE = 4;
+}
+
+message CompletedEvent {
+    uint64 timestamp_us = 1;
+    uint64 frames_processed = 2;
+}
+
+message FailedEvent {
+    string error = 1;
+    uint64 timestamp_us = 2;
+}
+
+message CancelledEvent {
+    uint64 timestamp_us = 1;
+}
+
+// Frame injection
+
+message InjectFrameRequest {
+    string handle = 1;
+    oneof frame {
+        TextFrame text = 2;
+        AudioFrame audio = 3;
+    }
+}
+
+message TextFrame {
+    string content = 1;
+    bool is_final = 2;
+}
+
+message AudioFrame {
+    bytes samples = 1;      // PCM 16-bit signed LE
+    uint32 sample_rate = 2;
+    uint32 channels = 3;
+}
+
+message InjectFrameResponse {
+    bool success = 1;
+    string error = 2;
+}

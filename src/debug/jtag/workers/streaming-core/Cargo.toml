@@ -1,0 +1,47 @@
+[package]
+name = "streaming-core"
+version.workspace = true
+edition.workspace = true
+description = "Universal streaming backbone for AI communication"
+
+[features]
+default = ["grpc"]
+grpc = []
+
+[dependencies]
+# Async runtime
+tokio.workspace = true
+tokio-stream.workspace = true
+
+# gRPC
+tonic.workspace = true
+prost.workspace = true
+
+# Utilities
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+
+# Serialization (for events)
+serde.workspace = true
+serde_json.workspace = true
+
+# Async streaming for gRPC
+async-stream = "0.3"
+
+# WebSocket
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+
+# Random (for test audio generation)
+rand.workspace = true
+
+[build-dependencies]
+tonic-build = "0.11"
+
+[[bin]]
+name = "streaming-core"
+path = "src/main.rs"
