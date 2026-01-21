@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-15T05:57:33.718Z",
+  "generated": "2026-01-21T21:21:14.207Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -274,6 +274,105 @@
           "type": "array",
           "required": false,
           "description": "files parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/transcribe",
+      "description": "Voice Transcribe Command - Shared Types\n *\n * Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.",
+      "params": {
+        "audio": {
+          "type": "string",
+          "required": true,
+          "description": "audio parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "language": {
+          "type": "string",
+          "required": false,
+          "description": "language parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/synthesize",
+      "description": "Voice Synthesize Command - Shared Types\n *\n * Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.",
+      "params": {
+        "text": {
+          "type": "string",
+          "required": true,
+          "description": "text parameter"
+        },
+        "voice": {
+          "type": "string",
+          "required": false,
+          "description": "voice parameter"
+        },
+        "adapter": {
+          "type": "string",
+          "required": false,
+          "description": "adapter parameter"
+        },
+        "speed": {
+          "type": "number",
+          "required": false,
+          "description": "speed parameter"
+        },
+        "sampleRate": {
+          "type": "number",
+          "required": false,
+          "description": "sampleRate parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "stream": {
+          "type": "boolean",
+          "required": false,
+          "description": "stream parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/stop",
+      "description": "Voice Stop Command - Shared Types\n *\n * Stop an active voice chat session",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": false,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/start",
+      "description": "Voice Start Command - Shared Types\n *\n * Start voice chat session for real-time audio communication with AI",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": false,
+          "description": "room parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "voice": {
+          "type": "string",
+          "required": false,
+          "description": "voice parameter"
         }
       }
     },
@@ -3867,6 +3966,43 @@
           "type": "string",
           "required": false,
           "description": "to parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/live/start",
+      "description": "Collaboration Live Start Command - Shared Types\n *\n * Start a live call with selected participants. Creates or finds the DM room for the participant set, then joins the call. Like Discord's group call - select users, click call.",
+      "params": {
+        "participants": {
+          "type": "array",
+          "required": true,
+          "description": "participants parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "withVideo": {
+          "type": "boolean",
+          "required": false,
+          "description": "withVideo parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/live/leave",
+      "description": "Live Leave Command Types\n *\n * Leave a live audio/video call.\n * Removes user from participants. Call ends when last person leaves.",
+      "params": {}
+    },
+    {
+      "name": "collaboration/live/join",
+      "description": "Live Join Command Types\n *\n * Join a live audio/video call for a room.\n * Creates call if none exists, or joins existing.",
+      "params": {
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
         }
       }
     },

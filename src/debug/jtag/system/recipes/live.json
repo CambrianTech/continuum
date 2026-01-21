@@ -1,0 +1,44 @@
+{
+  "uniqueId": "live",
+  "name": "Live Session",
+  "displayName": "Live",
+  "description": "Real-time audio/video collaboration - like Slack huddles, Discord voice channels, Zoom",
+  "version": 1,
+
+  "layout": {
+    "widgets": [
+      { "widget": "live-widget", "position": "center", "order": 0 }
+    ],
+    "rightPanel": null
+  },
+
+  "locked": ["layout"],
+
+  "pipeline": [],
+
+  "strategy": {
+    "conversationPattern": "live-collaboration",
+    "responseRules": [
+      "Speak naturally in voice conversations",
+      "Keep responses concise for audio - avoid walls of text",
+      "Use prosody appropriate for speech synthesis",
+      "Participate like a meeting attendee, not a chatbot"
+    ],
+    "decisionCriteria": [
+      "Was I addressed verbally or by name?",
+      "Is there a pause indicating my turn to speak?",
+      "Would my response add value to the live discussion?"
+    ]
+  },
+
+  "tools": [
+    {
+      "name": "voice_speak",
+      "description": "Synthesize and speak text in the live session",
+      "enabledFor": ["ai"]
+    }
+  ],
+
+  "isPublic": true,
+  "tags": ["live", "audio", "video", "voice", "collaboration", "huddle"]
+}
