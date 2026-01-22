@@ -476,28 +476,28 @@ export class LiveWidget extends ReactiveWidget {
               @click=${this.toggleMic}
               title="${this.micEnabled ? 'Mute' : 'Unmute'}"
             >
-              ${this.micEnabled ? '🎤' : '🔇'}
+              ${this.micEnabled ? this.renderMicOnIcon() : this.renderMicOffIcon()}
             </button>
             <button
               class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"
               @click=${this.toggleCamera}
               title="${this.cameraEnabled ? 'Turn off camera' : 'Turn on camera'}"
             >
-              ${this.cameraEnabled ? '📷' : '📷'}
+              ${this.cameraEnabled ? this.renderCameraOnIcon() : this.renderCameraOffIcon()}
             </button>
             <button
               class="control-btn ${this.screenShareEnabled ? 'active' : 'inactive'}"
               @click=${this.toggleScreenShare}
               title="${this.screenShareEnabled ? 'Stop sharing' : 'Share screen'}"
             >
-              🖥️
+              ${this.renderScreenShareIcon()}
             </button>
             <button
               class="control-btn leave"
               @click=${this.handleLeave}
               title="Leave"
             >
-              📞
+              ${this.renderLeaveIcon()}
             </button>
           </div>
         </div>
@@ -530,11 +530,93 @@ export class LiveWidget extends ReactiveWidget {
         <div class="participant-name">${participant.displayName}</div>
         <div class="participant-indicators">
           ${!participant.micEnabled
-            ? html`<div class="indicator muted">🔇</div>`
+            ? html`<div class="indicator muted">${this.renderMutedIndicator()}</div>`
             : ''
           }
         </div>
       </div>
+    `;
+  }
+
+  // ========================================
+  // SVG Icon Renderers (Modern, clean icons)
+  // ========================================
+
+  private renderMicOnIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+        <line x1="12" x2="12" y1="19" y2="22"></line>
+      </svg>
+    `;
+  }
+
+  private renderMicOffIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="2" x2="22" y1="2" y2="22"></line>
+        <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"></path>
+        <path d="M5 10v2a7 7 0 0 0 12 5"></path>
+        <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"></path>
+        <path d="M9 9v3a3 3 0 0 0 5.12 2.12"></path>
+        <line x1="12" x2="12" y1="19" y2="22"></line>
+      </svg>
+    `;
+  }
+
+  private renderCameraOnIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m22 8-6 4 6 4V8Z"></path>
+        <rect width="14" height="12" x="2" y="6" rx="2" ry="2"></rect>
+      </svg>
+    `;
+  }
+
+  private renderCameraOffIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="2" x2="22" y1="2" y2="22"></line>
+        <path d="M7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12"></path>
+        <path d="m22 8-6 4 6 4V8Z"></path>
+        <path d="M10.3 7.7A4 4 0 0 1 14 6h2a2 2 0 0 1 2 2v3.34l1 .66"></path>
+      </svg>
+    `;
+  }
+
+  private renderScreenShareIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+        <line x1="8" x2="16" y1="21" y2="21"></line>
+        <line x1="12" x2="12" y1="17" y2="21"></line>
+        <path d="m9 10 3-3 3 3"></path>
+        <path d="M12 7v7"></path>
+      </svg>
+    `;
+  }
+
+  private renderLeaveIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path>
+        <line x1="22" x2="16" y1="2" y2="8"></line>
+        <line x1="16" x2="22" y1="2" y2="8"></line>
+      </svg>
+    `;
+  }
+
+  private renderMutedIndicator(): TemplateResult {
+    return html`
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="2" x2="22" y1="2" y2="22"></line>
+        <path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"></path>
+        <path d="M5 10v2a7 7 0 0 0 12 5"></path>
+        <path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"></path>
+        <path d="M9 9v3a3 3 0 0 0 5.12 2.12"></path>
+        <line x1="12" x2="12" y1="19" y2="22"></line>
+      </svg>
     `;
   }
 
@@ -551,7 +633,7 @@ export class LiveWidget extends ReactiveWidget {
         <div class="spotlight-main">
           <div class="presenter-tile">
             ${presenter.screenShareEnabled
-              ? html`<div class="screen-share-placeholder">🖥️ ${presenter.displayName} is sharing</div>`
+              ? html`<div class="screen-share-placeholder">${this.renderScreenShareIcon()} ${presenter.displayName} is sharing</div>`
               : presenter.cameraEnabled && presenter.videoStream
                 ? html`<video class="participant-video" autoplay muted></video>`
                 : html`
@@ -573,7 +655,7 @@ export class LiveWidget extends ReactiveWidget {
                 <div class="strip-avatar">
                   ${p.displayName.charAt(0).toUpperCase()}
                 </div>
-                ${!p.micEnabled ? html`<div class="strip-muted">🔇</div>` : ''}
+                ${!p.micEnabled ? html`<div class="strip-muted">${this.renderMutedIndicator()}</div>` : ''}
               </div>
             `)}
           </div>
@@ -586,28 +668,28 @@ export class LiveWidget extends ReactiveWidget {
             @click=${this.toggleMic}
             title="${this.micEnabled ? 'Mute' : 'Unmute'}"
           >
-            ${this.micEnabled ? '🎤' : '🔇'}
+            ${this.micEnabled ? this.renderMicOnIcon() : this.renderMicOffIcon()}
           </button>
           <button
             class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"
             @click=${this.toggleCamera}
             title="${this.cameraEnabled ? 'Turn off camera' : 'Turn on camera'}"
           >
-            📷
+            ${this.cameraEnabled ? this.renderCameraOnIcon() : this.renderCameraOffIcon()}
           </button>
           <button
             class="control-btn ${this.screenShareEnabled ? 'active' : 'inactive'}"
             @click=${this.toggleScreenShare}
             title="${this.screenShareEnabled ? 'Stop sharing' : 'Share screen'}"
           >
-            🖥️
+            ${this.renderScreenShareIcon()}
           </button>
           <button
             class="control-btn leave"
             @click=${this.handleLeave}
             title="Leave"
           >
-            📞
+            ${this.renderLeaveIcon()}
           </button>
         </div>
       </div>
