@@ -440,12 +440,31 @@ export class LiveWidget extends ReactiveWidget {
     }
   }
 
+  /**
+   * Calculate optimal grid layout based on participant count
+   * Returns string for CSS data-count attribute
+   */
+  private getGridDataCount(): string {
+    const count = this.participants.length;
+    if (count <= 25) return count.toString();
+    return 'many';  // 26+ triggers scrollable grid
+  }
+
   protected override render(): TemplateResult {
     // Joined: show full call UI
     if (this.isJoined) {
+      // Check if someone is screen sharing (spotlight mode)
+      const presenter = this.participants.find(p => p.screenShareEnabled);
+
+      if (presenter) {
+        // Spotlight mode: presenter main, others in strip
+        return this.renderSpotlightView(presenter);
+      }
+
+      // Grid mode: everyone equal
       return html`
         <div class="live-container">
-          <div class="participant-grid">
+          <div class="participant-grid" data-count="${this.getGridDataCount()}">
             ${this.participants.length === 0
               ? html`<div class="empty-state">Waiting for others to join...</div>`
               : this.participants.map(p => this.renderParticipant(p))
@@ -514,6 +533,82 @@ export class LiveWidget extends ReactiveWidget {
             ? html`<div class="indicator muted">🔇</div>`
             : ''
           }
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render spotlight view - presenter in main area, others in strip at bottom
+   * Used when someone is screen sharing or presenting
+   */
+  private renderSpotlightView(presenter: Participant): TemplateResult {
+    const otherParticipants = this.participants.filter(p => p.userId !== presenter.userId);
+
+    return html`
+      <div class="live-container spotlight-mode">
+        <!-- Main presenter area -->
+        <div class="spotlight-main">
+          <div class="presenter-tile">
+            ${presenter.screenShareEnabled
+              ? html`<div class="screen-share-placeholder">🖥️ ${presenter.displayName} is sharing</div>`
+              : presenter.cameraEnabled && presenter.videoStream
+                ? html`<video class="participant-video" autoplay muted></video>`
+                : html`
+                    <div class="participant-avatar large">
+                      ${presenter.displayName.charAt(0).toUpperCase()}
+                    </div>
+                  `
+            }
+            <div class="participant-name">${presenter.displayName}</div>
+            <div class="live-badge">LIVE</div>
+          </div>
+        </div>
+
+        <!-- Other participants in horizontal strip -->
+        ${otherParticipants.length > 0 ? html`
+          <div class="participant-strip">
+            ${otherParticipants.map(p => html`
+              <div class="strip-tile ${p.isSpeaking ? 'speaking' : ''}">
+                <div class="strip-avatar">
+                  ${p.displayName.charAt(0).toUpperCase()}
+                </div>
+                ${!p.micEnabled ? html`<div class="strip-muted">🔇</div>` : ''}
+              </div>
+            `)}
+          </div>
+        ` : ''}
+
+        <!-- Controls -->
+        <div class="controls">
+          <button
+            class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
+            @click=${this.toggleMic}
+            title="${this.micEnabled ? 'Mute' : 'Unmute'}"
+          >
+            ${this.micEnabled ? '🎤' : '🔇'}
+          </button>
+          <button
+            class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"
+            @click=${this.toggleCamera}
+            title="${this.cameraEnabled ? 'Turn off camera' : 'Turn on camera'}"
+          >
+            📷
+          </button>
+          <button
+            class="control-btn ${this.screenShareEnabled ? 'active' : 'inactive'}"
+            @click=${this.toggleScreenShare}
+            title="${this.screenShareEnabled ? 'Stop sharing' : 'Share screen'}"
+          >
+            🖥️
+          </button>
+          <button
+            class="control-btn leave"
+            @click=${this.handleLeave}
+            title="Leave"
+          >
+            📞
+          </button>
         </div>
       </div>
     `;

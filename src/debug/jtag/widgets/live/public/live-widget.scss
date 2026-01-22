@@ -24,22 +24,106 @@
 
 // ========================================
 // Participant Grid (Teams/Discord style)
+// Fills available space intelligently based on participant count
 // ========================================
 
 .participant-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: $spacing-sm;
   padding: $spacing-md;
-  overflow-y: auto;
+  overflow: hidden;
   align-content: center;
   justify-content: center;
+
+  // Default: fill space with reasonable min size
+  // CSS custom property --participant-count set via JS
+  // Uses CSS container queries for responsive behavior
+
+  // Single participant: full width
+  &[data-count="1"] {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  // 2 participants: side by side
+  &[data-count="2"] {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: 1fr;
+  }
+
+  // 3-4 participants: 2x2 grid
+  &[data-count="3"],
+  &[data-count="4"] {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+  }
+
+  // 5-6 participants: 3x2 grid
+  &[data-count="5"],
+  &[data-count="6"] {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+  }
+
+  // 7-9 participants: 3x3 grid
+  &[data-count="7"],
+  &[data-count="8"],
+  &[data-count="9"] {
+    grid-template-columns: repeat(3, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+  }
+
+  // 10-12 participants: 4x3 grid
+  &[data-count="10"],
+  &[data-count="11"],
+  &[data-count="12"] {
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+  }
+
+  // 13-16 participants: 4x4 grid
+  &[data-count="13"],
+  &[data-count="14"],
+  &[data-count="15"],
+  &[data-count="16"] {
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+  }
+
+  // 17-20 participants: 5x4 grid
+  &[data-count="17"],
+  &[data-count="18"],
+  &[data-count="19"],
+  &[data-count="20"] {
+    grid-template-columns: repeat(5, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+  }
+
+  // 21-25 participants: 5x5 grid
+  &[data-count="21"],
+  &[data-count="22"],
+  &[data-count="23"],
+  &[data-count="24"],
+  &[data-count="25"] {
+    grid-template-columns: repeat(5, 1fr);
+    grid-template-rows: repeat(5, 1fr);
+  }
+
+  // 26+ participants: scrollable grid
+  &[data-count="many"] {
+    grid-template-columns: repeat(6, 1fr);
+    grid-auto-rows: minmax(100px, 150px);
+    overflow-y: auto;
+    align-content: start;
+  }
 }
 
 // Individual participant tile
 .participant-tile {
-  aspect-ratio: 16/9;
+  // Fill grid cell, let grid control aspect ratio
+  min-height: 0;  // Allow shrinking
+  height: 100%;
   background: linear-gradient(135deg, #2a2a3a 0%, #1e1e2e 100%);
   border-radius: $border-radius-lg;
   display: flex;
@@ -60,18 +144,31 @@
 }
 
 // Participant avatar (when no video)
+// Colorful circular avatars like Discord/Teams
 .participant-avatar {
-  width: 80px;
-  height: 80px;
+  width: clamp(60px, 25%, 120px);  // Responsive sizing
+  aspect-ratio: 1;
   border-radius: 50%;
-  background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 2rem;
+  font-size: clamp(1.5rem, 5vw, 3rem);
   font-weight: 600;
-  color: $color-text;
+  color: white;
   text-transform: uppercase;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+
+  // Generate colorful backgrounds based on nth-child
+  // Creates variety like Discord's colored avatars
+  background: linear-gradient(135deg, #5865F2 0%, #3B42C8 100%);  // Discord blurple default
+
+  .participant-tile:nth-child(7n+1) & { background: linear-gradient(135deg, #ED4245 0%, #C73A3D 100%); }  // Red
+  .participant-tile:nth-child(7n+2) & { background: linear-gradient(135deg, #FEE75C 0%, #E8D54D 100%); color: #1a1a1a; }  // Yellow
+  .participant-tile:nth-child(7n+3) & { background: linear-gradient(135deg, #57F287 0%, #3FC76C 100%); }  // Green
+  .participant-tile:nth-child(7n+4) & { background: linear-gradient(135deg, #5865F2 0%, #3B42C8 100%); }  // Blurple
+  .participant-tile:nth-child(7n+5) & { background: linear-gradient(135deg, #EB459E 0%, #C73882 100%); }  // Fuchsia
+  .participant-tile:nth-child(7n+6) & { background: linear-gradient(135deg, #FA8231 0%, #D96F2A 100%); }  // Orange
+  .participant-tile:nth-child(7n+7) & { background: linear-gradient(135deg, #9B59B6 0%, #7D4899 100%); }  // Purple
 }
 
 // Participant video
@@ -270,4 +367,118 @@
   &.speaking {
     box-shadow: 0 0 0 2px $color-success;
   }
+}
+
+// ========================================
+// Spotlight Mode (screen share / presenter)
+// Main presenter takes center, others in strip
+// ========================================
+
+.spotlight-mode {
+  .spotlight-main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: $spacing-md;
+    min-height: 0;  // Allow flex shrink
+  }
+
+  .presenter-tile {
+    width: 100%;
+    height: 100%;
+    max-width: 1200px;
+    background: linear-gradient(135deg, #2a2a3a 0%, #1e1e2e 100%);
+    border-radius: $border-radius-lg;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .screen-share-placeholder {
+    font-size: 3rem;
+    color: $color-text-dim;
+    text-align: center;
+    padding: $spacing-xl;
+  }
+
+  .participant-avatar.large {
+    width: 160px;
+    height: 160px;
+    font-size: 4rem;
+  }
+
+  .live-badge {
+    position: absolute;
+    top: $spacing-md;
+    right: $spacing-md;
+    background: $color-error;
+    color: white;
+    padding: $spacing-xs $spacing-sm;
+    border-radius: $border-radius-sm;
+    font-size: $font-size-sm;
+    font-weight: 700;
+    animation: pulse 2s infinite;
+  }
+
+  // Horizontal strip for other participants (Discord Go Live style)
+  .participant-strip {
+    display: flex;
+    justify-content: center;
+    gap: $spacing-sm;
+    padding: $spacing-md;
+    background: #1e1e1e;
+    overflow-x: auto;
+
+    &::-webkit-scrollbar {
+      height: 4px;
+    }
+
+    &::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 2px;
+    }
+  }
+
+  .strip-tile {
+    position: relative;
+    width: 80px;
+    height: 80px;
+    border-radius: $border-radius-md;
+    background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all $transition-fast;
+
+    &:hover {
+      transform: scale(1.05);
+    }
+
+    &.speaking {
+      box-shadow: 0 0 0 3px $color-success;
+    }
+
+    .strip-avatar {
+      width: 48px;
+      height: 48px;
+      font-size: 1.5rem;
+    }
+
+    .strip-muted {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      font-size: 0.75rem;
+    }
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
