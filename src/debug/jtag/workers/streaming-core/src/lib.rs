@@ -70,14 +70,14 @@ pub mod mixer;
 pub mod pipeline;
 pub mod ring;
 pub mod stage;
-pub mod kokoro;  // Kokoro TTS inference (ONNX)
-pub mod stt;  // Speech-to-text (Whisper)
-pub mod tts;
+pub mod stt;  // Speech-to-text adapter system (Whisper, etc.)
+pub mod tts;  // Text-to-speech adapter system (Kokoro, etc.)
 pub mod ws_audio;
 
 // gRPC voice service (requires proto compilation)
-#[cfg(feature = "grpc")]
-pub mod voice_service;
+// TODO: Update voice_service to use new adapter system
+// #[cfg(feature = "grpc")]
+// pub mod voice_service;
 
 // Re-export main types at crate root
 pub use adapter::{AdapterError, InputAdapter, OutputAdapter};
@@ -105,10 +105,10 @@ pub use ws_audio::{
 };
 
 // Re-export TTS adapter types
-pub use tts::{
-    F5TTSAdapter, FishSpeechAdapter, KokoroAdapter, StyleTTS2Adapter, TTSAdapter,
-    TTSAdapterRegistry, TTSAudioChunk, TTSAudioStream, TTSError, TTSParams, XTTSv2Adapter,
-};
+pub use tts::{TextToSpeech, TTSRegistry, TTSError, SynthesisResult, VoiceInfo, KokoroTTS};
+
+// Re-export STT adapter types
+pub use stt::{SpeechToText, STTRegistry, STTError, TranscriptResult, TranscriptSegment, WhisperSTT};
 
 // Re-export mixer types
 pub use mixer::{AudioMixer, ParticipantStream};

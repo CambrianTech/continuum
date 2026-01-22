@@ -7,7 +7,7 @@
 //! This is the gRPC endpoint that TypeScript VoiceGrpcClient connects to.
 
 use crate::stt;
-use crate::tts::{TTSAdapterRegistry, TTSParams};
+use crate::tts;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -29,13 +29,15 @@ use voice_proto::{
 
 /// Voice service state
 pub struct VoiceServiceImpl {
-    tts_registry: Arc<RwLock<TTSAdapterRegistry>>,
+    // TODO: Update to new TTS adapter system
+    // tts_registry: Arc<RwLock<tts::TTSRegistry>>,
 }
 
 impl VoiceServiceImpl {
     pub fn new() -> Self {
         Self {
-            tts_registry: Arc::new(RwLock::new(TTSAdapterRegistry::with_defaults())),
+            // TODO: Update to new TTS adapter system
+            // tts_registry: tts::get_registry(),
         }
     }
 
@@ -264,11 +266,11 @@ impl VoiceService for VoiceServiceImpl {
             return Err(Status::invalid_argument("Audio cannot be empty"));
         }
 
-        // Check if Whisper is initialized
-        if !stt::is_whisper_initialized() {
-            error!("Whisper not initialized - model may not be loaded");
+        // Check if STT is initialized
+        if !stt::is_initialized() {
+            error!("STT adapter not initialized - model may not be loaded");
             return Err(Status::unavailable(
-                "Whisper model not loaded. Place ggml-base.en.bin in models/whisper/"
+                "STT model not loaded. Place ggml-base.en.bin in models/whisper/"
             ));
         }
 

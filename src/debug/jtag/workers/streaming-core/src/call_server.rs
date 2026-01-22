@@ -463,9 +463,9 @@ impl CallManager {
         display_name: String,
         samples: Vec<i16>,
     ) {
-        // Check if Whisper is initialized
-        if !stt::is_whisper_initialized() {
-            warn!("Whisper not initialized - skipping transcription");
+        // Check if STT is initialized
+        if !stt::is_initialized() {
+            warn!("STT adapter not initialized - skipping transcription");
             return;
         }
 

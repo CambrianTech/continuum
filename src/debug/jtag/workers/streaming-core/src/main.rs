@@ -14,8 +14,9 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 // Voice service (gRPC) - import from library
-#[cfg(feature = "grpc")]
-use streaming_core::voice_service::VoiceServiceImpl;
+// TODO: Update voice_service to use new adapter system
+// #[cfg(feature = "grpc")]
+// use streaming_core::voice_service::VoiceServiceImpl;
 
 /// Get gRPC port from environment or default
 fn get_grpc_port() -> u16 {
@@ -151,23 +152,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting streaming-core service");
 
-    // Initialize Whisper STT model (loads once, reused for all transcriptions)
-    // This runs synchronously at startup - model loading is ~1-2 seconds for base.en
-    match streaming_core::stt::init_whisper(None) {
-        Ok(_) => info!("Whisper STT initialized successfully"),
+    // Initialize STT registry and adapters
+    streaming_core::stt::init_registry();
+    match streaming_core::stt::initialize().await {
+        Ok(_) => info!("STT adapter initialized successfully"),
         Err(e) => {
-            tracing::warn!("Whisper STT not available: {}. STT will return errors until model is loaded.", e);
+            tracing::warn!("STT adapter not available: {}. STT will return errors until model is loaded.", e);
             tracing::warn!("Download ggml-base.en.bin from https://huggingface.co/ggerganov/whisper.cpp/tree/main");
             tracing::warn!("Place in: models/whisper/ggml-base.en.bin");
         }
     }
 
-    // Initialize Kokoro TTS model (loads once, reused for all synthesis)
-    // This is optional - TTS will fall back to silence if model not available
-    match streaming_core::kokoro::init_kokoro(None) {
-        Ok(_) => info!("Kokoro TTS initialized successfully"),
+    // Initialize TTS registry and adapters
+    streaming_core::tts::init_registry();
+    match streaming_core::tts::initialize().await {
+        Ok(_) => info!("TTS adapter initialized successfully"),
         Err(e) => {
-            tracing::warn!("Kokoro TTS not available: {}. TTS will use fallback (silence).", e);
+            tracing::warn!("TTS adapter not available: {}. TTS will use fallback (silence).", e);
             tracing::warn!("Download Kokoro ONNX from https://huggingface.co/hexgrad/Kokoro-82M");
             tracing::warn!("Place in: models/kokoro/kokoro-v0_19.onnx");
         }
@@ -186,6 +187,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Start gRPC server with voice service
+    // TODO: Update to new adapter system - gRPC service disabled for now
+    /*
     #[cfg(feature = "grpc")]
     {
         let grpc_port = get_grpc_port();
@@ -207,19 +210,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         // Wait for call server (the primary service)
-        // gRPC is optional - if it fails, we still have WebSocket
         let _ = call_server_handle.await;
 
         // If call server exits, also stop gRPC
         grpc_handle.abort();
     }
+    */
 
-    // Fallback if gRPC not enabled
-    #[cfg(not(feature = "grpc"))]
-    {
-        info!("gRPC feature not enabled, running WebSocket call server only");
-        let _ = call_server_handle.await;
-    }
+    // Run the call server (primary service)
+    info!("gRPC disabled (TODO: update to new adapter system), running WebSocket call server only");
+    let _ = call_server_handle.await;
 
     Ok(())
 }
