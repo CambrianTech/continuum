@@ -19,6 +19,7 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
+import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
 
 export class LiveJoinServerCommand extends LiveJoinCommand {
 
@@ -58,9 +59,25 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     if (!call) {
       call = await this.createCall(room.id, params);
       existed = false;
+
+      // NEW CALL: Add ALL room members as participants
+      // This ensures AI personas are in the call from the start
+      if (room.members && room.members.length > 0) {
+        const memberIds = room.members.map(m => m.userId);
+        const membersInfo = await this.lookupUsers(memberIds, params);
+
+        for (const memberUser of membersInfo) {
+          call.addParticipant(
+            memberUser.id as UUID,
+            memberUser.displayName || memberUser.uniqueId,
+            memberUser.avatar
+          );
+        }
+        console.log(`🎙️ LiveJoin: Added ${membersInfo.length} room members to call`);
+      }
     }
 
-    // 4. Add user as participant (if not already)
+    // 4. Add current user as participant (if not already in the call)
     const myParticipant = call.addParticipant(
       user.id,
       user.displayName,
@@ -75,6 +92,15 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       sessionId: call.id,
       participant: myParticipant
     });
+
+    // 7. Register with VoiceOrchestrator so AI participants can join the audio call
+    // This connects AI personas to the streaming-core call server
+    const allParticipantIds = call.getActiveParticipants().map(p => p.userId);
+    try {
+      await getVoiceOrchestrator().registerSession(call.id, allParticipantIds);
+    } catch (error) {
+      console.warn('Failed to register voice session:', error);
+    }
 
     return transformPayload(params, {
       success: true,
@@ -251,5 +277,25 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         sessionId: params.sessionId
       }
     );
+  }
+
+  /**
+   * Look up user info for a list of user IDs
+   */
+  private async lookupUsers(userIds: UUID[], params: LiveJoinParams): Promise<readonly UserEntity[]> {
+    if (userIds.length === 0) return [];
+
+    const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
+      DATA_COMMANDS.LIST,
+      {
+        collection: UserEntity.collection,
+        filter: { id: { $in: userIds } },
+        limit: userIds.length,
+        context: params.context,
+        sessionId: params.sessionId
+      }
+    );
+
+    return result.success && result.items ? result.items : [];
   }
 }

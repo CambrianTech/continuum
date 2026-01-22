@@ -145,7 +145,7 @@ export class VoiceOrchestrator {
             participants.push({
               userId: user.id as UUID,
               displayName: user.displayName || user.uniqueId,
-              type: user.userType as 'human' | 'persona' | 'agent',
+              type: user.type as 'human' | 'persona' | 'agent',
               expertise: (user.metadata as Record<string, unknown>)?.expertise as string[] | undefined
             });
           }

@@ -16,6 +16,7 @@ import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
+import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
 
 export class LiveLeaveServerCommand extends LiveLeaveCommand {
 
@@ -64,6 +65,15 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
 
     const remainingParticipants = call.getActiveParticipants().length;
     const callEnded = call.status === 'ended';
+
+    // 6. Unregister voice session if call ended
+    if (callEnded) {
+      try {
+        getVoiceOrchestrator().unregisterSession(call.id);
+      } catch (error) {
+        console.warn('Failed to unregister voice session:', error);
+      }
+    }
 
     return transformPayload(params, {
       success: true,

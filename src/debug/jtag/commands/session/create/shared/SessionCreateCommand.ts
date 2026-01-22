@@ -27,6 +27,7 @@ export abstract class SessionCreateCommand extends CommandBase<SessionCreatePara
 
     try {
       // Convert command params to session daemon params
+      // CRITICAL: Pass connectionContext for identity resolution!
       const sessionParams: CreateSessionParams = {
         context: createParams.context,
         sessionId: createParams.sessionId,
@@ -34,7 +35,8 @@ export abstract class SessionCreateCommand extends CommandBase<SessionCreatePara
         category: createParams.category,
         displayName: createParams.displayName,
         userId: createParams.userId ?? generateUUID(),
-        isShared: createParams.isShared ?? true
+        isShared: createParams.isShared ?? true,
+        connectionContext: createParams.connectionContext  // Pass through for clientType-aware identity
       };
 
       // Route to session daemon via router

@@ -477,6 +477,7 @@ export class SessionDaemonServer extends SessionDaemon {
           const clientType = enhancedContext?.clientType;
           const deviceId = enhancedContext?.identity?.deviceId;
 
+
           // For browser-ui: Use deviceId to find existing session (server owns user identity)
           if (clientType === 'browser-ui') {
             if (deviceId) {
@@ -488,25 +489,36 @@ export class SessionDaemonServer extends SessionDaemon {
               );
 
               if (existingSession) {
-                this.log.info(`✅ SessionDaemon: Found existing session for device ${deviceId.slice(0, 12)}...`);
-
-                // Reload user from database to get fresh state
+                // CRITICAL: Verify the session's user is a HUMAN, not an AI agent
+                // This can happen if the session was created when Claude Code was detected
                 try {
-                  existingSession.user = await this.getUserById(existingSession.userId);
-                } catch (error) {
-                  this.log.warn(`Failed to refresh user for session: ${error}`);
-                }
+                  const sessionUser = await this.getUserById(existingSession.userId);
+                  const userType = sessionUser?.entity?.userType;
 
-                return createPayload(params.context, existingSession.sessionId, {
-                  success: true,
-                  timestamp: new Date().toISOString(),
-                  operation: 'get',
-                  session: existingSession
-                });
+                  // If user is an AI agent (not human), discard session and create new
+                  if (userType === 'agent' || userType === 'persona') {
+                    this.log.warn(`⚠️ SessionDaemon: Session for device ${deviceId.slice(0, 12)}... has AI user (${sessionUser.displayName}) - discarding and creating human session`);
+                    // Mark old session as inactive
+                    existingSession.isActive = false;
+                    // Fall through to create new session
+                  } else {
+                    this.log.info(`✅ SessionDaemon: Found existing session for device ${deviceId.slice(0, 12)}... with human user ${sessionUser.displayName}`);
+                    existingSession.user = sessionUser;
+
+                    return createPayload(params.context, existingSession.sessionId, {
+                      success: true,
+                      timestamp: new Date().toISOString(),
+                      operation: 'get',
+                      session: existingSession
+                    });
+                  }
+                } catch (error) {
+                  this.log.warn(`Failed to verify user for session: ${error} - creating new session`);
+                }
               }
             }
-            // No existing session for this device - create new
-            this.log.info(`🆕 SessionDaemon: Creating new session for device ${deviceId?.slice(0, 12) || 'unknown'}...`);
+            // No valid existing session for this device - create new with human identity
+            this.log.info(`🆕 SessionDaemon: Creating new human session for device ${deviceId?.slice(0, 12) || 'unknown'}...`);
             return await this.createSession(params);
           }
 

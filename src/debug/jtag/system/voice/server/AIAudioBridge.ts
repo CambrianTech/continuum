@@ -15,6 +15,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Commands } from '../../core/shared/Commands';
 import type { VoiceTranscribeParams, VoiceTranscribeResult } from '../../../commands/voice/transcribe/shared/VoiceTranscribeTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { getVoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -285,8 +286,22 @@ export class AIAudioBridge {
       if (result.success && result.text && result.text.trim().length > 2) {
         console.log(`🤖 AIAudioBridge: ${connection.displayName} heard: "${result.text}"`);
 
-        // TODO: Route this to VoiceOrchestrator for persona processing
-        // For now, just log it
+        // Route transcription to VoiceOrchestrator for persona processing
+        // This triggers turn arbitration and routes to appropriate AI for response
+        const utteranceEvent: UtteranceEvent = {
+          sessionId: connection.callId as UUID,
+          speakerId: 'unknown-speaker' as UUID,  // We don't know who spoke (could be any participant)
+          speakerName: 'Participant',            // Generic name since we can't identify
+          speakerType: 'human',                  // Assume human spoke (AIs don't hear themselves)
+          transcript: result.text,
+          confidence: result.confidence ?? 0.8,
+          timestamp: Date.now()
+        };
+
+        // Route to orchestrator asynchronously (don't block audio processing)
+        getVoiceOrchestrator().onUtterance(utteranceEvent).catch(error => {
+          console.warn('🤖 AIAudioBridge: Failed to route utterance:', error);
+        });
       }
     } catch (error) {
       console.warn(`🤖 AIAudioBridge: STT error:`, error);
