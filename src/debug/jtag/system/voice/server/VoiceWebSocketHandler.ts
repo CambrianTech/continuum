@@ -15,6 +15,8 @@ import { Commands } from '@system/core/shared/Commands';
 import type { VoiceTranscribeParams, VoiceTranscribeResult } from '@commands/voice/transcribe/shared/VoiceTranscribeTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '@commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
+import { getVoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 // Audio configuration
 const SAMPLE_RATE = 16000;
@@ -188,7 +190,10 @@ export class VoiceWebSocketServer {
   /**
    * Process accumulated audio buffer
    *
-   * Flow: Audio → STT → Text → Chat Message → PersonaUser → Response → TTS → Audio
+   * Flow: Audio → STT → VoiceOrchestrator → PersonaInbox → PersonaUser → TTS → Audio
+   *
+   * Key change: Instead of posting to chat and waiting for events, we use VoiceOrchestrator
+   * which routes transcriptions through PersonaInbox with proper turn arbitration.
    */
   private async processAudioBuffer(connection: VoiceConnection): Promise<void> {
     // Concatenate buffered chunks
@@ -231,61 +236,26 @@ export class VoiceWebSocketServer {
         confidence: transcribeResult.confidence,
       });
 
-      // Step 2: Send text as chat message (this triggers PersonaUser to respond)
-      // We use the existing chat/send command which creates a message entity
-      // PersonaUser will automatically see it and respond
-      const chatResult = await Commands.execute<ChatSendParams, ChatSendResult>(
-        'collaboration/chat/send',
-        {
-          room: connection.roomId,
-          message: transcribedText,
-        }
-      );
+      // Step 2: Route through VoiceOrchestrator (replaces direct chat/send + event waiting)
+      // VoiceOrchestrator handles:
+      // - Turn arbitration (which AI responds)
+      // - Creating InboxMessage with sourceModality='voice'
+      // - Enqueueing to selected persona's inbox
+      // - TTS routing when response generated
+      const utteranceEvent: UtteranceEvent = {
+        sessionId: connection.roomId as UUID,
+        speakerId: connection.userId as UUID,
+        speakerName: 'User',  // TODO: Get from session
+        speakerType: 'human',
+        transcript: transcribedText,
+        confidence: transcribeResult.confidence || 0.9,
+        timestamp: Date.now()
+      };
 
-      if (!chatResult.success) {
-        console.error('🎤 Failed to send chat message:', chatResult.message);
-        return;
-      }
+      await getVoiceOrchestrator().onUtterance(utteranceEvent);
 
-      // Step 3: Wait for AI response (PersonaUser will respond automatically)
-      // We subscribe to the room's message events to catch the AI's response
-      const aiResponse = await this.waitForAIResponse(connection, chatResult.messageEntity.id);
-
-      if (!aiResponse) {
-        console.log('🎤 No AI response received');
-        return;
-      }
-
-      // Send AI response text to client
-      this.sendJson(connection.ws, {
-        type: 'ai_response',
-        text: aiResponse,
-      });
-
-      // Step 4: Synthesize AI response to audio via Rust TTS
-      console.log(`🎤 Synthesizing response: "${aiResponse.substring(0, 50)}..."`);
-
-      VoiceSessionManager.setAISpeaking(connection.handle, true);
-
-      const synthesizeResult = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
-        'voice/synthesize',
-        {
-          text: aiResponse,
-          adapter: 'kokoro', // Use best TTS
-        }
-      );
-
-      if (synthesizeResult.success && synthesizeResult.audio) {
-        // Decode base64 audio and send to client
-        const audioData = Buffer.from(synthesizeResult.audio, 'base64');
-        await this.sendAudioResponse(connection, audioData, synthesizeResult.sampleRate);
-      } else {
-        console.error('🎤 TTS synthesis failed:', synthesizeResult.error);
-        // Fall back to silence
-        await this.sendMockAudioResponse(connection);
-      }
-
-      VoiceSessionManager.setAISpeaking(connection.handle, false);
+      // Note: AI response will come back via VoiceOrchestrator.onPersonaResponse()
+      // which calls our TTS callback (set in startVoiceServer)
 
     } catch (error) {
       console.error('🎤 Voice processing error:', error);
@@ -450,6 +420,90 @@ export class VoiceWebSocketServer {
   get connectionCount(): number {
     return this.connections.size;
   }
+
+  /**
+   * Synthesize text to speech and send to all clients in a session
+   *
+   * Called by VoiceOrchestrator when a persona generates a voice response.
+   */
+  async synthesizeAndSendToSession(sessionId: UUID, personaId: UUID, text: string): Promise<void> {
+    // Find all connections in this session
+    const sessionConnections = Array.from(this.connections.values())
+      .filter(conn => conn.roomId === sessionId);
+
+    if (sessionConnections.length === 0) {
+      console.warn(`🎤 No connections found for session ${sessionId.slice(0, 8)}`);
+      return;
+    }
+
+    console.log(`🎤 Synthesizing for ${sessionConnections.length} clients: "${text.slice(0, 50)}..."`);
+
+    // Notify clients that AI is speaking
+    for (const conn of sessionConnections) {
+      this.sendJson(conn.ws, {
+        type: 'ai_response',
+        text,
+        personaId,
+      });
+    }
+
+    // Mark session as AI speaking
+    for (const conn of sessionConnections) {
+      VoiceSessionManager.setAISpeaking(conn.handle, true);
+    }
+
+    try {
+      // Synthesize via Rust TTS
+      const synthesizeResult = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
+        'voice/synthesize',
+        {
+          text,
+          adapter: 'kokoro',
+        }
+      );
+
+      if (synthesizeResult.success && synthesizeResult.audio) {
+        const audioData = Buffer.from(synthesizeResult.audio, 'base64');
+
+        // Send audio to all clients in session
+        await this.sendAudioToSession(sessionConnections, audioData, synthesizeResult.sampleRate);
+      } else {
+        console.error('🎤 TTS synthesis failed:', synthesizeResult.error);
+      }
+    } finally {
+      // Mark session as AI done speaking
+      for (const conn of sessionConnections) {
+        VoiceSessionManager.setAISpeaking(conn.handle, false);
+      }
+    }
+  }
+
+  /**
+   * Send audio data to all connections in a session
+   */
+  private async sendAudioToSession(
+    connections: VoiceConnection[],
+    audioData: Buffer,
+    sampleRate: number
+  ): Promise<void> {
+    const samplesPerChunk = Math.floor(sampleRate * CHUNK_DURATION_MS / 1000);
+    const bytesPerChunk = samplesPerChunk * BYTES_PER_SAMPLE;
+
+    for (let offset = 0; offset < audioData.length; offset += bytesPerChunk) {
+      const chunkEnd = Math.min(offset + bytesPerChunk, audioData.length);
+      const chunk = audioData.subarray(offset, chunkEnd);
+
+      // Send to all active connections
+      for (const conn of connections) {
+        if (conn.ws.readyState === WebSocket.OPEN) {
+          conn.ws.send(chunk);
+        }
+      }
+
+      // Pace audio playback
+      await this.delay(CHUNK_DURATION_MS);
+    }
+  }
 }
 
 // Singleton instance
@@ -471,5 +525,11 @@ export function getVoiceWebSocketServer(port?: number): VoiceWebSocketServer {
 export async function startVoiceServer(port: number = 3001): Promise<VoiceWebSocketServer> {
   const server = getVoiceWebSocketServer(port);
   await server.start();
+
+  // Wire up TTS callback so VoiceOrchestrator can route responses to audio
+  getVoiceOrchestrator().setTTSCallback(async (sessionId, personaId, text) => {
+    await server.synthesizeAndSendToSession(sessionId, personaId, text);
+  });
+
   return server;
 }

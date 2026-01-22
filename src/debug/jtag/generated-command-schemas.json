@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-21T21:21:14.207Z",
+  "generated": "2026-01-22T05:26:41.388Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3999,10 +3999,15 @@
       "name": "collaboration/live/join",
       "description": "Live Join Command Types\n *\n * Join a live audio/video call for a room.\n * Creates call if none exists, or joins existing.",
       "params": {
-        "roomId": {
+        "entityId": {
           "type": "string",
           "required": true,
-          "description": "roomId parameter"
+          "description": "entityId parameter"
+        },
+        "callerId": {
+          "type": "string",
+          "required": false,
+          "description": "callerId parameter"
         }
       }
     },

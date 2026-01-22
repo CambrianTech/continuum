@@ -35,6 +35,10 @@ export interface InboxMessage extends BaseQueueItem {
   senderName: string;        // Sender display name
   senderType: 'human' | 'persona' | 'agent' | 'system';  // Sender user type
   mentions?: boolean;        // True if persona mentioned by name
+
+  // Voice modality tracking for response routing
+  sourceModality?: 'text' | 'voice';   // Where input came from (default: 'text')
+  voiceSessionId?: UUID;               // Voice call context if applicable
 }
 
 /**

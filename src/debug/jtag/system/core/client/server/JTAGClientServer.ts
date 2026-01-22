@@ -32,11 +32,27 @@ import type { JTAGPayload, JTAGContext, JTAGMessage } from '../../types/JTAGType
 import type { JTAGResponsePayload } from '../../types/ResponseTypes';
 import type { UUID } from '../../types/CrossPlatformUUID';
 import { Events } from '../../shared/Events';
+import type { ClientType, ConnectionIdentity } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import { DEFAULT_USER_UNIQUE_IDS } from '../../../data/domains/DefaultEntities';
 
 export class JTAGClientServer extends JTAGClient {
+  // Explicit client type and identity for persona connections
+  // Set by UserDaemon when creating client for PersonaUser
+  private explicitClientType?: ClientType;
+  private explicitUserId?: UUID;
+
   constructor(context: JTAGContext) {
     super(context);
     // Session ID managed by base class - SessionDaemon will assign proper session
+  }
+
+  /**
+   * Set explicit client type for persona connections
+   * Called by UserDaemon when creating client for PersonaUser
+   */
+  public setExplicitClientType(clientType: ClientType, userId?: UUID): void {
+    this.explicitClientType = clientType;
+    this.explicitUserId = userId;
   }
 
   /**
@@ -82,6 +98,67 @@ export class JTAGClientServer extends JTAGClient {
    */
   protected async getTransportFactory(): Promise<ITransportFactory> {
     return new TransportFactoryServer(this.context);
+  }
+
+  // ========================================================================
+  // CLIENT TYPE & IDENTITY (Unified Client Identity Architecture)
+  // ========================================================================
+
+  /**
+   * Get client type for identity resolution
+   *
+   * Server clients can be:
+   * - persona: Set explicitly by UserDaemon for PersonaUser instances
+   * - agent: Detected via agentInfo (Claude Code, GPT, etc.)
+   * - cli: Default for human CLI users
+   */
+  protected getClientType(): ClientType {
+    // Explicit type set by UserDaemon for personas
+    if (this.explicitClientType) {
+      return this.explicitClientType;
+    }
+
+    // Agent detection for autonomous AI agents
+    const agentInfo = this.connectionContext?.agentInfo;
+    if (agentInfo?.detected && agentInfo.confidence > 0.5) {
+      return 'agent';
+    }
+
+    // Default: CLI user (human or AI-assisted)
+    return 'cli';
+  }
+
+  /**
+   * Get identity for server client types
+   *
+   * - persona: Returns explicit userId set by UserDaemon
+   * - agent: Returns uniqueId derived from agent name
+   * - cli: Returns CLI uniqueId constant
+   */
+  protected async getIdentityForClientType(clientType: ClientType): Promise<ConnectionIdentity> {
+    switch (clientType) {
+      case 'persona':
+        // Persona identity is set explicitly by UserDaemon
+        return {
+          userId: this.explicitUserId
+        };
+
+      case 'agent': {
+        // Agent identity from agent name
+        const agentName = this.connectionContext?.agentInfo?.name || 'unknown-agent';
+        const uniqueId = agentName.toLowerCase().replace(/\s+/g, '-');
+        return {
+          uniqueId
+        };
+      }
+
+      case 'cli':
+      default:
+        // CLI uses constant uniqueId
+        return {
+          uniqueId: DEFAULT_USER_UNIQUE_IDS.CLI_CLIENT
+        };
+    }
   }
 
   /**

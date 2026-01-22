@@ -23,12 +23,12 @@ import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 export class LiveJoinServerCommand extends LiveJoinCommand {
 
   protected async executeJoin(params: LiveJoinParams): Promise<LiveJoinResult> {
-    // 1. Resolve the room
-    const room = await this.resolveRoom(params.roomId, params);
+    // 1. Resolve the entity (room/activity)
+    const room = await this.resolveRoom(params.entityId, params);
     if (!room) {
       return transformPayload(params, {
         success: false,
-        message: `Room not found: ${params.roomId}`,
+        message: `Entity not found: ${params.entityId}`,
         session: null as any,
         sessionId: '' as UUID,
         existed: false,

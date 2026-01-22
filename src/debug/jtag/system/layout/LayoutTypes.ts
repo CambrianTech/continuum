@@ -80,11 +80,12 @@ export const GLOBAL_LAYOUT: LayoutConfig = {
  * These are MERGED with GLOBAL_LAYOUT - persistent widgets always appear
  */
 export const DEFAULT_LAYOUTS: Record<string, LayoutConfig> = {
-  // Chat layout - room list left, chat center, assistant right
+  // Chat layout - room list left, DMs below rooms, chat center, assistant right
   // (user-list-widget is global, no need to include here)
   'chat': {
     widgets: [
       { widget: 'room-list-widget', position: 'left', order: 0 },
+      { widget: 'dm-list-widget', position: 'left', order: 5 },
       { widget: 'chat-widget', position: 'center', order: 0 },
       { widget: 'chat-widget', position: 'right', order: 0, config: { room: 'help', compact: true } }
     ]

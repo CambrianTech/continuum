@@ -55,7 +55,7 @@ export class CollaborationLiveStartServerCommand extends CommandBase<Collaborati
     const joinResult = await Commands.execute<LiveJoinParams, LiveJoinResult>(
       COMMANDS.COLLABORATION_LIVE_JOIN,
       {
-        roomId: dmResult.room.id,
+        entityId: dmResult.room.id,
         context: params.context,
         sessionId: params.sessionId
       }

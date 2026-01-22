@@ -164,9 +164,7 @@ export abstract class CollaborativeActivityWidget<
 
   /** Get the current activity ID */
   get activityId(): UUID | null {
-    // Check attribute first (set by recipe/content system)
-    const attrId = this.getAttribute('activity-id') || this.getAttribute('entity-id');
-    return attrId || this._activityId;
+    return this._activityId;
   }
 
   /** Set the activity ID */
@@ -193,6 +191,27 @@ export abstract class CollaborativeActivityWidget<
   /** Get count of loaded operations */
   get operationCount(): number {
     return this.operations.length;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // MainWidget Integration
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Called by MainWidget when this widget is activated with an entityId.
+   * For collaborative activities, entityId is the activityId.
+   */
+  onActivate(entityId?: string, _metadata?: unknown): void {
+    if (entityId) {
+      this.activityId = entityId as UUID;
+    }
+  }
+
+  /**
+   * Alternative setter for MainWidget compatibility
+   */
+  setEntityId(entityId: string): void {
+    this.activityId = entityId as UUID;
   }
 
   // ─────────────────────────────────────────────────────────────────

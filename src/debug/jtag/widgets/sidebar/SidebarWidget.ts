@@ -153,7 +153,7 @@ export class SidebarWidget extends ReactiveWidget {
 
   protected override renderContent(): TemplateResult {
     // Minimal header: just floating collapse button
-    const dynamicWidget = this.renderDynamicWidget();
+    const dynamicWidgets = this.renderDynamicWidgets();
 
     return html`
       <button class="collapse-btn floating" title="Collapse panel" @click=${this.handleCollapse}>
@@ -162,7 +162,7 @@ export class SidebarWidget extends ReactiveWidget {
       <div class="panel-content full-height">
         <div class="sidebar-widgets">
           ${this.renderGlobalWidgetsBefore()}
-          ${dynamicWidget ? html`<div class="widget-slot widget-slot--dynamic">${dynamicWidget}</div>` : ''}
+          ${dynamicWidgets.map(w => html`<div class="widget-slot widget-slot--dynamic">${w}</div>`)}
           ${this.renderGlobalWidgetsAfter()}
         </div>
       </div>
@@ -198,21 +198,23 @@ export class SidebarWidget extends ReactiveWidget {
   }
 
   /**
-   * Render the dynamic widget (content-specific, swaps on navigation)
+   * Render all dynamic widgets (content-specific, swaps on navigation)
+   * Returns array to support multiple content-specific widgets like room-list + dm-list
    */
-  private renderDynamicWidget(): HTMLElement | null {
+  private renderDynamicWidgets(): HTMLElement[] {
     const isGlobal = (w: LayoutWidget) => GLOBAL_WIDGET_NAMES.has(w.widget);
-    const dynamicWidget = this.leftWidgets.find(w => !isGlobal(w));
+    const dynamicWidgets = this.leftWidgets.filter(w => !isGlobal(w));
 
-    if (!dynamicWidget) return null;
+    if (dynamicWidgets.length === 0) return [];
 
-    const newTag = dynamicWidget.widget;
-    if (newTag !== this._currentDynamicWidgetTag) {
-      this.verbose() && console.log(`📐 SidebarWidget: Dynamic widget changed: ${this._currentDynamicWidgetTag} → ${newTag}`);
-      this._currentDynamicWidgetTag = newTag;
+    // Track first dynamic widget for logging (backwards compat)
+    const firstTag = dynamicWidgets[0].widget;
+    if (firstTag !== this._currentDynamicWidgetTag) {
+      this.verbose() && console.log(`📐 SidebarWidget: Dynamic widgets changed: ${this._currentDynamicWidgetTag} → ${dynamicWidgets.map(w => w.widget).join(', ')}`);
+      this._currentDynamicWidgetTag = firstTag;
     }
 
-    return this.getOrCreateWidget(dynamicWidget);
+    return dynamicWidgets.map(w => this.getOrCreateWidget(w));
   }
 
   /**

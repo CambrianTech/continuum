@@ -225,7 +225,11 @@ export class PersonaAutonomousLoop {
         senderDisplayName: item.senderName,
         status: 'delivered',
         priority: item.priority,
-        metadata: {},
+        // Pass through voice modality for TTS routing
+        metadata: {
+          sourceModality: item.sourceModality,      // 'text' | 'voice'
+          voiceSessionId: item.voiceSessionId        // UUID if voice
+        },
         reactions: [],
         attachments: [],
         mentions: [],

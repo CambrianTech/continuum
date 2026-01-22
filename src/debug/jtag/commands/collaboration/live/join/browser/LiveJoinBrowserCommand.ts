@@ -9,8 +9,8 @@ import type { LiveJoinParams, LiveJoinResult } from '../shared/LiveJoinTypes';
 
 export class LiveJoinBrowserCommand extends LiveJoinCommand {
 
-  protected async executeJoin(_params: LiveJoinParams): Promise<LiveJoinResult> {
-    // Browser delegates to server - command routing handles this automatically
-    throw new Error('live/join command must run on server');
+  protected async executeJoin(params: LiveJoinParams): Promise<LiveJoinResult> {
+    // Delegate to server
+    return await this.remoteExecute(params);
   }
 }

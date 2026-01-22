@@ -11,9 +11,14 @@ import type { CallEntity, CallParticipant } from '@system/data/entities/CallEnti
 
 export interface LiveJoinParams extends CommandParams {
   /**
-   * Room to join live call for (UUID or uniqueId)
+   * Entity (room/activity) to join live call for (UUID or uniqueId)
    */
-  roomId: string;
+  entityId: string;
+
+  /**
+   * ID of the user joining the call (browser passes this to identify the logged-in user)
+   */
+  callerId?: UUID;
 }
 
 export interface LiveJoinResult extends CommandResult {

@@ -39,6 +39,10 @@ futures-util.workspace = true
 # Random (for test audio generation)
 rand.workspace = true
 
+# Audio processing
+hound = "3.5"  # WAV file reading/writing
+once_cell = "1.19"  # Lazy static initialization
+
 # TypeScript type generation
 ts-rs.workspace = true
 

@@ -8,6 +8,7 @@ use crate::mixer::{AudioMixer, ParticipantStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -15,6 +16,40 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use ts_rs::TS;
+use once_cell::sync::Lazy;
+
+/// Embedded hold music WAV file (16kHz, mono, 16-bit)
+static HOLD_MUSIC_WAV: &[u8] = include_bytes!("../assets/hold-music.wav");
+
+/// Pre-decoded hold music samples (lazy loaded once on first use)
+static HOLD_MUSIC_SAMPLES: Lazy<Vec<i16>> = Lazy::new(|| {
+    let cursor = Cursor::new(HOLD_MUSIC_WAV);
+    match hound::WavReader::new(cursor) {
+        Ok(mut reader) => {
+            let samples: Vec<i16> = reader
+                .samples::<i16>()
+                .filter_map(|s| s.ok())
+                .collect();
+            info!("Loaded hold music: {} samples ({:.1}s at 16kHz)",
+                  samples.len(), samples.len() as f32 / 16000.0);
+            samples
+        }
+        Err(e) => {
+            error!("Failed to decode hold music WAV: {}", e);
+            Vec::new()
+        }
+    }
+});
+
+/// Check if audio samples are effectively silence (RMS below threshold)
+fn is_silence(samples: &[i16]) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+    let sum_squares: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
+    let rms = (sum_squares / samples.len() as f64).sqrt();
+    rms < 50.0  // Very low threshold - basically only true silence
+}
 
 /// Message types for call protocol
 /// TypeScript types are generated via `cargo test -p streaming-core export_types`
@@ -60,7 +95,26 @@ pub enum CallMessage {
     },
 }
 
-/// A single call instance
+/// Audio stream configuration
+#[derive(Debug, Clone)]
+pub struct AudioConfig {
+    pub sample_rate: u32,
+    pub frame_size: usize,
+    pub frame_duration_ms: u64,
+}
+
+impl Default for AudioConfig {
+    fn default() -> Self {
+        // 512 samples at 16kHz = 32ms per frame
+        Self {
+            sample_rate: 16000,
+            frame_size: 512,
+            frame_duration_ms: 32,
+        }
+    }
+}
+
+/// A single call instance with server-driven audio clock
 pub struct Call {
     pub id: String,
     pub mixer: AudioMixer,
@@ -68,6 +122,12 @@ pub struct Call {
     pub audio_tx: broadcast::Sender<(Handle, Vec<i16>)>,
     /// Total samples processed (for stats)
     pub samples_processed: u64,
+    /// Current position in hold music (sample index)
+    hold_music_position: usize,
+    /// Audio configuration
+    pub config: AudioConfig,
+    /// Shutdown signal for the audio loop
+    shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
 impl Call {
@@ -78,31 +138,76 @@ impl Call {
             mixer: AudioMixer::default_voice(),
             audio_tx,
             samples_processed: 0,
+            hold_music_position: 0,
+            config: AudioConfig::default(),
+            shutdown_tx: None,
         }
     }
 
-    /// Process incoming audio and broadcast mix-minus to all participants
-    pub fn process_audio(&mut self, from_handle: &Handle, samples: Vec<i16>) {
-        // Update the participant's audio buffer
-        self.mixer.push_audio(from_handle, samples);
-        self.samples_processed += 320; // Frame size
+    /// Generate hold music from pre-decoded samples
+    fn generate_hold_tone(&mut self, frame_size: usize) -> Vec<i16> {
+        let samples = &*HOLD_MUSIC_SAMPLES;
 
-        // Generate mix-minus for all participants
+        if samples.is_empty() {
+            return vec![0i16; frame_size];
+        }
+
+        let total_len = samples.len();
+        let mut output = Vec::with_capacity(frame_size);
+
+        for i in 0..frame_size {
+            let idx = (self.hold_music_position + i) % total_len;
+            output.push(samples[idx]);
+        }
+
+        self.hold_music_position = (self.hold_music_position + frame_size) % total_len;
+        output
+    }
+
+    /// Update incoming audio from a participant (doesn't send anything)
+    pub fn push_audio(&mut self, from_handle: &Handle, samples: Vec<i16>) {
+        self.mixer.push_audio(from_handle, samples);
+    }
+
+    /// Generate one frame of mixed audio for all participants (called by audio loop)
+    pub fn tick(&mut self) -> Vec<(Handle, Vec<i16>)> {
+        let frame_size = self.config.frame_size;
+        self.samples_processed += frame_size as u64;
+
+        let is_alone = self.mixer.participant_count() == 1;
         let mixes = self.mixer.mix_minus_all();
 
-        // Broadcast to all
-        for (handle, mixed_audio) in mixes {
-            // Ignore send errors (receiver might have dropped)
-            let _ = self.audio_tx.send((handle, mixed_audio));
+        mixes.into_iter().map(|(handle, mixed_audio)| {
+            // If alone, mix in hold tone
+            let audio = if is_alone && is_silence(&mixed_audio) {
+                self.generate_hold_tone(frame_size)
+            } else {
+                mixed_audio
+            };
+            (handle, audio)
+        }).collect()
+    }
+
+    /// Set shutdown sender (called by CallManager when starting audio loop)
+    pub fn set_shutdown(&mut self, tx: mpsc::Sender<()>) {
+        self.shutdown_tx = Some(tx);
+    }
+
+    /// Signal shutdown
+    pub async fn shutdown(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(()).await;
         }
     }
 }
 
-/// Call manager - tracks all active calls
+/// Call manager - tracks all active calls with server-driven audio loops
 pub struct CallManager {
     calls: RwLock<HashMap<String, Arc<RwLock<Call>>>>,
     /// Map participant handle to call ID
     participant_calls: RwLock<HashMap<Handle, String>>,
+    /// Track running audio loops
+    audio_loops: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl CallManager {
@@ -110,18 +215,99 @@ impl CallManager {
         Self {
             calls: RwLock::new(HashMap::new()),
             participant_calls: RwLock::new(HashMap::new()),
+            audio_loops: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Get or create a call
-    pub async fn get_or_create_call(&self, call_id: &str) -> Arc<RwLock<Call>> {
+    /// Get or create a call, starting audio loop if new
+    async fn get_or_create_call(&self, call_id: &str) -> Arc<RwLock<Call>> {
         let mut calls = self.calls.write().await;
         if let Some(call) = calls.get(call_id) {
             call.clone()
         } else {
             let call = Arc::new(RwLock::new(Call::new(call_id.to_string())));
             calls.insert(call_id.to_string(), call.clone());
+
+            // Start server-driven audio loop for this call
+            self.start_audio_loop(call_id.to_string(), call.clone()).await;
+
             call
+        }
+    }
+
+    /// Start the server-driven audio loop (sends audio at fixed intervals)
+    async fn start_audio_loop(&self, call_id: String, call: Arc<RwLock<Call>>) {
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+        // Configure call with shutdown signal
+        {
+            let mut c = call.write().await;
+            c.set_shutdown(shutdown_tx);
+        }
+
+        // Get config once
+        let frame_duration_ms = {
+            let c = call.read().await;
+            c.config.frame_duration_ms
+        };
+
+        let call_clone = call.clone();
+        let call_id_clone = call_id.clone();
+
+        // Spawn the audio loop task
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                tokio::time::Duration::from_millis(frame_duration_ms)
+            );
+
+            info!("Audio loop started for call {} ({}ms frames)", call_id_clone, frame_duration_ms);
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let mut c = call_clone.write().await;
+
+                        // Only tick if there are participants
+                        if c.mixer.participant_count() == 0 {
+                            continue;
+                        }
+
+                        // Generate mixed audio for all participants
+                        let mixes = c.tick();
+
+                        // Broadcast to all
+                        for (handle, audio) in mixes {
+                            let _ = c.audio_tx.send((handle, audio));
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("Audio loop shutdown for call {}", call_id_clone);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Track the loop
+        let mut loops = self.audio_loops.write().await;
+        loops.insert(call_id, handle);
+    }
+
+    /// Stop audio loop for a call
+    async fn stop_audio_loop(&self, call_id: &str) {
+        // Signal shutdown
+        {
+            let calls = self.calls.read().await;
+            if let Some(call) = calls.get(call_id) {
+                let mut c = call.write().await;
+                c.shutdown().await;
+            }
+        }
+
+        // Remove and abort the task
+        let mut loops = self.audio_loops.write().await;
+        if let Some(handle) = loops.remove(call_id) {
+            handle.abort();
         }
     }
 
@@ -166,18 +352,32 @@ impl CallManager {
         };
 
         if let Some(call_id) = call_id {
-            let calls = self.calls.read().await;
-            if let Some(call) = calls.get(&call_id) {
-                let mut call = call.write().await;
-                if let Some(stream) = call.mixer.remove_participant(handle) {
-                    info!("Participant {} ({}) left call {}", stream.display_name, handle.short(), call_id);
+            let should_cleanup = {
+                let calls = self.calls.read().await;
+                if let Some(call) = calls.get(&call_id) {
+                    let mut call = call.write().await;
+                    if let Some(stream) = call.mixer.remove_participant(handle) {
+                        info!("Participant {} ({}) left call {}", stream.display_name, handle.short(), call_id);
+                    }
+                    // Check if call is now empty
+                    call.mixer.participant_count() == 0
+                } else {
+                    false
                 }
+            };
+
+            // Cleanup empty call
+            if should_cleanup {
+                self.stop_audio_loop(&call_id).await;
+                let mut calls = self.calls.write().await;
+                calls.remove(&call_id);
+                info!("Call {} cleaned up (no participants)", call_id);
             }
         }
     }
 
-    /// Process audio from a participant
-    pub async fn process_audio(&self, handle: &Handle, samples: Vec<i16>) {
+    /// Push audio from a participant (buffered, mixed by audio loop)
+    pub async fn push_audio(&self, handle: &Handle, samples: Vec<i16>) {
         let call_id = {
             let participant_calls = self.participant_calls.read().await;
             participant_calls.get(handle).cloned()
@@ -187,7 +387,7 @@ impl CallManager {
             let calls = self.calls.read().await;
             if let Some(call) = calls.get(&call_id) {
                 let mut call = call.write().await;
-                call.process_audio(handle, samples);
+                call.push_audio(handle, samples);
             }
         }
     }
@@ -304,7 +504,7 @@ async fn handle_connection(
                             Ok(CallMessage::Audio { data }) => {
                                 if let Some(handle) = &participant_handle {
                                     if let Some(samples) = base64_decode_i16(&data) {
-                                        manager.process_audio(handle, samples).await;
+                                        manager.push_audio(handle, samples).await;
                                     }
                                 }
                             }
@@ -325,7 +525,7 @@ async fn handle_connection(
                         // Binary audio data (raw i16 PCM, little-endian)
                         if let Some(handle) = &participant_handle {
                             let samples = bytes_to_i16(&data);
-                            manager.process_audio(handle, samples).await;
+                            manager.push_audio(handle, samples).await;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
@@ -513,11 +713,14 @@ mod tests {
         let stats = manager.get_stats(&handle_a).await;
         assert_eq!(stats.unwrap().0, 2);
 
-        // Process audio from Alice
+        // Push audio from Alice (buffered, mixed by audio loop)
         let audio = generate_sine_wave(440.0, 16000, 320);
-        manager.process_audio(&handle_a, audio).await;
+        manager.push_audio(&handle_a, audio).await;
 
-        // Check samples processed
+        // Give audio loop time to tick
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Check samples processed (audio loop should have ticked)
         let stats = manager.get_stats(&handle_a).await;
         assert!(stats.unwrap().1 > 0);
 

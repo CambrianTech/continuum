@@ -386,12 +386,15 @@ $ai-statuses: (
 // Controls
 .user-controls {
   display: none;
+  gap: 4px;
+  align-items: center;
 }
 
 .user-item:hover .user-controls {
-  opacity: 1;
+  display: flex;
 }
 
+.user-call-btn,
 .user-favorite-btn,
 .user-action-btn {
   background: transparent;
@@ -408,6 +411,11 @@ $ai-statuses: (
     background: var(--border-subtle);
     color: var(--content-primary);
   }
+}
+
+.user-call-btn:hover {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
 }
 
 // Status indicator - Discord-style overlay on avatar

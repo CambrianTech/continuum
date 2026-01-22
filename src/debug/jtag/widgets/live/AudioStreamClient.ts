@@ -17,7 +17,7 @@ interface AudioStreamClientOptions {
   serverUrl?: string;
   /** Sample rate for audio (default: 16000) */
   sampleRate?: number;
-  /** Frame size in samples (default: 320 = 20ms at 16kHz) */
+  /** Frame size in samples (default: 512 - must be power of 2 for Web Audio API) */
   frameSize?: number;
   /** Callback when participant joins */
   onParticipantJoined?: (userId: string, displayName: string) => void;
@@ -34,6 +34,7 @@ export class AudioStreamClient {
   private processorNode: ScriptProcessorNode | null = null;
   private playbackQueue: Float32Array[] = [];
   private isPlaying = false;
+  private nextPlaybackTime = 0; // Scheduled playback time for seamless audio
 
   // Max queue depth to prevent memory growth in long sessions
   // At 20ms per frame, 50 frames = 1 second of buffer
@@ -51,7 +52,7 @@ export class AudioStreamClient {
   constructor(options: AudioStreamClientOptions = {}) {
     this.serverUrl = options.serverUrl || 'ws://127.0.0.1:50053';
     this.sampleRate = options.sampleRate || 16000;
-    this.frameSize = options.frameSize || 320;
+    this.frameSize = options.frameSize || 512;  // Must be power of 2 for Web Audio API
     this.options = options;
   }
 
@@ -259,36 +260,49 @@ export class AudioStreamClient {
   }
 
   /**
-   * Process playback queue
+   * Process playback queue with scheduled timing for seamless audio
+   *
+   * Uses AudioContext.currentTime to schedule buffers back-to-back
+   * without gaps. This is the correct way to handle streaming audio.
    */
   private processPlaybackQueue(): void {
-    if (this.isPlaying || this.playbackQueue.length === 0) return;
+    if (this.playbackQueue.length === 0) return;
     if (!this.audioContext) {
       this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
     }
 
-    this.isPlaying = true;
+    // Ensure audioContext is running (needed after user interaction)
+    if (this.audioContext.state === 'suspended') {
+      this.audioContext.resume();
+    }
 
-    const playNext = (): void => {
-      const samples = this.playbackQueue.shift();
-      if (!samples || !this.audioContext) {
-        this.isPlaying = false;
-        return;
-      }
+    // Initialize nextPlaybackTime if not set or if we've fallen behind
+    const now = this.audioContext.currentTime;
+    if (this.nextPlaybackTime < now) {
+      // Add small buffer (50ms) to prevent underrun
+      this.nextPlaybackTime = now + 0.05;
+    }
+
+    // Schedule all queued buffers
+    while (this.playbackQueue.length > 0) {
+      const samples = this.playbackQueue.shift()!;
 
       // Create audio buffer
       const buffer = this.audioContext.createBuffer(1, samples.length, this.sampleRate);
       buffer.getChannelData(0).set(samples);
 
-      // Play buffer
+      // Calculate duration of this buffer
+      const duration = samples.length / this.sampleRate;
+
+      // Schedule to play at exact time (seamless)
       const source = this.audioContext.createBufferSource();
       source.buffer = buffer;
       source.connect(this.audioContext.destination);
-      source.onended = playNext;
-      source.start();
-    };
+      source.start(this.nextPlaybackTime);
 
-    playNext();
+      // Update next playback time for perfect continuity
+      this.nextPlaybackTime += duration;
+    }
   }
 
   /**
@@ -309,6 +323,7 @@ export class AudioStreamClient {
 
     this.playbackQueue = [];
     this.isPlaying = false;
+    this.nextPlaybackTime = 0;
     this.callId = null;
     this.userId = null;
     this.displayName = null;

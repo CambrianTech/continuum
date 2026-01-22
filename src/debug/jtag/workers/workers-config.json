@@ -76,6 +76,14 @@
       "args": [],
       "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
       "enabled": true
+    },
+    {
+      "name": "streaming-core",
+      "binary": "workers/target/release/streaming-core",
+      "type": "tcp",
+      "port": 50053,
+      "description": "WebSocket audio/video call server with mix-minus and hold music",
+      "enabled": true
     }
   ],
   "sharedSockets": [

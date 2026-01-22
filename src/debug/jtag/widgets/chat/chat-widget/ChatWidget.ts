@@ -924,6 +924,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Setup error toggle handler
     this.setupErrorToggleHandler();
 
+    // Setup call button handler
+    this.setupCallButtonHandler();
+
     // Setup member click handlers (for initial HTML-rendered chips)
     this.setupMemberClickHandlers();
 
@@ -1096,6 +1099,13 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       <div class="entity-list-header">
         <div class="header-top">
           <span class="header-title">${headerText}</span>
+          <button
+            class="call-btn"
+            id="callBtn"
+            title="Start voice call"
+          >
+            📞
+          </button>
           <button
             class="error-toggle ${!this.errorsHidden ? 'pressed' : ''}"
             id="errorToggle"
@@ -1399,6 +1409,32 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
 
     toggleButton.addEventListener('click', () => {
       this.toggleErrorPanel();
+    });
+  }
+
+  /**
+   * Setup click handler for call button - starts voice call in current room
+   */
+  private setupCallButtonHandler(): void {
+    const callButton = this.shadowRoot?.getElementById('callBtn');
+    if (!callButton) return;
+
+    callButton.addEventListener('click', async () => {
+      if (!this.currentRoomId) {
+        console.warn('ChatWidget: No room to start call in');
+        return;
+      }
+
+      // Navigate to live view with this room's entity ID
+      // This triggers main-widget to show the LiveWidget for this room
+      console.log(`📞 ChatWidget: Starting call in room ${this.currentRoomId} (${this.currentRoomName})`);
+
+      // Emit navigation event to switch to live view
+      Events.emit('navigate:live', {
+        entityId: this.currentRoomId,
+        entityType: 'room',
+        displayName: this.currentRoomName || 'Live Call'
+      });
     });
   }
 

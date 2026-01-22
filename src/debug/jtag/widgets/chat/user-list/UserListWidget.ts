@@ -261,6 +261,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
           ${intelligenceLevel > 0 ? unsafeHTML(this.renderIntelligenceBars(intelligenceLevel, ragCertified)) : nothing}
         </div>
         <div class="user-controls">
+          <button class="user-call-btn" title="Start voice call" @click=${(e: Event) => this.handleCallClick(e, user)}>📞</button>
           <button class="user-favorite-btn" title="Add to favorites" @click=${(e: Event) => this.handleFavoriteClick(e, user.id)}>⭐</button>
           <button class="user-action-btn" title="Actions" @click=${(e: Event) => this.handleActionClick(e, user.id)}>»</button>
         </div>
@@ -436,6 +437,19 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
   private handleActionClick(e: Event, userId: string): void {
     e.stopPropagation();
     verbose() && console.log(`» UserListWidget: Show action menu for user ${userId}`);
+  }
+
+  private handleCallClick(e: Event, user: UserEntity): void {
+    e.stopPropagation();
+    console.log(`📞 UserListWidget: Starting call with user ${user.displayName} (${user.id})`);
+
+    // For now, use "general" room for all calls
+    // TODO: Create DM room for 1:1 calls with specific user
+    Events.emit('navigate:live', {
+      entityId: 'general',  // Use general room - live/join will resolve by uniqueId
+      entityType: 'room',
+      displayName: `Call with ${user.displayName}`
+    });
   }
 
   private openUserProfile(userEntity: UserEntity): void {

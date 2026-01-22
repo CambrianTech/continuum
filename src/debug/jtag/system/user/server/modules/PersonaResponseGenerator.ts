@@ -53,6 +53,7 @@ import { ResponseCleaner } from './ResponseCleaner';
 import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
+import type { InboxMessage } from './QueueItemTypes';
 
 /**
  * Response generation result
@@ -1498,6 +1499,28 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           {
             scope: EVENT_SCOPES.ROOM,
             scopeId: originalMessage.roomId
+          }
+        );
+      }
+
+      // VOICE ROUTING: If original message was from voice, route response to TTS
+      // The VoiceOrchestrator listens for this event and sends to TTS
+      if (originalMessage.metadata?.sourceModality === 'voice' && originalMessage.metadata?.voiceSessionId) {
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing`);
+
+        // Emit voice response event for VoiceOrchestrator
+        await Events.emit(
+          DataDaemon.jtagContext!,
+          'persona:response:generated',
+          {
+            personaId: this.personaId,
+            response: aiResponse.text.trim(),
+            originalMessage: {
+              id: originalMessage.id,
+              roomId: originalMessage.roomId,
+              sourceModality: 'voice',
+              voiceSessionId: originalMessage.metadata.voiceSessionId
+            } as InboxMessage
           }
         );
       }

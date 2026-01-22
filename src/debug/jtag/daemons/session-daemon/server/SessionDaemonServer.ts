@@ -35,6 +35,8 @@ import {
   type ListSessionsResult,
   type DestroySessionParams,
   type DestroySessionResult,
+  type EnhancedConnectionContext,
+  type ClientType,
 } from '../shared/SessionTypes';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
@@ -336,6 +338,30 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     /**
+     * Find existing user by deviceId (browser device identification)
+     *
+     * The deviceId → userId mapping is stored in session metadata.
+     * If we find a session with this deviceId, return its user.
+     */
+    private async findUserByDeviceId(deviceId: string): Promise<BaseUser | null> {
+      // Look for existing session with this deviceId
+      const existingSession = this.sessions.find(s =>
+        (s as any).deviceId === deviceId
+      );
+
+      if (existingSession) {
+        try {
+          return await this.getUserById(existingSession.userId);
+        } catch {
+          // User was deleted, session is stale
+          return null;
+        }
+      }
+
+      return null;
+    }
+
+    /**
      * Load existing user (citizen) by ID
      */
     private async getUserById(userId: UUID): Promise<BaseUser> {
@@ -387,6 +413,30 @@ export class SessionDaemonServer extends SessionDaemon {
      * Create User object with entity and state
      * Uses UserIdentityResolver + UserFactory to detect, lookup, or create user
      */
+    /**
+     * Create anonymous human user for browser-ui clients
+     *
+     * This is called when a browser connects for the first time without
+     * an existing userId in localStorage. Creates a human user that can
+     * later be upgraded with proper authentication (login, passkey, etc.)
+     */
+    private async createAnonymousHuman(params: CreateSessionParams, deviceId?: string): Promise<BaseUser> {
+      const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
+        type: 'human',
+        displayName: 'Anonymous User',
+        uniqueId: `anon-${generateUUID().slice(0, 8)}`,  // Unique but not meant for lookup
+        shortName: 'anon',
+        bio: 'Anonymous browser user',
+        avatar: undefined,
+        provider: 'browser'
+      });
+
+      const user = await UserFactory.create(createParams, this.context, this.router);
+      this.log.info(`✅ SessionDaemon: Created anonymous human user: ${user.entity.id.slice(0, 8)}... (deviceId: ${deviceId?.slice(0, 12) || 'none'})`);
+
+      return user;
+    }
+
     private async createUser(params: CreateSessionParams): Promise<BaseUser> {
       // Use UserIdentityResolver to detect identity and lookup existing user BEFORE creating
       const resolvedIdentity = await UserIdentityResolver.resolve();
@@ -422,13 +472,52 @@ export class SessionDaemonServer extends SessionDaemon {
 
     public async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
         if (params.isShared) {
-          // Check for existing shared session
-          const existingSession = this.sessions.find(s => s.isShared && s.isActive);
-          if (existingSession) {
-            this.log.info(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
+          // Extract identity from enhanced connection context
+          const enhancedContext = params.connectionContext as EnhancedConnectionContext | undefined;
+          const clientType = enhancedContext?.clientType;
+          const deviceId = enhancedContext?.identity?.deviceId;
 
-            // IMPORTANT: Reload user from database to get fresh state (not stale cached version)
-            // This ensures browser gets current contentState, preferences, etc.
+          // For browser-ui: Use deviceId to find existing session (server owns user identity)
+          if (clientType === 'browser-ui') {
+            if (deviceId) {
+              // Look for existing session with this deviceId
+              const existingSession = this.sessions.find(s =>
+                s.isShared &&
+                s.isActive &&
+                (s as any).deviceId === deviceId  // Session stores deviceId
+              );
+
+              if (existingSession) {
+                this.log.info(`✅ SessionDaemon: Found existing session for device ${deviceId.slice(0, 12)}...`);
+
+                // Reload user from database to get fresh state
+                try {
+                  existingSession.user = await this.getUserById(existingSession.userId);
+                } catch (error) {
+                  this.log.warn(`Failed to refresh user for session: ${error}`);
+                }
+
+                return createPayload(params.context, existingSession.sessionId, {
+                  success: true,
+                  timestamp: new Date().toISOString(),
+                  operation: 'get',
+                  session: existingSession
+                });
+              }
+            }
+            // No existing session for this device - create new
+            this.log.info(`🆕 SessionDaemon: Creating new session for device ${deviceId?.slice(0, 12) || 'unknown'}...`);
+            return await this.createSession(params);
+          }
+
+          // For CLI/agent/persona: Use userId or uniqueId as before
+          const requestedUserId = enhancedContext?.identity?.userId;
+          const existingSession = requestedUserId
+            ? this.sessions.find(s => s.isShared && s.isActive && s.userId === requestedUserId)
+            : null;
+
+          if (existingSession) {
+            this.log.info(`✅ SessionDaemon: Reusing existing session for user ${existingSession.userId.slice(0, 8)}...`);
             try {
               existingSession.user = await this.getUserById(existingSession.userId);
             } catch (error) {
@@ -442,38 +531,125 @@ export class SessionDaemonServer extends SessionDaemon {
               session: existingSession
             });
           }
-          this.log.info(`🆕 SessionDaemon: No existing valid shared session found, creating new one`);
+          this.log.info(`🆕 SessionDaemon: No matching session found, creating new one`);
         }
         return await this.createSession(params);
     }
 
     private async createSession(params: CreateSessionParams): Promise<CreateSessionResult> {
-      // console.debug(`⚡ ${this.toString()}: Creating new session:`, params);
-
       // Always generate a new UUID for actual sessions - never use bootstrap IDs
       const actualSessionId = isBootstrapSession(params.sessionId) ? generateUUID() : params.sessionId;
 
-      // Get or create User (citizen) - sessions link to existing citizens, don't create duplicates
-      // Priority: uniqueId (for agents) > userId (for browser persistence) > create new citizen
+      // ========================================================================
+      // CLIENT TYPE-AWARE IDENTITY RESOLUTION
+      // ========================================================================
+      // Key insight: clientType determines HOW to resolve identity
+      // - browser-ui: Use identity.userId (human), NEVER use agent detection
+      // - cli: Use identity.uniqueId (@cli)
+      // - persona: Use identity.userId (must exist in DB)
+      // - agent: Use identity.uniqueId (claude-code, gpt-4, etc.)
+      // ========================================================================
+
+      const enhancedContext = params.connectionContext as EnhancedConnectionContext | undefined;
+      const clientType: ClientType = enhancedContext?.clientType || 'cli';
+      const identity = enhancedContext?.identity;
+      const assistant = enhancedContext?.assistant;
+
+      // Log assistant for attribution (NOT for identity resolution!)
+      if (assistant) {
+        this.log.info(`🤖 Session assisted by ${assistant.name} (confidence: ${assistant.confidence})`);
+      }
+
       let user: BaseUser;
 
-      // Try uniqueId first (single source of truth for agent identity)
-      const uniqueId = params.connectionContext?.uniqueId;
-      const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
+      switch (clientType) {
+        case 'browser-ui': {
+          // Browser identity: Use deviceId to find/create user
+          // Server is source of truth - browser doesn't send userId
+          this.log.info(`🌐 Browser-ui session: resolving human identity from deviceId`);
 
-      if (existingUser) {
-        user = existingUser;
-      } else if (params.userId) {
-        // Fall back to userId lookup (for browser-stored sessions)
-        try {
-          user = await this.getUserById(params.userId);
-        } catch (error) {
-          // userId doesn't exist, create new user
-          user = await this.createUser(params);
+          const deviceId = identity?.deviceId;
+
+          if (deviceId) {
+            // Look for existing user associated with this device
+            const existingUser = await this.findUserByDeviceId(deviceId);
+            if (existingUser) {
+              user = existingUser;
+              this.log.info(`✅ Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
+            } else {
+              // New device - create anonymous human
+              this.log.info(`📝 New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
+              user = await this.createAnonymousHuman(params, deviceId);
+            }
+          } else {
+            // No deviceId - create anonymous human (will get new device on next connect)
+            this.log.info(`📝 No deviceId provided - creating anonymous human`);
+            user = await this.createAnonymousHuman(params, undefined);
+          }
+          break;
         }
-      } else {
-        // No uniqueId or userId, create new user
-        user = await this.createUser(params);
+
+        case 'cli': {
+          // CLI identity: Use uniqueId (@cli or env user)
+          const cliUniqueId = identity?.uniqueId || '@cli';
+          this.log.info(`💻 CLI session: resolving uniqueId=${cliUniqueId}`);
+
+          const existingCli = await this.findUserByUniqueId(cliUniqueId);
+          if (existingCli) {
+            user = existingCli;
+          } else {
+            user = await this.createUser(params);
+          }
+          break;
+        }
+
+        case 'persona': {
+          // Persona identity: userId must exist (created by user/create command)
+          this.log.info(`🎭 Persona session: resolving userId=${identity?.userId?.slice(0, 8)}...`);
+
+          if (!identity?.userId) {
+            throw new Error('Persona client must have explicit userId');
+          }
+          user = await this.getUserById(identity.userId);
+          break;
+        }
+
+        case 'agent': {
+          // Agent identity: Use uniqueId from agent name
+          const agentUniqueId = identity?.uniqueId;
+          this.log.info(`🤖 Agent session: resolving uniqueId=${agentUniqueId}`);
+
+          if (!agentUniqueId) {
+            throw new Error('Agent client must have uniqueId');
+          }
+
+          const existingAgent = await this.findUserByUniqueId(agentUniqueId);
+          if (existingAgent) {
+            user = existingAgent;
+          } else {
+            user = await this.createUser(params);
+          }
+          break;
+        }
+
+        default: {
+          // Fallback: use legacy resolution (for backward compatibility)
+          this.log.warn(`⚠️ Unknown clientType '${clientType}', using legacy resolution`);
+          const uniqueId = params.connectionContext?.uniqueId;
+          const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
+
+          if (existingUser) {
+            user = existingUser;
+          } else if (params.userId) {
+            try {
+              user = await this.getUserById(params.userId);
+            } catch {
+              user = await this.createUser(params);
+            }
+          } else {
+            user = await this.createUser(params);
+          }
+        }
       }
 
       // Enrich context with caller type based on User type (enables caller-adaptive output)
@@ -496,7 +672,11 @@ export class SessionDaemonServer extends SessionDaemon {
           enrichedContext.callerType = 'script';
       }
 
-      const newSession: SessionMetadata = {
+      // Extract deviceId for browser-ui clients (server owns device → user mapping)
+      const enhancedCtx = params.connectionContext as EnhancedConnectionContext | undefined;
+      const deviceId = enhancedCtx?.identity?.deviceId;
+
+      const newSession: SessionMetadata & { deviceId?: string } = {
         sourceContext: enrichedContext, // Use enriched context with callerType
         sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,
@@ -506,7 +686,8 @@ export class SessionDaemonServer extends SessionDaemon {
         lastActive: new Date(),
         isActive: true,
         isShared: params.isShared, // Use original isShared request
-        user: user // Add User object to session
+        user: user, // Add User object to session
+        deviceId: deviceId  // Store deviceId for browser-ui lookup
       };
 
       this.sessions.push(newSession);

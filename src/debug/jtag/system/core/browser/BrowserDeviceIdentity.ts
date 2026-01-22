@@ -1,10 +1,15 @@
 /**
- * BrowserDeviceIdentity - Secure device identification for browser
+ * BrowserDeviceIdentity - Device identification for browser
  *
- * Generates and manages persistent device identity:
- * - Device ID: Unique identifier for this browser/device
- * - User ID: Persistent user identity (anonymous or authenticated)
- * - Encrypted storage in localStorage
+ * IMPORTANT: This is for device identification ONLY.
+ * The SERVER owns user identity. Browser just has a device token
+ * that the server uses to look up or create the associated user.
+ *
+ * Flow:
+ * 1. Browser generates/loads deviceId (stable per browser)
+ * 2. Browser sends deviceId to server on connect
+ * 3. Server maintains deviceId → userId mapping
+ * 4. Server returns user info, browser displays it (doesn't store userId)
  */
 
 import { generateUUID, type UUID } from '../types/CrossPlatformUUID';
@@ -13,8 +18,8 @@ import { generateUUID, type UUID } from '../types/CrossPlatformUUID';
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
 interface DeviceIdentity {
-  deviceId: string;        // Unique device identifier
-  userId: UUID;            // Persistent user ID (anonymous or authenticated)
+  deviceId: string;        // Unique device identifier (browser stores this)
+  // NOTE: userId is NOT stored client-side anymore - server is source of truth
   createdAt: string;       // When device was first registered
   deviceFingerprint?: {    // Optional device characteristics
     userAgent: string;
@@ -24,32 +29,42 @@ interface DeviceIdentity {
   };
 }
 
+// Legacy interface for backward compatibility during migration
+interface LegacyDeviceIdentity extends DeviceIdentity {
+  userId?: UUID;  // May exist in old localStorage data, ignored
+}
+
 export class BrowserDeviceIdentity {
   private static readonly STORAGE_KEY = 'continuum-device-identity';
   private static readonly ENCRYPTION_KEY = 'continuum-device-key';
 
   /**
    * Get or create device identity
-   * Returns both deviceId and userId for persistence
+   * Returns deviceId only - server owns userId
    */
-  static async getOrCreateIdentity(): Promise<DeviceIdentity> {
+  static async getOrCreateIdentity(): Promise<DeviceIdentity & { userId?: never }> {
     // Try to load existing identity
     const existing = this.loadIdentity();
     if (existing) {
-      verbose() && console.log(`🔐 BrowserDeviceIdentity: Loaded existing device ${existing.deviceId.substring(0, 8)}...`);
-      return existing;
+      verbose() && console.log(`🔐 BrowserDeviceIdentity: Loaded device ${existing.deviceId.substring(0, 12)}...`);
+      // Return without userId even if legacy data has it
+      return {
+        deviceId: existing.deviceId,
+        createdAt: existing.createdAt,
+        deviceFingerprint: existing.deviceFingerprint
+      };
     }
 
     // Create new device identity
     const identity = this.createNewIdentity();
     this.saveIdentity(identity);
 
-    verbose() && console.log(`🔐 BrowserDeviceIdentity: Created new device ${identity.deviceId.substring(0, 8)}...`);
+    verbose() && console.log(`🔐 BrowserDeviceIdentity: Created new device ${identity.deviceId.substring(0, 12)}...`);
     return identity;
   }
 
   /**
-   * Get just the device ID (for backward compatibility)
+   * Get just the device ID
    */
   static async getDeviceId(): Promise<string> {
     const identity = await this.getOrCreateIdentity();
@@ -57,36 +72,32 @@ export class BrowserDeviceIdentity {
   }
 
   /**
-   * Get just the user ID (for backward compatibility)
+   * DEPRECATED: User ID is now owned by server
+   * This method exists only for backward compatibility during migration
+   * @deprecated Use server-returned user instead
    */
-  static async getUserId(): Promise<UUID> {
-    const identity = await this.getOrCreateIdentity();
-    return identity.userId;
+  static async getUserId(): Promise<UUID | undefined> {
+    const existing = this.loadIdentity() as LegacyDeviceIdentity | null;
+    // Return legacy userId if it exists, but this should not be relied upon
+    return existing?.userId;
   }
 
   /**
-   * Update user ID when user authenticates
-   * Keeps same deviceId, updates userId
+   * DEPRECATED: User identity is now server-managed
+   * The server will associate userId with deviceId in its database
+   * @deprecated Server manages user association now
    */
-  static async upgradeToAuthenticated(authenticatedUserId: UUID): Promise<void> {
-    const identity = await this.getOrCreateIdentity();
-
-    const upgraded: DeviceIdentity = {
-      ...identity,
-      userId: authenticatedUserId
-    };
-
-    this.saveIdentity(upgraded);
-    verbose() && console.log(`🔐 BrowserDeviceIdentity: Upgraded to authenticated user ${authenticatedUserId.substring(0, 8)}...`);
+  static async upgradeToAuthenticated(_authenticatedUserId: UUID): Promise<void> {
+    verbose() && console.log(`🔐 BrowserDeviceIdentity: upgradeToAuthenticated is deprecated - server manages user identity`);
+    // No-op: server manages the deviceId → userId mapping now
   }
 
   /**
-   * Create new device identity with random IDs
+   * Create new device identity (no userId - server will create user)
    */
   private static createNewIdentity(): DeviceIdentity {
     return {
       deviceId: `device-${generateUUID()}`,
-      userId: generateUUID(),
       createdAt: new Date().toISOString(),
       deviceFingerprint: this.generateFingerprint()
     };
@@ -201,11 +212,11 @@ export class BrowserDeviceIdentity {
 
   /**
    * Get device info for debugging
+   * Note: userId is no longer stored locally - server is source of truth
    */
   static async getDebugInfo(): Promise<{
     hasIdentity: boolean;
     deviceId?: string;
-    userId?: UUID;
     createdAt?: string;
     fingerprint?: any;
   }> {
@@ -218,7 +229,7 @@ export class BrowserDeviceIdentity {
     return {
       hasIdentity: true,
       deviceId: identity.deviceId,
-      userId: identity.userId,
+      // userId removed - server is source of truth
       createdAt: identity.createdAt,
       fingerprint: identity.deviceFingerprint
     };
