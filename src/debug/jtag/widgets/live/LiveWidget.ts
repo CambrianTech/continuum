@@ -20,6 +20,8 @@ import { COMMANDS } from '../../shared/generated-command-constants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
+import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { AudioStreamClient } from './AudioStreamClient';
 
 interface Participant {
@@ -42,7 +44,10 @@ export class LiveWidget extends ReactiveWidget {
   @reactive() private previewStream: MediaStream | null = null;
 
   // Local user state
-  @reactive() private micEnabled: boolean = true;  // Default to on
+  @reactive() private micEnabled: boolean = true;  // Default to on - YOUR microphone input
+  @reactive() private speakerEnabled: boolean = true;  // Default to on - audio OUTPUT
+  @reactive() private speakerVolume: number = 1.0;  // 0.0 to 1.0
+  @reactive() private micLevel: number = 0;  // 0.0 to 1.0 - current mic input level for visual feedback
   @reactive() private cameraEnabled: boolean = false;
   @reactive() private screenShareEnabled: boolean = false;
   @reactive() private micPermissionGranted: boolean = false;
@@ -68,6 +73,50 @@ export class LiveWidget extends ReactiveWidget {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    // Load call state from UserStateEntity
+    this.loadCallState();
+  }
+
+  /**
+   * Load call state from UserStateEntity
+   */
+  private loadCallState(): void {
+    const callState = this.userState?.callState;
+    if (callState) {
+      this.micEnabled = callState.micEnabled ?? true;
+      this.speakerEnabled = callState.speakerEnabled ?? true;
+      this.speakerVolume = callState.speakerVolume ?? 1.0;
+      this.cameraEnabled = callState.cameraEnabled ?? false;
+      this.screenShareEnabled = callState.screenShareEnabled ?? false;
+    }
+  }
+
+  /**
+   * Persist call state to UserStateEntity
+   */
+  private async saveCallState(): Promise<void> {
+    if (!this.userState?.id) return;
+
+    // Update the entity
+    const newCallState = {
+      micEnabled: this.micEnabled,
+      speakerEnabled: this.speakerEnabled,
+      speakerVolume: this.speakerVolume,
+      cameraEnabled: this.cameraEnabled,
+      screenShareEnabled: this.screenShareEnabled,
+      currentCallId: this.sessionId || undefined
+    };
+
+    // Persist via data/update
+    try {
+      await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>('data/update', {
+        collection: 'user_states',
+        id: this.userState.id as UUID,
+        data: { callState: newCallState }
+      });
+    } catch (error) {
+      console.error('LiveWidget: Failed to save call state:', error);
+    }
   }
 
   /**
@@ -241,16 +290,31 @@ export class LiveWidget extends ReactiveWidget {
       if (result.success && result.sessionId) {
         this.sessionId = result.sessionId;
         this.isJoined = true;
-        // Map CallParticipant to local Participant (add isSpeaking state)
-        this.participants = (result.participants || []).map(p => ({
-          userId: p.userId,
-          displayName: p.displayName,
-          avatar: p.avatar,
-          micEnabled: p.micEnabled,
-          cameraEnabled: p.cameraEnabled,
-          screenShareEnabled: p.screenShareEnabled,
-          isSpeaking: false  // Local UI state, not in CallParticipant
-        }));
+
+        // Use participants from server response (includes all room members for new calls)
+        // WebSocket events (ParticipantJoined/Left) will update in real-time
+        if (result.participants && result.participants.length > 0) {
+          this.participants = result.participants.map((p: any) => ({
+            userId: p.userId,
+            displayName: p.displayName || 'Unknown',
+            micEnabled: p.micEnabled ?? true,
+            cameraEnabled: p.cameraEnabled ?? false,
+            screenShareEnabled: p.screenShareEnabled ?? false,
+            isSpeaking: false
+          }));
+          console.log('LiveWidget: Loaded', this.participants.length, 'participants from server');
+        } else {
+          // Fallback to just ourselves if server returned empty
+          const myInfo = result.myParticipant;
+          this.participants = [{
+            userId: myInfo?.userId || ('self' as UUID),
+            displayName: myInfo?.displayName || 'You',
+            micEnabled: true,
+            cameraEnabled: false,
+            screenShareEnabled: false,
+            isSpeaking: false
+          }];
+        }
         this.requestUpdate();  // Force UI update
 
         // Subscribe to session events
@@ -260,6 +324,13 @@ export class LiveWidget extends ReactiveWidget {
         this.audioClient = new AudioStreamClient({
           // Port configured via STREAMING_CORE_WS_PORT env var, default 50053
           serverUrl: `ws://127.0.0.1:${(window as any).__STREAMING_CORE_WS_PORT || 50053}`,
+          onMicLevel: (level) => {
+            // Update mic level indicator directly (bypass reactive rendering for 30fps)
+            const indicator = this.shadowRoot?.getElementById('mic-level') as HTMLElement;
+            if (indicator) {
+              indicator.style.height = `${Math.min(100, level * 300)}%`;
+            }
+          },
           onParticipantJoined: (userId, displayName) => {
             console.log(`LiveWidget: ${displayName} joined the call`);
             // Add to participants if not already present
@@ -367,6 +438,7 @@ export class LiveWidget extends ReactiveWidget {
 
   private async toggleMic(): Promise<void> {
     this.micEnabled = !this.micEnabled;
+    this.requestUpdate();  // Force UI update
 
     if (this.audioClient) {
       if (this.micEnabled) {
@@ -375,12 +447,44 @@ export class LiveWidget extends ReactiveWidget {
         } catch (error) {
           console.error('LiveWidget: Failed to start mic:', error);
           this.micEnabled = false;
+          this.requestUpdate();
         }
       } else {
         this.audioClient.stopMicrophone();
       }
       // Notify server of mute status
       this.audioClient.setMuted(!this.micEnabled);
+    }
+
+    // Persist to UserStateEntity
+    await this.saveCallState();
+  }
+
+  /**
+   * Toggle speaker (audio output) - controls what YOU hear
+   * Separate from mic which controls what OTHERS hear
+   */
+  private async toggleSpeaker(): Promise<void> {
+    this.speakerEnabled = !this.speakerEnabled;
+    this.requestUpdate();  // Force UI update
+
+    if (this.audioClient) {
+      // Mute/unmute the audio output (playback)
+      this.audioClient.setSpeakerMuted(!this.speakerEnabled);
+    }
+
+    // Persist to UserStateEntity
+    await this.saveCallState();
+  }
+
+  /**
+   * Set speaker volume (0.0 to 1.0)
+   */
+  private setSpeakerVolume(volume: number): void {
+    this.speakerVolume = Math.max(0, Math.min(1, volume));
+
+    if (this.audioClient) {
+      this.audioClient.setSpeakerVolume(this.speakerVolume);
     }
   }
 
@@ -472,11 +576,20 @@ export class LiveWidget extends ReactiveWidget {
           </div>
           <div class="controls">
             <button
+              id="mic-btn"
               class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
               @click=${this.toggleMic}
-              title="${this.micEnabled ? 'Mute' : 'Unmute'}"
+              title="${this.micEnabled ? 'Mute your mic' : 'Unmute your mic'}"
             >
               ${this.micEnabled ? this.renderMicOnIcon() : this.renderMicOffIcon()}
+              ${this.micEnabled ? html`<span class="mic-level-indicator" id="mic-level"></span>` : ''}
+            </button>
+            <button
+              class="control-btn ${this.speakerEnabled ? 'active' : 'inactive'}"
+              @click=${this.toggleSpeaker}
+              title="${this.speakerEnabled ? 'Mute audio' : 'Unmute audio'}"
+            >
+              ${this.speakerEnabled ? this.renderSpeakerOnIcon() : this.renderSpeakerOffIcon()}
             </button>
             <button
               class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"
@@ -585,6 +698,26 @@ export class LiveWidget extends ReactiveWidget {
     `;
   }
 
+  private renderSpeakerOnIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+      </svg>
+    `;
+  }
+
+  private renderSpeakerOffIcon(): TemplateResult {
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+        <line x1="22" x2="16" y1="9" y2="15"></line>
+        <line x1="16" x2="22" y1="9" y2="15"></line>
+      </svg>
+    `;
+  }
+
   private renderScreenShareIcon(): TemplateResult {
     return html`
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -667,8 +800,10 @@ export class LiveWidget extends ReactiveWidget {
             class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
             @click=${this.toggleMic}
             title="${this.micEnabled ? 'Mute' : 'Unmute'}"
+            style="--mic-level: ${Math.min(1, this.micLevel * 3)}"
           >
             ${this.micEnabled ? this.renderMicOnIcon() : this.renderMicOffIcon()}
+            ${this.micEnabled ? html`<span class="mic-level-indicator" style="height: ${Math.min(100, this.micLevel * 300)}%"></span>` : ''}
           </button>
           <button
             class="control-btn ${this.cameraEnabled ? 'active' : 'inactive'}"

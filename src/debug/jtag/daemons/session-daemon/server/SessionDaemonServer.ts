@@ -414,6 +414,37 @@ export class SessionDaemonServer extends SessionDaemon {
      * Uses UserIdentityResolver + UserFactory to detect, lookup, or create user
      */
     /**
+     * Find the seeded human owner
+     *
+     * In single-user dev environment, prefer the seeded owner over creating anonymous users.
+     * The owner is identified as a human user whose uniqueId does NOT start with "anon-".
+     * This avoids hardcoding names and works with any seeded owner.
+     */
+    private async findSeededHumanOwner(): Promise<BaseUser | null> {
+      // Look for all human users
+      const result = await DataDaemon.query<UserEntity>({
+        collection: COLLECTIONS.USERS,
+        filter: { type: 'human' }
+      });
+
+      if (!result.success || !result.data || result.data.length === 0) {
+        return null;
+      }
+
+      // Find the first non-anonymous human (uniqueId doesn't start with "anon-")
+      // DataRecord<T> wraps entity in .data property
+      const seededOwner = result.data.find(record => {
+        const entity = record.data;
+        return entity.uniqueId && !entity.uniqueId.startsWith('anon-');
+      });
+      if (!seededOwner) {
+        return null;
+      }
+
+      return await this.getUserById(seededOwner.data.id);
+    }
+
+    /**
      * Create anonymous human user for browser-ui clients
      *
      * This is called when a browser connects for the first time without
@@ -493,14 +524,32 @@ export class SessionDaemonServer extends SessionDaemon {
                 // This can happen if the session was created when Claude Code was detected
                 try {
                   const sessionUser = await this.getUserById(existingSession.userId);
-                  const userType = sessionUser?.entity?.userType;
+                  const userType = sessionUser?.entity?.type;  // FIX: was 'userType', field is 'type'
 
                   // If user is an AI agent (not human), discard session and create new
-                  if (userType === 'agent' || userType === 'persona') {
+                  if (userType === 'agent' || userType === 'persona' || userType === 'system') {
                     this.log.warn(`⚠️ SessionDaemon: Session for device ${deviceId.slice(0, 12)}... has AI user (${sessionUser.displayName}) - discarding and creating human session`);
                     // Mark old session as inactive
                     existingSession.isActive = false;
                     // Fall through to create new session
+                  } else if (sessionUser?.entity?.uniqueId?.startsWith('anon-')) {
+                    // Anonymous user - check if seeded owner exists and prefer them
+                    const seededOwner = await this.findSeededHumanOwner();
+                    if (seededOwner) {
+                      this.log.info(`✅ SessionDaemon: Upgrading anonymous user to seeded owner: ${seededOwner.displayName}`);
+                      existingSession.userId = seededOwner.id;
+                      existingSession.user = seededOwner;
+                      // Save updated session
+                      await this.saveSessionsToFile();
+                    } else {
+                      existingSession.user = sessionUser;
+                    }
+                    return createPayload(params.context, existingSession.sessionId, {
+                      success: true,
+                      timestamp: new Date().toISOString(),
+                      operation: 'get',
+                      session: existingSession
+                    });
                   } else {
                     this.log.info(`✅ SessionDaemon: Found existing session for device ${deviceId.slice(0, 12)}... with human user ${sessionUser.displayName}`);
                     existingSession.user = sessionUser;
@@ -589,14 +638,26 @@ export class SessionDaemonServer extends SessionDaemon {
               user = existingUser;
               this.log.info(`✅ Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
             } else {
-              // New device - create anonymous human
-              this.log.info(`📝 New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
-              user = await this.createAnonymousHuman(params, deviceId);
+              // New device - check for seeded owner (human without anon- prefix)
+              const seededOwner = await this.findSeededHumanOwner();
+              if (seededOwner) {
+                user = seededOwner;
+                this.log.info(`✅ Associating new device with seeded owner: ${user.displayName}`);
+              } else {
+                this.log.info(`📝 New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
+                user = await this.createAnonymousHuman(params, deviceId);
+              }
             }
           } else {
-            // No deviceId - create anonymous human (will get new device on next connect)
-            this.log.info(`📝 No deviceId provided - creating anonymous human`);
-            user = await this.createAnonymousHuman(params, undefined);
+            // No deviceId - check for seeded owner first
+            const seededOwner = await this.findSeededHumanOwner();
+            if (seededOwner) {
+              user = seededOwner;
+              this.log.info(`✅ Using seeded owner: ${user.displayName} (no deviceId)`);
+            } else {
+              this.log.info(`📝 No deviceId - creating anonymous human`);
+              user = await this.createAnonymousHuman(params, undefined);
+            }
           }
           break;
         }

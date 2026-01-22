@@ -147,6 +147,18 @@ export class UserStateEntity extends BaseEntity {
     environment?: Record<string, string>; // Environment variables (optional)
   };
 
+  // Voice/Call state - tracks user's mic and speaker settings in live calls
+  // Persisted across sessions and synced to UI components
+  @JsonField()
+  callState?: {
+    micEnabled: boolean;           // User's microphone enabled
+    speakerEnabled: boolean;       // User's audio output enabled
+    speakerVolume: number;         // 0.0 to 1.0
+    cameraEnabled: boolean;        // User's camera enabled
+    screenShareEnabled: boolean;   // User is screen sharing
+    currentCallId?: string;        // Active call ID (if in a call)
+  };
+
   // Index signature for compatibility
   [key: string]: unknown;
 
@@ -171,6 +183,13 @@ export class UserStateEntity extends BaseEntity {
     };
     this.shellState = {
       currentWorkingDir: typeof process !== 'undefined' ? process.cwd() : '/'
+    };
+    this.callState = {
+      micEnabled: true,
+      speakerEnabled: true,
+      speakerVolume: 1.0,
+      cameraEnabled: false,
+      screenShareEnabled: false
     };
   }
 

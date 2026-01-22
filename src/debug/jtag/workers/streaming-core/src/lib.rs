@@ -70,6 +70,8 @@ pub mod mixer;
 pub mod pipeline;
 pub mod ring;
 pub mod stage;
+pub mod kokoro;  // Kokoro TTS inference (ONNX)
+pub mod stt;  // Speech-to-text (Whisper)
 pub mod tts;
 pub mod ws_audio;
 

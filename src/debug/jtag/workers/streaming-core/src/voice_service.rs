@@ -6,6 +6,7 @@
 //!
 //! This is the gRPC endpoint that TypeScript VoiceGrpcClient connects to.
 
+use crate::stt;
 use crate::tts::{TTSAdapterRegistry, TTSParams};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -246,6 +247,7 @@ impl VoiceService for VoiceServiceImpl {
     }
 
     /// Transcribe audio to text (Whisper STT)
+    /// Runs on thread pool to avoid blocking async runtime
     async fn transcribe(
         &self,
         request: Request<TranscribeRequest>,
@@ -262,22 +264,73 @@ impl VoiceService for VoiceServiceImpl {
             return Err(Status::invalid_argument("Audio cannot be empty"));
         }
 
-        // TODO: Implement Whisper STT in Rust using candle
-        // For now, return a placeholder response
-        // This will be implemented using whisper-rs or candle-whisper
+        // Check if Whisper is initialized
+        if !stt::is_whisper_initialized() {
+            error!("Whisper not initialized - model may not be loaded");
+            return Err(Status::unavailable(
+                "Whisper model not loaded. Place ggml-base.en.bin in models/whisper/"
+            ));
+        }
 
-        error!("STT transcription not yet implemented - Whisper integration pending");
+        // Decode audio from base64 (TypeScript sends base64)
+        let audio_bytes = if req.audio.iter().all(|&b| b.is_ascii()) {
+            // Looks like base64
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            STANDARD.decode(&req.audio).map_err(|e| {
+                Status::invalid_argument(format!("Invalid base64 audio: {}", e))
+            })?
+        } else {
+            req.audio
+        };
 
-        // Return stub response for now
+        // Convert bytes to i16 samples (little-endian PCM16)
+        let i16_samples: Vec<i16> = audio_bytes
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+
+        // Convert to f32 for Whisper
+        let f32_samples = stt::i16_to_f32(&i16_samples);
+
+        // Resample to 16kHz if needed (Whisper native rate)
+        let sample_rate = if req.sample_rate > 0 { req.sample_rate as u32 } else { 16000 };
+        let samples = if sample_rate != 16000 {
+            stt::resample_to_16k(&f32_samples, sample_rate)
+        } else {
+            f32_samples
+        };
+
+        // Run transcription (off main thread via spawn_blocking)
+        let language = if req.language.is_empty() || req.language == "auto" {
+            None
+        } else {
+            Some(req.language.as_str())
+        };
+
+        let result = stt::transcribe(samples, language).await.map_err(|e| {
+            error!("Whisper transcription failed: {}", e);
+            Status::internal(format!("Transcription failed: {}", e))
+        })?;
+
+        info!("STT result: '{}' ({})", result.text, result.language);
+
+        // Convert segments
+        let segments: Vec<voice_proto::Segment> = result
+            .segments
+            .iter()
+            .map(|s| voice_proto::Segment {
+                word: s.text.clone(),
+                start: s.start_ms as f32 / 1000.0,
+                end: s.end_ms as f32 / 1000.0,
+                confidence: result.confidence,
+            })
+            .collect();
+
         Ok(Response::new(TranscribeResponse {
-            text: "[Whisper STT not yet implemented]".to_string(),
-            language: if req.language.is_empty() {
-                "en".to_string()
-            } else {
-                req.language
-            },
-            confidence: 0.0,
-            segments: vec![],
+            text: result.text,
+            language: result.language,
+            confidence: result.confidence,
+            segments,
         }))
     }
 

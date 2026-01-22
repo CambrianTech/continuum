@@ -96,6 +96,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Embedding (fastembed)
 fastembed = "4"
 
+# ONNX Runtime - ensure all crates use download-binaries (not load-dynamic)
+ort = { version = "2.0.0-rc.9", default-features = false, features = ["download-binaries"] }
+
 # WebSocket
 tokio-tungstenite = "0.21"
 futures-util = "0.3"

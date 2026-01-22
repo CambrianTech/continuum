@@ -1,6 +1,6 @@
 {
   "name": "@continuum/jtag",
-  "version": "1.0.7292",
+  "version": "1.0.7312",
   "description": "Global CLI debugging system for any Node.js project. Install once globally, use anywhere: npm install -g @continuum/jtag",
   "config": {
     "active_example": "widget-ui",
@@ -120,7 +120,8 @@
   "scripts": {
     "setup:rust": "./scripts/setup-rust.sh",
     "worker:build": "jq -c '.workers[] | select(.enabled != false)' workers/workers-config.json | while read -r w; do dir=$(echo $w | jq -r '.binary' | sed 's|/target/.*||'); echo \"Building $(echo $w | jq -r '.name')...\"; (cd $dir && cargo build --release --quiet); done",
-    "worker:start": "./workers/start-workers.sh",
+    "worker:models": "./scripts/download-voice-models.sh",
+    "worker:start": "./scripts/download-voice-models.sh && ./workers/start-workers.sh",
     "worker:stop": "./workers/stop-workers.sh",
     "worker:kill": "jq -r '.workers[].name' workers/workers-config.json | while read n; do pkill -f \"$n-worker\" || true; done; jq -r '.workers[].socket' workers/workers-config.json | xargs rm -f",
     "worker:status": "jq -r '.workers[] | select(.enabled != false) | .name' workers/workers-config.json | while read n; do pgrep -f \"$n-worker\" > /dev/null && echo \"✅ $n-worker running\" || echo \"❌ $n-worker NOT running\"; done",

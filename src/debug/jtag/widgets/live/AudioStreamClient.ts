@@ -25,20 +25,27 @@ interface AudioStreamClientOptions {
   onParticipantLeft?: (userId: string) => void;
   /** Callback for connection status changes */
   onConnectionChange?: (connected: boolean) => void;
+  /** Callback for microphone audio level (0.0 to 1.0, called ~30x/sec) */
+  onMicLevel?: (level: number) => void;
 }
 
 export class AudioStreamClient {
   private ws: WebSocket | null = null;
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
-  private processorNode: ScriptProcessorNode | null = null;
-  private playbackQueue: Float32Array[] = [];
-  private isPlaying = false;
-  private nextPlaybackTime = 0; // Scheduled playback time for seamless audio
 
-  // Max queue depth to prevent memory growth in long sessions
-  // At 20ms per frame, 50 frames = 1 second of buffer
-  private static readonly MAX_PLAYBACK_QUEUE = 50;
+  // Mic capture worklet (off main thread)
+  private micWorkletNode: AudioWorkletNode | null = null;
+
+  // Playback worklet (off main thread) - decodes AND plays
+  private playbackWorkletNode: AudioWorkletNode | null = null;
+
+  private micWorkletReady = false;
+  private playbackWorkletReady = false;
+
+  // Speaker (output) state
+  private speakerMuted = false;
+  private speakerVolume = 1.0;
 
   private serverUrl: string;
   private sampleRate: number;
@@ -63,6 +70,10 @@ export class AudioStreamClient {
     this.callId = callId;
     this.userId = userId;
     this.displayName = displayName;
+
+    // Initialize audio context and playback worklet FIRST (before WebSocket)
+    // This ensures we're ready to play audio as soon as it arrives
+    await this.initializePlayback();
 
     // Create WebSocket connection
     return new Promise((resolve, reject) => {
@@ -105,6 +116,40 @@ export class AudioStreamClient {
   }
 
   /**
+   * Initialize playback worklet - runs on AUDIO THREAD, not main thread
+   * Decoding and playback all happen off main thread
+   */
+  private async initializePlayback(): Promise<void> {
+    if (!this.audioContext) {
+      this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+    }
+
+    // Load playback worklet module
+    if (!this.playbackWorkletReady) {
+      try {
+        const workletUrl = new URL('./audio-playback-worklet.js', import.meta.url).href;
+        await this.audioContext.audioWorklet.addModule(workletUrl);
+        this.playbackWorkletReady = true;
+      } catch (error) {
+        console.error('AudioStreamClient: Failed to load playback worklet:', error);
+        throw error;
+      }
+    }
+
+    // Create playback worklet node - ALL audio processing on audio thread
+    this.playbackWorkletNode = new AudioWorkletNode(this.audioContext, 'playback-processor');
+
+    // Connect to destination (speakers)
+    this.playbackWorkletNode.connect(this.audioContext.destination);
+
+    // Set initial mute/volume state
+    this.playbackWorkletNode.port.postMessage({ type: 'mute', muted: this.speakerMuted });
+    this.playbackWorkletNode.port.postMessage({ type: 'volume', volume: this.speakerVolume });
+
+    console.log('AudioStreamClient: Playback worklet ready (off main thread)');
+  }
+
+  /**
    * Leave the current call
    */
   leave(): void {
@@ -117,14 +162,29 @@ export class AudioStreamClient {
 
   /**
    * Start streaming microphone audio
+   * Uses AudioWorklet for processing on audio thread (NOT main thread)
    */
   async startMicrophone(): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to call server');
     }
 
-    // Create audio context
-    this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+    // Ensure audio context exists
+    if (!this.audioContext) {
+      this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
+    }
+
+    // Load mic capture worklet module (runs on audio rendering thread, not main thread)
+    if (!this.micWorkletReady) {
+      try {
+        const workletUrl = new URL('./audio-worklet-processor.js', import.meta.url).href;
+        await this.audioContext.audioWorklet.addModule(workletUrl);
+        this.micWorkletReady = true;
+      } catch (error) {
+        console.error('AudioStreamClient: Failed to load mic worklet:', error);
+        throw error;
+      }
+    }
 
     // Get microphone stream
     this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -137,31 +197,37 @@ export class AudioStreamClient {
       },
     });
 
-    // Create audio processing pipeline
+    // Create audio processing pipeline using AudioWorklet (off main thread)
     const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
-    // Use ScriptProcessorNode to capture audio frames
-    // Note: This is deprecated but AudioWorklet requires more setup
-    this.processorNode = this.audioContext.createScriptProcessor(this.frameSize, 1, 1);
+    // Create AudioWorkletNode - processing happens on audio thread
+    this.micWorkletNode = new AudioWorkletNode(this.audioContext, 'microphone-processor');
 
-    this.processorNode.onaudioprocess = (event) => {
-      const inputData = event.inputBuffer.getChannelData(0);
-      this.sendAudioFrame(inputData);
+    // Listen for audio frames from the worklet (via MessagePort)
+    // Worklet sends { frame: Float32Array, level: number }
+    this.micWorkletNode.port.onmessage = (event) => {
+      const { frame, level } = event.data;
+      // Send audio to server
+      this.sendAudioFrame(frame);
+      // Notify UI of mic level for visual feedback
+      this.options.onMicLevel?.(level);
     };
 
-    source.connect(this.processorNode);
-    this.processorNode.connect(this.audioContext.destination);
+    // Connect: mic -> worklet -> (nowhere, we just capture)
+    source.connect(this.micWorkletNode);
+    // Don't connect to destination - we're just capturing, not playing back locally
 
-    console.log('AudioStreamClient: Microphone streaming started');
+    console.log('AudioStreamClient: Microphone streaming started (AudioWorklet - off main thread)');
   }
 
   /**
    * Stop streaming microphone audio
    */
   stopMicrophone(): void {
-    if (this.processorNode) {
-      this.processorNode.disconnect();
-      this.processorNode = null;
+    if (this.micWorkletNode) {
+      this.micWorkletNode.disconnect();
+      this.micWorkletNode.port.close();
+      this.micWorkletNode = null;
     }
 
     if (this.mediaStream) {
@@ -173,12 +239,34 @@ export class AudioStreamClient {
   }
 
   /**
-   * Set mute status
+   * Set mic mute status (your input to others)
    */
   setMuted(muted: boolean): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       const muteMsg: CallMessage = { type: 'Mute', muted };
       this.ws.send(JSON.stringify(muteMsg));
+    }
+  }
+
+  /**
+   * Set speaker muted (your output - what you hear)
+   */
+  setSpeakerMuted(muted: boolean): void {
+    this.speakerMuted = muted;
+    // Send to playback worklet (runs on audio thread)
+    if (this.playbackWorkletNode) {
+      this.playbackWorkletNode.port.postMessage({ type: 'mute', muted });
+    }
+  }
+
+  /**
+   * Set speaker volume (0.0 to 1.0)
+   */
+  setSpeakerVolume(volume: number): void {
+    this.speakerVolume = Math.max(0, Math.min(1, volume));
+    // Send to playback worklet (runs on audio thread)
+    if (this.playbackWorkletNode) {
+      this.playbackWorkletNode.port.postMessage({ type: 'volume', volume: this.speakerVolume });
     }
   }
 
@@ -234,9 +322,17 @@ export class AudioStreamClient {
 
   /**
    * Handle received mixed audio
+   * Decode on main thread (fast), transfer Float32Array to worklet (zero-copy)
    */
   private handleMixedAudio(base64Data: string): void {
-    // Decode base64 to Int16Array
+    // Ensure audio context is running (needed after user interaction)
+    if (this.audioContext?.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
+    if (!this.playbackWorkletNode) return;
+
+    // Decode base64 on main thread (atob not available in AudioWorkletGlobalScope)
     const binaryString = atob(base64Data);
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
@@ -245,64 +341,16 @@ export class AudioStreamClient {
     const int16Data = new Int16Array(bytes.buffer);
 
     // Convert Int16 to Float32
-    const float32Data = new Float32Array(int16Data.length);
+    const samples = new Float32Array(int16Data.length);
     for (let i = 0; i < int16Data.length; i++) {
-      float32Data[i] = int16Data[i] / 32768;
+      samples[i] = int16Data[i] / 32768;
     }
 
-    // Queue for playback with bounded size to prevent memory growth
-    if (this.playbackQueue.length >= AudioStreamClient.MAX_PLAYBACK_QUEUE) {
-      // Drop oldest frame to prevent memory growth
-      this.playbackQueue.shift();
-    }
-    this.playbackQueue.push(float32Data);
-    this.processPlaybackQueue();
-  }
-
-  /**
-   * Process playback queue with scheduled timing for seamless audio
-   *
-   * Uses AudioContext.currentTime to schedule buffers back-to-back
-   * without gaps. This is the correct way to handle streaming audio.
-   */
-  private processPlaybackQueue(): void {
-    if (this.playbackQueue.length === 0) return;
-    if (!this.audioContext) {
-      this.audioContext = new AudioContext({ sampleRate: this.sampleRate });
-    }
-
-    // Ensure audioContext is running (needed after user interaction)
-    if (this.audioContext.state === 'suspended') {
-      this.audioContext.resume();
-    }
-
-    // Initialize nextPlaybackTime if not set or if we've fallen behind
-    const now = this.audioContext.currentTime;
-    if (this.nextPlaybackTime < now) {
-      // Add small buffer (50ms) to prevent underrun
-      this.nextPlaybackTime = now + 0.05;
-    }
-
-    // Schedule all queued buffers
-    while (this.playbackQueue.length > 0) {
-      const samples = this.playbackQueue.shift()!;
-
-      // Create audio buffer
-      const buffer = this.audioContext.createBuffer(1, samples.length, this.sampleRate);
-      buffer.getChannelData(0).set(samples);
-
-      // Calculate duration of this buffer
-      const duration = samples.length / this.sampleRate;
-
-      // Schedule to play at exact time (seamless)
-      const source = this.audioContext.createBufferSource();
-      source.buffer = buffer;
-      source.connect(this.audioContext.destination);
-      source.start(this.nextPlaybackTime);
-
-      // Update next playback time for perfect continuity
-      this.nextPlaybackTime += duration;
-    }
+    // Transfer Float32Array to worklet (zero-copy via transferable)
+    this.playbackWorkletNode.port.postMessage(
+      { type: 'audio', samples },
+      [samples.buffer]  // Transfer ownership - zero-copy
+    );
   }
 
   /**
@@ -310,6 +358,13 @@ export class AudioStreamClient {
    */
   private cleanup(): void {
     this.stopMicrophone();
+
+    // Cleanup playback worklet
+    if (this.playbackWorkletNode) {
+      this.playbackWorkletNode.disconnect();
+      this.playbackWorkletNode.port.close();
+      this.playbackWorkletNode = null;
+    }
 
     if (this.audioContext) {
       this.audioContext.close();
@@ -321,9 +376,8 @@ export class AudioStreamClient {
       this.ws = null;
     }
 
-    this.playbackQueue = [];
-    this.isPlaying = false;
-    this.nextPlaybackTime = 0;
+    this.micWorkletReady = false;
+    this.playbackWorkletReady = false;
     this.callId = null;
     this.userId = null;
     this.displayName = null;

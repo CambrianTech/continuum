@@ -151,6 +151,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting streaming-core service");
 
+    // Initialize Whisper STT model (loads once, reused for all transcriptions)
+    // This runs synchronously at startup - model loading is ~1-2 seconds for base.en
+    match streaming_core::stt::init_whisper(None) {
+        Ok(_) => info!("Whisper STT initialized successfully"),
+        Err(e) => {
+            tracing::warn!("Whisper STT not available: {}. STT will return errors until model is loaded.", e);
+            tracing::warn!("Download ggml-base.en.bin from https://huggingface.co/ggerganov/whisper.cpp/tree/main");
+            tracing::warn!("Place in: models/whisper/ggml-base.en.bin");
+        }
+    }
+
+    // Initialize Kokoro TTS model (loads once, reused for all synthesis)
+    // This is optional - TTS will fall back to silence if model not available
+    match streaming_core::kokoro::init_kokoro(None) {
+        Ok(_) => info!("Kokoro TTS initialized successfully"),
+        Err(e) => {
+            tracing::warn!("Kokoro TTS not available: {}. TTS will use fallback (silence).", e);
+            tracing::warn!("Download Kokoro ONNX from https://huggingface.co/hexgrad/Kokoro-82M");
+            tracing::warn!("Place in: models/kokoro/kokoro-v0_19.onnx");
+        }
+    }
+
     let _manager = Arc::new(PipelineManager::new());
 
     // Start WebSocket call server for live audio

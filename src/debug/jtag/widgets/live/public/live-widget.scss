@@ -245,6 +245,8 @@
   transition: all $transition-fast;
   background: #3a3a3a;
   color: $color-text;
+  position: relative;
+  overflow: hidden;
 
   &:hover {
     background: #4a4a4a;
@@ -272,6 +274,25 @@
       background: darken($color-error, 10%);
     }
   }
+}
+
+// Mic level indicator - visual feedback for audio input
+.mic-level-indicator {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(to top, rgba(0, 255, 100, 0.7), rgba(0, 255, 100, 0.3));
+  pointer-events: none;
+  z-index: 1;
+  border-radius: 0 0 50% 50%;
+  transition: height 50ms ease-out;
+}
+
+// Ensure icon SVG sits above the level indicator
+.control-btn svg {
+  position: relative;
+  z-index: 2;
 }
 
 // ========================================

@@ -347,9 +347,9 @@ export class PanelResizer extends HTMLElement {
         document.addEventListener('mousemove', this.boundMouseMove);
         document.addEventListener('mouseup', this.boundMouseUp);
 
-        this.shadowRoot?.addEventListener('touchstart', this.handleTouchStart.bind(this));
-        document.addEventListener('touchmove', this.boundTouchMove);
-        document.addEventListener('touchend', this.boundTouchEnd);
+        this.shadowRoot?.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: true });
+        document.addEventListener('touchmove', this.boundTouchMove, { passive: true });
+        document.addEventListener('touchend', this.boundTouchEnd, { passive: true });
     }
 
     private handleDoubleClick(e: MouseEvent): void {
