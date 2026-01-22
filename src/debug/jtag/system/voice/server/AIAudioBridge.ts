@@ -1,21 +1,22 @@
 /**
  * AIAudioBridge - Connects AI personas to the Rust streaming-core call server
  *
- * When an AI joins a voice call:
- * 1. Opens WebSocket to Rust streaming-core as that AI
- * 2. Receives mixed audio from other participants
- * 3. Sends audio to STT for transcription (AI "hears" the call)
- * 4. When AI responds, TTS audio is injected into the call
+ * ARCHITECTURE NOTE: Transcription is handled by Rust call_server, NOT here.
+ * Rust does VAD-based speech detection and runs Whisper natively.
+ * Transcriptions flow: Rust → browser WebSocket → Events → VoiceOrchestrator
  *
- * This bridges the persona system with the audio call system.
+ * This bridge ONLY handles:
+ * 1. TTS injection (AI speaking INTO the call)
+ * 2. Maintaining WebSocket connections for AI participants
+ *
+ * Previously this did TypeScript-side transcription (buffer concat, RMS, base64)
+ * which was wasteful - all that work is now done efficiently in Rust.
  */
 
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Commands } from '../../core/shared/Commands';
-import type { VoiceTranscribeParams, VoiceTranscribeResult } from '../../../commands/voice/transcribe/shared/VoiceTranscribeTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
-import { getVoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -30,30 +31,22 @@ interface AudioMessage {
   data: string; // base64 encoded i16 PCM
 }
 
-interface MixedAudioMessage {
-  type: 'MixedAudio';
-  data: string; // base64 encoded i16 PCM
-}
-
 interface LeaveMessage {
   type: 'Leave';
 }
 
-type CallMessage = JoinMessage | AudioMessage | MixedAudioMessage | LeaveMessage | { type: string };
+// Only messages we send/receive - MixedAudio is ignored (transcription done in Rust)
+type CallMessage = JoinMessage | AudioMessage | LeaveMessage | { type: string };
 
 interface AIConnection {
   ws: WebSocket;
   callId: string;
   userId: string;
   displayName: string;
-  audioBuffer: Int16Array[];
-  lastTranscription: number;
   isConnected: boolean;
 }
 
 const STREAMING_CORE_URL = process.env.STREAMING_CORE_WS_URL || 'ws://127.0.0.1:50053';
-const SAMPLE_RATE = 16000;
-const TRANSCRIPTION_INTERVAL_MS = 3000; // Send accumulated audio to STT every 3 seconds
 
 export class AIAudioBridge {
   private static _instance: AIAudioBridge | null = null;
@@ -90,8 +83,6 @@ export class AIAudioBridge {
           callId,
           userId,
           displayName,
-          audioBuffer: [],
-          lastTranscription: Date.now(),
           isConnected: false,
         };
 
@@ -210,111 +201,23 @@ export class AIAudioBridge {
 
   /**
    * Handle incoming messages from call server
+   *
+   * NOTE: Transcription is now handled by Rust call_server with VAD.
+   * This handler only processes control messages, not audio.
    */
-  private handleMessage(key: string, data: WebSocket.Data): void {
-    const connection = this.connections.get(key);
-    if (!connection) return;
-
+  private handleMessage(_key: string, data: WebSocket.Data): void {
+    // Could handle Transcription messages here if needed
+    // But transcriptions flow: Rust → browser → Events → VoiceOrchestrator
+    // So server-side AIs don't need to process them here
     try {
       const msg = JSON.parse(data.toString()) as CallMessage;
-
-      if (msg.type === 'MixedAudio') {
-        // AI receives audio from other participants
-        this.handleMixedAudio(connection, (msg as MixedAudioMessage).data);
+      // Log for debugging but don't process audio
+      if (msg.type !== 'MixedAudio') {
+        // console.log(`🤖 AIAudioBridge: Received ${msg.type} message`);
       }
-    } catch (error) {
-      // Might be binary data
+    } catch {
+      // Binary data - ignore
     }
-  }
-
-  /**
-   * Handle received mixed audio (AI "hears" other participants)
-   */
-  private handleMixedAudio(connection: AIConnection, base64Data: string): void {
-    // Decode audio
-    const audioData = Buffer.from(base64Data, 'base64');
-    const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.byteLength / 2);
-
-    // Buffer audio for transcription
-    connection.audioBuffer.push(samples);
-
-    // Check if enough time has passed for transcription
-    const now = Date.now();
-    if (now - connection.lastTranscription >= TRANSCRIPTION_INTERVAL_MS) {
-      this.transcribeBufferedAudio(connection);
-      connection.lastTranscription = now;
-    }
-  }
-
-  /**
-   * Transcribe buffered audio (AI "understands" what was said)
-   */
-  private async transcribeBufferedAudio(connection: AIConnection): Promise<void> {
-    if (connection.audioBuffer.length === 0) return;
-
-    // Concatenate all buffered audio
-    const totalLength = connection.audioBuffer.reduce((sum, arr) => sum + arr.length, 0);
-    const concatenated = new Int16Array(totalLength);
-    let offset = 0;
-    for (const chunk of connection.audioBuffer) {
-      concatenated.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // Clear buffer
-    connection.audioBuffer = [];
-
-    // Check if audio is mostly silence (skip transcription)
-    const rms = this.calculateRMS(concatenated);
-    if (rms < 100) {
-      // Too quiet - probably just hold tone or silence
-      return;
-    }
-
-    // Convert to base64 for STT
-    const base64Audio = this.int16ToBase64(concatenated);
-
-    try {
-      const result = await Commands.execute<VoiceTranscribeParams, VoiceTranscribeResult>(
-        'voice/transcribe',
-        {
-          audio: base64Audio,
-          language: 'en',
-        }
-      );
-
-      if (result.success && result.text && result.text.trim().length > 2) {
-        console.log(`🤖 AIAudioBridge: ${connection.displayName} heard: "${result.text}"`);
-
-        // Route transcription to VoiceOrchestrator for persona processing
-        // This triggers turn arbitration and routes to appropriate AI for response
-        const utteranceEvent: UtteranceEvent = {
-          sessionId: connection.callId as UUID,
-          speakerId: 'unknown-speaker' as UUID,  // We don't know who spoke (could be any participant)
-          speakerName: 'Participant',            // Generic name since we can't identify
-          speakerType: 'human',                  // Assume human spoke (AIs don't hear themselves)
-          transcript: result.text,
-          confidence: result.confidence ?? 0.8,
-          timestamp: Date.now()
-        };
-
-        // Route to orchestrator asynchronously (don't block audio processing)
-        getVoiceOrchestrator().onUtterance(utteranceEvent).catch(error => {
-          console.warn('🤖 AIAudioBridge: Failed to route utterance:', error);
-        });
-      }
-    } catch (error) {
-      console.warn(`🤖 AIAudioBridge: STT error:`, error);
-    }
-  }
-
-  /**
-   * Calculate RMS of audio samples
-   */
-  private calculateRMS(samples: Int16Array): number {
-    if (samples.length === 0) return 0;
-    const sumSquares = samples.reduce((sum, s) => sum + s * s, 0);
-    return Math.sqrt(sumSquares / samples.length);
   }
 
   /**

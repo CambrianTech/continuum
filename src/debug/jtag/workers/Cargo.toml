@@ -97,7 +97,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 fastembed = "4"
 
 # ONNX Runtime - ensure all crates use download-binaries (not load-dynamic)
-ort = { version = "2.0.0-rc.9", default-features = false, features = ["download-binaries"] }
+# ndarray feature enables Tensor::from_array() for ndarray arrays
+ort = { version = "2.0.0-rc.9", default-features = false, features = ["download-binaries", "ndarray"] }
+ndarray = "0.16"
 
 # WebSocket
 tokio-tungstenite = "0.21"

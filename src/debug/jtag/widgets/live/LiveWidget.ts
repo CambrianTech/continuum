@@ -22,7 +22,7 @@ import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboratio
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
-import { AudioStreamClient } from './AudioStreamClient';
+import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
 
 interface Participant {
   userId: UUID;
@@ -51,6 +51,8 @@ export class LiveWidget extends ReactiveWidget {
   @reactive() private cameraEnabled: boolean = false;
   @reactive() private screenShareEnabled: boolean = false;
   @reactive() private micPermissionGranted: boolean = false;
+  @reactive() private captionsEnabled: boolean = true;  // Show live transcription captions
+  @reactive() private currentCaption: { speakerName: string; text: string; timestamp: number } | null = null;
 
   // Entity association (the room/activity this live session is attached to)
   @reactive() private entityId: string = '';
@@ -64,6 +66,9 @@ export class LiveWidget extends ReactiveWidget {
 
   // Event subscriptions
   private unsubscribers: Array<() => void> = [];
+
+  // Caption fade timeout
+  private captionFadeTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Styles imported from SCSS
   static override styles = [
@@ -163,6 +168,13 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   private cleanup(): void {
+    // Clear caption timeout
+    if (this.captionFadeTimeout) {
+      clearTimeout(this.captionFadeTimeout);
+      this.captionFadeTimeout = null;
+    }
+    this.currentCaption = null;
+
     // Unsubscribe from events
     this.unsubscribers.forEach(unsub => unsub());
     this.unsubscribers = [];
@@ -351,6 +363,22 @@ export class LiveWidget extends ReactiveWidget {
           },
           onConnectionChange: (connected) => {
             console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
+          },
+          onTranscription: (transcription: TranscriptionResult) => {
+            // [STEP 9] LiveWidget emitting event to server
+            console.log(`[STEP 9] 📤 LiveWidget emitting voice:transcription event: "${transcription.text.slice(0, 50)}..."`);
+            Events.emit('voice:transcription', {
+              sessionId: this.sessionId,
+              speakerId: transcription.userId,
+              speakerName: transcription.displayName,
+              transcript: transcription.text,
+              confidence: transcription.confidence,
+              language: transcription.language,
+              timestamp: Date.now()
+            });
+
+            // Update caption display
+            this.setCaption(transcription.displayName, transcription.text);
           },
         });
 
@@ -545,6 +573,44 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
+   * Toggle caption display on/off
+   */
+  private toggleCaptions(): void {
+    this.captionsEnabled = !this.captionsEnabled;
+    if (!this.captionsEnabled) {
+      this.currentCaption = null;
+    }
+  }
+
+  /**
+   * Set a caption to display (auto-fades after 5 seconds)
+   */
+  private setCaption(speakerName: string, text: string): void {
+    console.log(`[CAPTION] Setting caption: "${speakerName}: ${text.slice(0, 30)}..."`);
+
+    // Clear existing timeout
+    if (this.captionFadeTimeout) {
+      clearTimeout(this.captionFadeTimeout);
+    }
+
+    // Set caption
+    this.currentCaption = {
+      speakerName,
+      text,
+      timestamp: Date.now()
+    };
+
+    // Force re-render
+    this.requestUpdate();
+
+    // Auto-fade after 5 seconds of no new transcription
+    this.captionFadeTimeout = setTimeout(() => {
+      this.currentCaption = null;
+      this.requestUpdate();
+    }, 5000);
+  }
+
+  /**
    * Calculate optimal grid layout based on participant count
    * Returns string for CSS data-count attribute
    */
@@ -575,6 +641,12 @@ export class LiveWidget extends ReactiveWidget {
             }
           </div>
           <div class="controls">
+            ${this.captionsEnabled && this.currentCaption ? html`
+              <div class="caption-display">
+                <span class="caption-speaker">${this.currentCaption.speakerName}:</span>
+                <span class="caption-text">${this.currentCaption.text}</span>
+              </div>
+            ` : ''}
             <button
               id="mic-btn"
               class="control-btn ${this.micEnabled ? 'active' : 'inactive'}"
@@ -604,6 +676,13 @@ export class LiveWidget extends ReactiveWidget {
               title="${this.screenShareEnabled ? 'Stop sharing' : 'Share screen'}"
             >
               ${this.renderScreenShareIcon()}
+            </button>
+            <button
+              class="control-btn ${this.captionsEnabled ? 'active' : 'inactive'}"
+              @click=${this.toggleCaptions}
+              title="${this.captionsEnabled ? 'Hide captions' : 'Show captions'}"
+            >
+              ${this.renderCaptionsIcon()}
             </button>
             <button
               class="control-btn leave"
@@ -642,9 +721,8 @@ export class LiveWidget extends ReactiveWidget {
         }
         <div class="participant-name">${participant.displayName}</div>
         <div class="participant-indicators">
-          ${!participant.micEnabled
-            ? html`<div class="indicator muted">${this.renderMutedIndicator()}</div>`
-            : ''
+          ${/* TODO: Sync mic status from Rust call_server to show accurate muted state */
+            '' /* Disabled: micEnabled not synced, shows everyone as muted */
           }
         </div>
       </div>
@@ -736,6 +814,19 @@ export class LiveWidget extends ReactiveWidget {
         <path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"></path>
         <line x1="22" x2="16" y1="2" y2="8"></line>
         <line x1="16" x2="22" y1="2" y2="8"></line>
+      </svg>
+    `;
+  }
+
+  private renderCaptionsIcon(): TemplateResult {
+    // CC (closed captions) icon
+    return html`
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+        <path d="M7 10h1.5"></path>
+        <path d="M7 14h5"></path>
+        <path d="M15 10h2"></path>
+        <path d="M15 14h2"></path>
       </svg>
     `;
   }

@@ -5,6 +5,7 @@
 
 use crate::handle::Handle;
 use std::collections::HashMap;
+use tracing::{debug, info, warn};
 
 /// Audio test utilities for generating synthetic audio
 pub mod test_utils {
@@ -78,56 +79,240 @@ pub mod test_utils {
     }
 }
 
-/// Participant audio stream
+/// Standard frame size (20ms at 16kHz = 320 samples)
+pub const FRAME_SIZE: usize = 320;
+
+/// Max speech buffer for transcription (30s at 16kHz) - pre-allocated once
+const MAX_SPEECH_SAMPLES: usize = 16000 * 30;
+
+/// Streaming transcription window (3s) - triggers periodic transcription during speech
+const STREAMING_WINDOW_SAMPLES: usize = 16000 * 3;
+
+/// Participant audio stream - zero allocations on hot path
 #[derive(Debug)]
 pub struct ParticipantStream {
     pub handle: Handle,
     pub user_id: String,
     pub display_name: String,
-    /// Current audio buffer (latest frame)
-    pub audio_buffer: Vec<i16>,
+    /// Current audio frame - FIXED SIZE array, no allocation
+    audio_frame: [i16; FRAME_SIZE],
+    /// Valid samples in audio_frame (may be < FRAME_SIZE for partial frames)
+    frame_len: usize,
     /// Is this participant currently muted?
     pub muted: bool,
-    /// Is this an AI participant (TTS injection)?
+    /// Is this an AI participant (no transcription needed - we have their text)?
     pub is_ai: bool,
+
+    // === Transcription state (streaming, not batch) ===
+    /// Pre-allocated speech ring buffer (fixed capacity, never grows)
+    speech_ring: Vec<i16>,
+    /// Write position in ring buffer
+    speech_write_pos: usize,
+    /// How many samples accumulated since last transcription emit
+    samples_since_emit: usize,
+    /// Consecutive silence frames for end-of-speech
+    silence_frames: u32,
+    /// Is currently speaking?
+    is_speaking: bool,
+    /// Min speech to transcribe (0.5s)
+    min_speech_samples: usize,
+    /// Silence frames to end speech (320ms)
+    silence_threshold_frames: u32,
+}
+
+/// Result of pushing audio - indicates if speech ended and transcription is ready
+#[derive(Debug)]
+pub struct PushAudioResult {
+    /// Speech ended and buffer is ready for transcription
+    pub speech_ended: bool,
+    /// Accumulated speech samples (only populated if speech_ended is true)
+    pub speech_samples: Option<Vec<i16>>,
 }
 
 impl ParticipantStream {
     pub fn new(handle: Handle, user_id: String, display_name: String) -> Self {
+        // Pre-allocate speech buffer ONCE at construction - never grows
+        let mut speech_ring = Vec::with_capacity(MAX_SPEECH_SAMPLES);
+        speech_ring.resize(MAX_SPEECH_SAMPLES, 0);
+
         Self {
             handle,
             user_id,
             display_name,
-            audio_buffer: Vec::new(),
+            audio_frame: [0i16; FRAME_SIZE],
+            frame_len: 0,
             muted: false,
             is_ai: false,
+            speech_ring,
+            speech_write_pos: 0,
+            samples_since_emit: 0,
+            silence_frames: 0,
+            is_speaking: false,
+            min_speech_samples: 8000,  // 0.5s at 16kHz
+            silence_threshold_frames: 10,  // ~320ms of silence ends speech
         }
     }
 
     pub fn new_ai(handle: Handle, user_id: String, display_name: String) -> Self {
+        // AI participants don't need speech buffer (no transcription)
         Self {
             handle,
             user_id,
             display_name,
-            audio_buffer: Vec::new(),
+            audio_frame: [0i16; FRAME_SIZE],
+            frame_len: 0,
             muted: false,
             is_ai: true,
+            speech_ring: Vec::new(), // Empty - AI doesn't need transcription
+            speech_write_pos: 0,
+            samples_since_emit: 0,
+            silence_frames: 0,
+            is_speaking: false,
+            min_speech_samples: 8000,
+            silence_threshold_frames: 10,
         }
     }
 
-    /// Update audio buffer with new samples
-    pub fn push_audio(&mut self, samples: Vec<i16>) {
-        self.audio_buffer = samples;
+    /// Update audio frame with new samples - ZERO ALLOCATION on hot path
+    /// Returns PushAudioResult indicating if transcription should run
+    ///
+    /// Streaming behavior:
+    /// - During speech: emits every STREAMING_WINDOW_SAMPLES for partial transcription
+    /// - On silence: emits final transcription with is_final=true
+    pub fn push_audio(&mut self, samples: Vec<i16>) -> PushAudioResult {
+        // [STEP 1] Audio frame received
+        // Copy into fixed-size frame (no allocation, just memcpy)
+        let copy_len = samples.len().min(FRAME_SIZE);
+        self.audio_frame[..copy_len].copy_from_slice(&samples[..copy_len]);
+        self.frame_len = copy_len;
+
+        // Skip VAD for AI participants (we already have their text from TTS)
+        if self.is_ai || self.muted {
+            return PushAudioResult {
+                speech_ended: false,
+                speech_samples: None,
+            };
+        }
+
+        // VAD: Check if current frame is silence
+        let is_silence = test_utils::is_silence(&samples, 500.0);
+
+        if is_silence {
+            self.silence_frames += 1;
+
+            // If we were speaking and hit silence threshold, speech has ended
+            if self.is_speaking && self.silence_frames >= self.silence_threshold_frames {
+                self.is_speaking = false;
+                info!("[STEP 3] 🔇 VAD: Speech ENDED for {} ({}ms of speech)",
+                    self.display_name,
+                    self.samples_since_emit * 1000 / 16000);
+
+                // Emit final transcription if we have enough speech
+                if self.samples_since_emit >= self.min_speech_samples {
+                    let speech = self.extract_speech_buffer();
+                    info!("[STEP 4] 📤 Emitting FINAL transcription ({} samples) for {}",
+                        speech.len(), self.display_name);
+                    self.samples_since_emit = 0;
+                    return PushAudioResult {
+                        speech_ended: true,
+                        speech_samples: Some(speech),
+                    };
+                } else {
+                    debug!("[STEP 3] ⏭️ Speech too short ({}ms), discarding",
+                        self.samples_since_emit * 1000 / 16000);
+                    self.samples_since_emit = 0;
+                }
+            }
+        } else {
+            // Speech detected
+            if !self.is_speaking {
+                info!("[STEP 3] 🎤 VAD: Speech STARTED for {}", self.display_name);
+            }
+            self.silence_frames = 0;
+            self.is_speaking = true;
+
+            // [STEP 2] Write to pre-allocated ring buffer (no allocation)
+            self.write_to_ring(&samples);
+
+            // STREAMING: Emit partial transcription every 3 seconds during speech
+            if self.samples_since_emit >= STREAMING_WINDOW_SAMPLES {
+                let speech = self.extract_speech_buffer();
+                info!("[STEP 4] 📤 Emitting STREAMING transcription ({} samples, 3s chunk) for {}",
+                    speech.len(), self.display_name);
+                self.samples_since_emit = 0;
+                return PushAudioResult {
+                    speech_ended: false, // Not final - speech continues
+                    speech_samples: Some(speech),
+                };
+            }
+        }
+
+        PushAudioResult {
+            speech_ended: false,
+            speech_samples: None,
+        }
+    }
+
+    /// Write samples to pre-allocated ring buffer - ZERO ALLOCATION
+    fn write_to_ring(&mut self, samples: &[i16]) {
+        if self.speech_ring.is_empty() {
+            return; // AI participant has no buffer
+        }
+
+        for &sample in samples {
+            self.speech_ring[self.speech_write_pos] = sample;
+            self.speech_write_pos = (self.speech_write_pos + 1) % MAX_SPEECH_SAMPLES;
+        }
+        self.samples_since_emit += samples.len();
+    }
+
+    /// Extract accumulated speech from ring buffer
+    /// Returns a new Vec (allocation happens here, but this is off the hot path)
+    fn extract_speech_buffer(&mut self) -> Vec<i16> {
+        if self.samples_since_emit == 0 {
+            return Vec::new();
+        }
+
+        // Calculate read position (write_pos - samples_since_emit, wrapped)
+        let read_start = if self.speech_write_pos >= self.samples_since_emit {
+            self.speech_write_pos - self.samples_since_emit
+        } else {
+            MAX_SPEECH_SAMPLES - (self.samples_since_emit - self.speech_write_pos)
+        };
+
+        // Extract samples
+        let mut result = Vec::with_capacity(self.samples_since_emit);
+        for i in 0..self.samples_since_emit {
+            let idx = (read_start + i) % MAX_SPEECH_SAMPLES;
+            result.push(self.speech_ring[idx]);
+        }
+
+        result
     }
 
     /// Get audio samples (returns silence if muted)
     pub fn get_audio(&self) -> &[i16] {
-        if self.muted {
+        if self.muted || self.frame_len == 0 {
             &[]
         } else {
-            &self.audio_buffer
+            &self.audio_frame[..self.frame_len]
         }
     }
+
+    /// Check if currently speaking (for UI indicators)
+    pub fn is_currently_speaking(&self) -> bool {
+        self.is_speaking
+    }
+}
+
+/// Result of pushing audio to mixer - includes participant info if transcription ready
+#[derive(Debug)]
+pub struct MixerPushResult {
+    pub success: bool,
+    pub speech_ended: bool,
+    pub user_id: Option<String>,
+    pub display_name: Option<String>,
+    pub speech_samples: Option<Vec<i16>>,
 }
 
 /// Audio Mixer for multi-participant calls
@@ -176,12 +361,36 @@ impl AudioMixer {
     }
 
     /// Update audio for a participant
-    pub fn push_audio(&mut self, handle: &Handle, samples: Vec<i16>) -> bool {
+    /// Returns MixerPushResult with transcription data if speech ended
+    pub fn push_audio(&mut self, handle: &Handle, samples: Vec<i16>) -> MixerPushResult {
         if let Some(participant) = self.participants.get_mut(handle) {
-            participant.push_audio(samples);
-            true
+            let result = participant.push_audio(samples);
+
+            if result.speech_ended {
+                MixerPushResult {
+                    success: true,
+                    speech_ended: true,
+                    user_id: Some(participant.user_id.clone()),
+                    display_name: Some(participant.display_name.clone()),
+                    speech_samples: result.speech_samples,
+                }
+            } else {
+                MixerPushResult {
+                    success: true,
+                    speech_ended: false,
+                    user_id: None,
+                    display_name: None,
+                    speech_samples: None,
+                }
+            }
         } else {
-            false
+            MixerPushResult {
+                success: false,
+                speech_ended: false,
+                user_id: None,
+                display_name: None,
+                speech_samples: None,
+            }
         }
     }
 

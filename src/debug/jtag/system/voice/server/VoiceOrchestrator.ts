@@ -357,7 +357,7 @@ export class VoiceOrchestrator {
   }
 
   /**
-   * Setup event listeners for persona responses
+   * Setup event listeners for persona responses and incoming transcriptions
    */
   private setupEventListeners(): void {
     // Listen for persona responses that might need TTS routing
@@ -369,6 +369,34 @@ export class VoiceOrchestrator {
       if (this.isVoiceMessage(event.originalMessage)) {
         await this.onPersonaResponse(event.personaId, event.response, event.originalMessage);
       }
+    });
+
+    // Listen for transcriptions from Rust streaming-core via browser
+    // This bridges the Rust call_server's Whisper STT to the persona system
+    Events.subscribe('voice:transcription', async (event: {
+      sessionId: string;
+      speakerId: string;
+      speakerName: string;
+      transcript: string;
+      confidence: number;
+      language: string;
+      timestamp: number;
+    }) => {
+      console.log(`[STEP 10] 🎙️ VoiceOrchestrator RECEIVED event: "${event.transcript.slice(0, 50)}..."`);
+
+      // Convert to UtteranceEvent and process
+      const utteranceEvent: UtteranceEvent = {
+        sessionId: event.sessionId as UUID,
+        speakerId: event.speakerId as UUID,
+        speakerName: event.speakerName,
+        speakerType: 'human',  // Could be enhanced to detect AI speakers
+        transcript: event.transcript,
+        confidence: event.confidence,
+        timestamp: event.timestamp
+      };
+
+      console.log(`[STEP 11] 🎯 VoiceOrchestrator calling onUtterance for turn arbitration`);
+      await this.onUtterance(utteranceEvent);
     });
   }
 

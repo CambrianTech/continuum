@@ -20,6 +20,7 @@
   flex-direction: column;
   height: 100%;
   gap: 0;
+  position: relative;  // For caption overlay positioning
 }
 
 // ========================================
@@ -230,6 +231,7 @@
   padding: $spacing-lg;
   background: #252525;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;  // For caption positioning
 }
 
 .control-btn {
@@ -496,6 +498,38 @@
       right: 4px;
       font-size: 0.75rem;
     }
+  }
+}
+
+// ========================================
+// Caption Display (Live Transcription)
+// Subtle captions inside controls bar
+// ========================================
+
+.caption-display {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70%;
+  background: rgba(0, 0, 0, 0.8);
+  padding: $spacing-xs $spacing-md;
+  border-radius: $border-radius-sm;
+  font-size: $font-size-sm;
+  line-height: 1.3;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  .caption-speaker {
+    color: rgba(255, 255, 255, 0.6);
+    font-weight: 600;
+    margin-right: $spacing-xs;
+  }
+
+  .caption-text {
+    color: white;
   }
 }
 

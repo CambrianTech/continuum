@@ -236,9 +236,9 @@ fn synthesize_sync(
     let outputs = model
         .session
         .run(ort::inputs![
-            "tokens" => text_array.view(),
-            "voice" => voice_array.view(),
-            "speed" => speed_array.view()
+            "tokens" => text_array,
+            "voice" => voice_array,
+            "speed" => speed_array
         ]?)
         .map_err(|e| KokoroError::InferenceFailed(format!("ONNX inference failed: {}", e)))?;
 
@@ -248,13 +248,9 @@ fn synthesize_sync(
         .1;
 
     // Convert float output to i16 samples
-    let audio_data: Vec<f32> = audio_output
-        .try_extract_tensor::<f32>()
-        .map_err(|e| KokoroError::InferenceFailed(format!("Failed to extract audio: {}", e)))?
-        .view()
-        .iter()
-        .copied()
-        .collect();
+    let (_, audio_data) = audio_output
+        .try_extract_raw_tensor::<f32>()
+        .map_err(|e| KokoroError::InferenceFailed(format!("Failed to extract audio: {}", e)))?;
 
     // Convert f32 [-1, 1] to i16
     let samples: Vec<i16> = audio_data
