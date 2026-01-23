@@ -276,7 +276,7 @@ mod tests {
     fn test_resample() {
         // 6 samples at 22050Hz should become ~4 samples at 16000Hz
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = PiperTTS::resample_22k_to_16k(&input);
+        let output = PiperTTS::resample_to_16k(&input, 22050);
         assert!(output.len() >= 4 && output.len() <= 5);
     }
 }
