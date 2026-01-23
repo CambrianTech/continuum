@@ -18,24 +18,70 @@ PIPER_DIR="$MODELS_DIR/piper"
 mkdir -p "$WHISPER_DIR"
 mkdir -p "$PIPER_DIR"
 
-# Whisper model (for STT) - UPGRADED to medium for better accuracy
-WHISPER_MODEL="$WHISPER_DIR/ggml-medium.en.bin"
-WHISPER_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin"
+# Load config.env if it exists to get WHISPER_MODEL preference
+CONFIG_FILE="$HOME/.continuum/config.env"
+if [ -f "$CONFIG_FILE" ]; then
+  # Source the config to load WHISPER_MODEL
+  set -a  # Export all variables
+  source "$CONFIG_FILE"
+  set +a
+fi
 
-if [ ! -f "$WHISPER_MODEL" ]; then
-  echo -e "${YELLOW}Downloading Whisper medium.en model (~1.5GB) for better accuracy...${NC}"
+# Default to large-v3-turbo if not set (best balance of speed + accuracy)
+WHISPER_MODEL_NAME="${WHISPER_MODEL:-large-v3-turbo}"
+
+# Map model name to filename and URL
+case "$WHISPER_MODEL_NAME" in
+  "base")
+    WHISPER_FILE="ggml-base.en.bin"
+    WHISPER_SIZE="~74MB"
+    WHISPER_DESC="fastest, ~60-70% accuracy"
+    ;;
+  "small")
+    WHISPER_FILE="ggml-small.en.bin"
+    WHISPER_SIZE="~244MB"
+    WHISPER_DESC="fast, ~75-80% accuracy"
+    ;;
+  "medium")
+    WHISPER_FILE="ggml-medium.en.bin"
+    WHISPER_SIZE="~1.5GB"
+    WHISPER_DESC="balanced, ~75-85% accuracy"
+    ;;
+  "large-v3")
+    WHISPER_FILE="ggml-large-v3.bin"
+    WHISPER_SIZE="~3GB"
+    WHISPER_DESC="best accuracy ~90-95%, slower"
+    ;;
+  "large-v3-turbo")
+    WHISPER_FILE="ggml-large-v3-turbo.bin"
+    WHISPER_SIZE="~1.5GB"
+    WHISPER_DESC="best balance ~90-95% accuracy, 6x faster"
+    ;;
+  *)
+    echo -e "${YELLOW}Warning: Unknown WHISPER_MODEL='$WHISPER_MODEL_NAME', defaulting to large-v3-turbo${NC}"
+    WHISPER_FILE="ggml-large-v3-turbo.bin"
+    WHISPER_SIZE="~1.5GB"
+    WHISPER_DESC="best balance ~90-95% accuracy"
+    ;;
+esac
+
+WHISPER_MODEL_PATH="$WHISPER_DIR/$WHISPER_FILE"
+WHISPER_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$WHISPER_FILE"
+
+if [ ! -f "$WHISPER_MODEL_PATH" ]; then
+  echo -e "${YELLOW}Downloading Whisper $WHISPER_MODEL_NAME model ($WHISPER_SIZE) - $WHISPER_DESC${NC}"
   echo -e "${YELLOW}This may take a few minutes on first install${NC}"
   if command -v curl &> /dev/null; then
-    curl -L --progress-bar -o "$WHISPER_MODEL" "$WHISPER_URL"
+    curl -L --progress-bar -o "$WHISPER_MODEL_PATH" "$WHISPER_URL"
   elif command -v wget &> /dev/null; then
-    wget -q --show-progress -O "$WHISPER_MODEL" "$WHISPER_URL"
+    wget -q --show-progress -O "$WHISPER_MODEL_PATH" "$WHISPER_URL"
   else
     echo -e "${RED}Error: curl or wget required to download models${NC}"
     exit 1
   fi
-  echo -e "${GREEN}Whisper medium model downloaded (better transcription accuracy)${NC}"
+  echo -e "${GREEN}Whisper $WHISPER_MODEL_NAME model downloaded${NC}"
 else
-  echo -e "${GREEN}Whisper model already exists${NC}"
+  echo -e "${GREEN}Whisper $WHISPER_MODEL_NAME model already exists${NC}"
 fi
 
 # Piper TTS model (high quality, native ONNX - no Python conversion needed!)

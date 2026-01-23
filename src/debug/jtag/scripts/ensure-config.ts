@@ -143,6 +143,20 @@ HF_TOKEN=
 INFERENCE_MODE=auto
 
 # ============================================
+# VOICE MODELS
+# ============================================
+
+# Whisper STT Model - Speech-to-text model selection
+# Values: base, small, medium, large-v3, large-v3-turbo
+# - base: ~74MB, fastest, ~60-70% accuracy (not recommended)
+# - small: ~244MB, fast, ~75-80% accuracy
+# - medium: ~1.5GB, balanced, ~75-85% accuracy
+# - large-v3: ~3GB, best accuracy ~90-95%, slower
+# - large-v3-turbo: ~1.5GB, best balance ~90-95% accuracy, 6x faster than large-v3
+# Default: large-v3-turbo (best balance for real-time use)
+WHISPER_MODEL=large-v3-turbo
+
+# ============================================
 # FEATURE FLAGS
 # ============================================
 

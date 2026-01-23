@@ -37,25 +37,39 @@ impl WhisperSTT {
             return path.clone();
         }
 
-        let candidates = [
-            PathBuf::from("models/whisper/ggml-medium.en.bin"),  // Primary: medium for better accuracy
-            PathBuf::from("models/whisper/ggml-base.en.bin"),    // Fallback: base (less accurate)
-            PathBuf::from("models/whisper/ggml-base.bin"),
-            PathBuf::from("models/ggml-medium.en.bin"),
+        // Get model preference from WHISPER_MODEL env var (default: large-v3-turbo)
+        let model_name = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "large-v3-turbo".to_string());
+
+        // Map model name to filename
+        let model_file = match model_name.as_str() {
+            "base" => "ggml-base.en.bin",
+            "small" => "ggml-small.en.bin",
+            "medium" => "ggml-medium.en.bin",
+            "large-v3" => "ggml-large-v3.bin",
+            "large-v3-turbo" => "ggml-large-v3-turbo.bin",
+            _ => {
+                tracing::warn!("Unknown WHISPER_MODEL='{}', defaulting to large-v3-turbo", model_name);
+                "ggml-large-v3-turbo.bin"
+            }
+        };
+
+        // Search for the model in common locations
+        let candidates = vec![
+            PathBuf::from(format!("models/whisper/{}", model_file)),
             dirs::data_dir()
                 .unwrap_or_default()
-                .join("whisper/ggml-medium.en.bin"),
-            PathBuf::from("/usr/local/share/whisper/ggml-medium.en.bin"),
+                .join(format!("whisper/{}", model_file)),
+            PathBuf::from(format!("/usr/local/share/whisper/{}", model_file)),
         ];
 
-        for path in candidates {
+        for path in &candidates {
             if path.exists() {
-                return path;
+                return path.clone();
             }
         }
 
-        // Default - will fail if not found
-        PathBuf::from("models/whisper/ggml-medium.en.bin")
+        // Default - will fail if not found, but error message will be helpful
+        PathBuf::from(format!("models/whisper/{}", model_file))
     }
 
     /// Synchronous transcription (runs on blocking thread)
