@@ -159,6 +159,17 @@ const FALLBACK_REGISTRY: Record<string, ContentTypeConfig> = {
     requiresEntity: true,  // Needs userId (uniqueId or UUID)
     rightPanel: { widget: 'chat-widget', room: 'help', compact: true },
   },
+
+  // Live collaboration - audio/video/screen share
+  // Like Slack huddles, Discord voice channels, Zoom
+  // Can be attached to any room/activity as a modality layer
+  live: {
+    widget: 'live-widget',
+    displayName: 'Live',
+    pathPrefix: '/live',
+    requiresEntity: true,  // Needs roomId to associate with
+    rightPanel: null,  // Live IS the main interaction (has its own UI for participants)
+  },
 };
 
 /**

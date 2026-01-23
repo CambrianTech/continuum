@@ -19,6 +19,15 @@ import { Commands } from '@system/core/shared/Commands';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionProposeCommand } from '../shared/DecisionProposeCommand';
 import type { DecisionProposeParams, DecisionProposeResult } from '../shared/DecisionProposeTypes';
+
+/**
+ * Extended params with optional callerId/personaId injected by PersonaToolExecutor
+ * These fields are dynamically added for AI tool calls but not part of base schema
+ */
+interface DecisionProposeParamsWithCaller extends DecisionProposeParams {
+  callerId?: UUID;
+  personaId?: UUID;
+}
 import type { DecisionProposalEntity, DecisionOption } from '@system/data/entities/DecisionProposalEntity';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
@@ -283,9 +292,14 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       }
     }
 
-    // Get proposer info - auto-detect caller identity (similar to ChatSendCommand)
+    // Get proposer info - auto-detect caller identity
+    // Priority: 1) explicit proposerId, 2) injected callerId/personaId, 3) UserIdentityResolver
     let proposerId: UUID;
     let proposerName: string;
+
+    // Check for injected callerId/personaId (from AI tool calls via PersonaToolExecutor)
+    const paramsWithCaller = params as DecisionProposeParamsWithCaller;
+    const injectedCallerId = paramsWithCaller.callerId || paramsWithCaller.personaId;
 
     if (params.proposerId) {
       // Explicit proposerId provided
@@ -300,8 +314,22 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
 
       proposerId = params.proposerId;
       proposerName = proposerResult.data.displayName;
+    } else if (injectedCallerId) {
+      // Use injected callerId from AI tool execution
+      const proposerResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+        collection: COLLECTIONS.USERS,
+        id: injectedCallerId
+      });
+
+      if (!proposerResult.success || !proposerResult.data) {
+        return transformPayload(params, { success: false, error: 'Could not find caller user' });
+      }
+
+      proposerId = injectedCallerId;
+      proposerName = proposerResult.data.displayName;
+      this.log.debug('Using injected callerId for proposer', { proposerId, proposerName });
     } else {
-      // Auto-detect caller identity using UserIdentityResolver
+      // Fallback: Auto-detect caller identity using UserIdentityResolver (CLI calls)
       const identity = await UserIdentityResolver.resolve();
 
       this.log.debug('Auto-detected proposer identity', {

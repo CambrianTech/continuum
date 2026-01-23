@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/voice/transcribe",
+  "version": "1.0.0",
+  "description": "Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.",
+  "main": "server/VoiceTranscribeServerCommand.ts",
+  "types": "shared/VoiceTranscribeTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/VoiceTranscribeIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "voice/transcribe"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

@@ -7,7 +7,7 @@
 
 import type { JTAGContext, CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { SessionCategory, SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import type { SessionCategory, SessionMetadata, EnhancedConnectionContext } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
 /**
  * Session create command parameters
@@ -17,15 +17,12 @@ export interface SessionCreateParams extends CommandParams {
   category: SessionCategory;
   /** Display name for the session */
   displayName: string;
-  /** Optional user ID - will generate if not provided */
+  /** Optional user ID - server resolves from connectionContext.identity for browser-ui clients */
   userId?: UUID;
   /** Whether this should be a shared session */
   isShared?: boolean;
-  /** Connection context with uniqueId for user lookup/creation */
-  connectionContext?: {
-    uniqueId?: string;
-    [key: string]: unknown;
-  };
+  /** REQUIRED: Enhanced connection context with clientType and identity - determines user resolution */
+  connectionContext: EnhancedConnectionContext;
 }
 
 /**
@@ -42,15 +39,18 @@ export interface SessionCreateResult extends JTAGPayload {
 
 /**
  * Create session create parameters with defaults
+ * @param connectionContext REQUIRED - must provide valid connection context with clientType
  */
 export function createSessionCreateParams(
   context: JTAGContext,
   sessionId: UUID,
-  options: Partial<SessionCreateParams> = {}
+  connectionContext: EnhancedConnectionContext,
+  options: Partial<Omit<SessionCreateParams, 'context' | 'sessionId' | 'connectionContext'>> = {}
 ): SessionCreateParams {
   return {
     context,
     sessionId,
+    connectionContext,
     category: options.category || 'user',
     displayName: options.displayName || 'Default Session',
     userId: options.userId,

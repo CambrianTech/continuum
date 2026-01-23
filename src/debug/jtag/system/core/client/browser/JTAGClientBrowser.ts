@@ -46,6 +46,7 @@ import { ConsoleDaemon } from '../../../../daemons/console-daemon/shared/Console
 import { Events } from '../../shared/Events';
 import { startConnectionMonitoring } from './ConnectionMonitor';
 import { initializeFaviconManager } from './FaviconManager';
+import type { ClientType, ConnectionIdentity } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
@@ -250,32 +251,62 @@ export class JTAGClientBrowser extends JTAGClient {
     return new TransportFactoryBrowser(this.context);
   }
 
+  // ========================================================================
+  // CLIENT TYPE & IDENTITY (Unified Client Identity Architecture)
+  // ========================================================================
+
   /**
-   * Get stored userId from localStorage for citizen persistence
+   * Get client type for identity resolution
+   *
+   * Browser is ALWAYS 'browser-ui' - the human using the browser.
+   * Even if Claude Code is assisting, the identity belongs to the human.
    */
-  protected async getStoredUserId(): Promise<UUID | undefined> {
+  protected getClientType(): ClientType {
+    return 'browser-ui';
+  }
+
+  /**
+   * Get identity for browser-ui client type
+   *
+   * IMPORTANT: Browser only sends deviceId. Server owns user identity.
+   * Server will look up or create user based on deviceId.
+   * This ensures clearing site data never causes identity confusion.
+   */
+  protected async getIdentityForClientType(_clientType: ClientType): Promise<ConnectionIdentity> {
     try {
       const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
       const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
-      verbose() && console.log(`🔍 JTAGClientBrowser: Retrieved stored userId: ${identity.userId.slice(0, 8)}...`);
-      return identity.userId;
+
+      verbose() && console.log(`🔑 JTAGClientBrowser: Browser identity - deviceId: ${identity.deviceId.slice(0, 12)}... (server owns userId)`);
+
+      return {
+        // NO userId - server is source of truth for user identity
+        deviceId: identity.deviceId   // Browser/device fingerprint only
+      };
     } catch (error) {
-      console.error(`❌ JTAGClientBrowser: Failed to get stored userId:`, error);
-      return undefined;
+      console.error(`❌ JTAGClientBrowser: Failed to get identity:`, error);
+      return {
+        // Empty identity - server will create new device + user
+      };
     }
   }
 
   /**
-   * Store userId to localStorage for citizen persistence across sessions
+   * DEPRECATED: Server owns user identity now
+   * The user is obtained from the session response, not localStorage
    */
-  protected async storeUserIdentity(userId: UUID): Promise<void> {
-    try {
-      const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
-      await BrowserDeviceIdentity.upgradeToAuthenticated(userId);
-      verbose() && console.log(`✅ JTAGClientBrowser: Stored citizen identity (userId: ${userId.slice(0, 8)}...) to localStorage`);
-    } catch (error) {
-      console.error(`❌ JTAGClientBrowser: Failed to store userId:`, error);
-    }
+  protected async getStoredUserId(): Promise<UUID | undefined> {
+    // Server is source of truth - no local userId storage
+    return undefined;
+  }
+
+  /**
+   * DEPRECATED: Server owns user identity now
+   * No need to store userId locally - server manages the mapping
+   */
+  protected async storeUserIdentity(_userId: UUID): Promise<void> {
+    // No-op: server manages deviceId → userId mapping
+    verbose() && console.log(`🔑 JTAGClientBrowser: storeUserIdentity is deprecated - server owns user identity`);
   }
 
   /**
@@ -317,7 +348,7 @@ export class JTAGClientBrowser extends JTAGClient {
       const { BrowserDeviceIdentity } = await import('../../browser/BrowserDeviceIdentity');
       const identity = await BrowserDeviceIdentity.getOrCreateIdentity();
 
-      verbose() && console.log(`🔧 JTAGClientBrowser: Using device ${identity.deviceId.substring(0, 12)}... user ${identity.userId.substring(0, 8)}...`);
+      verbose() && console.log(`🔧 JTAGClientBrowser: Using device ${identity.deviceId.substring(0, 12)}... (server owns userId)`);
 
       // Try to load existing UserState from localStorage
       const { LocalStorageDataBackend } = await import('../../../../daemons/data-daemon/browser/LocalStorageDataBackend');
@@ -365,7 +396,8 @@ export class JTAGClientBrowser extends JTAGClient {
 
         const newUserState = new UserStateEntity();
         newUserState.id = this.userStateId;
-        newUserState.userId = identity.userId;
+        // userId comes from session (server is source of truth), not local identity
+        newUserState.userId = this.userId;  // Uses getter from base class
         newUserState.deviceId = identity.deviceId;
         // Use single source of truth - default to human preferences for browser users
         newUserState.preferences = getDefaultPreferencesForType('human');

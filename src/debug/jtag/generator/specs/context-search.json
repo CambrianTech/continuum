@@ -1,0 +1,84 @@
+{
+  "name": "ai/context/search",
+  "description": "Semantic context navigation - search memories, messages, timeline across all entity types using cosine similarity via Rust embedding worker",
+  "params": [
+    {
+      "name": "query",
+      "type": "string",
+      "optional": false,
+      "description": "Natural language query - what you're looking for"
+    },
+    {
+      "name": "types",
+      "type": "string[]",
+      "optional": true,
+      "description": "Entity types to search: chat_messages, memories, timeline_events, tool_results (default: all)"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Persona ID to scope search (default: current)"
+    },
+    {
+      "name": "excludeContextId",
+      "type": "string",
+      "optional": true,
+      "description": "Context/room ID to exclude (for cross-context search)"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Max results (default: 10, max: 50)"
+    },
+    {
+      "name": "minSimilarity",
+      "type": "number",
+      "optional": true,
+      "description": "Min cosine similarity threshold 0-1 (default: 0.5)"
+    },
+    {
+      "name": "since",
+      "type": "string",
+      "optional": true,
+      "description": "ISO timestamp - only search items after this time"
+    },
+    {
+      "name": "mode",
+      "type": "string",
+      "optional": true,
+      "description": "Search mode: semantic, keyword, or hybrid (default: semantic)"
+    }
+  ],
+  "results": [
+    {
+      "name": "items",
+      "type": "ContextSearchItem[]",
+      "description": "Matching items ranked by semantic similarity"
+    },
+    {
+      "name": "totalMatches",
+      "type": "number",
+      "description": "Total matches found"
+    },
+    {
+      "name": "durationMs",
+      "type": "number",
+      "description": "Search time in milliseconds"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Search for code-related memories",
+      "command": "./jtag ai/context/search --query=\"TypeScript error handling patterns\"",
+      "expectedResult": "{ items: [...], totalMatches: 5, durationMs: 45 }"
+    },
+    {
+      "description": "Cross-context search excluding current room",
+      "command": "./jtag ai/context/search --query=\"database optimization\" --excludeContextId=\"abc123\" --types=\"memories,timeline_events\""
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

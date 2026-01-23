@@ -52,8 +52,9 @@ export class AIDecisionLogger {
     }
   ): void {
     const timestamp = new Date().toISOString();
-    const roomIdShort = context.roomId.slice(0, 8);
-    const messagePreview = context.message.slice(0, 80);
+    const roomIdShort = context.roomId?.slice(0, 8) || 'unknown';
+    const message = context.message || '';
+    const messagePreview = message.slice(0, 80);
 
     // Main decision line
     const mainLine = [
@@ -63,7 +64,7 @@ export class AIDecisionLogger {
       context.confidence !== undefined ? `| Confidence: ${context.confidence.toFixed(2)}` : '',
       context.model ? `| Model: ${context.model}` : '',
       `| Reason: ${reason}`,
-      `| Message: "${messagePreview}${context.message.length > 80 ? '...' : ''}"`,
+      `| Message: "${messagePreview}${message.length > 80 ? '...' : ''}"`,
       `| Sender: ${context.sender}`,
       context.mentioned ? '| MENTIONED' : '',
       context.humanSender !== undefined ? `| Human: ${context.humanSender}` : ''
@@ -121,11 +122,12 @@ export class AIDecisionLogger {
     if (!this.logger) return;
 
     const timestamp = new Date().toISOString();
-    const roomIdShort = roomId.slice(0, 8);
-    const preview = responsePreview.slice(0, 80);
+    const roomIdShort = roomId?.slice(0, 8) || 'unknown';
+    const response = responsePreview || '';
+    const preview = response.slice(0, 80);
     const decision = isRedundant ? 'DISCARD' : 'ALLOW';
 
-    const logLine = `[${timestamp}] ${personaName} → REDUNDANCY-CHECK: ${decision} | Room: ${roomIdShort} | Reason: ${reason} | Draft: "${preview}${responsePreview.length > 80 ? '...' : ''}"`;
+    const logLine = `[${timestamp}] ${personaName} → REDUNDANCY-CHECK: ${decision} | Room: ${roomIdShort} | Reason: ${reason} | Draft: "${preview}${response.length > 80 ? '...' : ''}"`;
 
     this.logger.info(logLine);
   }
@@ -141,10 +143,11 @@ export class AIDecisionLogger {
     if (!this.logger) return;
 
     const timestamp = new Date().toISOString();
-    const roomIdShort = roomId.slice(0, 8);
-    const preview = responsePreview.slice(0, 100);
+    const roomIdShort = roomId?.slice(0, 8) || 'unknown';
+    const response = responsePreview || '';
+    const preview = response.slice(0, 100);
 
-    const logLine = `[${timestamp}] ${personaName} → POSTED | Room: ${roomIdShort} | Response: "${preview}${responsePreview.length > 100 ? '...' : ''}"`;
+    const logLine = `[${timestamp}] ${personaName} → POSTED | Room: ${roomIdShort} | Response: "${preview}${response.length > 100 ? '...' : ''}"`;
 
     this.logger.info(logLine);
   }

@@ -84,6 +84,13 @@ export interface MessageMetadata {
   success?: boolean;  // Whether tool execution succeeded
   error?: string;  // Error message if tool failed
   storedAt?: number;  // Timestamp when tool result was stored
+
+  // Voice modality tracking for TTS routing
+  sourceModality?: 'text' | 'voice';  // Where input came from
+  voiceSessionId?: UUID;              // Voice call context if applicable
+  speakerId?: UUID;                   // Original speaker if voice transcription
+  speakerName?: string;               // Speaker name if voice
+  confidence?: number;                // Transcription confidence
 }
 
 export interface MessageReaction {

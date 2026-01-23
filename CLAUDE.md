@@ -130,6 +130,99 @@ When you touch any code, improve it. Don't just add your feature and leave the m
 
 ---
 
+## 🧵 OFF-MAIN-THREAD PRINCIPLE (Non-Negotiable)
+
+**NEVER put CPU-intensive work on the main thread. No exceptions.**
+
+This has been the standard since **Grand Central Dispatch (2009)**, then **pthreads**, then **Web Workers**. Every modern SDK does all heavy work off the main thread. This is not optional.
+
+### The Rule
+
+| Work Type | Where It Goes | NOT Main Thread |
+|-----------|---------------|-----------------|
+| Audio processing | `AudioWorklet` (Web) or Rust worker | ❌ ScriptProcessorNode |
+| Video processing | Web Worker with transferable buffers | ❌ Canvas on main thread |
+| AI inference | Rust worker via Unix socket | ❌ WASM on main thread |
+| Image processing | Rust worker or Web Worker | ❌ Direct manipulation |
+| File I/O | Rust worker | ❌ Synchronous reads |
+| Crypto | Web Crypto API (already off-thread) | ❌ JS crypto libs |
+| Search/indexing | Rust worker | ❌ JS array operations |
+
+### Browser: Use AudioWorklet and Web Workers
+
+```typescript
+// ✅ CORRECT - AudioWorklet runs on audio rendering thread
+const workletUrl = new URL('./audio-worklet-processor.js', import.meta.url).href;
+await audioContext.audioWorklet.addModule(workletUrl);
+const workletNode = new AudioWorkletNode(audioContext, 'microphone-processor');
+
+// ✅ CORRECT - Transfer buffers (zero-copy)
+workletNode.port.onmessage = (event) => {
+  // event.data is the Float32Array, transferred not copied
+  sendToServer(event.data);
+};
+
+// In the worklet processor:
+this.port.postMessage(frame, [frame.buffer]);  // Transfer ownership
+
+// ❌ WRONG - ScriptProcessorNode (deprecated, runs on main thread)
+const scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+scriptNode.onaudioprocess = (e) => { /* BLOCKS MAIN THREAD */ };
+```
+
+### Server: Use Rust Workers
+
+```typescript
+// ✅ CORRECT - Heavy compute in Rust via Unix socket
+const result = await Commands.execute('ai/embedding/generate', { text });
+// Rust worker does the work, main thread stays responsive
+
+// ❌ WRONG - Heavy compute in Node.js main thread
+const embedding = computeEmbedding(text);  // BLOCKS EVENT LOOP
+```
+
+### Transferable Objects (Zero-Copy)
+
+Audio and video buffers can be **transferred** between threads without copying:
+
+```typescript
+// ✅ CORRECT - Transfer the ArrayBuffer (zero-copy)
+worker.postMessage(audioBuffer, [audioBuffer.buffer]);
+
+// ❌ WRONG - Copy the data (slow, wastes memory)
+worker.postMessage(audioBuffer);  // Copies entire buffer
+```
+
+### Why This Matters
+
+- **60fps requires <16ms per frame** - ANY blocking kills animations
+- **Audio glitches at 48kHz** - Processing must complete in <20ms
+- **User perceives lag at 100ms** - Main thread blocking = bad UX
+- **The whole system locks up** - One blocking operation cascades
+
+### Detection: Main Thread Violations
+
+Chrome DevTools shows these warnings:
+```
+[Violation] 'requestIdleCallback' handler took 345ms
+[Violation] 'click' handler took 349ms
+[Violation] Added non-passive event listener to a scroll-blocking event
+```
+
+**If you see these, something is wrong with the architecture.**
+
+### The History (Why This Is Non-Negotiable)
+
+- **2009**: Grand Central Dispatch (GCD) - Apple's answer to multicore
+- **2010s**: pthreads became standard in C/C++ for threading
+- **2013**: Web Workers standardized for browser background tasks
+- **2017**: AudioWorklet replaced ScriptProcessorNode (deprecated)
+- **Today**: EVERY professional SDK does heavy work off main thread
+
+**You cannot code like it's 2005.** Modern systems require concurrent architecture.
+
+---
+
 ## 🔌 POLYMORPHISM PATTERN (OpenCV-style)
 
 **Why polymorphism over templates/generics for compute-heavy work:**

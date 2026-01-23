@@ -84,7 +84,7 @@ import { isTestEnvironment } from '../../../shared/BrowserSafeConfig';
 import type { JTAGSystem } from '../../system/shared/JTAGSystem';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { JTAG_BOOTSTRAP_MESSAGES } from './JTAGClientConstants';
-import type { SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import type { SessionMetadata, ClientType, ConnectionIdentity, AssistantContext, EnhancedConnectionContext } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import type { BaseUser } from '../../../user/shared/BaseUser';
 import type { SessionCreateResult } from '../../../../commands/session/create/shared/SessionCreateTypes';
 import type { IConnectionBroker, ConnectionParams } from '../../connection-broker/shared/ConnectionBrokerTypes';
@@ -448,44 +448,69 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       verbose(`🎯 JTAGClient: Requesting shared session assignment from SessionDaemon`);
     }
 
-    // Detect if this is an AI agent based on connection context
+    // ========================================================================
+    // IDENTITY RESOLUTION - clientType determines identity, NOT agent detection
+    // ========================================================================
+
+    // Get client type (abstract method - browser-ui, cli, persona, agent)
+    const clientType = this.getClientType();
+
+    // Get identity for this client type (abstract method)
+    const identity = await this.getIdentityForClientType(clientType);
+
+    // Agent detection is ASSISTANCE context only - NOT used for identity!
     const agentInfo = this.connectionContext?.agentInfo;
-    const isAgent = agentInfo?.detected && agentInfo.confidence > 0.5;
+    const assistant: AssistantContext | undefined = agentInfo?.detected && agentInfo.confidence > 0.5
+      ? { name: agentInfo.name, confidence: agentInfo.confidence, source: agentInfo.plugin }
+      : undefined;
 
-    // Determine category and displayName
-    const category = isAgent ? 'agent' : 'user';
-    const displayName = isAgent && agentInfo?.name
-      ? agentInfo.name
-      : (isEphemeralClient ? 'CLI Client' : 'Anonymous User');
+    // Determine category and displayName from clientType (not agent detection)
+    let category: 'user' | 'agent' | 'persona';
+    let displayName: string;
 
-    verbose(`🔍 JTAGClient: Detected category=${category}, displayName=${displayName}, isAgent=${isAgent}`);
+    switch (clientType) {
+      case 'browser-ui':
+        category = 'user';
+        displayName = 'Browser User';  // Will be resolved to actual user by SessionDaemon
+        break;
+      case 'cli':
+        category = 'user';
+        displayName = 'CLI Client';
+        break;
+      case 'persona':
+        category = 'persona';
+        displayName = 'Persona';  // Will be resolved by SessionDaemon
+        break;
+      case 'agent':
+        category = 'agent';
+        displayName = assistant?.name || 'Unknown Agent';
+        break;
+      default:
+        category = 'user';
+        displayName = 'Unknown Client';
+    }
 
-    // Get stored userId from browser (if available) for citizen persistence
-    const storedUserId = await this.getStoredUserId();
+    verbose(`🔍 JTAGClient: clientType=${clientType}, category=${category}, displayName=${displayName}`);
+    verbose(`🔑 JTAGClient: identity=${JSON.stringify(identity)}, assistant=${assistant?.name || 'none'}`);
 
-    // For agents, derive a consistent uniqueId from the agent name
-    // For CLI clients, use CLI_CLIENT constant
-    // For browser clients, use PRIMARY_HUMAN constant (could be enhanced with login later)
-    // This allows persistent identity across sessions
-    const uniqueId = isAgent && agentInfo?.name
-      ? agentInfo.name.toLowerCase().replace(/\s+/g, '-')
-      : (isEphemeralClient ? DEFAULT_USER_UNIQUE_IDS.CLI_CLIENT : DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
-
-    verbose(`🔑 JTAGClient: Computed uniqueId="${uniqueId}" for ${displayName} (isEphemeralClient=${isEphemeralClient}, isAgent=${isAgent})`);
-
-    // Enhance connectionContext with uniqueId for lookup
-    const enhancedConnectionContext = this.connectionContext
-      ? { ...this.connectionContext, uniqueId }
-      : { uniqueId };
+    // Build enhanced connection context with clear separation
+    const enhancedConnectionContext: EnhancedConnectionContext = {
+      clientType,
+      identity,
+      assistant,  // Metadata only - NEVER used for identity resolution
+      agentInfo: this.connectionContext?.agentInfo,  // Legacy field for compatibility
+      outputPreferences: this.connectionContext?.outputPreferences,
+      capabilities: this.connectionContext?.capabilities
+    };
 
     const sessionParams = {
       context: this.context,
       sessionId: targetSessionId,
       category: category as 'user' | 'agent',
       displayName: displayName,
-      userId: storedUserId, // Pass stored userId to link to existing citizen
-      isShared: true, // All clients use shared sessions by default
-      connectionContext: enhancedConnectionContext // Pass enhanced context with uniqueId for agent detection
+      userId: identity.userId,  // May be undefined for browser-ui (server resolves from deviceId)
+      isShared: true,
+      connectionContext: enhancedConnectionContext  // Contains identity.deviceId
     };
     // Reduce log spam - massive config dump not needed
     // console.log(`🔍 JTAGClient: Sending session/create with params:`, JSON.stringify(sessionParams, null, 2));
@@ -520,6 +545,34 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
    * Get environment-specific transport factory - implemented by JTAGClientServer/JTAGClientBrowser
    */
   protected abstract getTransportFactory(): Promise<ITransportFactory>;
+
+  /**
+   * Get the client type for identity resolution
+   *
+   * Client type determines WHO the session belongs to:
+   * - browser-ui: Human in browser (may have AI assisting)
+   * - cli: Terminal ./jtag commands (may be run by AI or human)
+   * - persona: Internal AI citizen (PersonaUser instances)
+   * - agent: External AI using JTAG as tool (Claude Code, GPT, etc.)
+   * - remote: Future authenticated remote user
+   *
+   * Key insight: clientType is about WHERE the connection comes from, not WHO operates it.
+   */
+  protected abstract getClientType(): ClientType;
+
+  /**
+   * Get identity claims for this client type
+   *
+   * Returns the identity information used for session resolution:
+   * - browser-ui: { userId: from localStorage (human), deviceId: fingerprint }
+   * - cli: { uniqueId: '@cli' }
+   * - persona: { userId: persona's UUID }
+   * - agent: { uniqueId: 'claude-code', 'gpt-4', etc. }
+   *
+   * IMPORTANT: This is separate from agent detection. Agent detection goes
+   * in `assistant` context for attribution, NOT identity resolution.
+   */
+  protected abstract getIdentityForClientType(clientType: ClientType): Promise<ConnectionIdentity>;
 
   /**
    * Get stored userId from browser localStorage - implemented by JTAGClientBrowser

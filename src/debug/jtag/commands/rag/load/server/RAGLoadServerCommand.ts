@@ -4,6 +4,7 @@ import type { RAGLoadParams, RAGLoadResult, LoadedMessage } from '../shared/RAGL
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
+import { contentPreview, getTextSafe } from '../../../../shared/utils/StringUtils';
 
 /**
  * RAG Load Server Command - Test incremental message loading
@@ -144,8 +145,8 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
           shortId: message.id.slice(0, 8),
           timestamp: typeof message.timestamp === 'string' ? message.timestamp : new Date(message.timestamp).toISOString(),
           senderName: message.senderName || 'Unknown',
-          contentPreview: message.content.text.slice(0, 50) + (message.content.text.length > 50 ? '...' : ''),
-          fullContent: showMessageContent ? message.content.text : undefined,
+          contentPreview: contentPreview(message.content, 50),
+          fullContent: showMessageContent ? getTextSafe(message.content) : undefined,
           estimatedTokens,
           cumulativeTokens: tokensUsed
         });

@@ -18,6 +18,7 @@
 import type { UUID } from '../../../../core/types/CrossPlatformUUID';
 import { PersonaTimeline, type RecordEventParams, type ConsciousnessLogger, type TemporalThread, type ContextualEvent } from './PersonaTimeline';
 import type { ContextType, TimelineEventType } from '../../../../data/entities/TimelineEventEntity';
+import { truncate } from '../../../../../shared/utils/StringUtils';
 
 /**
  * Self-model - the persona's understanding of their own state
@@ -219,7 +220,7 @@ export class UnifiedConsciousness {
 
       const wasInterrupted = temporalThread.beforeThis.length > 0;
       const interruptedTask = wasInterrupted && temporalThread.beforeThis[0]
-        ? temporalThread.beforeThis[0].content.slice(0, 100)
+        ? truncate(temporalThread.beforeThis[0].content, 100)
         : undefined;
 
       const context: ConsciousnessContext = {
@@ -388,7 +389,7 @@ export function formatConsciousnessForPrompt(ctx: ConsciousnessContext): string 
   if (ctx.crossContext.relevantEvents.length > 0) {
     sections.push('## Relevant Knowledge From Other Contexts');
     for (const ce of ctx.crossContext.relevantEvents.slice(0, 5)) {
-      const preview = ce.event.content.slice(0, 150);
+      const preview = truncate(ce.event.content, 150);
       const reason = ce.relevanceReason ? ` [${ce.relevanceReason}]` : '';
       sections.push(`- From ${ce.sourceContextName}${reason}: ${preview}`);
     }

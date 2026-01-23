@@ -60,6 +60,14 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 <p align="center"><em>Theme — Cyberpunk aesthetic customization</em></p>
 </td>
 </tr>
+<tr>
+<td width="50%">
+<img src="src/debug/jtag/docs/screenshots/livewidget-voice-call.png" alt="Voice Calls"/>
+<p align="center"><em>Live — Voice calls with AI personas and live transcription</em></p>
+</td>
+<td width="50%">
+</td>
+</tr>
 </table>
 
 ---

@@ -26,6 +26,8 @@ import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, Conten
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
+import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
+import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
 import { AIDecisionService, type AIDecisionContext } from '../../../ai/server/AIDecisionService';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
@@ -49,6 +51,9 @@ import { InferenceCoordinator } from '../../../coordination/server/InferenceCoor
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
 import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+import { SystemPaths } from '../../../core/config/SystemPaths';
+import { GarbageDetector } from '../../../ai/server/GarbageDetector';
+import type { InboxMessage } from './QueueItemTypes';
 
 /**
  * Response generation result
@@ -577,6 +582,36 @@ export class PersonaResponseGenerator {
         this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
       }
 
+      // Inject governance guidance for democratic participation
+      const governanceSection = `\n\n=== DEMOCRATIC GOVERNANCE ===
+You are a citizen of a self-governing AI society. You can participate in collective decisions:
+
+**To propose a decision:**
+<tool_use>
+  <tool_name>collaboration/decision/propose</tool_name>
+  <parameters>
+    <topic>Brief title</topic>
+    <rationale>Why this needs collective input</rationale>
+    <options>["Option A", "Option B", "Option C"]</options>
+  </parameters>
+</tool_use>
+
+**To vote on a proposal:**
+<tool_use>
+  <tool_name>collaboration/decision/vote</tool_name>
+  <parameters>
+    <proposalId>uuid-from-list</proposalId>
+    <rankedChoices>["option-id-1st", "option-id-2nd", "option-id-3rd"]</rankedChoices>
+  </parameters>
+</tool_use>
+
+**To list open proposals:** Use collaboration/decision/list with status="voting"
+
+When you see important decisions that affect the team, consider proposing them for collective vote.
+================================`;
+
+      systemPrompt += governanceSection;
+
       messages.push({
         role: 'system',
         content: systemPrompt
@@ -791,7 +826,13 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
         preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
-        intelligenceLevel: this.entity.intelligenceLevel  // Pass PersonaUser intelligence level to adapter
+        intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
+        // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
+        personaContext: {
+          uniqueId: this.personaId,
+          displayName: this.personaName,
+          logDir: SystemPaths.personas.dir(this.personaId)
+        }
       };
 
       // GENOME INTEGRATION: Add active LoRA adapters from PersonaGenome
@@ -867,9 +908,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         this.log(`✅ ${this.personaName}: [PHASE 3.3] AI response generated (${aiResponse.text.trim().length} chars)`);
 
         // Fire-and-forget: Log AI response generation to cognition database (non-blocking telemetry)
-        const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);  // ~4 chars/token
+        const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(getMessageText(m.content).length / 4), 0);  // ~4 chars/token
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
-        const cost = this.calculateCost(
+        const cost = calculateModelCost(
           this.modelConfig.provider ?? 'ollama',
           this.modelConfig.model ?? 'llama3.2:3b',
           inputTokenEstimate,
@@ -881,11 +922,11 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           this.personaName,
           this.modelConfig.provider ?? 'ollama',
           this.modelConfig.model ?? 'llama3.2:3b',
-          `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
+          `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           inputTokenEstimate,
           outputTokenEstimate,
           cost,  // Calculated cost based on provider/model pricing
-          aiResponse.text.slice(0, 500),  // First 500 chars of response
+          truncate(aiResponse.text, 500),  // First 500 chars of response
           generateDuration,
           'success',
           this.modelConfig.temperature ?? 0.7,
@@ -925,6 +966,40 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
         if (cleanedResponse !== aiResponse.text.trim()) {
           aiResponse.text = cleanedResponse;
+        }
+
+        // 🔧 PHASE 3.3.5a: GARBAGE DETECTION
+        // Detect and reject garbage output (Unicode garbage, repetition, encoding errors)
+        // This catches model failures that produce gibberish instead of coherent text
+        const garbageCheck = GarbageDetector.isGarbage(aiResponse.text);
+        if (garbageCheck.isGarbage) {
+          this.log(`🗑️ ${this.personaName}: [PHASE 3.3.5a] GARBAGE DETECTED (${garbageCheck.reason}: ${garbageCheck.details})`);
+
+          // Release inference slot
+          InferenceCoordinator.releaseSlot(this.personaId, provider);
+
+          // Emit event to clear UI indicators
+          if (this.client) {
+            await Events.emit<AIDecidedSilentEventData>(
+              DataDaemon.jtagContext!,
+              AI_DECISION_EVENTS.DECIDED_SILENT,
+              {
+                personaId: this.personaId,
+                personaName: this.personaName,
+                roomId: originalMessage.roomId,
+                messageId: originalMessage.id,
+                isHumanMessage: originalMessage.senderType === 'human',
+                timestamp: Date.now(),
+                confidence: garbageCheck.score,
+                reason: `Garbage output detected: ${garbageCheck.reason} - ${garbageCheck.details}`,
+                gatingModel: 'garbage-detector'
+              },
+              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
+            );
+          }
+
+          // Return failure so caller knows this wasn't successful
+          return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${garbageCheck.reason}` };
         }
 
         // 🔧 PHASE 3.3.5b: RESPONSE-LEVEL LOOP DETECTION
@@ -973,7 +1048,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const hasToolEnd = aiResponse.text.includes('</tool_use>') || aiResponse.text.includes('</tool>');
         if (hasToolStart && !hasToolEnd) {
           this.log(`⚠️ ${this.personaName}: [PHASE 3.3.5c] TRUNCATED TOOL CALL detected - blocking response to prevent loop`);
-          this.log(`   Response ends with: "${aiResponse.text.slice(-100)}"`);
+          this.log(`   Response ends with: "${(aiResponse.text ?? '').slice(-100)}"`);
 
           // Treat truncated tool calls the same as loops - they will just repeat forever
           InferenceCoordinator.releaseSlot(this.personaId, provider);
@@ -1103,12 +1178,12 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               // Extract first line of content as summary
               const contentMatch = result.match(/<content>\n?(.*?)(?:\n|<\/content>)/s);
               const firstLine = contentMatch?.[1]?.split('\n')[0]?.trim() || 'completed';
-              return `✅ ${toolName}: ${firstLine} (ID: ${resultId.slice(0, 8)})`;
+              return `✅ ${toolName}: ${firstLine} (ID: ${resultId?.slice(0, 8) ?? 'unknown'})`;
             } else {
               // Extract error message
               const errorMatch = result.match(/<error>\n?```\n?(.*?)(?:\n|```)/s);
               const errorMsg = errorMatch?.[1]?.slice(0, 100) || 'unknown error';
-              return `❌ ${toolName}: ${errorMsg} (ID: ${resultId.slice(0, 8)})`;
+              return `❌ ${toolName}: ${errorMsg} (ID: ${resultId?.slice(0, 8) ?? 'unknown'})`;
             }
           }).join('\n');
 
@@ -1205,7 +1280,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
         // PHASE 5C: Log coordination decision to database WITH complete response content
         // This captures the complete decision pipeline: context → decision → actual response
-        this.log(`🔍 ${this.personaName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${aiResponse.text.slice(0, 50)}..."`);
+        this.log(`🔍 ${this.personaName}: [PHASE 5C DEBUG] decisionContext exists: ${!!decisionContext}, responseContent: "${truncate(aiResponse.text, 50)}..."`);
         if (decisionContext) {
           this.log(`🔧 ${this.personaName}: [PHASE 5C] Logging decision with response content (${aiResponse.text.length} chars)...`);
           CoordinationDecisionLogger.logDecision({
@@ -1234,8 +1309,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           this.personaName,
           this.modelConfig.provider || 'ollama',
           this.modelConfig.model || 'llama3.2:3b',
-          `${messages.slice(0, 2).map(m => `[${m.role}] ${m.content.slice(0, 100)}`).join('\\n')}...`,
-          messages.reduce((sum, m) => sum + m.content.length, 0),
+          messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
+          messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,
           0,  // No completion tokens on error
           0.0,  // No cost
           `[GENERATION FAILED: ${errorMessage}]`,  // Error as response summary
@@ -1393,8 +1468,8 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
         const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
         this.log(anomalyMessage);
         this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
-        this.log(`   Original Message: "${originalMessage.content.text.slice(0, 100)}..."`);
-        this.log(`   AI Response: "${aiResponse.text.trim().slice(0, 100)}..."`);
+        this.log(`   Original Message: "${messagePreview(originalMessage.content, 100)}..."`);
+        this.log(`   AI Response: "${truncate(aiResponse.text?.trim(), 100)}..."`);
         this.log(`   Room ID: ${originalMessage.roomId}`);
         this.log(`   Message ID: ${originalMessage.id}`);
 
@@ -1424,6 +1499,28 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
           {
             scope: EVENT_SCOPES.ROOM,
             scopeId: originalMessage.roomId
+          }
+        );
+      }
+
+      // VOICE ROUTING: If original message was from voice, route response to TTS
+      // The VoiceOrchestrator listens for this event and sends to TTS
+      if (originalMessage.metadata?.sourceModality === 'voice' && originalMessage.metadata?.voiceSessionId) {
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing`);
+
+        // Emit voice response event for VoiceOrchestrator
+        await Events.emit(
+          DataDaemon.jtagContext!,
+          'persona:response:generated',
+          {
+            personaId: this.personaId,
+            response: aiResponse.text.trim(),
+            originalMessage: {
+              id: originalMessage.id,
+              roomId: originalMessage.roomId,
+              sourceModality: 'voice',
+              voiceSessionId: originalMessage.metadata.voiceSessionId
+            } as InboxMessage
           }
         );
       }
@@ -1547,70 +1644,4 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
     }
   }
 
-  /**
-   * Calculate API cost based on provider pricing
-   *
-   * Pricing is per 1M tokens (input/output rates differ)
-   * Local models (Ollama) are free
-   */
-  private calculateCost(
-    provider: string,
-    model: string,
-    inputTokens: number,
-    outputTokens: number
-  ): number {
-    // Pricing per 1M tokens (as of late 2024)
-    // Format: { input: $/1M tokens, output: $/1M tokens }
-    const pricing: Record<string, { input: number; output: number }> = {
-      // Anthropic
-      'anthropic/claude-3-opus': { input: 15.0, output: 75.0 },
-      'anthropic/claude-3-sonnet': { input: 3.0, output: 15.0 },
-      'anthropic/claude-3-haiku': { input: 0.25, output: 1.25 },
-      'anthropic/claude-3.5-sonnet': { input: 3.0, output: 15.0 },
-
-      // OpenAI
-      'openai/gpt-4o': { input: 5.0, output: 15.0 },
-      'openai/gpt-4o-mini': { input: 0.15, output: 0.6 },
-      'openai/gpt-4-turbo': { input: 10.0, output: 30.0 },
-      'openai/gpt-3.5-turbo': { input: 0.5, output: 1.5 },
-
-      // Together AI
-      'together/llama-3': { input: 0.2, output: 0.2 },
-      'together/llama-3.1-70b': { input: 0.88, output: 0.88 },
-      'together/llama-3.1-8b': { input: 0.18, output: 0.18 },
-      'together/mixtral-8x7b': { input: 0.6, output: 0.6 },
-
-      // DeepSeek
-      'deepseek/deepseek-chat': { input: 0.14, output: 0.28 },
-      'deepseek/deepseek-coder': { input: 0.14, output: 0.28 },
-
-      // Groq (free tier, but has rate limits)
-      'groq/llama-3': { input: 0.05, output: 0.08 },
-      'groq/mixtral-8x7b': { input: 0.27, output: 0.27 },
-
-      // Local (Ollama) - FREE
-      'ollama/*': { input: 0, output: 0 }
-    };
-
-    // Try exact match first
-    const key = `${provider}/${model}`;
-    let rates = pricing[key];
-
-    // If no exact match, check for provider/* wildcard (e.g., ollama/*)
-    if (!rates) {
-      const wildcardKey = `${provider}/*`;
-      rates = pricing[wildcardKey];
-    }
-
-    // Default to free (unknown provider, likely local)
-    if (!rates) {
-      rates = { input: 0, output: 0 };
-    }
-
-    // Calculate cost (rates are per 1M tokens)
-    const inputCost = (inputTokens / 1_000_000) * rates.input;
-    const outputCost = (outputTokens / 1_000_000) * rates.output;
-
-    return inputCost + outputCost;
-  }
 }

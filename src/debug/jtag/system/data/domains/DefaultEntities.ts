@@ -73,7 +73,7 @@ export const SYSTEM_ROOM_IDS = new Set([
  */
 export const DEFAULT_MESSAGES = {
   WELCOME_GENERAL: stringToUUID('Welcome General Message') as UUID,
-  CLAUDE_INTRO: stringToUUID('Claude Introduction Message') as UUID,
+  // REMOVED: CLAUDE_INTRO was being pulled by RAG and causing personas to hallucinate
   WELCOME_ACADEMY: stringToUUID('Welcome Academy Message') as UUID
 } as const;
 
@@ -117,9 +117,10 @@ export const ROOM_CONFIG = {
 
 /**
  * Message Content Templates
+ * NOTE: Avoid persona-specific messages here - they get indexed by RAG and cause hallucinations
  */
 export const MESSAGE_CONTENT = {
   WELCOME_GENERAL: 'Welcome to the General room! This is where we discuss development, collaborate, and share ideas.',
-  CLAUDE_INTRO: 'Hello! I\'m Claude Code, your AI development assistant. I can help with TypeScript, React, debugging, and system architecture. Feel free to ask me anything!',
+  // REMOVED: CLAUDE_INTRO - personas would see this in RAG and think Claude just introduced itself
   WELCOME_ACADEMY: 'Welcome to the Academy! This room is for learning, tutorials, and educational discussions.'
 } as const;

@@ -28,6 +28,7 @@ import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coo
 import type { RAGContext } from '../../../data/entities/CoordinationDecisionEntity';
 import type { AIDecisionContext } from '../../../ai/server/AIDecisionService';
 import { AIDecisionService } from '../../../ai/server/AIDecisionService';
+import { contentPreview, truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
@@ -187,6 +188,8 @@ export class PersonaMessageEvaluator {
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
+    // Defensive: ensure messageText is always a string (prevents slice errors)
+    const safeMessageText = messageText ?? '';
     const taskStartTime = Date.now();
 
     // SIGNAL DETECTION: Analyze message content for training signals
@@ -200,10 +203,10 @@ export class PersonaMessageEvaluator {
       id: `task-${messageEntity.id}` as UUID,
       domain: 'chat',
       contextId: messageEntity.roomId,
-      description: `Respond to: "${messageText.slice(0, 100)}"`,
+      description: `Respond to: "${safeMessageText.slice(0, 100)}"`,
       priority: calculateMessagePriority(
         {
-          content: messageText,
+          content: safeMessageText,
           timestamp: this.personaUser.timestampToNumber(messageEntity.timestamp),
           roomId: messageEntity.roomId
         },
@@ -274,7 +277,7 @@ export class PersonaMessageEvaluator {
       domain: 'chat',
       contextId: messageEntity.roomId,
       thoughtType: 'observation',
-      thoughtContent: `Received message from ${messageEntity.senderName}: "${messageText.slice(0, 200)}"`,
+      thoughtContent: `Received message from ${messageEntity.senderName}: "${safeMessageText.slice(0, 200)}"`,
       importance: task.priority,
       shareable: false
     });
@@ -286,7 +289,7 @@ export class PersonaMessageEvaluator {
       plan.steps[0].completedAt = Date.now();
 
       // Execute step 2: "Generate thoughtful response" (existing logic)
-      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, messageText);
+      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText);
 
       // If we got here, response was generated (or decision was SILENT)
       plan.steps[1].completed = true;
@@ -368,14 +371,14 @@ export class PersonaMessageEvaluator {
   async evaluateAndPossiblyRespond(
     messageEntity: ChatMessageEntity,
     senderIsHuman: boolean,
-    messageText: string
+    safeMessageText: string
   ): Promise<void> {
     // STEP 2: Check response cap (prevent infinite loops)
     if (this.personaUser.rateLimiter.hasReachedResponseCap(messageEntity.roomId)) {
       const currentCount = this.personaUser.rateLimiter.getResponseCount(messageEntity.roomId);
       const config = this.personaUser.rateLimiter.getConfig();
       this.personaUser.logAIDecision('SILENT', `Response cap reached (${currentCount}/${config.maxResponsesPerSession})`, {
-        message: messageText,
+        message: safeMessageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
       });
@@ -383,13 +386,13 @@ export class PersonaMessageEvaluator {
     }
 
     // STEP 3: Check if mentioned
-    const isMentioned = this.isPersonaMentioned(messageText);
+    const isMentioned = this.isPersonaMentioned(safeMessageText);
 
     // STEP 4: Check rate limiting (before expensive LLM call)
     if (this.personaUser.rateLimiter.isRateLimited(messageEntity.roomId)) {
       const info = this.personaUser.rateLimiter.getRateLimitInfo(messageEntity.roomId);
       this.personaUser.logAIDecision('SILENT', `Rate limited, wait ${info.waitTimeSeconds?.toFixed(1)}s more`, {
-        message: messageText,
+        message: safeMessageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId
       });
@@ -401,7 +404,7 @@ export class PersonaMessageEvaluator {
     const sleepMode = personaSleepManager.getMode(this.personaUser.id);
     if (sleepMode !== 'active') {
       // Detect if this is a new topic (enables until_topic sleep mode)
-      const isNewTopic = await this.detectNewTopic(messageText, messageEntity.roomId);
+      const isNewTopic = await this.detectNewTopic(safeMessageText, messageEntity.roomId);
 
       const shouldRespondInSleepMode = personaSleepManager.shouldRespond(this.personaUser.id, {
         isHuman: senderIsHuman,
@@ -412,7 +415,7 @@ export class PersonaMessageEvaluator {
       if (!shouldRespondInSleepMode) {
         this.log(`😴 ${this.personaUser.displayName}: In ${sleepMode} mode, skipping message from ${messageEntity.senderName}`);
         this.personaUser.logAIDecision('SILENT', `Voluntary sleep mode: ${sleepMode} (isHuman=${senderIsHuman}, isMention=${isMentioned})`, {
-          message: messageText,
+          message: safeMessageText,
           sender: messageEntity.senderName,
           roomId: messageEntity.roomId,
           humanSender: senderIsHuman,
@@ -437,7 +440,7 @@ export class PersonaMessageEvaluator {
           messageId: messageEntity.id,
           isHumanMessage: senderIsHuman,
           timestamp: Date.now(),
-          messagePreview: messageText.slice(0, 100),
+          messagePreview: safeMessageText.slice(0, 100),
           senderName: messageEntity.senderName
         },
         {
@@ -451,12 +454,12 @@ export class PersonaMessageEvaluator {
 
     // FULL TRANSPARENCY LOGGING
     this.log(`\n${'='.repeat(80)}`);
-    this.log(`🧠 ${this.personaUser.displayName}: GATING DECISION for message "${messageText.slice(0, 60)}..."`);
+    this.log(`🧠 ${this.personaUser.displayName}: GATING DECISION for message "${safeMessageText.slice(0, 60)}..."`);
     this.log(`${'='.repeat(80)}`);
     this.log(`📊 Context: ${gatingResult.ragContextSummary?.filteredMessages ?? 0} messages in ${gatingResult.ragContextSummary?.timeWindowMinutes ?? 0}min window`);
     this.log(`💬 Conversation history seen by AI:`);
     gatingResult.conversationHistory?.slice(-5).forEach((msg, i) => {
-      this.log(`   ${i + 1}. [${msg.name}] ${msg.content.slice(0, 80)}...`);
+      this.log(`   ${i + 1}. [${msg.name}] ${truncate(msg.content, 80)}...`);
     });
     this.log(`\n🎯 Decision: ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'}`);
     this.log(`   Confidence: ${(gatingResult.confidence * 100).toFixed(0)}%`);
@@ -495,7 +498,7 @@ export class PersonaMessageEvaluator {
       }
 
       this.personaUser.logAIDecision('SILENT', gatingResult.reason, {
-        message: messageText,
+        message: safeMessageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId,
         confidence: gatingResult.confidence,
@@ -556,7 +559,7 @@ export class PersonaMessageEvaluator {
     } : undefined;
 
     this.personaUser.logAIDecision('RESPOND', gatingResult.reason, {
-      message: messageText,
+      message: safeMessageText,
       sender: messageEntity.senderName,
       roomId: messageEntity.roomId,
       mentioned: isMentioned,
@@ -666,7 +669,7 @@ export class PersonaMessageEvaluator {
         }
       }
 
-      this.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${m.data.content.text.slice(0, 50)}`).join(', ')}`);
+      this.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${contentPreview(m.data.content, 50)}`).join(', ')}`);
     }
 
     // 🔧 PHASE: Update RAG context
@@ -767,24 +770,24 @@ export class PersonaMessageEvaluator {
    *
    * TODO Phase 2: Use dedicated mention/directive events instead of text parsing
    */
-  private isPersonaMentioned(messageText: string): boolean {
-    const messageTextLower = messageText.toLowerCase();
+  private isPersonaMentioned(safeMessageText: string): boolean {
+    const safeMessageTextLower = safeMessageText.toLowerCase();
     const displayNameLower = this.personaUser.displayName.toLowerCase();
     const uniqueIdLower = this.personaUser.entity.uniqueId?.toLowerCase() || '';
 
     // Check for @mentions ANYWHERE in message: "@PersonaName" or "@uniqueid"
     // Works like Discord/Slack - @ can be at start, middle, or end
-    if (messageTextLower.includes(`@${displayNameLower}`) ||
-        messageTextLower.includes(`@${uniqueIdLower}`)) {
+    if (safeMessageTextLower.includes(`@${displayNameLower}`) ||
+        safeMessageTextLower.includes(`@${uniqueIdLower}`)) {
       return true;
     }
 
     // Check for direct address at START: "PersonaName," or "PersonaName:"
     // e.g. "Teacher AI, explain closures" or "teacher-ai: what's up"
-    if (messageTextLower.startsWith(displayNameLower + ',') ||
-        messageTextLower.startsWith(displayNameLower + ':') ||
-        messageTextLower.startsWith(uniqueIdLower + ',') ||
-        messageTextLower.startsWith(uniqueIdLower + ':')) {
+    if (safeMessageTextLower.startsWith(displayNameLower + ',') ||
+        safeMessageTextLower.startsWith(displayNameLower + ':') ||
+        safeMessageTextLower.startsWith(uniqueIdLower + ',') ||
+        safeMessageTextLower.startsWith(uniqueIdLower + ':')) {
       return true;
     }
 
@@ -1085,7 +1088,7 @@ export class PersonaMessageEvaluator {
       // PHASE 6: Use Decision Adapter Chain for all decisions
       const context: DecisionContext<ChatMessageEntity> = {
         triggerEvent: message,
-        eventContent: message.content.text,
+        eventContent: message.content?.text ?? '',  // Defensive: handle missing content
         personaId: this.personaUser.id,
         personaDisplayName: this.personaUser.displayName,
         senderIsHuman,

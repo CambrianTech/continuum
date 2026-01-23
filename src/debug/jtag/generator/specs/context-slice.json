@@ -1,0 +1,61 @@
+{
+  "name": "ai/context/slice",
+  "description": "Retrieve full content of a context item by ID - companion to context/search for getting complete entity data",
+  "params": [
+    {
+      "name": "id",
+      "type": "string",
+      "optional": false,
+      "description": "Entity ID to retrieve"
+    },
+    {
+      "name": "type",
+      "type": "string",
+      "optional": false,
+      "description": "Entity type: chat_messages, memories, timeline_events, tool_results"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Persona ID for per-persona database lookup"
+    },
+    {
+      "name": "includeRelated",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include related items (replies, thread context)"
+    },
+    {
+      "name": "relatedLimit",
+      "type": "number",
+      "optional": true,
+      "description": "Max related items to include (default: 5)"
+    }
+  ],
+  "results": [
+    {
+      "name": "item",
+      "type": "ContextSliceItem | null",
+      "description": "The full entity content or null if not found"
+    },
+    {
+      "name": "durationMs",
+      "type": "number",
+      "description": "Retrieval time in milliseconds"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Get full content of a memory",
+      "command": "./jtag ai/context/slice --id=\"abc123\" --type=\"memories\"",
+      "expectedResult": "{ item: { id: 'abc123', content: '...', ... }, durationMs: 12 }"
+    },
+    {
+      "description": "Get chat message with thread context",
+      "command": "./jtag ai/context/slice --id=\"def456\" --type=\"chat_messages\" --includeRelated=true"
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

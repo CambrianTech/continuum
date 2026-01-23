@@ -39,35 +39,22 @@ export class CodeFindServerCommand extends CodeFindCommand {
     console.log(`🔍 CODE FIND SERVER: Searching for pattern "${params.pattern}"`);
 
     // STEP 2: Query analysis - detect conceptual/semantic searches
+    // NOTE: We now WARN but still run the search. AIs reported that blocking was confusing.
     const queryAnalysis = this.analyzeQuery(params.pattern);
+    let conceptualWarning = '';
     if (queryAnalysis.isConceptual) {
-      const suggestions = [
-        `Your query "${params.pattern}" appears to be a semantic/conceptual search.`,
+      console.log(`⚠️ CODE FIND SERVER: Pattern "${params.pattern}" appears conceptual (${queryAnalysis.reasons.length} reasons)`);
+      conceptualWarning = [
         '',
-        'This tool (code/find) matches filename patterns, not code concepts or logic.',
+        '--- HINT ---',
+        `Your pattern "${params.pattern}" may be a semantic/conceptual search.`,
+        'This tool matches FILENAME PATTERNS (like *.ts, Auth*.ts), not code concepts.',
         '',
-        'For semantic code understanding, try:',
-        '• Use ai/rag/query-open: Ask questions about code functionality',
-        '  Example: "How does authentication flow work?"',
-        '• Use code/read after finding relevant files',
-        '',
-        'Detection reasons:',
-        ...queryAnalysis.reasons.map(r => `  • ${r}`),
-        '',
-        'If you meant to search for a filename pattern, try:',
-        '• Use wildcards: "**/*.ts" for TypeScript files',
-        '• Use exact names: "auth.ts" or "AuthService.ts"',
-        '• Use simpler patterns: "*.test.ts" for test files'
-      ];
-
-      return createCodeFindResultFromParams(params, {
-        success: true,
-        pattern: params.pattern,
-        matches: [],
-        totalMatches: 0,
-        baseDir: params.baseDir ?? '.',
-        message: suggestions.join('\n')
-      });
+        'For semantic code search, try: ai/context/search or ai/rag/query-open',
+        'For file content search, try: development/code/grep',
+        '--- END HINT ---',
+        ''
+      ].join('\n');
     }
 
     try {
@@ -129,7 +116,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
           '• Check your baseDir parameter (currently searching: ' + (baseDir ?? '.') + ')',
           '',
           'Note: This tool matches filename patterns, not file contents.',
-          'To search code contents, use the code/read command after finding the file.'
+          'To search code contents, use development/code/grep'
         ];
 
         return createCodeFindResultFromParams(params, {
@@ -138,7 +125,7 @@ export class CodeFindServerCommand extends CodeFindCommand {
           matches: [],
           totalMatches: 0,
           baseDir,
-          message: suggestions.join('\n')
+          message: conceptualWarning + suggestions.join('\n')
         });
       }
 
@@ -147,7 +134,8 @@ export class CodeFindServerCommand extends CodeFindCommand {
         pattern: params.pattern,
         matches,
         totalMatches,
-        baseDir
+        baseDir,
+        message: conceptualWarning || undefined
       });
     } catch (error) {
       console.error(`❌ CODE FIND SERVER: Exception searching for ${params.pattern}:`, error);

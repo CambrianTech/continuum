@@ -22,10 +22,12 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
 
     // Validate proposalId parameter
     if (!params.proposalId || params.proposalId.trim() === '') {
+      const errorMsg = 'Missing required parameter: proposalId';
       return createDecisionViewResultFromParams(params, {
         success: false,
         proposal: null,
-        summary: 'Missing required parameter: proposalId'
+        summary: errorMsg,
+        error: errorMsg as any  // ToolRegistry stringifyError handles strings
       });
     }
 
@@ -63,10 +65,12 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
       });
 
       if (!proposalResult.success || !proposalResult.data) {
+        const errorMsg = `Proposal not found with ID: ${params.proposalId}`;
         return createDecisionViewResultFromParams(params, {
           success: false,
           proposal: null,
-          summary: `Proposal not found with ID: ${params.proposalId}`
+          summary: errorMsg,
+          error: errorMsg as any  // ToolRegistry stringifyError handles strings
         });
       }
 
@@ -77,10 +81,10 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
       const optionCount = proposal.options?.length || 0;
       const timeRemaining = proposal.deadline ? Math.max(0, proposal.deadline - Date.now()) : 0;
       const hoursRemaining = Math.floor(timeRemaining / (1000 * 60 * 60));
-      const proposalShortId = toShortId(proposal.id);
+      const proposalShortId = proposal.id ? toShortId(proposal.id) : 'unknown';
 
-      let summary = `**${proposal.topic}** (#${proposalShortId})\n\n`;
-      summary += `Status: ${proposal.status}\n`;
+      let summary = `**${proposal.topic || 'Untitled'}** (#${proposalShortId})\n\n`;
+      summary += `Status: ${proposal.status || 'unknown'}\n`;
       summary += `Options: ${optionCount}\n`;
       summary += `Votes: ${voteCount}\n`;
 
@@ -88,11 +92,10 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         summary += `Time remaining: ${hoursRemaining}h\n`;
       }
 
-      summary += `\n**Options (use these short IDs for voting):**\n`;
+      summary += `\n**Options (use these IDs for voting):**\n`;
       for (const option of proposal.options || []) {
-        const { toShortId } = await import('@system/core/types/CrossPlatformUUID');
-        const optionShortId = toShortId(option.id);
-        summary += `- #${optionShortId} → ${option.label}: ${option.description}\n`;
+        const optionId = option.id || 'unknown';
+        summary += `- ${optionId} → ${option.label || 'Option'}: ${option.description || 'No description'}\n`;
       }
 
       return createDecisionViewResultFromParams(params, {
@@ -103,10 +106,12 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
 
     } catch (error: any) {
       console.error('Error in decision/view:', error);
+      const errorMsg = `Error retrieving proposal: ${error.message || 'Unknown error'}`;
       return createDecisionViewResultFromParams(params, {
         success: false,
         proposal: null,
-        summary: `Error retrieving proposal: ${error.message || 'Unknown error'}`
+        summary: errorMsg,
+        error: errorMsg as any  // ToolRegistry stringifyError handles strings
       });
     }
   }

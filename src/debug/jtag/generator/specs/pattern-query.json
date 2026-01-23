@@ -1,0 +1,84 @@
+{
+  "name": "persona/learning/pattern/query",
+  "description": "Query the collective pattern knowledge base. Search for patterns that might help solve the current problem.",
+  "params": [
+    {
+      "name": "domain",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by domain: chat, code, tools, web, general"
+    },
+    {
+      "name": "type",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by type: debugging, tool-use, optimization, architecture, communication"
+    },
+    {
+      "name": "keywords",
+      "type": "string[]",
+      "optional": true,
+      "description": "Keywords to search for in pattern name/problem/solution"
+    },
+    {
+      "name": "search",
+      "type": "string",
+      "optional": true,
+      "description": "Free text search across all pattern fields"
+    },
+    {
+      "name": "minConfidence",
+      "type": "number",
+      "optional": true,
+      "description": "Minimum confidence score 0-1 (default: 0.3)"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by status: pending, validated, active, deprecated"
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "optional": true,
+      "description": "Max results to return (default: 10)"
+    },
+    {
+      "name": "orderBy",
+      "type": "string",
+      "optional": true,
+      "description": "Sort by: confidence, successCount, discoveredAt (default: confidence)"
+    }
+  ],
+  "results": [
+    {
+      "name": "patterns",
+      "type": "PatternSummary[]",
+      "description": "Matching patterns with problem/solution"
+    },
+    {
+      "name": "totalMatches",
+      "type": "number",
+      "description": "Total patterns matching the query"
+    },
+    {
+      "name": "message",
+      "type": "string",
+      "description": "Usage guidance"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Find debugging patterns",
+      "command": "./jtag persona/learning/pattern/query --type=\"debugging\" --domain=\"code\"",
+      "expectedResult": "{ patterns: [...], totalMatches: 5 }"
+    },
+    {
+      "description": "Search for slice-related patterns",
+      "command": "./jtag persona/learning/pattern/query --search=\"slice undefined\" --minConfidence=0.5"
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

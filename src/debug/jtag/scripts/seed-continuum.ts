@@ -1035,14 +1035,9 @@ async function seedViaJTAG() {
         MESSAGE_CONTENT.WELCOME_GENERAL,
         'system'  // senderType
       ),
-      createMessage(
-        MESSAGE_IDS.CLAUDE_INTRO,
-        ROOM_IDS.GENERAL,
-        claudeUser.id,
-        USER_CONFIG.CLAUDE.NAME,
-        MESSAGE_CONTENT.CLAUDE_INTRO,
-        'agent'  // senderType - Claude Code is an agent
-      ),
+      // REMOVED: CLAUDE_INTRO message was confusing personas
+      // They would see this seeded message and think it was the most recent,
+      // hallucinating that "Claude Code just introduced itself"
       createMessage(
         MESSAGE_IDS.WELCOME_ACADEMY,
         ROOM_IDS.ACADEMY,

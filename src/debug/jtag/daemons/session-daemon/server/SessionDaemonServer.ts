@@ -35,6 +35,8 @@ import {
   type ListSessionsResult,
   type DestroySessionParams,
   type DestroySessionResult,
+  type EnhancedConnectionContext,
+  type ClientType,
 } from '../shared/SessionTypes';
 import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
@@ -336,9 +338,57 @@ export class SessionDaemonServer extends SessionDaemon {
     }
 
     /**
+     * Find existing user by deviceId (browser device identification)
+     *
+     * The deviceId → userId mapping is stored in session metadata.
+     * If we find a session with this deviceId, return its user.
+     */
+    private async findUserByDeviceId(deviceId: string): Promise<BaseUser | null> {
+      // Look for existing session with this deviceId
+      const existingSession = this.sessions.find(s =>
+        (s as any).deviceId === deviceId
+      );
+
+      if (existingSession) {
+        // CRITICAL: Validate userId exists before loading user
+        // Previous failed session creation may have stored session with undefined userId
+        if (!existingSession.userId) {
+          console.error(`❌ findUserByDeviceId: Found session with deviceId ${deviceId} but userId is undefined - clearing stale session`);
+          // Remove the broken session from memory
+          const index = this.sessions.indexOf(existingSession);
+          if (index > -1) {
+            this.sessions.splice(index, 1);
+          }
+          return null;
+        }
+
+        try {
+          return await this.getUserById(existingSession.userId);
+        } catch {
+          // User was deleted, session is stale
+          return null;
+        }
+      }
+
+      return null;
+    }
+
+    /**
      * Load existing user (citizen) by ID
      */
     private async getUserById(userId: UUID): Promise<BaseUser> {
+      // DEBUG: Always log getUserById calls to trace identity bugs - BYPASS LOGGER
+      console.error(`🔍🔍🔍 getUserById CALLED: userId=${JSON.stringify(userId)}, type=${typeof userId}, value=${userId}`);
+      this.log.info(`🔍 getUserById: userId=${JSON.stringify(userId)}, type=${typeof userId}, stringified=${String(userId)}`);
+
+      // CRITICAL: Validate userId is not the string "undefined" (indicates serialization bug upstream)
+      if (!userId || userId === 'undefined' || (userId as any) === undefined) {
+        console.error(`❌❌❌ getUserById VALIDATION FAILED: userId=${userId}`);
+        this.log.error(`❌ getUserById called with invalid userId`);
+        this.log.error(`Stack trace:`, new Error().stack);
+        throw new Error(`Invalid userId: ${userId} - this indicates a bug in session creation or identity resolution`);
+      }
+
       // Load UserEntity from database
       const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
       if (!userResult.success || !userResult.data) {
@@ -387,6 +437,86 @@ export class SessionDaemonServer extends SessionDaemon {
      * Create User object with entity and state
      * Uses UserIdentityResolver + UserFactory to detect, lookup, or create user
      */
+    /**
+     * Find the seeded human owner
+     *
+     * In single-user dev environment, prefer the seeded owner over creating anonymous users.
+     * The owner is identified as a human user whose uniqueId does NOT start with "anon-".
+     * This avoids hardcoding names and works with any seeded owner.
+     */
+    private async findSeededHumanOwner(): Promise<BaseUser | null> {
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Starting search...`);
+
+      // Look for all human users
+      const result = await DataDaemon.query<UserEntity>({
+        collection: COLLECTIONS.USERS,
+        filter: { type: 'human' }
+      });
+
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Query result - success=${result.success}, hasData=${!!result.data}, count=${result.data?.length || 0}`);
+
+      if (!result.success || !result.data || result.data.length === 0) {
+        console.error(`🔍🔍🔍 findSeededHumanOwner: No human users found, returning null`);
+        return null;
+      }
+
+      // Debug: log all human users
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Found ${result.data.length} human users:`);
+      result.data.forEach((record, i) => {
+        console.error(`  [${i}] uniqueId="${record.data.uniqueId}", id="${record.id}", recordId="${record.data.id}", startsWithAnon=${record.data.uniqueId?.startsWith('anon-')}`);
+      });
+
+      // Find the first non-anonymous human (uniqueId doesn't start with "anon-")
+      // DataRecord<T> wraps entity in .data property
+      // CRITICAL FIX: Use record.id instead of record.data.id (DataRecord issue)
+      const seededOwner = result.data.find(record => {
+        const entity = record.data;
+        const matches = entity.uniqueId && !entity.uniqueId.startsWith('anon-') && record.id;  // Use record.id, not entity.id!
+        console.error(`🔍🔍🔍 findSeededHumanOwner: Checking uniqueId="${entity.uniqueId}", record.id="${record.id}", matches=${matches}`);
+        return matches;
+      });
+
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Found seededOwner=${seededOwner ? seededOwner.data.uniqueId : 'null'}`);
+
+      if (!seededOwner) {
+        console.error(`🔍🔍🔍 findSeededHumanOwner: No non-anonymous human found, returning null`);
+        return null;
+      }
+
+      // CRITICAL FIX: Use record.id instead of record.data.id
+      if (!seededOwner.id) {
+        console.error(`❌ findSeededHumanOwner: Found seeded owner but record.id is undefined! uniqueId=${seededOwner.data.uniqueId}`);
+        return null;
+      }
+
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Loading user with id=${seededOwner.id}`);
+      return await this.getUserById(seededOwner.id);
+    }
+
+    /**
+     * Create anonymous human user for browser-ui clients
+     *
+     * This is called when a browser connects for the first time without
+     * an existing userId in localStorage. Creates a human user that can
+     * later be upgraded with proper authentication (login, passkey, etc.)
+     */
+    private async createAnonymousHuman(params: CreateSessionParams, deviceId?: string): Promise<BaseUser> {
+      const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
+        type: 'human',
+        displayName: 'Anonymous User',
+        uniqueId: `anon-${generateUUID().slice(0, 8)}`,  // Unique but not meant for lookup
+        shortName: 'anon',
+        bio: 'Anonymous browser user',
+        avatar: undefined,
+        provider: 'browser'
+      });
+
+      const user = await UserFactory.create(createParams, this.context, this.router);
+      this.log.info(`✅ SessionDaemon: Created anonymous human user: ${user.entity.id.slice(0, 8)}... (deviceId: ${deviceId?.slice(0, 12) || 'none'})`);
+
+      return user;
+    }
+
     private async createUser(params: CreateSessionParams): Promise<BaseUser> {
       // Use UserIdentityResolver to detect identity and lookup existing user BEFORE creating
       const resolvedIdentity = await UserIdentityResolver.resolve();
@@ -422,13 +552,82 @@ export class SessionDaemonServer extends SessionDaemon {
 
     public async createOrGetSession(params: CreateSessionParams): Promise<CreateSessionResult | GetSessionResult> {
         if (params.isShared) {
-          // Check for existing shared session
-          const existingSession = this.sessions.find(s => s.isShared && s.isActive);
-          if (existingSession) {
-            this.log.info(`✅ SessionDaemon: Reusing existing valid shared session: ${existingSession.sessionId}`);
+          // Extract identity from enhanced connection context
+          const enhancedContext = params.connectionContext as EnhancedConnectionContext | undefined;
+          const clientType = enhancedContext?.clientType;
+          const deviceId = enhancedContext?.identity?.deviceId;
 
-            // IMPORTANT: Reload user from database to get fresh state (not stale cached version)
-            // This ensures browser gets current contentState, preferences, etc.
+
+          // For browser-ui: Use deviceId to find existing session (server owns user identity)
+          if (clientType === 'browser-ui') {
+            if (deviceId) {
+              // Look for existing session with this deviceId
+              const existingSession = this.sessions.find(s =>
+                s.isShared &&
+                s.isActive &&
+                (s as any).deviceId === deviceId  // Session stores deviceId
+              );
+
+              if (existingSession) {
+                // CRITICAL: Verify the session's user is a HUMAN, not an AI agent
+                // This can happen if the session was created when Claude Code was detected
+                try {
+                  const sessionUser = await this.getUserById(existingSession.userId);
+                  const userType = sessionUser?.entity?.type;  // FIX: was 'userType', field is 'type'
+
+                  // If user is an AI agent (not human), discard session and create new
+                  if (userType === 'agent' || userType === 'persona' || userType === 'system') {
+                    this.log.warn(`⚠️ SessionDaemon: Session for device ${deviceId.slice(0, 12)}... has AI user (${sessionUser.displayName}) - discarding and creating human session`);
+                    // Mark old session as inactive
+                    existingSession.isActive = false;
+                    // Fall through to create new session
+                  } else if (sessionUser?.entity?.uniqueId?.startsWith('anon-')) {
+                    // Anonymous user - check if seeded owner exists and prefer them
+                    const seededOwner = await this.findSeededHumanOwner();
+                    if (seededOwner) {
+                      this.log.info(`✅ SessionDaemon: Upgrading anonymous user to seeded owner: ${seededOwner.displayName}`);
+                      existingSession.userId = seededOwner.id;
+                      existingSession.user = seededOwner;
+                      // Save updated session
+                      await this.saveSessionsToFile();
+                    } else {
+                      existingSession.user = sessionUser;
+                    }
+                    return createPayload(params.context, existingSession.sessionId, {
+                      success: true,
+                      timestamp: new Date().toISOString(),
+                      operation: 'get',
+                      session: existingSession
+                    });
+                  } else {
+                    this.log.info(`✅ SessionDaemon: Found existing session for device ${deviceId.slice(0, 12)}... with human user ${sessionUser.displayName}`);
+                    existingSession.user = sessionUser;
+
+                    return createPayload(params.context, existingSession.sessionId, {
+                      success: true,
+                      timestamp: new Date().toISOString(),
+                      operation: 'get',
+                      session: existingSession
+                    });
+                  }
+                } catch (error) {
+                  this.log.warn(`Failed to verify user for session: ${error} - creating new session`);
+                }
+              }
+            }
+            // No valid existing session for this device - create new with human identity
+            this.log.info(`🆕 SessionDaemon: Creating new human session for device ${deviceId?.slice(0, 12) || 'unknown'}...`);
+            return await this.createSession(params);
+          }
+
+          // For CLI/agent/persona: Use userId or uniqueId as before
+          const requestedUserId = enhancedContext?.identity?.userId;
+          const existingSession = requestedUserId
+            ? this.sessions.find(s => s.isShared && s.isActive && s.userId === requestedUserId)
+            : null;
+
+          if (existingSession) {
+            this.log.info(`✅ SessionDaemon: Reusing existing session for user ${existingSession.userId.slice(0, 8)}...`);
             try {
               existingSession.user = await this.getUserById(existingSession.userId);
             } catch (error) {
@@ -442,38 +641,166 @@ export class SessionDaemonServer extends SessionDaemon {
               session: existingSession
             });
           }
-          this.log.info(`🆕 SessionDaemon: No existing valid shared session found, creating new one`);
+          this.log.info(`🆕 SessionDaemon: No matching session found, creating new one`);
         }
         return await this.createSession(params);
     }
 
     private async createSession(params: CreateSessionParams): Promise<CreateSessionResult> {
-      // console.debug(`⚡ ${this.toString()}: Creating new session:`, params);
-
       // Always generate a new UUID for actual sessions - never use bootstrap IDs
       const actualSessionId = isBootstrapSession(params.sessionId) ? generateUUID() : params.sessionId;
 
-      // Get or create User (citizen) - sessions link to existing citizens, don't create duplicates
-      // Priority: uniqueId (for agents) > userId (for browser persistence) > create new citizen
+      // ========================================================================
+      // CLIENT TYPE-AWARE IDENTITY RESOLUTION
+      // ========================================================================
+      // Key insight: clientType determines HOW to resolve identity
+      // - browser-ui: Use identity.userId (human), NEVER use agent detection
+      // - cli: Use identity.uniqueId (@cli)
+      // - persona: Use identity.userId (must exist in DB)
+      // - agent: Use identity.uniqueId (claude-code, gpt-4, etc.)
+      // ========================================================================
+
+      const enhancedContext = params.connectionContext as EnhancedConnectionContext | undefined;
+      const clientType: ClientType = enhancedContext?.clientType || 'cli';
+      const identity = enhancedContext?.identity;
+      const assistant = enhancedContext?.assistant;
+
+      // DEBUG: BYPASS LOGGER - Use console.error to guarantee visibility
+      console.error(`🔍🔍🔍 SESSION CREATE DEBUG`);
+      console.error(`  clientType: ${clientType} (type: ${typeof clientType})`);
+      console.error(`  hasEnhancedContext: ${!!enhancedContext}`);
+      console.error(`  enhancedContext keys: ${enhancedContext ? Object.keys(enhancedContext).join(', ') : 'none'}`);
+      console.error(`  hasIdentity: ${!!identity}`);
+      console.error(`  identity: ${JSON.stringify(identity)}`);
+      console.error(`  params.userId: ${params.userId}`);
+      console.error(`  deviceId: ${identity?.deviceId?.slice(0, 12)}`);
+
+      // DEBUG: Log what we received
+      this.log.info(`🔍 Session create: clientType=${clientType}, hasEnhancedContext=${!!enhancedContext}, hasIdentity=${!!identity}, userId=${params.userId}, deviceId=${identity?.deviceId?.slice(0, 12)}`);
+
+      // Log assistant for attribution (NOT for identity resolution!)
+      if (assistant) {
+        this.log.info(`🤖 Session assisted by ${assistant.name} (confidence: ${assistant.confidence})`);
+      }
+
       let user: BaseUser;
 
-      // Try uniqueId first (single source of truth for agent identity)
-      const uniqueId = params.connectionContext?.uniqueId;
-      const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
+      switch (clientType) {
+        case 'browser-ui': {
+          // Browser identity: Use deviceId to find/create user
+          // Server is source of truth - browser doesn't send userId
+          console.error(`🌐🌐🌐 BROWSER-UI CASE ENTERED`);
+          this.log.info(`🌐 Browser-ui session: resolving human identity from deviceId`);
 
-      if (existingUser) {
-        user = existingUser;
-      } else if (params.userId) {
-        // Fall back to userId lookup (for browser-stored sessions)
-        try {
-          user = await this.getUserById(params.userId);
-        } catch (error) {
-          // userId doesn't exist, create new user
-          user = await this.createUser(params);
+          const deviceId = identity?.deviceId;
+          console.error(`🌐🌐🌐 deviceId: ${deviceId}`);
+
+          if (deviceId) {
+            console.error(`🌐🌐🌐 deviceId EXISTS, calling findUserByDeviceId...`);
+            // Look for existing user associated with this device
+            const existingUser = await this.findUserByDeviceId(deviceId);
+            console.error(`🌐🌐🌐 findUserByDeviceId returned: ${existingUser ? existingUser.displayName : 'null'}`);
+            if (existingUser) {
+              user = existingUser;
+              console.error(`🌐🌐🌐 ASSIGNED user from existingUser: ${user.displayName}`);
+              this.log.info(`✅ Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
+            } else {
+              console.error(`🌐🌐🌐 No existingUser, checking for seeded owner...`);
+              // New device - check for seeded owner (human without anon- prefix)
+              const seededOwner = await this.findSeededHumanOwner();
+              console.error(`🌐🌐🌐 findSeededHumanOwner returned: ${seededOwner ? seededOwner.displayName : 'null'}`);
+              if (seededOwner) {
+                user = seededOwner;
+                console.error(`🌐🌐🌐 ASSIGNED user from seededOwner: ${user.displayName}`);
+                this.log.info(`✅ Associating new device with seeded owner: ${user.displayName}`);
+              } else {
+                console.error(`🌐🌐🌐 No seededOwner, creating anonymous human...`);
+                this.log.info(`📝 New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
+                user = await this.createAnonymousHuman(params, deviceId);
+                console.error(`🌐🌐🌐 ASSIGNED user from createAnonymousHuman: ${user.displayName}`);
+              }
+            }
+          } else {
+            console.error(`🌐🌐🌐 NO deviceId, checking for seeded owner...`);
+            // No deviceId - check for seeded owner first
+            const seededOwner = await this.findSeededHumanOwner();
+            console.error(`🌐🌐🌐 findSeededHumanOwner returned: ${seededOwner ? seededOwner.displayName : 'null'}`);
+            if (seededOwner) {
+              user = seededOwner;
+              console.error(`🌐🌐🌐 ASSIGNED user from seededOwner (no deviceId): ${user.displayName}`);
+              this.log.info(`✅ Using seeded owner: ${user.displayName} (no deviceId)`);
+            } else {
+              console.error(`🌐🌐🌐 No seededOwner (no deviceId), creating anonymous human...`);
+              this.log.info(`📝 No deviceId - creating anonymous human`);
+              user = await this.createAnonymousHuman(params, undefined);
+              console.error(`🌐🌐🌐 ASSIGNED user from createAnonymousHuman (no deviceId): ${user.displayName}`);
+            }
+          }
+          console.error(`🌐🌐🌐 BROWSER-UI CASE COMPLETE, user: ${user ? user.displayName : 'UNDEFINED!!!'}`);
+          break;
         }
-      } else {
-        // No uniqueId or userId, create new user
-        user = await this.createUser(params);
+
+        case 'cli': {
+          // CLI identity: Use uniqueId (@cli or env user)
+          const cliUniqueId = identity?.uniqueId || '@cli';
+          this.log.info(`💻 CLI session: resolving uniqueId=${cliUniqueId}`);
+
+          const existingCli = await this.findUserByUniqueId(cliUniqueId);
+          if (existingCli) {
+            user = existingCli;
+          } else {
+            user = await this.createUser(params);
+          }
+          break;
+        }
+
+        case 'persona': {
+          // Persona identity: userId must exist (created by user/create command)
+          this.log.info(`🎭 Persona session: resolving userId=${identity?.userId?.slice(0, 8)}...`);
+
+          if (!identity?.userId) {
+            throw new Error('Persona client must have explicit userId');
+          }
+          user = await this.getUserById(identity.userId);
+          break;
+        }
+
+        case 'agent': {
+          // Agent identity: Use uniqueId from agent name
+          const agentUniqueId = identity?.uniqueId;
+          this.log.info(`🤖 Agent session: resolving uniqueId=${agentUniqueId}`);
+
+          if (!agentUniqueId) {
+            throw new Error('Agent client must have uniqueId');
+          }
+
+          const existingAgent = await this.findUserByUniqueId(agentUniqueId);
+          if (existingAgent) {
+            user = existingAgent;
+          } else {
+            user = await this.createUser(params);
+          }
+          break;
+        }
+
+        default: {
+          // Fallback: use legacy resolution (for backward compatibility)
+          this.log.warn(`⚠️ Unknown clientType '${clientType}', using legacy resolution`);
+          const uniqueId = params.connectionContext?.uniqueId;
+          const existingUser = uniqueId ? await this.findUserByUniqueId(uniqueId) : null;
+
+          if (existingUser) {
+            user = existingUser;
+          } else if (params.userId) {
+            try {
+              user = await this.getUserById(params.userId);
+            } catch {
+              user = await this.createUser(params);
+            }
+          } else {
+            user = await this.createUser(params);
+          }
+        }
       }
 
       // Enrich context with caller type based on User type (enables caller-adaptive output)
@@ -496,17 +823,32 @@ export class SessionDaemonServer extends SessionDaemon {
           enrichedContext.callerType = 'script';
       }
 
-      const newSession: SessionMetadata = {
+      // CRITICAL: Validate user was resolved successfully
+      // If user is undefined, it means one of the switch cases failed to assign it
+      // This should NEVER happen, but if it does, fail loudly rather than creating broken session
+      if (!user || !user.id) {
+        const errorMsg = `FATAL: User resolution failed for clientType=${clientType}. This is a bug in SessionDaemonServer.`;
+        console.error(`❌❌❌ ${errorMsg}`);
+        console.error(`Debug info: clientType=${clientType}, identity=${JSON.stringify(identity)}, params.userId=${params.userId}`);
+        throw new Error(errorMsg);
+      }
+
+      // Extract deviceId for browser-ui clients (server owns device → user mapping)
+      const enhancedCtx = params.connectionContext as EnhancedConnectionContext | undefined;
+      const deviceId = enhancedCtx?.identity?.deviceId;
+
+      const newSession: SessionMetadata & { deviceId?: string } = {
         sourceContext: enrichedContext, // Use enriched context with callerType
         sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,
         displayName: params.displayName,
-        userId: user.id, // Use userId from User object
+        userId: user.id, // Use userId from User object - validated above
         created: new Date(),
         lastActive: new Date(),
         isActive: true,
         isShared: params.isShared, // Use original isShared request
-        user: user // Add User object to session
+        user: user, // Add User object to session
+        deviceId: deviceId  // Store deviceId for browser-ui lookup
       };
 
       this.sessions.push(newSession);
@@ -629,6 +971,11 @@ export class SessionDaemonServer extends SessionDaemon {
       return [];
     }
 
+    if (!session.userId) {
+      this.log.warn(`Session ${sessionId} has no userId - cannot get open rooms`);
+      return [];
+    }
+
     return await SessionStateHelper.getOpenRooms(session.userId);
   }
 
@@ -639,6 +986,11 @@ export class SessionDaemonServer extends SessionDaemon {
     const session = this.sessions.find(s => s.sessionId === sessionId);
     if (!session) {
       this.log.warn(`Session ${sessionId} not found for getUserState`);
+      return null;
+    }
+
+    if (!session.userId) {
+      this.log.warn(`Session ${sessionId} has no userId - cannot get user state`);
       return null;
     }
 

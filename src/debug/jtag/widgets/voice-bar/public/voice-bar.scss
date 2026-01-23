@@ -1,0 +1,113 @@
+/**
+ * VoiceBar - Discord-style minimal voice bar
+ *
+ * Shows at bottom of main content when in a call.
+ * Minimal: room name + mic toggle + leave button.
+ */
+
+@use '../../shared/styles/variables' as *;
+
+:host {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 $spacing-md;
+  background: var(--surface-secondary, $bg-panel);
+  border-top: 1px solid var(--border-subtle, rgba($color-success, 0.3));
+  gap: $spacing-md;
+  flex-shrink: 0;
+}
+
+// Hidden state
+:host([hidden]) {
+  display: none;
+}
+
+.voice-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.voice-room {
+  font-size: $font-size-md;
+  color: var(--text-primary, $color-text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voice-status {
+  font-size: $font-size-sm;
+  color: var(--accent-color, $color-success);
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+
+  &::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-color, $color-success);
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.voice-participants {
+  font-size: $font-size-sm;
+  color: var(--text-dim, $color-text-dim);
+  padding: 0 $spacing-sm;
+}
+
+.voice-controls {
+  display: flex;
+  gap: $spacing-sm;
+}
+
+.voice-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: $font-size-lg;
+  transition: all $transition-fast;
+  background: var(--surface-tertiary, rgba(255, 255, 255, 0.1));
+  color: var(--text-primary, $color-text);
+
+  &:hover {
+    background: var(--surface-hover, rgba(255, 255, 255, 0.15));
+    transform: scale(1.05);
+  }
+
+  &.mic-on {
+    background: rgba($color-success, 0.2);
+    color: $color-success;
+  }
+
+  &.mic-off {
+    background: rgba($color-error, 0.2);
+    color: $color-error;
+  }
+
+  &.leave {
+    background: rgba($color-error, 0.2);
+    color: $color-error;
+
+    &:hover {
+      background: rgba($color-error, 0.4);
+    }
+  }
+}

@@ -172,6 +172,11 @@ class ContentStateServiceImpl {
     if (existing) {
       // Update existing and set as current
       existing.lastAccessedAt = new Date();
+      // Update title if a new one was provided (e.g., clicking different user for live call)
+      if (newItem.title && newItem.title !== existing.title) {
+        console.log(`📋 ContentState: Updating title from "${existing.title}" to "${newItem.title}"`);
+        existing.title = newItem.title;
+      }
       if (setAsCurrent) {
         this.state.currentItemId = existing.id;
       }

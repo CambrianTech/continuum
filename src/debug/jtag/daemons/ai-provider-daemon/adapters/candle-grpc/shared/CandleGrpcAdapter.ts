@@ -186,8 +186,9 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       return '';
     }
 
-    // Target 24K chars max (leaves ~8K chars / 2K tokens for response)
-    const MAX_PROMPT_CHARS = 24000;
+    // CRITICAL: Llama 3.2's RoPE embeddings max at 4096 positions
+    // Target 12K chars max (~3K tokens input + ~1K tokens output = 4K total)
+    const MAX_PROMPT_CHARS = 12000;
     const parts: string[] = ['<|begin_of_text|>'];
 
     // Format all messages first

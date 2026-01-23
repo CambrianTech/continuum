@@ -1,0 +1,73 @@
+{
+  "name": "collaboration/live/start",
+  "description": "Start a live session with selected participants. Creates or finds the DM room for the participant set, then joins the live session. Like Discord's group call - select users, click call.",
+  "params": [
+    {
+      "name": "participants",
+      "type": "string | string[]",
+      "optional": false,
+      "description": "User IDs or uniqueIds to include (current user auto-added)"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "optional": true,
+      "description": "Optional room name (defaults to participant names)"
+    },
+    {
+      "name": "withVideo",
+      "type": "boolean",
+      "optional": true,
+      "description": "Start with video enabled (default: false, audio only)"
+    }
+  ],
+  "results": [
+    {
+      "name": "roomId",
+      "type": "UUID",
+      "description": "The DM room ID (created or found)"
+    },
+    {
+      "name": "sessionId",
+      "type": "UUID",
+      "description": "The live session ID"
+    },
+    {
+      "name": "room",
+      "type": "RoomEntity",
+      "description": "The full room entity"
+    },
+    {
+      "name": "session",
+      "type": "LiveSessionEntity",
+      "description": "The live session with participants"
+    },
+    {
+      "name": "existed",
+      "type": "boolean",
+      "description": "Whether room already existed (true) or was created (false)"
+    },
+    {
+      "name": "participants",
+      "type": "LiveParticipant[]",
+      "description": "Current participants in the live session"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Start live call with Helper AI",
+      "command": "./jtag collaboration/live/start --participants=\"helper\"",
+      "expectedResult": "{ roomId: \"...\", sessionId: \"...\", existed: false }"
+    },
+    {
+      "description": "Start group call with multiple AIs",
+      "command": "./jtag collaboration/live/start --participants='[\"helper\",\"teacher\",\"codereview\"]'",
+      "expectedResult": "{ roomId: \"...\", sessionId: \"...\", participants: [...] }"
+    },
+    {
+      "description": "Start video call",
+      "command": "./jtag collaboration/live/start --participants=\"helper\" --withVideo=true"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

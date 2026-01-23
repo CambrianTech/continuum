@@ -174,6 +174,36 @@ export class ToolRegistry {
   // ===========================================================================
 
   /**
+   * Clean and truncate a description for tool listings
+   * Strips JSDoc comment formatting and limits to first sentence or 100 chars
+   */
+  private cleanDescription(desc: string | undefined, maxLength: number = 100): string {
+    if (!desc) return '';
+
+    // Remove JSDoc comment prefixes (e.g., " * ", "* ")
+    let cleaned = desc.replace(/^\s*\*\s*/gm, '').replace(/\n\s*\*\s*/g, ' ');
+
+    // Remove section headers (e.g., "====" lines)
+    cleaned = cleaned.replace(/={3,}/g, '').trim();
+
+    // Get first sentence (up to first period, exclamation, or newline)
+    const firstSentence = cleaned.split(/[.\n!]/)[0];
+    if (firstSentence && firstSentence.length > 10) {
+      cleaned = firstSentence;
+    }
+
+    // Collapse whitespace
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    // Truncate if still too long
+    if (cleaned.length > maxLength) {
+      return cleaned.slice(0, maxLength - 3) + '...';
+    }
+
+    return cleaned;
+  }
+
+  /**
    * Search tools by keyword (matches name and description)
    * Same algorithm as MCP search_tools for consistency
    *
@@ -204,7 +234,7 @@ export class ToolRegistry {
           const toolCategory = nameLower.includes('/') ? nameLower.split('/')[0] : 'root';
           results.push({
             name: tool.name,
-            description: tool.description || tool.name,
+            description: this.cleanDescription(tool.description, 120) || tool.name,
             category: toolCategory,
             score,
           });
@@ -274,7 +304,7 @@ export class ToolRegistry {
           const toolCategory = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
           return {
             name: tool.name,
-            description: tool.description,
+            description: this.cleanDescription(tool.description, 120) || tool.name,
             category: toolCategory,
             score: Math.round(r.score * 1000) / 1000,
           };
@@ -332,7 +362,7 @@ export class ToolRegistry {
 
       results.push({
         name: tool.name,
-        description: tool.description || tool.name,
+        description: this.cleanDescription(tool.description, 120) || tool.name,
         category: toolCategory,
       });
     }
@@ -450,7 +480,7 @@ export class ToolRegistry {
         const category = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
         results.push({
           name: tool.name,
-          description: tool.description,
+          description: this.cleanDescription(tool.description, 120) || tool.name,
           category,
           similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimals
         });
@@ -690,7 +720,7 @@ export class ToolRegistry {
       return {
         toolName,
         success: false,
-        error: result.error || 'Command execution failed'
+        error: this.stringifyError(result.error) || 'Command execution failed'
       };
     }
 
@@ -709,6 +739,35 @@ export class ToolRegistry {
       content,
       media  // ← Preserve structured media
     };
+  }
+
+  /**
+   * Convert any error value to a human-readable string
+   * Prevents [object Object] in error messages
+   */
+  private stringifyError(error: unknown): string {
+    if (error === undefined || error === null) {
+      return 'Unknown error';
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === 'object' && error !== null) {
+      const obj = error as Record<string, unknown>;
+      if (typeof obj.message === 'string') return obj.message;
+      if (typeof obj.error === 'string') return obj.error;
+      if (typeof obj.errorMessage === 'string') return obj.errorMessage;
+      try {
+        const str = JSON.stringify(error);
+        return str.length > 500 ? `${str.slice(0, 500)}...` : str;
+      } catch {
+        return 'Error object could not be serialized';
+      }
+    }
+    return String(error);
   }
 
   /**
@@ -763,57 +822,35 @@ export class ToolRegistry {
       return 'No tools available.';
     }
 
-    const toolDescriptions = tools.map((tool, index) => {
-      const requiredParams = Object.entries(tool.parameters)
-        .filter(([_, def]) => def.required)
-        .map(([name, def]) => `<${name}>${def.description || name}</${name}>`)
-        .join(' ');
-
-      const optionalParams = Object.entries(tool.parameters)
-        .filter(([_, def]) => !def.required)
-        .map(([name, def]) => `<${name}>${def.description || name}</${name}>`)
-        .join(' ');
-
-      let desc = `${index + 1}. ${tool.name} - ${tool.description}`;
-
-      if (requiredParams) {
-        desc += `\n   Required: ${requiredParams}`;
+    // Group tools by category (first part of name)
+    const categories = new Map<string, string[]>();
+    for (const tool of tools) {
+      const category = tool.name.split('/')[0];
+      if (!categories.has(category)) {
+        categories.set(category, []);
       }
+      categories.get(category)!.push(tool.name);
+    }
 
-      if (optionalParams) {
-        desc += `\n   Optional: ${optionalParams}`;
-      }
+    // Compact list: just names grouped by category
+    const compactList = Array.from(categories.entries())
+      .map(([cat, names]) => `${cat}: ${names.join(', ')}`)
+      .join('\n');
 
-      return desc;
-    }).join('\n\n');
+    // Keep few-shot examples - CRITICAL for small models
+    const examples = `TOOL EXAMPLES:
+<tool name="help"><command>data/list</command></tool>
+<tool name="data/list"><collection>chat_messages</collection><limit>10</limit></tool>
+<tool name="interface/screenshot"></tool>
 
-    // Few-shot examples are CRITICAL for small models (Llama 3.2 3B, etc.)
-    // Without concrete examples, they output "Using the X tool..." instead of actual tool calls
-    const fewShotExamples = `EXAMPLES OF CORRECT TOOL CALLS:
+DO NOT say "I'll use..." - just output the <tool> XML directly.`;
 
-User: "What's my favorite color?"
-You: <tool name="ai/should-respond-fast"><query>What's my favorite color?</query></tool>
+    return `TOOLS (${tools.length} available):
+Format: <tool name="command"><param>value</param></tool>
+Use: <tool name="help"><command>NAME</command></tool> for details
 
-User: "Take a screenshot"
-You: <tool name="interface/screenshot"></tool>
+${compactList}
 
-User: "List the recent chat messages"
-You: <tool name="data/list"><collection>chat_messages</collection><limit>20</limit></tool>
-
-WRONG (DO NOT DO THIS):
-❌ "I'll use the ai/should-respond-fast tool to check..."
-❌ "Using the interface/screenshot tool to capture..."
-❌ "Let me call data/list to fetch messages..."
-
-CORRECT:
-✅ Just output the <tool> XML directly. No explanation needed.`;
-
-    return `AVAILABLE TOOLS:
-Format: <tool name="command/name"><param>value</param></tool>
-
-${fewShotExamples}
-
-TOOL REFERENCE:
-${toolDescriptions}`;
+${examples}`;
   }
 }

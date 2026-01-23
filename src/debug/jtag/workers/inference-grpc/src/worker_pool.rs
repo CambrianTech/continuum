@@ -129,8 +129,12 @@ impl WorkerPool {
                     ) {
                         Ok((text, tokens)) => {
                             let duration_ms = gen_start.elapsed().as_millis() as u64;
-                            stats.total_tokens_generated.fetch_add(tokens as u64, Ordering::SeqCst);
-                            stats.total_inference_ms.fetch_add(duration_ms, Ordering::SeqCst);
+                            stats
+                                .total_tokens_generated
+                                .fetch_add(tokens as u64, Ordering::SeqCst);
+                            stats
+                                .total_inference_ms
+                                .fetch_add(duration_ms, Ordering::SeqCst);
 
                             InferenceResponse {
                                 text,

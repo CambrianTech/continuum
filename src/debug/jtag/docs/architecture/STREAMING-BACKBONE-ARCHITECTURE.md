@@ -1,0 +1,947 @@
+# Streaming Backbone Architecture
+
+**The universal real-time infrastructure for AI communication.**
+
+Voice, video, avatars, Sora-level generation - all built on ONE backbone. Adapters plug in. The core never changes.
+
+---
+
+## Design Principles (Non-Negotiable)
+
+These are not optimizations. They are the foundation.
+
+| Principle | Implementation |
+|-----------|----------------|
+| **Zero-copy** | Pass handles/slots, never memcpy buffers |
+| **Ring buffers** | Fixed allocation at startup, slots recycled |
+| **Event-driven** | Pull-based pipeline, no promises/await blocking |
+| **Rust core** | ALL processing in Rust, TS is thin display client |
+| **Backpressure** | Slow consumer → producer blocks at ring, no overflow |
+| **Handles not data** | `{ ring_id: u8, slot: u16 }` crosses boundaries |
+
+---
+
+## Everything is Streaming
+
+There is no "batch vs stream". Everything is continuous, just at different speeds:
+
+| Process | Duration | Streams... |
+|---------|----------|------------|
+| Voice | Real-time | Audio chunks every 20ms |
+| Avatar | Real-time | Video frames every 33ms |
+| Image gen | 2-30 sec | Progress events, partial renders |
+| Video gen | 30-300 sec | Frames as generated |
+| Training | Hours | Loss, samples, checkpoints |
+
+**Same infrastructure for all:**
+- Ring buffers hold partial results
+- Events flow as progress happens
+- Cancellation works at any point
+- TS shows progress, never blocks
+
+**A 30-second SDXL generation streams:**
+```
+Step 1/50  → ProgressEvent { step: 1, preview: handle }
+Step 2/50  → ProgressEvent { step: 2, preview: handle }
+...
+Step 50/50 → CompleteEvent { image: handle }
+```
+
+**Persona generating their banner = continuous process with live preview.**
+
+---
+
+## Handle Pattern (Not Blocking Promises)
+
+**Wrong - Promise returns data (blocks, times out):**
+```typescript
+// ❌ This blocks for 30 seconds, will timeout, doesn't scale
+const image = await generateImage(prompt);
+```
+
+**Right - Promise returns handle, events flow separately:**
+```typescript
+// ✅ Returns immediately with UUID handle
+const handle = await Commands.execute('streaming/image/start', {
+    prompt: 'A serene mountain landscape',
+    persona_id: personaId,
+});
+// handle = "550e8400-e29b-41d4-a716-446655440000"
+
+// Events flow with handle as correlation ID
+Events.subscribe(`streaming:image:${handle}:progress`, (event) => {
+    // { step: 5, total: 50, preview_handle: "ring:3:slot:42" }
+    updateProgressBar(event.step / event.total);
+    if (event.preview_handle) showPreview(event.preview_handle);
+});
+
+Events.subscribe(`streaming:image:${handle}:complete`, (event) => {
+    // { image_handle: "ring:3:slot:42" }
+    showFinalImage(event.image_handle);
+});
+
+Events.subscribe(`streaming:image:${handle}:error`, (event) => {
+    showError(event.message);
+});
+
+// Cancel anytime
+await Commands.execute('streaming/cancel', { job_id: handle });
+```
+
+**This is the same pattern as your data system:**
+```typescript
+// Create entity → get handle (UUID)
+const entityId = await Commands.execute('data/create', {
+    collection: 'jobs',
+    data: { status: 'pending' }
+});
+
+// Subscribe to changes on that handle
+Events.subscribe(`data:jobs:${entityId}:updated`, (entity) => {
+    updateUI(entity);
+});
+```
+
+**The handle is the correlation ID for everything:**
+- Start command → returns handle
+- Progress events → tagged with handle
+- Complete event → tagged with handle
+- Error events → tagged with handle
+- Cancel command → takes handle
+- Query status → takes handle
+
+**Rust side emits events with the handle:**
+```rust
+// Rust worker emits events tagged with job_id
+fn process_image_gen(&self, job_id: Uuid, request: ImageGenRequest) {
+    for step in 0..total_steps {
+        let latents = self.denoise_step(&latents);
+
+        // Emit progress event with job_id
+        self.events.emit(StreamingEvent::Progress {
+            job_id,
+            step,
+            total_steps,
+            preview_handle: self.store_preview(&latents),
+        });
+    }
+
+    // Emit complete event
+    self.events.emit(StreamingEvent::Complete {
+        job_id,
+        image_handle: self.store_final(&latents),
+    });
+}
+```
+
+**TS is just subscribing and displaying. Never blocking.**
+
+---
+
+## Extending CommandParams (Built-in Handle)
+
+The handle pattern should be built into `CommandParams` itself, not reimplemented per-command.
+
+**Current CommandParams (system/core/types/JTAGTypes.ts):**
+```typescript
+export interface CommandParams extends JTAGPayload {
+  readonly userId?: UUID;
+  timeout?: number;
+}
+```
+
+**Extended with universal handle:**
+```typescript
+export interface CommandParams extends JTAGPayload {
+  readonly userId?: UUID;
+  timeout?: number;
+
+  /**
+   * Universal correlation handle.
+   * - If provided by caller: used as correlation ID for all events
+   * - If not provided: auto-generated by command, returned in result
+   *
+   * Enables:
+   * - Caller-controlled correlation (same handle across retries)
+   * - Event filtering: Events.subscribe(`${handle}:*`)
+   * - Status queries: Commands.execute('status', { handle })
+   * - Cancellation: Commands.execute('cancel', { handle })
+   */
+  handle?: UUID;
+}
+
+export interface CommandResult extends JTAGPayload {
+  /**
+   * Correlation handle for this operation.
+   * - Same as params.handle if provided
+   * - Auto-generated UUID if not provided
+   * Always present for async/streaming/long-running commands.
+   */
+  handle?: UUID;
+}
+```
+
+**Usage - same pattern across ALL commands that need correlation:**
+```typescript
+// Image generation
+const { handle } = await Commands.execute('image/generate', {
+  prompt: 'Mountain landscape',
+});
+
+// Voice conversation
+const { handle } = await Commands.execute('voice/start', {
+  persona_id: personaId,
+  input_adapter: 'twilio',
+});
+
+// Training run
+const { handle } = await Commands.execute('genome/train', {
+  persona_id: personaId,
+  dataset: 'recent_corrections',
+});
+
+// Data operation
+const { handle } = await Commands.execute('data/create', {
+  collection: 'users',
+  data: { name: 'Joel' },
+});
+
+// ALL use the same event pattern
+Events.subscribe(`${handle}:progress`, onProgress);
+Events.subscribe(`${handle}:complete`, onComplete);
+Events.subscribe(`${handle}:error`, onError);
+
+// ALL controllable the same way
+await Commands.execute('cancel', { handle });
+await Commands.execute('status', { handle });
+```
+
+**`handle` is the universal correlation primitive for:**
+- Voice calls
+- Image generation
+- Video generation
+- Training runs
+- Data operations
+- File operations
+- Any operation that needs tracking
+
+**Built into the base, not bolted on per-command.**
+
+**Universal primitive - used everywhere, in and out:**
+
+| Operation | In (params) | Out (result/events) |
+|-----------|-------------|---------------------|
+| Start anything | `{ handle? }` | `{ handle }` + events |
+| Check status | `{ handle }` | `{ status, progress }` |
+| Cancel | `{ handle }` | `{ success }` |
+| Resume | `{ handle }` | events continue |
+| Get result | `{ handle }` | `{ data }` |
+| List active | `{}` | `{ handles[] }` |
+
+**Same concept as:**
+- Entity UUIDs in data system
+- SQL connection/cursor IDs
+- File descriptors in OS
+- Texture IDs in graphics
+- Pointers in C
+
+**The `handle` IS the operation. Everything references it.**
+
+---
+
+## Research Summary
+
+### Real-Time Infrastructure
+
+| Technology | Use Case | Key Insight |
+|------------|----------|-------------|
+| [webrtc-rs](https://github.com/webrtc-rs/webrtc) | WebRTC in Rust | Sans-IO core, async-native |
+| [mediasoup](https://crates.io/crates/mediasoup) | SFU (Selective Forwarding Unit) | Multi-stream over single transport |
+| [LiveKit](https://github.com/livekit/livekit) | Voice AI agents | Powers ChatGPT voice, 3B+ calls/year |
+| [Tonari](https://blog.tonari.no/why-we-love-rust) | 130ms latency (vs 315ms Zoom) | Rewrote WebRTC stack in Rust |
+
+### STT (Speech-to-Text)
+
+| Model | Rust Support | Latency | Notes |
+|-------|--------------|---------|-------|
+| [whisper-rs](https://github.com/tazz4843/whisper-rs) | Native bindings | ~200ms | CUDA/ROCm support |
+| [whisper_rust](https://github.com/Sameam/whisper_rust) | With VAD | Real-time | Voice activity detection built-in |
+| SimulStreaming | Python (2025) | Streaming | Replaces WhisperStreaming |
+
+### TTS (Text-to-Speech)
+
+| Model | Streaming Latency | Voice Cloning | License |
+|-------|-------------------|---------------|---------|
+| [XTTS-v2](https://huggingface.co/coqui/XTTS-v2) | <200ms | 6-second sample | Non-commercial |
+| [Bark](https://github.com/coqui-ai/TTS) | Medium | Yes | Research |
+| [MeloTTS](https://github.com/myshell-ai/MeloTTS) | Fast (CPU) | Limited | MIT |
+| [ChatTTS](https://github.com/2noise/ChatTTS) | Fast | No | Conversational optimized |
+
+### Avatar Generation
+
+| Model | Real-Time | Quality | Notes |
+|-------|-----------|---------|-------|
+| [SadTalker](https://github.com/OpenTalker/SadTalker) | Near RT | Good | Audio-driven, single image |
+| [LivePortrait](https://github.com/KlingTeam/LivePortrait) | Yes (TensorRT) | Premium | Used by Kuaishou, Douyin |
+| [MuseTalk](https://github.com/TMElyralab/MuseTalk) | Real-time | Good | Lip-sync optimized |
+| Avatar Forcing (2025) | Real-time | Best | Latest research |
+
+### Image Generation (Stable Diffusion / Flux)
+
+| Model | Speed | Quality | Notes |
+|-------|-------|---------|-------|
+| [SDXL Turbo](https://huggingface.co/stabilityai/sdxl-turbo) | 1-4 steps | Good | Real-time capable |
+| [SDXL Lightning](https://huggingface.co/ByteDance/SDXL-Lightning) | 2-4 steps | Great | ByteDance distilled |
+| [SDXL 1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 20-50 steps | Best | Full quality, LoRA |
+| [Flux.1](https://github.com/black-forest-labs/flux) | Medium | Premium | Latest BFL, inpainting |
+| [Flux.2](https://blackforestlabs.ai/) | Medium | Premium | Multi-image reference |
+
+**Candle supports**: SD 1.5, SD 2.1, SDXL 1.0, SDXL Turbo natively in Rust.
+
+**Use case**: Personas generate their own banners, avatars, visual identity. Async job, quality matters more than latency.
+
+### Video Generation (Sora-class)
+
+| Model | Params | Speed | Resolution | Notes |
+|-------|--------|-------|------------|-------|
+| [Mochi 1](https://github.com/genmoai/mochi) | 10B | Slow | 480p | Best text-to-video quality |
+| [CogVideoX](https://github.com/THUDM/CogVideo) | 5B | Medium | 720p | Best ecosystem, LoRA support |
+| [LTX-Video](https://github.com/Lightricks/LTX-Video) | - | **>Real-time** | 1216x704 | Fastest, 30fps |
+| [HunyuanVideo](https://github.com/Tencent/HunyuanVideo) | 13B | Slow | High | Largest, best quality |
+| [Open-Sora 2.0](https://github.com/hpcaitech/Open-Sora) | 11B | Slow | High | ~$200k to train equivalent |
+
+### Audio Infrastructure (Rust)
+
+| Library | Purpose | Notes |
+|---------|---------|-------|
+| [cpal](https://github.com/RustAudio/cpal) | Cross-platform audio I/O | ASIO, JACK, Audio Worklet support |
+| [rodio](https://github.com/RustAudio/rodio) | Audio playback | Built on cpal, background thread |
+| [symphonia](https://github.com/pdeljanov/Symphonia) | Audio decoding | Pure Rust, no FFmpeg |
+
+### Telephony
+
+| Provider | Protocol | Key Feature |
+|----------|----------|-------------|
+| [Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams) | WebSocket | Bidirectional audio, 8kHz mulaw |
+| [LiveKit Telephony](https://docs.livekit.io/agents/) | SIP/WebRTC | Native agent framework |
+| SIPREC | SIP | Standard call forking |
+
+---
+
+## Core Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            RUST BACKBONE                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                        RING BUFFER POOL                              │   │
+│   │                                                                      │   │
+│   │   Audio Ring [░░░░████████░░░░]  ← 128 slots × 20ms = 2.56s buffer   │   │
+│   │   Video Ring [░░████░░░░░░░░░░]  ← 64 slots × 33ms = 2.1s buffer     │   │
+│   │   Text Ring  [██░░░░░░░░░░░░░░]  ← 256 slots for tokens              │   │
+│   │                                                                      │   │
+│   │   Zero allocation after init. Slots recycled. Never grows.          │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                     │                                        │
+│                                     ▼                                        │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                      PROCESSING PIPELINE                             │   │
+│   │                                                                      │   │
+│   │   Stage 1: Input    ─►  Stage 2: Transform  ─►  Stage 3: Output     │   │
+│   │   (adapters)            (STT/LLM/TTS/etc)       (adapters)          │   │
+│   │                                                                      │   │
+│   │   Each stage:                                                        │   │
+│   │   • Pulls from upstream ring (blocking if empty)                    │   │
+│   │   • Processes frame                                                  │   │
+│   │   • Pushes handle to downstream ring (blocking if full = backpressure)│  │
+│   │   • NEVER copies data, only passes handles                          │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      │ Events only (transcript, status)
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         TYPESCRIPT THIN CLIENT                               │
+│                                                                              │
+│   • Subscribe to event stream                                                │
+│   • Display transcript, status, controls                                     │
+│   • Send commands (mute, end, etc.)                                         │
+│   • NEVER touches audio/video buffers                                       │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Core Types (Rust)
+
+```rust
+// ═══════════════════════════════════════════════════════════════════════════
+// FRAME HANDLE - The universal currency. 4 bytes. Never the data itself.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy)]
+pub struct FrameHandle {
+    pub ring_id: u8,      // Which ring buffer
+    pub slot: u16,        // Slot index in ring
+    pub generation: u8,   // Detect stale handles (ring wrapped)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RING BUFFER - Fixed allocation, lock-free, backpressure via blocking
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub struct RingBuffer<T, const N: usize> {
+    slots: Box<[UnsafeCell<T>; N]>,
+    write_idx: AtomicUsize,
+    read_idx: AtomicUsize,
+    generation: AtomicU8,
+}
+
+impl<T, const N: usize> RingBuffer<T, N> {
+    /// Try to write. Returns None if full (backpressure signal).
+    pub fn try_push(&self, item: T) -> Option<FrameHandle>;
+
+    /// Blocking push. Waits for slot to become available.
+    pub async fn push(&self, item: T) -> FrameHandle;
+
+    /// Try to read. Returns None if empty.
+    pub fn try_pop(&self) -> Option<(FrameHandle, &T)>;
+
+    /// Blocking pop. Waits for data.
+    pub async fn pop(&self) -> (FrameHandle, &T);
+
+    /// Release slot back to pool (after consumer done)
+    pub fn release(&self, handle: FrameHandle);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FRAME TYPES - What lives in ring slots
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub struct AudioFrame {
+    pub samples: [i16; 320],   // 20ms @ 16kHz mono
+    pub timestamp_us: u64,
+    pub sample_rate: u32,
+}
+
+pub struct VideoFrame {
+    pub texture_id: u64,       // GPU handle - data stays on GPU
+    pub width: u16,
+    pub height: u16,
+    pub timestamp_us: u64,
+    pub format: PixelFormat,
+}
+
+pub struct TextFrame {
+    pub tokens: ArrayVec<u32, 64>,  // Token IDs, no heap allocation
+    pub timestamp_us: u64,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PIPELINE STAGE - The processing unit interface
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+pub trait PipelineStage: Send + Sync {
+    type Input;
+    type Output;
+
+    /// Process one frame. May produce 0, 1, or many outputs.
+    async fn process(&self, input: &Self::Input) -> Vec<Self::Output>;
+
+    /// Name for logging/debugging
+    fn name(&self) -> &'static str;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADAPTER TRAITS - Input and Output interfaces
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[async_trait]
+pub trait InputAdapter: Send + Sync {
+    type Frame;
+
+    /// Stream of input frames
+    fn source(&self) -> Pin<Box<dyn Stream<Item = Self::Frame> + Send>>;
+
+    /// Adapter name
+    fn name(&self) -> &'static str;
+}
+
+#[async_trait]
+pub trait OutputAdapter: Send + Sync {
+    type Frame;
+
+    /// Sink for output frames
+    async fn sink(&self, frame: Self::Frame) -> Result<(), AdapterError>;
+
+    /// Adapter name
+    fn name(&self) -> &'static str;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PIPELINE - Connects adapters through processing stages
+// ═══════════════════════════════════════════════════════════════════════════
+
+pub struct Pipeline {
+    input_ring: Arc<RingBuffer<AudioFrame, 128>>,
+    output_ring: Arc<RingBuffer<AudioFrame, 128>>,
+    stages: Vec<Box<dyn AnyStage>>,
+}
+
+impl Pipeline {
+    pub async fn run(
+        &self,
+        input: impl InputAdapter<Frame = AudioFrame>,
+        output: impl OutputAdapter<Frame = AudioFrame>,
+    ) {
+        // Spawn tasks for each stage
+        // Input adapter → input_ring
+        // Stage 1 pulls from input_ring, pushes to stage1_ring
+        // Stage N pulls from stageN-1_ring, pushes to output_ring
+        // output_ring → Output adapter
+        //
+        // All connected by handles. Zero data copies.
+    }
+}
+```
+
+---
+
+## Adapters (Diverse Set for Interface Validation)
+
+Per your principle: pick diverse adapters NOW to work out kinks in the backbone early.
+
+### Input Adapters
+
+| Adapter | Source | Format | Why This One |
+|---------|--------|--------|--------------|
+| **TwilioInputAdapter** | Phone call | 8kHz mulaw WebSocket | Production telephony |
+| **WebRTCInputAdapter** | Browser | 48kHz opus | Web standard |
+| **CpalInputAdapter** | Local mic | Native | Desktop/embedded |
+| **FileInputAdapter** | WAV/MP3 | Any | Testing/batch |
+
+**Interface validation**: Twilio (8kHz, mulaw, WebSocket) vs Cpal (48kHz, native, callback) are maximally different. If both fit cleanly → interface is proven.
+
+```rust
+// Twilio: WebSocket, base64 mulaw, 8kHz
+pub struct TwilioInputAdapter {
+    ws: WebSocketStream,
+    resampler: Resampler<8000, 16000>,  // Upsample to internal 16kHz
+}
+
+#[async_trait]
+impl InputAdapter for TwilioInputAdapter {
+    type Frame = AudioFrame;
+
+    fn source(&self) -> Pin<Box<dyn Stream<Item = AudioFrame> + Send>> {
+        Box::pin(stream! {
+            while let Some(msg) = self.ws.next().await {
+                if let Ok(media) = parse_twilio_media(msg) {
+                    let pcm = mulaw_decode(&base64_decode(&media.payload));
+                    let resampled = self.resampler.process(&pcm);
+                    yield AudioFrame {
+                        samples: resampled,
+                        timestamp_us: media.timestamp * 1000,
+                        sample_rate: 16000,
+                    };
+                }
+            }
+        })
+    }
+
+    fn name(&self) -> &'static str { "twilio" }
+}
+
+// Cpal: Native callback, variable sample rate
+pub struct CpalInputAdapter {
+    rx: mpsc::Receiver<AudioFrame>,
+    _stream: cpal::Stream,  // Kept alive
+}
+
+#[async_trait]
+impl InputAdapter for CpalInputAdapter {
+    type Frame = AudioFrame;
+
+    fn source(&self) -> Pin<Box<dyn Stream<Item = AudioFrame> + Send>> {
+        Box::pin(ReceiverStream::new(self.rx.clone()))
+    }
+
+    fn name(&self) -> &'static str { "cpal" }
+}
+```
+
+### Output Adapters
+
+| Adapter | Destination | Format | Why This One |
+|---------|-------------|--------|--------------|
+| **TwilioOutputAdapter** | Phone call | 8kHz mulaw WebSocket | Production telephony |
+| **WebRTCOutputAdapter** | Browser | 48kHz opus | Web standard |
+| **CpalOutputAdapter** | Local speaker | Native | Desktop |
+| **FileOutputAdapter** | WAV file | Any | Testing/recording |
+
+### Processing Stages (Modular)
+
+| Stage | Input | Output | Implementation | Speed |
+|-------|-------|--------|----------------|-------|
+| **STTStage** | AudioFrame | TextFrame | whisper-rs | Real-time |
+| **LLMStage** | TextFrame | TextFrame | Candle (existing) | Real-time |
+| **TTSStage** | TextFrame | AudioFrame | XTTS/MeloTTS | Real-time |
+| **ImageGenStage** | TextFrame | ImageFrame | Candle SDXL | 2-30s |
+| **AvatarStage** | AudioFrame + TextFrame | VideoFrame | LivePortrait | Real-time |
+| **VideoGenStage** | TextFrame | VideoFrame | LTX-Video/CogVideoX | 30-300s |
+
+**Near-term priorities:**
+1. STT + LLM + TTS (voice conversations)
+2. ImageGenStage (persona banners, visual identity)
+3. AvatarStage (persona video presence)
+4. VideoGenStage (future)
+
+```rust
+// STT Stage - whisper-rs
+pub struct STTStage {
+    ctx: WhisperContext,
+    state: WhisperState,
+    buffer: AudioBuffer,  // Accumulate ~1-2s for transcription
+}
+
+#[async_trait]
+impl PipelineStage for STTStage {
+    type Input = AudioFrame;
+    type Output = TextFrame;
+
+    async fn process(&self, input: &AudioFrame) -> Vec<TextFrame> {
+        self.buffer.push(input);
+
+        // Accumulate until we have enough for transcription
+        if self.buffer.duration_ms() < 1000 {
+            return vec![];
+        }
+
+        let samples = self.buffer.drain();
+        let result = self.state.full(
+            whisper_rs::FullParams::new(SamplingStrategy::Greedy { best_of: 1 }),
+            &samples
+        );
+
+        vec![TextFrame {
+            tokens: tokenize(&result.get_text()),
+            timestamp_us: input.timestamp_us,
+        }]
+    }
+
+    fn name(&self) -> &'static str { "stt:whisper" }
+}
+
+// TTS Stage - streams audio as LLM tokens arrive
+pub struct TTSStage {
+    model: XTTSModel,
+    voice_embedding: VoiceEmbedding,
+}
+
+#[async_trait]
+impl PipelineStage for TTSStage {
+    type Input = TextFrame;
+    type Output = AudioFrame;
+
+    async fn process(&self, input: &TextFrame) -> Vec<AudioFrame> {
+        // Stream TTS - generate audio chunk by chunk
+        let text = detokenize(&input.tokens);
+        let mut frames = vec![];
+
+        // XTTS streams audio in chunks
+        for chunk in self.model.stream_synthesis(&text, &self.voice_embedding) {
+            frames.push(AudioFrame {
+                samples: chunk,
+                timestamp_us: input.timestamp_us,
+                sample_rate: 24000,
+            });
+        }
+
+        frames
+    }
+
+    fn name(&self) -> &'static str { "tts:xtts" }
+}
+
+// Image Generation Stage - SDXL via Candle (streams progress)
+pub struct ImageGenStage {
+    model: StableDiffusionXL,
+    scheduler: DDIMScheduler,
+}
+
+#[async_trait]
+impl PipelineStage for ImageGenStage {
+    type Input = ImageGenRequest;
+    type Output = ImageGenEvent;
+
+    async fn process(&self, input: &ImageGenRequest) -> Vec<ImageGenEvent> {
+        let mut events = vec![];
+
+        // Encode prompt
+        let text_embeddings = self.model.encode_prompt(&input.prompt);
+
+        // Generate with progress streaming
+        let total_steps = input.steps.unwrap_or(50);
+        let mut latents = self.scheduler.init_latents(input.width, input.height);
+
+        for step in 0..total_steps {
+            latents = self.model.denoise_step(&latents, &text_embeddings, step);
+
+            // Stream progress every N steps
+            if step % 5 == 0 || step == total_steps - 1 {
+                let preview = self.model.decode_latents(&latents);
+                events.push(ImageGenEvent::Progress {
+                    step,
+                    total_steps,
+                    preview_handle: store_in_ring(preview),
+                });
+            }
+        }
+
+        // Final decode
+        let final_image = self.model.decode_latents(&latents);
+        events.push(ImageGenEvent::Complete {
+            image_handle: store_in_ring(final_image),
+        });
+
+        events
+    }
+
+    fn name(&self) -> &'static str { "image:sdxl" }
+}
+```
+
+---
+
+## gRPC Service (TS ↔ Rust Interface)
+
+Thin. Events only. No audio over this boundary.
+
+```protobuf
+syntax = "proto3";
+package streaming;
+
+service StreamingService {
+    // Join a conversation - returns event stream
+    rpc Join(JoinRequest) returns (stream StreamEvent);
+
+    // Send control commands
+    rpc Command(CommandRequest) returns (CommandResponse);
+
+    // Health/status
+    rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+message JoinRequest {
+    string conversation_id = 1;
+    string persona_id = 2;
+
+    // Input adapter config
+    oneof input {
+        TwilioConfig twilio_input = 10;
+        WebRTCConfig webrtc_input = 11;
+        FileConfig file_input = 12;
+    }
+
+    // Output adapter config
+    oneof output {
+        TwilioConfig twilio_output = 20;
+        WebRTCConfig webrtc_output = 21;
+        FileConfig file_output = 22;
+    }
+}
+
+message StreamEvent {
+    uint64 timestamp_us = 1;
+
+    oneof event {
+        TranscriptEvent transcript = 10;      // STT output (for display)
+        ResponseEvent response = 11;          // LLM output (for display)
+        StatusEvent status = 12;              // Pipeline status
+        ErrorEvent error = 13;                // Error occurred
+    }
+}
+
+message TranscriptEvent {
+    string text = 1;
+    bool is_final = 2;
+    float confidence = 3;
+}
+
+message ResponseEvent {
+    string text = 1;           // Full text so far
+    string delta = 2;          // New tokens since last event
+    bool is_complete = 3;
+}
+
+message CommandRequest {
+    string conversation_id = 1;
+
+    oneof command {
+        MuteCommand mute = 10;
+        UnmuteCommand unmute = 11;
+        EndCommand end = 12;
+        InterruptCommand interrupt = 13;  // Stop current TTS
+    }
+}
+
+// Adapter configs
+message TwilioConfig {
+    string stream_sid = 1;
+    string call_sid = 2;
+}
+
+message WebRTCConfig {
+    string sdp_offer = 1;
+    repeated string ice_candidates = 2;
+}
+
+message FileConfig {
+    string path = 1;
+}
+```
+
+---
+
+## Phase Implementation
+
+### Phase 1: Core Backbone + Voice (NOW)
+- [ ] Ring buffer implementation with backpressure
+- [ ] FrameHandle system
+- [ ] Pipeline orchestrator
+- [ ] TwilioInputAdapter (diverse: WebSocket, 8kHz, mulaw)
+- [ ] CpalInputAdapter (diverse: native, callback, variable rate)
+- [ ] TwilioOutputAdapter
+- [ ] CpalOutputAdapter
+- [ ] STTStage (whisper-rs)
+- [ ] Integration with existing LLM (Candle)
+- [ ] TTSStage (MeloTTS for MIT license, or XTTS)
+- [ ] gRPC service for TS
+
+### Phase 2: Image Generation + WebRTC (Soon)
+- [ ] ImageGenStage (Candle SDXL - already have Candle infra)
+- [ ] Persona banner generation pipeline
+- [ ] Progress streaming for long generations
+- [ ] WebRTCInputAdapter (webrtc-rs or LiveKit)
+- [ ] WebRTCOutputAdapter
+- [ ] Opus codec handling
+- [ ] ICE/DTLS handling
+
+### Phase 3: Avatar (Later)
+- [ ] VideoFrame ring buffer
+- [ ] AvatarStage (LivePortrait)
+- [ ] GPU texture handle passing
+- [ ] WebRTC video output
+
+### Phase 4: Video Generation (Future)
+- [ ] VideoGenStage (LTX-Video for speed, CogVideoX for quality)
+- [ ] Multi-frame generation pipeline
+- [ ] Diffusion streaming (generate while displaying)
+
+---
+
+## File Structure
+
+```
+workers/
+├── streaming-core/              # NEW: The backbone
+│   ├── Cargo.toml
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── ring_buffer.rs       # Lock-free ring buffers
+│   │   ├── frame.rs             # FrameHandle, AudioFrame, VideoFrame
+│   │   ├── pipeline.rs          # Stage orchestration
+│   │   ├── adapters/
+│   │   │   ├── mod.rs
+│   │   │   ├── twilio.rs        # TwilioInputAdapter, TwilioOutputAdapter
+│   │   │   ├── cpal.rs          # CpalInputAdapter, CpalOutputAdapter
+│   │   │   ├── webrtc.rs        # WebRTCInputAdapter, WebRTCOutputAdapter
+│   │   │   └── file.rs          # FileInputAdapter, FileOutputAdapter
+│   │   ├── stages/
+│   │   │   ├── mod.rs
+│   │   │   ├── stt.rs           # STTStage (whisper-rs)
+│   │   │   ├── tts.rs           # TTSStage (XTTS/MeloTTS)
+│   │   │   ├── image_gen.rs     # ImageGenStage (Candle SDXL)
+│   │   │   ├── avatar.rs        # AvatarStage (LivePortrait)
+│   │   │   └── video_gen.rs     # VideoGenStage (LTX-Video)
+│   │   └── grpc.rs              # tonic service
+│   └── proto/
+│       └── streaming.proto
+│
+├── inference-grpc/              # EXISTING: LLM inference
+│   └── ...                      # Integrate as LLMStage
+│
+└── shared/
+    └── ...
+```
+
+---
+
+## Performance Targets
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| Audio latency (input → output) | <300ms | Conversational |
+| STT latency | <200ms | whisper-rs streaming |
+| LLM first token | <100ms | Existing Candle |
+| TTS first audio | <200ms | XTTS streaming |
+| Ring buffer size | 2-3 seconds | Absorb jitter |
+| Memory allocations | 0 after init | All preallocated |
+| CPU copies of audio | 0 | Handle passing only |
+
+---
+
+## References
+
+### WebRTC/Streaming
+- [webrtc-rs](https://github.com/webrtc-rs/webrtc) - Pure Rust WebRTC
+- [mediasoup](https://crates.io/crates/mediasoup) - Rust SFU bindings
+- [LiveKit](https://github.com/livekit/livekit) - Production voice AI platform
+- [Tonari blog](https://blog.tonari.no/why-we-love-rust) - 130ms latency achievement
+
+### STT
+- [whisper-rs](https://github.com/tazz4843/whisper-rs) - Whisper.cpp Rust bindings
+- [whisper_rust](https://github.com/Sameam/whisper_rust) - VAD-enabled real-time
+
+### TTS
+- [XTTS-v2](https://huggingface.co/coqui/XTTS-v2) - Voice cloning, <200ms streaming
+- [MeloTTS](https://github.com/myshell-ai/MeloTTS) - MIT license, CPU-fast
+- [Coqui TTS](https://github.com/idiap/coqui-ai-TTS) - Maintained fork
+
+### Avatar
+- [LivePortrait](https://github.com/KlingTeam/LivePortrait) - Premium quality
+- [SadTalker](https://github.com/OpenTalker/SadTalker) - Audio-driven animation
+- [MuseTalk](https://github.com/TMElyralab/MuseTalk) - Real-time lip-sync
+
+### Video Generation
+- [LTX-Video](https://github.com/Lightricks/LTX-Video) - Faster than real-time
+- [CogVideoX](https://github.com/THUDM/CogVideo) - Best ecosystem, LoRA
+- [Mochi 1](https://github.com/genmoai/mochi) - Best text-to-video quality
+
+### Audio Infrastructure
+- [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
+- [rodio](https://github.com/RustAudio/rodio) - Audio playback
+- [Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams) - Telephony
+
+### Rust Patterns
+- [tonic](https://github.com/hyperium/tonic) - gRPC with backpressure
+- [tokio](https://tokio.rs/) - Async runtime
+
+---
+
+## Summary
+
+**Build the backbone NOW.** Ring buffers, zero-copy handles, event-driven pull. Same architecture whether it's:
+- Voice IVR
+- Browser video call
+- AI avatar
+- Sora-level video generation
+
+Adapters plug in. Core never changes. This is day-one infrastructure, not optimization.

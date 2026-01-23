@@ -227,19 +227,33 @@ export class AnthropicStyleToolAdapter extends ToolFormatAdapter {
     }
 
     output += `
-Usage Format (Anthropic Claude XML style):
+=== HOW TO CALL TOOLS ===
+Use this EXACT XML format to call tools:
+
 <tool_use>
-  <tool_name>read</tool_name>
+  <tool_name>TOOL_NAME_HERE</tool_name>
   <parameters>
-    <filepath>/path/to/file.ts</filepath>
+    <param1>value1</param1>
+    <param2>value2</param2>
   </parameters>
 </tool_use>
 
+Example - voting on a proposal:
+<tool_use>
+  <tool_name>collaboration/decision/vote</tool_name>
+  <parameters>
+    <proposalId>uuid-here</proposalId>
+    <rankedChoices>["option1-id", "option2-id"]</rankedChoices>
+  </parameters>
+</tool_use>
+
+CRITICAL RULES:
+1. You MUST use the <tool_use> XML format above to call tools
+2. NEVER write "Tool 'x' completed" - that is the RESULT format, not how you CALL tools
+3. NEVER fabricate or make up tool results - the system will execute your tool call and return actual results
+4. If you want to use a tool, output the <tool_use> XML block and WAIT for the result
+
 When you need information, use tools instead of making assumptions.
-Examples:
-- Unknown file content? Use tools to read files
-- Need to find code? Use tools to search
-- Want to verify system state? Use tools to check
 `;
 
     return output;
@@ -304,11 +318,13 @@ export class MarkdownToolAdapter extends ToolFormatAdapter {
   }
 
   formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    // Use XML format for results to clearly distinguish from tool calls
+    // This prevents AIs from mimicking the result format when they should be calling tools
     return results.map(r => {
       if (r.success && r.content) {
-        return `Tool '${r.toolName}' completed: ${r.content}`;
+        return `<tool_result>\n<tool_name>${r.toolName}</tool_name>\n<status>success</status>\n<content>\n${r.content}\n</content>\n</tool_result>`;
       } else {
-        return `Tool '${r.toolName}' failed: ${r.error || 'Unknown error'}`;
+        return `<tool_result>\n<tool_name>${r.toolName}</tool_name>\n<status>error</status>\n<error>\n${r.error || 'Unknown error'}\n</error>\n</tool_result>`;
       }
     }).join('\n\n');
   }

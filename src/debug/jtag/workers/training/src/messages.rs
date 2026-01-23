@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 // Re-export JTAG protocol types from logger_client to avoid duplicate_mod warning
 // logger_client already includes and re-exports jtag_protocol types
-pub use super::logger_client::{JTAGErrorType, JtagRequest as JTAGRequest, JTAGResponse};
+pub use super::logger_client::{JTAGErrorType, JTAGResponse, JtagRequest as JTAGRequest};
 
 // ============================================================================
 // Training-Specific Types (owned by training worker)

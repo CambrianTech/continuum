@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/voice/synthesize",
+  "version": "1.0.0",
+  "description": "Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.",
+  "main": "server/VoiceSynthesizeServerCommand.ts",
+  "types": "shared/VoiceSynthesizeTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/VoiceSynthesizeIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "voice/synthesize"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

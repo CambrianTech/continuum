@@ -225,7 +225,11 @@ export class PersonaAutonomousLoop {
         senderDisplayName: item.senderName,
         status: 'delivered',
         priority: item.priority,
-        metadata: {},
+        // Pass through voice modality for TTS routing
+        metadata: {
+          sourceModality: item.sourceModality,      // 'text' | 'voice'
+          voiceSessionId: item.voiceSessionId        // UUID if voice
+        },
         reactions: [],
         attachments: [],
         mentions: [],
@@ -237,8 +241,8 @@ export class PersonaAutonomousLoop {
       // Determine if sender is human (from actual senderType, not ID prefix)
       const senderIsHuman = item.senderType === 'human';
 
-      // Extract message text
-      const messageText = item.content;
+      // Extract message text (defensive: ensure string even if undefined)
+      const messageText = item.content ?? '';
 
       // Process message using cognition-enhanced evaluation logic
       await this.personaUser.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);

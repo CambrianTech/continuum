@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-13T22:58:29.652Z",
+  "generated": "2026-01-23T19:00:06.313Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -274,6 +274,105 @@
           "type": "array",
           "required": false,
           "description": "files parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/transcribe",
+      "description": "Voice Transcribe Command - Shared Types\n *\n * Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.",
+      "params": {
+        "audio": {
+          "type": "string",
+          "required": true,
+          "description": "audio parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "language": {
+          "type": "string",
+          "required": false,
+          "description": "language parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/synthesize",
+      "description": "Voice Synthesize Command - Shared Types\n *\n * Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.",
+      "params": {
+        "text": {
+          "type": "string",
+          "required": true,
+          "description": "text parameter"
+        },
+        "voice": {
+          "type": "string",
+          "required": false,
+          "description": "voice parameter"
+        },
+        "adapter": {
+          "type": "string",
+          "required": false,
+          "description": "adapter parameter"
+        },
+        "speed": {
+          "type": "number",
+          "required": false,
+          "description": "speed parameter"
+        },
+        "sampleRate": {
+          "type": "number",
+          "required": false,
+          "description": "sampleRate parameter"
+        },
+        "format": {
+          "type": "string",
+          "required": false,
+          "description": "format parameter"
+        },
+        "stream": {
+          "type": "boolean",
+          "required": false,
+          "description": "stream parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/stop",
+      "description": "Voice Stop Command - Shared Types\n *\n * Stop an active voice chat session",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": false,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "voice/start",
+      "description": "Voice Start Command - Shared Types\n *\n * Start voice chat session for real-time audio communication with AI",
+      "params": {
+        "room": {
+          "type": "string",
+          "required": false,
+          "description": "room parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "voice": {
+          "type": "string",
+          "required": false,
+          "description": "voice parameter"
         }
       }
     },
@@ -767,8 +866,8 @@
           "description": "isShared parameter"
         },
         "connectionContext": {
-          "type": "object",
-          "required": false,
+          "type": "string",
+          "required": true,
           "description": "connectionContext parameter"
         }
       }
@@ -1013,6 +1112,129 @@
           "type": "boolean",
           "required": false,
           "description": "verbose parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/learning/pattern/query",
+      "description": "Persona Learning Pattern Query Command - Shared Types\n *\n * Query the collective pattern knowledge base. Search for patterns that might help solve the current problem.",
+      "params": {
+        "domain": {
+          "type": "string",
+          "required": false,
+          "description": "domain parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "keywords": {
+          "type": "array",
+          "required": false,
+          "description": "keywords parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "minConfidence": {
+          "type": "number",
+          "required": false,
+          "description": "minConfidence parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "orderBy": {
+          "type": "string",
+          "required": false,
+          "description": "orderBy parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/learning/pattern/endorse",
+      "description": "Persona Learning Pattern Endorse Command - Shared Types\n *\n * Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.",
+      "params": {
+        "patternId": {
+          "type": "string",
+          "required": true,
+          "description": "patternId parameter"
+        },
+        "success": {
+          "type": "boolean",
+          "required": true,
+          "description": "success parameter"
+        },
+        "notes": {
+          "type": "string",
+          "required": false,
+          "description": "notes parameter"
+        }
+      }
+    },
+    {
+      "name": "persona/learning/pattern/capture",
+      "description": "Persona Learning Pattern Capture Command - Shared Types\n *\n * Capture a successful pattern for cross-AI learning. When an AI discovers a working solution, they share it with the team.",
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "name parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "description": "domain parameter"
+        },
+        "problem": {
+          "type": "string",
+          "required": true,
+          "description": "problem parameter"
+        },
+        "solution": {
+          "type": "string",
+          "required": true,
+          "description": "solution parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "applicableWhen": {
+          "type": "array",
+          "required": false,
+          "description": "applicableWhen parameter"
+        },
+        "examples": {
+          "type": "array",
+          "required": false,
+          "description": "examples parameter"
+        },
+        "makePublic": {
+          "type": "boolean",
+          "required": false,
+          "description": "makePublic parameter"
         }
       }
     },
@@ -3748,6 +3970,89 @@
       }
     },
     {
+      "name": "collaboration/live/transcription",
+      "description": "Collaboration Live Transcription Command - Shared Types\n *\n * Relay voice transcription from browser to server for AI processing",
+      "params": {
+        "callSessionId": {
+          "type": "string",
+          "required": true,
+          "description": "callSessionId parameter"
+        },
+        "speakerId": {
+          "type": "string",
+          "required": true,
+          "description": "speakerId parameter"
+        },
+        "speakerName": {
+          "type": "string",
+          "required": true,
+          "description": "speakerName parameter"
+        },
+        "transcript": {
+          "type": "string",
+          "required": true,
+          "description": "transcript parameter"
+        },
+        "confidence": {
+          "type": "number",
+          "required": true,
+          "description": "confidence parameter"
+        },
+        "language": {
+          "type": "string",
+          "required": true,
+          "description": "language parameter"
+        },
+        "timestamp": {
+          "type": "number",
+          "required": true,
+          "description": "timestamp parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/live/start",
+      "description": "Collaboration Live Start Command - Shared Types\n *\n * Start a live call with selected participants. Creates or finds the DM room for the participant set, then joins the call. Like Discord's group call - select users, click call.",
+      "params": {
+        "participants": {
+          "type": "array",
+          "required": true,
+          "description": "participants parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "withVideo": {
+          "type": "boolean",
+          "required": false,
+          "description": "withVideo parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/live/leave",
+      "description": "Live Leave Command Types\n *\n * Leave a live audio/video call.\n * Removes user from participants. Call ends when last person leaves.",
+      "params": {}
+    },
+    {
+      "name": "collaboration/live/join",
+      "description": "Live Join Command Types\n *\n * Join a live audio/video call for a room.\n * Creates call if none exists, or joins existing.",
+      "params": {
+        "entityId": {
+          "type": "string",
+          "required": true,
+          "description": "entityId parameter"
+        },
+        "callerId": {
+          "type": "string",
+          "required": false,
+          "description": "callerId parameter"
+        }
+      }
+    },
+    {
       "name": "collaboration/dm",
       "description": "DM Command Types\n * Get or create a private room with specific participants\n *\n * Set theory: {A, B} == {B, A} - participant order doesn't matter\n * Works with any number of participants (2+ for group DM)",
       "params": {
@@ -5525,6 +5830,83 @@
       }
     },
     {
+      "name": "ai/context/slice",
+      "description": "Ai Context Slice Command - Shared Types\n *\n * Retrieve full content of a context item by ID - companion to context/search for getting complete entity data",
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "id parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "includeRelated": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeRelated parameter"
+        },
+        "relatedLimit": {
+          "type": "number",
+          "required": false,
+          "description": "relatedLimit parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/context/search",
+      "description": "Ai Context Search Command - Shared Types\n *\n * Semantic context navigation - search memories, messages, timeline across all entity types using cosine similarity via Rust embedding worker",
+      "params": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "collections": {
+          "type": "array",
+          "required": false,
+          "description": "collections parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "excludeContextId": {
+          "type": "string",
+          "required": false,
+          "description": "excludeContextId parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "minSimilarity": {
+          "type": "number",
+          "required": false,
+          "description": "minSimilarity parameter"
+        },
+        "since": {
+          "type": "string",
+          "required": false,
+          "description": "since parameter"
+        },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "description": "mode parameter"
+        }
+      }
+    },
+    {
       "name": "ai/bag-of-words",
       "description": "Bag of Words Command Types\n *\n * Orchestrates multi-persona conversations in a chat room.\n * \"Bag of words\" = collection of AI personas interacting naturally based on conversation context.",
       "params": {
@@ -5572,7 +5954,7 @@
     },
     {
       "name": "ai/adapter/test",
-      "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns UUID immediately, tests run in background.\n * Use ai/adapter/test/status and ai/adapter/test/results to monitor progress.",
+      "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns testId immediately, tests run in background.\n *\n * To check status/results:\n *   data/read --collection=\"test_executions\" --id=\"<testId>\"\n *\n * Status values: queued → running → completed (or failed)",
       "params": {
         "adapter": {
           "type": "string",

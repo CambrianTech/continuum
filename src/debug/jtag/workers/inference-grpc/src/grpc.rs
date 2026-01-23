@@ -423,8 +423,7 @@ impl Inference for InferenceService {
             }
 
             // Load BF16 model
-            let load_result =
-                tokio::task::spawn_blocking(crate::model::load_default_model).await;
+            let load_result = tokio::task::spawn_blocking(crate::model::load_default_model).await;
 
             match load_result {
                 Ok(Ok(new_state)) => {
@@ -636,8 +635,7 @@ impl Inference for InferenceService {
                 let mut q_state = self.quantized_state.write().await;
                 *q_state = None;
             }
-            let load_result =
-                tokio::task::spawn_blocking(crate::model::load_default_model).await;
+            let load_result = tokio::task::spawn_blocking(crate::model::load_default_model).await;
             match load_result {
                 Ok(Ok(new_state)) => {
                     let mut state = self.state.write().await;
@@ -829,8 +827,7 @@ impl Inference for InferenceService {
                 let mut q_state = self.quantized_state.write().await;
                 *q_state = None;
             }
-            let load_result =
-                tokio::task::spawn_blocking(crate::model::load_default_model).await;
+            let load_result = tokio::task::spawn_blocking(crate::model::load_default_model).await;
             match load_result {
                 Ok(Ok(new_state)) => {
                     let mut state = self.state.write().await;

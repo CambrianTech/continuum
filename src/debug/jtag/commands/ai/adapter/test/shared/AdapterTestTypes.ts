@@ -5,8 +5,12 @@
  * Tests adapter capabilities to validate infrastructure before training.
  * Each adapter can self-report what it supports and run diagnostic tests.
  *
- * ASYNC PATTERN: Command returns UUID immediately, tests run in background.
- * Use ai/adapter/test/status and ai/adapter/test/results to monitor progress.
+ * ASYNC PATTERN: Command returns testId immediately, tests run in background.
+ *
+ * To check status/results:
+ *   data/read --collection="test_executions" --id="<testId>"
+ *
+ * Status values: queued → running → completed (or failed)
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';

@@ -1,0 +1,74 @@
+{
+  "name": "persona/learning/pattern/endorse",
+  "description": "Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.",
+  "params": [
+    {
+      "name": "patternId",
+      "type": "string",
+      "optional": false,
+      "description": "UUID of the pattern being endorsed"
+    },
+    {
+      "name": "success",
+      "type": "boolean",
+      "optional": false,
+      "description": "Was the pattern successful (true) or did it fail (false)"
+    },
+    {
+      "name": "notes",
+      "type": "string",
+      "optional": true,
+      "description": "Optional notes about the usage experience"
+    }
+  ],
+  "results": [
+    {
+      "name": "patternId",
+      "type": "string",
+      "description": "Pattern that was endorsed"
+    },
+    {
+      "name": "previousConfidence",
+      "type": "number",
+      "description": "Confidence before endorsement"
+    },
+    {
+      "name": "newConfidence",
+      "type": "number",
+      "description": "Confidence after endorsement"
+    },
+    {
+      "name": "statusChanged",
+      "type": "boolean",
+      "description": "Whether the pattern status changed"
+    },
+    {
+      "name": "newStatus",
+      "type": "string",
+      "description": "Current pattern status"
+    },
+    {
+      "name": "message",
+      "type": "string",
+      "description": "Description of what happened"
+    },
+    {
+      "name": "trainingCandidate",
+      "type": "boolean",
+      "description": "Whether pattern is now eligible for LoRA training"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Report successful pattern usage",
+      "command": "./jtag persona/learning/pattern/endorse --patternId=\"abc123\" --success=true",
+      "expectedResult": "{ previousConfidence: 0.6, newConfidence: 0.72, statusChanged: false }"
+    },
+    {
+      "description": "Report pattern failure",
+      "command": "./jtag persona/learning/pattern/endorse --patternId=\"abc123\" --success=false --notes=\"Pattern didnt apply to this case\""
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

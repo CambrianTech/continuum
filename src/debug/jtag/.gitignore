@@ -1,3 +1,6 @@
+# Voice/ML Models (downloaded automatically, too large for git)
+models/
+
 # Python Training Environment
 .continuum/genome/python/envs/
 .continuum/genome/python/micromamba/

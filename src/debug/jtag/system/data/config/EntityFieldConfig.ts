@@ -136,6 +136,62 @@ export const ENTITY_FIELD_MAPPINGS: EntityFieldMapping[] = [
         }
       }
     ]
+  },
+  /**
+   * FeedbackEntity - Cross-AI Learning Patterns
+   * Enables personas to share successful patterns and collectively improve
+   */
+  {
+    collection: 'feedback_patterns',
+    keepJsonBlob: true,
+    extractedFields: [
+      {
+        fieldName: 'sourcePersonaId',
+        sqliteType: 'text',
+        indexed: true,
+        nullable: false
+      },
+      {
+        fieldName: 'type',
+        sqliteType: 'text',
+        indexed: true,
+        nullable: false
+      },
+      {
+        fieldName: 'domain',
+        sqliteType: 'text',
+        indexed: true,
+        nullable: false
+      },
+      {
+        fieldName: 'status',
+        sqliteType: 'text',
+        indexed: true,
+        nullable: false
+      },
+      {
+        fieldName: 'confidence',
+        sqliteType: 'real',
+        indexed: true,
+        nullable: false
+      },
+      {
+        fieldName: 'discoveredAt',
+        sqliteType: 'datetime',
+        indexed: true,
+        nullable: false,
+        converter: {
+          toStorage: (isoString: string) => new Date(isoString).getTime(),
+          fromStorage: (timestamp: number) => new Date(timestamp).toISOString()
+        }
+      },
+      {
+        fieldName: 'isPublic',
+        sqliteType: 'boolean',
+        indexed: true,
+        nullable: false
+      }
+    ]
   }
 ];
 

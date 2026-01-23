@@ -494,6 +494,22 @@ export class MainWidget extends ReactiveWidget {
       return () => unsubscribe();
     });
 
+    // Handle navigate:live events from chat/user widgets
+    this.createMountEffect(() => {
+      const unsubscribe = Events.subscribe('navigate:live', (data: { entityId: string; entityType: string; displayName?: string }) => {
+        this.log(`Navigate to live: ${data.entityType}/${data.entityId}`);
+        const userId = this.userState?.userId;
+        if (userId) {
+          ContentService.setUserId(userId as UUID);
+        }
+        ContentService.open('live', data.entityId, {
+          title: data.displayName || 'Live Call',
+          setAsCurrent: true
+        });
+      });
+      return () => unsubscribe();
+    });
+
     this.log('Subscribed to content events and pageState');
   }
 
