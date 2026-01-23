@@ -95,12 +95,9 @@ const MIN_SPEECH_SAMPLES: usize = 8000; // 0.5s at 16kHz
 /// Silence frames needed to declare speech has ended
 /// Research-based threshold: 500-1500ms is industry standard
 /// 22 frames * 32ms/frame = 704ms of silence (balanced for natural pauses)
+/// This threshold already provides hangover behavior - keeps speech active
+/// during natural volume variations before declaring end-of-speech
 const SILENCE_THRESHOLD_FRAMES: u32 = 22;
-
-/// Hangover frames - keep treating as speech after voice drops below threshold
-/// Prevents mid-word chopping on natural volume variations
-/// 5 frames * 32ms/frame = 160ms hangover
-const HANGOVER_FRAMES: u32 = 5;
 
 /// Participant audio stream - zero allocations on hot path
 #[derive(Debug)]

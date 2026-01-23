@@ -17,6 +17,7 @@ import { PersonaUser } from '../../../system/user/server/PersonaUser';
 import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
 import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
 import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { Events } from '../../../system/core/shared/Events';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
@@ -173,15 +174,44 @@ export class SessionDaemonServer extends SessionDaemon {
   protected async initialize(): Promise<void> {
     await super.initialize();
     await this.loadSessionsFromFile();
-    
+
     // Start session cleanup interval - check every 5 minutes
     this.registerInterval('session-cleanup', () => {
       this.cleanupExpiredSessions().catch(error => {
         this.log.error('Cleanup interval error:', error);
       });
     }, 5 * 60 * 1000);
-    
+
+    // Subscribe to user deletion events to clean up sessions
+    Events.subscribe('data:users:deleted', (payload: { id: UUID }) => {
+      this.handleUserDeleted(payload.id).catch(error => {
+        this.log.error(`Failed to cleanup sessions for deleted user ${payload.id}:`, error);
+      });
+    });
+
     // console.debug(`🏷️ ${this.toString()}: Session daemon server initialized with per-project persistence and expiry management`);
+  }
+
+  /**
+   * Handle user deletion - remove all sessions for that user
+   */
+  private async handleUserDeleted(userId: UUID): Promise<void> {
+    const userSessions = this.sessions.filter(s => s.userId === userId);
+
+    if (userSessions.length === 0) {
+      return;
+    }
+
+    this.log.info(`🧹 Cleaning up ${userSessions.length} session(s) for deleted user ${userId.slice(0, 8)}...`);
+
+    for (const session of userSessions) {
+      const index = this.sessions.indexOf(session);
+      if (index > -1) {
+        this.sessions.splice(index, 1);
+      }
+    }
+
+    await this.saveSessionsToFile();
   }
 
   /**
@@ -365,7 +395,12 @@ export class SessionDaemonServer extends SessionDaemon {
         try {
           return await this.getUserById(existingSession.userId);
         } catch {
-          // User was deleted, session is stale
+          // User was deleted, session is stale - remove it
+          this.log.warn(`⚠️ Session has deleted user ${existingSession.userId} - removing stale session`);
+          const index = this.sessions.indexOf(existingSession);
+          if (index > -1) {
+            this.sessions.splice(index, 1);
+          }
           return null;
         }
       }
