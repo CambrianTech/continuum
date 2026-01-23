@@ -71,10 +71,7 @@ pub struct WsAudioInputAdapter {
 
 impl WsAudioInputAdapter {
     /// Create new adapter with channels for WebSocket communication
-    pub fn new(
-        audio_rx: mpsc::Receiver<Vec<i16>>,
-        json_tx: mpsc::Sender<WsJsonMessage>,
-    ) -> Self {
+    pub fn new(audio_rx: mpsc::Receiver<Vec<i16>>, json_tx: mpsc::Sender<WsJsonMessage>) -> Self {
         Self {
             handle: None,
             streaming: false,
@@ -158,10 +155,7 @@ pub struct WsAudioOutputAdapter {
 
 impl WsAudioOutputAdapter {
     /// Create new adapter with channels for WebSocket communication
-    pub fn new(
-        audio_tx: mpsc::Sender<Vec<i16>>,
-        json_tx: mpsc::Sender<WsJsonMessage>,
-    ) -> Self {
+    pub fn new(audio_tx: mpsc::Sender<Vec<i16>>, json_tx: mpsc::Sender<WsJsonMessage>) -> Self {
         Self {
             handle: None,
             active: false,
@@ -281,7 +275,8 @@ impl VoiceSession {
             interrupted: Arc::new(RwLock::new(false)),
         };
 
-        let input_adapter = WsAudioInputAdapter::new(audio_to_pipeline_rx, json_to_client_tx.clone());
+        let input_adapter =
+            WsAudioInputAdapter::new(audio_to_pipeline_rx, json_to_client_tx.clone());
 
         let output_adapter = WsAudioOutputAdapter::new(audio_from_pipeline_tx, json_to_client_tx);
 

@@ -20,9 +20,11 @@ import { COMMANDS } from '../../shared/generated-command-constants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
+import type { CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult } from '../../commands/collaboration/live/transcription/shared/CollaborationLiveTranscriptionTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
+import { ContentService } from '../../system/state/ContentService';
 
 interface Participant {
   userId: UUID;
@@ -70,6 +72,9 @@ export class LiveWidget extends ReactiveWidget {
   // Caption fade timeout
   private captionFadeTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // Speaking state timeouts per user (clear after 2s of no speech)
+  private speakingTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map();
+
   // Styles imported from SCSS
   static override styles = [
     ReactiveWidget.styles,
@@ -78,8 +83,16 @@ export class LiveWidget extends ReactiveWidget {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    // Load call state from UserStateEntity
-    this.loadCallState();
+
+    // Wait for userState to load before trying to read call state
+    // loadUserContext is already called by super.connectedCallback()
+    // We need to wait for it to complete
+    this.loadUserContext().then(() => {
+      this.loadCallState();
+      this.requestUpdate(); // Force re-render with loaded state
+    }).catch(err => {
+      console.error('LiveWidget: Failed to load user context:', err);
+    });
   }
 
   /**
@@ -100,7 +113,10 @@ export class LiveWidget extends ReactiveWidget {
    * Persist call state to UserStateEntity
    */
   private async saveCallState(): Promise<void> {
-    if (!this.userState?.id) return;
+    if (!this.userState?.id) {
+      console.warn('LiveWidget: Cannot save call state - userState not loaded');
+      return;
+    }
 
     // Update the entity
     const newCallState = {
@@ -114,13 +130,19 @@ export class LiveWidget extends ReactiveWidget {
 
     // Persist via data/update
     try {
-      await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>('data/update', {
+      const result = await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>('data/update', {
         collection: 'user_states',
         id: this.userState.id as UUID,
         data: { callState: newCallState }
       });
+
+      if (!result.success) {
+        console.error('LiveWidget: Failed to save call state:', result.error);
+      } else {
+        console.log('LiveWidget: Call state saved:', newCallState);
+      }
     } catch (error) {
-      console.error('LiveWidget: Failed to save call state:', error);
+      console.error('LiveWidget: Exception saving call state:', error);
     }
   }
 
@@ -143,9 +165,9 @@ export class LiveWidget extends ReactiveWidget {
         this.entityId = meta.room.id;
       }
 
-      if (meta?.session?.id) {
-        this.sessionId = meta.session.id;
-      }
+      // Don't use metadata.session.id - it's from tab state and may be stale
+      // Session ID should only come from LiveJoinResult (server source of truth)
+      // Widget will get fresh sessionId when handleJoin() calls LiveJoin command
 
       // Auto-join immediately without preview step
       if (!this.isJoined) {
@@ -174,6 +196,10 @@ export class LiveWidget extends ReactiveWidget {
       this.captionFadeTimeout = null;
     }
     this.currentCaption = null;
+
+    // Clear speaking timeouts
+    this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
+    this.speakingTimeouts.clear();
 
     // Unsubscribe from events
     this.unsubscribers.forEach(unsub => unsub());
@@ -364,21 +390,36 @@ export class LiveWidget extends ReactiveWidget {
           onConnectionChange: (connected) => {
             console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
           },
-          onTranscription: (transcription: TranscriptionResult) => {
-            // [STEP 9] LiveWidget emitting event to server
-            console.log(`[STEP 9] 📤 LiveWidget emitting voice:transcription event: "${transcription.text.slice(0, 50)}..."`);
-            Events.emit('voice:transcription', {
-              sessionId: this.sessionId,
-              speakerId: transcription.userId,
-              speakerName: transcription.displayName,
-              transcript: transcription.text,
-              confidence: transcription.confidence,
-              language: transcription.language,
-              timestamp: Date.now()
-            });
+          onTranscription: async (transcription: TranscriptionResult) => {
+            // [STEP 9] LiveWidget relaying transcription to server
+            console.log(`[STEP 9] 📤 LiveWidget relaying transcription to server: "${transcription.text.slice(0, 50)}..."`);
+
+            // Send to server via command (bridges browser→server event bus)
+            if (!this.sessionId) {
+              console.warn('[STEP 9] ⚠️ No call sessionId - cannot relay transcription');
+              return;
+            }
+
+            try {
+              await Commands.execute<CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult>('collaboration/live/transcription', {
+                callSessionId: this.sessionId,  // Pass call session UUID
+                speakerId: transcription.userId,
+                speakerName: transcription.displayName,
+                transcript: transcription.text,
+                confidence: transcription.confidence,
+                language: transcription.language,
+                timestamp: Date.now()
+              });
+              console.log(`[STEP 9] ✅ Transcription sent to server successfully`);
+            } catch (error) {
+              console.error(`[STEP 9] ❌ Failed to relay transcription:`, error);
+            }
 
             // Update caption display
             this.setCaption(transcription.displayName, transcription.text);
+
+            // Mark user as speaking (auto-clears after 2s)
+            this.setSpeaking(transcription.userId as UUID, true);
           },
         });
 
@@ -611,6 +652,58 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   /**
+   * Mark a user as speaking (auto-clears after 2 seconds)
+   */
+  private setSpeaking(userId: UUID, isSpeaking: boolean): void {
+    // Clear existing timeout for this user
+    const existingTimeout = this.speakingTimeouts.get(userId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      this.speakingTimeouts.delete(userId);
+    }
+
+    // Update participant state
+    this.participants = this.participants.map(p => ({
+      ...p,
+      isSpeaking: p.userId === userId ? isSpeaking : p.isSpeaking
+    }));
+
+    // If setting to speaking, schedule auto-clear after 2s
+    if (isSpeaking) {
+      const timeout = setTimeout(() => {
+        this.setSpeaking(userId, false);
+      }, 2000);
+      this.speakingTimeouts.set(userId, timeout);
+    }
+  }
+
+  /**
+   * Open user profile in a new tab
+   */
+  private openParticipantProfile(participant: Participant): void {
+    const entityId = participant.userId;
+    const title = participant.displayName || 'User Profile';
+
+    console.log(`👤 LiveWidget: Opening profile for ${title} (entityId=${entityId})`);
+
+    // Set current user ID for ContentService
+    if (this.currentUser?.id) {
+      ContentService.setUserId(this.currentUser.id as UUID);
+    }
+
+    // Open profile in new tab
+    ContentService.open('profile', entityId, {
+      title,
+      metadata: {
+        user: {
+          id: entityId,
+          displayName: title
+        }
+      }
+    });
+  }
+
+  /**
    * Calculate optimal grid layout based on participant count
    * Returns string for CSS data-count attribute
    */
@@ -710,7 +803,11 @@ export class LiveWidget extends ReactiveWidget {
 
   private renderParticipant(participant: Participant): TemplateResult {
     return html`
-      <div class="participant-tile ${participant.isSpeaking ? 'speaking' : ''}">
+      <div
+        class="participant-tile ${participant.isSpeaking ? 'speaking' : ''}"
+        @click=${() => this.openParticipantProfile(participant)}
+        title="Click to view ${participant.displayName}'s profile"
+      >
         ${participant.cameraEnabled && participant.videoStream
           ? html`<video class="participant-video" autoplay muted></video>`
           : html`

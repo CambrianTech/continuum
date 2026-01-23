@@ -5,7 +5,7 @@
 
 use crate::handle::Handle;
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Audio test utilities for generating synthetic audio
 pub mod test_utils {
@@ -88,6 +88,15 @@ const MAX_SPEECH_SAMPLES: usize = 16000 * 30;
 /// Streaming transcription window (3s) - triggers periodic transcription during speech
 const STREAMING_WINDOW_SAMPLES: usize = 16000 * 3;
 
+/// Minimum speech samples before transcription (0.5s at 16kHz)
+/// Keep this LOW for responsiveness - Whisper adapter will pad if needed
+const MIN_SPEECH_SAMPLES: usize = 8000; // 0.5s at 16kHz
+
+/// Silence frames needed to declare speech has ended
+/// 10 frames * 32ms/frame = 320ms of silence
+/// Short threshold for responsive transcription
+const SILENCE_THRESHOLD_FRAMES: u32 = 10;
+
 /// Participant audio stream - zero allocations on hot path
 #[derive(Debug)]
 pub struct ParticipantStream {
@@ -132,8 +141,7 @@ pub struct PushAudioResult {
 impl ParticipantStream {
     pub fn new(handle: Handle, user_id: String, display_name: String) -> Self {
         // Pre-allocate speech buffer ONCE at construction - never grows
-        let mut speech_ring = Vec::with_capacity(MAX_SPEECH_SAMPLES);
-        speech_ring.resize(MAX_SPEECH_SAMPLES, 0);
+        let speech_ring = vec![0; MAX_SPEECH_SAMPLES];
 
         Self {
             handle,
@@ -148,8 +156,8 @@ impl ParticipantStream {
             samples_since_emit: 0,
             silence_frames: 0,
             is_speaking: false,
-            min_speech_samples: 8000,  // 0.5s at 16kHz
-            silence_threshold_frames: 10,  // ~320ms of silence ends speech
+            min_speech_samples: MIN_SPEECH_SAMPLES,
+            silence_threshold_frames: SILENCE_THRESHOLD_FRAMES,
         }
     }
 
@@ -168,8 +176,8 @@ impl ParticipantStream {
             samples_since_emit: 0,
             silence_frames: 0,
             is_speaking: false,
-            min_speech_samples: 8000,
-            silence_threshold_frames: 10,
+            min_speech_samples: MIN_SPEECH_SAMPLES,
+            silence_threshold_frames: SILENCE_THRESHOLD_FRAMES,
         }
     }
 
@@ -203,23 +211,30 @@ impl ParticipantStream {
             // If we were speaking and hit silence threshold, speech has ended
             if self.is_speaking && self.silence_frames >= self.silence_threshold_frames {
                 self.is_speaking = false;
-                info!("[STEP 3] 🔇 VAD: Speech ENDED for {} ({}ms of speech)",
+                info!(
+                    "[STEP 3] 🔇 VAD: Speech ENDED for {} ({}ms of speech)",
                     self.display_name,
-                    self.samples_since_emit * 1000 / 16000);
+                    self.samples_since_emit * 1000 / 16000
+                );
 
                 // Emit final transcription if we have enough speech
                 if self.samples_since_emit >= self.min_speech_samples {
                     let speech = self.extract_speech_buffer();
-                    info!("[STEP 4] 📤 Emitting FINAL transcription ({} samples) for {}",
-                        speech.len(), self.display_name);
+                    info!(
+                        "[STEP 4] 📤 Emitting FINAL transcription ({} samples) for {}",
+                        speech.len(),
+                        self.display_name
+                    );
                     self.samples_since_emit = 0;
                     return PushAudioResult {
                         speech_ended: true,
                         speech_samples: Some(speech),
                     };
                 } else {
-                    debug!("[STEP 3] ⏭️ Speech too short ({}ms), discarding",
-                        self.samples_since_emit * 1000 / 16000);
+                    debug!(
+                        "[STEP 3] ⏭️ Speech too short ({}ms), discarding",
+                        self.samples_since_emit * 1000 / 16000
+                    );
                     self.samples_since_emit = 0;
                 }
             }
@@ -237,8 +252,11 @@ impl ParticipantStream {
             // STREAMING: Emit partial transcription every 3 seconds during speech
             if self.samples_since_emit >= STREAMING_WINDOW_SAMPLES {
                 let speech = self.extract_speech_buffer();
-                info!("[STEP 4] 📤 Emitting STREAMING transcription ({} samples, 3s chunk) for {}",
-                    speech.len(), self.display_name);
+                info!(
+                    "[STEP 4] 📤 Emitting STREAMING transcription ({} samples, 3s chunk) for {}",
+                    speech.len(),
+                    self.display_name
+                );
                 self.samples_since_emit = 0;
                 return PushAudioResult {
                     speech_ended: false, // Not final - speech continues
@@ -483,7 +501,7 @@ mod tests {
 
         // Frequency should be approximately 440Hz
         let detected = detect_frequency_approx(&samples, 16000);
-        assert!((detected - 440.0).abs() < 50.0, "Detected: {}", detected);
+        assert!((detected - 440.0).abs() < 50.0, "Detected: {detected}");
     }
 
     #[test]
@@ -613,7 +631,10 @@ mod tests {
 
         // Mix-minus for Bob should be silence (Alice is muted)
         let mix_for_b = mixer.mix_minus(&handle_b);
-        assert!(is_silence(&mix_for_b, 10.0), "Bob should hear silence (Alice muted)");
+        assert!(
+            is_silence(&mix_for_b, 10.0),
+            "Bob should hear silence (Alice muted)"
+        );
 
         // Mix-minus for Alice should be Bob's audio
         let mix_for_a = mixer.mix_minus(&handle_a);
@@ -627,8 +648,10 @@ mod tests {
         let handle_human = Handle::new();
         let handle_ai = Handle::new();
 
-        let mut stream_human = ParticipantStream::new(handle_human, "user-human".into(), "Joel".into());
-        let mut stream_ai = ParticipantStream::new_ai(handle_ai, "ai-helper".into(), "Helper AI".into());
+        let mut stream_human =
+            ParticipantStream::new(handle_human, "user-human".into(), "Joel".into());
+        let mut stream_ai =
+            ParticipantStream::new_ai(handle_ai, "ai-helper".into(), "Helper AI".into());
 
         assert!(!stream_human.is_ai);
         assert!(stream_ai.is_ai);
@@ -684,7 +707,8 @@ mod tests {
         // Add many loud participants
         for i in 0..10 {
             let handle = Handle::new();
-            let mut stream = ParticipantStream::new(handle, format!("user-{}", i), format!("User {}", i));
+            let mut stream =
+                ParticipantStream::new(handle, format!("user-{i}"), format!("User {i}"));
             // Max amplitude sine wave
             stream.push_audio(generate_sine_wave(440.0 + (i as f32 * 100.0), 16000, 320));
             mixer.add_participant(stream);

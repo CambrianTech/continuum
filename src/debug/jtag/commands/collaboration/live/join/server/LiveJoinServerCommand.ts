@@ -52,30 +52,8 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       });
     }
 
-    // 3. Find or create active call for this room
-    let call = await this.findActiveCall(room.id, params);
-    let existed = true;
-
-    if (!call) {
-      call = await this.createCall(room.id, params);
-      existed = false;
-
-      // NEW CALL: Add ALL room members as participants
-      // This ensures AI personas are in the call from the start
-      if (room.members && room.members.length > 0) {
-        const memberIds = room.members.map(m => m.userId);
-        const membersInfo = await this.lookupUsers(memberIds, params);
-
-        for (const memberUser of membersInfo) {
-          call.addParticipant(
-            memberUser.id as UUID,
-            memberUser.displayName || memberUser.uniqueId,
-            memberUser.avatar
-          );
-        }
-        console.log(`🎙️ LiveJoin: Added ${membersInfo.length} room members to call`);
-      }
-    }
+    // 3. Find or create active call for this room (with retry logic for race conditions)
+    const { call, existed } = await this.findOrCreateCall(room, params);
 
     // 4. Add current user as participant (if not already in the call)
     const myParticipant = call.addParticipant(
@@ -97,12 +75,12 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     // This connects AI personas to the streaming-core call server
     const allParticipantIds = call.getActiveParticipants().map(p => p.userId);
     try {
-      await getVoiceOrchestrator().registerSession(call.id, allParticipantIds);
+      await getVoiceOrchestrator().registerSession(call.id, room.id, allParticipantIds);
     } catch (error) {
       console.warn('Failed to register voice session:', error);
     }
 
-    return transformPayload(params, {
+    const result = {
       success: true,
       message: existed
         ? `Joined existing live call`
@@ -112,7 +90,12 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
       existed,
       participants: call.getActiveParticipants(),
       myParticipant
-    });
+    };
+
+    // DEBUG: Log what we're returning to browser
+    console.error(`🎙️ LiveJoin RESULT: callId=${call.id.slice(0, 8)}, existed=${existed}, participants=${call.getActiveParticipants().length}, myParticipant=${myParticipant.displayName}`);
+
+    return transformPayload(params, result);
   }
 
   /**
@@ -198,6 +181,63 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     }
 
     return null;
+  }
+
+  /**
+   * Atomically find or create active call for room
+   * Handles race conditions when multiple participants join simultaneously
+   */
+  private async findOrCreateCall(room: RoomEntity, params: LiveJoinParams): Promise<{ call: CallEntity; existed: boolean }> {
+    const maxRetries = 5;
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      // Try to find existing call
+      let call = await this.findActiveCall(room.id, params);
+      if (call) {
+        return { call, existed: true };
+      }
+
+      // No call found, try to create one
+      try {
+        call = await this.createCall(room.id, params);
+
+        // NEW CALL: Add ALL room members as participants
+        // This ensures AI personas are in the call from the start
+        if (room.members && room.members.length > 0) {
+          const memberIds = room.members.map(m => m.userId);
+          const membersInfo = await this.lookupUsers(memberIds, params);
+
+          for (const memberUser of membersInfo) {
+            call.addParticipant(
+              memberUser.id as UUID,
+              memberUser.displayName || memberUser.uniqueId,
+              memberUser.avatar
+            );
+          }
+          console.log(`🎙️ LiveJoin: Added ${membersInfo.length} room members to new call ${call.id.slice(0, 8)}`);
+        }
+
+        return { call, existed: false };
+      } catch (error) {
+        lastError = error as Error;
+        console.warn(`🎙️ LiveJoin: Create call failed (attempt ${attempt + 1}/${maxRetries}), retrying...`, error);
+
+        // Exponential backoff: 100ms, 200ms, 400ms, 800ms, 1600ms
+        const backoffMs = 100 * Math.pow(2, attempt);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+
+        // Retry: another participant may have created the call while we were creating
+        call = await this.findActiveCall(room.id, params);
+        if (call) {
+          console.log(`🎙️ LiveJoin: Found call created by another participant: ${call.id.slice(0, 8)}`);
+          return { call, existed: true };
+        }
+      }
+    }
+
+    // All retries exhausted
+    throw new Error(`Failed to find or create call after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
   }
 
   /**

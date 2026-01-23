@@ -508,9 +508,9 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
       sessionId: targetSessionId,
       category: category as 'user' | 'agent',
       displayName: displayName,
-      userId: identity.userId,  // From identity, not from agent detection
+      userId: identity.userId,  // May be undefined for browser-ui (server resolves from deviceId)
       isShared: true,
-      connectionContext: enhancedConnectionContext
+      connectionContext: enhancedConnectionContext  // Contains identity.deviceId
     };
     // Reduce log spam - massive config dump not needed
     // console.log(`🔍 JTAGClient: Sending session/create with params:`, JSON.stringify(sessionParams, null, 2));

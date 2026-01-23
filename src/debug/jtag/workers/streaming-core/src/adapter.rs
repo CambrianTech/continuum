@@ -86,6 +86,12 @@ impl CpalMicrophoneAdapter {
     }
 }
 
+impl Default for CpalMicrophoneAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl InputAdapter for CpalMicrophoneAdapter {
     fn name(&self) -> &'static str {
@@ -185,6 +191,12 @@ impl WebRtcInputAdapter {
     }
 }
 
+impl Default for WebRtcInputAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl InputAdapter for WebRtcInputAdapter {
     fn name(&self) -> &'static str {
@@ -234,6 +246,12 @@ impl CpalSpeakerAdapter {
     }
 }
 
+impl Default for CpalSpeakerAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl OutputAdapter for CpalSpeakerAdapter {
     fn name(&self) -> &'static str {
@@ -256,7 +274,11 @@ impl OutputAdapter for CpalSpeakerAdapter {
             Frame::Audio(_audio) => {
                 // Write PCM samples to speaker
             }
-            _ => return Err(AdapterError::InvalidFormat("Expected audio frame".to_string())),
+            _ => {
+                return Err(AdapterError::InvalidFormat(
+                    "Expected audio frame".to_string(),
+                ))
+            }
         }
         Ok(())
     }
@@ -309,7 +331,11 @@ impl OutputAdapter for TwilioOutputAdapter {
             Frame::Audio(_audio) => {
                 // Encode and send
             }
-            _ => return Err(AdapterError::InvalidFormat("Expected audio frame".to_string())),
+            _ => {
+                return Err(AdapterError::InvalidFormat(
+                    "Expected audio frame".to_string(),
+                ))
+            }
         }
         Ok(())
     }
@@ -337,6 +363,12 @@ impl WebRtcOutputAdapter {
             handle: None,
             active: false,
         }
+    }
+}
+
+impl Default for WebRtcOutputAdapter {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

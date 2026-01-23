@@ -350,6 +350,18 @@ export class SessionDaemonServer extends SessionDaemon {
       );
 
       if (existingSession) {
+        // CRITICAL: Validate userId exists before loading user
+        // Previous failed session creation may have stored session with undefined userId
+        if (!existingSession.userId) {
+          console.error(`❌ findUserByDeviceId: Found session with deviceId ${deviceId} but userId is undefined - clearing stale session`);
+          // Remove the broken session from memory
+          const index = this.sessions.indexOf(existingSession);
+          if (index > -1) {
+            this.sessions.splice(index, 1);
+          }
+          return null;
+        }
+
         try {
           return await this.getUserById(existingSession.userId);
         } catch {
@@ -433,27 +445,52 @@ export class SessionDaemonServer extends SessionDaemon {
      * This avoids hardcoding names and works with any seeded owner.
      */
     private async findSeededHumanOwner(): Promise<BaseUser | null> {
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Starting search...`);
+
       // Look for all human users
       const result = await DataDaemon.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'human' }
       });
 
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Query result - success=${result.success}, hasData=${!!result.data}, count=${result.data?.length || 0}`);
+
       if (!result.success || !result.data || result.data.length === 0) {
+        console.error(`🔍🔍🔍 findSeededHumanOwner: No human users found, returning null`);
         return null;
       }
+
+      // Debug: log all human users
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Found ${result.data.length} human users:`);
+      result.data.forEach((record, i) => {
+        console.error(`  [${i}] uniqueId="${record.data.uniqueId}", id="${record.id}", recordId="${record.data.id}", startsWithAnon=${record.data.uniqueId?.startsWith('anon-')}`);
+      });
 
       // Find the first non-anonymous human (uniqueId doesn't start with "anon-")
       // DataRecord<T> wraps entity in .data property
+      // CRITICAL FIX: Use record.id instead of record.data.id (DataRecord issue)
       const seededOwner = result.data.find(record => {
         const entity = record.data;
-        return entity.uniqueId && !entity.uniqueId.startsWith('anon-');
+        const matches = entity.uniqueId && !entity.uniqueId.startsWith('anon-') && record.id;  // Use record.id, not entity.id!
+        console.error(`🔍🔍🔍 findSeededHumanOwner: Checking uniqueId="${entity.uniqueId}", record.id="${record.id}", matches=${matches}`);
+        return matches;
       });
+
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Found seededOwner=${seededOwner ? seededOwner.data.uniqueId : 'null'}`);
+
       if (!seededOwner) {
+        console.error(`🔍🔍🔍 findSeededHumanOwner: No non-anonymous human found, returning null`);
         return null;
       }
 
-      return await this.getUserById(seededOwner.data.id);
+      // CRITICAL FIX: Use record.id instead of record.data.id
+      if (!seededOwner.id) {
+        console.error(`❌ findSeededHumanOwner: Found seeded owner but record.id is undefined! uniqueId=${seededOwner.data.uniqueId}`);
+        return null;
+      }
+
+      console.error(`🔍🔍🔍 findSeededHumanOwner: Loading user with id=${seededOwner.id}`);
+      return await this.getUserById(seededOwner.id);
     }
 
     /**
@@ -628,6 +665,16 @@ export class SessionDaemonServer extends SessionDaemon {
       const identity = enhancedContext?.identity;
       const assistant = enhancedContext?.assistant;
 
+      // DEBUG: BYPASS LOGGER - Use console.error to guarantee visibility
+      console.error(`🔍🔍🔍 SESSION CREATE DEBUG`);
+      console.error(`  clientType: ${clientType} (type: ${typeof clientType})`);
+      console.error(`  hasEnhancedContext: ${!!enhancedContext}`);
+      console.error(`  enhancedContext keys: ${enhancedContext ? Object.keys(enhancedContext).join(', ') : 'none'}`);
+      console.error(`  hasIdentity: ${!!identity}`);
+      console.error(`  identity: ${JSON.stringify(identity)}`);
+      console.error(`  params.userId: ${params.userId}`);
+      console.error(`  deviceId: ${identity?.deviceId?.slice(0, 12)}`);
+
       // DEBUG: Log what we received
       this.log.info(`🔍 Session create: clientType=${clientType}, hasEnhancedContext=${!!enhancedContext}, hasIdentity=${!!identity}, userId=${params.userId}, deviceId=${identity?.deviceId?.slice(0, 12)}`);
 
@@ -642,38 +689,54 @@ export class SessionDaemonServer extends SessionDaemon {
         case 'browser-ui': {
           // Browser identity: Use deviceId to find/create user
           // Server is source of truth - browser doesn't send userId
+          console.error(`🌐🌐🌐 BROWSER-UI CASE ENTERED`);
           this.log.info(`🌐 Browser-ui session: resolving human identity from deviceId`);
 
           const deviceId = identity?.deviceId;
+          console.error(`🌐🌐🌐 deviceId: ${deviceId}`);
 
           if (deviceId) {
+            console.error(`🌐🌐🌐 deviceId EXISTS, calling findUserByDeviceId...`);
             // Look for existing user associated with this device
             const existingUser = await this.findUserByDeviceId(deviceId);
+            console.error(`🌐🌐🌐 findUserByDeviceId returned: ${existingUser ? existingUser.displayName : 'null'}`);
             if (existingUser) {
               user = existingUser;
+              console.error(`🌐🌐🌐 ASSIGNED user from existingUser: ${user.displayName}`);
               this.log.info(`✅ Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
             } else {
+              console.error(`🌐🌐🌐 No existingUser, checking for seeded owner...`);
               // New device - check for seeded owner (human without anon- prefix)
               const seededOwner = await this.findSeededHumanOwner();
+              console.error(`🌐🌐🌐 findSeededHumanOwner returned: ${seededOwner ? seededOwner.displayName : 'null'}`);
               if (seededOwner) {
                 user = seededOwner;
+                console.error(`🌐🌐🌐 ASSIGNED user from seededOwner: ${user.displayName}`);
                 this.log.info(`✅ Associating new device with seeded owner: ${user.displayName}`);
               } else {
+                console.error(`🌐🌐🌐 No seededOwner, creating anonymous human...`);
                 this.log.info(`📝 New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
                 user = await this.createAnonymousHuman(params, deviceId);
+                console.error(`🌐🌐🌐 ASSIGNED user from createAnonymousHuman: ${user.displayName}`);
               }
             }
           } else {
+            console.error(`🌐🌐🌐 NO deviceId, checking for seeded owner...`);
             // No deviceId - check for seeded owner first
             const seededOwner = await this.findSeededHumanOwner();
+            console.error(`🌐🌐🌐 findSeededHumanOwner returned: ${seededOwner ? seededOwner.displayName : 'null'}`);
             if (seededOwner) {
               user = seededOwner;
+              console.error(`🌐🌐🌐 ASSIGNED user from seededOwner (no deviceId): ${user.displayName}`);
               this.log.info(`✅ Using seeded owner: ${user.displayName} (no deviceId)`);
             } else {
+              console.error(`🌐🌐🌐 No seededOwner (no deviceId), creating anonymous human...`);
               this.log.info(`📝 No deviceId - creating anonymous human`);
               user = await this.createAnonymousHuman(params, undefined);
+              console.error(`🌐🌐🌐 ASSIGNED user from createAnonymousHuman (no deviceId): ${user.displayName}`);
             }
           }
+          console.error(`🌐🌐🌐 BROWSER-UI CASE COMPLETE, user: ${user ? user.displayName : 'UNDEFINED!!!'}`);
           break;
         }
 
@@ -760,6 +823,16 @@ export class SessionDaemonServer extends SessionDaemon {
           enrichedContext.callerType = 'script';
       }
 
+      // CRITICAL: Validate user was resolved successfully
+      // If user is undefined, it means one of the switch cases failed to assign it
+      // This should NEVER happen, but if it does, fail loudly rather than creating broken session
+      if (!user || !user.id) {
+        const errorMsg = `FATAL: User resolution failed for clientType=${clientType}. This is a bug in SessionDaemonServer.`;
+        console.error(`❌❌❌ ${errorMsg}`);
+        console.error(`Debug info: clientType=${clientType}, identity=${JSON.stringify(identity)}, params.userId=${params.userId}`);
+        throw new Error(errorMsg);
+      }
+
       // Extract deviceId for browser-ui clients (server owns device → user mapping)
       const enhancedCtx = params.connectionContext as EnhancedConnectionContext | undefined;
       const deviceId = enhancedCtx?.identity?.deviceId;
@@ -769,7 +842,7 @@ export class SessionDaemonServer extends SessionDaemon {
         sessionId: actualSessionId, // Use generated UUID, not bootstrap ID
         category: params.category,
         displayName: params.displayName,
-        userId: user.id, // Use userId from User object
+        userId: user.id, // Use userId from User object - validated above
         created: new Date(),
         lastActive: new Date(),
         isActive: true,

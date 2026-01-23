@@ -9,7 +9,7 @@ use streaming_core::{
     call_server, EventBus, Handle, Pipeline, PipelineBuilder, PipelineState, StreamEvent,
 };
 use tokio::sync::RwLock;
-use tonic::{transport::Server, Status};
+use tonic::Status;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -19,6 +19,7 @@ use tracing_subscriber::FmtSubscriber;
 // use streaming_core::voice_service::VoiceServiceImpl;
 
 /// Get gRPC port from environment or default
+#[allow(dead_code)]
 fn get_grpc_port() -> u16 {
     std::env::var("STREAMING_CORE_GRPC_PORT")
         .ok()
@@ -157,7 +158,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match streaming_core::stt::initialize().await {
         Ok(_) => info!("STT adapter initialized successfully"),
         Err(e) => {
-            tracing::warn!("STT adapter not available: {}. STT will return errors until model is loaded.", e);
+            tracing::warn!(
+                "STT adapter not available: {}. STT will return errors until model is loaded.",
+                e
+            );
             tracing::warn!("Download ggml-base.en.bin from https://huggingface.co/ggerganov/whisper.cpp/tree/main");
             tracing::warn!("Place in: models/whisper/ggml-base.en.bin");
         }
@@ -168,7 +172,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match streaming_core::tts::initialize().await {
         Ok(_) => info!("TTS adapter initialized successfully"),
         Err(e) => {
-            tracing::warn!("TTS adapter not available: {}. TTS will use fallback (silence).", e);
+            tracing::warn!(
+                "TTS adapter not available: {}. TTS will use fallback (silence).",
+                e
+            );
             tracing::warn!("Download Kokoro ONNX from https://huggingface.co/hexgrad/Kokoro-82M");
             tracing::warn!("Place in: models/kokoro/kokoro-v0_19.onnx");
         }
@@ -178,8 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start WebSocket call server for live audio
     let call_port = get_call_server_port();
-    let call_addr = format!("127.0.0.1:{}", call_port);
-    info!("Call WebSocket server starting on ws://{}", call_addr);
+    let call_addr = format!("127.0.0.1:{call_port}");
+    info!("Call WebSocket server starting on ws://{call_addr}");
     let call_server_handle = tokio::spawn(async move {
         if let Err(e) = call_server::start_call_server(&call_addr).await {
             tracing::error!("Call server error: {}", e);

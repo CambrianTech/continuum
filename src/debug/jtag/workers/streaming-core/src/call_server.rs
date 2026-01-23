@@ -7,6 +7,7 @@ use crate::handle::Handle;
 use crate::mixer::{AudioMixer, ParticipantStream};
 use crate::stt;
 use futures_util::{SinkExt, StreamExt};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -17,7 +18,9 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use ts_rs::TS;
-use once_cell::sync::Lazy;
+
+/// Maximum characters to show in truncated text previews (logs, errors)
+const TEXT_PREVIEW_LENGTH: usize = 30;
 
 /// Embedded hold music WAV file (16kHz, mono, 16-bit)
 static HOLD_MUSIC_WAV: &[u8] = include_bytes!("../assets/hold-music.wav");
@@ -27,12 +30,12 @@ static HOLD_MUSIC_SAMPLES: Lazy<Vec<i16>> = Lazy::new(|| {
     let cursor = Cursor::new(HOLD_MUSIC_WAV);
     match hound::WavReader::new(cursor) {
         Ok(mut reader) => {
-            let samples: Vec<i16> = reader
-                .samples::<i16>()
-                .filter_map(|s| s.ok())
-                .collect();
-            info!("Loaded hold music: {} samples ({:.1}s at 16kHz)",
-                  samples.len(), samples.len() as f32 / 16000.0);
+            let samples: Vec<i16> = reader.samples::<i16>().filter_map(|s| s.ok()).collect();
+            info!(
+                "Loaded hold music: {} samples ({:.1}s at 16kHz)",
+                samples.len(),
+                samples.len() as f32 / 16000.0
+            );
             samples
         }
         Err(e) => {
@@ -49,7 +52,7 @@ fn is_silence(samples: &[i16]) -> bool {
     }
     let sum_squares: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
     let rms = (sum_squares / samples.len() as f64).sqrt();
-    rms < 50.0  // Very low threshold - basically only true silence
+    rms < 50.0 // Very low threshold - basically only true silence
 }
 
 /// Message types for call protocol
@@ -105,12 +108,21 @@ pub enum CallMessage {
     },
 }
 
-/// Audio stream configuration
+/// Audio stream configuration - SINGLE SOURCE OF TRUTH for all buffer sizes
 #[derive(Debug, Clone)]
 pub struct AudioConfig {
     pub sample_rate: u32,
     pub frame_size: usize,
     pub frame_duration_ms: u64,
+
+    /// Audio broadcast channel capacity (frames)
+    /// Larger = more buffering, less likely to drop audio if client slow
+    /// Each frame ~640 bytes, so 2000 frames = ~1.3MB = 40 seconds
+    pub audio_channel_capacity: usize,
+
+    /// Transcription broadcast channel capacity (events)
+    /// Transcription events are small, buffer generously
+    pub transcription_channel_capacity: usize,
 }
 
 impl Default for AudioConfig {
@@ -120,6 +132,10 @@ impl Default for AudioConfig {
             sample_rate: 16000,
             frame_size: 512,
             frame_duration_ms: 32,
+            // NEVER drop audio - buffer 40+ seconds
+            audio_channel_capacity: 2000,
+            // NEVER drop transcriptions - buffer 500 events
+            transcription_channel_capacity: 500,
         }
     }
 }
@@ -162,8 +178,14 @@ pub struct CallPushAudioResult {
 
 impl Call {
     pub fn new(id: String) -> Self {
-        let (audio_tx, _) = broadcast::channel(64);
-        let (transcription_tx, _) = broadcast::channel(32);
+        let config = AudioConfig::default();
+
+        // Use config values for channel capacities (single source of truth)
+        // CRITICAL: Large buffers to NEVER drop audio/transcriptions
+        // Audio frames are tiny (~640 bytes each), so 2000 frames = ~1.3MB = 40 seconds
+        let (audio_tx, _) = broadcast::channel(config.audio_channel_capacity);
+        let (transcription_tx, _) = broadcast::channel(config.transcription_channel_capacity);
+
         Self {
             id,
             mixer: AudioMixer::default_voice(),
@@ -171,7 +193,7 @@ impl Call {
             transcription_tx,
             samples_processed: 0,
             hold_music_position: 0,
-            config: AudioConfig::default(),
+            config,
             shutdown_tx: None,
         }
     }
@@ -216,15 +238,18 @@ impl Call {
         let is_alone = self.mixer.participant_count() == 1;
         let mixes = self.mixer.mix_minus_all();
 
-        mixes.into_iter().map(|(handle, mixed_audio)| {
-            // If alone, mix in hold tone
-            let audio = if is_alone && is_silence(&mixed_audio) {
-                self.generate_hold_tone(frame_size)
-            } else {
-                mixed_audio
-            };
-            (handle, audio)
-        }).collect()
+        mixes
+            .into_iter()
+            .map(|(handle, mixed_audio)| {
+                // If alone, mix in hold tone
+                let audio = if is_alone && is_silence(&mixed_audio) {
+                    self.generate_hold_tone(frame_size)
+                } else {
+                    mixed_audio
+                };
+                (handle, audio)
+            })
+            .collect()
     }
 
     /// Set shutdown sender (called by CallManager when starting audio loop)
@@ -268,7 +293,8 @@ impl CallManager {
             calls.insert(call_id.to_string(), call.clone());
 
             // Start server-driven audio loop for this call
-            self.start_audio_loop(call_id.to_string(), call.clone()).await;
+            self.start_audio_loop(call_id.to_string(), call.clone())
+                .await;
 
             call
         }
@@ -295,28 +321,43 @@ impl CallManager {
 
         // Spawn the audio loop task
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(
-                tokio::time::Duration::from_millis(frame_duration_ms)
-            );
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_millis(frame_duration_ms));
 
-            info!("Audio loop started for call {} ({}ms frames)", call_id_clone, frame_duration_ms);
+            info!(
+                "Audio loop started for call {} ({}ms frames)",
+                call_id_clone, frame_duration_ms
+            );
 
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let mut c = call_clone.write().await;
+                        // CRITICAL: Minimize write lock duration to prevent blocking incoming audio
+                        // Only hold lock for mixing, NOT for broadcasting
+                        let (mixes, audio_tx) = {
+                            let mut c = call_clone.write().await;
 
-                        // Only tick if there are participants
-                        if c.mixer.participant_count() == 0 {
-                            continue;
-                        }
+                            // Only tick if there are participants
+                            if c.mixer.participant_count() == 0 {
+                                continue;
+                            }
 
-                        // Generate mixed audio for all participants
-                        let mixes = c.tick();
+                            // Generate mixed audio for all participants
+                            let mixes = c.tick();
+                            let audio_tx = c.audio_tx.clone();
 
-                        // Broadcast to all
+                            (mixes, audio_tx)
+                        };  // <-- Write lock released here, before broadcasting
+
+                        // Broadcast to all participants WITHOUT holding write lock
+                        // This prevents incoming audio from being blocked by slow/lagging receivers
                         for (handle, audio) in mixes {
-                            let _ = c.audio_tx.send((handle, audio));
+                            if audio_tx.send((handle, audio)).is_err() {
+                                // Log broadcast failures (lagging receivers)
+                                // This is expected when a participant can't keep up
+                                // Note: With 2000-frame buffer (~40s), this should be extremely rare
+                                warn!("Audio broadcast to {} failed (receiver too slow, dropped frame)", handle.short());
+                            }
                         }
                     }
                     _ = shutdown_rx.recv() => {
@@ -356,14 +397,19 @@ impl CallManager {
         call_id: &str,
         user_id: &str,
         display_name: &str,
-    ) -> (Handle, broadcast::Receiver<(Handle, Vec<i16>)>, broadcast::Receiver<TranscriptionEvent>) {
+    ) -> (
+        Handle,
+        broadcast::Receiver<(Handle, Vec<i16>)>,
+        broadcast::Receiver<TranscriptionEvent>,
+    ) {
         let call = self.get_or_create_call(call_id).await;
         let handle = Handle::new();
 
         // Add participant to call
         {
             let mut call = call.write().await;
-            let stream = ParticipantStream::new(handle, user_id.to_string(), display_name.to_string());
+            let stream =
+                ParticipantStream::new(handle, user_id.to_string(), display_name.to_string());
             call.mixer.add_participant(stream);
         }
 
@@ -379,7 +425,12 @@ impl CallManager {
             (call.audio_tx.subscribe(), call.transcription_tx.subscribe())
         };
 
-        info!("Participant {} ({}) joined call {}", display_name, handle.short(), call_id);
+        info!(
+            "Participant {} ({}) joined call {}",
+            display_name,
+            handle.short(),
+            call_id
+        );
         (handle, audio_rx, transcription_rx)
     }
 
@@ -396,7 +447,12 @@ impl CallManager {
                 if let Some(call) = calls.get(&call_id) {
                     let mut call = call.write().await;
                     if let Some(stream) = call.mixer.remove_participant(handle) {
-                        info!("Participant {} ({}) left call {}", stream.display_name, handle.short(), call_id);
+                        info!(
+                            "Participant {} ({}) left call {}",
+                            stream.display_name,
+                            handle.short(),
+                            call_id
+                        );
                     }
                     // Check if call is now empty
                     call.mixer.participant_count() == 0
@@ -418,24 +474,30 @@ impl CallManager {
     /// Push audio from a participant (buffered, mixed by audio loop)
     /// If speech ends, triggers transcription and broadcasts result
     pub async fn push_audio(&self, handle: &Handle, samples: Vec<i16>) {
+        // STEP 1: Lookup call ID (fast, read-only)
         let call_id = {
             let participant_calls = self.participant_calls.read().await;
             participant_calls.get(handle).cloned()
         };
 
         if let Some(call_id) = call_id {
+            // STEP 2: Push audio and check for speech end (minimized write lock)
             let (result, transcription_tx) = {
                 let calls = self.calls.read().await;
                 if let Some(call) = calls.get(&call_id) {
+                    // Only hold write lock for the actual push operation
                     let mut call = call.write().await;
                     let result = call.push_audio(handle, samples);
-                    (Some(result), Some(call.transcription_tx.clone()))
+                    let transcription_tx = call.transcription_tx.clone();
+                    drop(call); // Explicitly release write lock early
+
+                    (Some(result), Some(transcription_tx))
                 } else {
                     (None, None)
                 }
             };
 
-            // If speech ended, transcribe and broadcast
+            // STEP 3: Spawn transcription task if speech ended (no locks held)
             if let (Some(result), Some(transcription_tx)) = (result, transcription_tx) {
                 if result.speech_ended {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
@@ -448,7 +510,8 @@ impl CallManager {
                                 user_id,
                                 display_name,
                                 speech_samples,
-                            ).await;
+                            )
+                            .await;
                         });
                     }
                 }
@@ -469,8 +532,12 @@ impl CallManager {
             return;
         }
 
-        info!("[STEP 5] 📝 Whisper transcription START for {} ({} samples, {:.1}s)",
-            display_name, samples.len(), samples.len() as f32 / 16000.0);
+        info!(
+            "[STEP 5] 📝 Whisper transcription START for {} ({} samples, {:.1}s)",
+            display_name,
+            samples.len(),
+            samples.len() as f32 / 16000.0
+        );
 
         // Convert i16 to f32 for Whisper
         let f32_samples = stt::i16_to_f32(&samples);
@@ -483,21 +550,40 @@ impl CallManager {
             Ok(result) => {
                 let text = result.text.trim();
                 if !text.is_empty() {
-                    info!("[STEP 5] 📝 Whisper transcription DONE: \"{}\" (confidence: {:.2})",
-                        text, result.confidence);
+                    info!(
+                        "[STEP 5] 📝 Whisper transcription DONE: \"{}\" (confidence: {:.2})",
+                        text, result.confidence
+                    );
 
                     // [STEP 6] Broadcast transcription to all participants
                     let event = TranscriptionEvent {
-                        user_id,
+                        user_id: user_id.clone(),
                         display_name: display_name.clone(),
                         text: text.to_string(),
                         confidence: result.confidence,
-                        language: result.language,
+                        language: result.language.clone(),
                     };
 
                     info!("[STEP 6] 📡 Broadcasting transcription to WebSocket clients");
-                    if let Err(e) = transcription_tx.send(event) {
-                        warn!("[STEP 6] ❌ Broadcast FAILED: {}", e);
+
+                    // ERROR RECOVERY: Broadcast with detailed error logging
+                    // With 500-event buffer, failures should be extremely rare
+                    // If this fails, it means ALL receivers are too slow (lagging by 500+ events)
+                    if transcription_tx.send(event).is_err() {
+                        error!(
+                            "[STEP 6] ❌ TRANSCRIPTION DROPPED: \"{}...\" from {}. \
+                            ALL receivers are too slow - consider increasing buffer size or investigating blocking.",
+                            text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>(),
+                            display_name
+                        );
+
+                        // This is a critical issue - log to stderr for monitoring
+                        eprintln!(
+                            "🚨 CRITICAL: Transcription dropped due to buffer overflow. \
+                            Text: \"{}...\", Speaker: {}, Buffer: 500 events",
+                            text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>(),
+                            display_name
+                        );
                     }
                 } else {
                     info!("📝 Empty transcription result from {}", display_name);
@@ -553,11 +639,7 @@ impl Default for CallManager {
 }
 
 /// Handle a single WebSocket connection
-async fn handle_connection(
-    stream: TcpStream,
-    addr: SocketAddr,
-    manager: Arc<CallManager>,
-) {
+async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<CallManager>) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -604,7 +686,7 @@ async fn handle_connection(
                                             let data = base64_encode_i16(&audio);
                                             let msg = CallMessage::MixedAudio { data };
                                             if let Ok(json) = serde_json::to_string(&msg) {
-                                                if msg_tx_audio.send(Message::Text(json.into())).await.is_err() {
+                                                if msg_tx_audio.send(Message::Text(json)).await.is_err() {
                                                     break;
                                                 }
                                             }
@@ -618,7 +700,7 @@ async fn handle_connection(
                                 tokio::spawn(async move {
                                     while let Ok(event) = transcription_rx.recv().await {
                                         info!("[STEP 7] 🌐 WebSocket sending transcription to {}: \"{}\"",
-                                            ws_display_name, event.text.chars().take(50).collect::<String>());
+                                            ws_display_name, event.text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>());
                                         // Send transcription to all participants
                                         let msg = CallMessage::Transcription {
                                             user_id: event.user_id,
@@ -628,7 +710,7 @@ async fn handle_connection(
                                             language: event.language,
                                         };
                                         if let Ok(json) = serde_json::to_string(&msg) {
-                                            if msg_tx_transcription.send(Message::Text(json.into())).await.is_err() {
+                                            if msg_tx_transcription.send(Message::Text(json)).await.is_err() {
                                                 warn!("[STEP 7] ❌ WebSocket send FAILED for {}", ws_display_name);
                                                 break;
                                             }
@@ -710,10 +792,7 @@ pub async fn start_call_server(addr: &str) -> Result<(), Box<dyn std::error::Err
 // Helper functions for base64 encoding/decoding i16 audio
 
 fn base64_encode_i16(samples: &[i16]) -> String {
-    let bytes: Vec<u8> = samples
-        .iter()
-        .flat_map(|&s| s.to_le_bytes())
-        .collect();
+    let bytes: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
     base64_encode(&bytes)
 }
 
@@ -769,14 +848,12 @@ fn base64_encode(data: &[u8]) -> String {
 
 fn base64_decode(data: &str) -> Option<Vec<u8>> {
     const DECODE: [i8; 128] = [
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
-        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
-        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
-        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
+        -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
+        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
+        -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+        46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
     ];
 
     let data = data.trim_end_matches('=');
@@ -789,8 +866,14 @@ fn base64_decode(data: &str) -> Option<Vec<u8>> {
 
         let b0 = DECODE.get(chunk[0] as usize).copied().unwrap_or(-1);
         let b1 = DECODE.get(chunk[1] as usize).copied().unwrap_or(-1);
-        let b2 = chunk.get(2).and_then(|&c| DECODE.get(c as usize).copied()).unwrap_or(0);
-        let b3 = chunk.get(3).and_then(|&c| DECODE.get(c as usize).copied()).unwrap_or(0);
+        let b2 = chunk
+            .get(2)
+            .and_then(|&c| DECODE.get(c as usize).copied())
+            .unwrap_or(0);
+        let b3 = chunk
+            .get(3)
+            .and_then(|&c| DECODE.get(c as usize).copied())
+            .unwrap_or(0);
 
         if b0 < 0 || b1 < 0 {
             return None;
@@ -826,7 +909,8 @@ mod tests {
         let manager = CallManager::new();
 
         // Join a call
-        let (handle, _rx, _transcription_rx) = manager.join_call("test-call", "user-1", "Alice").await;
+        let (handle, _rx, _transcription_rx) =
+            manager.join_call("test-call", "user-1", "Alice").await;
 
         // Check stats
         let stats = manager.get_stats(&handle).await;
@@ -847,8 +931,10 @@ mod tests {
         let manager = CallManager::new();
 
         // Two participants join
-        let (handle_a, _rx_a, _transcription_rx_a) = manager.join_call("test-call", "user-a", "Alice").await;
-        let (handle_b, _rx_b, _transcription_rx_b) = manager.join_call("test-call", "user-b", "Bob").await;
+        let (handle_a, _rx_a, _transcription_rx_a) =
+            manager.join_call("test-call", "user-a", "Alice").await;
+        let (handle_b, _rx_b, _transcription_rx_b) =
+            manager.join_call("test-call", "user-b", "Bob").await;
 
         // Check count
         let stats = manager.get_stats(&handle_a).await;
@@ -874,7 +960,8 @@ mod tests {
     async fn test_mute() {
         let manager = CallManager::new();
 
-        let (handle, _rx, _transcription_rx) = manager.join_call("test-call", "user-1", "Alice").await;
+        let (handle, _rx, _transcription_rx) =
+            manager.join_call("test-call", "user-1", "Alice").await;
 
         // Mute
         manager.set_mute(&handle, true).await;

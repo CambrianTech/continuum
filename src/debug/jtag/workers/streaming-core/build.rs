@@ -19,9 +19,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .out_dir("src/proto")
                 .compile(&[proto_path], &["proto"])
             {
-                Ok(_) => println!("cargo:warning={} proto compilation successful", name),
+                Ok(_) => println!("cargo:warning={name} proto compilation successful"),
                 Err(e) => {
-                    println!("cargo:warning={} proto compilation skipped: {}", name, e);
+                    println!("cargo:warning={name} proto compilation skipped: {e}");
                     println!("cargo:warning=Install protoc to enable gRPC service");
                 }
             }

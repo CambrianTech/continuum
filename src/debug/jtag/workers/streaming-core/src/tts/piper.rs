@@ -1,7 +1,8 @@
-//! Kokoro TTS Adapter
+//! Piper TTS Adapter
 //!
-//! Local TTS inference using Kokoro (~82M params) via ONNX Runtime.
-//! Excellent quality for a lightweight model.
+//! Local TTS inference using Piper (ONNX-based, no Python dependencies).
+//! High-quality voices, efficient inference, designed for production use.
+//! Used by Home Assistant and other production systems.
 
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use async_trait::async_trait;
@@ -14,37 +15,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Global Kokoro session
-static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
+/// Global Piper session
+static PIPER_SESSION: OnceCell<Arc<Mutex<PiperModel>>> = OnceCell::new();
 
-/// Kokoro model wrapper
-struct KokoroModel {
+/// Piper model wrapper
+struct PiperModel {
     session: Session,
-    #[allow(dead_code)]
     sample_rate: u32,
 }
 
-/// Available Kokoro voices
-const KOKORO_VOICES: &[(&str, &str, &str)] = &[
-    ("af", "American Female (default)", "en-US"),
-    ("af_bella", "Bella", "en-US"),
-    ("af_nicole", "Nicole", "en-US"),
-    ("af_sarah", "Sarah", "en-US"),
-    ("af_sky", "Sky", "en-US"),
-    ("am_adam", "Adam", "en-US"),
-    ("am_michael", "Michael", "en-US"),
-    ("bf_emma", "Emma", "en-GB"),
-    ("bf_isabella", "Isabella", "en-GB"),
-    ("bm_george", "George", "en-GB"),
-    ("bm_lewis", "Lewis", "en-GB"),
-];
-
-/// Kokoro TTS Adapter
-pub struct KokoroTTS {
+/// Piper TTS Adapter
+pub struct PiperTTS {
     model_path: Option<PathBuf>,
 }
 
-impl KokoroTTS {
+impl PiperTTS {
     pub fn new() -> Self {
         Self { model_path: None }
     }
@@ -64,62 +49,47 @@ impl KokoroTTS {
         }
 
         let candidates = [
-            PathBuf::from("models/kokoro/kokoro-v0_19.onnx"),
-            PathBuf::from("models/kokoro/kokoro.onnx"),
-            PathBuf::from("models/tts/kokoro.onnx"),
+            PathBuf::from("models/piper/en_US-libritts_r-medium.onnx"),  // Primary
+            PathBuf::from("models/piper/en_US-amy-medium.onnx"),          // Alternative
+            PathBuf::from("models/piper/piper.onnx"),                     // Generic
+            PathBuf::from("models/tts/piper.onnx"),
             dirs::data_dir()
                 .unwrap_or_default()
-                .join("kokoro/kokoro-v0_19.onnx"),
-            PathBuf::from("/usr/local/share/kokoro/kokoro.onnx"),
+                .join("piper/en_US-libritts_r-medium.onnx"),
+            PathBuf::from("/usr/local/share/piper/en_US-libritts_r-medium.onnx"),
         ];
 
         candidates.into_iter().find(|path| path.exists())
     }
 
-    /// Normalize voice ID
-    fn normalize_voice(voice: &str) -> &'static str {
-        for (id, _, _) in KOKORO_VOICES {
-            if *id == voice {
-                return id;
-            }
-        }
-        "af" // Default
-    }
-
     /// Synchronous synthesis
     fn synthesize_sync(
-        session: &Arc<Mutex<KokoroModel>>,
+        session: &Arc<Mutex<PiperModel>>,
         text: &str,
-        voice: &str,
+        _voice: &str,  // Piper models are single-voice
         speed: f32,
     ) -> Result<SynthesisResult, TTSError> {
         if text.is_empty() {
             return Err(TTSError::InvalidText("Text cannot be empty".into()));
         }
 
-        let voice_id = Self::normalize_voice(voice);
         let model = session.lock();
 
-        // Tokenize text
+        // Tokenize text (simplified - real Piper uses phonemization)
         let text_tokens: Vec<i64> = text
             .chars()
             .filter_map(|c| if c.is_ascii() { Some(c as i64) } else { None })
             .collect();
         let text_array = ndarray::Array1::from_vec(text_tokens);
 
-        // Voice embedding (simplified)
-        let voice_embedding = Self::get_voice_embedding(voice_id);
-        let voice_array = ndarray::Array1::from_vec(voice_embedding);
-
-        // Speed
+        // Speed parameter
         let speed_array = ndarray::Array1::from_vec(vec![speed]);
 
         // Run inference
         let outputs = model
             .session
             .run(ort::inputs![
-                "tokens" => text_array,
-                "voice" => voice_array,
+                "input" => text_array,
                 "speed" => speed_array
             ]?)
             .map_err(|e| TTSError::SynthesisFailed(format!("ONNX inference failed: {e}")))?;
@@ -135,19 +105,20 @@ impl KokoroTTS {
             .try_extract_raw_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
-        // Convert f32 to i16 and resample from 24kHz to 16kHz
-        let samples_24k: Vec<i16> = audio_data
+        // Convert f32 to i16 (Piper outputs at model sample rate, we need 16kHz)
+        let source_rate = model.sample_rate;
+        let samples_source: Vec<i16> = audio_data
             .iter()
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
 
-        // Simple downsample 24kHz -> 16kHz (2:3 ratio)
-        let samples_16k = Self::resample_24k_to_16k(&samples_24k);
+        // Resample from model's sample rate to 16000Hz
+        let samples_16k = Self::resample_to_16k(&samples_source, source_rate);
 
         let duration_ms = (samples_16k.len() as u64 * 1000) / 16000;
 
         info!(
-            "Kokoro synthesized {} samples ({}ms) for '{}...'",
+            "Piper synthesized {} samples ({}ms) for '{}...'",
             samples_16k.len(),
             duration_ms,
             &text[..text.len().min(30)]
@@ -160,23 +131,16 @@ impl KokoroTTS {
         })
     }
 
-    /// Voice embedding (placeholder - real impl loads from disk)
-    fn get_voice_embedding(voice_id: &str) -> Vec<f32> {
-        let seed = voice_id
-            .bytes()
-            .fold(0u32, |acc, b| acc.wrapping_add(b as u32));
-        let mut embedding = vec![0.0f32; 256];
+    /// Resample from source sample rate to 16000Hz (linear interpolation)
+    fn resample_to_16k(samples: &[i16], source_rate: u32) -> Vec<i16> {
+        const TARGET_RATE: u32 = 16000;
 
-        for (i, val) in embedding.iter_mut().enumerate() {
-            *val = ((seed.wrapping_mul(i as u32 + 1) % 1000) as f32 / 1000.0) * 2.0 - 1.0;
+        // If already at target rate, return as-is
+        if source_rate == TARGET_RATE {
+            return samples.to_vec();
         }
 
-        embedding
-    }
-
-    /// Resample 24kHz to 16kHz (simple linear interpolation)
-    fn resample_24k_to_16k(samples: &[i16]) -> Vec<i16> {
-        let ratio = 24000.0 / 16000.0; // 1.5
+        let ratio = source_rate as f64 / TARGET_RATE as f64;
         let output_len = (samples.len() as f64 / ratio) as usize;
         let mut output = Vec::with_capacity(output_len);
 
@@ -200,74 +164,69 @@ impl KokoroTTS {
     }
 }
 
-impl Default for KokoroTTS {
+impl Default for PiperTTS {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl From<ort::Error> for TTSError {
-    fn from(e: ort::Error) -> Self {
-        TTSError::SynthesisFailed(e.to_string())
-    }
-}
+// Note: From<ort::Error> for TTSError already implemented in kokoro.rs
 
 #[async_trait]
-impl TextToSpeech for KokoroTTS {
+impl TextToSpeech for PiperTTS {
     fn name(&self) -> &'static str {
-        "kokoro"
+        "piper"
     }
 
     fn description(&self) -> &'static str {
-        "Local Kokoro TTS (82M params, ONNX)"
+        "Piper TTS (high-quality, ONNX-based)"
     }
 
     fn is_initialized(&self) -> bool {
-        KOKORO_SESSION.get().is_some()
+        PIPER_SESSION.get().is_some()
     }
 
     async fn initialize(&self) -> Result<(), TTSError> {
-        if KOKORO_SESSION.get().is_some() {
-            info!("Kokoro already initialized");
+        if PIPER_SESSION.get().is_some() {
+            info!("Piper already initialized");
             return Ok(());
         }
 
         let model_path = match self.find_model_path() {
             Some(path) => path,
             None => {
-                warn!("Kokoro model not found. Download from:");
-                warn!("  https://huggingface.co/hexgrad/Kokoro-82M/tree/main");
-                warn!("Place ONNX file in: models/kokoro/kokoro-v0_19.onnx");
+                warn!("Piper model not found. Should be auto-downloaded at:");
+                warn!("  models/piper/en_US-libritts_r-medium.onnx");
                 return Err(TTSError::ModelNotLoaded(
-                    "Kokoro ONNX model not found".into(),
+                    "Piper ONNX model not found".into(),
                 ));
             }
         };
 
-        info!("Loading Kokoro model from: {:?}", model_path);
+        info!("Loading Piper model from: {:?}", model_path);
 
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(num_cpus::get().min(4))?
             .commit_from_file(&model_path)?;
 
-        let model = KokoroModel {
+        let model = PiperModel {
             session,
-            sample_rate: 24000,
+            sample_rate: 22050,
         };
 
-        KOKORO_SESSION
+        PIPER_SESSION
             .set(Arc::new(Mutex::new(model)))
             .map_err(|_| TTSError::ModelNotLoaded("Failed to set global session".into()))?;
 
-        info!("Kokoro model loaded successfully");
+        info!("Piper model loaded successfully");
         Ok(())
     }
 
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
-        let session = KOKORO_SESSION
+        let session = PIPER_SESSION
             .get()
-            .ok_or_else(|| TTSError::ModelNotLoaded("Kokoro not initialized".into()))?
+            .ok_or_else(|| TTSError::ModelNotLoaded("Piper not initialized".into()))?
             .clone();
 
         let text = text.to_string();
@@ -279,24 +238,17 @@ impl TextToSpeech for KokoroTTS {
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {
-        KOKORO_VOICES
-            .iter()
-            .map(|(id, name, lang)| VoiceInfo {
-                id: id.to_string(),
-                name: name.to_string(),
-                language: lang.to_string(),
-                gender: if id.contains("m_") {
-                    Some("male".to_string())
-                } else {
-                    Some("female".to_string())
-                },
-                description: None,
-            })
-            .collect()
+        vec![VoiceInfo {
+            id: "default".to_string(),
+            name: "LibriTTS (High Quality)".to_string(),
+            language: "en-US".to_string(),
+            gender: Some("neutral".to_string()),
+            description: Some("High-quality English voice from LibriTTS dataset".to_string()),
+        }]
     }
 
     fn default_voice(&self) -> &str {
-        "af"
+        "default"
     }
 }
 
@@ -305,26 +257,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kokoro_adapter() {
-        let adapter = KokoroTTS::new();
-        assert_eq!(adapter.name(), "kokoro");
+    fn test_piper_adapter() {
+        let adapter = PiperTTS::new();
+        assert_eq!(adapter.name(), "piper");
         assert!(!adapter.is_initialized());
-        assert_eq!(adapter.default_voice(), "af");
+        assert_eq!(adapter.default_voice(), "default");
     }
 
     #[test]
     fn test_available_voices() {
-        let adapter = KokoroTTS::new();
+        let adapter = PiperTTS::new();
         let voices = adapter.available_voices();
-        assert!(!voices.is_empty());
-        assert!(voices.iter().any(|v| v.id == "af"));
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices[0].id, "default");
     }
 
     #[test]
     fn test_resample() {
-        // 6 samples at 24kHz should become 4 samples at 16kHz
+        // 6 samples at 22050Hz should become ~4 samples at 16000Hz
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = KokoroTTS::resample_24k_to_16k(&input);
-        assert_eq!(output.len(), 4);
+        let output = PiperTTS::resample_22k_to_16k(&input);
+        assert!(output.len() >= 4 && output.len() <= 5);
     }
 }

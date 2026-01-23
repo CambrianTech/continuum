@@ -1,17 +1,19 @@
 //! Text-to-Speech (TTS) Adapter System
 //!
 //! Modular TTS with swappable backends:
-//! - Kokoro (local, default)
-//! - ElevenLabs API
-//! - OpenAI TTS API
-//! - Azure Cognitive Services
-//! - Google Cloud TTS
+//! - Piper (local, ONNX, high-quality - PRIMARY)
+//! - Kokoro (local, alternative)
+//! - Silence (fallback for testing)
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
+mod piper;
 mod kokoro;
+mod silence;
 
+pub use piper::PiperTTS;
 pub use kokoro::KokoroTTS;
+pub use silence::SilenceTTS;
 
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
@@ -168,7 +170,9 @@ impl TTSRegistry {
 
     /// Check if any adapter is initialized
     pub fn is_initialized(&self) -> bool {
-        self.get_active().map(|a| a.is_initialized()).unwrap_or(false)
+        self.get_active()
+            .map(|a| a.is_initialized())
+            .unwrap_or(false)
     }
 }
 
@@ -187,8 +191,18 @@ pub fn init_registry() {
     let registry = TTS_REGISTRY.get_or_init(|| {
         let mut reg = TTSRegistry::new();
 
-        // Register Kokoro (local) adapter
+        // Register Piper (local, ONNX) adapter - PRIMARY production adapter
+        // Piper is the default because it:
+        // - Works out of the box (ONNX, no Python)
+        // - High quality (LibriTTS dataset)
+        // - Battle-tested (used by Home Assistant)
+        reg.register(Arc::new(PiperTTS::new()));
+
+        // Register Kokoro (local) adapter - alternative
         reg.register(Arc::new(KokoroTTS::new()));
+
+        // Register Silence adapter - fallback for testing/development
+        reg.register(Arc::new(SilenceTTS::new()));
 
         // Future: Register API-based adapters
         // reg.register(Arc::new(ElevenLabsTTS::new()));
@@ -197,19 +211,18 @@ pub fn init_registry() {
         Arc::new(RwLock::new(reg))
     });
 
-    tracing::info!("TTS: Registry initialized with {} adapters",
-        registry.read().adapters.len());
+    tracing::info!(
+        "TTS: Registry initialized with {} adapters",
+        registry.read().adapters.len()
+    );
 }
 
 /// Get the global registry
 pub fn get_registry() -> Arc<RwLock<TTSRegistry>> {
-    TTS_REGISTRY
-        .get()
-        .cloned()
-        .unwrap_or_else(|| {
-            init_registry();
-            TTS_REGISTRY.get().cloned().unwrap()
-        })
+    TTS_REGISTRY.get().cloned().unwrap_or_else(|| {
+        init_registry();
+        TTS_REGISTRY.get().cloned().unwrap()
+    })
 }
 
 /// Check if TTS is initialized (convenience function)

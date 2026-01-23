@@ -70,6 +70,7 @@ interface TurnArbiter {
  */
 interface ConversationContext {
   sessionId: UUID;
+  roomId: UUID;            // Room this call belongs to
   recentUtterances: UtteranceEvent[];
   lastResponderId?: UUID;
   turnCount: number;
@@ -125,7 +126,7 @@ export class VoiceOrchestrator {
   /**
    * Register participants for a voice session
    */
-  async registerSession(sessionId: UUID, participantIds: UUID[]): Promise<void> {
+  async registerSession(sessionId: UUID, roomId: UUID, participantIds: UUID[]): Promise<void> {
     const participants: VoiceParticipant[] = [];
 
     // Look up users from database
@@ -158,11 +159,12 @@ export class VoiceOrchestrator {
     this.sessionParticipants.set(sessionId, participants);
     this.sessionContexts.set(sessionId, {
       sessionId,
+      roomId,
       recentUtterances: [],
       turnCount: 0
     });
 
-    console.log(`🎙️ VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} with ${participants.length} participants`);
+    console.log(`🎙️ VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} for room ${roomId.slice(0, 8)} with ${participants.length} participants`);
 
     // Connect AI participants to the audio call server
     const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
@@ -216,16 +218,11 @@ export class VoiceOrchestrator {
 
     console.log(`🎙️ VoiceOrchestrator: Utterance from ${speakerName}: "${transcript.slice(0, 50)}..."`);
 
-    // Step 1: Post transcript to chat room (visible to ALL AIs including text-only)
-    // This ensures the conversation history is captured and all models can see it
-    // Note: Voice metadata is tracked separately in pendingResponses for TTS routing
-    try {
-      await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
-        room: sessionId,
-        message: `[Voice] ${speakerName}: ${transcript}`
-      });
-    } catch (error) {
-      console.warn('🎙️ VoiceOrchestrator: Failed to post transcript to chat:', error);
+    // Get conversation context first (need roomId for chat posting)
+    const context = this.sessionContexts.get(sessionId);
+    if (!context) {
+      console.warn(`🎙️ VoiceOrchestrator: No context for session ${sessionId.slice(0, 8)}`);
+      return;
     }
 
     // Get participants for this session
@@ -235,11 +232,16 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Get conversation context
-    const context = this.sessionContexts.get(sessionId);
-    if (!context) {
-      console.warn(`🎙️ VoiceOrchestrator: No context for session ${sessionId.slice(0, 8)}`);
-      return;
+    // Step 1: Post transcript to chat room (visible to ALL AIs including text-only)
+    // This ensures the conversation history is captured and all models can see it
+    // Note: Voice metadata is tracked separately in pendingResponses for TTS routing
+    try {
+      await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+        room: context.roomId,  // Use roomId from context, not sessionId
+        message: `[Voice] ${speakerName}: ${transcript}`
+      });
+    } catch (error) {
+      console.warn('🎙️ VoiceOrchestrator: Failed to post transcript to chat:', error);
     }
 
     // Update context with new utterance

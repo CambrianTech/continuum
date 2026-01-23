@@ -70,8 +70,8 @@ pub mod mixer;
 pub mod pipeline;
 pub mod ring;
 pub mod stage;
-pub mod stt;  // Speech-to-text adapter system (Whisper, etc.)
-pub mod tts;  // Text-to-speech adapter system (Kokoro, etc.)
+pub mod stt; // Speech-to-text adapter system (Whisper, etc.)
+pub mod tts; // Text-to-speech adapter system (Kokoro, etc.)
 pub mod ws_audio;
 
 // gRPC voice service (requires proto compilation)
@@ -105,10 +105,12 @@ pub use ws_audio::{
 };
 
 // Re-export TTS adapter types
-pub use tts::{TextToSpeech, TTSRegistry, TTSError, SynthesisResult, VoiceInfo, KokoroTTS};
+pub use tts::{KokoroTTS, SynthesisResult, TTSError, TTSRegistry, TextToSpeech, VoiceInfo};
 
 // Re-export STT adapter types
-pub use stt::{SpeechToText, STTRegistry, STTError, TranscriptResult, TranscriptSegment, WhisperSTT};
+pub use stt::{
+    STTError, STTRegistry, SpeechToText, TranscriptResult, TranscriptSegment, WhisperSTT,
+};
 
 // Re-export mixer types
 pub use mixer::{AudioMixer, ParticipantStream};

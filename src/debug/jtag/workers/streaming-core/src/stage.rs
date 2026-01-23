@@ -118,6 +118,12 @@ impl SttStage {
     }
 }
 
+impl Default for SttStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Stage for SttStage {
     fn name(&self) -> &'static str {
@@ -195,6 +201,12 @@ impl TtsStage {
     pub fn with_speaker(mut self, speaker_id: String) -> Self {
         self.speaker_id = Some(speaker_id);
         self
+    }
+}
+
+impl Default for TtsStage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -304,6 +316,12 @@ impl ImageGenStage {
     }
 }
 
+impl Default for ImageGenStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Stage for ImageGenStage {
     fn name(&self) -> &'static str {
@@ -362,6 +380,12 @@ impl VideoGenStage {
     }
 }
 
+impl Default for VideoGenStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Stage for VideoGenStage {
     fn name(&self) -> &'static str {
@@ -413,6 +437,12 @@ impl AvatarStage {
     pub fn with_reference(mut self, texture_id: u64) -> Self {
         self.reference_texture = Some(texture_id);
         self
+    }
+}
+
+impl Default for AvatarStage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

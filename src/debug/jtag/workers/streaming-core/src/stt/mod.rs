@@ -9,8 +9,10 @@
 //!
 //! Uses trait-based polymorphism (OpenCV-style) for runtime flexibility.
 
+mod stub;
 mod whisper;
 
+pub use stub::StubSTT;
 pub use whisper::WhisperSTT;
 
 use async_trait::async_trait;
@@ -162,7 +164,9 @@ impl STTRegistry {
 
     /// Check if any adapter is initialized
     pub fn is_initialized(&self) -> bool {
-        self.get_active().map(|a| a.is_initialized()).unwrap_or(false)
+        self.get_active()
+            .map(|a| a.is_initialized())
+            .unwrap_or(false)
     }
 }
 
@@ -181,8 +185,11 @@ pub fn init_registry() {
     let registry = STT_REGISTRY.get_or_init(|| {
         let mut reg = STTRegistry::new();
 
-        // Register Whisper (local) adapter
+        // Register Whisper (local) adapter - primary production adapter
         reg.register(Arc::new(WhisperSTT::new()));
+
+        // Register Stub adapter - for testing/development
+        reg.register(Arc::new(StubSTT::new()));
 
         // Future: Register API-based adapters
         // reg.register(Arc::new(OpenAIWhisperSTT::new()));
@@ -191,19 +198,18 @@ pub fn init_registry() {
         Arc::new(RwLock::new(reg))
     });
 
-    tracing::info!("STT: Registry initialized with {} adapters",
-        registry.read().adapters.len());
+    tracing::info!(
+        "STT: Registry initialized with {} adapters",
+        registry.read().adapters.len()
+    );
 }
 
 /// Get the global registry
 pub fn get_registry() -> Arc<RwLock<STTRegistry>> {
-    STT_REGISTRY
-        .get()
-        .cloned()
-        .unwrap_or_else(|| {
-            init_registry();
-            STT_REGISTRY.get().cloned().unwrap()
-        })
+    STT_REGISTRY.get().cloned().unwrap_or_else(|| {
+        init_registry();
+        STT_REGISTRY.get().cloned().unwrap()
+    })
 }
 
 /// Check if STT is initialized (convenience function)

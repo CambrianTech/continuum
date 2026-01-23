@@ -26,6 +26,26 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
     const getUserParams = params as SessionGetUserParams;
 
     try {
+      // CRITICAL FIX: If userId is directly provided (e.g., PersonaUsers), use it directly
+      // PersonaUsers have unregistered sessions but valid userIds
+      if (getUserParams.userId) {
+        const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, getUserParams.userId);
+
+        if (!userResult.success || !userResult.data) {
+          return transformPayload(getUserParams, {
+            success: false,
+            error: `User not found: ${getUserParams.userId}`
+          });
+        }
+
+        const user = userResult.data.data as UserEntity;
+
+        return transformPayload(getUserParams, {
+          success: true,
+          user: user
+        });
+      }
+
       // Use targetSessionId if provided, otherwise use caller's sessionId
       const lookupSessionId = getUserParams.targetSessionId ?? getUserParams.sessionId;
 

@@ -167,10 +167,7 @@ impl Pipeline {
         // Start output adapter if present
         if let Some(output) = &mut self.output {
             output.start(self.handle).await?;
-            info!(
-                "Pipeline {} started output adapter",
-                self.handle.short()
-            );
+            info!("Pipeline {} started output adapter", self.handle.short());
         }
 
         // Create cancel channel
@@ -281,7 +278,7 @@ impl Pipeline {
                 self.event_bus.publish(StreamEvent::Progress {
                     handle: self.handle,
                     progress: 0.0, // Unknown total for streams
-                    message: Some(format!("Processed {} frames", frame_count)),
+                    message: Some(format!("Processed {frame_count} frames")),
                 });
             }
         }
@@ -392,24 +389,21 @@ impl PipelineBuilder {
     pub fn image_gen(self) -> Pipeline {
         use crate::stage::ImageGenStage;
 
-        Pipeline::with_config(self.event_bus, self.config)
-            .stage(Box::new(ImageGenStage::new()))
+        Pipeline::with_config(self.event_bus, self.config).stage(Box::new(ImageGenStage::new()))
     }
 
     /// Build video generation pipeline: Text -> VideoGen -> Output
     pub fn video_gen(self) -> Pipeline {
         use crate::stage::VideoGenStage;
 
-        Pipeline::with_config(self.event_bus, self.config)
-            .stage(Box::new(VideoGenStage::new()))
+        Pipeline::with_config(self.event_bus, self.config).stage(Box::new(VideoGenStage::new()))
     }
 
     /// Build avatar pipeline: Audio -> Avatar -> Video Output
     pub fn avatar(self) -> Pipeline {
         use crate::stage::AvatarStage;
 
-        Pipeline::with_config(self.event_bus, self.config)
-            .stage(Box::new(AvatarStage::new()))
+        Pipeline::with_config(self.event_bus, self.config).stage(Box::new(AvatarStage::new()))
     }
 }
 

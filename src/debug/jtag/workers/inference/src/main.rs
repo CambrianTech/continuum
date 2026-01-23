@@ -2379,87 +2379,86 @@ async fn handle_client_async(stream: UnixStream, state: Arc<RwLock<WorkerState>>
                 temperature,
             }) = serde_json::from_str::<InferenceCommand>(trimmed)
             {
-                    // Read binary prompt payload (async)
-                    let prompt_result = read_exact_bytes_async(&mut reader, prompt_length)
+                // Read binary prompt payload (async)
+                let prompt_result = read_exact_bytes_async(&mut reader, prompt_length)
+                    .await
+                    .map_err(|e| format!("Failed to read prompt bytes: {e}"))
+                    .and_then(|bytes| {
+                        String::from_utf8(bytes)
+                            .map_err(|e| format!("Invalid UTF-8 in prompt: {e}"))
+                    });
+
+                match prompt_result {
+                    Ok(prompt) => {
+                        // Spawn blocking task for compute-heavy generation
+                        // This prevents blocking the async runtime
+                        let state_clone = Arc::clone(&state);
+                        let model_id_clone = model_id.clone();
+                        let gen_result = tokio::task::spawn_blocking(move || {
+                            let state_guard = state_clone.blocking_read();
+                            state_guard.handle_generate_binary(
+                                &model_id_clone,
+                                &prompt,
+                                max_tokens,
+                                temperature,
+                            )
+                        })
                         .await
-                        .map_err(|e| format!("Failed to read prompt bytes: {e}"))
-                        .and_then(|bytes| {
-                            String::from_utf8(bytes)
-                                .map_err(|e| format!("Invalid UTF-8 in prompt: {e}"))
-                        });
+                        .unwrap_or_else(|e| Err(format!("Task panicked: {e}")));
 
-                    match prompt_result {
-                        Ok(prompt) => {
-                            // Spawn blocking task for compute-heavy generation
-                            // This prevents blocking the async runtime
-                            let state_clone = Arc::clone(&state);
-                            let model_id_clone = model_id.clone();
-                            let gen_result = tokio::task::spawn_blocking(move || {
-                                let state_guard = state_clone.blocking_read();
-                                state_guard.handle_generate_binary(
-                                    &model_id_clone,
-                                    &prompt,
-                                    max_tokens,
-                                    temperature,
+                        // Reunite for writing (need full stream for binary write)
+                        let mut full_stream = write_half
+                            .reunite(reader.into_inner())
+                            .expect("Failed to reunite stream");
+
+                        match gen_result {
+                            Ok((text, prompt_tokens, generated_tokens)) => {
+                                if let Err(e) = write_binary_text_async(
+                                    &mut full_stream,
+                                    &text,
+                                    &model_id,
+                                    prompt_tokens,
+                                    generated_tokens,
                                 )
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(format!("Task panicked: {e}")));
-
-                            // Reunite for writing (need full stream for binary write)
-                            let mut full_stream = write_half
-                                .reunite(reader.into_inner())
-                                .expect("Failed to reunite stream");
-
-                            match gen_result {
-                                Ok((text, prompt_tokens, generated_tokens)) => {
-                                    if let Err(e) = write_binary_text_async(
-                                        &mut full_stream,
-                                        &text,
-                                        &model_id,
-                                        prompt_tokens,
-                                        generated_tokens,
-                                    )
+                                .await
+                                {
+                                    eprintln!("❌ Failed to write binary response: {e}");
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                let error_response = json!({
+                                    "success": false,
+                                    "error": e
+                                });
+                                let response_str =
+                                    serde_json::to_string(&error_response).unwrap() + "\n";
+                                if full_stream
+                                    .write_all(response_str.as_bytes())
                                     .await
-                                    {
-                                        eprintln!("❌ Failed to write binary response: {e}");
-                                        return;
-                                    }
-                                }
-                                Err(e) => {
-                                    let error_response = json!({
-                                        "success": false,
-                                        "error": e
-                                    });
-                                    let response_str =
-                                        serde_json::to_string(&error_response).unwrap() + "\n";
-                                    if full_stream
-                                        .write_all(response_str.as_bytes())
-                                        .await
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
-
-                            // Split again for continued reading
-                            let (new_read, new_write) = full_stream.into_split();
-                            reader = TokioBufReader::new(new_read);
-                            write_half = new_write;
                         }
-                        Err(e) => {
-                            let error_response = json!({
-                                "success": false,
-                                "error": e
-                            });
-                            let response_str =
-                                serde_json::to_string(&error_response).unwrap() + "\n";
-                            if write_half.write_all(response_str.as_bytes()).await.is_err() {
-                                break;
-                            }
+
+                        // Split again for continued reading
+                        let (new_read, new_write) = full_stream.into_split();
+                        reader = TokioBufReader::new(new_read);
+                        write_half = new_write;
+                    }
+                    Err(e) => {
+                        let error_response = json!({
+                            "success": false,
+                            "error": e
+                        });
+                        let response_str = serde_json::to_string(&error_response).unwrap() + "\n";
+                        if write_half.write_all(response_str.as_bytes()).await.is_err() {
+                            break;
                         }
                     }
+                }
             }
             continue;
         }

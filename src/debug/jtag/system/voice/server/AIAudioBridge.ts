@@ -44,6 +44,9 @@ interface AIConnection {
   userId: string;
   displayName: string;
   isConnected: boolean;
+  reconnectAttempts?: number;
+  intentionalDisconnect?: boolean;  // true if explicitly called leaveCall()
+  reconnectTimeout?: NodeJS.Timeout;
 }
 
 const STREAMING_CORE_URL = process.env.STREAMING_CORE_WS_URL || 'ws://127.0.0.1:50053';
@@ -111,9 +114,19 @@ export class AIAudioBridge {
           resolve(false);
         });
 
-        ws.on('close', () => {
-          console.log(`🤖 AIAudioBridge: ${displayName} disconnected from call`);
-          this.connections.delete(key);
+        ws.on('close', (code, reason) => {
+          console.log(`🤖 AIAudioBridge: ${displayName} disconnected (code: ${code}, reason: ${reason})`);
+
+          // Check if this was an intentional disconnect (user called leaveCall)
+          if (connection.intentionalDisconnect) {
+            console.log(`🤖 AIAudioBridge: ${displayName} intentionally left, not reconnecting`);
+            this.connections.delete(key);
+            return;
+          }
+
+          // Unintentional disconnect - attempt reconnection with exponential backoff
+          connection.isConnected = false;
+          this.scheduleReconnect(key, connection);
         });
 
       } catch (error) {
@@ -131,6 +144,15 @@ export class AIAudioBridge {
     const connection = this.connections.get(key);
 
     if (connection) {
+      // Mark as intentional disconnect to prevent reconnection
+      connection.intentionalDisconnect = true;
+
+      // Cancel any pending reconnect
+      if (connection.reconnectTimeout) {
+        clearTimeout(connection.reconnectTimeout);
+        connection.reconnectTimeout = undefined;
+      }
+
       if (connection.ws.readyState === WebSocket.OPEN) {
         const leaveMsg: LeaveMessage = { type: 'Leave' };
         connection.ws.send(JSON.stringify(leaveMsg));
@@ -139,6 +161,53 @@ export class AIAudioBridge {
       this.connections.delete(key);
       console.log(`🤖 AIAudioBridge: ${connection.displayName} left call ${callId.slice(0, 8)}`);
     }
+  }
+
+  /**
+   * Schedule reconnection with exponential backoff
+   */
+  private scheduleReconnect(key: string, oldConnection: AIConnection): void {
+    const maxRetries = 10;
+    const attempts = (oldConnection.reconnectAttempts || 0) + 1;
+
+    if (attempts > maxRetries) {
+      console.error(`🤖 AIAudioBridge: ${oldConnection.displayName} exceeded max reconnect attempts (${maxRetries})`);
+      this.connections.delete(key);
+      return;
+    }
+
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s (max ~8.5 minutes)
+    const backoffMs = Math.min(1000 * Math.pow(2, attempts - 1), 512000);
+
+    console.log(`🤖 AIAudioBridge: ${oldConnection.displayName} will reconnect in ${backoffMs}ms (attempt ${attempts}/${maxRetries})`);
+
+    oldConnection.reconnectTimeout = setTimeout(() => {
+      console.log(`🤖 AIAudioBridge: Reconnecting ${oldConnection.displayName} (attempt ${attempts}/${maxRetries})`);
+
+      // Attempt reconnection
+      this.joinCall(oldConnection.callId, oldConnection.userId, oldConnection.displayName)
+        .then((success) => {
+          if (success) {
+            console.log(`🤖 AIAudioBridge: ${oldConnection.displayName} reconnected successfully`);
+            // Reset reconnect counter on successful connection
+            const connection = this.connections.get(key);
+            if (connection) {
+              connection.reconnectAttempts = 0;
+            }
+          } else {
+            console.warn(`🤖 AIAudioBridge: ${oldConnection.displayName} reconnect failed`);
+            // joinCall handles error, will trigger close event and schedule another reconnect
+          }
+        })
+        .catch((error) => {
+          console.error(`🤖 AIAudioBridge: Reconnect error for ${oldConnection.displayName}:`, error);
+        });
+
+    }, backoffMs);
+
+    // Store updated connection with incremented attempt count
+    oldConnection.reconnectAttempts = attempts;
+    this.connections.set(key, oldConnection);
   }
 
   /**

@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-22T23:47:08.854Z",
+  "generated": "2026-01-23T18:09:43.644Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -866,8 +866,8 @@
           "description": "isShared parameter"
         },
         "connectionContext": {
-          "type": "object",
-          "required": false,
+          "type": "string",
+          "required": true,
           "description": "connectionContext parameter"
         }
       }
@@ -3966,6 +3966,47 @@
           "type": "string",
           "required": false,
           "description": "to parameter"
+        }
+      }
+    },
+    {
+      "name": "collaboration/live/transcription",
+      "description": "Collaboration Live Transcription Command - Shared Types\n *\n * Relay voice transcription from browser to server for AI processing",
+      "params": {
+        "callSessionId": {
+          "type": "string",
+          "required": true,
+          "description": "callSessionId parameter"
+        },
+        "speakerId": {
+          "type": "string",
+          "required": true,
+          "description": "speakerId parameter"
+        },
+        "speakerName": {
+          "type": "string",
+          "required": true,
+          "description": "speakerName parameter"
+        },
+        "transcript": {
+          "type": "string",
+          "required": true,
+          "description": "transcript parameter"
+        },
+        "confidence": {
+          "type": "number",
+          "required": true,
+          "description": "confidence parameter"
+        },
+        "language": {
+          "type": "string",
+          "required": true,
+          "description": "language parameter"
+        },
+        "timestamp": {
+          "type": "number",
+          "required": true,
+          "description": "timestamp parameter"
         }
       }
     },

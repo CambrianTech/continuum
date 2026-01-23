@@ -9,7 +9,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 /// Whisper model context (loaded once)
@@ -38,13 +38,14 @@ impl WhisperSTT {
         }
 
         let candidates = [
-            PathBuf::from("models/whisper/ggml-base.en.bin"),
+            PathBuf::from("models/whisper/ggml-medium.en.bin"),  // Primary: medium for better accuracy
+            PathBuf::from("models/whisper/ggml-base.en.bin"),    // Fallback: base (less accurate)
             PathBuf::from("models/whisper/ggml-base.bin"),
-            PathBuf::from("models/ggml-base.en.bin"),
+            PathBuf::from("models/ggml-medium.en.bin"),
             dirs::data_dir()
                 .unwrap_or_default()
-                .join("whisper/ggml-base.en.bin"),
-            PathBuf::from("/usr/local/share/whisper/ggml-base.en.bin"),
+                .join("whisper/ggml-medium.en.bin"),
+            PathBuf::from("/usr/local/share/whisper/ggml-medium.en.bin"),
         ];
 
         for path in candidates {
@@ -54,17 +55,31 @@ impl WhisperSTT {
         }
 
         // Default - will fail if not found
-        PathBuf::from("models/whisper/ggml-base.en.bin")
+        PathBuf::from("models/whisper/ggml-medium.en.bin")
     }
 
     /// Synchronous transcription (runs on blocking thread)
     fn transcribe_sync(
         ctx: &Arc<Mutex<WhisperContext>>,
-        samples: Vec<f32>,
+        mut samples: Vec<f32>,
         language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
         if samples.is_empty() {
             return Err(STTError::InvalidAudio("Empty audio samples".into()));
+        }
+
+        // CRITICAL: Whisper requires minimum 1000ms at 16kHz
+        // Pad to 1050ms to account for Whisper's internal rounding (it reports 990ms for 16000 samples)
+        const WHISPER_MIN_SAMPLES: usize = 16800; // 1050ms at 16kHz (safety margin)
+        if samples.len() < WHISPER_MIN_SAMPLES {
+            let original_len = samples.len();
+            let padding = WHISPER_MIN_SAMPLES - samples.len();
+            samples.resize(WHISPER_MIN_SAMPLES, 0.0); // Pad with silence
+            info!(
+                "Whisper: Padded audio from {}ms to 1050ms ({} silence samples)",
+                (original_len * 1000) / 16000,
+                padding
+            );
         }
 
         // Validate sample range
@@ -101,35 +116,33 @@ impl WhisperSTT {
         // Create state and run inference
         let mut state = ctx_guard
             .create_state()
-            .map_err(|e| STTError::InferenceFailed(format!("Failed to create state: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Failed to create state: {e}")))?;
 
         state
             .full(params, &samples)
-            .map_err(|e| STTError::InferenceFailed(format!("Inference failed: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Inference failed: {e}")))?;
 
         // Extract results
         let num_segments = state
             .full_n_segments()
-            .map_err(|e| STTError::InferenceFailed(format!("Failed to get segments: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Failed to get segments: {e}")))?;
 
         let mut full_text = String::new();
         let mut segments = Vec::new();
 
         for i in 0..num_segments {
             let segment_text = state.full_get_segment_text(i).map_err(|e| {
-                STTError::InferenceFailed(format!("Failed to get segment {}: {}", i, e))
+                STTError::InferenceFailed(format!("Failed to get segment {i}: {e}"))
             })?;
 
             let start_ms = state
                 .full_get_segment_t0(i)
                 .map_err(|_| STTError::InferenceFailed("Failed to get segment start".into()))?
-                as i64
                 * 10;
 
             let end_ms = state
                 .full_get_segment_t1(i)
                 .map_err(|_| STTError::InferenceFailed("Failed to get segment end".into()))?
-                as i64
                 * 10;
 
             full_text.push_str(&segment_text);
@@ -192,16 +205,14 @@ impl SpeechToText for WhisperSTT {
             warn!("Place ggml-base.en.bin in models/whisper/");
 
             return Err(STTError::ModelNotLoaded(format!(
-                "Model not found: {:?}. Download ggml-base.en.bin from HuggingFace whisper.cpp repo",
-                model_path
+                "Model not found: {model_path:?}. Download ggml-base.en.bin from HuggingFace whisper.cpp repo"
             )));
         }
 
         // Load model
         let params = WhisperContextParameters::default();
-        let ctx =
-            WhisperContext::new_with_params(model_path.to_str().unwrap_or(""), params)
-                .map_err(|e| STTError::ModelNotLoaded(e.to_string()))?;
+        let ctx = WhisperContext::new_with_params(model_path.to_str().unwrap_or(""), params)
+            .map_err(|e| STTError::ModelNotLoaded(e.to_string()))?;
 
         WHISPER_CTX
             .set(Arc::new(Mutex::new(ctx)))
@@ -219,20 +230,16 @@ impl SpeechToText for WhisperSTT {
         let ctx = WHISPER_CTX
             .get()
             .ok_or_else(|| {
-                STTError::ModelNotLoaded(
-                    "Whisper not initialized. Call initialize() first.".into(),
-                )
+                STTError::ModelNotLoaded("Whisper not initialized. Call initialize() first.".into())
             })?
             .clone();
 
         let lang = language.map(|s| s.to_string());
 
         // Run inference on blocking thread pool
-        tokio::task::spawn_blocking(move || {
-            Self::transcribe_sync(&ctx, samples, lang.as_deref())
-        })
-        .await
-        .map_err(|e| STTError::InferenceFailed(format!("Task join error: {}", e)))?
+        tokio::task::spawn_blocking(move || Self::transcribe_sync(&ctx, samples, lang.as_deref()))
+            .await
+            .map_err(|e| STTError::InferenceFailed(format!("Task join error: {e}")))?
     }
 
     fn supported_languages(&self) -> Vec<&'static str> {

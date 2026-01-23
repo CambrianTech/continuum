@@ -4,10 +4,10 @@
 //! Pull-based: subscribers poll, never pushed.
 
 use crate::handle::Handle;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 /// Event types that flow through the system
@@ -17,10 +17,18 @@ pub enum StreamEvent {
     Started { handle: Handle },
 
     /// Progress update (0.0 - 1.0)
-    Progress { handle: Handle, progress: f32, message: Option<String> },
+    Progress {
+        handle: Handle,
+        progress: f32,
+        message: Option<String>,
+    },
 
     /// Frame available (use SlotRef to access)
-    FrameReady { handle: Handle, frame_type: FrameType, slot: u16 },
+    FrameReady {
+        handle: Handle,
+        frame_type: FrameType,
+        slot: u16,
+    },
 
     /// Stream completed successfully
     Completed { handle: Handle },
