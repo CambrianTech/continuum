@@ -1,0 +1,231 @@
+/**
+ * Continuum Core IPC Client - TypeScript <-> Rust via Unix Socket
+ *
+ * Event-driven architecture:
+ * - Socket.on('data') wakes when response ready (no polling)
+ * - Async/await for request/response
+ * - Performance timing on every call
+ */
+
+import net from 'net';
+import { EventEmitter } from 'events';
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export interface VoiceParticipant {
+	user_id: string;
+	display_name: string;
+	participant_type: 'human' | 'persona' | 'agent';
+	expertise: string[];
+}
+
+export interface UtteranceEvent {
+	session_id: string;
+	speaker_id: string;
+	speaker_name: string;
+	speaker_type: 'human' | 'persona' | 'agent';
+	transcript: string;
+	confidence: number;
+	timestamp: number;
+}
+
+interface Response {
+	success: boolean;
+	result?: any;
+	error?: string;
+}
+
+// ============================================================================
+// IPC Client
+// ============================================================================
+
+export class RustCoreIPCClient extends EventEmitter {
+	private socket: net.Socket | null = null;
+	private buffer = '';
+	private pendingRequests: Map<number, (response: Response) => void> = new Map();
+	private nextRequestId = 1;
+	private connected = false;
+
+	constructor(private socketPath: string) {
+		super();
+	}
+
+	/**
+	 * Connect to continuum-core server
+	 */
+	async connect(): Promise<void> {
+		if (this.connected) {
+			return;
+		}
+
+		return new Promise((resolve, reject) => {
+			this.socket = net.createConnection(this.socketPath);
+
+			this.socket.on('connect', () => {
+				this.connected = true;
+				this.emit('connect');
+				resolve();
+			});
+
+			this.socket.on('data', (data) => {
+				this.buffer += data.toString();
+
+				// Process complete lines
+				const lines = this.buffer.split('\n');
+				this.buffer = lines.pop() || '';
+
+				for (const line of lines) {
+					if (line.trim()) {
+						this.handleResponse(line);
+					}
+				}
+			});
+
+			this.socket.on('error', (err) => {
+				this.emit('error', err);
+				reject(err);
+			});
+
+			this.socket.on('close', () => {
+				this.connected = false;
+				this.emit('close');
+			});
+		});
+	}
+
+	private handleResponse(line: string): void {
+		try {
+			const response: Response & { requestId?: number } = JSON.parse(line);
+			if (response.requestId !== undefined) {
+				const callback = this.pendingRequests.get(response.requestId);
+				if (callback) {
+					callback(response);
+					this.pendingRequests.delete(response.requestId);
+				}
+			}
+		} catch (e) {
+			console.error('Failed to parse response:', e, line);
+		}
+	}
+
+	/**
+	 * Send a request and wait for response (event-driven, no polling)
+	 * Supports concurrent requests via request IDs
+	 */
+	private async request(command: any): Promise<Response> {
+		if (!this.connected || !this.socket) {
+			throw new Error('Not connected to continuum-core server');
+		}
+
+		const requestId = this.nextRequestId++;
+		const requestWithId = { ...command, requestId };
+
+		return new Promise((resolve, reject) => {
+			const json = JSON.stringify(requestWithId) + '\n';
+			const start = performance.now();
+
+			this.pendingRequests.set(requestId, (response) => {
+				const duration = performance.now() - start;
+				if (duration > 10) {
+					console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(2)}ms`);
+				}
+				resolve(response);
+			});
+
+			this.socket!.write(json, (err) => {
+				if (err) {
+					this.pendingRequests.delete(requestId);
+					reject(err);
+				}
+			});
+		});
+	}
+
+	/**
+	 * Health check
+	 */
+	async healthCheck(): Promise<boolean> {
+		const response = await this.request({ command: 'health-check' });
+		return response.success && response.result?.healthy === true;
+	}
+
+	/**
+	 * Register a voice session
+	 */
+	async voiceRegisterSession(
+		sessionId: string,
+		roomId: string,
+		participants: VoiceParticipant[]
+	): Promise<void> {
+		const response = await this.request({
+			command: 'voice/register-session',
+			session_id: sessionId,
+			room_id: roomId,
+			participants,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to register session');
+		}
+	}
+
+	/**
+	 * Process an utterance and get selected responder
+	 */
+	async voiceOnUtterance(event: UtteranceEvent): Promise<string | null> {
+		const response = await this.request({
+			command: 'voice/on-utterance',
+			event,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to process utterance');
+		}
+
+		return response.result?.responder_id || null;
+	}
+
+	/**
+	 * Check if TTS should be routed to a session
+	 */
+	async voiceShouldRouteTts(sessionId: string, personaId: string): Promise<boolean> {
+		const response = await this.request({
+			command: 'voice/should-route-tts',
+			session_id: sessionId,
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to check TTS routing');
+		}
+
+		return response.result?.should_route === true;
+	}
+
+	/**
+	 * Create a persona inbox
+	 */
+	async inboxCreate(personaId: string): Promise<void> {
+		const response = await this.request({
+			command: 'inbox/create',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create inbox');
+		}
+	}
+
+	/**
+	 * Disconnect from server
+	 */
+	disconnect(): void {
+		if (this.socket) {
+			this.socket.end();
+			this.socket = null;
+			this.connected = false;
+		}
+	}
+}

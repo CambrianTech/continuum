@@ -70,6 +70,16 @@
       "enabled": true
     },
     {
+      "name": "continuum-core",
+      "binary": "workers/target/release/continuum-core-server",
+      "socket": "/tmp/continuum-core.sock",
+      "args": [
+        "/tmp/jtag-logger-worker.sock"
+      ],
+      "description": "Rust core for VoiceOrchestrator, PersonaInbox, and other performance-critical systems",
+      "enabled": true
+    },
+    {
       "name": "search",
       "binary": "workers/target/release/search-worker",
       "socket": "/tmp/jtag-search-worker.sock",

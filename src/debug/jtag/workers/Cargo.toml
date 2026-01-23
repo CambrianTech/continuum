@@ -7,7 +7,7 @@
 resolver = "2"
 members = [
     "archive",
-    "chat-drain",
+    "chat-drain", "continuum-core",
     "data",
     "data-daemon",
     "embedding",

@@ -232,17 +232,14 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Step 1: Post transcript to chat room (visible to ALL AIs including text-only)
-    // This ensures the conversation history is captured and all models can see it
-    // Note: Voice metadata is tracked separately in pendingResponses for TTS routing
-    try {
-      await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
-        room: context.roomId,  // Use roomId from context, not sessionId
-        message: `[Voice] ${speakerName}: ${transcript}`
-      });
-    } catch (error) {
+    // Step 1: Post transcript to chat room (FIRE AND FORGET - don't await)
+    // This prevents blocking the event loop while 12 AIs wake up and process
+    Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+      room: context.roomId,
+      message: `[Voice] ${speakerName}: ${transcript}`
+    }).catch(error => {
       console.warn('🎙️ VoiceOrchestrator: Failed to post transcript to chat:', error);
-    }
+    });
 
     // Update context with new utterance
     context.recentUtterances.push(event);
