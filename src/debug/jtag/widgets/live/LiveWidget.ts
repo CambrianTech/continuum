@@ -328,6 +328,7 @@ export class LiveWidget extends ReactiveWidget {
       if (result.success && result.sessionId) {
         this.sessionId = result.sessionId;
         this.isJoined = true;
+        console.error(`🔍 DEBUG: LiveWidget storing sessionId=${this.sessionId.slice(0, 8)} from LiveJoin result`);
 
         // Use participants from server response (includes all room members for new calls)
         // WebSocket events (ParticipantJoined/Left) will update in real-time
@@ -400,6 +401,7 @@ export class LiveWidget extends ReactiveWidget {
               return;
             }
 
+            console.error(`🔍 DEBUG: Sending transcription with callSessionId=${this.sessionId?.slice(0, 8)}`);
             try {
               await Commands.execute<CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult>('collaboration/live/transcription', {
                 callSessionId: this.sessionId,  // Pass call session UUID
@@ -429,13 +431,14 @@ export class LiveWidget extends ReactiveWidget {
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
           // Join audio stream (sessionId is guaranteed non-null here)
+          console.error(`🔍 DEBUG: Joining audio stream with callId=${result.sessionId.slice(0, 8)}`);
           await this.audioClient.join(result.sessionId, myUserId, myDisplayName);
           console.log('LiveWidget: Connected to audio stream');
 
-          // Start microphone streaming
-          await this.audioClient.startMicrophone();
-          this.micEnabled = true;
-          console.log('LiveWidget: Mic streaming started');
+          // Apply saved state to audio client (ONE source of truth)
+          await this.applyMicState();
+          this.applySpeakerState();
+          console.log(`LiveWidget: State applied from saved (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, volume=${this.speakerVolume})`);
         } catch (audioError) {
           console.warn('LiveWidget: Audio stream failed:', audioError);
           // Still joined, just without audio
@@ -505,28 +508,50 @@ export class LiveWidget extends ReactiveWidget {
     // rather than through JTAG events for lower latency
   }
 
+  /**
+   * Apply mic state to audio client (ONE source of truth)
+   * Used by: initial load, toggleMic
+   */
+  private async applyMicState(): Promise<void> {
+    if (!this.audioClient) return;
+
+    if (this.micEnabled) {
+      try {
+        await this.audioClient.startMicrophone();
+      } catch (error) {
+        console.error('LiveWidget: Failed to start mic:', error);
+        this.micEnabled = false;
+        this.requestUpdate();
+      }
+    } else {
+      this.audioClient.stopMicrophone();
+    }
+    // Notify server of mute status
+    this.audioClient.setMuted(!this.micEnabled);
+  }
+
   private async toggleMic(): Promise<void> {
     this.micEnabled = !this.micEnabled;
     this.requestUpdate();  // Force UI update
 
-    if (this.audioClient) {
-      if (this.micEnabled) {
-        try {
-          await this.audioClient.startMicrophone();
-        } catch (error) {
-          console.error('LiveWidget: Failed to start mic:', error);
-          this.micEnabled = false;
-          this.requestUpdate();
-        }
-      } else {
-        this.audioClient.stopMicrophone();
-      }
-      // Notify server of mute status
-      this.audioClient.setMuted(!this.micEnabled);
-    }
+    await this.applyMicState();
 
     // Persist to UserStateEntity
     await this.saveCallState();
+  }
+
+  /**
+   * Apply speaker state to audio client (ONE source of truth)
+   * Used by: initial load, toggleSpeaker, setSpeakerVolume
+   */
+  private applySpeakerState(): void {
+    if (!this.audioClient) return;
+
+    // Apply mute state
+    this.audioClient.setSpeakerMuted(!this.speakerEnabled);
+
+    // Apply volume
+    this.audioClient.setSpeakerVolume(this.speakerVolume);
   }
 
   /**
@@ -537,10 +562,7 @@ export class LiveWidget extends ReactiveWidget {
     this.speakerEnabled = !this.speakerEnabled;
     this.requestUpdate();  // Force UI update
 
-    if (this.audioClient) {
-      // Mute/unmute the audio output (playback)
-      this.audioClient.setSpeakerMuted(!this.speakerEnabled);
-    }
+    this.applySpeakerState();
 
     // Persist to UserStateEntity
     await this.saveCallState();
@@ -551,10 +573,7 @@ export class LiveWidget extends ReactiveWidget {
    */
   private setSpeakerVolume(volume: number): void {
     this.speakerVolume = Math.max(0, Math.min(1, volume));
-
-    if (this.audioClient) {
-      this.audioClient.setSpeakerVolume(this.speakerVolume);
-    }
+    this.applySpeakerState();
   }
 
   private async toggleCamera(): Promise<void> {
