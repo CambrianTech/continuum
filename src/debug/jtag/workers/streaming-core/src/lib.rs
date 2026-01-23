@@ -63,6 +63,7 @@
 
 pub mod adapter;
 pub mod call_server;
+pub mod continuous; // Continuous transcription module
 pub mod event;
 pub mod frame;
 pub mod handle;
@@ -117,3 +118,6 @@ pub use mixer::{AudioMixer, ParticipantStream};
 
 // Re-export call server types
 pub use call_server::{Call, CallManager, CallMessage};
+
+// Re-export continuous transcription types
+pub use continuous::SlidingAudioBuffer;
