@@ -7,7 +7,7 @@
 
 import type { JTAGContext, CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { SessionCategory, SessionMetadata } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import type { SessionCategory, SessionMetadata, EnhancedConnectionContext } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
 /**
  * Session create command parameters
@@ -21,11 +21,8 @@ export interface SessionCreateParams extends CommandParams {
   userId?: UUID;
   /** Whether this should be a shared session */
   isShared?: boolean;
-  /** Connection context with uniqueId for user lookup/creation */
-  connectionContext?: {
-    uniqueId?: string;
-    [key: string]: unknown;
-  };
+  /** Enhanced connection context with clientType and identity */
+  connectionContext?: EnhancedConnectionContext;
 }
 
 /**

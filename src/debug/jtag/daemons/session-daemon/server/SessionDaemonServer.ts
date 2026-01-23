@@ -365,6 +365,18 @@ export class SessionDaemonServer extends SessionDaemon {
      * Load existing user (citizen) by ID
      */
     private async getUserById(userId: UUID): Promise<BaseUser> {
+      // DEBUG: Always log getUserById calls to trace identity bugs - BYPASS LOGGER
+      console.error(`🔍🔍🔍 getUserById CALLED: userId=${JSON.stringify(userId)}, type=${typeof userId}, value=${userId}`);
+      this.log.info(`🔍 getUserById: userId=${JSON.stringify(userId)}, type=${typeof userId}, stringified=${String(userId)}`);
+
+      // CRITICAL: Validate userId is not the string "undefined" (indicates serialization bug upstream)
+      if (!userId || userId === 'undefined' || (userId as any) === undefined) {
+        console.error(`❌❌❌ getUserById VALIDATION FAILED: userId=${userId}`);
+        this.log.error(`❌ getUserById called with invalid userId`);
+        this.log.error(`Stack trace:`, new Error().stack);
+        throw new Error(`Invalid userId: ${userId} - this indicates a bug in session creation or identity resolution`);
+      }
+
       // Load UserEntity from database
       const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
       if (!userResult.success || !userResult.data) {
@@ -615,6 +627,9 @@ export class SessionDaemonServer extends SessionDaemon {
       const clientType: ClientType = enhancedContext?.clientType || 'cli';
       const identity = enhancedContext?.identity;
       const assistant = enhancedContext?.assistant;
+
+      // DEBUG: Log what we received
+      this.log.info(`🔍 Session create: clientType=${clientType}, hasEnhancedContext=${!!enhancedContext}, hasIdentity=${!!identity}, userId=${params.userId}, deviceId=${identity?.deviceId?.slice(0, 12)}`);
 
       // Log assistant for attribution (NOT for identity resolution!)
       if (assistant) {
@@ -883,6 +898,11 @@ export class SessionDaemonServer extends SessionDaemon {
       return [];
     }
 
+    if (!session.userId) {
+      this.log.warn(`Session ${sessionId} has no userId - cannot get open rooms`);
+      return [];
+    }
+
     return await SessionStateHelper.getOpenRooms(session.userId);
   }
 
@@ -893,6 +913,11 @@ export class SessionDaemonServer extends SessionDaemon {
     const session = this.sessions.find(s => s.sessionId === sessionId);
     if (!session) {
       this.log.warn(`Session ${sessionId} not found for getUserState`);
+      return null;
+    }
+
+    if (!session.userId) {
+      this.log.warn(`Session ${sessionId} has no userId - cannot get user state`);
       return null;
     }
 

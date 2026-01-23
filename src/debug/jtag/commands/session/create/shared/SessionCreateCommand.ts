@@ -28,13 +28,14 @@ export abstract class SessionCreateCommand extends CommandBase<SessionCreatePara
     try {
       // Convert command params to session daemon params
       // CRITICAL: Pass connectionContext for identity resolution!
+      // For browser-ui clients, userId should be omitted - server resolves from connectionContext
       const sessionParams: CreateSessionParams = {
         context: createParams.context,
         sessionId: createParams.sessionId,
         operation: 'create',
         category: createParams.category,
         displayName: createParams.displayName,
-        userId: createParams.userId ?? generateUUID(),
+        userId: createParams.userId,  // DON'T generate UUID - let server resolve from connectionContext
         isShared: createParams.isShared ?? true,
         connectionContext: createParams.connectionContext  // Pass through for clientType-aware identity
       };

@@ -100,15 +100,17 @@ export type SessionOperation = 'create' | 'get' | 'list' | 'destroy';
 
 export interface SessionIdentity {
   category: SessionCategory; // user | persona | agent | system
-  userId: UUID; // Reference to actual user record (via UserDaemon)
+  userId?: UUID; // Optional - server resolves from connectionContext for browser-ui clients
   displayName: string; // "Claude", "Joel", etc. - passed from connect()
 }
 
 /**
  * Session Metadata - Core identity information only
+ * Note: userId is REQUIRED in metadata because server always resolves it during creation
  */
-export interface SessionMetadata extends SessionIdentity {
+export interface SessionMetadata extends Omit<SessionIdentity, 'userId'> {
   sessionId: UUID;
+  userId: UUID;  // Required in metadata - server resolves from connectionContext during creation
   created: Date;
   isActive: boolean; // Whether session is currently active
   lastActive: Date; // Last time session was active
