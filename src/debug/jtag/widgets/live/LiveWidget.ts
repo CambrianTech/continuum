@@ -325,10 +325,10 @@ export class LiveWidget extends ReactiveWidget {
         callerId: userId  // Pass current user's ID so server knows WHO is joining
       });
 
-      if (result.success && result.sessionId) {
-        this.sessionId = result.sessionId;
+      if (result.success && result.callId) {
+        this.sessionId = result.callId;
         this.isJoined = true;
-        console.error(`🔍 DEBUG: LiveWidget storing sessionId=${this.sessionId.slice(0, 8)} from LiveJoin result`);
+        console.error(`🔍 DEBUG: LiveWidget storing callId=${this.sessionId.slice(0, 8)} from LiveJoin result`);
 
         // Use participants from server response (includes all room members for new calls)
         // WebSocket events (ParticipantJoined/Left) will update in real-time
@@ -430,9 +430,9 @@ export class LiveWidget extends ReactiveWidget {
           const myUserId = result.myParticipant?.userId || 'unknown';
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
-          // Join audio stream (sessionId is guaranteed non-null here)
-          console.error(`🔍 DEBUG: Joining audio stream with callId=${result.sessionId.slice(0, 8)}`);
-          await this.audioClient.join(result.sessionId, myUserId, myDisplayName);
+          // Join audio stream (callId is guaranteed non-null here)
+          console.error(`🔍 DEBUG: Joining audio stream with callId=${result.callId.slice(0, 8)}`);
+          await this.audioClient.join(result.callId, myUserId, myDisplayName);
           console.log('LiveWidget: Connected to audio stream');
 
           // Apply saved state to audio client (ONE source of truth)
