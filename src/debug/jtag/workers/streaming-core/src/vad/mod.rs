@@ -17,6 +17,7 @@ pub mod silero_raw;
 pub mod test_audio;
 pub mod webrtc;
 pub mod metrics;
+pub mod wav_loader;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;
