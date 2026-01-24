@@ -15,12 +15,14 @@ pub mod rms_threshold;
 pub mod silero;
 pub mod silero_raw;
 pub mod test_audio;
+pub mod webrtc;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;
 pub use silero::SileroVAD;
 pub use silero_raw::SileroRawVAD;
 pub use test_audio::{TestAudioGenerator, Vowel};
+pub use webrtc::WebRtcVAD;
 
 /// VAD Error
 #[derive(Debug, thiserror::Error)]
@@ -97,21 +99,29 @@ impl VADFactory {
     ///
     /// Supported:
     /// - "rms" - Fast RMS threshold (primitive but low latency)
+    /// - "webrtc" - WebRTC VAD (fast, rule-based, 1-10μs per frame)
     /// - "silero" - ML-based Silero VAD (accurate, rejects background noise)
     /// - "silero-raw" - Silero with raw ONNX Runtime (no external crate dependencies)
     pub fn create(name: &str) -> Result<Box<dyn VoiceActivityDetection>, VADError> {
         match name {
             "rms" => Ok(Box::new(rms_threshold::RmsThresholdVAD::new())),
+            "webrtc" => Ok(Box::new(webrtc::WebRtcVAD::new())),
             "silero" => Ok(Box::new(silero::SileroVAD::new())),
             "silero-raw" => Ok(Box::new(silero_raw::SileroRawVAD::new())),
             _ => Err(VADError::ModelNotLoaded(format!(
-                "Unknown VAD: '{}'. Supported: rms, silero, silero-raw",
+                "Unknown VAD: '{}'. Supported: rms, webrtc, silero, silero-raw",
                 name
             ))),
         }
     }
 
-    /// Get default VAD (Silero if available, RMS fallback)
+    /// Get default VAD (best available)
+    ///
+    /// Priority:
+    /// 1. Silero Raw (ML-based, most accurate)
+    /// 2. Silero (ML-based with external crate)
+    /// 3. WebRTC (fast, rule-based, good quality)
+    /// 4. RMS (primitive fallback)
     pub fn default() -> Box<dyn VoiceActivityDetection> {
         // Try Silero raw ONNX first (best quality, fewest dependencies)
         if let Ok(silero) = Self::create("silero-raw") {
@@ -123,7 +133,12 @@ impl VADFactory {
             return silero;
         }
 
-        // Fallback to RMS (always works, no dependencies)
+        // Try WebRTC (fast, better than RMS, always available)
+        if let Ok(webrtc) = Self::create("webrtc") {
+            return webrtc;
+        }
+
+        // Fallback to RMS (primitive but always works)
         Box::new(rms_threshold::RmsThresholdVAD::new())
     }
 }

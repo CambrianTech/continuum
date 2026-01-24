@@ -64,6 +64,9 @@ num_cpus = "1.16"
 # User directories (for model paths)
 dirs = "5.0"
 
+# Fast VAD (WebRTC-style, pure Rust, no_std)
+earshot = "0.1"
+
 # TypeScript type generation
 ts-rs.workspace = true
 
