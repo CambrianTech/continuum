@@ -146,6 +146,18 @@ export class UserDaemonServer extends UserDaemon {
     });
     this.registerSubscription(unsubDeleted);
 
+    // Listen for voice utterances directed to personas
+    const unsubVoice = Events.subscribe('voice:utterance-for-persona', async (payload: { personaId: UUID; message: any }) => {
+      const personaClient = this.personaClients.get(payload.personaId);
+      if (personaClient && personaClient instanceof PersonaUser) {
+        await personaClient.inbox.enqueue(payload.message);
+        this.log.info(`🎙️ Enqueued voice message to ${personaClient.displayName}'s inbox`);
+      } else {
+        this.log.warn(`⚠️  Voice message for ${payload.personaId} but no PersonaUser client found`);
+      }
+    });
+    this.registerSubscription(unsubVoice);
+
   }
 
   /**
