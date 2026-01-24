@@ -59,10 +59,10 @@ impl TestAudioGenerator {
     }
 
     /// Formant filter (simplified bandpass resonance)
-    fn formant_filter(&self, signal: f32, t: f32, center_freq: f32, bandwidth: f32) -> f32 {
+    fn formant_filter(&self, signal: f32, t: f32, center_freq: f32, _bandwidth: f32) -> f32 {
         let phase = 2.0 * PI * center_freq * t;
-        let resonance = phase.sin() * (-bandwidth * t).exp();
-        signal * resonance
+        let resonance = phase.sin();
+        signal * resonance * 0.3 // Reduced amplitude to prevent clipping
     }
 
     /// Amplitude envelope (attack-sustain-release)

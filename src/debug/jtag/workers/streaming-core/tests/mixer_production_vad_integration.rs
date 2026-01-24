@@ -180,14 +180,14 @@ async fn test_mixer_production_vad_multi_participant() {
     println!("\n📊 Multi-Participant VAD Test\n");
 
     // Alice speaks
-    for _ in 0..5 {
+    for _ in 0..10 {
         let speech = gen.generate_formant_speech(480, Vowel::A);
         mixer.push_audio(&handle_a, speech);
     }
 
     // Bob speaks at the same time
-    for _ in 0..5 {
-        let speech = gen.generate_formant_speech(480, Vowel::O);
+    for _ in 0..10 {
+        let speech = gen.generate_formant_speech(480, Vowel::A);  // Use same vowel as Alice
         mixer.push_audio(&handle_b, speech);
     }
 
