@@ -16,6 +16,7 @@ pub mod silero;
 pub mod silero_raw;
 pub mod test_audio;
 pub mod webrtc;
+pub mod metrics;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;
@@ -23,6 +24,9 @@ pub use silero::SileroVAD;
 pub use silero_raw::SileroRawVAD;
 pub use test_audio::{TestAudioGenerator, Vowel};
 pub use webrtc::WebRtcVAD;
+
+// Re-export metrics
+pub use metrics::{ConfusionMatrix, GroundTruth, Outcome, Prediction, VADEvaluator};
 
 /// VAD Error
 #[derive(Debug, thiserror::Error)]
