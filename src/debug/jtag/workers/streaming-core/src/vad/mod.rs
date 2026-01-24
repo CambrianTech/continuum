@@ -14,11 +14,13 @@ use async_trait::async_trait;
 pub mod rms_threshold;
 pub mod silero;
 pub mod silero_raw;
+pub mod test_audio;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;
 pub use silero::SileroVAD;
 pub use silero_raw::SileroRawVAD;
+pub use test_audio::{TestAudioGenerator, Vowel};
 
 /// VAD Error
 #[derive(Debug, thiserror::Error)]
