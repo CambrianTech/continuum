@@ -262,6 +262,65 @@ impl TestAudioGenerator {
 
         samples
     }
+
+    /// Mix two audio signals together with SNR (Signal-to-Noise Ratio) control
+    ///
+    /// SNR is in decibels (dB):
+    /// - 0 dB = equal volume
+    /// - +10 dB = signal is 10dB louder than noise
+    /// - -10 dB = noise is 10dB louder than signal
+    ///
+    /// # Arguments
+    /// * `signal` - The primary audio (speech)
+    /// * `noise` - The background noise
+    /// * `snr_db` - Signal-to-noise ratio in decibels
+    ///
+    /// # Returns
+    /// Mixed audio with specified SNR
+    pub fn mix_audio_with_snr(signal: &[i16], noise: &[i16], snr_db: f32) -> Vec<i16> {
+        assert_eq!(signal.len(), noise.len(), "Signal and noise must be same length");
+
+        // Convert SNR from dB to linear ratio
+        // SNR_linear = 10^(SNR_dB / 20)
+        let snr_linear = 10_f32.powf(snr_db / 20.0);
+
+        // Calculate RMS (Root Mean Square) of both signals
+        let signal_rms = Self::calculate_rms(signal);
+        let noise_rms = Self::calculate_rms(noise);
+
+        // Calculate noise scaling factor to achieve desired SNR
+        // SNR = signal_rms / (noise_rms * scale)
+        // scale = signal_rms / (noise_rms * SNR_linear)
+        let noise_scale = if noise_rms > 0.0 {
+            signal_rms / (noise_rms * snr_linear)
+        } else {
+            0.0
+        };
+
+        // Mix signals
+        signal
+            .iter()
+            .zip(noise.iter())
+            .map(|(&s, &n)| {
+                let mixed = s as f32 + (n as f32 * noise_scale);
+                mixed.clamp(-32767.0, 32767.0) as i16
+            })
+            .collect()
+    }
+
+    /// Calculate RMS (Root Mean Square) of audio signal
+    fn calculate_rms(samples: &[i16]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+
+        let sum_squares: f64 = samples
+            .iter()
+            .map(|&s| (s as f64) * (s as f64))
+            .sum();
+
+        ((sum_squares / samples.len() as f64).sqrt()) as f32
+    }
 }
 
 /// Vowel formants (F1, F2, F3 in Hz)
@@ -332,5 +391,28 @@ mod tests {
         // Should be louder than pure silence
         let max_amplitude = tv.iter().map(|&s| s.abs()).max().unwrap();
         assert!(max_amplitude > 1000);
+    }
+
+    #[test]
+    fn test_audio_mixing() {
+        let gen = TestAudioGenerator::new(16000);
+
+        // Generate signal and noise (same length)
+        let signal = gen.generate_formant_speech(240, Vowel::A);
+        let noise = gen.generate_factory_floor(240);
+
+        // Mix at different SNR levels
+        let mixed_high_snr = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, 20.0); // Signal 20dB louder
+        let mixed_equal = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, 0.0);     // Equal volume
+        let mixed_low_snr = TestAudioGenerator::mix_audio_with_snr(&signal, &noise, -10.0); // Noise 10dB louder
+
+        assert_eq!(mixed_high_snr.len(), 240);
+        assert_eq!(mixed_equal.len(), 240);
+        assert_eq!(mixed_low_snr.len(), 240);
+
+        // High SNR should be dominated by signal
+        let signal_rms = TestAudioGenerator::calculate_rms(&signal);
+        let mixed_high_rms = TestAudioGenerator::calculate_rms(&mixed_high_snr);
+        assert!((mixed_high_rms - signal_rms).abs() / signal_rms < 0.2); // Within 20%
     }
 }
