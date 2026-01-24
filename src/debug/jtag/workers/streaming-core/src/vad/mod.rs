@@ -13,10 +13,12 @@ use async_trait::async_trait;
 
 pub mod rms_threshold;
 pub mod silero;
+pub mod silero_raw;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;
 pub use silero::SileroVAD;
+pub use silero_raw::SileroRawVAD;
 
 /// VAD Error
 #[derive(Debug, thiserror::Error)]
@@ -94,12 +96,14 @@ impl VADFactory {
     /// Supported:
     /// - "rms" - Fast RMS threshold (primitive but low latency)
     /// - "silero" - ML-based Silero VAD (accurate, rejects background noise)
+    /// - "silero-raw" - Silero with raw ONNX Runtime (no external crate dependencies)
     pub fn create(name: &str) -> Result<Box<dyn VoiceActivityDetection>, VADError> {
         match name {
             "rms" => Ok(Box::new(rms_threshold::RmsThresholdVAD::new())),
             "silero" => Ok(Box::new(silero::SileroVAD::new())),
+            "silero-raw" => Ok(Box::new(silero_raw::SileroRawVAD::new())),
             _ => Err(VADError::ModelNotLoaded(format!(
-                "Unknown VAD: '{}'. Supported: rms, silero",
+                "Unknown VAD: '{}'. Supported: rms, silero, silero-raw",
                 name
             ))),
         }
@@ -107,7 +111,12 @@ impl VADFactory {
 
     /// Get default VAD (Silero if available, RMS fallback)
     pub fn default() -> Box<dyn VoiceActivityDetection> {
-        // Try Silero first (best quality)
+        // Try Silero raw ONNX first (best quality, fewest dependencies)
+        if let Ok(silero) = Self::create("silero-raw") {
+            return silero;
+        }
+
+        // Try original Silero with external crate
         if let Ok(silero) = Self::create("silero") {
             return silero;
         }

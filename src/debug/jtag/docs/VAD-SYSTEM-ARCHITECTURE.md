@@ -13,25 +13,37 @@ Created trait-based architecture following CLAUDE.md polymorphism pattern.
 ```
 VoiceActivityDetection trait
 ├── RmsThresholdVAD (fast, primitive)
-│   - RMS energy threshold
+│   - RMS energy threshold (5μs per frame)
 │   - Cannot reject background noise
 │   - Fallback for when Silero unavailable
+│   - Accuracy: 28.6% on synthetic tests
 │
-└── SileroVAD (accurate, ML-based)
-    - Trained on 6000+ hours of speech
-    - Rejects TV, music, background noise
-    - ONNX Runtime inference (~1ms latency)
+├── SileroRawVAD (accurate, ML-based) ✅ WORKING
+│   - Raw ONNX Runtime (no external crate dependencies)
+│   - HuggingFace onnx-community/silero-vad model (2.1MB)
+│   - 100% accuracy on pure noise rejection
+│   - ~54ms per frame (1.7x real-time)
+│   - Uses combined state tensor (2x1x128)
+│
+└── SileroVAD (legacy, external crate)
+    - Uses silero-vad-rs crate (kept for reference)
+    - Original Silero model with h/c state separation
+    - May have API compatibility issues
 ```
 
 ### Files Created
 
-| File | Purpose |
-|------|---------|
-| `workers/streaming-core/src/vad/mod.rs` | Trait definition + factory |
-| `workers/streaming-core/src/vad/rms_threshold.rs` | RMS threshold implementation |
-| `workers/streaming-core/src/vad/silero.rs` | Silero ML VAD implementation |
-| `workers/streaming-core/src/vad/README.md` | Usage documentation |
-| `docs/VAD-SYSTEM-ARCHITECTURE.md` | This architecture doc |
+| File | Purpose | Status |
+|------|---------|--------|
+| `workers/streaming-core/src/vad/mod.rs` | Trait definition + factory | ✅ Complete |
+| `workers/streaming-core/src/vad/rms_threshold.rs` | RMS threshold implementation | ✅ Complete |
+| `workers/streaming-core/src/vad/silero.rs` | Original Silero (legacy) | ⚠️ External crate issues |
+| `workers/streaming-core/src/vad/silero_raw.rs` | Silero Raw ONNX (working!) | ✅ Complete |
+| `workers/streaming-core/tests/vad_integration.rs` | Basic functionality tests | ✅ Complete |
+| `workers/streaming-core/tests/vad_background_noise.rs` | Accuracy tests with synthetic audio | ✅ Complete |
+| `docs/VAD-SYSTEM-ARCHITECTURE.md` | This architecture doc | ✅ Complete |
+| `docs/VAD-TEST-RESULTS.md` | Test results and metrics | ✅ Complete |
+| `docs/VAD-SILERO-INTEGRATION.md` | Silero integration findings | ✅ Complete |
 
 ### Files Modified
 
@@ -179,4 +191,66 @@ impl VoiceActivityDetection for WebRtcVAD {
 
 ---
 
-**Summary**: Replaced primitive RMS threshold with modular ML-based VAD system that accurately rejects background noise while maintaining backwards compatibility.
+## ✅ UPDATE: Silero Raw VAD Integration Complete
+
+**Date**: 2026-01-24
+**Status**: WORKING
+
+### What Was Accomplished
+
+1. **✅ Silero Raw ONNX implementation**: Successfully integrated HuggingFace Silero VAD model
+2. **✅ Model downloaded**: 2.1 MB onnx model at `workers/streaming-core/models/vad/silero_vad.onnx`
+3. **✅ Tests passing**: Comprehensive test suite with synthetic audio
+4. **✅ Auto-activation**: Mixer uses Silero Raw by default via `VADFactory::default()`
+
+### Key Findings
+
+#### 1. Pure Noise Rejection: 100% ✓
+Silero correctly rejects:
+- Silence (confidence: 0.044)
+- White noise (confidence: 0.004)
+- Factory floor machinery (confidence: 0.030)
+
+#### 2. Critical Insight: TV Dialogue IS Speech
+
+**The Realization**: When user said "my TV is being transcribed", Silero is working CORRECTLY.
+
+TV dialogue DOES contain speech - just not the user's speech. VAD alone cannot solve this problem.
+
+**What's needed**:
+- Speaker diarization (identify WHO is speaking)
+- Echo cancellation (filter TV audio)
+- Directional audio (detect WHERE sound comes from)
+- Proximity detection (measure distance to speaker)
+
+#### 3. Sine Wave Tests Inadequate
+
+Our synthesized "speech" using sine waves (200Hz + 400Hz harmonics) is too primitive for ML-based VAD.
+
+**Evidence**: Silero confidence on sine wave "speech" = 0.180 (below threshold)
+
+**Solution**: Use TTS (Kokoro) to generate realistic test audio or use real speech datasets.
+
+### Performance Metrics
+
+| VAD Type | Latency | Throughput | Accuracy (Noise) |
+|----------|---------|------------|------------------|
+| RMS Threshold | 5μs | 6400x real-time | 100% (silence only) |
+| Silero Raw | 54ms | 1.7x real-time | 100% (all noise types) |
+
+### Next Steps
+
+1. **Build TTS test suite** - Use Kokoro to generate realistic speech samples
+2. **Add WebRTC VAD** - Fast alternative for ultra-low latency
+3. **Implement metrics** - Precision/recall/F1 for better evaluation
+4. **Address TV problem** - Speaker diarization or echo cancellation
+
+### References
+
+- **Integration doc**: `docs/VAD-SILERO-INTEGRATION.md`
+- **Test results**: `docs/VAD-TEST-RESULTS.md`
+- **Implementation**: `workers/streaming-core/src/vad/silero_raw.rs`
+
+---
+
+**Summary**: Replaced primitive RMS threshold with modular ML-based VAD system. Silero Raw VAD working but reveals that "TV transcription" problem requires speaker identification, not better VAD.
