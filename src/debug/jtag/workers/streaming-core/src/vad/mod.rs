@@ -18,6 +18,7 @@ pub mod test_audio;
 pub mod webrtc;
 pub mod metrics;
 pub mod wav_loader;
+pub mod production;
 
 // Re-export implementations
 pub use rms_threshold::RmsThresholdVAD;
@@ -28,6 +29,9 @@ pub use webrtc::WebRtcVAD;
 
 // Re-export metrics
 pub use metrics::{ConfusionMatrix, GroundTruth, Outcome, Prediction, VADEvaluator};
+
+// Re-export production
+pub use production::{ProductionVAD, ProductionVADConfig};
 
 /// VAD Error
 #[derive(Debug, thiserror::Error)]
