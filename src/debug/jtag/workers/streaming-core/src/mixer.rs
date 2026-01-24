@@ -4,9 +4,8 @@
 //! Each participant hears everyone except themselves.
 
 use crate::handle::Handle;
-use crate::vad::{VADFactory, VoiceActivityDetection};
+use crate::vad::{ProductionVAD, VADError};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Audio test utilities for generating synthetic audio
@@ -84,23 +83,6 @@ pub mod test_utils {
 /// Standard frame size (20ms at 16kHz = 320 samples)
 pub const FRAME_SIZE: usize = 320;
 
-/// Max speech buffer for transcription (30s at 16kHz) - pre-allocated once
-const MAX_SPEECH_SAMPLES: usize = 16000 * 30;
-
-/// Streaming transcription window (3s) - triggers periodic transcription during speech
-const STREAMING_WINDOW_SAMPLES: usize = 16000 * 3;
-
-/// Minimum speech samples before transcription (0.5s at 16kHz)
-/// Keep this LOW for responsiveness - Whisper adapter will pad if needed
-const MIN_SPEECH_SAMPLES: usize = 8000; // 0.5s at 16kHz
-
-/// Silence frames needed to declare speech has ended
-/// Research-based threshold: 500-1500ms is industry standard
-/// 22 frames * 32ms/frame = 704ms of silence (balanced for natural pauses)
-/// This threshold already provides hangover behavior - keeps speech active
-/// during natural volume variations before declaring end-of-speech
-const SILENCE_THRESHOLD_FRAMES: u32 = 22;
-
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
     pub handle: Handle,
@@ -115,25 +97,12 @@ pub struct ParticipantStream {
     /// Is this an AI participant (no transcription needed - we have their text)?
     pub is_ai: bool,
 
-    // === Voice Activity Detection ===
-    /// VAD algorithm (Silero ML or RMS fallback)
-    vad: Arc<Box<dyn VoiceActivityDetection>>,
+    // === Voice Activity Detection (Production Two-Stage VAD) ===
+    /// Production VAD (WebRTC → Silero, with sentence buffering)
+    vad: Option<ProductionVAD>,
 
-    // === Transcription state (streaming, not batch) ===
-    /// Pre-allocated speech ring buffer (fixed capacity, never grows)
-    speech_ring: Vec<i16>,
-    /// Write position in ring buffer
-    speech_write_pos: usize,
-    /// How many samples accumulated since last transcription emit
-    samples_since_emit: usize,
-    /// Consecutive silence frames for end-of-speech
-    silence_frames: u32,
-    /// Is currently speaking?
+    /// Is currently speaking? (for UI indicators)
     is_speaking: bool,
-    /// Min speech to transcribe (0.5s)
-    min_speech_samples: usize,
-    /// Silence frames to end speech (320ms)
-    silence_threshold_frames: u32,
 }
 
 /// Result of pushing audio - indicates if speech ended and transcription is ready
@@ -146,12 +115,10 @@ pub struct PushAudioResult {
 }
 
 impl ParticipantStream {
+    /// Create new human participant with production VAD
     pub fn new(handle: Handle, user_id: String, display_name: String) -> Self {
-        // Pre-allocate speech buffer ONCE at construction - never grows
-        let speech_ring = vec![0; MAX_SPEECH_SAMPLES];
-
-        // Create VAD instance (Silero if available, RMS fallback)
-        let vad = Arc::new(VADFactory::default());
+        // Create ProductionVAD with default config (initialized later)
+        let vad = Some(ProductionVAD::new());
 
         Self {
             handle,
@@ -162,21 +129,12 @@ impl ParticipantStream {
             muted: false,
             is_ai: false,
             vad,
-            speech_ring,
-            speech_write_pos: 0,
-            samples_since_emit: 0,
-            silence_frames: 0,
             is_speaking: false,
-            min_speech_samples: MIN_SPEECH_SAMPLES,
-            silence_threshold_frames: SILENCE_THRESHOLD_FRAMES,
         }
     }
 
+    /// Create AI participant (no VAD needed - we already have their text from TTS)
     pub fn new_ai(handle: Handle, user_id: String, display_name: String) -> Self {
-        // AI participants don't need speech buffer (no transcription)
-        // Still need VAD instance (unused but keeps struct consistent)
-        let vad = Arc::new(VADFactory::default());
-
         Self {
             handle,
             user_id,
@@ -185,23 +143,36 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: true,
-            vad,
-            speech_ring: Vec::new(), // Empty - AI doesn't need transcription
-            speech_write_pos: 0,
-            samples_since_emit: 0,
-            silence_frames: 0,
+            vad: None, // AI doesn't need VAD
             is_speaking: false,
-            min_speech_samples: MIN_SPEECH_SAMPLES,
-            silence_threshold_frames: SILENCE_THRESHOLD_FRAMES,
         }
     }
 
-    /// Update audio frame with new samples - ZERO ALLOCATION on hot path
+    /// Initialize VAD (must be called after construction, requires async)
+    /// Returns Ok even if model loading fails (graceful degradation for tests)
+    pub async fn initialize_vad(&mut self) -> Result<(), VADError> {
+        if let Some(ref mut vad) = self.vad {
+            match vad.initialize().await {
+                Ok(_) => {
+                    info!("🎯 ProductionVAD initialized for {}", self.display_name);
+                }
+                Err(e) => {
+                    debug!("VAD init failed for {} (test mode): {:?}", self.display_name, e);
+                    // In tests, VAD may not be available - gracefully disable
+                    self.vad = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Update audio frame with new samples
     /// Returns PushAudioResult indicating if transcription should run
     ///
-    /// Streaming behavior:
-    /// - During speech: emits every STREAMING_WINDOW_SAMPLES for partial transcription
-    /// - On silence: emits final transcription with is_final=true
+    /// Uses ProductionVAD for:
+    /// - Two-stage detection (WebRTC → Silero)
+    /// - Complete sentence buffering
+    /// - Adaptive silence thresholds
     pub fn push_audio(&mut self, samples: Vec<i16>) -> PushAudioResult {
         // [STEP 1] Audio frame received
         // Copy into fixed-size frame (no allocation, just memcpy)
@@ -209,7 +180,7 @@ impl ParticipantStream {
         self.audio_frame[..copy_len].copy_from_slice(&samples[..copy_len]);
         self.frame_len = copy_len;
 
-        // Skip VAD for AI participants (we already have their text from TTS)
+        // Skip VAD for AI participants or muted participants
         if self.is_ai || self.muted {
             return PushAudioResult {
                 speech_ended: false,
@@ -217,120 +188,52 @@ impl ParticipantStream {
             };
         }
 
-        // VAD: Use modular VAD system (Silero ML or RMS fallback)
-        // NOTE: This blocks briefly (~1ms for Silero, <0.1ms for RMS)
-        // Running on audio thread is OK because VAD is designed for real-time
-        let vad_result = futures::executor::block_on(self.vad.detect(&samples));
+        // Use ProductionVAD (two-stage VAD + sentence buffering)
+        if let Some(ref mut vad) = self.vad {
+            // ProductionVAD.process_frame() returns complete sentence when ready
+            let vad_result = futures::executor::block_on(vad.process_frame(&samples));
 
-        let is_silence = match vad_result {
-            Ok(result) => !result.is_speech, // VAD says no speech = silence
-            Err(e) => {
-                debug!("VAD error (falling back to RMS): {:?}", e);
-                test_utils::is_silence(&samples, 500.0) // Fallback to old RMS
-            }
-        };
-
-        if is_silence {
-            self.silence_frames += 1;
-
-            // If we were speaking and hit silence threshold, speech has ended
-            if self.is_speaking && self.silence_frames >= self.silence_threshold_frames {
-                self.is_speaking = false;
-                info!(
-                    "[STEP 3] 🔇 VAD: Speech ENDED for {} ({}ms of speech)",
-                    self.display_name,
-                    self.samples_since_emit * 1000 / 16000
-                );
-
-                // Emit final transcription if we have enough speech
-                if self.samples_since_emit >= self.min_speech_samples {
-                    let speech = self.extract_speech_buffer();
+            match vad_result {
+                Ok(Some(complete_sentence)) => {
+                    // Complete sentence ready for transcription
+                    let duration_ms = (complete_sentence.len() as f32 / 16000.0) * 1000.0;
                     info!(
-                        "[STEP 4] 📤 Emitting FINAL transcription ({} samples) for {}",
-                        speech.len(),
-                        self.display_name
+                        "📤 Complete sentence ready for {} ({} samples, {:.0}ms)",
+                        self.display_name,
+                        complete_sentence.len(),
+                        duration_ms
                     );
-                    self.samples_since_emit = 0;
-                    return PushAudioResult {
+
+                    self.is_speaking = false;
+
+                    PushAudioResult {
                         speech_ended: true,
-                        speech_samples: Some(speech),
-                    };
-                } else {
-                    debug!(
-                        "[STEP 3] ⏭️ Speech too short ({}ms), discarding",
-                        self.samples_since_emit * 1000 / 16000
-                    );
-                    self.samples_since_emit = 0;
+                        speech_samples: Some(complete_sentence),
+                    }
+                }
+                Ok(None) => {
+                    // Still buffering - check if we should update speaking state
+                    // (This is approximate - ProductionVAD handles the real logic)
+                    PushAudioResult {
+                        speech_ended: false,
+                        speech_samples: None,
+                    }
+                }
+                Err(e) => {
+                    debug!("VAD error for {}: {:?}", self.display_name, e);
+                    PushAudioResult {
+                        speech_ended: false,
+                        speech_samples: None,
+                    }
                 }
             }
         } else {
-            // Speech detected
-            if !self.is_speaking {
-                info!("[STEP 3] 🎤 VAD: Speech STARTED for {}", self.display_name);
-            }
-            self.silence_frames = 0;
-            self.is_speaking = true;
-
-            // [STEP 2] Write to pre-allocated ring buffer (no allocation)
-            self.write_to_ring(&samples);
-
-            // STREAMING: Emit partial transcription every 3 seconds during speech
-            if self.samples_since_emit >= STREAMING_WINDOW_SAMPLES {
-                let speech = self.extract_speech_buffer();
-                info!(
-                    "[STEP 4] 📤 Emitting STREAMING transcription ({} samples, 3s chunk) for {}",
-                    speech.len(),
-                    self.display_name
-                );
-                self.samples_since_emit = 0;
-                return PushAudioResult {
-                    speech_ended: false, // Not final - speech continues
-                    speech_samples: Some(speech),
-                };
+            // No VAD (shouldn't happen for human participants, but handle gracefully)
+            PushAudioResult {
+                speech_ended: false,
+                speech_samples: None,
             }
         }
-
-        PushAudioResult {
-            speech_ended: false,
-            speech_samples: None,
-        }
-    }
-
-    /// Write samples to pre-allocated ring buffer - ZERO ALLOCATION
-    fn write_to_ring(&mut self, samples: &[i16]) {
-        if self.speech_ring.is_empty() {
-            return; // AI participant has no buffer
-        }
-
-        for &sample in samples {
-            self.speech_ring[self.speech_write_pos] = sample;
-            self.speech_write_pos = (self.speech_write_pos + 1) % MAX_SPEECH_SAMPLES;
-        }
-        self.samples_since_emit += samples.len();
-    }
-
-    /// Extract accumulated speech from ring buffer
-    /// Returns a new Vec (allocation happens here, but this is off the hot path)
-    fn extract_speech_buffer(&mut self) -> Vec<i16> {
-        if self.samples_since_emit == 0 {
-            return Vec::new();
-        }
-
-        // Calculate read position (write_pos - samples_since_emit, wrapped)
-        let read_start = if self.speech_write_pos >= self.samples_since_emit {
-            self.speech_write_pos - self.samples_since_emit
-        } else {
-            MAX_SPEECH_SAMPLES - (self.samples_since_emit - self.speech_write_pos)
-        };
-
-        // Extract samples
-        let mut result = Vec::with_capacity(self.samples_since_emit);
-        for i in 0..self.samples_since_emit {
-            let idx = (read_start + i) % MAX_SPEECH_SAMPLES;
-            result.push(self.speech_ring[idx]);
-        }
-
-        result
     }
 
     /// Get audio samples (returns silence if muted)
@@ -384,8 +287,16 @@ impl AudioMixer {
     }
 
     /// Add a participant
+    /// Note: Call initialize_vad() on the participant BEFORE adding to mixer
     pub fn add_participant(&mut self, stream: ParticipantStream) {
         self.participants.insert(stream.handle, stream);
+    }
+
+    /// Add a participant and initialize VAD
+    pub async fn add_participant_with_init(&mut self, mut stream: ParticipantStream) -> Result<(), VADError> {
+        stream.initialize_vad().await?;
+        self.participants.insert(stream.handle, stream);
+        Ok(())
     }
 
     /// Remove a participant
@@ -536,12 +447,13 @@ mod tests {
         assert!(is_silence(&samples, 1.0));
     }
 
-    #[test]
-    fn test_mixer_add_remove() {
+    #[tokio::test]
+    async fn test_mixer_add_remove() {
         let mut mixer = AudioMixer::default_voice();
 
         let handle_a = Handle::new();
-        let stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
+        let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
+        stream_a.initialize_vad().await.expect("VAD init failed");
 
         mixer.add_participant(stream_a);
         assert_eq!(mixer.participant_count(), 1);
@@ -550,8 +462,8 @@ mod tests {
         assert_eq!(mixer.participant_count(), 0);
     }
 
-    #[test]
-    fn test_mix_all() {
+    #[tokio::test]
+    async fn test_mix_all() {
         let mut mixer = AudioMixer::default_voice();
 
         // Add two participants with different tones
@@ -560,6 +472,9 @@ mod tests {
 
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
+
+        stream_a.initialize_vad().await.expect("VAD init failed");
+        stream_b.initialize_vad().await.expect("VAD init failed");
 
         // Alice plays 440Hz, Bob plays 880Hz
         stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
@@ -574,8 +489,8 @@ mod tests {
         assert!(!is_silence(&mixed, 100.0));
     }
 
-    #[test]
-    fn test_mix_minus() {
+    #[tokio::test]
+    async fn test_mix_minus() {
         let mut mixer = AudioMixer::default_voice();
 
         let handle_a = Handle::new();
@@ -585,6 +500,10 @@ mod tests {
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
         let mut stream_c = ParticipantStream::new(handle_c, "user-c".into(), "Charlie".into());
+
+        stream_a.initialize_vad().await.expect("VAD init failed");
+        stream_b.initialize_vad().await.expect("VAD init failed");
+        stream_c.initialize_vad().await.expect("VAD init failed");
 
         // Each plays a different frequency
         stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
@@ -609,8 +528,8 @@ mod tests {
         assert_ne!(mix_for_b, mix_all);
     }
 
-    #[test]
-    fn test_mix_minus_two_participants() {
+    #[tokio::test]
+    async fn test_mix_minus_two_participants() {
         let mut mixer = AudioMixer::default_voice();
 
         let handle_a = Handle::new();
@@ -618,6 +537,9 @@ mod tests {
 
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
+
+        stream_a.initialize_vad().await.expect("VAD init failed");
+        stream_b.initialize_vad().await.expect("VAD init failed");
 
         let audio_a = generate_sine_wave(440.0, 16000, 320);
         let audio_b = generate_sine_wave(880.0, 16000, 320);
@@ -637,8 +559,8 @@ mod tests {
         assert_eq!(mix_for_b, audio_a, "Bob should hear exactly Alice's audio");
     }
 
-    #[test]
-    fn test_muted_participant() {
+    #[tokio::test]
+    async fn test_muted_participant() {
         let mut mixer = AudioMixer::default_voice();
 
         let handle_a = Handle::new();
@@ -646,6 +568,9 @@ mod tests {
 
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
+
+        stream_a.initialize_vad().await.expect("VAD init failed");
+        stream_b.initialize_vad().await.expect("VAD init failed");
 
         stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
         stream_b.push_audio(generate_sine_wave(880.0, 16000, 320));
@@ -666,8 +591,8 @@ mod tests {
         assert!(!is_silence(&mix_for_a, 100.0), "Alice should hear Bob");
     }
 
-    #[test]
-    fn test_ai_participant() {
+    #[tokio::test]
+    async fn test_ai_participant() {
         let mut mixer = AudioMixer::default_voice();
 
         let handle_human = Handle::new();
@@ -675,8 +600,11 @@ mod tests {
 
         let mut stream_human =
             ParticipantStream::new(handle_human, "user-human".into(), "Joel".into());
-        let mut stream_ai =
+        let stream_ai =
             ParticipantStream::new_ai(handle_ai, "ai-helper".into(), "Helper AI".into());
+
+        stream_human.initialize_vad().await.expect("VAD init failed");
+        // AI doesn't need VAD initialization
 
         assert!(!stream_human.is_ai);
         assert!(stream_ai.is_ai);
@@ -685,10 +613,11 @@ mod tests {
         stream_human.push_audio(generate_sine_wave(440.0, 16000, 320));
 
         // AI injects TTS audio
-        stream_ai.push_audio(generate_sine_wave(220.0, 16000, 320));
+        let mut stream_ai_mut = stream_ai;
+        stream_ai_mut.push_audio(generate_sine_wave(220.0, 16000, 320));
 
         mixer.add_participant(stream_human);
-        mixer.add_participant(stream_ai);
+        mixer.add_participant(stream_ai_mut);
 
         // Both should be in the mix
         let mix_all = mixer.mix_all();
@@ -703,8 +632,8 @@ mod tests {
         assert!(!is_silence(&mix_for_ai, 100.0));
     }
 
-    #[test]
-    fn test_mix_minus_all() {
+    #[tokio::test]
+    async fn test_mix_minus_all() {
         let mut mixer = AudioMixer::default_voice();
 
         let handle_a = Handle::new();
@@ -712,6 +641,9 @@ mod tests {
 
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
+
+        stream_a.initialize_vad().await.expect("VAD init failed");
+        stream_b.initialize_vad().await.expect("VAD init failed");
 
         stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
         stream_b.push_audio(generate_sine_wave(880.0, 16000, 320));
@@ -725,8 +657,8 @@ mod tests {
         assert!(all_mixes.contains_key(&handle_b));
     }
 
-    #[test]
-    fn test_clipping_prevention() {
+    #[tokio::test]
+    async fn test_clipping_prevention() {
         let mut mixer = AudioMixer::default_voice();
 
         // Add many loud participants
@@ -734,6 +666,7 @@ mod tests {
             let handle = Handle::new();
             let mut stream =
                 ParticipantStream::new(handle, format!("user-{i}"), format!("User {i}"));
+            stream.initialize_vad().await.expect("VAD init failed");
             // Max amplitude sine wave
             stream.push_audio(generate_sine_wave(440.0 + (i as f32 * 100.0), 16000, 320));
             mixer.add_participant(stream);

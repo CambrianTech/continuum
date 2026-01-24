@@ -6,9 +6,9 @@
 //! - Low latency (fast silence detection)
 //! - Perfect noise rejection
 
-use super::{SileroRawVAD, VADError, VADResult, VoiceActivityDetection, WebRtcVAD};
+use super::{SileroRawVAD, VADError, VoiceActivityDetection, WebRtcVAD};
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Production VAD configuration
 #[derive(Debug, Clone)]
