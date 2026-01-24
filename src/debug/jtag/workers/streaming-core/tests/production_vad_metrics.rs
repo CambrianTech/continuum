@@ -7,7 +7,8 @@
 //! - Performance improvement over single-stage approaches
 
 use streaming_core::vad::{
-    GroundTruth, ProductionVAD, TestAudioGenerator, VADEvaluator, Vowel,
+    GroundTruth, ProductionVAD, ProductionVADConfig, SileroRawVAD, TestAudioGenerator,
+    VADEvaluator, VoiceActivityDetection, Vowel,
 };
 
 /// Create comprehensive test dataset covering:
@@ -86,7 +87,13 @@ fn create_comprehensive_dataset() -> Vec<(Vec<i16>, GroundTruth, &'static str)> 
 #[tokio::test]
 #[ignore] // Requires Silero model
 async fn test_production_vad_comprehensive_metrics() {
-    let mut vad = ProductionVAD::new();
+    // Test with single-stage (bypass WebRTC) to see if WebRTC is the bottleneck
+    let config = ProductionVADConfig {
+        silero_threshold: 0.2, // More sensitive - catch plosives/fricatives
+        use_two_stage: false,  // Disable WebRTC pre-filter
+        ..Default::default()
+    };
+    let mut vad = ProductionVAD::with_config(config.clone());
     vad.initialize()
         .await
         .expect("ProductionVAD init failed");
@@ -103,21 +110,24 @@ async fn test_production_vad_comprehensive_metrics() {
     let mut noisy_speech_count = 0;
 
     for (audio, ground_truth, label) in &dataset {
-        // ProductionVAD processes frames, need to send 3+ frames for min_speech_frames
+        // Reset VAD state for each sample (create fresh instance with same config)
+        let mut vad_fresh = ProductionVAD::with_config(config.clone());
+        vad_fresh.initialize().await.expect("VAD init failed");
+
         let mut detected = false;
 
-        // Send 5 frames of same audio (simulating sustained sound)
-        for _ in 0..5 {
-            if let Ok(Some(_)) = vad.process_frame(audio).await {
+        // Send 10 frames of SAME audio (simulating sustained sound like real speech)
+        for _ in 0..10 {
+            if let Ok(Some(_)) = vad_fresh.process_frame(audio).await {
                 detected = true;
                 break;
             }
         }
 
-        // Add 40 silence frames to trigger transcription if any speech detected
+        // Add 42 silence frames to trigger transcription if speech was buffered
         if !detected {
-            for _ in 0..40 {
-                if let Ok(Some(_)) = vad.process_frame(&vec![0i16; 480]).await {
+            for _ in 0..42 {
+                if let Ok(Some(_)) = vad_fresh.process_frame(&vec![0i16; 480]).await {
                     detected = true;
                     break;
                 }
@@ -208,6 +218,10 @@ async fn test_production_vad_noise_types() {
         let trials = 20;
 
         for _ in 0..trials {
+            // Fresh VAD for each trial
+            let mut vad_fresh = ProductionVAD::new();
+            vad_fresh.initialize().await.expect("VAD init failed");
+
             let noise = match noise_name {
                 "White Noise" => (0..480).map(|_| (rand::random::<f32>() * 2000.0 - 1000.0) as i16).collect(),
                 "Factory Floor" => gen.generate_factory_floor(480),
@@ -215,10 +229,10 @@ async fn test_production_vad_noise_types() {
                 _ => vec![0; 480],
             };
 
-            // Send noise frames
+            // Send 10 frames of same noise (sustained)
             let mut detected = false;
-            for _ in 0..5 {
-                if let Ok(Some(_)) = vad.process_frame(&noise).await {
+            for _ in 0..10 {
+                if let Ok(Some(_)) = vad_fresh.process_frame(&noise).await {
                     detected = true;
                     break;
                 }
@@ -226,8 +240,8 @@ async fn test_production_vad_noise_types() {
 
             // Trigger with silence
             if !detected {
-                for _ in 0..40 {
-                    if let Ok(Some(_)) = vad.process_frame(&vec![0i16; 480]).await {
+                for _ in 0..42 {
+                    if let Ok(Some(_)) = vad_fresh.process_frame(&vec![0i16; 480]).await {
                         detected = true;
                         break;
                     }
@@ -267,25 +281,29 @@ async fn test_production_vad_snr_threshold() {
         let trials = 10;
 
         for _ in 0..trials {
+            // Fresh VAD for each trial
+            let mut vad_fresh = ProductionVAD::new();
+            vad_fresh.initialize().await.expect("VAD init failed");
+
             let speech = gen.generate_formant_speech(480, Vowel::A);
             let noise: Vec<i16> = (0..480)
                 .map(|_| (rand::random::<f32>() * 2000.0 - 1000.0) as i16)
                 .collect();
             let mixed = TestAudioGenerator::mix_audio_with_snr(&speech, &noise, snr);
 
-            // Send mixed audio
+            // Send 10 frames of same mixed audio (sustained)
             let mut detected = false;
-            for _ in 0..5 {
-                if let Ok(Some(_)) = vad.process_frame(&mixed).await {
+            for _ in 0..10 {
+                if let Ok(Some(_)) = vad_fresh.process_frame(&mixed).await {
                     detected = true;
                     break;
                 }
             }
 
-            // Trigger
+            // Trigger with silence
             if !detected {
-                for _ in 0..40 {
-                    if let Ok(Some(_)) = vad.process_frame(&vec![0i16; 480]).await {
+                for _ in 0..42 {
+                    if let Ok(Some(_)) = vad_fresh.process_frame(&vec![0i16; 480]).await {
                         detected = true;
                         break;
                     }
@@ -302,5 +320,95 @@ async fn test_production_vad_snr_threshold() {
             "  SNR {:+4.0}dB: {:.0}% detection rate ({}/{})",
             snr, detection_rate, detections, trials
         );
+    }
+}
+
+#[tokio::test]
+#[ignore] // Requires Silero model
+async fn test_silero_confidence_scores_debug() {
+    let mut silero = SileroRawVAD::new();
+    silero.initialize().await.expect("Silero init failed");
+
+    let gen = TestAudioGenerator::new(16000);
+
+    println!("\n🔍 Silero Confidence Scores for Synthetic Audio\n");
+
+    // Test each type of synthetic audio
+    let test_cases = vec![
+        ("Silence", vec![0i16; 480]),
+        ("White Noise", (0..480).map(|_| (rand::random::<f32>() * 2000.0 - 1000.0) as i16).collect()),
+        ("Vowel-A", gen.generate_formant_speech(480, Vowel::A)),
+        ("Vowel-E", gen.generate_formant_speech(480, Vowel::E)),
+        ("Vowel-I", gen.generate_formant_speech(480, Vowel::I)),
+        ("Vowel-O", gen.generate_formant_speech(480, Vowel::O)),
+        ("Vowel-U", gen.generate_formant_speech(480, Vowel::U)),
+        ("Plosive", gen.generate_plosive(480)),
+        ("Fricative", gen.generate_fricative(480, 5000.0)),
+    ];
+
+    for (label, audio) in test_cases {
+        let result = silero.detect(&audio).await.expect("Detect failed");
+        let threshold_03 = if result.confidence > 0.3 { "PASS" } else { "FAIL" };
+        let threshold_02 = if result.confidence > 0.2 { "PASS" } else { "FAIL" };
+
+        println!(
+            "  {:15} confidence: {:.3} (0.3: {}, 0.2: {})",
+            label, result.confidence, threshold_03, threshold_02
+        );
+    }
+
+    println!("\n💡 This shows what confidence scores Silero returns for our synthetic audio");
+    println!("   Helps us understand why certain sounds aren't detected");
+}
+
+#[tokio::test]
+#[ignore] // Requires Silero model
+async fn test_plosive_detection_debug() {
+    let mut silero = SileroRawVAD::new();
+    silero.initialize().await.expect("Silero init failed");
+
+    let gen = TestAudioGenerator::new(16000);
+
+    println!("\n🔬 Plosive Detection Debug\n");
+
+    // Generate 3 plosives (same as comprehensive test)
+    for i in 1..=3 {
+        let plosive = gen.generate_plosive(480);
+
+        // Test with Silero directly
+        let result = silero.detect(&plosive).await.expect("Detect failed");
+        println!("Plosive-{} single-frame confidence: {:.3}", i, result.confidence);
+
+        // Test with ProductionVAD (single-stage, threshold 0.2)
+        let config = ProductionVADConfig {
+            silero_threshold: 0.2,
+            use_two_stage: false,
+            ..Default::default()
+        };
+        let mut vad = ProductionVAD::with_config(config);
+        vad.initialize().await.expect("VAD init failed");
+
+        let mut detected = false;
+        let mut speech_frame_count = 0;
+
+        // Send 10 frames of SAME plosive
+        for frame_num in 0..10 {
+            let result = silero.detect(&plosive).await.expect("Detect failed");
+            let is_speech = result.confidence > 0.2;
+
+            if is_speech {
+                speech_frame_count += 1;
+            }
+
+            if let Ok(Some(_)) = vad.process_frame(&plosive).await {
+                detected = true;
+                println!("  → Detected after frame {} (speech_frames: {})", frame_num + 1, speech_frame_count);
+                break;
+            }
+        }
+
+        if !detected {
+            println!("  → NOT detected after 10 frames (speech_frames: {}, need 3+)", speech_frame_count);
+        }
     }
 }

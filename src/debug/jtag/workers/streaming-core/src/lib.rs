@@ -62,6 +62,7 @@
 //! ```
 
 pub mod adapter;
+pub mod benchmark; // Benchmarking framework for ML components
 pub mod call_server;
 pub mod continuous; // Continuous transcription module
 pub mod event;
