@@ -73,6 +73,7 @@ pub mod ring;
 pub mod stage;
 pub mod stt; // Speech-to-text adapter system (Whisper, etc.)
 pub mod tts; // Text-to-speech adapter system (Kokoro, etc.)
+pub mod vad; // Voice activity detection (Silero, RMS threshold, etc.)
 pub mod ws_audio;
 
 // gRPC voice service (requires proto compilation)
@@ -111,6 +112,11 @@ pub use tts::{KokoroTTS, SynthesisResult, TTSError, TTSRegistry, TextToSpeech, V
 // Re-export STT adapter types
 pub use stt::{
     STTError, STTRegistry, SpeechToText, TranscriptResult, TranscriptSegment, WhisperSTT,
+};
+
+// Re-export VAD adapter types
+pub use vad::{
+    RmsThresholdVAD, SileroVAD, VADError, VADFactory, VADResult, VoiceActivityDetection,
 };
 
 // Re-export mixer types

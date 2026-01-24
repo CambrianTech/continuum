@@ -4,7 +4,9 @@
 //! Each participant hears everyone except themselves.
 
 use crate::handle::Handle;
+use crate::vad::{VADFactory, VoiceActivityDetection};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Audio test utilities for generating synthetic audio
@@ -100,7 +102,6 @@ const MIN_SPEECH_SAMPLES: usize = 8000; // 0.5s at 16kHz
 const SILENCE_THRESHOLD_FRAMES: u32 = 22;
 
 /// Participant audio stream - zero allocations on hot path
-#[derive(Debug)]
 pub struct ParticipantStream {
     pub handle: Handle,
     pub user_id: String,
@@ -113,6 +114,10 @@ pub struct ParticipantStream {
     pub muted: bool,
     /// Is this an AI participant (no transcription needed - we have their text)?
     pub is_ai: bool,
+
+    // === Voice Activity Detection ===
+    /// VAD algorithm (Silero ML or RMS fallback)
+    vad: Arc<Box<dyn VoiceActivityDetection>>,
 
     // === Transcription state (streaming, not batch) ===
     /// Pre-allocated speech ring buffer (fixed capacity, never grows)
@@ -145,6 +150,9 @@ impl ParticipantStream {
         // Pre-allocate speech buffer ONCE at construction - never grows
         let speech_ring = vec![0; MAX_SPEECH_SAMPLES];
 
+        // Create VAD instance (Silero if available, RMS fallback)
+        let vad = Arc::new(VADFactory::default());
+
         Self {
             handle,
             user_id,
@@ -153,6 +161,7 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: false,
+            vad,
             speech_ring,
             speech_write_pos: 0,
             samples_since_emit: 0,
@@ -165,6 +174,9 @@ impl ParticipantStream {
 
     pub fn new_ai(handle: Handle, user_id: String, display_name: String) -> Self {
         // AI participants don't need speech buffer (no transcription)
+        // Still need VAD instance (unused but keeps struct consistent)
+        let vad = Arc::new(VADFactory::default());
+
         Self {
             handle,
             user_id,
@@ -173,6 +185,7 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: true,
+            vad,
             speech_ring: Vec::new(), // Empty - AI doesn't need transcription
             speech_write_pos: 0,
             samples_since_emit: 0,
@@ -204,8 +217,18 @@ impl ParticipantStream {
             };
         }
 
-        // VAD: Check if current frame is silence
-        let is_silence = test_utils::is_silence(&samples, 500.0);
+        // VAD: Use modular VAD system (Silero ML or RMS fallback)
+        // NOTE: This blocks briefly (~1ms for Silero, <0.1ms for RMS)
+        // Running on audio thread is OK because VAD is designed for real-time
+        let vad_result = futures::executor::block_on(self.vad.detect(&samples));
+
+        let is_silence = match vad_result {
+            Ok(result) => !result.is_speech, // VAD says no speech = silence
+            Err(e) => {
+                debug!("VAD error (falling back to RMS): {:?}", e);
+                test_utils::is_silence(&samples, 500.0) // Fallback to old RMS
+            }
+        };
 
         if is_silence {
             self.silence_frames += 1;
