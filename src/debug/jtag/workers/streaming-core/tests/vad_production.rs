@@ -19,14 +19,14 @@ async fn test_production_vad_complete_sentences() {
 
     // Simulate a sentence: "Hello" (pause) "how are" (pause) "you"
     let frames = vec![
-        ("Hello", gen.generate_formant_speech(512, Vowel::A)),       // Speech
-        ("pause", vec![0; 512]),                                      // Brief silence (natural pause)
-        ("how", gen.generate_formant_speech(512, Vowel::O)),          // Speech
-        ("are", gen.generate_formant_speech(512, Vowel::A)),          // Speech
-        ("pause", vec![0; 512]),                                      // Brief silence
-        ("you", gen.generate_formant_speech(512, Vowel::U)),          // Speech
-        ("end", vec![0; 512]),                                        // Silence 1
-        ("end", vec![0; 512]),                                        // Silence 2
+        ("Hello", gen.generate_formant_speech(480, Vowel::A)),       // Speech
+        ("pause", vec![0; 480]),                                      // Brief silence (natural pause)
+        ("how", gen.generate_formant_speech(480, Vowel::O)),          // Speech
+        ("are", gen.generate_formant_speech(480, Vowel::A)),          // Speech
+        ("pause", vec![0; 480]),                                      // Brief silence
+        ("you", gen.generate_formant_speech(480, Vowel::U)),          // Speech
+        ("end", vec![0; 480]),                                        // Silence 1
+        ("end", vec![0; 480]),                                        // Silence 2
         // ... many more silence frames to trigger end of sentence
     ];
 
@@ -37,7 +37,7 @@ async fn test_production_vad_complete_sentences() {
             Some(audio) => {
                 sentence_count += 1;
                 println!("✓ Complete sentence #{} ready ({} samples)", sentence_count, audio.len());
-                println!("  Contains: {} frames of audio", audio.len() / 512);
+                println!("  Contains: {} frames of audio", audio.len() / 480);
             }
             None => {
                 println!("  Buffering: {}...", label);
@@ -47,7 +47,7 @@ async fn test_production_vad_complete_sentences() {
 
     // Add remaining silence frames to trigger final transcription
     for i in 0..40 {
-        if let Some(audio) = vad.process_frame(&vec![0; 512]).await.expect("Process failed") {
+        if let Some(audio) = vad.process_frame(&vec![0; 480]).await.expect("Process failed") {
             sentence_count += 1;
             println!("✓ Final sentence complete after {} silence frames ({} samples)",
                 i + 1, audio.len());
@@ -72,7 +72,7 @@ async fn test_production_vad_performance() {
     println!("\n⚡ Production VAD Performance Test\n");
 
     // Test pure silence (should be very fast with two-stage)
-    let silence = vec![0i16; 512];
+    let silence = vec![0i16; 480];
     let mut silence_times = vec![];
 
     for _ in 0..100 {
@@ -90,7 +90,7 @@ async fn test_production_vad_performance() {
 
     // Test speech (both stages run)
     let gen = TestAudioGenerator::new(16000);
-    let speech = gen.generate_formant_speech(512, Vowel::A);
+    let speech = gen.generate_formant_speech(480, Vowel::A);
     let mut speech_times = vec![];
 
     for _ in 0..10 {
@@ -163,11 +163,11 @@ async fn test_dont_skip_parts() {
 
     // Simulate speech with short pauses between words
     let conversation = vec![
-        (gen.generate_formant_speech(512, Vowel::A), "word1"),
-        (vec![0; 512], "pause"),  // Short pause
-        (gen.generate_formant_speech(512, Vowel::E), "word2"),
-        (vec![0; 512], "pause"),  // Short pause
-        (gen.generate_formant_speech(512, Vowel::I), "word3"),
+        (gen.generate_formant_speech(480, Vowel::A), "word1"),
+        (vec![0; 480], "pause"),  // Short pause
+        (gen.generate_formant_speech(480, Vowel::E), "word2"),
+        (vec![0; 480], "pause"),  // Short pause
+        (gen.generate_formant_speech(480, Vowel::I), "word3"),
     ];
 
     for (audio, label) in &conversation {
@@ -181,7 +181,7 @@ async fn test_dont_skip_parts() {
 
     // Now add long silence to end sentence
     for i in 0..40 {
-        if let Some(complete) = vad.process_frame(&vec![0; 512]).await.expect("Process failed") {
+        if let Some(complete) = vad.process_frame(&vec![0; 480]).await.expect("Process failed") {
             let duration_ms = (complete.len() as f32 / 16000.0) * 1000.0;
             println!("\n✅ Complete sentence after {} silence frames", i + 1);
             println!("   Duration: {:.0}ms", duration_ms);

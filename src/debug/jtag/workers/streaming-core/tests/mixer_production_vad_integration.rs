@@ -33,12 +33,12 @@ async fn test_mixer_production_vad_complete_sentences() {
 
     // Simulate a sentence: "Hello" (pause) "how are" (pause) "you"
     let frames = vec![
-        ("Hello", gen.generate_formant_speech(512, Vowel::A)), // Speech
-        ("pause", vec![0; 512]),                                // Brief silence (natural pause)
-        ("how", gen.generate_formant_speech(512, Vowel::O)),   // Speech
-        ("are", gen.generate_formant_speech(512, Vowel::A)),   // Speech
-        ("pause", vec![0; 512]),                                // Brief silence
-        ("you", gen.generate_formant_speech(512, Vowel::U)),   // Speech
+        ("Hello", gen.generate_formant_speech(480, Vowel::A)), // Speech
+        ("pause", vec![0; 480]),                                // Brief silence (natural pause)
+        ("how", gen.generate_formant_speech(480, Vowel::O)),   // Speech
+        ("are", gen.generate_formant_speech(480, Vowel::A)),   // Speech
+        ("pause", vec![0; 480]),                                // Brief silence
+        ("you", gen.generate_formant_speech(480, Vowel::U)),   // Speech
     ];
 
     let mut sentence_count = 0;
@@ -61,7 +61,7 @@ async fn test_mixer_production_vad_complete_sentences() {
 
     // Add silence frames to trigger final transcription (40 frames = 1.28s)
     for i in 0..40 {
-        let result = mixer.push_audio(&handle, vec![0; 512]);
+        let result = mixer.push_audio(&handle, vec![0; 480]);
         if result.speech_ended {
             sentence_count += 1;
             let duration_ms = (result.speech_samples.as_ref().unwrap().len() as f32 / 16000.0)
@@ -105,7 +105,7 @@ async fn test_mixer_production_vad_noise_rejection() {
 
     // Pure silence (should not transcribe)
     for i in 0..50 {
-        let result = mixer.push_audio(&handle, vec![0; 512]);
+        let result = mixer.push_audio(&handle, vec![0; 480]);
         if result.speech_ended {
             panic!("ProductionVAD falsely detected speech in silence at frame {}", i);
         }
@@ -116,7 +116,7 @@ async fn test_mixer_production_vad_noise_rejection() {
     // White noise (should not transcribe)
     let gen = TestAudioGenerator::new(16000);
     for i in 0..50 {
-        let noise = (0..512)
+        let noise = (0..480)
             .map(|_| (rand::random::<f32>() * 1000.0 - 500.0) as i16)
             .collect();
         let result = mixer.push_audio(&handle, noise);
@@ -129,14 +129,14 @@ async fn test_mixer_production_vad_noise_rejection() {
 
     // Real speech (should transcribe)
     for _ in 0..10 {
-        let speech = gen.generate_formant_speech(512, Vowel::A);
+        let speech = gen.generate_formant_speech(480, Vowel::A);
         mixer.push_audio(&handle, speech);
     }
 
     // Trigger transcription with silence
     let mut transcription_triggered = false;
     for i in 0..40 {
-        let result = mixer.push_audio(&handle, vec![0; 512]);
+        let result = mixer.push_audio(&handle, vec![0; 480]);
         if result.speech_ended {
             transcription_triggered = true;
             println!("✓ Speech detected after {} silence frames", i + 1);
@@ -181,13 +181,13 @@ async fn test_mixer_production_vad_multi_participant() {
 
     // Alice speaks
     for _ in 0..5 {
-        let speech = gen.generate_formant_speech(512, Vowel::A);
+        let speech = gen.generate_formant_speech(480, Vowel::A);
         mixer.push_audio(&handle_a, speech);
     }
 
     // Bob speaks at the same time
     for _ in 0..5 {
-        let speech = gen.generate_formant_speech(512, Vowel::O);
+        let speech = gen.generate_formant_speech(480, Vowel::O);
         mixer.push_audio(&handle_b, speech);
     }
 
@@ -196,7 +196,7 @@ async fn test_mixer_production_vad_multi_participant() {
     // Silence for Alice (should trigger her transcription)
     let mut alice_transcribed = false;
     for i in 0..40 {
-        let result = mixer.push_audio(&handle_a, vec![0; 512]);
+        let result = mixer.push_audio(&handle_a, vec![0; 480]);
         if result.speech_ended {
             alice_transcribed = true;
             println!("✓ Alice's speech transcribed after {} silence frames", i + 1);
@@ -207,7 +207,7 @@ async fn test_mixer_production_vad_multi_participant() {
     // Silence for Bob (should trigger his transcription)
     let mut bob_transcribed = false;
     for i in 0..40 {
-        let result = mixer.push_audio(&handle_b, vec![0; 512]);
+        let result = mixer.push_audio(&handle_b, vec![0; 480]);
         if result.speech_ended {
             bob_transcribed = true;
             println!("✓ Bob's speech transcribed after {} silence frames", i + 1);

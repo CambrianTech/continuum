@@ -90,7 +90,7 @@ impl SentenceBuffer {
             silence_frames: 0,
             speech_frames: 0,
             config,
-            frame_size: 512, // 32ms @ 16kHz
+            frame_size: 480, // 30ms @ 16kHz (earshot requires multiples of 240)
         }
     }
 
@@ -260,20 +260,20 @@ mod tests {
         let mut buffer = SentenceBuffer::new(config);
 
         // Add speech frames
-        buffer.add_frame(&vec![1; 512], true);
-        buffer.add_frame(&vec![2; 512], true);
+        buffer.add_frame(&vec![1; 480], true);
+        buffer.add_frame(&vec![2; 480], true);
 
         assert!(!buffer.should_transcribe()); // Not enough silence yet
 
         // Add silence frames
-        buffer.add_frame(&vec![0; 512], false);
-        buffer.add_frame(&vec![0; 512], false);
-        buffer.add_frame(&vec![0; 512], false);
+        buffer.add_frame(&vec![0; 480], false);
+        buffer.add_frame(&vec![0; 480], false);
+        buffer.add_frame(&vec![0; 480], false);
 
         assert!(buffer.should_transcribe()); // 3 silence frames → ready
 
         let audio = buffer.get_audio();
-        assert_eq!(audio.len(), 512 * 5); // 2 speech + 3 silence
+        assert_eq!(audio.len(), 480 * 5); // 2 speech + 3 silence
     }
 
     #[tokio::test]

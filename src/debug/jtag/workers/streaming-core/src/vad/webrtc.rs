@@ -103,12 +103,40 @@ impl VoiceActivityDetection for WebRtcVAD {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
 
-        // Run VAD detection (extremely fast ~1-10μs)
-        let is_speech = {
+        // earshot requires multiples of 240 samples (15ms @ 16kHz)
+        // If input isn't a multiple, chunk it and use majority voting
+        const CHUNK_SIZE: usize = 240;
+
+        let is_speech = if samples.len() % CHUNK_SIZE == 0 {
+            // Perfect size - process directly
             let mut detector = self.detector.lock();
             detector
                 .predict_16khz(samples)
                 .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {:?}", e)))?
+        } else {
+            // Chunk into 240-sample pieces and use majority voting
+            let mut speech_chunks = 0;
+            let mut total_chunks = 0;
+
+            for chunk in samples.chunks(CHUNK_SIZE) {
+                if chunk.len() < CHUNK_SIZE {
+                    // Skip partial chunks at the end
+                    continue;
+                }
+
+                let mut detector = self.detector.lock();
+                let chunk_is_speech = detector
+                    .predict_16khz(chunk)
+                    .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {:?}", e)))?;
+
+                if chunk_is_speech {
+                    speech_chunks += 1;
+                }
+                total_chunks += 1;
+            }
+
+            // Majority voting: if > 50% of chunks are speech, return speech
+            total_chunks > 0 && speech_chunks * 2 > total_chunks
         };
 
         let confidence = self.calculate_confidence(is_speech);
