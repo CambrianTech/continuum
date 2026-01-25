@@ -63,6 +63,9 @@ export class LiveWidget extends ReactiveWidget {
   private localStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
 
+  // Visibility observer for auto-mute
+  private visibilityObserver: IntersectionObserver | null = null;
+
   // Audio streaming client (WebSocket to Rust call server)
   private audioClient: AudioStreamClient | null = null;
 
@@ -98,49 +101,32 @@ export class LiveWidget extends ReactiveWidget {
       console.error('LiveWidget: Failed to load user context:', err);
     });
 
-    // Auto-mute when navigating away from live view
-    this.unsubscribers.push(
-      Events.subscribe('content:switched', this.handleContentSwitched)
-    );
-  }
-
-  private handleContentSwitched = (data: { contentType: string; entityId?: string }): void => {
-    console.log('🔍 LiveWidget: content:switched event', {
-      contentType: data.contentType,
-      entityId: data.entityId,
-      isJoined: this.isJoined,
-      currentEntityId: this.entityId
-    });
-
-    // Mute if navigating AWAY from live view
-    if (this.isJoined && data.contentType !== 'live') {
-      if (this.savedMicState === null) {
-        this.savedMicState = this.micEnabled;
-        this.savedSpeakerState = this.speakerEnabled;
-        console.log('🔇 LiveWidget: Navigated away from live - muting', {
-          savedMic: this.savedMicState,
-          savedSpeaker: this.savedSpeakerState
-        });
-        this.micEnabled = false;
-        this.speakerEnabled = false;
-        this.applyMicState();
-        this.applySpeakerState();
+    // IntersectionObserver for auto-mute when widget becomes hidden
+    this.visibilityObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (this.isJoined) {
+          if (!entry.isIntersecting && this.savedMicState === null) {
+            this.savedMicState = this.micEnabled;
+            this.savedSpeakerState = this.speakerEnabled;
+            this.micEnabled = false;
+            this.speakerEnabled = false;
+            this.applyMicState();
+            this.applySpeakerState();
+          } else if (entry.isIntersecting && this.savedMicState !== null) {
+            this.micEnabled = this.savedMicState;
+            this.speakerEnabled = this.savedSpeakerState ?? true;
+            this.applyMicState();
+            this.applySpeakerState();
+            this.savedMicState = null;
+            this.savedSpeakerState = null;
+          }
+        }
       }
-    }
-    // Unmute if navigating BACK to live view
-    else if (this.isJoined && data.contentType === 'live' && this.savedMicState !== null) {
-      console.log('🔊 LiveWidget: Navigated back to live - restoring', {
-        savedMic: this.savedMicState,
-        savedSpeaker: this.savedSpeakerState
-      });
-      this.micEnabled = this.savedMicState;
-      this.speakerEnabled = this.savedSpeakerState ?? true;
-      this.applyMicState();
-      this.applySpeakerState();
-      this.savedMicState = null;
-      this.savedSpeakerState = null;
-    }
+    }, { threshold: 0.1 });
+
+    this.visibilityObserver.observe(this);
   }
+
 
   /**
    * Load call state from UserStateEntity
@@ -222,6 +208,33 @@ export class LiveWidget extends ReactiveWidget {
         this.handleJoin();
       }
     }
+
+    // Restore mic/speaker when reactivated
+    if (this.isJoined && this.savedMicState !== null) {
+      this.micEnabled = this.savedMicState;
+      this.speakerEnabled = this.savedSpeakerState ?? true;
+      this.applyMicState();
+      this.applySpeakerState();
+      this.savedMicState = null;
+      this.savedSpeakerState = null;
+    }
+  }
+
+  onDeactivate(): void {
+    console.log('🔴 LiveWidget.onDeactivate CALLED', {
+      isJoined: this.isJoined,
+      micEnabled: this.micEnabled,
+      savedMicState: this.savedMicState
+    });
+    if (this.isJoined && this.savedMicState === null) {
+      this.savedMicState = this.micEnabled;
+      this.savedSpeakerState = this.speakerEnabled;
+      this.micEnabled = false;
+      this.speakerEnabled = false;
+      console.log('🔇 LiveWidget: Muting mic/speaker on deactivate');
+      this.applyMicState();
+      this.applySpeakerState();
+    }
   }
 
   /**
@@ -237,6 +250,12 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   private cleanup(): void {
+    // Stop audio client
+    if (this.audioClient) {
+      this.audioClient.leave();
+      this.audioClient = null;
+    }
+
     // Clear caption timeout
     if (this.captionFadeTimeout) {
       clearTimeout(this.captionFadeTimeout);
@@ -251,6 +270,12 @@ export class LiveWidget extends ReactiveWidget {
     // Unsubscribe from events
     this.unsubscribers.forEach(unsub => unsub());
     this.unsubscribers = [];
+
+    // Disconnect visibility observer
+    if (this.visibilityObserver) {
+      this.visibilityObserver.disconnect();
+      this.visibilityObserver = null;
+    }
 
     // Stop preview stream
     if (this.previewStream) {

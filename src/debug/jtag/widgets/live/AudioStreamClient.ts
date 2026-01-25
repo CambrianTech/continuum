@@ -47,6 +47,7 @@ export class AudioStreamClient {
 
   // Mic capture worklet (off main thread)
   private micWorkletNode: AudioWorkletNode | null = null;
+  private micSourceNode: MediaStreamAudioSourceNode | null = null;
 
   // Playback worklet (off main thread) - decodes AND plays
   private playbackWorkletNode: AudioWorkletNode | null = null;
@@ -209,7 +210,7 @@ export class AudioStreamClient {
     });
 
     // Create audio processing pipeline using AudioWorklet (off main thread)
-    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+    this.micSourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
 
     // Create AudioWorkletNode - processing happens on audio thread
     this.micWorkletNode = new AudioWorkletNode(this.audioContext, 'microphone-processor');
@@ -225,7 +226,7 @@ export class AudioStreamClient {
     };
 
     // Connect: mic -> worklet -> (nowhere, we just capture)
-    source.connect(this.micWorkletNode);
+    this.micSourceNode.connect(this.micWorkletNode);
     // Don't connect to destination - we're just capturing, not playing back locally
 
     console.log('AudioStreamClient: Microphone streaming started (AudioWorklet - off main thread)');
@@ -235,6 +236,11 @@ export class AudioStreamClient {
    * Stop streaming microphone audio
    */
   stopMicrophone(): void {
+    if (this.micSourceNode) {
+      this.micSourceNode.disconnect();
+      this.micSourceNode = null;
+    }
+
     if (this.micWorkletNode) {
       this.micWorkletNode.disconnect();
       this.micWorkletNode.port.close();
@@ -242,11 +248,9 @@ export class AudioStreamClient {
     }
 
     if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((track) => track.stop());
+      this.mediaStream.getTracks().forEach(track => track.stop());
       this.mediaStream = null;
     }
-
-    console.log('AudioStreamClient: Microphone streaming stopped');
   }
 
   /**
