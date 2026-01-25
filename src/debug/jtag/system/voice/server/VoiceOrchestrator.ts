@@ -249,34 +249,22 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Turn arbitration - which AI responds via VOICE?
-    const responder = this.arbiter.selectResponder(event, aiParticipants, context);
+    // NO ARBITER - broadcast to ALL AI participants, let THEM decide if they want to respond
+    // Their PersonaUser.shouldRespond() logic handles engagement decisions
+    console.log(`🎙️ VoiceOrchestrator: Broadcasting to ${aiParticipants.length} AIs`);
 
-    if (!responder) {
-      console.log('🎙️ VoiceOrchestrator: Arbiter selected no voice responder');
-      return;
+    for (const ai of aiParticipants) {
+      Events.emit('voice:transcription:directed', {
+        sessionId: event.sessionId,
+        speakerId: event.speakerId,
+        speakerName: event.speakerName,
+        transcript: event.transcript,
+        confidence: event.confidence,
+        language: 'en',
+        timestamp: event.timestamp,
+        targetPersonaId: ai.userId  // Each AI gets the event
+      });
     }
-
-    console.log(`🎙️ VoiceOrchestrator: ${responder.displayName} selected to respond via voice`);
-
-    // Emit directed voice transcription event FOR THE SELECTED RESPONDER ONLY
-    // This goes to PersonaUser's voice:transcription:directed subscription
-    Events.emit('voice:transcription:directed', {
-      sessionId: event.sessionId,
-      speakerId: event.speakerId,
-      speakerName: event.speakerName,
-      transcript: event.transcript,
-      confidence: event.confidence,
-      language: 'en',
-      timestamp: event.timestamp,
-      targetPersonaId: responder.userId  // ONLY this persona should respond
-    });
-
-    // Track selected responder for this session
-    this.trackVoiceResponder(sessionId, responder.userId);
-
-    // Update last responder
-    context.lastResponderId = responder.userId;
   }
 
   /**
@@ -532,24 +520,16 @@ class CompositeArbiter implements TurnArbiter {
       return relevant;
     }
 
-    // 3. Fall back to round-robin (but only for questions)
-    const isQuestion = event.transcript.includes('?') ||
-                       event.transcript.toLowerCase().startsWith('what') ||
-                       event.transcript.toLowerCase().startsWith('how') ||
-                       event.transcript.toLowerCase().startsWith('why') ||
-                       event.transcript.toLowerCase().startsWith('can') ||
-                       event.transcript.toLowerCase().startsWith('could');
-
-    if (isQuestion) {
-      const next = this.roundRobin.selectResponder(event, candidates, context);
-      if (next) {
-        console.log(`🎙️ Arbiter: Selected ${next.displayName} (round-robin for question)`);
-        return next;
-      }
+    // 3. Fall back to round-robin for ALL utterances (questions AND statements)
+    // Voice conversations are interactive - AIs should engage, not just answer questions
+    const next = this.roundRobin.selectResponder(event, candidates, context);
+    if (next) {
+      console.log(`🎙️ Arbiter: Selected ${next.displayName} (round-robin)`);
+      return next;
     }
 
-    // 4. No one responds to statements (prevents spam)
-    console.log('🎙️ Arbiter: No responder selected (statement, not question)');
+    // 4. No candidates available
+    console.log('🎙️ Arbiter: No responder selected (no AI candidates)');
     return null;
   }
 }

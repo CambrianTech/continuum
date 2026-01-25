@@ -172,9 +172,12 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
-	 * Process an utterance and get selected responder
+	 * Process an utterance and broadcast to ALL AI participants
+	 * Returns array of AI participant IDs who should receive the utterance
 	 */
-	async voiceOnUtterance(event: UtteranceEvent): Promise<string | null> {
+	async voiceOnUtterance(event: UtteranceEvent): Promise<string[]> {
+		const { VOICE_RESPONSE_FIELDS } = await import('./IPCFieldNames');
+
 		const response = await this.request({
 			command: 'voice/on-utterance',
 			event,
@@ -184,7 +187,7 @@ export class RustCoreIPCClient extends EventEmitter {
 			throw new Error(response.error || 'Failed to process utterance');
 		}
 
-		return response.result?.responder_id || null;
+		return response.result?.[VOICE_RESPONSE_FIELDS.RESPONDER_IDS] || [];
 	}
 
 	/**
@@ -202,6 +205,38 @@ export class RustCoreIPCClient extends EventEmitter {
 		}
 
 		return response.result?.should_route === true;
+	}
+
+	/**
+	 * Synthesize text to speech (currently returns hold music)
+	 */
+	async voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<{
+		audio: Buffer;
+		sampleRate: number;
+		durationMs: number;
+		adapter: string;
+	}> {
+		const response = await this.request({
+			command: 'voice/synthesize',
+			text,
+			voice,
+			adapter,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to synthesize speech');
+		}
+
+		// Convert base64 audio to Buffer
+		const audioBase64 = response.result?.audio || '';
+		const audio = Buffer.from(audioBase64, 'base64');
+
+		return {
+			audio,
+			sampleRate: response.result?.sample_rate || 16000,
+			durationMs: response.result?.duration_ms || 0,
+			adapter: response.result?.adapter || 'unknown',
+		};
 	}
 
 	/**

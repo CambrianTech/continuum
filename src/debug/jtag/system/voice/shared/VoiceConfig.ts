@@ -6,32 +6,32 @@
  * Quality tiers:
  * - local: Fast, free, robotic (Piper, Kokoro)
  * - api: High quality, paid (ElevenLabs, Azure, Google)
- * - hybrid: Local backup with API fallback
  */
 
-export type TTSAdapter =
-  // Local (Free)
-  | 'piper'        // Current default - basic quality, fast
-  | 'kokoro'       // Better quality local option
-  | 'silence'      // Testing only
+// TTS Adapter Constants
+export const TTS_ADAPTERS = {
+  PIPER: 'piper',
+  KOKORO: 'kokoro',
+  SILENCE: 'silence',
+  ELEVENLABS: 'elevenlabs',
+  AZURE: 'azure',
+  GOOGLE: 'google',
+} as const;
 
-  // API (Paid - Future)
-  | 'elevenlabs'   // Premium quality, $$$
-  | 'azure'        // Good quality, $
-  | 'google'       // Good quality, $
+export type TTSAdapter = typeof TTS_ADAPTERS[keyof typeof TTS_ADAPTERS];
 
-  // System (Fallback)
-  | 'macos-say';   // macOS native (same quality as Piper currently)
+// STT Adapter Constants
+export const STT_ADAPTERS = {
+  WHISPER: 'whisper',
+  DEEPGRAM: 'deepgram',
+  AZURE: 'azure',
+} as const;
 
-export type STTAdapter =
-  | 'whisper'      // Local, good quality
-  | 'deepgram'     // API, excellent quality (future)
-  | 'azure';       // API, good quality (future)
+export type STTAdapter = typeof STT_ADAPTERS[keyof typeof STT_ADAPTERS];
 
 export interface VoiceConfig {
   tts: {
-    defaultAdapter: TTSAdapter;
-    fallbackAdapter: TTSAdapter;
+    adapter: TTSAdapter;  // NO FALLBACKS - fail if this doesn't work
 
     // Per-adapter config
     adapters: {
@@ -53,20 +53,18 @@ export interface VoiceConfig {
   };
 
   stt: {
-    defaultAdapter: STTAdapter;
-    fallbackAdapter: STTAdapter;
+    adapter: STTAdapter;  // NO FALLBACKS - fail if this doesn't work
   };
 
   // Performance
-  maxSynthesisTimeMs: number;  // Timeout before fallback
+  maxSynthesisTimeMs: number;  // Timeout before failure
   streamingEnabled: boolean;   // Stream audio chunks vs batch
 }
 
 // Default configuration (easily overrideable)
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   tts: {
-    defaultAdapter: 'piper',
-    fallbackAdapter: 'macos-say',
+    adapter: TTS_ADAPTERS.PIPER,  // Use constants, NO fallbacks
 
     adapters: {
       piper: {
@@ -77,11 +75,10 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   },
 
   stt: {
-    defaultAdapter: 'whisper',
-    fallbackAdapter: 'whisper',
+    adapter: STT_ADAPTERS.WHISPER,  // Use constants, NO fallbacks
   },
 
-  maxSynthesisTimeMs: 5000,  // 5s timeout
+  maxSynthesisTimeMs: 5000,  // 5s timeout before FAILURE (not fallback)
   streamingEnabled: false,    // Batch mode for now
 };
 
@@ -95,7 +92,7 @@ export interface UserVoicePreferences {
 
 /**
  * Get voice config for a user
- * Falls back to system defaults if user has no preferences
+ * Uses system defaults if user has no preferences
  */
 export function getVoiceConfigForUser(
   userId: string,
@@ -104,7 +101,7 @@ export function getVoiceConfigForUser(
   const config = { ...DEFAULT_VOICE_CONFIG };
 
   if (userPrefs?.preferredTTSAdapter) {
-    config.tts.defaultAdapter = userPrefs.preferredTTSAdapter;
+    config.tts.adapter = userPrefs.preferredTTSAdapter;
   }
 
   if (userPrefs?.speechRate && config.tts.adapters.piper) {

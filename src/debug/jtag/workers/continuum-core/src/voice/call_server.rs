@@ -6,6 +6,7 @@
 use crate::voice::handle::Handle;
 use crate::voice::mixer::{AudioMixer, ParticipantStream};
 use crate::voice::stt;
+use crate::voice::{VoiceOrchestrator, UtteranceEvent, SpeakerType};
 use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -199,7 +200,7 @@ impl Call {
     }
 
     /// Generate hold music from pre-decoded samples
-    fn generate_hold_tone(&mut self, frame_size: usize) -> Vec<i16> {
+    pub fn generate_hold_tone(&mut self, frame_size: usize) -> Vec<i16> {
         let samples = &*HOLD_MUSIC_SAMPLES;
 
         if samples.is_empty() {
@@ -272,14 +273,17 @@ pub struct CallManager {
     participant_calls: RwLock<HashMap<Handle, String>>,
     /// Track running audio loops
     audio_loops: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Voice orchestrator for AI turn arbitration - shared, concurrent
+    orchestrator: Arc<VoiceOrchestrator>,
 }
 
 impl CallManager {
-    pub fn new() -> Self {
+    pub fn new(orchestrator: Arc<VoiceOrchestrator>) -> Self {
         Self {
             calls: RwLock::new(HashMap::new()),
             participant_calls: RwLock::new(HashMap::new()),
             audio_loops: RwLock::new(HashMap::new()),
+            orchestrator,
         }
     }
 
@@ -508,10 +512,16 @@ impl CallManager {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
                         (result.user_id, result.display_name, result.speech_samples)
                     {
+                        // Clone orchestrator and call_id for the spawned task
+                        let orchestrator = Arc::clone(&self.orchestrator);
+                        let session_id = call_id.clone();
+
                         // Spawn transcription task (don't block audio processing)
                         tokio::spawn(async move {
                             Self::transcribe_and_broadcast(
                                 transcription_tx,
+                                orchestrator,
+                                session_id,
                                 user_id,
                                 display_name,
                                 speech_samples,
@@ -525,8 +535,11 @@ impl CallManager {
     }
 
     /// Transcribe speech samples and broadcast to all participants
+    /// Also calls VoiceOrchestrator to determine which AIs should respond
     async fn transcribe_and_broadcast(
         transcription_tx: broadcast::Sender<TranscriptionEvent>,
+        orchestrator: Arc<VoiceOrchestrator>,
+        session_id: String,
         user_id: String,
         display_name: String,
         samples: Vec<i16>,
@@ -590,6 +603,78 @@ impl CallManager {
                             display_name
                         );
                     }
+
+                    // [STEP 7] Call VoiceOrchestrator - TIMED for performance monitoring
+                    use std::time::Instant;
+                    let orch_start = Instant::now();
+
+                    // Parse UUIDs for orchestrator
+                    let session_uuid = match uuid::Uuid::parse_str(&session_id) {
+                        Ok(uuid) => uuid,
+                        Err(e) => {
+                            error!("[STEP 7] ❌ Invalid session UUID '{}': {}", session_id, e);
+                            return;
+                        }
+                    };
+
+                    let speaker_uuid = match uuid::Uuid::parse_str(&user_id) {
+                        Ok(uuid) => uuid,
+                        Err(e) => {
+                            warn!("[STEP 7] Invalid speaker UUID '{}': {}, using random UUID", user_id, e);
+                            uuid::Uuid::new_v4()
+                        }
+                    };
+
+                    // Create utterance event
+                    let utterance = UtteranceEvent {
+                        session_id: session_uuid,
+                        speaker_id: speaker_uuid,
+                        speaker_name: display_name.clone(),
+                        speaker_type: SpeakerType::Human,
+                        transcript: text.to_string(),
+                        confidence: result.confidence,
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                    };
+
+                    // Call orchestrator to determine which AIs should respond
+                    let responder_ids = orchestrator.on_utterance(utterance);
+                    let orch_duration = orch_start.elapsed();
+
+                    // Performance logging - WARN if > 10µs on M1 (user's target)
+                    if orch_duration.as_micros() > 10 {
+                        warn!(
+                            "[STEP 7] ⚠️ VoiceOrchestrator SLOW: {}µs for {} responders (target: <10µs)",
+                            orch_duration.as_micros(),
+                            responder_ids.len()
+                        );
+                    } else {
+                        info!(
+                            "[STEP 7] ✅ VoiceOrchestrator: {}µs → {} AI participants",
+                            orch_duration.as_micros(),
+                            responder_ids.len()
+                        );
+                    }
+
+                    // [STEP 8] Emit events to AI participants
+                    // TODO: Event emission mechanism needs IPC bridge implementation
+                    if !responder_ids.is_empty() {
+                        info!(
+                            "[STEP 8] 🎯 Broadcasting to {} AIs: {:?}",
+                            responder_ids.len(),
+                            responder_ids.iter().map(|id| id.to_string()[..8].to_string()).collect::<Vec<_>>()
+                        );
+
+                        for ai_id in responder_ids {
+                            // TODO: Implement IPC event emission to TypeScript
+                            // This will emit voice:transcription:directed event to PersonaUser instances
+                            info!("📤 Emitting voice event to AI: {}", &ai_id.to_string()[..8]);
+                        }
+                    } else {
+                        info!("[STEP 8] No AI participants to notify");
+                    }
                 } else {
                     info!("📝 Empty transcription result from {}", display_name);
                 }
@@ -639,7 +724,8 @@ impl CallManager {
 
 impl Default for CallManager {
     fn default() -> Self {
-        Self::new()
+        let orchestrator = Arc::new(VoiceOrchestrator::new());
+        Self::new(orchestrator)
     }
 }
 
@@ -783,7 +869,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
 /// Start the WebSocket call server
 pub async fn start_call_server(addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
-    let manager = Arc::new(CallManager::new());
+
+    // Create shared VoiceOrchestrator for all calls
+    let orchestrator = Arc::new(VoiceOrchestrator::new());
+    let manager = Arc::new(CallManager::new(orchestrator));
 
     info!("Call server listening on {}", addr);
 
@@ -911,7 +1000,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_call_manager_join_leave() {
-        let manager = CallManager::new();
+        let orchestrator = Arc::new(VoiceOrchestrator::new());
+        let manager = CallManager::new(orchestrator);
 
         // Join a call
         let (handle, _rx, _transcription_rx) =
@@ -933,7 +1023,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_call_manager_multi_participant() {
-        let manager = CallManager::new();
+        let orchestrator = Arc::new(VoiceOrchestrator::new());
+        let manager = CallManager::new(orchestrator);
 
         // Two participants join
         let (handle_a, _rx_a, _transcription_rx_a) =
@@ -963,7 +1054,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mute() {
-        let manager = CallManager::new();
+        let orchestrator = Arc::new(VoiceOrchestrator::new());
+        let manager = CallManager::new(orchestrator);
 
         let (handle, _rx, _transcription_rx) =
             manager.join_call("test-call", "user-1", "Alice").await;

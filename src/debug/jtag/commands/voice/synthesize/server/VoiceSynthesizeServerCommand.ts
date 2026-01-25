@@ -19,7 +19,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../shared/VoiceSynthesizeTypes';
 import { createVoiceSynthesizeResultFromParams } from '../shared/VoiceSynthesizeTypes';
-import { VoiceGrpcClient } from '@system/core/services/VoiceGrpcClient';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import { Events } from '@system/core/shared/Events';
 
@@ -27,11 +27,14 @@ import { Events } from '@system/core/shared/Events';
 const VALID_ADAPTERS = ['piper', 'kokoro', 'silence'];
 
 export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizeParams, VoiceSynthesizeResult> {
-  private voiceClient: VoiceGrpcClient;
+  private voiceClient: RustCoreIPCClient;
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('voice/synthesize', context, subpath, commander);
-    this.voiceClient = VoiceGrpcClient.sharedInstance();
+    this.voiceClient = new RustCoreIPCClient('/tmp/continuum-core.sock');
+    this.voiceClient.connect().catch(err => {
+      console.error('Failed to connect to continuum-core:', err);
+    });
   }
 
   async execute(params: VoiceSynthesizeParams): Promise<VoiceSynthesizeResult> {
@@ -101,15 +104,12 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
     console.log(`🔊 synthesizeAndEmit started for handle ${handle}`);
 
     try {
-      // Call actual Rust TTS via gRPC
-      const sampleRate = params.sampleRate || 24000;
-      const response = await this.voiceClient.synthesize({
-        text: params.text,
-        voice: params.voice || 'af', // Default to female American English
-        adapter,
-        speed,
-        sampleRate
-      });
+      // Call Rust TTS via IPC (continuum-core)
+      const response = await this.voiceClient.voiceSynthesize(
+        params.text,
+        params.voice || 'af', // Default to female American English
+        adapter
+      );
 
       const audioBase64 = response.audio.toString('base64');
       const durationSec = response.durationMs / 1000;

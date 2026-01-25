@@ -8,7 +8,7 @@
 import { Commands } from '../../core/shared/Commands';
 import { Events } from '../../core/shared/Events';
 import type { VoiceConfig, TTSAdapter } from '../shared/VoiceConfig';
-import { DEFAULT_VOICE_CONFIG } from '../shared/VoiceConfig';
+import { DEFAULT_VOICE_CONFIG, TTS_ADAPTERS } from '../shared/VoiceConfig';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 
 export interface SynthesizeSpeechRequest {
@@ -47,28 +47,20 @@ export class VoiceService {
    * Returns i16 audio samples ready for WebSocket transmission.
    * Automatically handles:
    * - Adapter selection (default or override)
-   * - Fallback on failure
    * - Base64 decoding
    * - Format conversion to i16
+   *
+   * NO FALLBACKS - fails immediately if adapter doesn't work
    */
   async synthesizeSpeech(request: SynthesizeSpeechRequest): Promise<SynthesizeSpeechResult> {
-    const adapter = request.adapter || this.config.tts.defaultAdapter;
+    const adapter = request.adapter || this.config.tts.adapter;
     const adapterConfig = this.config.tts.adapters[adapter as keyof typeof this.config.tts.adapters];
 
     const voice = request.voice || (adapterConfig as any)?.voice || 'default';
     const speed = request.speed || (adapterConfig as any)?.speed || 1.0;
 
-    try {
-      return await this.synthesizeWithAdapter(request.text, adapter, voice, speed);
-    } catch (err) {
-      // Fallback to alternative adapter
-      const fallback = this.config.tts.fallbackAdapter;
-      if (fallback !== adapter) {
-        console.warn(`TTS fallback: ${adapter} failed, trying ${fallback}`);
-        return await this.synthesizeWithAdapter(request.text, fallback, voice, speed);
-      }
-      throw err;
-    }
+    // NO FALLBACKS - fail immediately if this doesn't work
+    return await this.synthesizeWithAdapter(request.text, adapter, voice, speed);
   }
 
   /**

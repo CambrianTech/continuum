@@ -16,6 +16,7 @@
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { getVoiceService } from './VoiceService';
+import { TTS_ADAPTERS } from '../shared/VoiceConfig';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -227,7 +228,7 @@ export class AIAudioBridge {
       const result = await voiceService.synthesizeSpeech({
         text,
         userId,
-        adapter: 'piper',  // Local, fast TTS
+        adapter: TTS_ADAPTERS.PIPER,  // Local, fast TTS
       });
 
       // result.audioSamples is already i16 array ready to send

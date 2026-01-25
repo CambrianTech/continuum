@@ -8,7 +8,7 @@
 /// - Tokio async for concurrent request handling
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
-use crate::voice::{VoiceOrchestrator, UtteranceEvent, VoiceParticipant};
+use crate::voice::{UtteranceEvent, VoiceParticipant};
 use crate::persona::PersonaInbox;
 use crate::logging::TimingGuard;
 use crate::{log_debug, log_info, log_error};
@@ -19,6 +19,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+
+// ============================================================================
+// Response Field Names - Single Source of Truth
+// ============================================================================
+
+/// Voice response field: Array of AI participant UUIDs
+const VOICE_RESPONSE_FIELD_RESPONDER_IDS: &str = "responder_ids";
 
 // ============================================================================
 // Request/Response Protocol
@@ -41,6 +48,13 @@ enum Request {
     VoiceShouldRouteTts {
         session_id: String,
         persona_id: String,
+    },
+
+    #[serde(rename = "voice/synthesize")]
+    VoiceSynthesize {
+        text: String,
+        voice: Option<String>,
+        adapter: Option<String>,
     },
 
     #[serde(rename = "inbox/create")]
@@ -95,14 +109,14 @@ impl Response {
 // ============================================================================
 
 struct ServerState {
-    voice_orchestrator: Arc<Mutex<VoiceOrchestrator>>,
+    voice_service: Arc<crate::voice::voice_service::VoiceService>,
     inboxes: Arc<Mutex<HashMap<Uuid, PersonaInbox>>>,
 }
 
 impl ServerState {
     fn new() -> Self {
         Self {
-            voice_orchestrator: Arc::new(Mutex::new(VoiceOrchestrator::new())),
+            voice_service: Arc::new(crate::voice::voice_service::VoiceService::new()),
             inboxes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -116,37 +130,21 @@ impl ServerState {
             } => {
                 let _timer = TimingGuard::new("ipc", "voice_register_session");
 
-                let session_uuid = match Uuid::parse_str(&session_id) {
-                    Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid session_id: {e}")),
-                };
-
-                let room_uuid = match Uuid::parse_str(&room_id) {
-                    Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid room_id: {e}")),
-                };
-
-                let orchestrator = match self.voice_orchestrator.lock() {
-                    Ok(o) => o,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
-                };
-                orchestrator.register_session(session_uuid, room_uuid, participants);
-
-                Response::success(serde_json::json!({ "registered": true }))
+                match self.voice_service.register_session(&session_id, &room_id, participants) {
+                    Ok(_) => Response::success(serde_json::json!({ "registered": true })),
+                    Err(e) => Response::error(e),
+                }
             }
 
             Request::VoiceOnUtterance { event } => {
                 let _timer = TimingGuard::new("ipc", "voice_on_utterance").with_threshold(10);
 
-                let orchestrator = match self.voice_orchestrator.lock() {
-                    Ok(o) => o,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
-                };
-                let responder_id = orchestrator.on_utterance(event);
-
-                Response::success(serde_json::json!({
-                    "responder_id": responder_id.map(|id| id.to_string())
-                }))
+                match self.voice_service.on_utterance(event) {
+                    Ok(responder_ids) => Response::success(serde_json::json!({
+                        VOICE_RESPONSE_FIELD_RESPONDER_IDS: responder_ids.into_iter().map(|id| id.to_string()).collect::<Vec<String>>()
+                    })),
+                    Err(e) => Response::error(e),
+                }
             }
 
             Request::VoiceShouldRouteTts {
@@ -155,23 +153,55 @@ impl ServerState {
             } => {
                 let _timer = TimingGuard::new("ipc", "voice_should_route_tts");
 
-                let session_uuid = match Uuid::parse_str(&session_id) {
-                    Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid session_id: {e}")),
-                };
+                match self.voice_service.should_route_tts(&session_id, &persona_id) {
+                    Ok(should_route) => Response::success(serde_json::json!({ "should_route": should_route })),
+                    Err(e) => Response::error(e),
+                }
+            }
 
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
-                };
+            Request::VoiceSynthesize { text, voice, adapter } => {
+                let _timer = TimingGuard::new("ipc", "voice_synthesize");
 
-                let orchestrator = match self.voice_orchestrator.lock() {
-                    Ok(o) => o,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
-                };
-                let should_route = orchestrator.should_route_to_tts(session_uuid, persona_uuid);
+                // Delegate to TTS service (synchronous wrapper handles runtime)
+                use crate::voice::tts_service;
+                use base64::Engine;
 
-                Response::success(serde_json::json!({ "should_route": should_route }))
+                let result = tts_service::synthesize_speech_sync(
+                    &text,
+                    voice.as_deref(),
+                    adapter.as_deref()
+                );
+
+                match result {
+                    Ok(synthesis) => {
+                        // Convert to base64 for transport
+                        let bytes: Vec<u8> = synthesis.samples.iter()
+                            .flat_map(|s| s.to_le_bytes())
+                            .collect();
+                        let audio_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+                        log_info!(
+                            "ipc", "voice_synthesize",
+                            "Synthesized {} samples at {}Hz ({:.1}s)",
+                            synthesis.samples.len(),
+                            synthesis.sample_rate,
+                            synthesis.duration_ms as f64 / 1000.0
+                        );
+
+                        // CRITICAL: Return ACTUAL sample rate from TTS, not a default
+                        // TTS adapters resample to 16kHz, so this should always be 16000
+                        Response::success(serde_json::json!({
+                            "audio": audio_base64,
+                            "sample_rate": synthesis.sample_rate,  // Actual rate from TTS (16000)
+                            "duration_ms": synthesis.duration_ms,
+                            "adapter": adapter.unwrap_or_else(|| "default".to_string())
+                        }))
+                    },
+                    Err(e) => {
+                        log_error!("ipc", "voice_synthesize", "TTS failed: {}", e);
+                        Response::error(format!("TTS failed: {}", e))
+                    }
+                }
             }
 
             Request::InboxCreate { persona_id } => {

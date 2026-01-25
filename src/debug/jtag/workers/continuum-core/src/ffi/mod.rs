@@ -224,39 +224,37 @@ pub extern "C" fn continuum_voice_on_utterance(
         }
     };
 
-    // Process utterance
-    let responder_id = orchestrator.on_utterance(event.clone());
+    // Process utterance - returns Vec of ALL AI participant IDs
+    let responder_ids = orchestrator.on_utterance(event.clone());
 
-    match responder_id {
-        Some(id) => {
-            let id_str = id.to_string();
-            let c_string = CString::new(id_str).unwrap();
-            let bytes = c_string.as_bytes_with_nul();
-
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), out_responder_id as *mut u8, bytes.len());
-            }
-
-            logger().info(
-                "ffi",
-                "voice",
-                &format!(
-                    "Utterance from {} → responder {}",
-                    event.speaker_name, id
-                )
-            );
-
-            0
-        }
-        None => {
-            logger().debug(
-                "ffi",
-                "voice",
-                &format!("Utterance from {} → no responder", event.speaker_name)
-            );
-            1
-        }
+    if responder_ids.is_empty() {
+        logger().debug(
+            "ffi",
+            "voice",
+            &format!("Utterance from {} → no AI participants", event.speaker_name)
+        );
+        return 1;
     }
+
+    // Serialize Vec<Uuid> to JSON array
+    let json_array = serde_json::to_string(&responder_ids).unwrap();
+    let c_string = CString::new(json_array).unwrap();
+    let bytes = c_string.as_bytes_with_nul();
+
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out_responder_id as *mut u8, bytes.len());
+    }
+
+    logger().info(
+        "ffi",
+        "voice",
+        &format!(
+            "Utterance from {} → {} AI participants",
+            event.speaker_name, responder_ids.len()
+        )
+    );
+
+    0
 }
 
 /// Check if TTS should be routed to a session

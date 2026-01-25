@@ -16,7 +16,9 @@ import type { VoiceTranscribeParams, VoiceTranscribeResult } from '@commands/voi
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '@commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { getVoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
+import { getRustVoiceOrchestrator } from './VoiceOrchestratorRustBridge';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { TTS_ADAPTERS } from '../shared/VoiceConfig';
 
 // Audio configuration
 const SAMPLE_RATE = 16000;
@@ -252,7 +254,23 @@ export class VoiceWebSocketServer {
         timestamp: Date.now()
       };
 
-      await getVoiceOrchestrator().onUtterance(utteranceEvent);
+      // [STEP 7] Call Rust VoiceOrchestrator to get responder IDs
+      const responderIds = await getRustVoiceOrchestrator().onUtterance(utteranceEvent);
+
+      // [STEP 8] Emit voice:transcription:directed events for each AI
+      for (const aiId of responderIds) {
+        await Events.emit('voice:transcription:directed', {
+          sessionId: utteranceEvent.sessionId,
+          speakerId: utteranceEvent.speakerId,
+          speakerName: utteranceEvent.speakerName,
+          transcript: utteranceEvent.transcript,
+          confidence: utteranceEvent.confidence,
+          targetPersonaId: aiId,
+          timestamp: utteranceEvent.timestamp,
+        });
+      }
+
+      console.log(`[STEP 8] 📤 Emitted voice events to ${responderIds.length} AI participants`);
 
       // Note: AI response will come back via VoiceOrchestrator.onPersonaResponse()
       // which calls our TTS callback (set in startVoiceServer)
@@ -340,11 +358,47 @@ export class VoiceWebSocketServer {
   /**
    * Handle incoming JSON message
    */
-  private handleJsonMessage(connection: VoiceConnection, data: string): void {
+  private async handleJsonMessage(connection: VoiceConnection, data: string): Promise<void> {
     try {
       const message = JSON.parse(data);
 
       switch (message.type) {
+        case 'Transcription':
+          // Transcription from Rust continuum-core
+          console.log(`[STEP 10] 🎙️ SERVER: Relaying transcription to VoiceOrchestrator: "${message.text?.slice(0, 50)}..."`);
+
+          // Relay to VoiceOrchestrator for turn arbitration and PersonaUser routing
+          const utteranceEvent: UtteranceEvent = {
+            sessionId: connection.roomId as UUID,
+            speakerId: connection.userId as UUID,
+            speakerName: 'User',  // TODO: Get from session
+            speakerType: 'human',
+            transcript: message.text,
+            confidence: message.confidence || 0.9,
+            timestamp: Date.now()
+          };
+
+          console.log(`[STEP 10] ✅ Transcription event emitted on server Events bus`);
+
+          // [STEP 10] Call Rust VoiceOrchestrator to get responder IDs
+          const responderIds = await getRustVoiceOrchestrator().onUtterance(utteranceEvent);
+          console.log(`[STEP 10] 🎙️ VoiceOrchestrator → ${responderIds.length} AI participants`);
+
+          // [STEP 11] Emit voice:transcription:directed events for each AI
+          for (const aiId of responderIds) {
+            await Events.emit('voice:transcription:directed', {
+              sessionId: utteranceEvent.sessionId,
+              speakerId: utteranceEvent.speakerId,
+              speakerName: utteranceEvent.speakerName,
+              transcript: utteranceEvent.transcript,
+              confidence: utteranceEvent.confidence,
+              targetPersonaId: aiId,
+              timestamp: utteranceEvent.timestamp,
+            });
+            console.log(`[STEP 11] 📤 Emitted voice event to AI: ${aiId.slice(0, 8)}`);
+          }
+          break;
+
         case 'interrupt':
           // User wants to interrupt AI
           console.log(`🎤 Interrupt requested: ${connection.handle.substring(0, 8)}`);
@@ -361,6 +415,41 @@ export class VoiceWebSocketServer {
       }
     } catch (error) {
       console.error('🎤 Failed to parse JSON message:', error);
+    }
+  }
+
+  /**
+   * Send confirmation audio (proves audio output + mixer works)
+   */
+  private async sendConfirmationBeep(connection: VoiceConnection): Promise<void> {
+    // Use TTS to synthesize confirmation message through the mixer
+    try {
+      const result = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
+        'voice/synthesize',
+        {
+          text: 'Got it',
+          adapter: TTS_ADAPTERS.PIPER,
+          sampleRate: SAMPLE_RATE
+        }
+      );
+
+      // Get audio data from event
+      const handle = result.handle;
+      Events.subscribe(`voice:audio:${handle}`, (event: any) => {
+        const audioBuffer = Buffer.from(event.audio, 'base64');
+        const audioSamples = new Int16Array(audioBuffer.length / 2);
+        for (let i = 0; i < audioSamples.length; i++) {
+          audioSamples[i] = audioBuffer.readInt16LE(i * 2);
+        }
+
+        // Send to browser through mixer
+        if (connection.ws.readyState === WebSocket.OPEN) {
+          connection.ws.send(Buffer.from(audioSamples.buffer));
+          console.log('🔊 Sent "Got it" confirmation audio to browser');
+        }
+      });
+    } catch (error) {
+      console.error('Failed to send confirmation audio:', error);
     }
   }
 
@@ -458,7 +547,7 @@ export class VoiceWebSocketServer {
         'voice/synthesize',
         {
           text,
-          adapter: 'kokoro',
+          adapter: TTS_ADAPTERS.KOKORO,
         }
       );
 

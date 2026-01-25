@@ -99,14 +99,15 @@ export class VoiceOrchestratorRustBridge {
 	}
 
 	/**
-	 * Process an utterance and determine who should respond
+	 * Process an utterance and broadcast to ALL AI participants
+	 * Returns array of AI participant IDs who should receive the utterance
 	 *
 	 * This is the critical path - must be <1ms overhead
 	 */
-	async onUtterance(event: UtteranceEvent): Promise<UUID | null> {
+	async onUtterance(event: UtteranceEvent): Promise<UUID[]> {
 		if (!this.connected) {
 			console.warn('⚠️  VoiceOrchestrator: Not connected to Rust core, skipping');
-			return null;
+			return [];
 		}
 
 		const start = performance.now();
@@ -123,21 +124,21 @@ export class VoiceOrchestratorRustBridge {
 				timestamp: event.timestamp,
 			};
 
-			// Call Rust VoiceOrchestrator via IPC
-			const responderId = await this.client.voiceOnUtterance(rustEvent);
+			// Call Rust VoiceOrchestrator via IPC - returns ALL AI participant IDs
+			const responderIds = await this.client.voiceOnUtterance(rustEvent);
 
 			const duration = performance.now() - start;
 
 			if (duration > 5) {
 				console.warn(`⚠️  VoiceOrchestrator: Slow utterance processing: ${duration.toFixed(2)}ms`);
 			} else {
-				console.log(`🦀 VoiceOrchestrator: Processed utterance in ${duration.toFixed(2)}ms → ${responderId ? `responder: ${responderId}` : 'no responder'}`);
+				console.log(`🦀 VoiceOrchestrator: Processed utterance in ${duration.toFixed(2)}ms → ${responderIds.length} AI participants`);
 			}
 
-			return responderId as UUID | null;
+			return responderIds as UUID[];
 		} catch (e) {
 			console.error('❌ VoiceOrchestrator: Failed to process utterance:', e);
-			return null;
+			return [];
 		}
 	}
 

@@ -595,6 +595,16 @@ export class PersonaUser extends AIUser {
       this._eventUnsubscribes.push(unsubVoiceTranscription);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
 
+      // Subscribe to TTS audio events and inject into CallServer
+      // This allows AI voice responses to be heard in voice calls
+      const { AIAudioInjector } = await import('../../voice/server/AIAudioInjector');
+      const unsubAudioInjection = AIAudioInjector.subscribeToTTSEvents(
+        this.id,
+        this.displayName
+      );
+      this._eventUnsubscribes.push(unsubAudioInjection);
+      this.log.info(`🎙️ ${this.displayName}: Subscribed to TTS audio injection events`);
+
       this.eventsSubscribed = true;
       this.log.info(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
 
