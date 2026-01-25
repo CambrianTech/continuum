@@ -259,30 +259,10 @@ export class VoiceOrchestrator {
 
     console.log(`🎙️ VoiceOrchestrator: ${responder.displayName} selected to respond via voice`);
 
-    // Enqueue voice utterance directly to selected AI's inbox
-    // Uses InboxMessage with sourceModality='voice' (NOT chat)
-    const inboxMessage: InboxMessage = {
-      id: generateUUID(),
-      type: 'message',
-      roomId: context.roomId,
-      content: transcript,
-      senderId: speakerId,
-      senderName: speakerName,
-      senderType: 'human',
-      priority: 0.9, // High priority - voice interaction
-      timestamp: event.timestamp,
-      domain: 'voice' as TaskDomain,
-      sourceModality: 'voice',       // Voice utterance, not text chat
-      voiceSessionId: sessionId      // Voice call context
-    };
-
-    // Get PersonaUser and enqueue to their inbox
-    const userDaemon = this.userDaemon;
-    const persona = userDaemon.getUser(responder.userId);
-    if (persona && 'inbox' in persona) {
-      await (persona as any).inbox.enqueue(inboxMessage);
-      console.log(`🎙️ VoiceOrchestrator: Enqueued voice utterance to ${responder.displayName}'s inbox`);
-    }
+    // TODO: Implement proper voice inbox routing through event system
+    // Voice transcriptions currently appear only as LiveWidget captions
+    // Future: Route to PersonaInbox via proper event/message architecture
+    // (NOT direct enqueueing - use event-driven routing)
 
     // Track selected responder for this session
     this.trackVoiceResponder(sessionId, responder.userId);
