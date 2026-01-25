@@ -98,33 +98,47 @@ export class LiveWidget extends ReactiveWidget {
       console.error('LiveWidget: Failed to load user context:', err);
     });
 
-    // Auto-mute when tab goes to background, restore when it comes back
-    document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    // Auto-mute when navigating away from live view
+    this.unsubscribers.push(
+      Events.subscribe('content:switched', this.handleContentSwitched)
+    );
   }
 
-  private handleVisibilityChange = (): void => {
-    if (document.hidden) {
-      // Tab went to background - save state and mute both
-      if (this.isJoined) {
+  private handleContentSwitched = (data: { contentType: string; entityId?: string }): void => {
+    console.log('🔍 LiveWidget: content:switched event', {
+      contentType: data.contentType,
+      entityId: data.entityId,
+      isJoined: this.isJoined,
+      currentEntityId: this.entityId
+    });
+
+    // Mute if navigating AWAY from live view
+    if (this.isJoined && data.contentType !== 'live') {
+      if (this.savedMicState === null) {
         this.savedMicState = this.micEnabled;
         this.savedSpeakerState = this.speakerEnabled;
+        console.log('🔇 LiveWidget: Navigated away from live - muting', {
+          savedMic: this.savedMicState,
+          savedSpeaker: this.savedSpeakerState
+        });
         this.micEnabled = false;
         this.speakerEnabled = false;
         this.applyMicState();
         this.applySpeakerState();
-        console.log('LiveWidget: Tab in background - muted (saved state for restore)');
       }
-    } else {
-      // Tab came back to foreground - restore previous state
-      if (this.isJoined && this.savedMicState !== null) {
-        this.micEnabled = this.savedMicState;
-        this.speakerEnabled = this.savedSpeakerState ?? true;
-        this.applyMicState();
-        this.applySpeakerState();
-        console.log('LiveWidget: Tab in foreground - restored previous state');
-        this.savedMicState = null;
-        this.savedSpeakerState = null;
-      }
+    }
+    // Unmute if navigating BACK to live view
+    else if (this.isJoined && data.contentType === 'live' && this.savedMicState !== null) {
+      console.log('🔊 LiveWidget: Navigated back to live - restoring', {
+        savedMic: this.savedMicState,
+        savedSpeaker: this.savedSpeakerState
+      });
+      this.micEnabled = this.savedMicState;
+      this.speakerEnabled = this.savedSpeakerState ?? true;
+      this.applyMicState();
+      this.applySpeakerState();
+      this.savedMicState = null;
+      this.savedSpeakerState = null;
     }
   }
 
@@ -219,7 +233,6 @@ export class LiveWidget extends ReactiveWidget {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     this.cleanup();
   }
 
