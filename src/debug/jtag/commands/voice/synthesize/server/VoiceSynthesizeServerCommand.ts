@@ -23,8 +23,8 @@ import { VoiceGrpcClient } from '@system/core/services/VoiceGrpcClient';
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import { Events } from '@system/core/shared/Events';
 
-// Valid TTS adapters
-const VALID_ADAPTERS = ['kokoro', 'fish-speech', 'f5-tts', 'styletts2', 'xtts-v2'];
+// Valid TTS adapters (must match streaming-core TTS registry)
+const VALID_ADAPTERS = ['piper', 'kokoro', 'silence'];
 
 export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizeParams, VoiceSynthesizeResult> {
   private voiceClient: VoiceGrpcClient;
@@ -47,7 +47,7 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
     }
 
     // Validate adapter if provided
-    const adapter = params.adapter || 'kokoro';
+    const adapter = params.adapter || 'piper';
     if (!VALID_ADAPTERS.includes(adapter)) {
       throw new ValidationError(
         'adapter',
@@ -100,41 +100,44 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
   ): Promise<void> {
     console.log(`🔊 synthesizeAndEmit started for handle ${handle}`);
 
-    // STUB: Generate silence until streaming-core is configured
-    // 1 second of 16-bit PCM silence at 24kHz = 48000 bytes
-    const sampleRate = params.sampleRate || 24000;
-    const durationSec = 1.0;
-    const numSamples = Math.floor(sampleRate * durationSec);
-    const stubAudio = Buffer.alloc(numSamples * 2); // 16-bit = 2 bytes per sample
+    try {
+      // Call actual Rust TTS via gRPC
+      const sampleRate = params.sampleRate || 24000;
+      const response = await this.voiceClient.synthesize({
+        text: params.text,
+        voice: params.voice || 'af', // Default to female American English
+        adapter,
+        speed,
+        sampleRate
+      });
 
-    // Generate a simple sine wave beep (440Hz) instead of silence so we know it works
-    for (let i = 0; i < numSamples; i++) {
-      const t = i / sampleRate;
-      const sample = Math.sin(2 * Math.PI * 440 * t) * 0.3; // 440Hz at 30% volume
-      const intSample = Math.floor(sample * 32767);
-      stubAudio.writeInt16LE(intSample, i * 2);
+      const audioBase64 = response.audio.toString('base64');
+      const durationSec = response.durationMs / 1000;
+
+      console.log(`🔊 Synthesized ${response.audio.length} bytes (${durationSec.toFixed(2)}s)`);
+      console.log(`🔊 Emitting voice:audio:${handle} (${audioBase64.length} chars base64)`);
+
+      // Emit real synthesized audio
+      await Events.emit(`voice:audio:${handle}`, {
+        handle,
+        audio: audioBase64,
+        sampleRate: response.sampleRate,
+        duration: durationSec,
+        adapter: response.adapter,
+        final: true
+      });
+
+      console.log(`🔊 Emitting voice:done:${handle}`);
+      await Events.emit(`voice:done:${handle}`, {
+        handle,
+        duration: durationSec,
+        adapter: response.adapter
+      });
+
+      console.log(`🔊 synthesizeAndEmit complete for handle ${handle}`);
+    } catch (err) {
+      console.error(`🔊 TTS synthesis failed:`, err);
+      throw err;
     }
-
-    const audioBase64 = stubAudio.toString('base64');
-    console.log(`🔊 Emitting voice:audio:${handle} (${audioBase64.length} chars base64)`);
-
-    // Emit stub audio immediately
-    await Events.emit(`voice:audio:${handle}`, {
-      handle,
-      audio: audioBase64,
-      sampleRate,
-      duration: durationSec,
-      adapter: 'stub',
-      final: true
-    });
-
-    console.log(`🔊 Emitting voice:done:${handle}`);
-    await Events.emit(`voice:done:${handle}`, {
-      handle,
-      duration: durationSec,
-      adapter: 'stub'
-    });
-
-    console.log(`🔊 synthesizeAndEmit complete for handle ${handle}`);
   }
 }

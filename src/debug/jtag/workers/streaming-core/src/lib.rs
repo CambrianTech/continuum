@@ -78,9 +78,10 @@ pub mod vad; // Voice activity detection (Silero, RMS threshold, etc.)
 pub mod ws_audio;
 
 // gRPC voice service (requires proto compilation)
-// TODO: Update voice_service to use new adapter system
-// #[cfg(feature = "grpc")]
-// pub mod voice_service;
+#[cfg(feature = "grpc")]
+pub mod proto;
+#[cfg(feature = "grpc")]
+pub mod voice_service;
 
 // Re-export main types at crate root
 pub use adapter::{AdapterError, InputAdapter, OutputAdapter};

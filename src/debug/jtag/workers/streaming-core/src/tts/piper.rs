@@ -4,7 +4,7 @@
 //! High-quality voices, efficient inference, designed for production use.
 //! Used by Home Assistant and other production systems.
 
-use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
+use super::{Phonemizer, SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use async_trait::async_trait;
 use ndarray;
 use once_cell::sync::OnceCell;
@@ -22,6 +22,7 @@ static PIPER_SESSION: OnceCell<Arc<Mutex<PiperModel>>> = OnceCell::new();
 struct PiperModel {
     session: Session,
     sample_rate: u32,
+    phonemizer: Phonemizer,
 }
 
 /// Piper TTS Adapter
@@ -67,7 +68,7 @@ impl PiperTTS {
         session: &Arc<Mutex<PiperModel>>,
         text: &str,
         _voice: &str,  // Piper models are single-voice
-        speed: f32,
+        _speed: f32,   // TODO: Implement speed control via length_scale parameter
     ) -> Result<SynthesisResult, TTSError> {
         if text.is_empty() {
             return Err(TTSError::InvalidText("Text cannot be empty".into()));
@@ -75,22 +76,29 @@ impl PiperTTS {
 
         let model = session.lock();
 
-        // Tokenize text (simplified - real Piper uses phonemization)
-        let text_tokens: Vec<i64> = text
-            .chars()
-            .filter_map(|c| if c.is_ascii() { Some(c as i64) } else { None })
-            .collect();
-        let text_array = ndarray::Array1::from_vec(text_tokens);
+        // Phonemize text to get phoneme IDs using model's phonemizer
+        let phoneme_ids = model.phonemizer.text_to_phoneme_ids(text);
 
-        // Speed parameter
-        let speed_array = ndarray::Array1::from_vec(vec![speed]);
+        // Reshape to [1, len] for batch dimension
+        let len = phoneme_ids.len();
+        let text_array = ndarray::Array2::from_shape_vec((1, len), phoneme_ids)
+            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to reshape input: {e}")))?;
+
+        // Speaker ID (for multi-speaker models) - use speaker 0
+        let sid_array = ndarray::Array1::from_vec(vec![0i64]);
+
+        // Inference parameters from model config
+        // Format: [noise_scale, length_scale, noise_w]
+        let scales_array = ndarray::Array1::from_vec(vec![0.333_f32, 1.0_f32, 0.333_f32]);
 
         // Run inference
         let outputs = model
             .session
             .run(ort::inputs![
-                "input" => text_array,
-                "speed" => speed_array
+                "input" => text_array.view(),
+                "input_lengths" => ndarray::Array1::from_vec(vec![len as i64]).view(),
+                "scales" => scales_array.view(),
+                "sid" => sid_array.view()
             ]?)
             .map_err(|e| TTSError::SynthesisFailed(format!("ONNX inference failed: {e}")))?;
 
@@ -106,10 +114,15 @@ impl PiperTTS {
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
         // Convert f32 to i16 (Piper outputs at model sample rate, we need 16kHz)
+        const PCM_I16_MAX: f32 = 32767.0;  // Maximum value for signed 16-bit PCM
+        const AUDIO_RANGE_MIN: f32 = -1.0;
+        const AUDIO_RANGE_MAX: f32 = 1.0;
+
         let source_rate = model.sample_rate;
+
         let samples_source: Vec<i16> = audio_data
             .iter()
-            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .map(|&s| (s.clamp(AUDIO_RANGE_MIN, AUDIO_RANGE_MAX) * PCM_I16_MAX) as i16)
             .collect();
 
         // Resample from model's sample rate to 16000Hz
@@ -210,9 +223,16 @@ impl TextToSpeech for PiperTTS {
             .with_intra_threads(num_cpus::get().min(4))?
             .commit_from_file(&model_path)?;
 
+        // Load phonemizer from model config
+        let config_path = model_path.with_extension("onnx.json");
+        let phonemizer = Phonemizer::load_from_config(
+            config_path.to_str().unwrap_or("models/piper/en_US-libritts_r-medium.onnx.json")
+        ).map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {}", e)))?;
+
         let model = PiperModel {
             session,
             sample_rate: 22050,
+            phonemizer,
         };
 
         PIPER_SESSION

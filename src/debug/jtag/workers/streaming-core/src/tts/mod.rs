@@ -10,10 +10,12 @@
 mod piper;
 mod kokoro;
 mod silence;
+mod phonemizer;
 
 pub use piper::PiperTTS;
 pub use kokoro::KokoroTTS;
 pub use silence::SilenceTTS;
+pub(crate) use phonemizer::Phonemizer;
 
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;

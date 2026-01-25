@@ -405,12 +405,17 @@ impl CallManager {
         let call = self.get_or_create_call(call_id).await;
         let handle = Handle::new();
 
-        // Add participant to call
+        // Add participant to call with VAD initialization
         {
             let mut call = call.write().await;
             let stream =
                 ParticipantStream::new(handle, user_id.to_string(), display_name.to_string());
-            call.mixer.add_participant(stream);
+
+            // Initialize VAD for speech detection and transcription
+            if let Err(e) = call.mixer.add_participant_with_init(stream).await {
+                error!("Failed to initialize VAD for {}: {:?}", display_name, e);
+                // Fallback to non-VAD participant (won't get transcriptions)
+            }
         }
 
         // Track participant -> call mapping

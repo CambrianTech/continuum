@@ -37,8 +37,8 @@ impl WhisperSTT {
             return path.clone();
         }
 
-        // Get model preference from WHISPER_MODEL env var (default: large-v3-turbo)
-        let model_name = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "large-v3-turbo".to_string());
+        // Get model preference from WHISPER_MODEL env var (default: base)
+        let model_name = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "base".to_string());
 
         // Map model name to filename
         let model_file = match model_name.as_str() {
@@ -48,8 +48,8 @@ impl WhisperSTT {
             "large-v3" => "ggml-large-v3.bin",
             "large-v3-turbo" => "ggml-large-v3-turbo.bin",
             _ => {
-                tracing::warn!("Unknown WHISPER_MODEL='{}', defaulting to large-v3-turbo", model_name);
-                "ggml-large-v3-turbo.bin"
+                tracing::warn!("Unknown WHISPER_MODEL='{}', defaulting to base", model_name);
+                "ggml-base.en.bin"
             }
         };
 

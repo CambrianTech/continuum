@@ -75,6 +75,10 @@ export class LiveWidget extends ReactiveWidget {
   // Speaking state timeouts per user (clear after 2s of no speech)
   private speakingTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map();
 
+  // Saved state before tab went to background
+  private savedMicState: boolean | null = null;
+  private savedSpeakerState: boolean | null = null;
+
   // Styles imported from SCSS
   static override styles = [
     ReactiveWidget.styles,
@@ -93,6 +97,35 @@ export class LiveWidget extends ReactiveWidget {
     }).catch(err => {
       console.error('LiveWidget: Failed to load user context:', err);
     });
+
+    // Auto-mute when tab goes to background, restore when it comes back
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
+  }
+
+  private handleVisibilityChange = (): void => {
+    if (document.hidden) {
+      // Tab went to background - save state and mute both
+      if (this.isJoined) {
+        this.savedMicState = this.micEnabled;
+        this.savedSpeakerState = this.speakerEnabled;
+        this.micEnabled = false;
+        this.speakerEnabled = false;
+        this.applyMicState();
+        this.applySpeakerState();
+        console.log('LiveWidget: Tab in background - muted (saved state for restore)');
+      }
+    } else {
+      // Tab came back to foreground - restore previous state
+      if (this.isJoined && this.savedMicState !== null) {
+        this.micEnabled = this.savedMicState;
+        this.speakerEnabled = this.savedSpeakerState ?? true;
+        this.applyMicState();
+        this.applySpeakerState();
+        console.log('LiveWidget: Tab in foreground - restored previous state');
+        this.savedMicState = null;
+        this.savedSpeakerState = null;
+      }
+    }
   }
 
   /**
@@ -186,6 +219,7 @@ export class LiveWidget extends ReactiveWidget {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     this.cleanup();
   }
 

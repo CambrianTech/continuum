@@ -15,8 +15,7 @@
 
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { Commands } from '../../core/shared/Commands';
-import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { getVoiceService } from './VoiceService';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -223,41 +222,33 @@ export class AIAudioBridge {
     }
 
     try {
-      // Generate TTS audio
-      const ttsResult = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
-        'voice/synthesize',
-        {
-          text,
-          voice: 'default',
-          format: 'pcm16',
-        }
-      );
+      // Use VoiceService (handles TTS + event subscription)
+      const voiceService = getVoiceService();
+      const result = await voiceService.synthesizeSpeech({
+        text,
+        userId,
+        adapter: 'piper',  // Local, fast TTS
+      });
 
-      if (!ttsResult.success || !ttsResult.audio) {
-        console.warn(`🤖 AIAudioBridge: TTS failed for ${connection.displayName}`);
-        return;
-      }
+      // result.audioSamples is already i16 array ready to send
+      const samples = result.audioSamples;
 
-      // Send audio in chunks to the call
-      const audioData = Buffer.from(ttsResult.audio, 'base64');
-      const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.byteLength / 2);
-
-      // Send in ~20ms chunks (320 samples at 16kHz)
-      const chunkSize = 320;
-      for (let i = 0; i < samples.length; i += chunkSize) {
-        const chunk = samples.slice(i, i + chunkSize);
-        const base64Chunk = this.int16ToBase64(chunk);
+      // Stream to call in 20ms frames (320 samples at 16kHz)
+      const frameSize = 320;
+      for (let i = 0; i < samples.length; i += frameSize) {
+        const frame = samples.slice(i, i + frameSize);
+        const base64Frame = this.int16ToBase64(frame);
 
         const audioMsg: AudioMessage = {
           type: 'Audio',
-          data: base64Chunk,
+          data: base64Frame,
         };
 
         if (connection.ws.readyState === WebSocket.OPEN) {
           connection.ws.send(JSON.stringify(audioMsg));
         }
 
-        // Small delay between chunks to simulate real-time playback
+        // Pace frames at 20ms intervals (real-time playback)
         await this.sleep(20);
       }
 

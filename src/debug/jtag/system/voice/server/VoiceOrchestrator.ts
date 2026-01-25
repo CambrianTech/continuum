@@ -232,15 +232,6 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Step 1: Post transcript to chat room (FIRE AND FORGET - don't await)
-    // This prevents blocking the event loop while 12 AIs wake up and process
-    Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
-      room: context.roomId,
-      message: `[Voice] ${speakerName}: ${transcript}`
-    }).catch(error => {
-      console.warn('🎙️ VoiceOrchestrator: Failed to post transcript to chat:', error);
-    });
-
     // Update context with new utterance
     context.recentUtterances.push(event);
     if (context.recentUtterances.length > 20) {
@@ -258,30 +249,42 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Step 2: Turn arbitration - which AI responds via VOICE?
-    // Other AIs will see the chat message and may respond via text
+    // Turn arbitration - which AI responds via VOICE?
     const responder = this.arbiter.selectResponder(event, aiParticipants, context);
 
     if (!responder) {
-      console.log('🎙️ VoiceOrchestrator: Arbiter selected no voice responder (AIs may still respond via text)');
+      console.log('🎙️ VoiceOrchestrator: Arbiter selected no voice responder');
       return;
     }
 
     console.log(`🎙️ VoiceOrchestrator: ${responder.displayName} selected to respond via voice`);
 
-    // Step 3: Track who should respond via voice
-    // The persona will see the chat message through their normal inbox polling
-    // When they respond, we'll intercept it for TTS via event subscription
-    const pendingId = generateUUID();
-    this.pendingResponses.set(pendingId, {
-      sessionId,
-      personaId: responder.userId,
-      originalMessageId: pendingId,
-      timestamp: Date.now()
-    });
+    // Enqueue voice utterance directly to selected AI's inbox
+    // Uses InboxMessage with sourceModality='voice' (NOT chat)
+    const inboxMessage: InboxMessage = {
+      id: generateUUID(),
+      type: 'message',
+      roomId: context.roomId,
+      content: transcript,
+      senderId: speakerId,
+      senderName: speakerName,
+      senderType: 'human',
+      priority: 0.9, // High priority - voice interaction
+      timestamp: event.timestamp,
+      domain: 'voice' as TaskDomain,
+      sourceModality: 'voice',       // Voice utterance, not text chat
+      voiceSessionId: sessionId      // Voice call context
+    };
+
+    // Get PersonaUser and enqueue to their inbox
+    const userDaemon = this.userDaemon;
+    const persona = userDaemon.getUser(responder.userId);
+    if (persona && 'inbox' in persona) {
+      await (persona as any).inbox.enqueue(inboxMessage);
+      console.log(`🎙️ VoiceOrchestrator: Enqueued voice utterance to ${responder.displayName}'s inbox`);
+    }
 
     // Track selected responder for this session
-    // When this persona posts a message to this room, route to TTS
     this.trackVoiceResponder(sessionId, responder.userId);
 
     // Update last responder

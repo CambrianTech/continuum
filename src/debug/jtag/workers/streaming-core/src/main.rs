@@ -14,9 +14,12 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 // Voice service (gRPC) - import from library
-// TODO: Update voice_service to use new adapter system
-// #[cfg(feature = "grpc")]
-// use streaming_core::voice_service::VoiceServiceImpl;
+#[cfg(feature = "grpc")]
+use streaming_core::proto::voice::voice_service_server::VoiceServiceServer;
+#[cfg(feature = "grpc")]
+use streaming_core::voice_service::VoiceServiceImpl;
+#[cfg(feature = "grpc")]
+use tonic::transport::Server;
 
 /// Get gRPC port from environment or default
 #[allow(dead_code)]
@@ -194,8 +197,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Start gRPC server with voice service
-    // TODO: Update to new adapter system - gRPC service disabled for now
-    /*
     #[cfg(feature = "grpc")]
     {
         let grpc_port = get_grpc_port();
@@ -207,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Spawn gRPC server as a separate task (non-blocking)
         let grpc_handle = tokio::spawn(async move {
             if let Err(e) = Server::builder()
-                .add_service(voice_service.into_server())
+                .add_service(VoiceServiceServer::new(voice_service))
                 .serve(addr)
                 .await
             {
@@ -222,11 +223,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // If call server exits, also stop gRPC
         grpc_handle.abort();
     }
-    */
 
-    // Run the call server (primary service)
-    info!("gRPC disabled (TODO: update to new adapter system), running WebSocket call server only");
-    let _ = call_server_handle.await;
+    #[cfg(not(feature = "grpc"))]
+    {
+        // Run the call server only (gRPC disabled)
+        info!("gRPC disabled (compile with --features grpc to enable)");
+        let _ = call_server_handle.await;
+    }
 
     Ok(())
 }
