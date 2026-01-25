@@ -259,10 +259,18 @@ export class VoiceOrchestrator {
 
     console.log(`🎙️ VoiceOrchestrator: ${responder.displayName} selected to respond via voice`);
 
-    // TODO: Implement proper voice inbox routing through event system
-    // Voice transcriptions currently appear only as LiveWidget captions
-    // Future: Route to PersonaInbox via proper event/message architecture
-    // (NOT direct enqueueing - use event-driven routing)
+    // Emit directed voice transcription event FOR THE SELECTED RESPONDER ONLY
+    // This goes to PersonaUser's voice:transcription:directed subscription
+    Events.emit('voice:transcription:directed', {
+      sessionId: event.sessionId,
+      speakerId: event.speakerId,
+      speakerName: event.speakerName,
+      transcript: event.transcript,
+      confidence: event.confidence,
+      language: 'en',
+      timestamp: event.timestamp,
+      targetPersonaId: responder.userId  // ONLY this persona should respond
+    });
 
     // Track selected responder for this session
     this.trackVoiceResponder(sessionId, responder.userId);

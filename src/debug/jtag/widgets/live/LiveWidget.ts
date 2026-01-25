@@ -400,7 +400,6 @@ export class LiveWidget extends ReactiveWidget {
       if (result.success && result.callId) {
         this.sessionId = result.callId;
         this.isJoined = true;
-        console.error(`🔍 DEBUG: LiveWidget storing callId=${this.sessionId.slice(0, 8)} from LiveJoin result`);
 
         // Use participants from server response (includes all room members for new calls)
         // WebSocket events (ParticipantJoined/Left) will update in real-time
@@ -464,19 +463,13 @@ export class LiveWidget extends ReactiveWidget {
             console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
           },
           onTranscription: async (transcription: TranscriptionResult) => {
-            // [STEP 9] LiveWidget relaying transcription to server
-            console.log(`[STEP 9] 📤 LiveWidget relaying transcription to server: "${transcription.text.slice(0, 50)}..."`);
-
-            // Send to server via command (bridges browser→server event bus)
             if (!this.sessionId) {
-              console.warn('[STEP 9] ⚠️ No call sessionId - cannot relay transcription');
               return;
             }
 
-            console.error(`🔍 DEBUG: Sending transcription with callSessionId=${this.sessionId?.slice(0, 8)}`);
             try {
               await Commands.execute<CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult>('collaboration/live/transcription', {
-                callSessionId: this.sessionId,  // Pass call session UUID
+                callSessionId: this.sessionId,
                 speakerId: transcription.userId,
                 speakerName: transcription.displayName,
                 transcript: transcription.text,
@@ -484,9 +477,8 @@ export class LiveWidget extends ReactiveWidget {
                 language: transcription.language,
                 timestamp: Date.now()
               });
-              console.log(`[STEP 9] ✅ Transcription sent to server successfully`);
             } catch (error) {
-              console.error(`[STEP 9] ❌ Failed to relay transcription:`, error);
+              console.error(`Failed to relay transcription:`, error);
             }
 
             // Update caption display
@@ -503,7 +495,6 @@ export class LiveWidget extends ReactiveWidget {
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
           // Join audio stream (callId is guaranteed non-null here)
-          console.error(`🔍 DEBUG: Joining audio stream with callId=${result.callId.slice(0, 8)}`);
           await this.audioClient.join(result.callId, myUserId, myDisplayName);
           console.log('LiveWidget: Connected to audio stream');
 
@@ -718,7 +709,6 @@ export class LiveWidget extends ReactiveWidget {
    * Set a caption to display (auto-fades after 5 seconds)
    */
   private setCaption(speakerName: string, text: string): void {
-    console.log(`[CAPTION] Setting caption: "${speakerName}: ${text.slice(0, 30)}..."`);
 
     // Clear existing timeout
     if (this.captionFadeTimeout) {

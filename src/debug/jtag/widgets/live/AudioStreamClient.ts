@@ -310,8 +310,6 @@ export class AudioStreamClient {
           this.options.onParticipantLeft?.(msg.user_id);
           break;
         case 'Transcription':
-          // [STEP 8] Browser received transcription from Rust WebSocket
-          console.log(`[STEP 8] 🎧 Browser received transcription: "${msg.text.slice(0, 50)}..." from ${msg.display_name}`);
           this.options.onTranscription?.({
             userId: msg.user_id,
             displayName: msg.display_name,
