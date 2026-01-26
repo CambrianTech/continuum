@@ -19,12 +19,11 @@ import { getVoiceOrchestrator, type UtteranceEvent } from './VoiceOrchestrator';
 import { getRustVoiceOrchestrator } from './VoiceOrchestratorRustBridge';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { TTS_ADAPTERS } from '../shared/VoiceConfig';
+import { AUDIO_SAMPLE_RATE, BYTES_PER_SAMPLE } from '../../../shared/AudioConstants';
 
-// Audio configuration
-const SAMPLE_RATE = 16000;
-const BYTES_PER_SAMPLE = 2; // Int16
+// Audio configuration - derived from constants
 const CHUNK_DURATION_MS = 20;
-const SAMPLES_PER_CHUNK = (SAMPLE_RATE * CHUNK_DURATION_MS) / 1000; // 320
+const SAMPLES_PER_CHUNK = (AUDIO_SAMPLE_RATE * CHUNK_DURATION_MS) / 1000; // 320
 
 interface VoiceConnection {
   ws: WebSocket;
@@ -214,7 +213,7 @@ export class VoiceWebSocketServer {
 
     try {
       // Step 1: Transcribe audio to text via Rust Whisper
-      console.log(`🎤 Transcribing ${totalSamples} samples (${(totalSamples / SAMPLE_RATE * 1000).toFixed(0)}ms)`);
+      console.log(`🎤 Transcribing ${totalSamples} samples (${(totalSamples / AUDIO_SAMPLE_RATE * 1000).toFixed(0)}ms)`);
 
       const transcribeResult = await Commands.execute<VoiceTranscribeParams, VoiceTranscribeResult>(
         'voice/transcribe',
@@ -429,7 +428,7 @@ export class VoiceWebSocketServer {
         {
           text: 'Got it',
           adapter: TTS_ADAPTERS.PIPER,
-          sampleRate: SAMPLE_RATE
+          sampleRate: AUDIO_SAMPLE_RATE
         }
       );
 

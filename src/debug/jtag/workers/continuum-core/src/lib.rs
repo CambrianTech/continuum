@@ -7,12 +7,15 @@
 //! - Zero-copy where possible
 //! - Performance timing from the ground up
 
+pub mod audio_constants;
 pub mod concurrent;
 pub mod voice;
 pub mod persona;
 pub mod logging;
 pub mod ipc;
 pub mod ffi;
+
+pub use audio_constants::*;
 
 pub use voice::VoiceOrchestrator;
 pub use persona::PersonaInbox;

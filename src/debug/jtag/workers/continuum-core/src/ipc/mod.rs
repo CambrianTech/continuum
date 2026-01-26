@@ -57,6 +57,14 @@ enum Request {
         adapter: Option<String>,
     },
 
+    #[serde(rename = "voice/transcribe")]
+    VoiceTranscribe {
+        /// Base64-encoded i16 PCM samples, 16kHz mono
+        audio: String,
+        /// Language code (e.g., "en") or None for auto-detection
+        language: Option<String>,
+    },
+
     #[serde(rename = "inbox/create")]
     InboxCreate { persona_id: String },
 
@@ -200,6 +208,72 @@ impl ServerState {
                     Err(e) => {
                         log_error!("ipc", "voice_synthesize", "TTS failed: {}", e);
                         Response::error(format!("TTS failed: {}", e))
+                    }
+                }
+            }
+
+            Request::VoiceTranscribe { audio, language } => {
+                let _timer = TimingGuard::new("ipc", "voice_transcribe");
+
+                use crate::voice::stt_service;
+                use base64::Engine;
+
+                // Decode base64 audio
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(&audio) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        log_error!("ipc", "voice_transcribe", "Base64 decode failed: {}", e);
+                        return Response::error(format!("Base64 decode failed: {}", e));
+                    }
+                };
+
+                // Convert bytes to i16 samples
+                if bytes.len() % 2 != 0 {
+                    return Response::error("Audio data must have even length (i16 samples)".into());
+                }
+                let samples: Vec<i16> = bytes
+                    .chunks_exact(2)
+                    .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+                    .collect();
+
+                log_info!(
+                    "ipc", "voice_transcribe",
+                    "Transcribing {} samples ({:.1}s)",
+                    samples.len(),
+                    samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64
+                );
+
+                // Transcribe
+                let result = stt_service::transcribe_speech_sync(
+                    &samples,
+                    language.as_deref()
+                );
+
+                match result {
+                    Ok(transcript) => {
+                        log_info!(
+                            "ipc", "voice_transcribe",
+                            "Transcribed: \"{}\" (confidence: {:.2})",
+                            transcript.text,
+                            transcript.confidence
+                        );
+
+                        Response::success(serde_json::json!({
+                            "text": transcript.text,
+                            "language": transcript.language,
+                            "confidence": transcript.confidence,
+                            "segments": transcript.segments.iter().map(|s| {
+                                serde_json::json!({
+                                    "text": s.text,
+                                    "start_ms": s.start_ms,
+                                    "end_ms": s.end_ms
+                                })
+                            }).collect::<Vec<_>>()
+                        }))
+                    },
+                    Err(e) => {
+                        log_error!("ipc", "voice_transcribe", "STT failed: {}", e);
+                        Response::error(format!("STT failed: {}", e))
                     }
                 }
             }

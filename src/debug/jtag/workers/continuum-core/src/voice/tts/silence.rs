@@ -4,11 +4,9 @@
 //! Useful for validating TTS pipeline without actual synthesis.
 
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
+use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Sample rate for generated audio (must match system standard)
-const SILENCE_SAMPLE_RATE: u32 = 16000;
 
 /// Duration per character (milliseconds)
 /// Simulates realistic speech timing: 150ms per character ≈ 400 WPM
@@ -51,7 +49,7 @@ impl SilenceTTS {
 
     /// Generate silent audio samples
     fn generate_silence(&self, duration_ms: u64) -> Vec<i16> {
-        let num_samples = (SILENCE_SAMPLE_RATE as u64 * duration_ms) / 1000;
+        let num_samples = (AUDIO_SAMPLE_RATE as u64 * duration_ms) / 1000;
         vec![0i16; num_samples as usize]
     }
 }
@@ -98,7 +96,7 @@ impl TextToSpeech for SilenceTTS {
 
         Ok(SynthesisResult {
             samples,
-            sample_rate: SILENCE_SAMPLE_RATE,
+            sample_rate: AUDIO_SAMPLE_RATE,
             duration_ms,
         })
     }
@@ -119,7 +117,7 @@ impl TextToSpeech for SilenceTTS {
 
     fn get_param(&self, name: &str) -> Option<String> {
         match name {
-            "sample_rate" => Some(SILENCE_SAMPLE_RATE.to_string()),
+            "sample_rate" => Some(AUDIO_SAMPLE_RATE.to_string()),
             "ms_per_char" => Some(SILENCE_MS_PER_CHAR.to_string()),
             "min_duration_ms" => Some(SILENCE_MIN_DURATION_MS.to_string()),
             "max_duration_ms" => Some(SILENCE_MAX_DURATION_MS.to_string()),

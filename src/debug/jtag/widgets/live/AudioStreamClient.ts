@@ -47,7 +47,6 @@ export class AudioStreamClient {
 
   // Mic capture worklet (off main thread)
   private micWorkletNode: AudioWorkletNode | null = null;
-  private micSourceNode: MediaStreamAudioSourceNode | null = null;
 
   // Playback worklet (off main thread) - decodes AND plays
   private playbackWorkletNode: AudioWorkletNode | null = null;
@@ -91,6 +90,9 @@ export class AudioStreamClient {
     return new Promise((resolve, reject) => {
       try {
         this.ws = new WebSocket(this.serverUrl);
+        // CRITICAL: Set binary type to arraybuffer for raw audio data
+        // This eliminates base64 encoding overhead (~33%) for real-time audio
+        this.ws.binaryType = 'arraybuffer';
 
         this.ws.onopen = () => {
           console.log('AudioStreamClient: Connected to call server');
@@ -108,7 +110,13 @@ export class AudioStreamClient {
         };
 
         this.ws.onmessage = (event) => {
-          this.handleMessage(event.data);
+          // Binary frames are raw audio data (i16 PCM, little-endian)
+          if (event.data instanceof ArrayBuffer) {
+            this.handleBinaryAudio(event.data);
+          } else {
+            // Text frames are JSON (transcriptions, join/leave notifications)
+            this.handleMessage(event.data);
+          }
         };
 
         this.ws.onerror = (error) => {
@@ -210,7 +218,7 @@ export class AudioStreamClient {
     });
 
     // Create audio processing pipeline using AudioWorklet (off main thread)
-    this.micSourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
+    const source = this.audioContext.createMediaStreamSource(this.mediaStream);
 
     // Create AudioWorkletNode - processing happens on audio thread
     this.micWorkletNode = new AudioWorkletNode(this.audioContext, 'microphone-processor');
@@ -226,7 +234,7 @@ export class AudioStreamClient {
     };
 
     // Connect: mic -> worklet -> (nowhere, we just capture)
-    this.micSourceNode.connect(this.micWorkletNode);
+    source.connect(this.micWorkletNode);
     // Don't connect to destination - we're just capturing, not playing back locally
 
     console.log('AudioStreamClient: Microphone streaming started (AudioWorklet - off main thread)');
@@ -236,11 +244,6 @@ export class AudioStreamClient {
    * Stop streaming microphone audio
    */
   stopMicrophone(): void {
-    if (this.micSourceNode) {
-      this.micSourceNode.disconnect();
-      this.micSourceNode = null;
-    }
-
     if (this.micWorkletNode) {
       this.micWorkletNode.disconnect();
       this.micWorkletNode.port.close();
@@ -248,9 +251,11 @@ export class AudioStreamClient {
     }
 
     if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
+      this.mediaStream.getTracks().forEach((track) => track.stop());
       this.mediaStream = null;
     }
+
+    console.log('AudioStreamClient: Microphone streaming stopped');
   }
 
   /**
@@ -293,16 +298,14 @@ export class AudioStreamClient {
   }
 
   /**
-   * Handle incoming WebSocket messages
+   * Handle incoming JSON WebSocket messages (transcriptions, join/leave notifications)
+   * Audio now comes as binary frames - see handleBinaryAudio()
    */
   private handleMessage(data: string): void {
     try {
       const msg = JSON.parse(data) as CallMessage;
 
       switch (msg.type) {
-        case 'MixedAudio':
-          this.handleMixedAudio(msg.data);
-          break;
         case 'ParticipantJoined':
           this.options.onParticipantJoined?.(msg.user_id, msg.display_name);
           break;
@@ -310,6 +313,8 @@ export class AudioStreamClient {
           this.options.onParticipantLeft?.(msg.user_id);
           break;
         case 'Transcription':
+          // [STEP 8] Browser received transcription from Rust WebSocket
+          console.log(`[STEP 8] 🎧 Browser received transcription: "${msg.text.slice(0, 50)}..." from ${msg.display_name}`);
           this.options.onTranscription?.({
             userId: msg.user_id,
             displayName: msg.display_name,
@@ -318,6 +323,11 @@ export class AudioStreamClient {
             language: msg.language,
           });
           break;
+        case 'MixedAudio':
+          // DEPRECATED: Audio now comes as binary frames
+          // Keep for backwards compatibility during transition
+          this.handleMixedAudio(msg.data);
+          break;
       }
     } catch (error) {
       console.error('AudioStreamClient: Failed to parse message:', error);
@@ -325,7 +335,8 @@ export class AudioStreamClient {
   }
 
   /**
-   * Send audio frame to server
+   * Send audio frame to server as BINARY WebSocket frame
+   * Direct bytes transfer - no JSON, no base64 encoding overhead
    */
   private sendAudioFrame(samples: Float32Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -336,16 +347,42 @@ export class AudioStreamClient {
       int16Data[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
     }
 
-    // Encode as base64
-    const bytes = new Uint8Array(int16Data.buffer);
-    const base64 = btoa(String.fromCharCode(...bytes));
-
-    const audioMsg: CallMessage = { type: 'Audio', data: base64 };
-    this.ws.send(JSON.stringify(audioMsg));
+    // Send raw bytes directly - WebSocket binary frame
+    // Rust server receives as Message::Binary(data) and converts with bytes_to_i16()
+    this.ws.send(int16Data.buffer);
   }
 
   /**
-   * Handle received mixed audio
+   * Handle binary audio frames from server
+   * Raw i16 PCM data - no base64 decoding needed
+   * This is the new high-performance path for real-time audio
+   */
+  private handleBinaryAudio(arrayBuffer: ArrayBuffer): void {
+    // Ensure audio context is running (needed after user interaction)
+    if (this.audioContext?.state === 'suspended') {
+      this.audioContext.resume();
+    }
+
+    if (!this.playbackWorkletNode) return;
+
+    // Direct ArrayBuffer to Int16Array view (zero-copy)
+    const int16Data = new Int16Array(arrayBuffer);
+
+    // Convert Int16 to Float32 for Web Audio API
+    const samples = new Float32Array(int16Data.length);
+    for (let i = 0; i < int16Data.length; i++) {
+      samples[i] = int16Data[i] / 32768;
+    }
+
+    // Transfer Float32Array to worklet (zero-copy via transferable)
+    this.playbackWorkletNode.port.postMessage(
+      { type: 'audio', samples },
+      [samples.buffer]  // Transfer ownership - zero-copy
+    );
+  }
+
+  /**
+   * Handle received mixed audio (DEPRECATED - for backwards compatibility)
    * Decode on main thread (fast), transfer Float32Array to worklet (zero-copy)
    */
   private handleMixedAudio(base64Data: string): void {

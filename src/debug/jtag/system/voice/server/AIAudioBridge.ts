@@ -234,23 +234,22 @@ export class AIAudioBridge {
       // result.audioSamples is already i16 array ready to send
       const samples = result.audioSamples;
 
-      // Stream to call in 20ms frames (320 samples at 16kHz)
-      const frameSize = 320;
+      // Stream to call in 32ms frames (512 samples at 16kHz)
+      // MUST match Rust call_server frame_size for proper mixing
+      const frameSize = 512;
+      const frameDurationMs = 32;
       for (let i = 0; i < samples.length; i += frameSize) {
         const frame = samples.slice(i, i + frameSize);
-        const base64Frame = this.int16ToBase64(frame);
 
-        const audioMsg: AudioMessage = {
-          type: 'Audio',
-          data: base64Frame,
-        };
-
+        // Send as BINARY WebSocket frame - direct bytes, no JSON, no base64
+        // Rust server receives as Message::Binary and converts with bytes_to_i16()
         if (connection.ws.readyState === WebSocket.OPEN) {
-          connection.ws.send(JSON.stringify(audioMsg));
+          const buffer = Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength);
+          connection.ws.send(buffer);
         }
 
-        // Pace frames at 20ms intervals (real-time playback)
-        await this.sleep(20);
+        // Pace frames at 32ms intervals (real-time playback)
+        await this.sleep(frameDurationMs);
       }
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);

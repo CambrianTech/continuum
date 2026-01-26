@@ -141,21 +141,22 @@ impl KokoroTTS {
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
 
-        // Simple downsample 24kHz -> 16kHz (2:3 ratio)
-        let samples_16k = Self::resample_24k_to_16k(&samples_24k);
+        // Resample from Kokoro's 24kHz to standard audio rate
+        use crate::audio_constants::AUDIO_SAMPLE_RATE;
+        let samples_resampled = Self::resample_24k_to_target(&samples_24k, AUDIO_SAMPLE_RATE);
 
-        let duration_ms = (samples_16k.len() as u64 * 1000) / 16000;
+        let duration_ms = (samples_resampled.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
 
         info!(
             "Kokoro synthesized {} samples ({}ms) for '{}...'",
-            samples_16k.len(),
+            samples_resampled.len(),
             duration_ms,
             &text[..text.len().min(30)]
         );
 
         Ok(SynthesisResult {
-            samples: samples_16k,
-            sample_rate: 16000,
+            samples: samples_resampled,
+            sample_rate: AUDIO_SAMPLE_RATE,
             duration_ms,
         })
     }
@@ -174,9 +175,9 @@ impl KokoroTTS {
         embedding
     }
 
-    /// Resample 24kHz to 16kHz (simple linear interpolation)
-    fn resample_24k_to_16k(samples: &[i16]) -> Vec<i16> {
-        let ratio = 24000.0 / 16000.0; // 1.5
+    /// Resample from 24kHz to target rate (simple linear interpolation)
+    fn resample_24k_to_target(samples: &[i16], target_rate: u32) -> Vec<i16> {
+        let ratio = 24000.0 / target_rate as f64;
         let output_len = (samples.len() as f64 / ratio) as usize;
         let mut output = Vec::with_capacity(output_len);
 
@@ -324,7 +325,7 @@ mod tests {
     fn test_resample() {
         // 6 samples at 24kHz should become 4 samples at 16kHz
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = KokoroTTS::resample_24k_to_16k(&input);
+        let output = KokoroTTS::resample_24k_to_target(&input, 16000);
         assert_eq!(output.len(), 4);
     }
 }

@@ -10,6 +10,7 @@ import { Events } from '../../core/shared/Events';
 import type { VoiceConfig, TTSAdapter } from '../shared/VoiceConfig';
 import { DEFAULT_VOICE_CONFIG, TTS_ADAPTERS } from '../shared/VoiceConfig';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { AUDIO_SAMPLE_RATE } from '../../../shared/AudioConstants';
 
 export interface SynthesizeSpeechRequest {
   text: string;
@@ -85,7 +86,7 @@ export class VoiceService {
         adapter,
         voice,
         speed,
-        sampleRate: 16000,
+        sampleRate: AUDIO_SAMPLE_RATE,
       }).then((result) => {
         const handle = result.handle;
 

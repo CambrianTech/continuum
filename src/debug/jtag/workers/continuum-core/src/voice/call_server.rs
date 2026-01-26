@@ -6,7 +6,6 @@
 use crate::voice::handle::Handle;
 use crate::voice::mixer::{AudioMixer, ParticipantStream};
 use crate::voice::stt;
-use crate::voice::{VoiceOrchestrator, UtteranceEvent, SpeakerType};
 use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -90,6 +89,12 @@ pub enum CallMessage {
     /// Mixed audio to play (base64 encoded i16 PCM)
     MixedAudio { data: String },
 
+    /// Loopback test: client echoes this back as LoopbackReturn
+    LoopbackTest { data: String, seq: u32 },
+
+    /// Loopback return: client sends back what it received
+    LoopbackReturn { data: String, seq: u32 },
+
     /// Error message
     Error { message: String },
 
@@ -128,6 +133,7 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
+        // 16kHz for voice - matches TTS output, Whisper input, and WebSocket transport
         // 512 samples at 16kHz = 32ms per frame
         Self {
             sample_rate: 16000,
@@ -200,7 +206,7 @@ impl Call {
     }
 
     /// Generate hold music from pre-decoded samples
-    pub fn generate_hold_tone(&mut self, frame_size: usize) -> Vec<i16> {
+    fn generate_hold_tone(&mut self, frame_size: usize) -> Vec<i16> {
         let samples = &*HOLD_MUSIC_SAMPLES;
 
         if samples.is_empty() {
@@ -273,17 +279,14 @@ pub struct CallManager {
     participant_calls: RwLock<HashMap<Handle, String>>,
     /// Track running audio loops
     audio_loops: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
-    /// Voice orchestrator for AI turn arbitration - shared, concurrent
-    orchestrator: Arc<VoiceOrchestrator>,
 }
 
 impl CallManager {
-    pub fn new(orchestrator: Arc<VoiceOrchestrator>) -> Self {
+    pub fn new() -> Self {
         Self {
             calls: RwLock::new(HashMap::new()),
             participant_calls: RwLock::new(HashMap::new()),
             audio_loops: RwLock::new(HashMap::new()),
-            orchestrator,
         }
     }
 
@@ -512,16 +515,10 @@ impl CallManager {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
                         (result.user_id, result.display_name, result.speech_samples)
                     {
-                        // Clone orchestrator and call_id for the spawned task
-                        let orchestrator = Arc::clone(&self.orchestrator);
-                        let session_id = call_id.clone();
-
                         // Spawn transcription task (don't block audio processing)
                         tokio::spawn(async move {
                             Self::transcribe_and_broadcast(
                                 transcription_tx,
-                                orchestrator,
-                                session_id,
                                 user_id,
                                 display_name,
                                 speech_samples,
@@ -535,11 +532,8 @@ impl CallManager {
     }
 
     /// Transcribe speech samples and broadcast to all participants
-    /// Also calls VoiceOrchestrator to determine which AIs should respond
     async fn transcribe_and_broadcast(
         transcription_tx: broadcast::Sender<TranscriptionEvent>,
-        orchestrator: Arc<VoiceOrchestrator>,
-        session_id: String,
         user_id: String,
         display_name: String,
         samples: Vec<i16>,
@@ -603,78 +597,6 @@ impl CallManager {
                             display_name
                         );
                     }
-
-                    // [STEP 7] Call VoiceOrchestrator - TIMED for performance monitoring
-                    use std::time::Instant;
-                    let orch_start = Instant::now();
-
-                    // Parse UUIDs for orchestrator
-                    let session_uuid = match uuid::Uuid::parse_str(&session_id) {
-                        Ok(uuid) => uuid,
-                        Err(e) => {
-                            error!("[STEP 7] ❌ Invalid session UUID '{}': {}", session_id, e);
-                            return;
-                        }
-                    };
-
-                    let speaker_uuid = match uuid::Uuid::parse_str(&user_id) {
-                        Ok(uuid) => uuid,
-                        Err(e) => {
-                            warn!("[STEP 7] Invalid speaker UUID '{}': {}, using random UUID", user_id, e);
-                            uuid::Uuid::new_v4()
-                        }
-                    };
-
-                    // Create utterance event
-                    let utterance = UtteranceEvent {
-                        session_id: session_uuid,
-                        speaker_id: speaker_uuid,
-                        speaker_name: display_name.clone(),
-                        speaker_type: SpeakerType::Human,
-                        transcript: text.to_string(),
-                        confidence: result.confidence,
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u64,
-                    };
-
-                    // Call orchestrator to determine which AIs should respond
-                    let responder_ids = orchestrator.on_utterance(utterance);
-                    let orch_duration = orch_start.elapsed();
-
-                    // Performance logging - WARN if > 10µs on M1 (user's target)
-                    if orch_duration.as_micros() > 10 {
-                        warn!(
-                            "[STEP 7] ⚠️ VoiceOrchestrator SLOW: {}µs for {} responders (target: <10µs)",
-                            orch_duration.as_micros(),
-                            responder_ids.len()
-                        );
-                    } else {
-                        info!(
-                            "[STEP 7] ✅ VoiceOrchestrator: {}µs → {} AI participants",
-                            orch_duration.as_micros(),
-                            responder_ids.len()
-                        );
-                    }
-
-                    // [STEP 8] Emit events to AI participants
-                    // TODO: Event emission mechanism needs IPC bridge implementation
-                    if !responder_ids.is_empty() {
-                        info!(
-                            "[STEP 8] 🎯 Broadcasting to {} AIs: {:?}",
-                            responder_ids.len(),
-                            responder_ids.iter().map(|id| id.to_string()[..8].to_string()).collect::<Vec<_>>()
-                        );
-
-                        for ai_id in responder_ids {
-                            // TODO: Implement IPC event emission to TypeScript
-                            // This will emit voice:transcription:directed event to PersonaUser instances
-                            info!("📤 Emitting voice event to AI: {}", &ai_id.to_string()[..8]);
-                        }
-                    } else {
-                        info!("[STEP 8] No AI participants to notify");
-                    }
                 } else {
                     info!("📝 Empty transcription result from {}", display_name);
                 }
@@ -724,8 +646,7 @@ impl CallManager {
 
 impl Default for CallManager {
     fn default() -> Self {
-        let orchestrator = Arc::new(VoiceOrchestrator::new());
-        Self::new(orchestrator)
+        Self::new()
     }
 }
 
@@ -768,18 +689,21 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 let (handle, mut audio_rx, mut transcription_rx) = manager.join_call(&call_id, &user_id, &display_name).await;
                                 participant_handle = Some(handle);
 
-                                // Start audio forwarding task
+                                // Start audio forwarding task - BINARY WebSocket frames (not JSON+base64)
+                                // This eliminates base64 encoding overhead (~33%) for real-time audio
                                 let msg_tx_audio = msg_tx.clone();
                                 tokio::spawn(async move {
                                     while let Ok((target_handle, audio)) = audio_rx.recv().await {
                                         // Only send if this is audio meant for us
                                         if target_handle == handle {
-                                            let data = base64_encode_i16(&audio);
-                                            let msg = CallMessage::MixedAudio { data };
-                                            if let Ok(json) = serde_json::to_string(&msg) {
-                                                if msg_tx_audio.send(Message::Text(json)).await.is_err() {
-                                                    break;
-                                                }
+                                            // Send raw i16 PCM as binary WebSocket frame (little-endian)
+                                            // NO JSON, NO base64 - direct bytes transfer
+                                            let bytes: Vec<u8> = audio
+                                                .iter()
+                                                .flat_map(|&s| s.to_le_bytes())
+                                                .collect();
+                                            if msg_tx_audio.send(Message::Binary(bytes)).await.is_err() {
+                                                break;
                                             }
                                         }
                                     }
@@ -827,6 +751,13 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                     manager.set_mute(handle, muted).await;
                                 }
                             }
+                            Ok(CallMessage::LoopbackReturn { data, seq }) => {
+                                // Loopback test: verify returned audio matches sent
+                                if let Some(samples) = base64_decode_i16(&data) {
+                                    let rms: f64 = (samples.iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / samples.len() as f64).sqrt();
+                                    info!("🔄 LOOPBACK #{}: {} samples returned, RMS={:.1}", seq, samples.len(), rms);
+                                }
+                            }
                             Ok(_) => {
                                 // Ignore other message types from client
                             }
@@ -869,10 +800,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
 /// Start the WebSocket call server
 pub async fn start_call_server(addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
-
-    // Create shared VoiceOrchestrator for all calls
-    let orchestrator = Arc::new(VoiceOrchestrator::new());
-    let manager = Arc::new(CallManager::new(orchestrator));
+    let manager = Arc::new(CallManager::new());
 
     info!("Call server listening on {}", addr);
 
@@ -1000,8 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_call_manager_join_leave() {
-        let orchestrator = Arc::new(VoiceOrchestrator::new());
-        let manager = CallManager::new(orchestrator);
+        let manager = CallManager::new();
 
         // Join a call
         let (handle, _rx, _transcription_rx) =
@@ -1023,8 +950,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_call_manager_multi_participant() {
-        let orchestrator = Arc::new(VoiceOrchestrator::new());
-        let manager = CallManager::new(orchestrator);
+        let manager = CallManager::new();
 
         // Two participants join
         let (handle_a, _rx_a, _transcription_rx_a) =
@@ -1054,8 +980,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mute() {
-        let orchestrator = Arc::new(VoiceOrchestrator::new());
-        let manager = CallManager::new(orchestrator);
+        let manager = CallManager::new();
 
         let (handle, _rx, _transcription_rx) =
             manager.join_call("test-call", "user-1", "Alice").await;

@@ -249,9 +249,9 @@ pub fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
     samples.iter().map(|&s| s as f32 / 32768.0).collect()
 }
 
-/// Resample audio to 16kHz (standard STT rate)
-pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Vec<f32> {
-    if from_rate == 16000 {
+/// Resample audio from any rate to any target rate
+pub fn resample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate {
         return samples.to_vec();
     }
 
@@ -259,7 +259,7 @@ pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Vec<f32> {
 
     let params = rubato::FftFixedInOut::<f32>::new(
         from_rate as usize,
-        16000,
+        to_rate as usize,
         samples.len().min(1024),
         1, // mono
     );
@@ -280,4 +280,9 @@ pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Vec<f32> {
             samples.to_vec()
         }
     }
+}
+
+/// Resample audio to 16kHz (standard STT rate)
+pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Vec<f32> {
+    resample(samples, from_rate, 16000)
 }

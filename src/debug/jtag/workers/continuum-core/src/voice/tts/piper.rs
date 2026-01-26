@@ -125,35 +125,34 @@ impl PiperTTS {
             .map(|&s| (s.clamp(AUDIO_RANGE_MIN, AUDIO_RANGE_MAX) * PCM_I16_MAX) as i16)
             .collect();
 
-        // Resample from model's sample rate to 16000Hz
-        let samples_16k = Self::resample_to_16k(&samples_source, source_rate);
+        // Resample from model's sample rate to standard audio rate
+        use crate::audio_constants::AUDIO_SAMPLE_RATE;
+        let samples_resampled = Self::resample_to_target(&samples_source, source_rate, AUDIO_SAMPLE_RATE);
 
-        let duration_ms = (samples_16k.len() as u64 * 1000) / 16000;
+        let duration_ms = (samples_resampled.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
 
         info!(
             "Piper synthesized {} samples ({}ms) for '{}...'",
-            samples_16k.len(),
+            samples_resampled.len(),
             duration_ms,
             &text[..text.len().min(30)]
         );
 
         Ok(SynthesisResult {
-            samples: samples_16k,
-            sample_rate: 16000,
+            samples: samples_resampled,
+            sample_rate: AUDIO_SAMPLE_RATE,
             duration_ms,
         })
     }
 
-    /// Resample from source sample rate to 16000Hz (linear interpolation)
-    fn resample_to_16k(samples: &[i16], source_rate: u32) -> Vec<i16> {
-        const TARGET_RATE: u32 = 16000;
-
+    /// Resample from source sample rate to target rate (linear interpolation)
+    fn resample_to_target(samples: &[i16], source_rate: u32, target_rate: u32) -> Vec<i16> {
         // If already at target rate, return as-is
-        if source_rate == TARGET_RATE {
+        if source_rate == target_rate {
             return samples.to_vec();
         }
 
-        let ratio = source_rate as f64 / TARGET_RATE as f64;
+        let ratio = source_rate as f64 / target_rate as f64;
         let output_len = (samples.len() as f64 / ratio) as usize;
         let mut output = Vec::with_capacity(output_len);
 

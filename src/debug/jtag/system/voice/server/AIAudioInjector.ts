@@ -115,21 +115,22 @@ export class AIAudioInjector {
       `🎙️ ${this.displayName}: Injecting ${totalSamples} samples (${(totalSamples / this.sampleRate).toFixed(2)}s)`
     );
 
-    // Chunk audio into frameSize chunks and send
-    // This simulates real-time speech at the correct rate
+    // Chunk audio into frameSize chunks and send as BINARY WebSocket frames
+    // Direct bytes transfer - no JSON, no base64 encoding overhead
     for (let offset = 0; offset < totalSamples; offset += this.frameSize) {
       if (this.ws.readyState !== WebSocket.OPEN) break;
 
       const end = Math.min(offset + this.frameSize, totalSamples);
       const chunk = audioSamples.subarray(offset, end);
 
-      // Convert to Buffer (little-endian Int16)
+      // Convert to Buffer (little-endian Int16) and send directly
+      // Rust server receives as Message::Binary and converts with bytes_to_i16()
       const buffer = Buffer.allocUnsafe(chunk.length * 2);
       for (let i = 0; i < chunk.length; i++) {
         buffer.writeInt16LE(chunk[i], i * 2);
       }
 
-      // Send binary audio frame
+      // Send raw binary - no JSON wrapper, no base64 encoding
       this.ws.send(buffer);
 
       // Pace audio at real-time rate (frameSize samples at sampleRate Hz)

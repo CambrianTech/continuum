@@ -3,6 +3,7 @@
 //! Multi-participant audio mixing with mix-minus support.
 //! Each participant hears everyone except themselves.
 
+use crate::audio_constants::AUDIO_FRAME_SIZE;
 use crate::voice::handle::Handle;
 use crate::voice::vad::{ProductionVAD, VADError};
 use std::collections::HashMap;
@@ -80,8 +81,8 @@ pub mod test_utils {
     }
 }
 
-/// Standard frame size (20ms at 16kHz = 320 samples)
-pub const FRAME_SIZE: usize = 320;
+/// Standard frame size - uses AUDIO_FRAME_SIZE from constants (single source of truth)
+pub const FRAME_SIZE: usize = AUDIO_FRAME_SIZE;
 
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
@@ -196,7 +197,7 @@ impl ParticipantStream {
             match vad_result {
                 Ok(Some(complete_sentence)) => {
                     // Complete sentence ready for transcription
-                    let duration_ms = (complete_sentence.len() as f32 / 16000.0) * 1000.0;
+                    let duration_ms = (complete_sentence.len() as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32) * 1000.0;
                     info!(
                         "📤 Complete sentence ready for {} ({} samples, {:.0}ms)",
                         self.display_name,
@@ -281,9 +282,10 @@ impl AudioMixer {
         }
     }
 
-    /// Create mixer with default settings (16kHz, 20ms frames)
+    /// Create mixer with default settings (uses audio_constants)
     pub fn default_voice() -> Self {
-        Self::new(16000, 320) // 16kHz, 20ms = 320 samples
+        use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
+        Self::new(AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE)
     }
 
     /// Add a participant

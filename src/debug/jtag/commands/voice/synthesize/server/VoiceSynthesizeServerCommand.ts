@@ -18,6 +18,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../shared/VoiceSynthesizeTypes';
+import { AUDIO_SAMPLE_RATE } from '../../../../shared/AudioConstants';
 import { createVoiceSynthesizeResultFromParams } from '../shared/VoiceSynthesizeTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
@@ -86,7 +87,7 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
       success: true,
       audio: '', // Audio comes via events, not response
       handle,
-      sampleRate: params.sampleRate || 24000,
+      sampleRate: params.sampleRate || AUDIO_SAMPLE_RATE,
       duration: 0, // Unknown until complete
       adapter,
     });
