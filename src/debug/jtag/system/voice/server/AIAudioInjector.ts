@@ -21,6 +21,7 @@ interface CallMessage {
   call_id?: string;
   user_id?: string;
   display_name?: string;
+  is_ai?: boolean;  // AI participants get server-side audio buffering
 }
 
 interface AIAudioInjectorOptions {
@@ -62,12 +63,13 @@ export class AIAudioInjector {
           console.log(`🎙️ ${displayName}: Connected to CallServer`);
           this.connected = true;
 
-          // Send join message
+          // Send join message - is_ai: true enables server-side audio buffering
           const joinMsg: CallMessage = {
             type: 'Join',
             call_id: callId,
             user_id: userId,
             display_name: displayName,
+            is_ai: true,  // CRITICAL: Server creates ring buffer for AI participants
           };
           this.ws?.send(JSON.stringify(joinMsg));
           resolve();
@@ -115,27 +117,32 @@ export class AIAudioInjector {
       `🎙️ ${this.displayName}: Injecting ${totalSamples} samples (${(totalSamples / this.sampleRate).toFixed(2)}s)`
     );
 
-    // Chunk audio into frameSize chunks and send as BINARY WebSocket frames
-    // Direct bytes transfer - no JSON, no base64 encoding overhead
-    for (let offset = 0; offset < totalSamples; offset += this.frameSize) {
+    // SERVER-SIDE BUFFERING: Send ALL audio at once
+    // Rust server has a 10-second ring buffer per AI participant
+    // Server pulls frames at precise 32ms intervals (tokio::time::interval)
+    // This eliminates JavaScript timing jitter from the audio pipeline
+
+    console.log(
+      `🎙️ ${this.displayName}: Sending ${totalSamples} samples (${(totalSamples / this.sampleRate).toFixed(1)}s) to server buffer`
+    );
+
+    // Send entire audio as one binary WebSocket frame
+    // For very long audio (>10s), chunk into ~5 second segments to avoid buffer overflow
+    const chunkSize = this.sampleRate * 5; // 5 seconds per chunk
+    for (let offset = 0; offset < totalSamples; offset += chunkSize) {
       if (this.ws.readyState !== WebSocket.OPEN) break;
 
-      const end = Math.min(offset + this.frameSize, totalSamples);
+      const end = Math.min(offset + chunkSize, totalSamples);
       const chunk = audioSamples.subarray(offset, end);
 
       // Convert to Buffer (little-endian Int16) and send directly
-      // Rust server receives as Message::Binary and converts with bytes_to_i16()
       const buffer = Buffer.allocUnsafe(chunk.length * 2);
       for (let i = 0; i < chunk.length; i++) {
         buffer.writeInt16LE(chunk[i], i * 2);
       }
 
-      // Send raw binary - no JSON wrapper, no base64 encoding
+      // Send raw binary - server buffers and paces playback
       this.ws.send(buffer);
-
-      // Pace audio at real-time rate (frameSize samples at sampleRate Hz)
-      const frameDurationMs = (this.frameSize / this.sampleRate) * 1000;
-      await this.delay(frameDurationMs);
     }
 
     console.log(`🎙️ ${this.displayName}: Audio injection complete`);

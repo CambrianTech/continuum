@@ -24,6 +24,7 @@ interface JoinMessage {
   call_id: string;
   user_id: string;
   display_name: string;
+  is_ai: boolean;  // AI participants get server-side audio buffering
 }
 
 interface AudioMessage {
@@ -92,12 +93,13 @@ export class AIAudioBridge {
         ws.on('open', () => {
           console.log(`🤖 AIAudioBridge: ${displayName} connected to call server`);
 
-          // Send join message
+          // Send join message - is_ai: true enables server-side audio buffering
           const joinMsg: JoinMessage = {
             type: 'Join',
             call_id: callId,
             user_id: userId,
             display_name: displayName,
+            is_ai: true,  // CRITICAL: Server creates ring buffer for AI participants
           };
           ws.send(JSON.stringify(joinMsg));
           connection.isConnected = true;
@@ -234,22 +236,26 @@ export class AIAudioBridge {
       // result.audioSamples is already i16 array ready to send
       const samples = result.audioSamples;
 
-      // Stream to call in 32ms frames (512 samples at 16kHz)
-      // MUST match Rust call_server frame_size for proper mixing
-      const frameSize = 512;
-      const frameDurationMs = 32;
-      for (let i = 0; i < samples.length; i += frameSize) {
-        const frame = samples.slice(i, i + frameSize);
+      // SERVER-SIDE BUFFERING: Send ALL audio at once
+      // Rust server has a 10-second ring buffer per AI participant
+      // Server pulls frames at precise 32ms intervals (tokio::time::interval)
+      // This eliminates JavaScript timing jitter from the audio pipeline
+      //
+      // OLD APPROACH (broken): JavaScript pacing with sleep(32ms) - imprecise, causes jitter
+      // NEW APPROACH: Dump all audio, let Rust pace playback with precise timer
 
-        // Send as BINARY WebSocket frame - direct bytes, no JSON, no base64
-        // Rust server receives as Message::Binary and converts with bytes_to_i16()
+      console.log(`🤖 AIAudioBridge: ${connection.displayName} sending ${samples.length} samples (${(samples.length / 16000).toFixed(1)}s) to server buffer`);
+
+      // Send entire audio as one binary WebSocket frame
+      // For very long audio (>10s), chunk into ~5 second segments to avoid buffer overflow
+      const chunkSize = 16000 * 5; // 5 seconds per chunk
+      for (let offset = 0; offset < samples.length; offset += chunkSize) {
+        const chunk = samples.slice(offset, Math.min(offset + chunkSize, samples.length));
+
         if (connection.ws.readyState === WebSocket.OPEN) {
-          const buffer = Buffer.from(frame.buffer, frame.byteOffset, frame.byteLength);
+          const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
           connection.ws.send(buffer);
         }
-
-        // Pace frames at 32ms intervals (real-time playback)
-        await this.sleep(frameDurationMs);
       }
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);

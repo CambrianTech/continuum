@@ -84,6 +84,9 @@ pub mod test_utils {
 /// Standard frame size - uses AUDIO_FRAME_SIZE from constants (single source of truth)
 pub const FRAME_SIZE: usize = AUDIO_FRAME_SIZE;
 
+/// Ring buffer size for AI audio (10 seconds at 16kHz)
+const AI_RING_BUFFER_SIZE: usize = 16000 * 10;
+
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
     pub handle: Handle,
@@ -97,6 +100,14 @@ pub struct ParticipantStream {
     pub muted: bool,
     /// Is this an AI participant (no transcription needed - we have their text)?
     pub is_ai: bool,
+
+    // === AI Audio Ring Buffer ===
+    // AI participants dump all TTS audio at once, we buffer and pull frame-by-frame
+    // This eliminates JavaScript timing jitter from the audio pipeline
+    ai_ring_buffer: Option<Box<[i16; AI_RING_BUFFER_SIZE]>>,
+    ai_ring_write: usize,  // Write position
+    ai_ring_read: usize,   // Read position
+    ai_ring_available: usize, // Samples available
 
     // === Voice Activity Detection (Production Two-Stage VAD) ===
     /// Production VAD (WebRTC → Silero, with sentence buffering)
@@ -129,13 +140,21 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: false,
+            ai_ring_buffer: None, // Humans don't need ring buffer
+            ai_ring_write: 0,
+            ai_ring_read: 0,
+            ai_ring_available: 0,
             vad,
             is_speaking: false,
         }
     }
 
     /// Create AI participant (no VAD needed - we already have their text from TTS)
+    /// AI participants get a ring buffer for server-side audio pacing
     pub fn new_ai(handle: Handle, user_id: String, display_name: String) -> Self {
+        // Allocate ring buffer on heap (10 seconds = 320KB)
+        let ring_buffer = Box::new([0i16; AI_RING_BUFFER_SIZE]);
+
         Self {
             handle,
             user_id,
@@ -144,6 +163,10 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: true,
+            ai_ring_buffer: Some(ring_buffer),
+            ai_ring_write: 0,
+            ai_ring_read: 0,
+            ai_ring_available: 0,
             vad: None, // AI doesn't need VAD
             is_speaking: false,
         }
@@ -170,19 +193,54 @@ impl ParticipantStream {
     /// Update audio frame with new samples
     /// Returns PushAudioResult indicating if transcription should run
     ///
-    /// Uses ProductionVAD for:
-    /// - Two-stage detection (WebRTC → Silero)
-    /// - Complete sentence buffering
-    /// - Adaptive silence thresholds
+    /// For AI participants: Writes to ring buffer (can accept large chunks at once)
+    /// For human participants: Uses ProductionVAD for sentence detection
     pub fn push_audio(&mut self, samples: Vec<i16>) -> PushAudioResult {
-        // [STEP 1] Audio frame received
-        // Copy into fixed-size frame (no allocation, just memcpy)
+        // AI PARTICIPANTS: Write to ring buffer for server-paced playback
+        // This eliminates JavaScript timing jitter - AI can dump all TTS audio at once
+        if self.is_ai {
+            if let Some(ref mut ring) = self.ai_ring_buffer {
+                let samples_to_write = samples.len().min(AI_RING_BUFFER_SIZE - self.ai_ring_available);
+
+                if samples_to_write < samples.len() {
+                    debug!(
+                        "⚠️ AI ring buffer overflow for {}: dropping {} samples",
+                        self.display_name,
+                        samples.len() - samples_to_write
+                    );
+                }
+
+                // Write samples to ring buffer
+                for &sample in samples.iter().take(samples_to_write) {
+                    ring[self.ai_ring_write] = sample;
+                    self.ai_ring_write = (self.ai_ring_write + 1) % AI_RING_BUFFER_SIZE;
+                }
+                self.ai_ring_available += samples_to_write;
+
+                if samples_to_write > 0 {
+                    debug!(
+                        "🤖 AI {} buffered {} samples (total: {} = {:.1}s)",
+                        self.display_name,
+                        samples_to_write,
+                        self.ai_ring_available,
+                        self.ai_ring_available as f32 / 16000.0
+                    );
+                }
+            }
+
+            return PushAudioResult {
+                speech_ended: false,
+                speech_samples: None,
+            };
+        }
+
+        // HUMAN PARTICIPANTS: Copy into fixed-size frame for immediate mixing
         let copy_len = samples.len().min(FRAME_SIZE);
         self.audio_frame[..copy_len].copy_from_slice(&samples[..copy_len]);
         self.frame_len = copy_len;
 
-        // Skip VAD for AI participants or muted participants
-        if self.is_ai || self.muted {
+        // Skip VAD for muted participants
+        if self.muted {
             return PushAudioResult {
                 speech_ended: false,
                 speech_samples: None,
@@ -237,9 +295,49 @@ impl ParticipantStream {
         }
     }
 
-    /// Get audio samples (returns silence if muted)
-    pub fn get_audio(&self) -> &[i16] {
-        if self.muted || self.frame_len == 0 {
+    /// Get audio samples for mixing
+    /// - Human participants: Returns current frame (set by push_audio)
+    /// - AI participants: Pulls one frame from ring buffer (server-paced playback)
+    pub fn get_audio(&mut self) -> &[i16] {
+        if self.muted {
+            return &[];
+        }
+
+        // AI PARTICIPANTS: Pull one frame from ring buffer
+        if self.is_ai {
+            if let Some(ref ring) = self.ai_ring_buffer {
+                if self.ai_ring_available >= FRAME_SIZE {
+                    // Pull FRAME_SIZE samples from ring buffer into audio_frame
+                    for i in 0..FRAME_SIZE {
+                        self.audio_frame[i] = ring[(self.ai_ring_read + i) % AI_RING_BUFFER_SIZE];
+                    }
+                    self.ai_ring_read = (self.ai_ring_read + FRAME_SIZE) % AI_RING_BUFFER_SIZE;
+                    self.ai_ring_available -= FRAME_SIZE;
+                    self.frame_len = FRAME_SIZE;
+                } else if self.ai_ring_available > 0 {
+                    // Partial frame - play what we have
+                    let available = self.ai_ring_available;
+                    for i in 0..available {
+                        self.audio_frame[i] = ring[(self.ai_ring_read + i) % AI_RING_BUFFER_SIZE];
+                    }
+                    // Zero-pad the rest
+                    for i in available..FRAME_SIZE {
+                        self.audio_frame[i] = 0;
+                    }
+                    self.ai_ring_read = (self.ai_ring_read + available) % AI_RING_BUFFER_SIZE;
+                    self.ai_ring_available = 0;
+                    self.frame_len = FRAME_SIZE;
+                } else {
+                    // No audio available - silence
+                    return &[];
+                }
+            } else {
+                return &[];
+            }
+        }
+
+        // Return current frame
+        if self.frame_len == 0 {
             &[]
         } else {
             &self.audio_frame[..self.frame_len]
@@ -356,10 +454,11 @@ impl AudioMixer {
     }
 
     /// Mix all participants (sum all streams)
-    pub fn mix_all(&self) -> Vec<i16> {
+    /// Note: Requires &mut self because AI participants pull from ring buffer
+    pub fn mix_all(&mut self) -> Vec<i16> {
         let mut mixed = vec![0i32; self.frame_size];
 
-        for participant in self.participants.values() {
+        for participant in self.participants.values_mut() {
             let audio = participant.get_audio();
             for (i, &sample) in audio.iter().enumerate() {
                 if i < self.frame_size {
@@ -376,10 +475,11 @@ impl AudioMixer {
     ///
     /// This is the standard approach for conference calls - each participant
     /// hears everyone except themselves to prevent feedback.
-    pub fn mix_minus(&self, exclude_handle: &Handle) -> Vec<i16> {
+    /// Note: Requires &mut self because AI participants pull from ring buffer
+    pub fn mix_minus(&mut self, exclude_handle: &Handle) -> Vec<i16> {
         let mut mixed = vec![0i32; self.frame_size];
 
-        for (handle, participant) in &self.participants {
+        for (handle, participant) in &mut self.participants {
             if handle == exclude_handle {
                 continue; // Skip the excluded participant
             }
@@ -398,11 +498,44 @@ impl AudioMixer {
 
     /// Generate mix-minus for all participants
     /// Returns a map of handle -> mixed audio (what that participant should hear)
-    pub fn mix_minus_all(&self) -> HashMap<Handle, Vec<i16>> {
-        self.participants
-            .keys()
-            .map(|handle| (*handle, self.mix_minus(handle)))
-            .collect()
+    /// Note: Requires &mut self because AI participants pull from ring buffer
+    ///
+    /// CRITICAL: Pull all audio frames ONCE at the start, then mix from cache.
+    /// Otherwise AI ring buffers get pulled N-1 times per tick (once per other participant),
+    /// causing audio to play at (N-1)x speed!
+    pub fn mix_minus_all(&mut self) -> HashMap<Handle, Vec<i16>> {
+        // STEP 1: Pull audio from ALL participants ONCE (including AI ring buffers)
+        // This ensures each AI's audio is only consumed once per tick
+        let mut audio_cache: HashMap<Handle, Vec<i16>> = HashMap::new();
+        for (handle, participant) in &mut self.participants {
+            let audio = participant.get_audio();
+            audio_cache.insert(*handle, audio.to_vec());
+        }
+
+        // STEP 2: Generate mix-minus for each participant using cached audio
+        let handles: Vec<Handle> = self.participants.keys().copied().collect();
+        let mut result = HashMap::new();
+
+        for target_handle in handles {
+            let mut mixed = vec![0i32; self.frame_size];
+
+            // Mix all OTHER participants' cached audio
+            for (handle, audio) in &audio_cache {
+                if handle == &target_handle {
+                    continue; // Skip self (mix-minus)
+                }
+
+                for (i, &sample) in audio.iter().enumerate() {
+                    if i < self.frame_size {
+                        mixed[i] += sample as i32;
+                    }
+                }
+            }
+
+            result.insert(target_handle, Self::clamp_to_i16(&mixed));
+        }
+
+        result
     }
 
     /// Clamp i32 samples to i16 range

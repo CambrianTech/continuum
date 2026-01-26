@@ -66,6 +66,8 @@ pub enum CallMessage {
         call_id: String,
         user_id: String,
         display_name: String,
+        #[serde(default)]
+        is_ai: bool,  // AI participants get server-side audio buffering
     },
 
     /// Leave the call
@@ -399,11 +401,13 @@ impl CallManager {
     }
 
     /// Join a participant to a call
+    /// is_ai: If true, creates AI participant with server-side audio buffering
     pub async fn join_call(
         &self,
         call_id: &str,
         user_id: &str,
         display_name: &str,
+        is_ai: bool,
     ) -> (
         Handle,
         broadcast::Receiver<(Handle, Vec<i16>)>,
@@ -412,13 +416,19 @@ impl CallManager {
         let call = self.get_or_create_call(call_id).await;
         let handle = Handle::new();
 
-        // Add participant to call with VAD initialization
+        // Add participant to call
+        // AI participants get a ring buffer for server-paced audio playback
+        // Human participants get VAD for speech detection
         {
             let mut call = call.write().await;
-            let stream =
-                ParticipantStream::new(handle, user_id.to_string(), display_name.to_string());
+            let stream = if is_ai {
+                info!("🤖 Creating AI participant {} with ring buffer", display_name);
+                ParticipantStream::new_ai(handle, user_id.to_string(), display_name.to_string())
+            } else {
+                ParticipantStream::new(handle, user_id.to_string(), display_name.to_string())
+            };
 
-            // Initialize VAD for speech detection and transcription
+            // Initialize VAD for speech detection and transcription (humans only)
             if let Err(e) = call.mixer.add_participant_with_init(stream).await {
                 error!("Failed to initialize VAD for {}: {:?}", display_name, e);
                 // Fallback to non-VAD participant (won't get transcriptions)
@@ -685,8 +695,8 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<CallMessage>(&text) {
-                            Ok(CallMessage::Join { call_id, user_id, display_name }) => {
-                                let (handle, mut audio_rx, mut transcription_rx) = manager.join_call(&call_id, &user_id, &display_name).await;
+                            Ok(CallMessage::Join { call_id, user_id, display_name, is_ai }) => {
+                                let (handle, mut audio_rx, mut transcription_rx) = manager.join_call(&call_id, &user_id, &display_name, is_ai).await;
                                 participant_handle = Some(handle);
 
                                 // Start audio forwarding task - BINARY WebSocket frames (not JSON+base64)
