@@ -17,6 +17,7 @@ import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { getVoiceService } from './VoiceService';
 import { TTS_ADAPTERS } from '../shared/VoiceConfig';
+import { Events } from '../../core/shared/Events';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -214,8 +215,10 @@ export class AIAudioBridge {
 
   /**
    * Inject TTS audio into the call (AI speaking)
+   * @param voice - Speaker ID for multi-speaker TTS models (0-246 for LibriTTS).
+   *                If not provided, computed from userId for consistent per-AI voices.
    */
-  async speak(callId: string, userId: UUID, text: string): Promise<void> {
+  async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
     const key = `${callId}-${userId}`;
     const connection = this.connections.get(key);
 
@@ -225,11 +228,26 @@ export class AIAudioBridge {
     }
 
     try {
+      // BROADCAST to other AIs: Emit the speech text so other AIs can "hear" what this AI said
+      // This is essential for AIs to have conversations with each other
+      Events.emit('voice:ai:speech', {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: connection.displayName,
+        text,
+        timestamp: Date.now()
+      });
+
+      // Compute deterministic voice from userId if not provided
+      // This ensures each AI always has the same voice
+      const voiceId = voice ?? this.computeVoiceFromUserId(userId);
+
       // Use VoiceService (handles TTS + event subscription)
       const voiceService = getVoiceService();
       const result = await voiceService.synthesizeSpeech({
         text,
         userId,
+        voice: voiceId,  // Speaker ID for multi-speaker models
         adapter: TTS_ADAPTERS.PIPER,  // Local, fast TTS
       });
 
@@ -299,6 +317,20 @@ export class AIAudioBridge {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Compute a deterministic voice ID from userId
+   * Uses a simple hash to map UUID to speaker ID (0-246 for LibriTTS)
+   */
+  private computeVoiceFromUserId(userId: string): string {
+    // Simple hash: sum char codes and mod by number of speakers
+    let hash = 0;
+    for (let i = 0; i < userId.length; i++) {
+      hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;  // Unsigned 32-bit
+    }
+    const speakerId = hash % 247;  // 0-246 for LibriTTS
+    return speakerId.toString();
   }
 
   /**

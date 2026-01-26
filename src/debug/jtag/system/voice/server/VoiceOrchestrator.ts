@@ -376,6 +376,45 @@ export class VoiceOrchestrator {
       console.log(`[STEP 11] 🎯 VoiceOrchestrator calling onUtterance for turn arbitration`);
       await this.onUtterance(utteranceEvent);
     });
+
+    // Listen for AI speech events (when an AI speaks via TTS)
+    // Route to OTHER AIs so they can "hear" what the speaking AI said
+    Events.subscribe('voice:ai:speech', async (event: {
+      sessionId: string;
+      speakerId: string;
+      speakerName: string;
+      text: string;
+      timestamp: number;
+    }) => {
+      console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke: "${event.text.slice(0, 50)}..."`);
+
+      // Get participants for this session
+      const participants = this.sessionParticipants.get(event.sessionId as UUID);
+      if (!participants || participants.length === 0) return;
+
+      // Get AI participants (excluding the speaking AI)
+      const otherAIs = participants.filter(
+        p => p.type === 'persona' && p.userId !== event.speakerId
+      );
+
+      if (otherAIs.length === 0) return;
+
+      console.log(`🎙️ VoiceOrchestrator: Broadcasting to ${otherAIs.length} other AIs`);
+
+      // Broadcast to each other AI so they can respond
+      for (const ai of otherAIs) {
+        Events.emit('voice:transcription:directed', {
+          sessionId: event.sessionId,
+          speakerId: event.speakerId,
+          speakerName: event.speakerName,
+          transcript: event.text,
+          confidence: 1.0,  // AI-generated text is perfectly accurate
+          language: 'en',
+          timestamp: event.timestamp,
+          targetPersonaId: ai.userId
+        });
+      }
+    });
   }
 
   /**

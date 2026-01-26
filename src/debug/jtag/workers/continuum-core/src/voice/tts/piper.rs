@@ -67,7 +67,7 @@ impl PiperTTS {
     fn synthesize_sync(
         session: &Arc<Mutex<PiperModel>>,
         text: &str,
-        _voice: &str,  // Piper models are single-voice
+        voice: &str,  // Speaker ID for multi-speaker models (0-246 for LibriTTS)
         _speed: f32,   // TODO: Implement speed control via length_scale parameter
     ) -> Result<SynthesisResult, TTSError> {
         if text.is_empty() {
@@ -84,8 +84,10 @@ impl PiperTTS {
         let text_array = ndarray::Array2::from_shape_vec((1, len), phoneme_ids)
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to reshape input: {e}")))?;
 
-        // Speaker ID (for multi-speaker models) - use speaker 0
-        let sid_array = ndarray::Array1::from_vec(vec![0i64]);
+        // Speaker ID (for multi-speaker models like LibriTTS which has 247 speakers)
+        // Parse voice as speaker ID, default to 0 if invalid
+        let speaker_id: i64 = voice.parse().unwrap_or(0).min(246).max(0);
+        let sid_array = ndarray::Array1::from_vec(vec![speaker_id]);
 
         // Inference parameters from model config
         // Format: [noise_scale, length_scale, noise_w]
