@@ -18,6 +18,8 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { getVoiceService } from './VoiceService';
 import { TTS_ADAPTERS } from '../shared/VoiceConfig';
 import { Events } from '../../core/shared/Events';
+import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -228,21 +230,11 @@ export class AIAudioBridge {
     }
 
     try {
-      // BROADCAST to other AIs: Emit the speech text so other AIs can "hear" what this AI said
-      // This is essential for AIs to have conversations with each other
-      Events.emit('voice:ai:speech', {
-        sessionId: callId,
-        speakerId: userId,
-        speakerName: connection.displayName,
-        text,
-        timestamp: Date.now()
-      });
-
       // Compute deterministic voice from userId if not provided
       // This ensures each AI always has the same voice
       const voiceId = voice ?? this.computeVoiceFromUserId(userId);
 
-      // Use VoiceService (handles TTS + event subscription)
+      // Use VoiceService (handles TTS synthesis)
       const voiceService = getVoiceService();
       const result = await voiceService.synthesizeSpeech({
         text,
@@ -253,16 +245,14 @@ export class AIAudioBridge {
 
       // result.audioSamples is already i16 array ready to send
       const samples = result.audioSamples;
+      const audioDurationSec = samples.length / 16000;
 
       // SERVER-SIDE BUFFERING: Send ALL audio at once
       // Rust server has a 10-second ring buffer per AI participant
       // Server pulls frames at precise 32ms intervals (tokio::time::interval)
       // This eliminates JavaScript timing jitter from the audio pipeline
-      //
-      // OLD APPROACH (broken): JavaScript pacing with sleep(32ms) - imprecise, causes jitter
-      // NEW APPROACH: Dump all audio, let Rust pace playback with precise timer
 
-      console.log(`🤖 AIAudioBridge: ${connection.displayName} sending ${samples.length} samples (${(samples.length / 16000).toFixed(1)}s) to server buffer`);
+      console.log(`🤖 AIAudioBridge: ${connection.displayName} sending ${samples.length} samples (${audioDurationSec.toFixed(1)}s) to server buffer`);
 
       // Send entire audio as one binary WebSocket frame
       // For very long audio (>10s), chunk into ~5 second segments to avoid buffer overflow
@@ -274,6 +264,27 @@ export class AIAudioBridge {
           const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
           connection.ws.send(buffer);
         }
+      }
+
+      // BROADCAST to browser + other AIs: Emit AFTER TTS synthesis and audio send
+      // This syncs caption display with actual audio playback (audio is now in server buffer)
+      // Browser LiveWidget subscribes to show AI caption/speaker highlight
+      if (DataDaemon.jtagContext) {
+        await Events.emit(
+          DataDaemon.jtagContext,
+          'voice:ai:speech',
+          {
+            sessionId: callId,
+            speakerId: userId,
+            speakerName: connection.displayName,
+            text,
+            audioDurationMs: Math.round(audioDurationSec * 1000),
+            timestamp: Date.now()
+          },
+          {
+            scope: EVENT_SCOPES.GLOBAL  // Broadcast to all environments including browser
+          }
+        );
       }
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);

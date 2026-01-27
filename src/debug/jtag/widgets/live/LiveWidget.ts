@@ -54,7 +54,8 @@ export class LiveWidget extends ReactiveWidget {
   @reactive() private screenShareEnabled: boolean = false;
   @reactive() private micPermissionGranted: boolean = false;
   @reactive() private captionsEnabled: boolean = true;  // Show live transcription captions
-  @reactive() private currentCaption: { speakerName: string; text: string; timestamp: number } | null = null;
+  // Support multiple simultaneous speakers - Map keyed by speakerId
+  @reactive() private activeCaptions: Map<string, { speakerName: string; text: string; timestamp: number }> = new Map();
 
   // Entity association (the room/activity this live session is attached to)
   @reactive() private entityId: string = '';
@@ -72,8 +73,8 @@ export class LiveWidget extends ReactiveWidget {
   // Event subscriptions
   private unsubscribers: Array<() => void> = [];
 
-  // Caption fade timeout
-  private captionFadeTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Caption fade timeouts per speaker (supports multiple simultaneous speakers)
+  private captionFadeTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
   // Speaking state timeouts per user (clear after 2s of no speech)
   private speakingTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map();
@@ -260,12 +261,10 @@ export class LiveWidget extends ReactiveWidget {
       this.audioClient = null;
     }
 
-    // Clear caption timeout
-    if (this.captionFadeTimeout) {
-      clearTimeout(this.captionFadeTimeout);
-      this.captionFadeTimeout = null;
-    }
-    this.currentCaption = null;
+    // Clear caption timeouts
+    this.captionFadeTimeouts.forEach(timeout => clearTimeout(timeout));
+    this.captionFadeTimeouts.clear();
+    this.activeCaptions.clear();
 
     // Clear speaking timeouts
     this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -578,20 +577,25 @@ export class LiveWidget extends ReactiveWidget {
     );
 
     // AI speech captions - when an AI speaks via TTS, show it in captions
-    // This event is emitted by AIAudioBridge when AI voice is injected
+    // This event is emitted by AIAudioBridge AFTER TTS synthesis, when audio is sent to server
+    // audioDurationMs tells us how long the audio will play, so we can time the caption/highlight
     this.unsubscribers.push(
       Events.subscribe('voice:ai:speech', (data: {
         sessionId: string;
         speakerId: string;
         speakerName: string;
         text: string;
+        audioDurationMs?: number;
         timestamp: number;
       }) => {
         // Only show captions for this session
         if (data.sessionId === this.sessionId) {
-          console.log(`LiveWidget: AI speech caption: ${data.speakerName}: "${data.text.slice(0, 50)}..."`);
-          this.setCaption(data.speakerName, data.text);
-          this.setSpeaking(data.speakerId as UUID, true);
+          const durationMs = data.audioDurationMs || 5000;  // Default 5s if not provided
+          console.log(`LiveWidget: AI speech caption: ${data.speakerName}: "${data.text.slice(0, 50)}..." (${durationMs}ms)`);
+
+          // Show caption and speaking indicator for the duration of the audio
+          this.setCaptionWithDuration(data.speakerName, data.text, durationMs);
+          this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
         }
       })
     );
@@ -730,35 +734,40 @@ export class LiveWidget extends ReactiveWidget {
   private toggleCaptions(): void {
     this.captionsEnabled = !this.captionsEnabled;
     if (!this.captionsEnabled) {
-      this.currentCaption = null;
+      this.captionFadeTimeouts.forEach(timeout => clearTimeout(timeout));
+      this.captionFadeTimeouts.clear();
+      this.activeCaptions.clear();
     }
   }
 
   /**
    * Set a caption to display (auto-fades after 5 seconds)
+   * Uses speakerName as key to support multiple simultaneous speakers
    */
   private setCaption(speakerName: string, text: string): void {
-
-    // Clear existing timeout
-    if (this.captionFadeTimeout) {
-      clearTimeout(this.captionFadeTimeout);
+    // Clear existing timeout for this speaker
+    const existingTimeout = this.captionFadeTimeouts.get(speakerName);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
     }
 
-    // Set caption
-    this.currentCaption = {
+    // Set/update caption for this speaker
+    this.activeCaptions.set(speakerName, {
       speakerName,
       text,
       timestamp: Date.now()
-    };
+    });
 
     // Force re-render
     this.requestUpdate();
 
-    // Auto-fade after 5 seconds of no new transcription
-    this.captionFadeTimeout = setTimeout(() => {
-      this.currentCaption = null;
+    // Auto-fade after 5 seconds of no new transcription from this speaker
+    const timeout = setTimeout(() => {
+      this.activeCaptions.delete(speakerName);
+      this.captionFadeTimeouts.delete(speakerName);
       this.requestUpdate();
     }, 5000);
+    this.captionFadeTimeouts.set(speakerName, timeout);
   }
 
   /**
@@ -785,6 +794,66 @@ export class LiveWidget extends ReactiveWidget {
       }, 2000);
       this.speakingTimeouts.set(userId, timeout);
     }
+  }
+
+  /**
+   * Set caption with specific duration (for AI speech with known audio length)
+   * Supports multiple simultaneous speakers
+   */
+  private setCaptionWithDuration(speakerName: string, text: string, durationMs: number): void {
+    // Clear existing timeout for this speaker
+    const existingTimeout = this.captionFadeTimeouts.get(speakerName);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+    }
+
+    // Set/update caption for this speaker
+    this.activeCaptions.set(speakerName, {
+      speakerName,
+      text,
+      timestamp: Date.now()
+    });
+
+    // Force re-render
+    this.requestUpdate();
+
+    // Clear caption after audio duration + small buffer
+    const timeout = setTimeout(() => {
+      this.activeCaptions.delete(speakerName);
+      this.captionFadeTimeouts.delete(speakerName);
+      this.requestUpdate();
+    }, durationMs + 500);  // Add 500ms buffer
+    this.captionFadeTimeouts.set(speakerName, timeout);
+  }
+
+  /**
+   * Mark a user as speaking for a specific duration (for AI speech with known audio length)
+   */
+  private setSpeakingWithDuration(userId: UUID, durationMs: number): void {
+    // Clear existing timeout for this user
+    const existingTimeout = this.speakingTimeouts.get(userId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      this.speakingTimeouts.delete(userId);
+    }
+
+    // Update participant state - set speaking
+    this.participants = this.participants.map(p => ({
+      ...p,
+      isSpeaking: p.userId === userId ? true : p.isSpeaking
+    }));
+    this.requestUpdate();
+
+    // Schedule auto-clear after audio duration + buffer
+    const timeout = setTimeout(() => {
+      this.participants = this.participants.map(p => ({
+        ...p,
+        isSpeaking: p.userId === userId ? false : p.isSpeaking
+      }));
+      this.speakingTimeouts.delete(userId);
+      this.requestUpdate();
+    }, durationMs + 500);  // Add 500ms buffer
+    this.speakingTimeouts.set(userId, timeout);
   }
 
   /**
@@ -844,10 +913,14 @@ export class LiveWidget extends ReactiveWidget {
             }
           </div>
           <div class="controls">
-            ${this.captionsEnabled && this.currentCaption ? html`
-              <div class="caption-display">
-                <span class="caption-speaker">${this.currentCaption.speakerName}:</span>
-                <span class="caption-text">${this.currentCaption.text}</span>
+            ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
+              <div class="caption-display multi-speaker">
+                ${Array.from(this.activeCaptions.values()).map(caption => html`
+                  <div class="caption-line">
+                    <span class="caption-speaker">${caption.speakerName}:</span>
+                    <span class="caption-text">${caption.text}</span>
+                  </div>
+                `)}
               </div>
             ` : ''}
             <button

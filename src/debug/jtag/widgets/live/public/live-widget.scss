@@ -545,6 +545,35 @@
     color: white;
     font-size: 1.1em;
   }
+
+  // Multi-speaker mode: allow multiple lines stacked vertically
+  &.multi-speaker {
+    white-space: normal;  // Allow wrapping
+    max-height: 150px;    // Limit height for many speakers
+    overflow-y: auto;     // Scroll if too many
+    top: auto;
+    bottom: 100%;         // Position above controls bar
+    margin-bottom: $spacing-sm;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+
+    .caption-line {
+      display: flex;
+      justify-content: center;
+      align-items: baseline;
+      gap: $spacing-xs;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      padding: 2px 0;
+
+      &:not(:last-child) {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      }
+    }
+  }
 }
 
 @keyframes pulse {
