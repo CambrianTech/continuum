@@ -20,6 +20,7 @@ import type {
 } from '../shared/AudioNativeTypes';
 import { DEFAULT_AUDIO_NATIVE_CONFIG, AUDIO_NATIVE_VOICES } from '../shared/AudioNativeTypes';
 import { Qwen3OmniRealtimeAdapter } from './adapters/Qwen3OmniRealtimeAdapter';
+import { GeminiLiveAdapter } from './adapters/GeminiLiveAdapter';
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
@@ -28,9 +29,13 @@ import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
  * Registry of audio-native adapter factories
  */
 const ADAPTER_FACTORIES: Record<string, (apiKey?: string) => IAudioNativeAdapter> = {
+  // Qwen3-Omni (Alibaba DashScope)
   'qwen3-omni-flash-realtime': (apiKey) => new Qwen3OmniRealtimeAdapter(apiKey),
   'qwen3-omni': (apiKey) => new Qwen3OmniRealtimeAdapter(apiKey),
-  // Future: Add OpenAI gpt-realtime, Gemini Live
+  // Gemini Live (Google) - Free tier available
+  'gemini-2.5-flash-native-audio-preview': (apiKey) => new GeminiLiveAdapter(apiKey),
+  'gemini-live': (apiKey) => new GeminiLiveAdapter(apiKey),
+  // Future: Add OpenAI gpt-realtime
 };
 
 /**
@@ -345,7 +350,10 @@ export class AudioNativeBridge {
       return 'qwen3-omni-flash-realtime';
     }
 
-    // Add more normalizations as needed
+    if (lower.includes('gemini') && (lower.includes('native-audio') || lower.includes('live'))) {
+      return 'gemini-2.5-flash-native-audio-preview';
+    }
+
     return modelId;
   }
 
@@ -353,7 +361,17 @@ export class AudioNativeBridge {
    * Select a voice deterministically from userId
    */
   private selectVoice(userId: string, modelId: string): string {
-    const voices = AUDIO_NATIVE_VOICES['qwen3-omni'] || ['Cherry'];
+    // Determine voice set based on model
+    let voices: readonly string[];
+    const lower = modelId.toLowerCase();
+
+    if (lower.includes('gemini')) {
+      voices = AUDIO_NATIVE_VOICES['gemini-live'] ?? ['Aoede'];
+    } else if (lower.includes('gpt') || lower.includes('openai')) {
+      voices = AUDIO_NATIVE_VOICES['gpt-realtime'] ?? ['alloy'];
+    } else {
+      voices = AUDIO_NATIVE_VOICES['qwen3-omni'] ?? ['Cherry'];
+    }
 
     // Simple hash to select voice
     let hash = 0;

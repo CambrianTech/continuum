@@ -64,6 +64,15 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
     isAudioNative: true,
     // No voiceId - Qwen3-Omni has its own native voices (Cherry, Ethan, etc.)
   },
+  {
+    uniqueId: generateUniqueId('Gemini-Live'),
+    displayName: 'Gemini Live',
+    provider: 'google',
+    type: 'persona',
+    modelId: 'gemini-2.5-flash-native-audio-preview',
+    isAudioNative: true,
+    // No voiceId - Gemini has its own native voices (Aoede, Puck, etc.)
+  },
 ];
 
 /**
@@ -86,4 +95,5 @@ export const PERSONA_UNIQUE_IDS = {
   SENTINEL: generateUniqueId('Sentinel'),
   // Audio-native models
   QWEN3_OMNI: generateUniqueId('Qwen3-Omni'),
+  GEMINI_LIVE: generateUniqueId('Gemini-Live'),
 } as const;

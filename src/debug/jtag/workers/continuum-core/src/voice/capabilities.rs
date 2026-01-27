@@ -91,6 +91,9 @@ impl ModelCapabilityRegistry {
         capabilities.insert("gpt-3.5-turbo".into(), AudioCapabilities::TEXT_ONLY);
 
         // Google models
+        capabilities.insert("gemini-2.5-flash-native-audio-preview".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert("gemini-2.5-flash".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert("gemini-live".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("gemini-2.0-flash".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("gemini-2.0-flash-exp".into(), AudioCapabilities::AUDIO_NATIVE);
         capabilities.insert("gemini-1.5-pro".into(), AudioCapabilities::AUDIO_INPUT_ONLY);
