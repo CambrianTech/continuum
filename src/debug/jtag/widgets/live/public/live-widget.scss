@@ -549,28 +549,35 @@
   // Multi-speaker mode: allow multiple lines stacked vertically
   &.multi-speaker {
     white-space: normal;  // Allow wrapping
-    max-height: 150px;    // Limit height for many speakers
+    max-height: 200px;    // Limit height for many speakers
     overflow-y: auto;     // Scroll if too many
     top: auto;
     bottom: 100%;         // Position above controls bar
     margin-bottom: $spacing-sm;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
+    max-width: 85%;       // Wider for longer text
+    min-width: 300px;     // Minimum width for readability
 
     .caption-line {
-      display: flex;
-      justify-content: center;
-      align-items: baseline;
-      gap: $spacing-xs;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 100%;
-      padding: 2px 0;
+      display: block;     // Block for text wrapping
+      text-align: left;   // Left align for readability
+      padding: 4px 8px;
+      background: rgba(0, 0, 0, 0.3);  // Subtle background per line
+      border-radius: 4px;
 
-      &:not(:last-child) {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      .caption-speaker {
+        display: inline;
+        color: $color-primary;  // Highlight speaker name
+        font-weight: 700;
+        margin-right: $spacing-xs;
+      }
+
+      .caption-text {
+        display: inline;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
       }
     }
   }
