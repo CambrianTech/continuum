@@ -33,10 +33,12 @@ impl PersonaInbox {
                     // Receive new messages from enqueue channel
                     Some(msg) = enqueue_rx.recv() => {
                         heap.push(msg);
-                        signal_clone.notify_one();
+                        // Don't notify here - let dequeue() trigger the pop
+                        // This ensures priority ordering is preserved across batches
                     }
 
                     // Send highest priority message to dequeue channel
+                    // Only triggered when dequeue() calls notify_one()
                     _ = signal_clone.notified(), if !heap.is_empty() => {
                         if let Some(msg) = heap.pop() {
                             let _ = dequeue_tx.send(msg);

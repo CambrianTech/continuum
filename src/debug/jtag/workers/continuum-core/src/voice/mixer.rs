@@ -734,12 +734,13 @@ mod tests {
         assert!(!stream_human.is_ai);
         assert!(stream_ai.is_ai);
 
-        // Human speaks
+        // Human speaks (3 frames - mix_all() + mix_minus() x2 each consume from human)
         stream_human.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
 
-        // AI injects TTS audio
+        // AI injects TTS audio (3 frames - each mixing call consumes one frame from ring buffer)
+        // mix_all(), mix_minus(&human), mix_minus(&ai) each pull one frame
         let mut stream_ai_mut = stream_ai;
-        stream_ai_mut.push_audio(generate_sine_wave(220.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_ai_mut.push_audio(generate_sine_wave(220.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE * 3));
 
         mixer.add_participant(stream_human);
         mixer.add_participant(stream_ai_mut);

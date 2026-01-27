@@ -8,7 +8,7 @@
 //! TDD: Write tests first, then implement the integration.
 
 use continuum_core::voice::{
-    AudioCapabilities, AudioEvent, AudioRouter, AudioRouting,
+    AudioEvent, AudioRouter,
     ModelCapabilityRegistry, RoutedParticipant,
 };
 

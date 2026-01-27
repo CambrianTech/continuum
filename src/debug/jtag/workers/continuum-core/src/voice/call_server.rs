@@ -4,6 +4,8 @@
 //! Each call has multiple participants, audio is mixed with mix-minus.
 
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use crate::voice::audio_router::{AudioRouter, RoutedParticipant};
+use crate::voice::capabilities::ModelCapabilityRegistry;
 use crate::voice::handle::Handle;
 use crate::voice::mixer::{AudioMixer, ParticipantStream};
 use crate::utils::audio::{base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k};
@@ -274,6 +276,10 @@ pub struct CallManager {
     participant_calls: RwLock<HashMap<Handle, String>>,
     /// Track running audio loops
     audio_loops: RwLock<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Audio router for model-capability-based routing (heterogeneous conversations)
+    audio_router: AudioRouter,
+    /// Model capability registry for looking up what models can do
+    capability_registry: Arc<ModelCapabilityRegistry>,
 }
 
 impl CallManager {
@@ -282,6 +288,8 @@ impl CallManager {
             calls: RwLock::new(HashMap::new()),
             participant_calls: RwLock::new(HashMap::new()),
             audio_loops: RwLock::new(HashMap::new()),
+            audio_router: AudioRouter::new(),
+            capability_registry: Arc::new(ModelCapabilityRegistry::new()),
         }
     }
 
@@ -449,6 +457,93 @@ impl CallManager {
         (handle, audio_rx, transcription_rx)
     }
 
+    /// Join a participant to a call with model-specific capabilities
+    /// This enables heterogeneous conversations where audio-native models (GPT-4o)
+    /// can hear TTS from text-only models (Claude) and vice versa.
+    pub async fn join_call_with_model(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        display_name: &str,
+        model_id: &str,
+    ) -> (
+        Handle,
+        broadcast::Receiver<(Handle, Vec<i16>)>,
+        broadcast::Receiver<TranscriptionEvent>,
+    ) {
+        // AI participants always get server-side buffering
+        let (handle, audio_rx, transcription_rx) =
+            self.join_call(call_id, user_id, display_name, true).await;
+
+        // Create routed participant with model capabilities
+        let participant = RoutedParticipant::ai(
+            user_id.to_string(),
+            display_name.to_string(),
+            model_id,
+            &self.capability_registry,
+        );
+
+        // Log routing info
+        let caps = &participant.routing.capabilities;
+        info!(
+            "🎯 Model {} joined with routing: audio_in={}, audio_out={}, needs_stt={}, needs_tts={}",
+            model_id,
+            caps.audio_input,
+            caps.audio_output,
+            caps.needs_stt(),
+            caps.needs_tts()
+        );
+
+        // Add to audio router for capability-based routing
+        self.audio_router.add_participant(participant).await;
+
+        (handle, audio_rx, transcription_rx)
+    }
+
+    /// Inject TTS audio into a call (for text-only models speaking)
+    /// This routes the TTS audio to all audio-capable participants so they can hear it.
+    pub async fn inject_tts_audio(
+        &self,
+        call_id: &str,
+        from_handle: &Handle,
+        display_name: &str,
+        text: &str,
+        samples: Vec<i16>,
+    ) {
+        let call = {
+            let calls = self.calls.read().await;
+            calls.get(call_id).cloned()
+        };
+
+        if let Some(call) = call {
+            // Add TTS audio to the mixer so it gets mixed for all participants
+            let mut call = call.write().await;
+
+            // Push the TTS audio as if it came from this participant
+            // The mixer will include it in mix-minus for everyone else to hear
+            call.mixer.push_audio(from_handle, samples.clone());
+
+            info!(
+                "🔊 Injected TTS audio for {} into call {} ({} samples, \"{}\")",
+                display_name,
+                call_id,
+                samples.len(),
+                text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>()
+            );
+
+            // Also route through audio router for capability-aware handling
+            self.audio_router
+                .route_tts_audio(
+                    &from_handle.to_string(),
+                    display_name,
+                    text,
+                    samples,
+                    AUDIO_SAMPLE_RATE,
+                )
+                .await;
+        }
+    }
+
     /// Leave a call
     pub async fn leave_call(&self, handle: &Handle) {
         let call_id = {
@@ -457,24 +552,32 @@ impl CallManager {
         };
 
         if let Some(call_id) = call_id {
-            let should_cleanup = {
+            let (should_cleanup, user_id) = {
                 let calls = self.calls.read().await;
                 if let Some(call) = calls.get(&call_id) {
                     let mut call = call.write().await;
-                    if let Some(stream) = call.mixer.remove_participant(handle) {
+                    let user_id = if let Some(stream) = call.mixer.remove_participant(handle) {
                         info!(
                             "Participant {} ({}) left call {}",
                             stream.display_name,
                             handle.short(),
                             call_id
                         );
-                    }
+                        Some(stream.user_id.clone())
+                    } else {
+                        None
+                    };
                     // Check if call is now empty
-                    call.mixer.participant_count() == 0
+                    (call.mixer.participant_count() == 0, user_id)
                 } else {
-                    false
+                    (false, None)
                 }
             };
+
+            // Remove from audio router if this was a model-aware participant
+            if let Some(user_id) = user_id {
+                self.audio_router.remove_participant(&user_id).await;
+            }
 
             // Cleanup empty call
             if should_cleanup {

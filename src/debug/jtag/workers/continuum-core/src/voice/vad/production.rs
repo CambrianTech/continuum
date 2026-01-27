@@ -283,7 +283,7 @@ mod tests {
         let config = ProductionVADConfig::default();
 
         assert_eq!(config.silero_threshold, 0.3); // Lowered for production
-        assert_eq!(config.silence_threshold_frames, 15); // 0.48s (fast feedback)
+        assert_eq!(config.silence_threshold_frames, 8); // 0.256s (faster feedback)
         assert!(config.use_two_stage); // Performance optimization
     }
 }
