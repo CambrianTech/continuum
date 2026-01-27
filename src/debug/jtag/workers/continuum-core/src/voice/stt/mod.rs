@@ -2,16 +2,18 @@
 //!
 //! Modular STT with swappable backends:
 //! - Whisper (local, default)
-//! - OpenAI Whisper API
+//! - OpenAI Realtime (streaming, semantic VAD)
 //! - Deepgram
 //! - Google Cloud Speech
 //! - Azure Cognitive Services
 //!
 //! Uses trait-based polymorphism (OpenCV-style) for runtime flexibility.
 
+mod openai_realtime;
 mod stub;
 mod whisper;
 
+pub use openai_realtime::{OpenAIRealtimeSTT, TurnDetection, TurnDetectionType};
 pub use stub::StubSTT;
 pub use whisper::WhisperSTT;
 
@@ -188,12 +190,12 @@ pub fn init_registry() {
         // Register Whisper (local) adapter - primary production adapter
         reg.register(Arc::new(WhisperSTT::new()));
 
+        // Register OpenAI Realtime adapter - streaming + semantic VAD
+        // Will be used when OPENAI_API_KEY is set and fast response needed
+        reg.register(Arc::new(OpenAIRealtimeSTT::new()));
+
         // Register Stub adapter - for testing/development
         reg.register(Arc::new(StubSTT::new()));
-
-        // Future: Register API-based adapters
-        // reg.register(Arc::new(OpenAIWhisperSTT::new()));
-        // reg.register(Arc::new(DeepgramSTT::new()));
 
         Arc::new(RwLock::new(reg))
     });
