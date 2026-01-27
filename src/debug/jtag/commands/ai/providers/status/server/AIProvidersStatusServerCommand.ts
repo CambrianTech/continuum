@@ -91,6 +91,14 @@ const PROVIDER_CONFIG: Array<{
     description: 'Qwen3-Omni - audio-native, open-source',
     getKeyUrl: 'https://dashscope.console.aliyun.com/apiKey',
     billingUrl: 'https://usercenter2.aliyun.com/finance/fund-management/overview'
+  },
+  {
+    provider: 'Google',
+    key: 'GOOGLE_API_KEY',
+    category: 'cloud',
+    description: 'Gemini Live - audio-native, free tier available',
+    getKeyUrl: 'https://aistudio.google.com/app/apikey',
+    billingUrl: 'https://console.cloud.google.com/billing'
   }
 ];
 

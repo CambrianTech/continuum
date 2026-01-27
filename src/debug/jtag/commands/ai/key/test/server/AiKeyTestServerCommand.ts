@@ -57,6 +57,11 @@ const PROVIDER_ENDPOINTS: Record<string, {
     testEndpoint: 'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
     headerName: 'Authorization',
     headerPrefix: 'Bearer '
+  },
+  google: {
+    testEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    headerName: 'x-goog-api-key',
+    headerPrefix: ''
   }
 };
 
@@ -76,6 +81,7 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
     together: 'TOGETHER_API_KEY',
     fireworks: 'FIREWORKS_API_KEY',
     alibaba: 'DASHSCOPE_API_KEY',  // Also check QWEN_API_KEY as fallback
+    google: 'GOOGLE_API_KEY',
   };
 
   async execute(params: AiKeyTestParams): Promise<AiKeyTestResult> {
