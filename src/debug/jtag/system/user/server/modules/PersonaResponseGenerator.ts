@@ -509,6 +509,9 @@ export class PersonaResponseGenerator {
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
+    // Debug: Log voice modality properties
+    const msgAny = originalMessage as any;
+    this.log(`🔧 ${this.personaName}: Voice check - sourceModality=${msgAny.sourceModality}, voiceSessionId=${msgAny.voiceSessionId ? String(msgAny.voiceSessionId).slice(0,8) : 'undefined'}`);
     const generateStartTime = Date.now();  // Track total response time for decision logging
     const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
@@ -800,6 +803,34 @@ CRITICAL READING COMPREHENSION:
 
 Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts (consecutive messages about different subjects) are also topic changes.`
       });
+
+      // VOICE MODE: Add conversational brevity instruction (only if not already in RAG context)
+      // VoiceConversationSource injects these via systemPromptSection when active
+      // This is a fallback for cases where sourceModality is set but VoiceConversationSource wasn't used
+      const hasVoiceRAGContext = fullRAGContext.metadata && (fullRAGContext.metadata as any).responseStyle?.voiceMode;
+      if (originalMessage.sourceModality === 'voice' && !hasVoiceRAGContext) {
+        messages.push({
+          role: 'system',
+          content: `🎙️ VOICE CONVERSATION MODE:
+This is a SPOKEN conversation. Your response will be converted to speech.
+
+CRITICAL: Keep responses SHORT and CONVERSATIONAL:
+- Maximum 2-3 sentences
+- No bullet points, lists, or formatting
+- Speak naturally, as if talking face-to-face
+- Ask clarifying questions instead of long explanations
+- If the topic is complex, give a brief answer and offer to elaborate
+
+BAD (too long): "There are several approaches to this problem. First, you could... Second, another option is... Third, additionally you might consider..."
+GOOD (conversational): "The simplest approach would be X. Want me to explain the alternatives?"
+
+Remember: This is voice chat, not a written essay. Be brief, be natural, be human.`
+        });
+        this.log(`🔊 ${this.personaName}: Added voice conversation mode instructions (fallback - VoiceConversationSource not active)`);
+      } else if (hasVoiceRAGContext) {
+        this.log(`🔊 ${this.personaName}: Voice instructions provided by VoiceConversationSource`);
+      }
+
       this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM message array built (${messages.length} messages)`);
 
       // 🔧 SUB-PHASE 3.3: Generate AI response with timeout
@@ -807,7 +838,22 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
       // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
-      const effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
+      let effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
+
+      // VOICE MODE: Limit response length for conversational voice
+      // Priority: 1) RAG context responseStyle (from recipe/source), 2) hard-coded fallback
+      // Voice responses need to be SHORT and conversational (10-15 seconds of speech max)
+      // 100 tokens ≈ 75 words ≈ 10 seconds of speech at 150 WPM
+      const responseStyle = (fullRAGContext.metadata as any)?.responseStyle;
+      const isVoiceMode = responseStyle?.voiceMode || originalMessage.sourceModality === 'voice';
+      if (isVoiceMode) {
+        // Use responseStyle.maxTokens from RAG source if available, otherwise default
+        const VOICE_MAX_TOKENS = responseStyle?.maxTokens ?? 100;
+        if (effectiveMaxTokens > VOICE_MAX_TOKENS) {
+          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${VOICE_MAX_TOKENS} tokens (source: ${responseStyle ? 'RAG' : 'default'})`);
+          effectiveMaxTokens = VOICE_MAX_TOKENS;
+        }
+      }
 
       this.log(`📊 ${this.personaName}: RAG metadata check:`, {
         hasAdjustedMaxTokens: !!fullRAGContext.metadata.adjustedMaxTokens,
@@ -1505,8 +1551,9 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
 
       // VOICE ROUTING: If original message was from voice, route response to TTS
       // The VoiceOrchestrator listens for this event and sends to TTS
-      if (originalMessage.metadata?.sourceModality === 'voice' && originalMessage.metadata?.voiceSessionId) {
-        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing`);
+      // NOTE: sourceModality and voiceSessionId are DIRECT properties on InboxMessage, not nested in metadata
+      if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${String(originalMessage.voiceSessionId).slice(0, 8)})`);
 
         // Emit voice response event for VoiceOrchestrator
         await Events.emit(
@@ -1519,7 +1566,7 @@ Time gaps > 1 hour usually indicate topic changes, but IMMEDIATE semantic shifts
               id: originalMessage.id,
               roomId: originalMessage.roomId,
               sourceModality: 'voice',
-              voiceSessionId: originalMessage.metadata.voiceSessionId
+              voiceSessionId: originalMessage.voiceSessionId
             } as InboxMessage
           }
         );

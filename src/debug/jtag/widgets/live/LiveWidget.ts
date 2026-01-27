@@ -577,6 +577,25 @@ export class LiveWidget extends ReactiveWidget {
       })
     );
 
+    // AI speech captions - when an AI speaks via TTS, show it in captions
+    // This event is emitted by AIAudioBridge when AI voice is injected
+    this.unsubscribers.push(
+      Events.subscribe('voice:ai:speech', (data: {
+        sessionId: string;
+        speakerId: string;
+        speakerName: string;
+        text: string;
+        timestamp: number;
+      }) => {
+        // Only show captions for this session
+        if (data.sessionId === this.sessionId) {
+          console.log(`LiveWidget: AI speech caption: ${data.speakerName}: "${data.text.slice(0, 50)}..."`);
+          this.setCaption(data.speakerName, data.text);
+          this.setSpeaking(data.speakerId as UUID, true);
+        }
+      })
+    );
+
     // Note: Audio streaming is handled directly via WebSocket (AudioStreamClient)
     // rather than through JTAG events for lower latency
   }

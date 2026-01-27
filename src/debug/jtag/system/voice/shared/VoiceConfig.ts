@@ -78,7 +78,7 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
     adapter: STT_ADAPTERS.WHISPER,  // Use constants, NO fallbacks
   },
 
-  maxSynthesisTimeMs: 5000,  // 5s timeout before FAILURE (not fallback)
+  maxSynthesisTimeMs: 30000,  // 30s timeout - Piper runs at real-time (RTF≈1.0), need time for synthesis
   streamingEnabled: false,    // Batch mode for now
 };
 

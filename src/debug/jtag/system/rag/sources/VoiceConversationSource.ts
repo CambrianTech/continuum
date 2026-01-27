@@ -141,7 +141,16 @@ export class VoiceConversationSource implements RAGSource {
           utteranceCount: llmMessages.length,
           voiceSessionId,
           personaId: context.personaId,
-          speakerBreakdown: this.getSpeakerBreakdown(utterances)
+          speakerBreakdown: this.getSpeakerBreakdown(utterances),
+          // Voice response style configuration - used by PersonaResponseGenerator
+          responseStyle: {
+            voiceMode: true,
+            maxTokens: 100,          // ~10-15 seconds of speech at 150 WPM
+            conversational: true,
+            maxSentences: 3,
+            preferQuestions: true,   // Ask clarifying questions vs long explanations
+            avoidFormatting: true    // No bullet points, code blocks, markdown
+          }
         }
       };
     } catch (error: any) {
@@ -152,30 +161,36 @@ export class VoiceConversationSource implements RAGSource {
 
   /**
    * Build voice-specific system prompt section
-   * Explains the speaker type labels to the AI
+   * Explains the speaker type labels and CRITICAL brevity requirements
    */
   private buildVoiceSystemPromptSection(utterances: UtteranceEvent[]): string {
     const humanCount = utterances.filter(u => u.speakerType === 'human').length;
     const aiCount = utterances.filter(u => u.speakerType === 'persona' || u.speakerType === 'agent').length;
 
-    return `## Voice Call Context
+    return `## 🎙️ VOICE CALL CONTEXT
 
-You are participating in a live voice call. The conversation history shows transcriptions from speech.
+You are in a LIVE VOICE CONVERSATION. Your response will be spoken aloud via TTS.
 
 **Speaker Labels:**
-- [HUMAN] - Human participants speaking
-- [AI] - AI participants speaking (including other AI personas)
+- [HUMAN] - Human participants
+- [AI] - AI participants (other personas)
 - [AGENT] - AI agents (like Claude Code)
 
-**Current Session Stats:**
-- Human utterances: ${humanCount}
-- AI utterances: ${aiCount}
+**Session:** ${humanCount} human + ${aiCount} AI utterances
 
-**Voice Call Guidelines:**
-- Keep responses conversational and concise (voice is real-time)
-- When responding to humans, be helpful and direct
-- When hearing other AIs, you can build on their ideas or offer different perspectives
-- Avoid interrupting - wait for natural pauses`;
+**⚡ CRITICAL - VOICE RESPONSE RULES:**
+
+1. **MAXIMUM 2-3 SENTENCES** - This is voice, not text chat
+2. **NO FORMATTING** - No bullets, lists, code blocks, or markdown
+3. **SPEAK NATURALLY** - As if talking face-to-face
+4. **ASK, DON'T LECTURE** - "Want me to explain more?" vs long explanations
+5. **WAIT YOUR TURN** - Don't interrupt, let others finish
+
+❌ BAD: "There are several approaches. First, you could try X. Second, another option is Y. Third, you might also consider Z. Additionally, some people prefer..."
+
+✅ GOOD: "I'd suggest trying X first. Want me to walk through the other options?"
+
+Remember: 10 seconds of speech, not an essay.`;
   }
 
   /**

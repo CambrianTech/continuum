@@ -225,11 +225,11 @@ export class PersonaAutonomousLoop {
         senderDisplayName: item.senderName,
         status: 'delivered',
         priority: item.priority,
-        // Pass through voice modality for TTS routing
-        metadata: {
-          sourceModality: item.sourceModality,      // 'text' | 'voice'
-          voiceSessionId: item.voiceSessionId        // UUID if voice
-        },
+        // Voice modality for TTS routing - DIRECT PROPERTIES (not nested in metadata)
+        // PersonaResponseGenerator checks these as direct properties on the message
+        sourceModality: item.sourceModality,      // 'text' | 'voice'
+        voiceSessionId: item.voiceSessionId,      // UUID if voice
+        metadata: {},
         reactions: [],
         attachments: [],
         mentions: [],
