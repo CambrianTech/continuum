@@ -884,6 +884,15 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // STEP 1c: Skip audio-native models for text chat (they only work in voice calls)
+    // Audio-native models like Gemini Live and Qwen3-Omni communicate via direct audio I/O,
+    // not through the text generation pipeline.
+    const metadata = this.entity.metadata as Record<string, unknown> | undefined;
+    if (metadata?.isAudioNative === true) {
+      this.log.debug(`⏭️ ${this.displayName}: Skipping chat (audio-native model, voice-only)`);
+      return;
+    }
+
     // STEP 2: Deduplication - prevent evaluating same message multiple times
     if (this.rateLimiter.hasEvaluatedMessage(messageEntity.id)) {
       return; // Already evaluated this message
