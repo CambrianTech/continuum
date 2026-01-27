@@ -170,7 +170,7 @@ impl Default for ModelCapabilityRegistry {
 }
 
 /// Determine the optimal audio routing for a participant
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AudioRouting {
     /// Model being used
     pub model_id: String,
@@ -183,7 +183,7 @@ pub struct AudioRouting {
 }
 
 /// How audio reaches the model
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InputRoute {
     /// Raw audio stream (for audio-native models)
     RawAudio,
@@ -192,7 +192,7 @@ pub enum InputRoute {
 }
 
 /// How model output becomes audio
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OutputRoute {
     /// Model generates audio directly
     NativeAudio,

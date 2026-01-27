@@ -1,3 +1,4 @@
+pub mod audio_router;
 pub mod call_server;
 pub mod capabilities;
 pub mod handle;
@@ -11,6 +12,7 @@ pub mod types;
 pub mod vad;
 pub mod voice_service;
 
+pub use audio_router::{AudioEvent, AudioRouter, RoutedParticipant};
 pub use capabilities::{AudioCapabilities, AudioRouting, ModelCapabilityRegistry};
 pub use orchestrator::VoiceOrchestrator;
 pub use types::*;
