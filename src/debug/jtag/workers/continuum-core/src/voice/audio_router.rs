@@ -11,7 +11,7 @@
 use super::capabilities::{AudioCapabilities, AudioRouting, InputRoute, ModelCapabilityRegistry, OutputRoute};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
 /// Participant in a voice conversation with routing info
