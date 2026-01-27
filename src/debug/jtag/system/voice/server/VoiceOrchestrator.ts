@@ -98,10 +98,10 @@ export class VoiceOrchestrator {
   private sessionContexts: Map<UUID, ConversationContext> = new Map();
   private pendingResponses: Map<UUID, PendingVoiceResponse> = new Map();
 
-  // Cooldown per session - don't select new responder within N ms of last selection
-  // This prevents backlog of utterances from each getting a different AI
-  private lastSelectionTime: Map<UUID, number> = new Map();
-  private static readonly SELECTION_COOLDOWN_MS = 1000; // 1 second - research shows 600ms-1s optimal
+  // Track when current speaker will FINISH - don't select new responder until then
+  // This prevents interrupting the current speaker
+  private lastSpeechEndTime: Map<UUID, number> = new Map();
+  private static readonly POST_SPEECH_BUFFER_MS = 2000; // 2 seconds after speaker finishes
 
   // Turn arbitration
   private arbiter: TurnArbiter;
@@ -259,11 +259,13 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // COOLDOWN CHECK - skip if we recently selected someone (prevents backlog flood)
-    const lastSelection = this.lastSelectionTime.get(sessionId) || 0;
+    // COOLDOWN CHECK - wait until current speaker finishes + buffer
+    const speechEndTime = this.lastSpeechEndTime.get(sessionId) || 0;
     const now = Date.now();
-    if (now - lastSelection < VoiceOrchestrator.SELECTION_COOLDOWN_MS) {
-      console.log(`🎙️ VoiceOrchestrator: Skipping - cooldown active (${Math.round((VoiceOrchestrator.SELECTION_COOLDOWN_MS - (now - lastSelection)) / 1000)}s left)`);
+    const waitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
+    if (now < waitUntil) {
+      const msLeft = waitUntil - now;
+      console.log(`🎙️ VoiceOrchestrator: Skipping - waiting for speaker to finish (${Math.round(msLeft / 1000)}s left)`);
       return;
     }
 
@@ -275,11 +277,16 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Update context and cooldown
+    // Update context
     context.lastResponderId = selectedResponder.userId;
-    this.lastSelectionTime.set(sessionId, Date.now());
 
-    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (cooldown: ${VoiceOrchestrator.SELECTION_COOLDOWN_MS / 1000}s)`);
+    // Set IMMEDIATE cooldown - block other selections while AI is thinking/responding
+    // This prevents multiple AIs being selected before first one speaks
+    // Will be extended when AI actually speaks (via voice:ai:speech event with audioDurationMs)
+    const THINKING_BUFFER_MS = 10000; // 10 seconds for AI to think + respond + start speaking
+    this.lastSpeechEndTime.set(sessionId, Date.now() + THINKING_BUFFER_MS);
+
+    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 10s while thinking)`);
 
     // Send directed event ONLY to the selected responder
     Events.emit('voice:transcription:directed', {
@@ -406,15 +413,24 @@ export class VoiceOrchestrator {
     });
 
     // Listen for AI speech events (when an AI speaks via TTS)
+    // Track when speech will END to prevent interruption
     // Route to ONE other AI using arbiter (turn-taking coordination)
     Events.subscribe('voice:ai:speech', async (event: {
       sessionId: string;
       speakerId: string;
       speakerName: string;
       text: string;
+      audioDurationMs?: number;
       timestamp: number;
     }) => {
-      console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke: "${event.text.slice(0, 50)}..."`);
+      // Track when this speech will finish - prevents new selection until done + buffer
+      if (event.audioDurationMs) {
+        const speechEndTime = Date.now() + event.audioDurationMs;
+        this.lastSpeechEndTime.set(event.sessionId as UUID, speechEndTime);
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speaking for ${Math.round(event.audioDurationMs / 1000)}s - will wait until finished`);
+      } else {
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke: "${event.text.slice(0, 50)}..."`);
+      }
 
       // Get participants for this session
       const participants = this.sessionParticipants.get(event.sessionId as UUID);
