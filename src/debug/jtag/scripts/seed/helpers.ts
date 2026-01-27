@@ -8,6 +8,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { UserEntity } from '../../system/data/entities/UserEntity';
 import type { UserCreateResult } from '../../commands/user/create/shared/UserCreateTypes';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 
 const execAsync = promisify(exec);
 

@@ -78,6 +78,7 @@ export class Qwen3OmniRealtimeAdapter implements IAudioNativeAdapter {
       this.ws = new WebSocket(endpoint, {
         headers: {
           'Authorization': `Bearer ${this.apiKey}`,
+          'OpenAI-Beta': 'realtime=v1',  // Required header for DashScope realtime API
         },
       });
 

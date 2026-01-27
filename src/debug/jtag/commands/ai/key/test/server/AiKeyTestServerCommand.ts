@@ -75,7 +75,7 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
     xai: 'XAI_API_KEY',
     together: 'TOGETHER_API_KEY',
     fireworks: 'FIREWORKS_API_KEY',
-    alibaba: 'DASHSCOPE_API_KEY'
+    alibaba: 'DASHSCOPE_API_KEY',  // Also check QWEN_API_KEY as fallback
   };
 
   async execute(params: AiKeyTestParams): Promise<AiKeyTestResult> {
@@ -97,6 +97,11 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
       if (envKey) {
         const secrets = SecretManager.getInstance();
         key = secrets.get(envKey) || '';
+
+        // Alibaba: also check QWEN_API_KEY as fallback
+        if (!key && provider === 'alibaba') {
+          key = secrets.get('QWEN_API_KEY') || '';
+        }
       }
     }
 

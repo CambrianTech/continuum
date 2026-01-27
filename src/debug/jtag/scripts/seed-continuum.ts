@@ -889,6 +889,14 @@ async function seedViaJTAG() {
         const existingUser = await loadUserByUniqueId(persona.uniqueId);
         if (existingUser) {
           userMap[persona.uniqueId] = existingUser;
+
+          // Also update metadata for existing audio-native models (in case it was missed)
+          if (persona.isAudioNative && persona.modelId) {
+            await updateUserMetadata(existingUser.id, {
+              modelId: persona.modelId,
+              isAudioNative: true,
+            });
+          }
         }
       }
     }
