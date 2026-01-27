@@ -83,6 +83,14 @@ const PROVIDER_CONFIG: Array<{
     description: 'Fast open-source models',
     getKeyUrl: 'https://fireworks.ai/account/api-keys',
     billingUrl: 'https://fireworks.ai/account/billing'
+  },
+  {
+    provider: 'Alibaba',
+    key: 'DASHSCOPE_API_KEY',
+    category: 'cloud',
+    description: 'Qwen3-Omni - audio-native, open-source',
+    getKeyUrl: 'https://dashscope.console.aliyun.com/apiKey',
+    billingUrl: 'https://usercenter2.aliyun.com/finance/fund-management/overview'
   }
 ];
 

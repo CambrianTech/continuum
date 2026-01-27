@@ -301,6 +301,7 @@ export class SettingsWidget extends ReactiveWidget {
       { key: 'XAI_API_KEY', value: '', isSecret: true, provider: 'xAI', category: 'cloud', description: 'Grok models' },
       { key: 'TOGETHER_API_KEY', value: '', isSecret: true, provider: 'Together', category: 'cloud', description: 'Open-source model hosting' },
       { key: 'FIREWORKS_API_KEY', value: '', isSecret: true, provider: 'Fireworks', category: 'cloud', description: 'Fast open-source models' },
+      { key: 'DASHSCOPE_API_KEY', value: '', isSecret: true, provider: 'Alibaba', category: 'cloud', description: 'Qwen3-Omni - audio-native, open-source' },
     ];
   }
 
