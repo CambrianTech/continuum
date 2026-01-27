@@ -28,6 +28,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { getAIAudioBridge } from './AIAudioBridge';
+import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 
 /**
@@ -53,6 +54,8 @@ interface VoiceParticipant {
   type: 'human' | 'persona' | 'agent';
   personaUser?: unknown;     // PersonaUser instance if AI
   expertise?: string[];      // For relevance scoring
+  modelId?: string;          // AI model ID (e.g., 'qwen3-omni', 'claude-3-sonnet')
+  isAudioNative?: boolean;   // True if model supports direct audio I/O
 }
 
 /**
@@ -152,12 +155,19 @@ export class VoiceOrchestrator {
         );
 
         if (result.success && result.items) {
+          const audioNativeBridge = getAudioNativeBridge();
           for (const user of result.items) {
+            const metadata = user.metadata as Record<string, unknown> | undefined;
+            const modelId = metadata?.modelId as string | undefined;
+            const isAudioNative = modelId ? audioNativeBridge.isAudioNativeModel(modelId) : false;
+
             participants.push({
               userId: user.id as UUID,
               displayName: user.displayName || user.uniqueId,
               type: user.type as 'human' | 'persona' | 'agent',
-              expertise: (user.metadata as Record<string, unknown>)?.expertise as string[] | undefined
+              expertise: metadata?.expertise as string[] | undefined,
+              modelId,
+              isAudioNative,
             });
           }
         }
@@ -176,19 +186,36 @@ export class VoiceOrchestrator {
 
     console.log(`🎙️ VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} for room ${roomId.slice(0, 8)} with ${participants.length} participants`);
 
-    // Connect AI participants to the audio call server
+    // Connect AI participants to the appropriate audio bridge
     const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
     if (aiParticipants.length > 0) {
-      const bridge = getAIAudioBridge();
+      const textBridge = getAIAudioBridge();
+      const audioNativeBridge = getAudioNativeBridge();
+
       for (const ai of aiParticipants) {
-        console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} to audio call...`);
-        bridge.joinCall(sessionId, ai.userId, ai.displayName).then(success => {
-          if (success) {
-            console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected to audio`);
-          } else {
-            console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect to audio`);
-          }
-        });
+        if (ai.isAudioNative && ai.modelId) {
+          // Audio-native models: connect via AudioNativeBridge (direct audio I/O)
+          console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} (${ai.modelId}) as AUDIO-NATIVE...`);
+          audioNativeBridge.joinCall(sessionId, ai.userId, ai.displayName, ai.modelId).then(success => {
+            if (success) {
+              console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected as audio-native`);
+            } else {
+              console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect (falling back to text)`);
+              // Fallback to text-based bridge
+              textBridge.joinCall(sessionId, ai.userId, ai.displayName);
+            }
+          });
+        } else {
+          // Text-based models: connect via AIAudioBridge (STT → LLM → TTS)
+          console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} as TEXT-BASED...`);
+          textBridge.joinCall(sessionId, ai.userId, ai.displayName).then(success => {
+            if (success) {
+              console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected to audio`);
+            } else {
+              console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect to audio`);
+            }
+          });
+        }
       }
     }
   }
@@ -197,13 +224,19 @@ export class VoiceOrchestrator {
    * Unregister a voice session
    */
   unregisterSession(sessionId: UUID): void {
-    // Disconnect AI participants from audio call
+    // Disconnect AI participants from both bridges
     const participants = this.sessionParticipants.get(sessionId);
     if (participants) {
-      const bridge = getAIAudioBridge();
+      const textBridge = getAIAudioBridge();
+      const audioNativeBridge = getAudioNativeBridge();
       const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
+
       for (const ai of aiParticipants) {
-        bridge.leaveCall(sessionId, ai.userId);
+        if (ai.isAudioNative) {
+          audioNativeBridge.leaveCall(sessionId, ai.userId);
+        } else {
+          textBridge.leaveCall(sessionId, ai.userId);
+        }
       }
     }
 

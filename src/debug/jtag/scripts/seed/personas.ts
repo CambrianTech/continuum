@@ -18,6 +18,8 @@ export interface PersonaConfig {
   provider?: string;
   type: 'agent' | 'persona';
   voiceId?: string;  // TTS speaker ID (0-246 for LibriTTS multi-speaker model)
+  modelId?: string;  // AI model ID (e.g., 'qwen3-omni-flash-realtime' for audio-native)
+  isAudioNative?: boolean;  // True if model supports direct audio I/O (no STT/TTS needed)
 }
 
 /**
@@ -51,6 +53,17 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60' },
   { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'ollama', type: 'persona', voiceId: '90' },
   { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
+
+  // Audio-native personas (no STT/TTS needed - direct audio I/O)
+  {
+    uniqueId: generateUniqueId('Qwen3-Omni'),
+    displayName: 'Qwen3-Omni',
+    provider: 'alibaba',
+    type: 'persona',
+    modelId: 'qwen3-omni-flash-realtime',
+    isAudioNative: true,
+    // No voiceId - Qwen3-Omni has its own native voices (Cherry, Ethan, etc.)
+  },
 ];
 
 /**
@@ -71,4 +84,6 @@ export const PERSONA_UNIQUE_IDS = {
   FIREWORKS: generateUniqueId('Fireworks'),
   LOCAL: generateUniqueId('Local'),
   SENTINEL: generateUniqueId('Sentinel'),
+  // Audio-native models
+  QWEN3_OMNI: generateUniqueId('Qwen3-Omni'),
 } as const;

@@ -117,6 +117,19 @@ impl ModelCapabilityRegistry {
         capabilities.insert("groq-llama3".into(), AudioCapabilities::TEXT_ONLY);
         capabilities.insert("groq-mixtral".into(), AudioCapabilities::TEXT_ONLY);
 
+        // Alibaba Qwen3-Omni (audio native, open source)
+        capabilities.insert("qwen3-omni".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert("qwen3-omni-flash".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert("qwen3-omni-flash-realtime".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert("qwen3-omni-30b".into(), AudioCapabilities::AUDIO_NATIVE);
+
+        // Amazon Nova Sonic (audio native)
+        capabilities.insert("nova-sonic".into(), AudioCapabilities::AUDIO_NATIVE);
+        capabilities.insert("amazon-nova-sonic".into(), AudioCapabilities::AUDIO_NATIVE);
+
+        // Hume EVI (audio native with emotion)
+        capabilities.insert("hume-evi".into(), AudioCapabilities::AUDIO_NATIVE);
+
         Self { capabilities }
     }
 
@@ -299,5 +312,34 @@ mod tests {
         let routing = AudioRouting::for_model("gemini-1.5-pro", &registry);
         assert_eq!(routing.input_route, InputRoute::RawAudio);
         assert!(matches!(routing.output_route, OutputRoute::TextToSpeech { .. }));
+    }
+
+    #[test]
+    fn test_qwen3_omni_audio_native() {
+        let registry = ModelCapabilityRegistry::new();
+
+        // Qwen3-Omni is fully audio native (open source)
+        let qwen = registry.get("qwen3-omni-flash-realtime");
+        assert!(qwen.is_audio_native());
+        assert!(!qwen.needs_stt()); // Hears raw audio
+        assert!(!qwen.needs_tts()); // Speaks raw audio
+
+        // Routing should be raw audio in, native audio out
+        let routing = AudioRouting::for_model("qwen3-omni", &registry);
+        assert_eq!(routing.input_route, InputRoute::RawAudio);
+        assert_eq!(routing.output_route, OutputRoute::NativeAudio);
+        assert!(routing.needs_mixed_audio());
+        assert!(!routing.tts_should_be_audible()); // Produces native audio, not TTS
+    }
+
+    #[test]
+    fn test_nova_sonic_audio_native() {
+        let registry = ModelCapabilityRegistry::new();
+
+        // Amazon Nova Sonic is audio native
+        let nova = registry.get("nova-sonic");
+        assert!(nova.is_audio_native());
+        assert!(!nova.needs_stt());
+        assert!(!nova.needs_tts());
     }
 }

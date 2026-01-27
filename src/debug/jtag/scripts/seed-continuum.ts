@@ -34,6 +34,7 @@ import {
   createStateRecord,
   updatePersonaProfile,
   updatePersonaConfig,
+  updateUserMetadata,
   createUserViaCommand,
   loadUserByUniqueId,
   seedRecords
@@ -874,6 +875,14 @@ async function seedViaJTAG() {
         const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
         if (user) {
           userMap[persona.uniqueId] = user;
+
+          // Update metadata for audio-native models (Qwen3-Omni, etc.)
+          if (persona.isAudioNative && persona.modelId) {
+            await updateUserMetadata(user.id, {
+              modelId: persona.modelId,
+              isAudioNative: true,
+            });
+          }
         }
       } else {
         // User already exists - load from database using uniqueId

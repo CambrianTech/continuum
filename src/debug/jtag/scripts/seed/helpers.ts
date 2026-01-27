@@ -150,6 +150,35 @@ export async function updatePersonaConfig(userId: string, config: any): Promise<
 }
 
 /**
+ * Update user metadata with audio-native model info
+ * Sets modelId and isAudioNative flags for VoiceOrchestrator routing
+ */
+export async function updateUserMetadata(
+  userId: string,
+  metadata: { modelId?: string; isAudioNative?: boolean }
+): Promise<boolean> {
+  const updateData = { metadata };
+  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const result = JSON.parse(stdout);
+
+    if (result.success) {
+      console.log(`  ✅ Updated metadata for user ${userId.slice(0, 8)}... (modelId: ${metadata.modelId})`);
+      return true;
+    } else {
+      console.error(`  ❌ Failed to update metadata: ${result.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`  ❌ Failed to update metadata: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Create a user via user/create command (proper factory-based creation)
  *
  * Note: Pass uniqueId from persona config (clean slug without @ prefix)
