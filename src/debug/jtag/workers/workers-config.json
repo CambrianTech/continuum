@@ -70,6 +70,16 @@
       "enabled": true
     },
     {
+      "name": "continuum-core",
+      "binary": "workers/target/release/continuum-core-server",
+      "socket": "/tmp/continuum-core.sock",
+      "args": [
+        "/tmp/jtag-logger-worker.sock"
+      ],
+      "description": "Rust core: IPC (VoiceOrchestrator, PersonaInbox) + WebSocket voice calls on port 50053 (replaces streaming-core)",
+      "enabled": true
+    },
+    {
       "name": "search",
       "binary": "workers/target/release/search-worker",
       "socket": "/tmp/jtag-search-worker.sock",
@@ -82,8 +92,8 @@
       "binary": "workers/target/release/streaming-core",
       "type": "tcp",
       "port": 50053,
-      "description": "WebSocket audio/video call server with mix-minus and hold music",
-      "enabled": true
+      "description": "DEPRECATED - Voice processing moved to continuum-core",
+      "enabled": false
     }
   ],
   "sharedSockets": [

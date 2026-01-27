@@ -21,6 +21,12 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     this.readIndex = 0;
     this.samplesAvailable = 0;
 
+    // PREBUFFERING: Don't start playback until buffer has enough data
+    // This prevents choppy audio at the start of streams
+    // 100ms prebuffer = 1600 samples at 16kHz (about 3 frames)
+    this.prebufferSize = Math.floor(sampleRate * 0.1);
+    this.playbackStarted = false;
+
     this.muted = false;
     this.volume = 1.0;
 
@@ -79,6 +85,21 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     const channel = output[0];
     const samplesToWrite = channel.length; // Usually 128 samples
 
+    // PREBUFFERING: Wait until we have enough samples before starting playback
+    // This prevents choppy audio at stream start
+    if (!this.playbackStarted) {
+      if (this.samplesAvailable >= this.prebufferSize) {
+        this.playbackStarted = true;
+        // console.log('PlaybackProcessor: Prebuffer filled, starting playback');
+      } else {
+        // Output silence while prebuffering
+        for (let i = 0; i < samplesToWrite; i++) {
+          channel[i] = 0;
+        }
+        return true;
+      }
+    }
+
     // Fill output buffer from our circular buffer
     for (let i = 0; i < samplesToWrite; i++) {
       if (this.muted) {
@@ -86,6 +107,12 @@ class PlaybackProcessor extends AudioWorkletProcessor {
       } else {
         channel[i] = this.readFromBuffer() * this.volume;
       }
+    }
+
+    // If buffer runs completely dry during playback, reset prebuffer state
+    // This handles stream restarts after long silence
+    if (this.samplesAvailable === 0) {
+      this.playbackStarted = false;
     }
 
     return true; // Keep processor alive

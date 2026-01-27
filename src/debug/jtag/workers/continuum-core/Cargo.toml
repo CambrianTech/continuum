@@ -1,0 +1,48 @@
+[package]
+name = "continuum-core"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
+
+[[bin]]
+name = "continuum-core-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+thiserror.workspace = true
+dashmap = "6.1"  # Lock-free concurrent HashMap
+base64 = "0.22"  # Base64 encoding for audio data
+async-trait.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+tokio-stream.workspace = true
+
+# Voice processing dependencies
+tokio-tungstenite.workspace = true  # WebSocket server for voice calls
+futures-util.workspace = true
+futures = "0.3"  # For VAD block_on in audio thread
+hound = "3.5"  # WAV file reading/writing
+once_cell.workspace = true
+rubato = "0.15"  # High-quality audio resampling
+whisper-rs = "0.13"  # Whisper.cpp bindings for STT
+ort.workspace = true  # ONNX Runtime for TTS
+rayon.workspace = true
+ndarray.workspace = true
+num_cpus = "1.16"  # CPU count detection
+dirs = "5.0"  # User directories for model paths
+earshot = "0.1"  # Fast VAD (WebRTC-style)
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true  # For test audio generation
+ts-rs.workspace = true  # TypeScript type generation
+
+[dev-dependencies]
+tokio-test = "0.4"

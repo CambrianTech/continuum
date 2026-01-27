@@ -15,8 +15,11 @@
 
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { Commands } from '../../core/shared/Commands';
-import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { getVoiceService } from './VoiceService';
+import { TTS_ADAPTERS } from '../shared/VoiceConfig';
+import { Events } from '../../core/shared/Events';
+import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 
 // CallMessage types matching Rust call_server.rs
 interface JoinMessage {
@@ -24,6 +27,7 @@ interface JoinMessage {
   call_id: string;
   user_id: string;
   display_name: string;
+  is_ai: boolean;  // AI participants get server-side audio buffering
 }
 
 interface AudioMessage {
@@ -92,12 +96,13 @@ export class AIAudioBridge {
         ws.on('open', () => {
           console.log(`🤖 AIAudioBridge: ${displayName} connected to call server`);
 
-          // Send join message
+          // Send join message - is_ai: true enables server-side audio buffering
           const joinMsg: JoinMessage = {
             type: 'Join',
             call_id: callId,
             user_id: userId,
             display_name: displayName,
+            is_ai: true,  // CRITICAL: Server creates ring buffer for AI participants
           };
           ws.send(JSON.stringify(joinMsg));
           connection.isConnected = true;
@@ -212,8 +217,10 @@ export class AIAudioBridge {
 
   /**
    * Inject TTS audio into the call (AI speaking)
+   * @param voice - Speaker ID for multi-speaker TTS models (0-246 for LibriTTS).
+   *                If not provided, computed from userId for consistent per-AI voices.
    */
-  async speak(callId: string, userId: UUID, text: string): Promise<void> {
+  async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
     const key = `${callId}-${userId}`;
     const connection = this.connections.get(key);
 
@@ -223,42 +230,61 @@ export class AIAudioBridge {
     }
 
     try {
-      // Generate TTS audio
-      const ttsResult = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
-        'voice/synthesize',
-        {
-          text,
-          voice: 'default',
-          format: 'pcm16',
-        }
-      );
+      // Compute deterministic voice from userId if not provided
+      // This ensures each AI always has the same voice
+      const voiceId = voice ?? this.computeVoiceFromUserId(userId);
 
-      if (!ttsResult.success || !ttsResult.audio) {
-        console.warn(`🤖 AIAudioBridge: TTS failed for ${connection.displayName}`);
-        return;
-      }
+      // Use VoiceService (handles TTS synthesis)
+      const voiceService = getVoiceService();
+      const result = await voiceService.synthesizeSpeech({
+        text,
+        userId,
+        voice: voiceId,  // Speaker ID for multi-speaker models
+        adapter: TTS_ADAPTERS.PIPER,  // Local, fast TTS
+      });
 
-      // Send audio in chunks to the call
-      const audioData = Buffer.from(ttsResult.audio, 'base64');
-      const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.byteLength / 2);
+      // result.audioSamples is already i16 array ready to send
+      const samples = result.audioSamples;
+      const audioDurationSec = samples.length / 16000;
 
-      // Send in ~20ms chunks (320 samples at 16kHz)
-      const chunkSize = 320;
-      for (let i = 0; i < samples.length; i += chunkSize) {
-        const chunk = samples.slice(i, i + chunkSize);
-        const base64Chunk = this.int16ToBase64(chunk);
+      // SERVER-SIDE BUFFERING: Send ALL audio at once
+      // Rust server has a 10-second ring buffer per AI participant
+      // Server pulls frames at precise 32ms intervals (tokio::time::interval)
+      // This eliminates JavaScript timing jitter from the audio pipeline
 
-        const audioMsg: AudioMessage = {
-          type: 'Audio',
-          data: base64Chunk,
-        };
+      console.log(`🤖 AIAudioBridge: ${connection.displayName} sending ${samples.length} samples (${audioDurationSec.toFixed(1)}s) to server buffer`);
+
+      // Send entire audio as one binary WebSocket frame
+      // For very long audio (>10s), chunk into ~5 second segments to avoid buffer overflow
+      const chunkSize = 16000 * 5; // 5 seconds per chunk
+      for (let offset = 0; offset < samples.length; offset += chunkSize) {
+        const chunk = samples.slice(offset, Math.min(offset + chunkSize, samples.length));
 
         if (connection.ws.readyState === WebSocket.OPEN) {
-          connection.ws.send(JSON.stringify(audioMsg));
+          const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+          connection.ws.send(buffer);
         }
+      }
 
-        // Small delay between chunks to simulate real-time playback
-        await this.sleep(20);
+      // BROADCAST to browser + other AIs: Emit AFTER TTS synthesis and audio send
+      // This syncs caption display with actual audio playback (audio is now in server buffer)
+      // Browser LiveWidget subscribes to show AI caption/speaker highlight
+      if (DataDaemon.jtagContext) {
+        await Events.emit(
+          DataDaemon.jtagContext,
+          'voice:ai:speech',
+          {
+            sessionId: callId,
+            speakerId: userId,
+            speakerName: connection.displayName,
+            text,
+            audioDurationMs: Math.round(audioDurationSec * 1000),
+            timestamp: Date.now()
+          },
+          {
+            scope: EVENT_SCOPES.GLOBAL  // Broadcast to all environments including browser
+          }
+        );
       }
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);
@@ -302,6 +328,20 @@ export class AIAudioBridge {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Compute a deterministic voice ID from userId
+   * Uses a simple hash to map UUID to speaker ID (0-246 for LibriTTS)
+   */
+  private computeVoiceFromUserId(userId: string): string {
+    // Simple hash: sum char codes and mod by number of speakers
+    let hash = 0;
+    for (let i = 0; i < userId.length; i++) {
+      hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;  // Unsigned 32-bit
+    }
+    const speakerId = hash % 247;  // 0-246 for LibriTTS
+    return speakerId.toString();
   }
 
   /**

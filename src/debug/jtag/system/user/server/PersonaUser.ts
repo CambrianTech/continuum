@@ -575,6 +575,36 @@ export class PersonaUser extends AIUser {
       }, undefined, this.id);
       this._eventUnsubscribes.push(unsubTruncate);
 
+      // Subscribe to DIRECTED voice transcription events (only when arbiter selects this persona)
+      const unsubVoiceTranscription = Events.subscribe('voice:transcription:directed', async (transcriptionData: {
+        sessionId: UUID;
+        speakerId: UUID;
+        speakerName: string;
+        transcript: string;
+        confidence: number;
+        language: string;
+        timestamp: number;
+        targetPersonaId: UUID;
+      }) => {
+        // Only process if directed at THIS persona
+        if (transcriptionData.targetPersonaId === this.id) {
+          this.log.info(`🎙️ ${this.displayName}: Received DIRECTED voice transcription`);
+          await this.handleVoiceTranscription(transcriptionData);
+        }
+      }, undefined, this.id);
+      this._eventUnsubscribes.push(unsubVoiceTranscription);
+      this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
+
+      // Subscribe to TTS audio events and inject into CallServer
+      // This allows AI voice responses to be heard in voice calls
+      const { AIAudioInjector } = await import('../../voice/server/AIAudioInjector');
+      const unsubAudioInjection = AIAudioInjector.subscribeToTTSEvents(
+        this.id,
+        this.displayName
+      );
+      this._eventUnsubscribes.push(unsubAudioInjection);
+      this.log.info(`🎙️ ${this.displayName}: Subscribed to TTS audio injection events`);
+
       this.eventsSubscribed = true;
       this.log.info(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
 
@@ -928,6 +958,99 @@ export class PersonaUser extends AIUser {
     // PHASE 3: Autonomous polling loop will service inbox at adaptive cadence
     // (No immediate processing - messages wait in inbox until loop polls)
     // NOTE: Memory creation handled autonomously by Hippocampus subprocess
+  }
+
+  /**
+   * Handle voice transcription from live call
+   * Voice transcriptions flow through the same inbox/priority system as chat messages
+   */
+  private async handleVoiceTranscription(transcriptionData: {
+    sessionId: UUID;
+    speakerId: UUID;
+    speakerName: string;
+    speakerType?: 'human' | 'persona' | 'agent';  // Added: know if speaker is human or AI
+    transcript: string;
+    confidence: number;
+    language: string;
+    timestamp?: string | number;
+  }): Promise<void> {
+    // STEP 1: Ignore our own transcriptions
+    if (transcriptionData.speakerId === this.id) {
+      return;
+    }
+
+    this.log.debug(`🎤 ${this.displayName}: Received transcription from ${transcriptionData.speakerName}: "${transcriptionData.transcript.slice(0, 50)}..."`);
+
+    // STEP 2: Deduplication - prevent evaluating same transcription multiple times
+    // Use transcript + timestamp as unique key
+    const transcriptionKey = `${transcriptionData.speakerId}-${transcriptionData.timestamp || Date.now()}`;
+    if (this.rateLimiter.hasEvaluatedMessage(transcriptionKey)) {
+      return;
+    }
+    this.rateLimiter.markMessageEvaluated(transcriptionKey);
+
+    // STEP 3: Calculate priority for voice transcriptions
+    // Voice transcriptions from live calls should have higher priority than passive chat
+    const timestamp = transcriptionData.timestamp
+      ? (typeof transcriptionData.timestamp === 'number'
+          ? transcriptionData.timestamp
+          : new Date(transcriptionData.timestamp).getTime())
+      : Date.now();
+
+    const priority = calculateMessagePriority(
+      {
+        content: transcriptionData.transcript,
+        timestamp,
+        roomId: transcriptionData.sessionId  // Use call sessionId as "roomId" for voice
+      },
+      {
+        displayName: this.displayName,
+        id: this.id,
+        recentRooms: Array.from(this.myRoomIds),
+        expertise: []
+      }
+    );
+
+    // Boost priority for voice (real-time conversation is more urgent than text)
+    const boostedPriority = Math.min(1.0, priority + 0.2);
+
+    // STEP 4: Enqueue to inbox as InboxMessage
+    const inboxMessage: InboxMessage = {
+      id: generateUUID(),  // Generate new UUID for transcription event
+      type: 'message',
+      domain: 'chat',  // Chat domain (voice is just another input modality for chat)
+      roomId: transcriptionData.sessionId,  // Call session is the "room"
+      content: transcriptionData.transcript,
+      senderId: transcriptionData.speakerId,
+      senderName: transcriptionData.speakerName,
+      senderType: transcriptionData.speakerType || 'human',  // Use speakerType from event (human/persona/agent)
+      timestamp,
+      priority: boostedPriority,
+      sourceModality: 'voice',  // Mark as coming from voice (for response routing)
+      voiceSessionId: transcriptionData.sessionId  // Store voice call session ID
+    };
+
+    await this.inbox.enqueue(inboxMessage);
+
+    // Update inbox load in state (for mood calculation)
+    this.personaState.updateInboxLoad(this.inbox.getSize());
+
+    this.log.info(`🎙️ ${this.displayName}: Enqueued voice transcription (priority=${boostedPriority.toFixed(2)}, confidence=${transcriptionData.confidence}, inbox size=${this.inbox.getSize()})`);
+
+    // UNIFIED CONSCIOUSNESS: Record voice event in global timeline
+    if (this._consciousness) {
+      this._consciousness.recordEvent({
+        contextType: 'room',  // Voice call is like a room
+        contextId: transcriptionData.sessionId,
+        contextName: `Voice Call ${transcriptionData.sessionId.slice(0, 8)}`,
+        eventType: 'message_received',  // It's a received message (via voice)
+        actorId: transcriptionData.speakerId,
+        actorName: transcriptionData.speakerName,
+        content: transcriptionData.transcript,
+        importance: 0.7,  // Higher than chat messages (real-time voice is more important)
+        topics: this.extractTopics(transcriptionData.transcript)
+      }).catch(err => this.log.warn(`Timeline record failed: ${err}`));
+    }
   }
 
   /**

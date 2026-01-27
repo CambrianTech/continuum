@@ -15,9 +15,11 @@ import { SERVER_DAEMONS } from '../../../../server/generated';
 import { SYSTEM_SCOPES } from '../../types/SystemScopes';
 import { generateUUID } from '../../types/CrossPlatformUUID';
 import { CommandRouterServer } from '@shared/ipc/archive-worker/CommandRouterServer';
+import { startVoiceServer, getVoiceWebSocketServer } from '../../../voice/server';
 
 export class JTAGSystemServer extends JTAGSystem {
   private commandRouter: CommandRouterServer | null = null;
+  private voiceServerStarted: boolean = false;
 
   protected override get daemonEntries(): DaemonEntry[] { return SERVER_DAEMONS; }
 
@@ -193,6 +195,15 @@ export class JTAGSystemServer extends JTAGSystem {
       console.warn(`⚠️  JTAG System: Command Router failed to start (Rust workers will not work):`, error);
     }
 
+    // 7.5. Start Voice WebSocket Server
+    try {
+      await startVoiceServer();
+      system.voiceServerStarted = true;
+      console.log(`🎙️  JTAG System: Voice WebSocket Server started`);
+    } catch (error) {
+      console.warn(`⚠️  JTAG System: Voice Server failed to start:`, error);
+    }
+
     // 8. Register this process in the ProcessRegistry to prevent cleanup false positives
     await system.registerSystemProcess();
     
@@ -217,6 +228,19 @@ export class JTAGSystemServer extends JTAGSystem {
    */
   override async shutdown(): Promise<void> {
     console.log(`🔄 JTAG System Server: Shutting down...`);
+
+    // Stop Voice WebSocket Server
+    if (this.voiceServerStarted) {
+      try {
+        const voiceServer = getVoiceWebSocketServer();
+        if (voiceServer) {
+          await voiceServer.stop();
+          console.log(`🎙️  JTAG System Server: Voice Server stopped`);
+        }
+      } catch (error) {
+        console.warn(`⚠️  JTAG System Server: Error stopping Voice Server:`, error);
+      }
+    }
 
     // Stop CommandRouterServer
     if (this.commandRouter) {

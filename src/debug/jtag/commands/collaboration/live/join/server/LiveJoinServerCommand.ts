@@ -31,7 +31,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         success: false,
         message: `Entity not found: ${params.entityId}`,
         session: null as any,
-        sessionId: '' as UUID,
+        callId: '' as UUID,
         existed: false,
         participants: [],
         myParticipant: null as any
@@ -45,7 +45,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         success: false,
         message: 'Could not identify current user',
         session: null as any,
-        sessionId: '' as UUID,
+        callId: '' as UUID,
         existed: false,
         participants: [],
         myParticipant: null as any
@@ -86,7 +86,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
         ? `Joined existing live call`
         : `Created and joined new live call`,
       session: call,
-      sessionId: call.id,
+      callId: call.id,
       existed,
       participants: call.getActiveParticipants(),
       myParticipant

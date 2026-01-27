@@ -28,6 +28,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { getAIAudioBridge } from './AIAudioBridge';
+import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 
 /**
  * Utterance event from voice transcription
@@ -97,6 +98,11 @@ export class VoiceOrchestrator {
   private sessionContexts: Map<UUID, ConversationContext> = new Map();
   private pendingResponses: Map<UUID, PendingVoiceResponse> = new Map();
 
+  // Track when current speaker will FINISH - don't select new responder until then
+  // This prevents interrupting the current speaker
+  private lastSpeechEndTime: Map<UUID, number> = new Map();
+  private static readonly POST_SPEECH_BUFFER_MS = 2000; // 2 seconds after speaker finishes
+
   // Turn arbitration
   private arbiter: TurnArbiter;
 
@@ -106,6 +112,10 @@ export class VoiceOrchestrator {
   private constructor() {
     this.arbiter = new CompositeArbiter();
     this.setupEventListeners();
+
+    // Register with VoiceConversationSource for RAG context building
+    registerVoiceOrchestrator(this);
+
     console.log('🎙️ VoiceOrchestrator: Initialized');
   }
 
@@ -232,18 +242,6 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Step 1: Post transcript to chat room (visible to ALL AIs including text-only)
-    // This ensures the conversation history is captured and all models can see it
-    // Note: Voice metadata is tracked separately in pendingResponses for TTS routing
-    try {
-      await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
-        room: context.roomId,  // Use roomId from context, not sessionId
-        message: `[Voice] ${speakerName}: ${transcript}`
-      });
-    } catch (error) {
-      console.warn('🎙️ VoiceOrchestrator: Failed to post transcript to chat:', error);
-    }
-
     // Update context with new utterance
     context.recentUtterances.push(event);
     if (context.recentUtterances.length > 20) {
@@ -261,34 +259,47 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // Step 2: Turn arbitration - which AI responds via VOICE?
-    // Other AIs will see the chat message and may respond via text
-    const responder = this.arbiter.selectResponder(event, aiParticipants, context);
-
-    if (!responder) {
-      console.log('🎙️ VoiceOrchestrator: Arbiter selected no voice responder (AIs may still respond via text)');
+    // COOLDOWN CHECK - wait until current speaker finishes + buffer
+    const speechEndTime = this.lastSpeechEndTime.get(sessionId) || 0;
+    const now = Date.now();
+    const waitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
+    if (now < waitUntil) {
+      const msLeft = waitUntil - now;
+      console.log(`🎙️ VoiceOrchestrator: Skipping - waiting for speaker to finish (${Math.round(msLeft / 1000)}s left)`);
       return;
     }
 
-    console.log(`🎙️ VoiceOrchestrator: ${responder.displayName} selected to respond via voice`);
+    // USE ARBITER to select ONE responder for coordinated turn-taking
+    const selectedResponder = this.arbiter.selectResponder(event, aiParticipants, context);
 
-    // Step 3: Track who should respond via voice
-    // The persona will see the chat message through their normal inbox polling
-    // When they respond, we'll intercept it for TTS via event subscription
-    const pendingId = generateUUID();
-    this.pendingResponses.set(pendingId, {
-      sessionId,
-      personaId: responder.userId,
-      originalMessageId: pendingId,
-      timestamp: Date.now()
+    if (!selectedResponder) {
+      console.log('🎙️ VoiceOrchestrator: Arbiter selected no responder');
+      return;
+    }
+
+    // Update context
+    context.lastResponderId = selectedResponder.userId;
+
+    // Set IMMEDIATE cooldown - block other selections while AI is thinking/responding
+    // This prevents multiple AIs being selected before first one speaks
+    // Will be extended when AI actually speaks (via voice:ai:speech event with audioDurationMs)
+    const THINKING_BUFFER_MS = 10000; // 10 seconds for AI to think + respond + start speaking
+    this.lastSpeechEndTime.set(sessionId, Date.now() + THINKING_BUFFER_MS);
+
+    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 10s while thinking)`);
+
+    // Send directed event ONLY to the selected responder
+    Events.emit('voice:transcription:directed', {
+      sessionId: event.sessionId,
+      speakerId: event.speakerId,
+      speakerName: event.speakerName,
+      speakerType: event.speakerType,
+      transcript: event.transcript,
+      confidence: event.confidence,
+      language: 'en',
+      timestamp: event.timestamp,
+      targetPersonaId: selectedResponder.userId
     });
-
-    // Track selected responder for this session
-    // When this persona posts a message to this room, route to TTS
-    this.trackVoiceResponder(sessionId, responder.userId);
-
-    // Update last responder
-    context.lastResponderId = responder.userId;
   }
 
   /**
@@ -400,6 +411,79 @@ export class VoiceOrchestrator {
       console.log(`[STEP 11] 🎯 VoiceOrchestrator calling onUtterance for turn arbitration`);
       await this.onUtterance(utteranceEvent);
     });
+
+    // Listen for AI speech events (when an AI speaks via TTS)
+    // Track when speech will END to prevent interruption
+    // Route to ONE other AI using arbiter (turn-taking coordination)
+    Events.subscribe('voice:ai:speech', async (event: {
+      sessionId: string;
+      speakerId: string;
+      speakerName: string;
+      text: string;
+      audioDurationMs?: number;
+      timestamp: number;
+    }) => {
+      // Track when this speech will finish - prevents new selection until done + buffer
+      if (event.audioDurationMs) {
+        const speechEndTime = Date.now() + event.audioDurationMs;
+        this.lastSpeechEndTime.set(event.sessionId as UUID, speechEndTime);
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speaking for ${Math.round(event.audioDurationMs / 1000)}s - will wait until finished`);
+      } else {
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke: "${event.text.slice(0, 50)}..."`);
+      }
+
+      // Get participants for this session
+      const participants = this.sessionParticipants.get(event.sessionId as UUID);
+      if (!participants || participants.length === 0) return;
+
+      // Get AI participants (excluding the speaking AI)
+      const otherAIs = participants.filter(
+        p => p.type === 'persona' && p.userId !== event.speakerId
+      );
+
+      if (otherAIs.length === 0) return;
+
+      // Get context for arbiter
+      const context = this.sessionContexts.get(event.sessionId as UUID);
+      if (!context) return;
+
+      // Create utterance event for arbiter
+      const utteranceEvent: UtteranceEvent = {
+        sessionId: event.sessionId as UUID,
+        speakerId: event.speakerId as UUID,
+        speakerName: event.speakerName,
+        speakerType: 'persona',
+        transcript: event.text,
+        confidence: 1.0,
+        timestamp: event.timestamp
+      };
+
+      // Use arbiter to select ONE responder (turn-taking)
+      const selectedResponder = this.arbiter.selectResponder(utteranceEvent, otherAIs, context);
+
+      if (!selectedResponder) {
+        console.log('🎙️ VoiceOrchestrator: No AI selected to respond to AI speech');
+        return;
+      }
+
+      // Update context
+      context.lastResponderId = selectedResponder.userId;
+
+      console.log(`🎙️ VoiceOrchestrator: ${selectedResponder.displayName} will respond to ${event.speakerName}`);
+
+      // Send to selected responder only
+      Events.emit('voice:transcription:directed', {
+        sessionId: event.sessionId,
+        speakerId: event.speakerId,
+        speakerName: event.speakerName,
+        speakerType: 'persona',
+        transcript: event.text,
+        confidence: 1.0,
+        language: 'en',
+        timestamp: event.timestamp,
+        targetPersonaId: selectedResponder.userId
+      });
+    });
   }
 
   /**
@@ -419,6 +503,25 @@ export class VoiceOrchestrator {
       turnCount: context.turnCount,
       pendingResponses: pendingCount
     };
+  }
+
+  /**
+   * Get recent utterances for a voice session
+   * Used by VoiceConversationSource for RAG context building
+   *
+   * @param sessionId - Voice session ID
+   * @param limit - Maximum number of utterances to return (default: 20)
+   * @returns Array of recent utterances with speaker type information
+   */
+  getRecentUtterances(sessionId: string, limit: number = 20): UtteranceEvent[] {
+    const context = this.sessionContexts.get(sessionId as UUID);
+    if (!context) {
+      return [];
+    }
+
+    // Return most recent utterances up to limit
+    const utterances = context.recentUtterances.slice(-limit);
+    return utterances;
   }
 }
 
@@ -544,24 +647,16 @@ class CompositeArbiter implements TurnArbiter {
       return relevant;
     }
 
-    // 3. Fall back to round-robin (but only for questions)
-    const isQuestion = event.transcript.includes('?') ||
-                       event.transcript.toLowerCase().startsWith('what') ||
-                       event.transcript.toLowerCase().startsWith('how') ||
-                       event.transcript.toLowerCase().startsWith('why') ||
-                       event.transcript.toLowerCase().startsWith('can') ||
-                       event.transcript.toLowerCase().startsWith('could');
-
-    if (isQuestion) {
-      const next = this.roundRobin.selectResponder(event, candidates, context);
-      if (next) {
-        console.log(`🎙️ Arbiter: Selected ${next.displayName} (round-robin for question)`);
-        return next;
-      }
+    // 3. Fall back to round-robin for ALL utterances (questions AND statements)
+    // Voice conversations are interactive - AIs should engage, not just answer questions
+    const next = this.roundRobin.selectResponder(event, candidates, context);
+    if (next) {
+      console.log(`🎙️ Arbiter: Selected ${next.displayName} (round-robin)`);
+      return next;
     }
 
-    // 4. No one responds to statements (prevents spam)
-    console.log('🎙️ Arbiter: No responder selected (statement, not question)');
+    // 4. No candidates available
+    console.log('🎙️ Arbiter: No responder selected (no AI candidates)');
     return null;
   }
 }

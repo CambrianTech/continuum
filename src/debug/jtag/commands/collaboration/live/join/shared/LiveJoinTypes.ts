@@ -28,8 +28,8 @@ export interface LiveJoinResult extends CommandResult {
   /** The call (either found or newly created) */
   session: CallEntity;
 
-  /** Call ID for quick reference (avoiding 'sessionId' confusion with JTAG session) */
-  sessionId: UUID;
+  /** Call ID for audio/voice connection */
+  callId: UUID;
 
   /** Whether this was an existing call (true) or newly created (false) */
   existed: boolean;

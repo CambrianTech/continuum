@@ -186,6 +186,12 @@ export class UserProfileWidget extends BaseWidget {
   private async deleteUser(): Promise<void> {
     if (!this.user) return;
 
+    // Prevent deleting your own user
+    if (this.userState?.userId === this.user.id) {
+      alert('You cannot delete your own user account. Please use a different account to delete this user.');
+      return;
+    }
+
     if (!confirm(`Are you sure you want to permanently delete ${this.user.displayName}? This cannot be undone.`)) {
       return;
     }

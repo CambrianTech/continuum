@@ -130,6 +130,69 @@ When you touch any code, improve it. Don't just add your feature and leave the m
 
 ---
 
+## 🚨 CODE QUALITY DISCIPLINE (Non-Negotiable)
+
+**Every error, every warning, every issue requires attention. No exceptions.**
+
+### The Three Levels of Urgency
+
+```
+ERRORS     → Fix NOW (blocking, must resolve immediately)
+WARNINGS   → Fix (not necessarily immediate, but NEVER ignored)
+ISSUES     → NEVER "not my concern" (you own the code quality)
+```
+
+### The Anti-Pattern: Panic Debugging
+
+**WRONG approach when finding bugs:**
+- Panic and hack whatever silences the error
+- Add `@ts-ignore` or `#[allow(dead_code)]`
+- Wrap in try/catch and swallow the error
+- "It works now" without understanding why
+
+**CORRECT approach:**
+1. **STOP and THINK** - Understand the root cause
+2. **FIX PROPERLY** - Address the actual problem, not the symptom
+3. **NO HACKS** - No suppression, no workarounds, no "good enough"
+4. **VERIFY** - Ensure the fix is architecturally sound
+
+### Examples
+
+**Bad (Panic Mode):**
+```rust
+#[allow(dead_code)]  // Silencing warning
+const HANGOVER_FRAMES: u32 = 5;
+```
+
+**Good (Thoughtful):**
+```rust
+// Removed HANGOVER_FRAMES - redundant with SILENCE_THRESHOLD_FRAMES
+// The 704ms silence threshold already provides hangover behavior
+const SILENCE_THRESHOLD_FRAMES: u32 = 22;
+```
+
+**Bad (Hack):**
+```typescript
+// In UserProfileWidget - WRONG LAYER
+localStorage.removeItem('continuum-device-identity');
+```
+
+**Good (Proper Fix):**
+```typescript
+// In SessionDaemon - RIGHT LAYER
+Events.subscribe('data:users:deleted', (payload) => {
+  this.handleUserDeleted(payload.id);  // Clean up sessions
+});
+```
+
+### Why This Matters
+
+Warnings accumulate into technical debt. One ignored warning becomes ten becomes a hundred. The codebase that tolerates warnings tolerates bugs.
+
+**Your standard:** Clean builds, zero warnings, proper fixes. Every time.
+
+---
+
 ## 🧵 OFF-MAIN-THREAD PRINCIPLE (Non-Negotiable)
 
 **NEVER put CPU-intensive work on the main thread. No exceptions.**

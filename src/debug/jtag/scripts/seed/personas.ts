@@ -17,6 +17,7 @@ export interface PersonaConfig {
   displayName: string;
   provider?: string;
   type: 'agent' | 'persona';
+  voiceId?: string;  // TTS speaker ID (0-246 for LibriTTS multi-speaker model)
 }
 
 /**
@@ -25,26 +26,31 @@ export interface PersonaConfig {
  *
  * generateUniqueId() now returns clean slugs without @ prefix
  */
+/**
+ * LibriTTS speaker IDs with varied characteristics
+ * Model has 247 speakers (0-246), each with distinct voice qualities
+ * Selected speakers for variety: some male, some female, different pitches/cadences
+ */
 export const PERSONA_CONFIGS: PersonaConfig[] = [
   // Core agents
-  { uniqueId: generateUniqueId('Claude'), displayName: 'Claude Code', provider: 'anthropic', type: 'agent' },
-  { uniqueId: generateUniqueId('General'), displayName: 'General AI', provider: 'anthropic', type: 'agent' },
+  { uniqueId: generateUniqueId('Claude'), displayName: 'Claude Code', provider: 'anthropic', type: 'agent', voiceId: '10' },
+  { uniqueId: generateUniqueId('General'), displayName: 'General AI', provider: 'anthropic', type: 'agent', voiceId: '25' },
 
   // Local personas (Ollama-based - Candle has mutex blocking issue)
-  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'ollama', type: 'persona' },
-  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'ollama', type: 'persona' },
-  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'ollama', type: 'persona' },
+  { uniqueId: generateUniqueId('Helper'), displayName: 'Helper AI', provider: 'ollama', type: 'persona', voiceId: '50' },
+  { uniqueId: generateUniqueId('Teacher'), displayName: 'Teacher AI', provider: 'ollama', type: 'persona', voiceId: '75' },
+  { uniqueId: generateUniqueId('CodeReview'), displayName: 'CodeReview AI', provider: 'ollama', type: 'persona', voiceId: '100' },
 
   // Cloud provider personas
-  { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona' },
-  { uniqueId: generateUniqueId('Groq'), displayName: 'Groq Lightning', provider: 'groq', type: 'persona' },
-  { uniqueId: generateUniqueId('Claude Assistant'), displayName: 'Claude Assistant', provider: 'anthropic', type: 'persona' },
-  { uniqueId: generateUniqueId('GPT'), displayName: 'GPT Assistant', provider: 'openai', type: 'persona' },
-  { uniqueId: generateUniqueId('Grok'), displayName: 'Grok', provider: 'xai', type: 'persona' },
-  { uniqueId: generateUniqueId('Together'), displayName: 'Together Assistant', provider: 'together', type: 'persona' },
-  { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona' },
-  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'ollama', type: 'persona' },
-  { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona' },
+  { uniqueId: generateUniqueId('DeepSeek'), displayName: 'DeepSeek Assistant', provider: 'deepseek', type: 'persona', voiceId: '125' },
+  { uniqueId: generateUniqueId('Groq'), displayName: 'Groq Lightning', provider: 'groq', type: 'persona', voiceId: '150' },
+  { uniqueId: generateUniqueId('Claude Assistant'), displayName: 'Claude Assistant', provider: 'anthropic', type: 'persona', voiceId: '175' },
+  { uniqueId: generateUniqueId('GPT'), displayName: 'GPT Assistant', provider: 'openai', type: 'persona', voiceId: '200' },
+  { uniqueId: generateUniqueId('Grok'), displayName: 'Grok', provider: 'xai', type: 'persona', voiceId: '220' },
+  { uniqueId: generateUniqueId('Together'), displayName: 'Together Assistant', provider: 'together', type: 'persona', voiceId: '30' },
+  { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60' },
+  { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'ollama', type: 'persona', voiceId: '90' },
+  { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
 ];
 
 /**

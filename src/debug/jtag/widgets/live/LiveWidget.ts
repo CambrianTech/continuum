@@ -54,7 +54,8 @@ export class LiveWidget extends ReactiveWidget {
   @reactive() private screenShareEnabled: boolean = false;
   @reactive() private micPermissionGranted: boolean = false;
   @reactive() private captionsEnabled: boolean = true;  // Show live transcription captions
-  @reactive() private currentCaption: { speakerName: string; text: string; timestamp: number } | null = null;
+  // Support multiple simultaneous speakers - Map keyed by speakerId
+  @reactive() private activeCaptions: Map<string, { speakerName: string; text: string; timestamp: number }> = new Map();
 
   // Entity association (the room/activity this live session is attached to)
   @reactive() private entityId: string = '';
@@ -63,17 +64,27 @@ export class LiveWidget extends ReactiveWidget {
   private localStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
 
+  // Visibility observer for auto-mute
+  private visibilityObserver: IntersectionObserver | null = null;
+
   // Audio streaming client (WebSocket to Rust call server)
   private audioClient: AudioStreamClient | null = null;
 
   // Event subscriptions
   private unsubscribers: Array<() => void> = [];
 
-  // Caption fade timeout
-  private captionFadeTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Caption fade timeouts per speaker (supports multiple simultaneous speakers)
+  private captionFadeTimeouts: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
   // Speaking state timeouts per user (clear after 2s of no speech)
   private speakingTimeouts: Map<UUID, ReturnType<typeof setTimeout>> = new Map();
+
+  // Saved state before tab went to background
+  private savedMicState: boolean | null = null;
+  private savedSpeakerState: boolean | null = null;
+
+  // State loading tracking - ensures state is loaded before using it
+  private stateLoadedPromise: Promise<void> | null = null;
 
   // Styles imported from SCSS
   static override styles = [
@@ -86,14 +97,41 @@ export class LiveWidget extends ReactiveWidget {
 
     // Wait for userState to load before trying to read call state
     // loadUserContext is already called by super.connectedCallback()
-    // We need to wait for it to complete
-    this.loadUserContext().then(() => {
+    // Store promise so handleJoin() can wait for it
+    this.stateLoadedPromise = this.loadUserContext().then(() => {
       this.loadCallState();
+      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled})`);
       this.requestUpdate(); // Force re-render with loaded state
     }).catch(err => {
       console.error('LiveWidget: Failed to load user context:', err);
     });
+
+    // IntersectionObserver for auto-mute when widget becomes hidden
+    this.visibilityObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (this.isJoined) {
+          if (!entry.isIntersecting && this.savedMicState === null) {
+            this.savedMicState = this.micEnabled;
+            this.savedSpeakerState = this.speakerEnabled;
+            this.micEnabled = false;
+            this.speakerEnabled = false;
+            this.applyMicState();
+            this.applySpeakerState();
+          } else if (entry.isIntersecting && this.savedMicState !== null) {
+            this.micEnabled = this.savedMicState;
+            this.speakerEnabled = this.savedSpeakerState ?? true;
+            this.applyMicState();
+            this.applySpeakerState();
+            this.savedMicState = null;
+            this.savedSpeakerState = null;
+          }
+        }
+      }
+    }, { threshold: 0.1 });
+
+    this.visibilityObserver.observe(this);
   }
+
 
   /**
    * Load call state from UserStateEntity
@@ -175,6 +213,33 @@ export class LiveWidget extends ReactiveWidget {
         this.handleJoin();
       }
     }
+
+    // Restore mic/speaker when reactivated
+    if (this.isJoined && this.savedMicState !== null) {
+      this.micEnabled = this.savedMicState;
+      this.speakerEnabled = this.savedSpeakerState ?? true;
+      this.applyMicState();
+      this.applySpeakerState();
+      this.savedMicState = null;
+      this.savedSpeakerState = null;
+    }
+  }
+
+  onDeactivate(): void {
+    console.log('🔴 LiveWidget.onDeactivate CALLED', {
+      isJoined: this.isJoined,
+      micEnabled: this.micEnabled,
+      savedMicState: this.savedMicState
+    });
+    if (this.isJoined && this.savedMicState === null) {
+      this.savedMicState = this.micEnabled;
+      this.savedSpeakerState = this.speakerEnabled;
+      this.micEnabled = false;
+      this.speakerEnabled = false;
+      console.log('🔇 LiveWidget: Muting mic/speaker on deactivate');
+      this.applyMicState();
+      this.applySpeakerState();
+    }
   }
 
   /**
@@ -190,12 +255,16 @@ export class LiveWidget extends ReactiveWidget {
   }
 
   private cleanup(): void {
-    // Clear caption timeout
-    if (this.captionFadeTimeout) {
-      clearTimeout(this.captionFadeTimeout);
-      this.captionFadeTimeout = null;
+    // Stop audio client
+    if (this.audioClient) {
+      this.audioClient.leave();
+      this.audioClient = null;
     }
-    this.currentCaption = null;
+
+    // Clear caption timeouts
+    this.captionFadeTimeouts.forEach(timeout => clearTimeout(timeout));
+    this.captionFadeTimeouts.clear();
+    this.activeCaptions.clear();
 
     // Clear speaking timeouts
     this.speakingTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -204,6 +273,12 @@ export class LiveWidget extends ReactiveWidget {
     // Unsubscribe from events
     this.unsubscribers.forEach(unsub => unsub());
     this.unsubscribers = [];
+
+    // Disconnect visibility observer
+    if (this.visibilityObserver) {
+      this.visibilityObserver.disconnect();
+      this.visibilityObserver = null;
+    }
 
     // Stop preview stream
     if (this.previewStream) {
@@ -298,6 +373,12 @@ export class LiveWidget extends ReactiveWidget {
       return;
     }
 
+    // CRITICAL: Wait for saved state to load before using micEnabled/speakerEnabled
+    // This prevents race conditions where we use default values instead of saved state
+    if (this.stateLoadedPromise) {
+      await this.stateLoadedPromise;
+    }
+
     // Request mic permission NOW (when user clicks Join)
     if (this.micEnabled && !this.micPermissionGranted) {
       try {
@@ -325,8 +406,8 @@ export class LiveWidget extends ReactiveWidget {
         callerId: userId  // Pass current user's ID so server knows WHO is joining
       });
 
-      if (result.success && result.sessionId) {
-        this.sessionId = result.sessionId;
+      if (result.success && result.callId) {
+        this.sessionId = result.callId;
         this.isJoined = true;
 
         // Use participants from server response (includes all room members for new calls)
@@ -391,18 +472,13 @@ export class LiveWidget extends ReactiveWidget {
             console.log(`LiveWidget: Audio stream ${connected ? 'connected' : 'disconnected'}`);
           },
           onTranscription: async (transcription: TranscriptionResult) => {
-            // [STEP 9] LiveWidget relaying transcription to server
-            console.log(`[STEP 9] 📤 LiveWidget relaying transcription to server: "${transcription.text.slice(0, 50)}..."`);
-
-            // Send to server via command (bridges browser→server event bus)
             if (!this.sessionId) {
-              console.warn('[STEP 9] ⚠️ No call sessionId - cannot relay transcription');
               return;
             }
 
             try {
               await Commands.execute<CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult>('collaboration/live/transcription', {
-                callSessionId: this.sessionId,  // Pass call session UUID
+                callSessionId: this.sessionId,
                 speakerId: transcription.userId,
                 speakerName: transcription.displayName,
                 transcript: transcription.text,
@@ -410,9 +486,8 @@ export class LiveWidget extends ReactiveWidget {
                 language: transcription.language,
                 timestamp: Date.now()
               });
-              console.log(`[STEP 9] ✅ Transcription sent to server successfully`);
             } catch (error) {
-              console.error(`[STEP 9] ❌ Failed to relay transcription:`, error);
+              console.error(`Failed to relay transcription:`, error);
             }
 
             // Update caption display
@@ -428,14 +503,14 @@ export class LiveWidget extends ReactiveWidget {
           const myUserId = result.myParticipant?.userId || 'unknown';
           const myDisplayName = result.myParticipant?.displayName || 'Unknown User';
 
-          // Join audio stream (sessionId is guaranteed non-null here)
-          await this.audioClient.join(result.sessionId, myUserId, myDisplayName);
+          // Join audio stream (callId is guaranteed non-null here)
+          await this.audioClient.join(result.callId, myUserId, myDisplayName);
           console.log('LiveWidget: Connected to audio stream');
 
-          // Start microphone streaming
-          await this.audioClient.startMicrophone();
-          this.micEnabled = true;
-          console.log('LiveWidget: Mic streaming started');
+          // Apply saved state to audio client (ONE source of truth)
+          await this.applyMicState();
+          this.applySpeakerState();
+          console.log(`LiveWidget: State applied from saved (mic=${this.micEnabled}, speaker=${this.speakerEnabled}, volume=${this.speakerVolume})`);
         } catch (audioError) {
           console.warn('LiveWidget: Audio stream failed:', audioError);
           // Still joined, just without audio
@@ -501,32 +576,78 @@ export class LiveWidget extends ReactiveWidget {
       })
     );
 
+    // AI speech captions - when an AI speaks via TTS, show it in captions
+    // This event is emitted by AIAudioBridge AFTER TTS synthesis, when audio is sent to server
+    // audioDurationMs tells us how long the audio will play, so we can time the caption/highlight
+    this.unsubscribers.push(
+      Events.subscribe('voice:ai:speech', (data: {
+        sessionId: string;
+        speakerId: string;
+        speakerName: string;
+        text: string;
+        audioDurationMs?: number;
+        timestamp: number;
+      }) => {
+        // Only show captions for this session
+        if (data.sessionId === this.sessionId) {
+          const durationMs = data.audioDurationMs || 5000;  // Default 5s if not provided
+          console.log(`LiveWidget: AI speech caption: ${data.speakerName}: "${data.text.slice(0, 50)}..." (${durationMs}ms)`);
+
+          // Show caption and speaking indicator for the duration of the audio
+          this.setCaptionWithDuration(data.speakerName, data.text, durationMs);
+          this.setSpeakingWithDuration(data.speakerId as UUID, durationMs);
+        }
+      })
+    );
+
     // Note: Audio streaming is handled directly via WebSocket (AudioStreamClient)
     // rather than through JTAG events for lower latency
+  }
+
+  /**
+   * Apply mic state to audio client (ONE source of truth)
+   * Used by: initial load, toggleMic
+   */
+  private async applyMicState(): Promise<void> {
+    if (!this.audioClient) return;
+
+    if (this.micEnabled) {
+      try {
+        await this.audioClient.startMicrophone();
+      } catch (error) {
+        console.error('LiveWidget: Failed to start mic:', error);
+        this.micEnabled = false;
+        this.requestUpdate();
+      }
+    } else {
+      this.audioClient.stopMicrophone();
+    }
+    // Notify server of mute status
+    this.audioClient.setMuted(!this.micEnabled);
   }
 
   private async toggleMic(): Promise<void> {
     this.micEnabled = !this.micEnabled;
     this.requestUpdate();  // Force UI update
 
-    if (this.audioClient) {
-      if (this.micEnabled) {
-        try {
-          await this.audioClient.startMicrophone();
-        } catch (error) {
-          console.error('LiveWidget: Failed to start mic:', error);
-          this.micEnabled = false;
-          this.requestUpdate();
-        }
-      } else {
-        this.audioClient.stopMicrophone();
-      }
-      // Notify server of mute status
-      this.audioClient.setMuted(!this.micEnabled);
-    }
+    await this.applyMicState();
 
     // Persist to UserStateEntity
     await this.saveCallState();
+  }
+
+  /**
+   * Apply speaker state to audio client (ONE source of truth)
+   * Used by: initial load, toggleSpeaker, setSpeakerVolume
+   */
+  private applySpeakerState(): void {
+    if (!this.audioClient) return;
+
+    // Apply mute state
+    this.audioClient.setSpeakerMuted(!this.speakerEnabled);
+
+    // Apply volume
+    this.audioClient.setSpeakerVolume(this.speakerVolume);
   }
 
   /**
@@ -537,10 +658,7 @@ export class LiveWidget extends ReactiveWidget {
     this.speakerEnabled = !this.speakerEnabled;
     this.requestUpdate();  // Force UI update
 
-    if (this.audioClient) {
-      // Mute/unmute the audio output (playback)
-      this.audioClient.setSpeakerMuted(!this.speakerEnabled);
-    }
+    this.applySpeakerState();
 
     // Persist to UserStateEntity
     await this.saveCallState();
@@ -551,10 +669,7 @@ export class LiveWidget extends ReactiveWidget {
    */
   private setSpeakerVolume(volume: number): void {
     this.speakerVolume = Math.max(0, Math.min(1, volume));
-
-    if (this.audioClient) {
-      this.audioClient.setSpeakerVolume(this.speakerVolume);
-    }
+    this.applySpeakerState();
   }
 
   private async toggleCamera(): Promise<void> {
@@ -619,36 +734,40 @@ export class LiveWidget extends ReactiveWidget {
   private toggleCaptions(): void {
     this.captionsEnabled = !this.captionsEnabled;
     if (!this.captionsEnabled) {
-      this.currentCaption = null;
+      this.captionFadeTimeouts.forEach(timeout => clearTimeout(timeout));
+      this.captionFadeTimeouts.clear();
+      this.activeCaptions.clear();
     }
   }
 
   /**
    * Set a caption to display (auto-fades after 5 seconds)
+   * Uses speakerName as key to support multiple simultaneous speakers
    */
   private setCaption(speakerName: string, text: string): void {
-    console.log(`[CAPTION] Setting caption: "${speakerName}: ${text.slice(0, 30)}..."`);
-
-    // Clear existing timeout
-    if (this.captionFadeTimeout) {
-      clearTimeout(this.captionFadeTimeout);
+    // Clear existing timeout for this speaker
+    const existingTimeout = this.captionFadeTimeouts.get(speakerName);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
     }
 
-    // Set caption
-    this.currentCaption = {
+    // Set/update caption for this speaker
+    this.activeCaptions.set(speakerName, {
       speakerName,
       text,
       timestamp: Date.now()
-    };
+    });
 
     // Force re-render
     this.requestUpdate();
 
-    // Auto-fade after 5 seconds of no new transcription
-    this.captionFadeTimeout = setTimeout(() => {
-      this.currentCaption = null;
+    // Auto-fade after 5 seconds of no new transcription from this speaker
+    const timeout = setTimeout(() => {
+      this.activeCaptions.delete(speakerName);
+      this.captionFadeTimeouts.delete(speakerName);
       this.requestUpdate();
     }, 5000);
+    this.captionFadeTimeouts.set(speakerName, timeout);
   }
 
   /**
@@ -675,6 +794,66 @@ export class LiveWidget extends ReactiveWidget {
       }, 2000);
       this.speakingTimeouts.set(userId, timeout);
     }
+  }
+
+  /**
+   * Set caption with specific duration (for AI speech with known audio length)
+   * Supports multiple simultaneous speakers
+   */
+  private setCaptionWithDuration(speakerName: string, text: string, durationMs: number): void {
+    // Clear existing timeout for this speaker
+    const existingTimeout = this.captionFadeTimeouts.get(speakerName);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+    }
+
+    // Set/update caption for this speaker
+    this.activeCaptions.set(speakerName, {
+      speakerName,
+      text,
+      timestamp: Date.now()
+    });
+
+    // Force re-render
+    this.requestUpdate();
+
+    // Clear caption after audio duration + small buffer
+    const timeout = setTimeout(() => {
+      this.activeCaptions.delete(speakerName);
+      this.captionFadeTimeouts.delete(speakerName);
+      this.requestUpdate();
+    }, durationMs + 500);  // Add 500ms buffer
+    this.captionFadeTimeouts.set(speakerName, timeout);
+  }
+
+  /**
+   * Mark a user as speaking for a specific duration (for AI speech with known audio length)
+   */
+  private setSpeakingWithDuration(userId: UUID, durationMs: number): void {
+    // Clear existing timeout for this user
+    const existingTimeout = this.speakingTimeouts.get(userId);
+    if (existingTimeout) {
+      clearTimeout(existingTimeout);
+      this.speakingTimeouts.delete(userId);
+    }
+
+    // Update participant state - set speaking
+    this.participants = this.participants.map(p => ({
+      ...p,
+      isSpeaking: p.userId === userId ? true : p.isSpeaking
+    }));
+    this.requestUpdate();
+
+    // Schedule auto-clear after audio duration + buffer
+    const timeout = setTimeout(() => {
+      this.participants = this.participants.map(p => ({
+        ...p,
+        isSpeaking: p.userId === userId ? false : p.isSpeaking
+      }));
+      this.speakingTimeouts.delete(userId);
+      this.requestUpdate();
+    }, durationMs + 500);  // Add 500ms buffer
+    this.speakingTimeouts.set(userId, timeout);
   }
 
   /**
@@ -734,10 +913,14 @@ export class LiveWidget extends ReactiveWidget {
             }
           </div>
           <div class="controls">
-            ${this.captionsEnabled && this.currentCaption ? html`
-              <div class="caption-display">
-                <span class="caption-speaker">${this.currentCaption.speakerName}:</span>
-                <span class="caption-text">${this.currentCaption.text}</span>
+            ${this.captionsEnabled && this.activeCaptions.size > 0 ? html`
+              <div class="caption-display multi-speaker">
+                ${Array.from(this.activeCaptions.values()).map(caption => html`
+                  <div class="caption-line">
+                    <span class="caption-speaker">${caption.speakerName}:</span>
+                    <span class="caption-text">${caption.text}</span>
+                  </div>
+                `)}
               </div>
             ` : ''}
             <button

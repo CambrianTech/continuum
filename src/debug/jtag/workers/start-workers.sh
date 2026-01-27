@@ -130,17 +130,17 @@ while read -r worker; do
       sleep 0.5
     done
   else
-    # Unix socket worker (original behavior)
+    # Unix socket worker - each gets its own log file for better segregation
     # Note: ulimit -v sets virtual memory limit; may not be enforced on macOS
     if [ -z "$args" ]; then
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
     else
       # Convert newline-separated args to array
       arg_array=()
       while IFS= read -r arg; do
         arg_array+=("$arg")
       done <<< "$args"
-      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> .continuum/jtag/logs/system/rust-worker.log 2>&1 &
+      (ulimit -v $MEM_LIMIT_KB 2>/dev/null || true; exec "$binary" "$socket" "${arg_array[@]}") >> ".continuum/jtag/logs/system/${name}.log" 2>&1 &
     fi
 
     WORKER_PID=$!

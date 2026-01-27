@@ -8,6 +8,7 @@ resolver = "2"
 members = [
     "archive",
     "chat-drain",
+    "continuum-core",
     "data",
     "data-daemon",
     "embedding",
@@ -15,7 +16,6 @@ members = [
     "inference-grpc",
     "logger",
     "search",
-    "streaming-core",
     "training",
 ]
 
@@ -98,6 +98,9 @@ fastembed = "4"
 
 # ONNX Runtime - ensure all crates use download-binaries (not load-dynamic)
 # ndarray feature enables Tensor::from_array() for ndarray arrays
+# TODO: Add GPU acceleration when ort linking issues are resolved:
+#   - coreml: Apple CoreML (macOS) - linking error on arm64
+#   - cuda: NVIDIA CUDA (Linux/Windows with 5090, etc.)
 ort = { version = "2.0.0-rc.9", default-features = false, features = ["download-binaries", "ndarray"] }
 ndarray = "0.16"
 

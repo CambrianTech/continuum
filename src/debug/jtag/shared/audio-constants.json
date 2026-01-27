@@ -1,0 +1,9 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for audio constants. Used by generator to create TS and Rust files.",
+  "AUDIO_SAMPLE_RATE": 16000,
+  "AUDIO_FRAME_SIZE": 512,
+  "AUDIO_PLAYBACK_BUFFER_SECONDS": 2,
+  "AUDIO_CHANNEL_CAPACITY": 2000,
+  "BYTES_PER_SAMPLE": 2,
+  "CALL_SERVER_PORT": 50053
+}
