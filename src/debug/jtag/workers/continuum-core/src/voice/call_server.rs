@@ -3,8 +3,10 @@
 //! Handles live audio/video calls over WebSocket.
 //! Each call has multiple participants, audio is mixed with mix-minus.
 
+use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::voice::handle::Handle;
 use crate::voice::mixer::{AudioMixer, ParticipantStream};
+use crate::utils::audio::{base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k};
 use crate::voice::stt;
 use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
@@ -32,9 +34,10 @@ static HOLD_MUSIC_SAMPLES: Lazy<Vec<i16>> = Lazy::new(|| {
         Ok(mut reader) => {
             let samples: Vec<i16> = reader.samples::<i16>().filter_map(|s| s.ok()).collect();
             info!(
-                "Loaded hold music: {} samples ({:.1}s at 16kHz)",
+                "Loaded hold music: {} samples ({:.1}s at {}Hz)",
                 samples.len(),
-                samples.len() as f32 / 16000.0
+                samples.len() as f32 / AUDIO_SAMPLE_RATE as f32,
+                AUDIO_SAMPLE_RATE
             );
             samples
         }
@@ -44,16 +47,6 @@ static HOLD_MUSIC_SAMPLES: Lazy<Vec<i16>> = Lazy::new(|| {
         }
     }
 });
-
-/// Check if audio samples are effectively silence (RMS below threshold)
-fn is_silence(samples: &[i16]) -> bool {
-    if samples.is_empty() {
-        return true;
-    }
-    let sum_squares: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
-    let rms = (sum_squares / samples.len() as f64).sqrt();
-    rms < 50.0 // Very low threshold - basically only true silence
-}
 
 /// Message types for call protocol
 /// TypeScript types are generated via `cargo test -p streaming-core export_types`
@@ -135,14 +128,14 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        // 16kHz for voice - matches TTS output, Whisper input, and WebSocket transport
-        // 512 samples at 16kHz = 32ms per frame
+        use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE, AUDIO_FRAME_DURATION_MS, AUDIO_CHANNEL_CAPACITY};
+        // Sample rate and frame size from audio constants (single source of truth)
         Self {
-            sample_rate: 16000,
-            frame_size: 512,
-            frame_duration_ms: 32,
+            sample_rate: AUDIO_SAMPLE_RATE,
+            frame_size: AUDIO_FRAME_SIZE,
+            frame_duration_ms: AUDIO_FRAME_DURATION_MS,
             // NEVER drop audio - buffer 40+ seconds
-            audio_channel_capacity: 2000,
+            audio_channel_capacity: AUDIO_CHANNEL_CAPACITY,
             // NEVER drop transcriptions - buffer 500 events
             transcription_channel_capacity: 500,
         }
@@ -251,7 +244,7 @@ impl Call {
             .into_iter()
             .map(|(handle, mixed_audio)| {
                 // If alone, mix in hold tone
-                let audio = if is_alone && is_silence(&mixed_audio) {
+                let audio = if is_alone && is_silence(&mixed_audio, 50.0) {
                     self.generate_hold_tone(frame_size)
                 } else {
                     mixed_audio
@@ -558,14 +551,14 @@ impl CallManager {
             "[STEP 5] 📝 Whisper transcription START for {} ({} samples, {:.1}s)",
             display_name,
             samples.len(),
-            samples.len() as f32 / 16000.0
+            samples.len() as f32 / AUDIO_SAMPLE_RATE as f32
         );
 
         // Convert i16 to f32 for Whisper
-        let f32_samples = stt::i16_to_f32(&samples);
+        let f32_samples = i16_to_f32(&samples);
 
-        // Resample if needed (Whisper expects 16kHz)
-        let samples_16k = stt::resample_to_16k(&f32_samples, 16000);
+        // Resample if needed (Whisper expects standard sample rate)
+        let samples_16k = resample_to_16k(&f32_samples, AUDIO_SAMPLE_RATE);
 
         // Transcribe
         match stt::transcribe(samples_16k, Some("en")).await {
@@ -821,116 +814,16 @@ pub async fn start_call_server(addr: &str) -> Result<(), Box<dyn std::error::Err
     }
 }
 
-// Helper functions for base64 encoding/decoding i16 audio
-
-fn base64_encode_i16(samples: &[i16]) -> String {
-    let bytes: Vec<u8> = samples.iter().flat_map(|&s| s.to_le_bytes()).collect();
-    base64_encode(&bytes)
-}
-
-fn base64_decode_i16(data: &str) -> Option<Vec<i16>> {
-    let bytes = base64_decode(data)?;
-    if bytes.len() % 2 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(2)
-            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-            .collect(),
-    )
-}
-
-fn bytes_to_i16(data: &[u8]) -> Vec<i16> {
-    if data.len() % 2 != 0 {
-        return Vec::new();
-    }
-    data.chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect()
-}
-
-// Simple base64 encoding (no external dependency)
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
-
-        result.push(ALPHABET[b0 >> 2] as char);
-        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
-
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(ALPHABET[b2 & 0x3f] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
-fn base64_decode(data: &str) -> Option<Vec<u8>> {
-    const DECODE: [i8; 128] = [
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
-        -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3, 4,
-        5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1,
-        -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
-        46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
-    ];
-
-    let data = data.trim_end_matches('=');
-    let mut result = Vec::with_capacity(data.len() * 3 / 4);
-
-    for chunk in data.as_bytes().chunks(4) {
-        if chunk.len() < 2 {
-            break;
-        }
-
-        let b0 = DECODE.get(chunk[0] as usize).copied().unwrap_or(-1);
-        let b1 = DECODE.get(chunk[1] as usize).copied().unwrap_or(-1);
-        let b2 = chunk
-            .get(2)
-            .and_then(|&c| DECODE.get(c as usize).copied())
-            .unwrap_or(0);
-        let b3 = chunk
-            .get(3)
-            .and_then(|&c| DECODE.get(c as usize).copied())
-            .unwrap_or(0);
-
-        if b0 < 0 || b1 < 0 {
-            return None;
-        }
-
-        result.push(((b0 << 2) | (b1 >> 4)) as u8);
-        if chunk.len() > 2 && b2 >= 0 {
-            result.push((((b1 & 0x0f) << 4) | (b2 >> 2)) as u8);
-        }
-        if chunk.len() > 3 && b3 >= 0 {
-            result.push((((b2 & 0x03) << 6) | b3) as u8);
-        }
-    }
-
-    Some(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
     use crate::voice::mixer::test_utils::*;
+    use crate::utils::audio::base64_encode_i16;
 
     #[test]
     fn test_base64_roundtrip() {
-        let samples = generate_sine_wave(440.0, 16000, 320);
+        let samples = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
         let encoded = base64_encode_i16(&samples);
         let decoded = base64_decode_i16(&encoded).unwrap();
         assert_eq!(samples, decoded);
@@ -940,9 +833,9 @@ mod tests {
     async fn test_call_manager_join_leave() {
         let manager = CallManager::new();
 
-        // Join a call
+        // Join a call (false = not AI)
         let (handle, _rx, _transcription_rx) =
-            manager.join_call("test-call", "user-1", "Alice").await;
+            manager.join_call("test-call", "user-1", "Alice", false).await;
 
         // Check stats
         let stats = manager.get_stats(&handle).await;
@@ -962,18 +855,18 @@ mod tests {
     async fn test_call_manager_multi_participant() {
         let manager = CallManager::new();
 
-        // Two participants join
+        // Two participants join (humans)
         let (handle_a, _rx_a, _transcription_rx_a) =
-            manager.join_call("test-call", "user-a", "Alice").await;
+            manager.join_call("test-call", "user-a", "Alice", false).await;
         let (handle_b, _rx_b, _transcription_rx_b) =
-            manager.join_call("test-call", "user-b", "Bob").await;
+            manager.join_call("test-call", "user-b", "Bob", false).await;
 
         // Check count
         let stats = manager.get_stats(&handle_a).await;
         assert_eq!(stats.unwrap().0, 2);
 
         // Push audio from Alice (buffered, mixed by audio loop)
-        let audio = generate_sine_wave(440.0, 16000, 320);
+        let audio = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
         manager.push_audio(&handle_a, audio).await;
 
         // Give audio loop time to tick
@@ -993,7 +886,7 @@ mod tests {
         let manager = CallManager::new();
 
         let (handle, _rx, _transcription_rx) =
-            manager.join_call("test-call", "user-1", "Alice").await;
+            manager.join_call("test-call", "user-1", "Alice", false).await;
 
         // Mute
         manager.set_mute(&handle, true).await;

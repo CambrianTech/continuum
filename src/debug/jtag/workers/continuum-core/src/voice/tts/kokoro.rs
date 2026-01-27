@@ -304,6 +304,7 @@ impl TextToSpeech for KokoroTTS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_constants::AUDIO_SAMPLE_RATE;
 
     #[test]
     fn test_kokoro_adapter() {
@@ -323,9 +324,10 @@ mod tests {
 
     #[test]
     fn test_resample() {
-        // 6 samples at 24kHz should become 4 samples at 16kHz
+        // 6 samples at 24kHz should become 4 samples at AUDIO_SAMPLE_RATE
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = KokoroTTS::resample_24k_to_target(&input, 16000);
+        let output = KokoroTTS::resample_24k_to_target(&input, AUDIO_SAMPLE_RATE);
+        // 6 * 16000 / 24000 = 4 samples
         assert_eq!(output.len(), 4);
     }
 }

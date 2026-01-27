@@ -101,11 +101,12 @@ impl VoiceActivityDetection for RmsThresholdVAD {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_constants::AUDIO_FRAME_SIZE;
 
     #[tokio::test]
     async fn test_rms_silence() {
         let vad = RmsThresholdVAD::new();
-        let silence = vec![0i16; 320]; // One frame of silence
+        let silence = vec![0i16; AUDIO_FRAME_SIZE]; // One frame of silence
 
         let result = vad.detect(&silence).await.unwrap();
         assert!(!result.is_speech);
@@ -114,7 +115,7 @@ mod tests {
     #[tokio::test]
     async fn test_rms_loud_audio() {
         let vad = RmsThresholdVAD::new();
-        let loud = vec![5000i16; 320]; // Loud audio
+        let loud = vec![5000i16; AUDIO_FRAME_SIZE]; // Loud audio
 
         let result = vad.detect(&loud).await.unwrap();
         assert!(result.is_speech); // RMS thinks loud = speech (wrong!)

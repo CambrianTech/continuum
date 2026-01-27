@@ -4,6 +4,7 @@
 //! Runs on CPU with optional GPU acceleration.
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
+use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
@@ -82,16 +83,17 @@ impl WhisperSTT {
             return Err(STTError::InvalidAudio("Empty audio samples".into()));
         }
 
-        // CRITICAL: Whisper requires minimum 1000ms at 16kHz
+        // CRITICAL: Whisper requires minimum 1000ms at AUDIO_SAMPLE_RATE
         // Pad to 1050ms to account for Whisper's internal rounding (it reports 990ms for 16000 samples)
-        const WHISPER_MIN_SAMPLES: usize = 16800; // 1050ms at 16kHz (safety margin)
-        if samples.len() < WHISPER_MIN_SAMPLES {
+        // 1050ms * AUDIO_SAMPLE_RATE / 1000 = minimum samples needed
+        let whisper_min_samples = (1050 * AUDIO_SAMPLE_RATE as usize) / 1000;
+        if samples.len() < whisper_min_samples {
             let original_len = samples.len();
-            let padding = WHISPER_MIN_SAMPLES - samples.len();
-            samples.resize(WHISPER_MIN_SAMPLES, 0.0); // Pad with silence
+            let padding = whisper_min_samples - samples.len();
+            samples.resize(whisper_min_samples, 0.0); // Pad with silence
             info!(
                 "Whisper: Padded audio from {}ms to 1050ms ({} silence samples)",
-                (original_len * 1000) / 16000,
+                (original_len * 1000) / AUDIO_SAMPLE_RATE as usize,
                 padding
             );
         }

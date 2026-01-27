@@ -4,6 +4,7 @@
 //! No actual speech recognition - just returns dummy text based on audio length.
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
+use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -79,8 +80,8 @@ impl SpeechToText for StubSTT {
             ));
         }
 
-        // Calculate audio duration (samples are at 16kHz)
-        let duration_ms = (samples.len() as i64 * 1000) / 16000;
+        // Calculate audio duration (samples are at AUDIO_SAMPLE_RATE)
+        let duration_ms = (samples.len() as i64 * 1000) / AUDIO_SAMPLE_RATE as i64;
 
         if duration_ms < STUB_MIN_AUDIO_MS {
             return Err(STTError::InvalidAudio(format!(

@@ -14,6 +14,7 @@ pub mod persona;
 pub mod logging;
 pub mod ipc;
 pub mod ffi;
+pub mod utils;
 
 pub use audio_constants::*;
 

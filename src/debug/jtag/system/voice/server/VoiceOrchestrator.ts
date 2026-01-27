@@ -28,6 +28,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { getAIAudioBridge } from './AIAudioBridge';
+import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 
 /**
  * Utterance event from voice transcription
@@ -106,6 +107,10 @@ export class VoiceOrchestrator {
   private constructor() {
     this.arbiter = new CompositeArbiter();
     this.setupEventListeners();
+
+    // Register with VoiceConversationSource for RAG context building
+    registerVoiceOrchestrator(this);
+
     console.log('🎙️ VoiceOrchestrator: Initialized');
   }
 
@@ -258,6 +263,7 @@ export class VoiceOrchestrator {
         sessionId: event.sessionId,
         speakerId: event.speakerId,
         speakerName: event.speakerName,
+        speakerType: event.speakerType,  // Pass through speaker type (human/persona/agent)
         transcript: event.transcript,
         confidence: event.confidence,
         language: 'en',
@@ -407,6 +413,7 @@ export class VoiceOrchestrator {
           sessionId: event.sessionId,
           speakerId: event.speakerId,
           speakerName: event.speakerName,
+          speakerType: 'persona',  // AI speech - other AIs know this is from an AI
           transcript: event.text,
           confidence: 1.0,  // AI-generated text is perfectly accurate
           language: 'en',
@@ -434,6 +441,25 @@ export class VoiceOrchestrator {
       turnCount: context.turnCount,
       pendingResponses: pendingCount
     };
+  }
+
+  /**
+   * Get recent utterances for a voice session
+   * Used by VoiceConversationSource for RAG context building
+   *
+   * @param sessionId - Voice session ID
+   * @param limit - Maximum number of utterances to return (default: 20)
+   * @returns Array of recent utterances with speaker type information
+   */
+  getRecentUtterances(sessionId: string, limit: number = 20): UtteranceEvent[] {
+    const context = this.sessionContexts.get(sessionId as UUID);
+    if (!context) {
+      return [];
+    }
+
+    // Return most recent utterances up to limit
+    const utterances = context.recentUtterances.slice(-limit);
+    return utterances;
   }
 }
 

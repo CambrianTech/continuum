@@ -4,29 +4,17 @@
 //! This is the SIMPLEST test - no TTS, no AI, just verify audio mixing works.
 
 use continuum_core::voice::call_server::CallManager;
-use continuum_core::voice::orchestrator::VoiceOrchestrator;
-use std::sync::Arc;
+use continuum_core::utils::audio::{is_silence, calculate_rms};
 use std::time::Duration;
-
-/// Check if audio samples are effectively silence (RMS below threshold)
-fn is_silence(samples: &[i16]) -> bool {
-    if samples.is_empty() {
-        return true;
-    }
-    let sum_squares: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
-    let rms = (sum_squares / samples.len() as f64).sqrt();
-    rms < 50.0 // Very low threshold - basically only true silence
-}
 
 #[tokio::test]
 async fn test_hold_music_plays_when_alone() {
-    // STEP 1: Create CallManager with orchestrator
-    let orchestrator = Arc::new(VoiceOrchestrator::new());
-    let manager = CallManager::new(orchestrator);
+    // STEP 1: Create CallManager
+    let manager = CallManager::new();
 
-    // STEP 2: Join a call as single participant
+    // STEP 2: Join a call as single participant (false = not AI)
     let (handle, mut audio_rx, _transcription_rx) =
-        manager.join_call("test-hold-music", "user-1", "Alice").await;
+        manager.join_call("test-hold-music", "user-1", "Alice", false).await;
 
     println!("✓ Participant joined call");
 
@@ -44,7 +32,7 @@ async fn test_hold_music_plays_when_alone() {
                 if target_handle == handle {
                     frame_count += 1;
 
-                    if !is_silence(&audio) {
+                    if !is_silence(&audio, 50.0) {
                         non_silence_count += 1;
                         println!("✓ Frame {}: Non-silence audio ({} samples, RMS: {:.1})",
                             frame_count, audio.len(), calculate_rms(&audio));
@@ -76,13 +64,4 @@ async fn test_hold_music_plays_when_alone() {
     // STEP 6: Cleanup
     manager.leave_call(&handle).await;
     println!("✓ Test complete - hold music verified");
-}
-
-/// Calculate RMS (root mean square) of audio samples
-fn calculate_rms(samples: &[i16]) -> f64 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    let sum_squares: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
-    (sum_squares / samples.len() as f64).sqrt()
 }

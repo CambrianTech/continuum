@@ -276,6 +276,7 @@ impl TextToSpeech for PiperTTS {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_constants::AUDIO_SAMPLE_RATE;
 
     #[test]
     fn test_piper_adapter() {
@@ -295,9 +296,10 @@ mod tests {
 
     #[test]
     fn test_resample() {
-        // 6 samples at 22050Hz should become ~4 samples at 16000Hz
+        // 6 samples at 22050Hz should become ~4 samples at AUDIO_SAMPLE_RATE
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
-        let output = PiperTTS::resample_to_16k(&input, 22050);
+        let output = PiperTTS::resample_to_target(&input, 22050, AUDIO_SAMPLE_RATE);
+        // 6 * 16000 / 22050 ≈ 4.35 samples
         assert!(output.len() >= 4 && output.len() <= 5);
     }
 }

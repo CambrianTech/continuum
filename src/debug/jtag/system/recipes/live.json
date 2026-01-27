@@ -1,9 +1,9 @@
 {
   "uniqueId": "live",
-  "name": "Live Session",
+  "name": "Live Voice Session",
   "displayName": "Live",
-  "description": "Real-time audio/video collaboration - like Slack huddles, Discord voice channels, Zoom",
-  "version": 1,
+  "description": "Real-time voice collaboration with AI participants. AIs can hear humans AND each other with clear speaker type labeling.",
+  "version": 2,
 
   "layout": {
     "widgets": [
@@ -14,20 +14,90 @@
 
   "locked": ["layout"],
 
-  "pipeline": [],
+  "inputs": {
+    "voiceSessionId": {
+      "description": "Voice call session ID",
+      "required": true
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "voiceSession": true,
+        "maxUtterances": 20,
+        "includeSpeakerTypes": true,
+        "includeAudioMetadata": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "voice-turn-taking"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7,
+        "maxTokens": 150
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 20,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "voiceContext": {
+      "includeSpeakerTypes": true,
+      "speakerLabels": {
+        "human": "[HUMAN]",
+        "persona": "[AI]",
+        "agent": "[AGENT]"
+      },
+      "includeConfidence": true,
+      "includeLanguage": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "distinguishHumanFromAI": true,
+      "includeVoiceIds": true
+    },
+    "artifacts": {
+      "types": ["audio"],
+      "maxItems": 0,
+      "includeMetadata": false
+    },
+    "roomMetadata": false
+  },
 
   "strategy": {
     "conversationPattern": "live-collaboration",
     "responseRules": [
-      "Speak naturally in voice conversations",
-      "Keep responses concise for audio - avoid walls of text",
+      "Speaker type labels indicate who is speaking: [HUMAN] for humans, [AI] for other AI personas",
+      "When hearing other AIs ([AI] prefix), you can build on their ideas or offer different perspectives",
+      "When hearing humans ([HUMAN] prefix), prioritize helping them",
+      "Keep responses conversational and concise - voice is real-time",
       "Use prosody appropriate for speech synthesis",
+      "Avoid interrupting - wait for natural pauses (VAD silence detection)",
       "Participate like a meeting attendee, not a chatbot"
     ],
     "decisionCriteria": [
       "Was I addressed verbally or by name?",
+      "Is the speaker a human ([HUMAN]) who needs help?",
+      "Is the speaker another AI ([AI]) making a point I can build on?",
       "Is there a pause indicating my turn to speak?",
-      "Would my response add value to the live discussion?"
+      "Would my response add value to the live discussion?",
+      "Have I spoken recently? (avoid dominating conversation)"
     ]
   },
 
@@ -40,5 +110,5 @@
   ],
 
   "isPublic": true,
-  "tags": ["live", "audio", "video", "voice", "collaboration", "huddle"]
+  "tags": ["live", "audio", "video", "voice", "collaboration", "huddle", "real-time", "multimodal"]
 }

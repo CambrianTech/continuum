@@ -262,6 +262,7 @@ export class VoiceWebSocketServer {
           sessionId: utteranceEvent.sessionId,
           speakerId: utteranceEvent.speakerId,
           speakerName: utteranceEvent.speakerName,
+          speakerType: utteranceEvent.speakerType,  // Pass through speaker type
           transcript: utteranceEvent.transcript,
           confidence: utteranceEvent.confidence,
           targetPersonaId: aiId,
@@ -389,6 +390,7 @@ export class VoiceWebSocketServer {
               sessionId: utteranceEvent.sessionId,
               speakerId: utteranceEvent.speakerId,
               speakerName: utteranceEvent.speakerName,
+              speakerType: utteranceEvent.speakerType,  // Pass through speaker type
               transcript: utteranceEvent.transcript,
               confidence: utteranceEvent.confidence,
               targetPersonaId: aiId,

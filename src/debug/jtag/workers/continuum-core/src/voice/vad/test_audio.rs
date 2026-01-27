@@ -348,20 +348,22 @@ impl Vowel {
 
 impl Default for TestAudioGenerator {
     fn default() -> Self {
-        Self::new(16000)
+        use crate::audio_constants::AUDIO_SAMPLE_RATE;
+        Self::new(AUDIO_SAMPLE_RATE)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
 
     #[test]
     fn test_formant_speech_generation() {
-        let gen = TestAudioGenerator::new(16000);
-        let speech = gen.generate_formant_speech(512, Vowel::A);
+        let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
+        let speech = gen.generate_formant_speech(AUDIO_FRAME_SIZE, Vowel::A);
 
-        assert_eq!(speech.len(), 512);
+        assert_eq!(speech.len(), AUDIO_FRAME_SIZE);
 
         // Check that audio has non-zero content
         let rms: f32 = speech.iter()
@@ -374,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_sentence_generation() {
-        let gen = TestAudioGenerator::new(16000);
+        let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
         let sentence = gen.generate_sentence(3); // 3 words
 
         // Should generate multiple phonemes
@@ -383,10 +385,12 @@ mod tests {
 
     #[test]
     fn test_tv_dialogue() {
-        let gen = TestAudioGenerator::new(16000);
-        let tv = gen.generate_tv_dialogue(8000); // 500ms
+        let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
+        // Generate 500ms of TV dialogue (sample_rate / 2 samples)
+        let duration_samples = AUDIO_SAMPLE_RATE as usize / 2;
+        let tv = gen.generate_tv_dialogue(duration_samples);
 
-        assert_eq!(tv.len(), 8000);
+        assert_eq!(tv.len(), duration_samples);
 
         // Should be louder than pure silence
         let max_amplitude = tv.iter().map(|&s| s.abs()).max().unwrap();
@@ -395,7 +399,7 @@ mod tests {
 
     #[test]
     fn test_audio_mixing() {
-        let gen = TestAudioGenerator::new(16000);
+        let gen = TestAudioGenerator::new(AUDIO_SAMPLE_RATE);
 
         // Generate signal and noise (same length)
         let signal = gen.generate_formant_speech(240, Vowel::A);

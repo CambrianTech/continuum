@@ -39,11 +39,11 @@ async fn test_call_manager_uses_orchestrator() {
     );
 
     // Create CallManager with orchestrator
-    let manager = CallManager::new(Arc::clone(&orchestrator));
+    let manager = CallManager::new();
 
     // Join call
     let (handle, _rx, mut transcription_rx) = manager
-        .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User")
+        .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
         .await;
 
     // NOTE: We cannot fully test transcription → orchestrator flow without:
@@ -94,11 +94,11 @@ async fn test_orchestrator_registered_before_call() {
     );
 
     // Create CallManager
-    let manager = CallManager::new(Arc::clone(&orchestrator));
+    let manager = CallManager::new();
 
     // Join call with the same session ID
     let (handle, _rx, _transcription_rx) = manager
-        .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User")
+        .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
         .await;
 
     // Manually test orchestrator with utterance
@@ -142,11 +142,11 @@ async fn test_multiple_participants_orchestrator_filtering() {
         ],
     );
 
-    let manager = CallManager::new(Arc::clone(&orchestrator));
+    let manager = CallManager::new();
 
     // Join call
     let (handle, _rx, _transcription_rx) = manager
-        .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User")
+        .join_call(TEST_SESSION_ID, TEST_HUMAN_USER, "Human User", false)
         .await;
 
     // Simulate AI 1 speaking (should only notify AI 2)
@@ -265,13 +265,13 @@ async fn test_concurrent_calls_different_sessions() {
         );
     }
 
-    let manager = CallManager::new(Arc::clone(&orchestrator));
+    let manager = CallManager::new();
 
     // Join all 3 calls concurrently
     let mut handles = Vec::new();
     for (session_id, _) in &sessions {
         let (handle, _rx, _transcription_rx) = manager
-            .join_call(&session_id.to_string(), TEST_HUMAN_USER, "Human User")
+            .join_call(&session_id.to_string(), TEST_HUMAN_USER, "Human User", false)
             .await;
         handles.push(handle);
     }

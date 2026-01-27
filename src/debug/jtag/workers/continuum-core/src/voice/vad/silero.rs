@@ -14,6 +14,7 @@
 //! - Works on 8kHz and 16kHz audio
 
 use super::{VADError, VADResult, VoiceActivityDetection};
+use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
@@ -258,8 +259,8 @@ impl VoiceActivityDetection for SileroVAD {
             (state_guard.h.clone(), state_guard.c.clone())
         };
 
-        // Sample rate for Silero (16000 Hz)
-        let sr = 16000i64;
+        // Sample rate for Silero
+        let sr = AUDIO_SAMPLE_RATE as i64;
 
         // Run inference on blocking thread
         let (speech_prob, h_next, c_next) = tokio::task::spawn_blocking(move || {

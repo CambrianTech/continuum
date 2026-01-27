@@ -968,6 +968,7 @@ export class PersonaUser extends AIUser {
     sessionId: UUID;
     speakerId: UUID;
     speakerName: string;
+    speakerType?: 'human' | 'persona' | 'agent';  // Added: know if speaker is human or AI
     transcript: string;
     confidence: number;
     language: string;
@@ -1022,7 +1023,7 @@ export class PersonaUser extends AIUser {
       content: transcriptionData.transcript,
       senderId: transcriptionData.speakerId,
       senderName: transcriptionData.speakerName,
-      senderType: 'human',  // Voice transcriptions are always from humans for now
+      senderType: transcriptionData.speakerType || 'human',  // Use speakerType from event (human/persona/agent)
       timestamp,
       priority: boostedPriority,
       sourceModality: 'voice',  // Mark as coming from voice (for response routing)

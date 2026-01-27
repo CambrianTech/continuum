@@ -48,19 +48,7 @@ pub mod test_utils {
         samples
     }
 
-    /// Calculate RMS (root mean square) of audio samples
-    pub fn calculate_rms(samples: &[i16]) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-        let sum_squares: f64 = samples.iter().map(|&s| (s as f64).powi(2)).sum();
-        (sum_squares / samples.len() as f64).sqrt() as f32
-    }
-
-    /// Check if audio is mostly silence (RMS below threshold)
-    pub fn is_silence(samples: &[i16], threshold: f32) -> bool {
-        calculate_rms(samples) < threshold
-    }
+    // Audio analysis utilities (is_silence, calculate_rms) moved to crate::utils::audio
 
     /// Detect dominant frequency using zero-crossing rate (simple method)
     pub fn detect_frequency_approx(samples: &[i16], sample_rate: u32) -> f32 {
@@ -84,8 +72,8 @@ pub mod test_utils {
 /// Standard frame size - uses AUDIO_FRAME_SIZE from constants (single source of truth)
 pub const FRAME_SIZE: usize = AUDIO_FRAME_SIZE;
 
-/// Ring buffer size for AI audio (10 seconds at 16kHz)
-const AI_RING_BUFFER_SIZE: usize = 16000 * 10;
+/// Ring buffer size for AI audio (10 seconds at sample rate)
+const AI_RING_BUFFER_SIZE: usize = crate::audio_constants::AUDIO_SAMPLE_RATE as usize * 10;
 
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
@@ -223,7 +211,7 @@ impl ParticipantStream {
                         self.display_name,
                         samples_to_write,
                         self.ai_ring_available,
-                        self.ai_ring_available as f32 / 16000.0
+                        self.ai_ring_available as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32
                     );
                 }
             }
@@ -561,24 +549,26 @@ impl AudioMixer {
 mod tests {
     use super::*;
     use test_utils::*;
+    use crate::utils::audio::is_silence;
+    use crate::audio_constants::{AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE};
 
     #[test]
     fn test_generate_sine_wave() {
-        let samples = generate_sine_wave(440.0, 16000, 320);
-        assert_eq!(samples.len(), 320);
+        let samples = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
+        assert_eq!(samples.len(), AUDIO_FRAME_SIZE);
 
         // Should not be silence
         assert!(!is_silence(&samples, 100.0));
 
         // Frequency should be approximately 440Hz
-        let detected = detect_frequency_approx(&samples, 16000);
+        let detected = detect_frequency_approx(&samples, AUDIO_SAMPLE_RATE);
         assert!((detected - 440.0).abs() < 50.0, "Detected: {detected}");
     }
 
     #[test]
     fn test_generate_silence() {
-        let samples = generate_silence(320);
-        assert_eq!(samples.len(), 320);
+        let samples = generate_silence(AUDIO_FRAME_SIZE);
+        assert_eq!(samples.len(), AUDIO_FRAME_SIZE);
         assert!(is_silence(&samples, 1.0));
     }
 
@@ -612,15 +602,15 @@ mod tests {
         stream_b.initialize_vad().await.expect("VAD init failed");
 
         // Alice plays 440Hz, Bob plays 880Hz
-        stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
-        stream_b.push_audio(generate_sine_wave(880.0, 16000, 320));
+        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
 
         // Mix should contain both frequencies (not silence)
         let mixed = mixer.mix_all();
-        assert_eq!(mixed.len(), 320);
+        assert_eq!(mixed.len(), AUDIO_FRAME_SIZE);
         assert!(!is_silence(&mixed, 100.0));
     }
 
@@ -641,9 +631,9 @@ mod tests {
         stream_c.initialize_vad().await.expect("VAD init failed");
 
         // Each plays a different frequency
-        stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
-        stream_b.push_audio(generate_sine_wave(880.0, 16000, 320));
-        stream_c.push_audio(generate_sine_wave(1320.0, 16000, 320));
+        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_c.push_audio(generate_sine_wave(1320.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
@@ -676,8 +666,8 @@ mod tests {
         stream_a.initialize_vad().await.expect("VAD init failed");
         stream_b.initialize_vad().await.expect("VAD init failed");
 
-        let audio_a = generate_sine_wave(440.0, 16000, 320);
-        let audio_b = generate_sine_wave(880.0, 16000, 320);
+        let audio_a = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
+        let audio_b = generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
 
         stream_a.push_audio(audio_a.clone());
         stream_b.push_audio(audio_b.clone());
@@ -707,8 +697,8 @@ mod tests {
         stream_a.initialize_vad().await.expect("VAD init failed");
         stream_b.initialize_vad().await.expect("VAD init failed");
 
-        stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
-        stream_b.push_audio(generate_sine_wave(880.0, 16000, 320));
+        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
         stream_a.muted = true; // Alice is muted
 
         mixer.add_participant(stream_a);
@@ -745,11 +735,11 @@ mod tests {
         assert!(stream_ai.is_ai);
 
         // Human speaks
-        stream_human.push_audio(generate_sine_wave(440.0, 16000, 320));
+        stream_human.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
 
         // AI injects TTS audio
         let mut stream_ai_mut = stream_ai;
-        stream_ai_mut.push_audio(generate_sine_wave(220.0, 16000, 320));
+        stream_ai_mut.push_audio(generate_sine_wave(220.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
 
         mixer.add_participant(stream_human);
         mixer.add_participant(stream_ai_mut);
@@ -780,8 +770,8 @@ mod tests {
         stream_a.initialize_vad().await.expect("VAD init failed");
         stream_b.initialize_vad().await.expect("VAD init failed");
 
-        stream_a.push_audio(generate_sine_wave(440.0, 16000, 320));
-        stream_b.push_audio(generate_sine_wave(880.0, 16000, 320));
+        stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
+        stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
 
         mixer.add_participant(stream_a);
         mixer.add_participant(stream_b);
@@ -803,13 +793,13 @@ mod tests {
                 ParticipantStream::new(handle, format!("user-{i}"), format!("User {i}"));
             stream.initialize_vad().await.expect("VAD init failed");
             // Max amplitude sine wave
-            stream.push_audio(generate_sine_wave(440.0 + (i as f32 * 100.0), 16000, 320));
+            stream.push_audio(generate_sine_wave(440.0 + (i as f32 * 100.0), AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
             mixer.add_participant(stream);
         }
 
         // Mix should not overflow - if we get here without panic, clamping worked
         let mixed = mixer.mix_all();
-        assert_eq!(mixed.len(), 320);
+        assert_eq!(mixed.len(), AUDIO_FRAME_SIZE);
         // Values are already i16 so they're in valid range by type constraints
         // The real test is that clamp_to_i16 prevents overflow during mixing
     }

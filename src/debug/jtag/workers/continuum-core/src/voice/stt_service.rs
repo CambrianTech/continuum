@@ -4,6 +4,7 @@
 //! IPC should NOT directly call STT - it should call this service.
 
 use crate::voice::stt::{self, STTError, TranscriptResult};
+use crate::utils::audio::i16_to_f32;
 
 /// Transcribe speech from audio samples using the active STT adapter
 ///
@@ -20,7 +21,7 @@ pub fn transcribe_speech_sync(
     language: Option<&str>,
 ) -> Result<TranscriptResult, STTError> {
     // Convert i16 to f32 for STT
-    let f32_samples = stt::i16_to_f32(samples);
+    let f32_samples = i16_to_f32(samples);
 
     // Try to use existing runtime, or create one
     match tokio::runtime::Handle::try_current() {

@@ -4,6 +4,7 @@
 //! Uses the same ort crate we already have for TTS.
 
 use super::{VADError, VADResult, VoiceActivityDetection};
+use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
@@ -191,7 +192,7 @@ impl VoiceActivityDetection for SileroRawVAD {
         let threshold = self.threshold;
         let result = tokio::task::spawn_blocking(move || {
             let session_guard = session.lock();
-            Self::infer_sync(&session_guard, audio, state, 16000)
+            Self::infer_sync(&session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)
         })
         .await
         .map_err(|e| VADError::InferenceFailed(format!("Task join error: {e}")))?;
