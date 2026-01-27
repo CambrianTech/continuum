@@ -101,7 +101,7 @@ export class VoiceOrchestrator {
   // Cooldown per session - don't select new responder within N ms of last selection
   // This prevents backlog of utterances from each getting a different AI
   private lastSelectionTime: Map<UUID, number> = new Map();
-  private static readonly SELECTION_COOLDOWN_MS = 5000; // 5 seconds
+  private static readonly SELECTION_COOLDOWN_MS = 1000; // 1 second - research shows 600ms-1s optimal
 
   // Turn arbitration
   private arbiter: TurnArbiter;
