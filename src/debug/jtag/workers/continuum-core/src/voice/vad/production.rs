@@ -45,15 +45,17 @@ impl Default for ProductionVADConfig {
             // Moderate WebRTC aggressiveness
             webrtc_aggressiveness: 2,
 
-            // Shorter silence for faster transcription (conversational pauses)
-            silence_threshold_frames: 15, // 0.48 seconds (fast feedback)
+            // FAST: 8 frames × 32ms = 256ms silence before utterance ends
+            // This enables more conversational, responsive interactions
+            // Trade-off: May split long pauses mid-thought (future: sentence detection)
+            silence_threshold_frames: 8,
 
             // Minimum 3 frames (96ms) to avoid spurious detections
             min_speech_frames: 3,
 
             // Buffer around speech for context
             pre_speech_buffer_ms: 300,
-            post_speech_buffer_ms: 500,
+            post_speech_buffer_ms: 300, // Reduced for faster feedback
 
             // Two-stage for performance
             use_two_stage: true,

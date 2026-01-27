@@ -45,7 +45,8 @@
       "params": {
         "ragContext": "$ragContext",
         "temperature": 0.7,
-        "maxTokens": 150
+        "maxTokens": 100,
+        "voiceMode": true
       },
       "condition": "decision.shouldRespond === true"
     }
@@ -66,6 +67,14 @@
       },
       "includeConfidence": true,
       "includeLanguage": true
+    },
+    "responseStyle": {
+      "voiceMode": true,
+      "maxTokens": 100,
+      "conversational": true,
+      "maxSentences": 3,
+      "preferQuestions": true,
+      "avoidFormatting": true
     },
     "participants": {
       "includeRoles": true,
