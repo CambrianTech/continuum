@@ -18,13 +18,22 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock, Semaphore};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use ts_rs::TS;
 
 /// Maximum characters to show in truncated text previews (logs, errors)
 const TEXT_PREVIEW_LENGTH: usize = 30;
+
+/// Maximum concurrent transcription tasks
+/// With base model (~10x realtime), 2 concurrent should handle bursts
+/// If this fills up, we drop new audio rather than accumulate backlog
+const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 2;
+
+/// Global semaphore to limit concurrent transcriptions
+static TRANSCRIPTION_SEMAPHORE: Lazy<Arc<Semaphore>> =
+    Lazy::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_TRANSCRIPTIONS)));
 
 /// Embedded hold music WAV file (16kHz, mono, 16-bit)
 static HOLD_MUSIC_WAV: &[u8] = include_bytes!("assets/hold-music.wav");
@@ -621,16 +630,32 @@ impl CallManager {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
                         (result.user_id, result.display_name, result.speech_samples)
                     {
-                        // Spawn transcription task (don't block audio processing)
-                        tokio::spawn(async move {
-                            Self::transcribe_and_broadcast(
-                                transcription_tx,
-                                user_id,
-                                display_name,
-                                speech_samples,
-                            )
-                            .await;
-                        });
+                        // Try to acquire semaphore permit (non-blocking)
+                        // If we can't, drop this audio to prevent backlog
+                        let semaphore = TRANSCRIPTION_SEMAPHORE.clone();
+                        match semaphore.clone().try_acquire_owned() {
+                            Ok(permit) => {
+                                // Spawn transcription task with permit
+                                tokio::spawn(async move {
+                                    Self::transcribe_and_broadcast(
+                                        transcription_tx,
+                                        user_id,
+                                        display_name,
+                                        speech_samples,
+                                    )
+                                    .await;
+                                    // Permit automatically released when dropped
+                                    drop(permit);
+                                });
+                            }
+                            Err(_) => {
+                                // Queue full - drop this audio to stay current
+                                warn!(
+                                    "🚨 Dropping audio from {} - transcription queue full ({} max)",
+                                    display_name, MAX_CONCURRENT_TRANSCRIPTIONS
+                                );
+                            }
+                        }
                     }
                 }
             }

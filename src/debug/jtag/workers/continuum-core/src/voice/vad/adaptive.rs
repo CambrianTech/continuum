@@ -185,9 +185,9 @@ impl<V: VoiceActivityDetection> AdaptiveVAD<V> {
     }
 
     /// Process frame and adapt thresholds
-    pub async fn detect_adaptive(&mut self, samples: &[i16]) -> Result<VADResult, VADError> {
+    pub fn detect_adaptive(&mut self, samples: &[i16]) -> Result<VADResult, VADError> {
         // Get raw VAD result
-        let result = self.vad.detect(samples).await?;
+        let result = self.vad.detect(samples)?;
 
         // Track result
         self.recent_results.push_back((result.is_speech, result.confidence));

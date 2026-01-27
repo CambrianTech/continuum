@@ -9,8 +9,6 @@
 //! - Trait-based abstraction
 //! - Factory creation by name
 
-use async_trait::async_trait;
-
 pub mod rms_threshold;
 pub mod silero;
 pub mod silero_raw;
@@ -64,7 +62,7 @@ pub struct VADResult {
 ///
 /// Implementations must be Send + Sync for multi-threaded use.
 /// Follows polymorphism pattern for runtime swappable algorithms.
-#[async_trait]
+/// All methods are SYNC - VAD detection is pure computation, no async needed.
 pub trait VoiceActivityDetection: Send + Sync {
     /// Algorithm name
     fn name(&self) -> &'static str;
@@ -75,17 +73,17 @@ pub trait VoiceActivityDetection: Send + Sync {
     /// Is the VAD initialized and ready?
     fn is_initialized(&self) -> bool;
 
-    /// Initialize the VAD (load models, etc.)
-    async fn initialize(&self) -> Result<(), VADError>;
+    /// Initialize the VAD (load models, etc.) - SYNC, model loading is sync anyway
+    fn initialize(&self) -> Result<(), VADError>;
 
-    /// Detect voice activity in audio samples
+    /// Detect voice activity in audio samples (SYNC - no async needed for pure computation)
     ///
     /// # Arguments
     /// * `samples` - Audio samples (i16 PCM, 16kHz mono)
     ///
     /// # Returns
     /// * `VADResult` with is_speech boolean and confidence score
-    async fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError>;
+    fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError>;
 
     /// Get recommended silence threshold in frames
     ///

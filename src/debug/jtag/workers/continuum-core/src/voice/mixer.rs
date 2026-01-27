@@ -160,11 +160,11 @@ impl ParticipantStream {
         }
     }
 
-    /// Initialize VAD (must be called after construction, requires async)
+    /// Initialize VAD (must be called after construction)
     /// Returns Ok even if model loading fails (graceful degradation for tests)
-    pub async fn initialize_vad(&mut self) -> Result<(), VADError> {
+    pub fn initialize_vad(&mut self) -> Result<(), VADError> {
         if let Some(ref mut vad) = self.vad {
-            match vad.initialize().await {
+            match vad.initialize() {
                 Ok(_) => {
                     info!("🎯 ProductionVAD initialized for {}", self.display_name);
                 }
@@ -238,7 +238,7 @@ impl ParticipantStream {
         // Use ProductionVAD (two-stage VAD + sentence buffering)
         if let Some(ref mut vad) = self.vad {
             // ProductionVAD.process_frame() returns complete sentence when ready
-            let vad_result = futures::executor::block_on(vad.process_frame(&samples));
+            let vad_result = vad.process_frame(&samples);
 
             match vad_result {
                 Ok(Some(complete_sentence)) => {
@@ -382,7 +382,7 @@ impl AudioMixer {
 
     /// Add a participant and initialize VAD
     pub async fn add_participant_with_init(&mut self, mut stream: ParticipantStream) -> Result<(), VADError> {
-        stream.initialize_vad().await?;
+        stream.initialize_vad()?;
         self.participants.insert(stream.handle, stream);
         Ok(())
     }
@@ -578,7 +578,7 @@ mod tests {
 
         let handle_a = Handle::new();
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
-        stream_a.initialize_vad().await.expect("VAD init failed");
+        stream_a.initialize_vad().expect("VAD init failed");
 
         mixer.add_participant(stream_a);
         assert_eq!(mixer.participant_count(), 1);
@@ -598,8 +598,8 @@ mod tests {
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
 
-        stream_a.initialize_vad().await.expect("VAD init failed");
-        stream_b.initialize_vad().await.expect("VAD init failed");
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
 
         // Alice plays 440Hz, Bob plays 880Hz
         stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
@@ -626,9 +626,9 @@ mod tests {
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
         let mut stream_c = ParticipantStream::new(handle_c, "user-c".into(), "Charlie".into());
 
-        stream_a.initialize_vad().await.expect("VAD init failed");
-        stream_b.initialize_vad().await.expect("VAD init failed");
-        stream_c.initialize_vad().await.expect("VAD init failed");
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
+        stream_c.initialize_vad().expect("VAD init failed");
 
         // Each plays a different frequency
         stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
@@ -663,8 +663,8 @@ mod tests {
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
 
-        stream_a.initialize_vad().await.expect("VAD init failed");
-        stream_b.initialize_vad().await.expect("VAD init failed");
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
 
         let audio_a = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
         let audio_b = generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
@@ -694,8 +694,8 @@ mod tests {
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
 
-        stream_a.initialize_vad().await.expect("VAD init failed");
-        stream_b.initialize_vad().await.expect("VAD init failed");
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
 
         stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
         stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
@@ -728,7 +728,7 @@ mod tests {
         let stream_ai =
             ParticipantStream::new_ai(handle_ai, "ai-helper".into(), "Helper AI".into());
 
-        stream_human.initialize_vad().await.expect("VAD init failed");
+        stream_human.initialize_vad().expect("VAD init failed");
         // AI doesn't need VAD initialization
 
         assert!(!stream_human.is_ai);
@@ -768,8 +768,8 @@ mod tests {
         let mut stream_a = ParticipantStream::new(handle_a, "user-a".into(), "Alice".into());
         let mut stream_b = ParticipantStream::new(handle_b, "user-b".into(), "Bob".into());
 
-        stream_a.initialize_vad().await.expect("VAD init failed");
-        stream_b.initialize_vad().await.expect("VAD init failed");
+        stream_a.initialize_vad().expect("VAD init failed");
+        stream_b.initialize_vad().expect("VAD init failed");
 
         stream_a.push_audio(generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
         stream_b.push_audio(generate_sine_wave(880.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
@@ -792,7 +792,7 @@ mod tests {
             let handle = Handle::new();
             let mut stream =
                 ParticipantStream::new(handle, format!("user-{i}"), format!("User {i}"));
-            stream.initialize_vad().await.expect("VAD init failed");
+            stream.initialize_vad().expect("VAD init failed");
             // Max amplitude sine wave
             stream.push_audio(generate_sine_wave(440.0 + (i as f32 * 100.0), AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE));
             mixer.add_participant(stream);

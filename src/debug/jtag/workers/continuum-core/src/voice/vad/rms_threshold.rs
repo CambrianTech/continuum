@@ -9,7 +9,6 @@
 //! - Simple volume gating
 
 use super::{VADError, VADResult, VoiceActivityDetection};
-use async_trait::async_trait;
 
 /// RMS Threshold VAD
 ///
@@ -46,7 +45,6 @@ impl Default for RmsThresholdVAD {
     }
 }
 
-#[async_trait]
 impl VoiceActivityDetection for RmsThresholdVAD {
     fn name(&self) -> &'static str {
         "rms_threshold"
@@ -60,11 +58,11 @@ impl VoiceActivityDetection for RmsThresholdVAD {
         true // No initialization needed
     }
 
-    async fn initialize(&self) -> Result<(), VADError> {
+    fn initialize(&self) -> Result<(), VADError> {
         Ok(()) // Nothing to initialize
     }
 
-    async fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
+    fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
         if samples.is_empty() {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
@@ -103,21 +101,21 @@ mod tests {
     use super::*;
     use crate::audio_constants::AUDIO_FRAME_SIZE;
 
-    #[tokio::test]
-    async fn test_rms_silence() {
+    #[test]
+    fn test_rms_silence() {
         let vad = RmsThresholdVAD::new();
         let silence = vec![0i16; AUDIO_FRAME_SIZE]; // One frame of silence
 
-        let result = vad.detect(&silence).await.unwrap();
+        let result = vad.detect(&silence).unwrap();
         assert!(!result.is_speech);
     }
 
-    #[tokio::test]
-    async fn test_rms_loud_audio() {
+    #[test]
+    fn test_rms_loud_audio() {
         let vad = RmsThresholdVAD::new();
         let loud = vec![5000i16; AUDIO_FRAME_SIZE]; // Loud audio
 
-        let result = vad.detect(&loud).await.unwrap();
+        let result = vad.detect(&loud).unwrap();
         assert!(result.is_speech); // RMS thinks loud = speech (wrong!)
     }
 }

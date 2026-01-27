@@ -15,7 +15,6 @@
 //! - Good for: Low-latency, resource-constrained, or high-throughput scenarios
 
 use super::{VADError, VADResult, VoiceActivityDetection};
-use async_trait::async_trait;
 use earshot::{VoiceActivityDetector, VoiceActivityProfile};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -78,7 +77,6 @@ impl Default for WebRtcVAD {
     }
 }
 
-#[async_trait]
 impl VoiceActivityDetection for WebRtcVAD {
     fn name(&self) -> &'static str {
         "webrtc"
@@ -93,12 +91,12 @@ impl VoiceActivityDetection for WebRtcVAD {
         true
     }
 
-    async fn initialize(&self) -> Result<(), VADError> {
+    fn initialize(&self) -> Result<(), VADError> {
         // No initialization needed
         Ok(())
     }
 
-    async fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
+    fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
         if samples.is_empty() {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
@@ -168,16 +166,16 @@ impl VoiceActivityDetection for WebRtcVAD {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_webrtc_vad_creation() {
+    #[test]
+    fn test_webrtc_vad_creation() {
         let vad = WebRtcVAD::new();
         assert_eq!(vad.name(), "webrtc");
         assert!(vad.is_initialized());
         assert_eq!(vad.aggressiveness, 3); // Default is very aggressive
     }
 
-    #[tokio::test]
-    async fn test_aggressiveness_levels() {
+    #[test]
+    fn test_aggressiveness_levels() {
         for level in 0..=3 {
             let vad = WebRtcVAD::with_aggressiveness(level);
             assert_eq!(vad.aggressiveness, level);
@@ -188,36 +186,36 @@ mod tests {
         assert_eq!(vad.aggressiveness, 3);
     }
 
-    #[tokio::test]
-    async fn test_supported_frame_sizes() {
+    #[test]
+    fn test_supported_frame_sizes() {
         let vad = WebRtcVAD::new();
 
         // earshot requires 240 samples (15ms at 16kHz)
         let samples = vec![0i16; 240];
-        let result = vad.detect(&samples).await;
+        let result = vad.detect(&samples);
         assert!(result.is_ok(), "240 samples should work");
 
         // 480 samples (30ms at 16kHz) = 2x 240
         let samples = vec![0i16; 480];
-        let result = vad.detect(&samples).await;
+        let result = vad.detect(&samples);
         assert!(result.is_ok(), "480 samples should work");
     }
 
-    #[tokio::test]
-    async fn test_silence_detection() {
+    #[test]
+    fn test_silence_detection() {
         let vad = WebRtcVAD::new();
-        vad.initialize().await.expect("Init should succeed");
+        vad.initialize().expect("Init should succeed");
 
         // Silence (320 samples = 20ms at 16kHz)
         let silence = vec![0i16; 320];
-        let result = vad.detect(&silence).await.expect("Should detect");
+        let result = vad.detect(&silence).expect("Should detect");
 
         assert!(!result.is_speech, "Silence should not be detected as speech");
         assert!(result.confidence < 0.5);
     }
 
-    #[tokio::test]
-    async fn test_aggressiveness_configuration() {
+    #[test]
+    fn test_aggressiveness_configuration() {
         // Test direct construction with different levels
         for level in 0..=3 {
             let vad = WebRtcVAD::with_aggressiveness(level);

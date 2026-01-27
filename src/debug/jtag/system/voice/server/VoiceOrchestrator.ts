@@ -98,6 +98,11 @@ export class VoiceOrchestrator {
   private sessionContexts: Map<UUID, ConversationContext> = new Map();
   private pendingResponses: Map<UUID, PendingVoiceResponse> = new Map();
 
+  // Cooldown per session - don't select new responder within N ms of last selection
+  // This prevents backlog of utterances from each getting a different AI
+  private lastSelectionTime: Map<UUID, number> = new Map();
+  private static readonly SELECTION_COOLDOWN_MS = 5000; // 5 seconds
+
   // Turn arbitration
   private arbiter: TurnArbiter;
 
@@ -254,23 +259,40 @@ export class VoiceOrchestrator {
       return;
     }
 
-    // NO ARBITER - broadcast to ALL AI participants, let THEM decide if they want to respond
-    // Their PersonaUser.shouldRespond() logic handles engagement decisions
-    console.log(`🎙️ VoiceOrchestrator: Broadcasting to ${aiParticipants.length} AIs`);
-
-    for (const ai of aiParticipants) {
-      Events.emit('voice:transcription:directed', {
-        sessionId: event.sessionId,
-        speakerId: event.speakerId,
-        speakerName: event.speakerName,
-        speakerType: event.speakerType,  // Pass through speaker type (human/persona/agent)
-        transcript: event.transcript,
-        confidence: event.confidence,
-        language: 'en',
-        timestamp: event.timestamp,
-        targetPersonaId: ai.userId  // Each AI gets the event
-      });
+    // COOLDOWN CHECK - skip if we recently selected someone (prevents backlog flood)
+    const lastSelection = this.lastSelectionTime.get(sessionId) || 0;
+    const now = Date.now();
+    if (now - lastSelection < VoiceOrchestrator.SELECTION_COOLDOWN_MS) {
+      console.log(`🎙️ VoiceOrchestrator: Skipping - cooldown active (${Math.round((VoiceOrchestrator.SELECTION_COOLDOWN_MS - (now - lastSelection)) / 1000)}s left)`);
+      return;
     }
+
+    // USE ARBITER to select ONE responder for coordinated turn-taking
+    const selectedResponder = this.arbiter.selectResponder(event, aiParticipants, context);
+
+    if (!selectedResponder) {
+      console.log('🎙️ VoiceOrchestrator: Arbiter selected no responder');
+      return;
+    }
+
+    // Update context and cooldown
+    context.lastResponderId = selectedResponder.userId;
+    this.lastSelectionTime.set(sessionId, Date.now());
+
+    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (cooldown: ${VoiceOrchestrator.SELECTION_COOLDOWN_MS / 1000}s)`);
+
+    // Send directed event ONLY to the selected responder
+    Events.emit('voice:transcription:directed', {
+      sessionId: event.sessionId,
+      speakerId: event.speakerId,
+      speakerName: event.speakerName,
+      speakerType: event.speakerType,
+      transcript: event.transcript,
+      confidence: event.confidence,
+      language: 'en',
+      timestamp: event.timestamp,
+      targetPersonaId: selectedResponder.userId
+    });
   }
 
   /**
@@ -384,7 +406,7 @@ export class VoiceOrchestrator {
     });
 
     // Listen for AI speech events (when an AI speaks via TTS)
-    // Route to OTHER AIs so they can "hear" what the speaking AI said
+    // Route to ONE other AI using arbiter (turn-taking coordination)
     Events.subscribe('voice:ai:speech', async (event: {
       sessionId: string;
       speakerId: string;
@@ -405,22 +427,46 @@ export class VoiceOrchestrator {
 
       if (otherAIs.length === 0) return;
 
-      console.log(`🎙️ VoiceOrchestrator: Broadcasting to ${otherAIs.length} other AIs`);
+      // Get context for arbiter
+      const context = this.sessionContexts.get(event.sessionId as UUID);
+      if (!context) return;
 
-      // Broadcast to each other AI so they can respond
-      for (const ai of otherAIs) {
-        Events.emit('voice:transcription:directed', {
-          sessionId: event.sessionId,
-          speakerId: event.speakerId,
-          speakerName: event.speakerName,
-          speakerType: 'persona',  // AI speech - other AIs know this is from an AI
-          transcript: event.text,
-          confidence: 1.0,  // AI-generated text is perfectly accurate
-          language: 'en',
-          timestamp: event.timestamp,
-          targetPersonaId: ai.userId
-        });
+      // Create utterance event for arbiter
+      const utteranceEvent: UtteranceEvent = {
+        sessionId: event.sessionId as UUID,
+        speakerId: event.speakerId as UUID,
+        speakerName: event.speakerName,
+        speakerType: 'persona',
+        transcript: event.text,
+        confidence: 1.0,
+        timestamp: event.timestamp
+      };
+
+      // Use arbiter to select ONE responder (turn-taking)
+      const selectedResponder = this.arbiter.selectResponder(utteranceEvent, otherAIs, context);
+
+      if (!selectedResponder) {
+        console.log('🎙️ VoiceOrchestrator: No AI selected to respond to AI speech');
+        return;
       }
+
+      // Update context
+      context.lastResponderId = selectedResponder.userId;
+
+      console.log(`🎙️ VoiceOrchestrator: ${selectedResponder.displayName} will respond to ${event.speakerName}`);
+
+      // Send to selected responder only
+      Events.emit('voice:transcription:directed', {
+        sessionId: event.sessionId,
+        speakerId: event.speakerId,
+        speakerName: event.speakerName,
+        speakerType: 'persona',
+        transcript: event.text,
+        confidence: 1.0,
+        language: 'en',
+        timestamp: event.timestamp,
+        targetPersonaId: selectedResponder.userId
+      });
     });
   }
 

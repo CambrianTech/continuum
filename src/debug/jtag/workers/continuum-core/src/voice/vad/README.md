@@ -68,11 +68,11 @@ let vad = VADFactory::create("silero")?;  // ML-based (external crate) - may hav
 // OR
 let vad = VADFactory::create("rms")?;  // Primitive fallback
 
-// Initialize (loads models)
-vad.initialize().await?;
+// Initialize (loads models) - synchronous
+vad.initialize()?;
 
-// Detect speech in audio frame
-let result = vad.detect(&samples).await?;
+// Detect speech in audio frame - synchronous (no async overhead)
+let result = vad.detect(&samples)?;
 if result.is_speech && result.confidence > 0.5 {
     // Transcribe this audio
 }

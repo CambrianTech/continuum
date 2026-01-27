@@ -5,7 +5,6 @@
 
 use super::{VADError, VADResult, VoiceActivityDetection};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
-use async_trait::async_trait;
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -126,7 +125,6 @@ impl Default for SileroRawVAD {
     }
 }
 
-#[async_trait]
 impl VoiceActivityDetection for SileroRawVAD {
     fn name(&self) -> &'static str {
         "silero-raw"
@@ -140,7 +138,7 @@ impl VoiceActivityDetection for SileroRawVAD {
         SILERO_SESSION.get().is_some()
     }
 
-    async fn initialize(&self) -> Result<(), VADError> {
+    fn initialize(&self) -> Result<(), VADError> {
         if SILERO_SESSION.get().is_some() {
             return Ok(());
         }
@@ -170,7 +168,7 @@ impl VoiceActivityDetection for SileroRawVAD {
         Ok(())
     }
 
-    async fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
+    fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
         if samples.is_empty() {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
@@ -188,22 +186,17 @@ impl VoiceActivityDetection for SileroRawVAD {
         // Get current state
         let state = self.state.lock().clone();
 
-        // Run inference on blocking thread
-        let threshold = self.threshold;
-        let result = tokio::task::spawn_blocking(move || {
-            let session_guard = session.lock();
-            Self::infer_sync(&session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)
-        })
-        .await
-        .map_err(|e| VADError::InferenceFailed(format!("Task join error: {e}")))?;
-
-        let (speech_prob, new_state) = result?;
+        // Run inference directly (CPU-bound, ~54ms)
+        // This is called only when WebRTC pre-filter detects possible speech
+        let session_guard = session.lock();
+        let (speech_prob, new_state) = Self::infer_sync(&session_guard, audio, state, AUDIO_SAMPLE_RATE as i64)?;
+        drop(session_guard);
 
         // Update state
         *self.state.lock() = new_state;
 
         Ok(VADResult {
-            is_speech: speech_prob >= threshold,
+            is_speech: speech_prob >= self.threshold,
             confidence: speech_prob,
         })
     }

@@ -183,21 +183,21 @@ impl ProductionVAD {
         }
     }
 
-    /// Initialize both VAD stages
-    pub async fn initialize(&mut self) -> Result<(), VADError> {
-        self.webrtc.initialize().await?;
-        self.silero.initialize().await?;
+    /// Initialize both VAD stages (SYNC - model loading is sync)
+    pub fn initialize(&mut self) -> Result<(), VADError> {
+        self.webrtc.initialize()?;
+        self.silero.initialize()?;
         self.initialized = true;
         Ok(())
     }
 
-    /// Process a frame and return complete sentence when ready
+    /// Process a frame and return complete sentence when ready (SYNC - pure computation)
     ///
     /// Returns:
     /// - `Ok(Some(audio))` when complete sentence is ready for transcription
     /// - `Ok(None)` when still buffering
     /// - `Err(_)` on processing error
-    pub async fn process_frame(&mut self, audio: &[i16]) -> Result<Option<Vec<i16>>, VADError> {
+    pub fn process_frame(&mut self, audio: &[i16]) -> Result<Option<Vec<i16>>, VADError> {
         if !self.initialized {
             return Err(VADError::ModelNotLoaded(
                 "ProductionVAD not initialized".into(),
@@ -206,19 +206,19 @@ impl ProductionVAD {
 
         let is_speech = if self.config.use_two_stage {
             // Stage 1: Fast pre-filter (1-10μs)
-            let quick_result = self.webrtc.detect(audio).await?;
+            let quick_result = self.webrtc.detect(audio)?;
 
             if !quick_result.is_speech {
                 // Definite silence - skip expensive Silero check
                 false
             } else {
                 // Possible speech - confirm with Silero (54ms)
-                let accurate_result = self.silero.detect(audio).await?;
+                let accurate_result = self.silero.detect(audio)?;
                 accurate_result.confidence > self.config.silero_threshold
             }
         } else {
             // Single-stage: Silero only (54ms every frame)
-            let result = self.silero.detect(audio).await?;
+            let result = self.silero.detect(audio)?;
             result.confidence > self.config.silero_threshold
         };
 

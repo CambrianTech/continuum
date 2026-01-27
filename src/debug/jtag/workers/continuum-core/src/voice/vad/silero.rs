@@ -15,7 +15,6 @@
 
 use super::{VADError, VADResult, VoiceActivityDetection};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
-use async_trait::async_trait;
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -185,7 +184,6 @@ impl Default for SileroVAD {
     }
 }
 
-#[async_trait]
 impl VoiceActivityDetection for SileroVAD {
     fn name(&self) -> &'static str {
         "silero"
@@ -199,7 +197,7 @@ impl VoiceActivityDetection for SileroVAD {
         SILERO_SESSION.get().is_some()
     }
 
-    async fn initialize(&self) -> Result<(), VADError> {
+    fn initialize(&self) -> Result<(), VADError> {
         if SILERO_SESSION.get().is_some() {
             info!("Silero VAD already initialized");
             return Ok(());
@@ -236,7 +234,7 @@ impl VoiceActivityDetection for SileroVAD {
         Ok(())
     }
 
-    async fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
+    fn detect(&self, samples: &[i16]) -> Result<VADResult, VADError> {
         if samples.is_empty() {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
@@ -253,7 +251,7 @@ impl VoiceActivityDetection for SileroVAD {
         // Preprocess audio
         let audio = self.preprocess_audio(samples);
 
-        // Get current state (clone to avoid holding lock across await)
+        // Get current state
         let (h, c) = {
             let state_guard = self.state.lock();
             (state_guard.h.clone(), state_guard.c.clone())
@@ -262,14 +260,11 @@ impl VoiceActivityDetection for SileroVAD {
         // Sample rate for Silero
         let sr = AUDIO_SAMPLE_RATE as i64;
 
-        // Run inference on blocking thread
-        let (speech_prob, h_next, c_next) = tokio::task::spawn_blocking(move || {
-            let session_guard = session.lock();
-            Self::infer_sync(&session_guard, audio, h, c, sr)
-        })
-        .await
-        .map_err(|e| VADError::InferenceFailed(format!("Task join error: {e}")))?
-        .map_err(|e| VADError::InferenceFailed(format!("Inference error: {e}")))?;
+        // Run inference directly (CPU-bound, ~54ms)
+        // This is called only when WebRTC pre-filter detects possible speech
+        let session_guard = session.lock();
+        let (speech_prob, h_next, c_next) = Self::infer_sync(&session_guard, audio, h, c, sr)?;
+        drop(session_guard);
 
         // Update state for next frame
         {
@@ -303,8 +298,8 @@ impl VoiceActivityDetection for SileroVAD {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_silero_creation() {
+    #[test]
+    fn test_silero_creation() {
         let vad = SileroVAD::new();
         assert_eq!(vad.name(), "silero");
         assert!(!vad.is_initialized());
@@ -312,14 +307,14 @@ mod tests {
 
     // Note: Full inference tests require model file download
     // Run manually: cargo test --release -- --ignored test_silero_inference
-    #[tokio::test]
+    #[test]
     #[ignore]
-    async fn test_silero_inference() {
+    fn test_silero_inference() {
         let vad = SileroVAD::new();
-        vad.initialize().await.expect("Failed to initialize");
+        vad.initialize().expect("Failed to initialize");
 
         let silence = vec![0i16; 512]; // 32ms at 16kHz
-        let result = vad.detect(&silence).await.unwrap();
+        let result = vad.detect(&silence).unwrap();
 
         // Silence should have low probability
         assert!(result.confidence < 0.3);
