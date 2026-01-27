@@ -82,6 +82,9 @@ export class LiveWidget extends ReactiveWidget {
   private savedMicState: boolean | null = null;
   private savedSpeakerState: boolean | null = null;
 
+  // State loading tracking - ensures state is loaded before using it
+  private stateLoadedPromise: Promise<void> | null = null;
+
   // Styles imported from SCSS
   static override styles = [
     ReactiveWidget.styles,
@@ -93,9 +96,10 @@ export class LiveWidget extends ReactiveWidget {
 
     // Wait for userState to load before trying to read call state
     // loadUserContext is already called by super.connectedCallback()
-    // We need to wait for it to complete
-    this.loadUserContext().then(() => {
+    // Store promise so handleJoin() can wait for it
+    this.stateLoadedPromise = this.loadUserContext().then(() => {
       this.loadCallState();
+      console.log(`LiveWidget: State loaded (mic=${this.micEnabled}, speaker=${this.speakerEnabled})`);
       this.requestUpdate(); // Force re-render with loaded state
     }).catch(err => {
       console.error('LiveWidget: Failed to load user context:', err);
@@ -368,6 +372,12 @@ export class LiveWidget extends ReactiveWidget {
     if (!this.entityId) {
       console.error('LiveWidget: No entityId specified');
       return;
+    }
+
+    // CRITICAL: Wait for saved state to load before using micEnabled/speakerEnabled
+    // This prevents race conditions where we use default values instead of saved state
+    if (this.stateLoadedPromise) {
+      await this.stateLoadedPromise;
     }
 
     // Request mic permission NOW (when user clicks Join)

@@ -2,6 +2,10 @@
 //!
 //! Local TTS inference using Kokoro (~82M params) via ONNX Runtime.
 //! Excellent quality for a lightweight model.
+//!
+//! GPU Acceleration:
+//! - CUDA (NVIDIA GPUs like RTX 5090) - Linux/Windows
+//! - CoreML (Apple Silicon) - macOS
 
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use async_trait::async_trait;

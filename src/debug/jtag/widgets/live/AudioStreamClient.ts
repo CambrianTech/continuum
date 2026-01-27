@@ -65,6 +65,9 @@ export class AudioStreamClient {
   private speakerMuted = false;
   private speakerVolume = 1.0;
 
+  // Mic mute state (tracked locally for defense in depth)
+  private micMuted = false;
+
   private serverUrl: string;
   private sampleRate: number;
   private frameSize: number;
@@ -268,11 +271,14 @@ export class AudioStreamClient {
 
   /**
    * Set mic mute status (your input to others)
+   * Tracked both client-side (to stop sending) and server-side (to skip processing)
    */
   setMuted(muted: boolean): void {
+    this.micMuted = muted; // Track locally to stop sending audio
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       const muteMsg: CallMessage = { type: 'Mute', muted };
       this.ws.send(JSON.stringify(muteMsg));
+      console.log(`AudioStreamClient: Mute set to ${muted}`);
     }
   }
 
@@ -348,6 +354,7 @@ export class AudioStreamClient {
    */
   private sendAudioFrame(samples: Float32Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.micMuted) return; // Don't send audio when muted (client-side check)
 
     // Convert Float32 (-1 to 1) to Int16 (-32768 to 32767)
     const int16Data = new Int16Array(samples.length);

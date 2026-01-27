@@ -667,6 +667,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     let mut participant_handle: Option<Handle> = None;
+    let mut is_muted = false; // Track mute state at connection level
 
     // Channel for sending messages from audio receiver task
     let (msg_tx, mut msg_rx) = mpsc::channel::<Message>(64);
@@ -743,6 +744,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 break;
                             }
                             Ok(CallMessage::Audio { data }) => {
+                                // Skip processing if muted at connection level
+                                if is_muted {
+                                    continue;
+                                }
                                 if let Some(handle) = &participant_handle {
                                     if let Some(samples) = base64_decode_i16(&data) {
                                         manager.push_audio(handle, samples).await;
@@ -750,9 +755,11 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 }
                             }
                             Ok(CallMessage::Mute { muted }) => {
+                                is_muted = muted; // Track locally for this connection
                                 if let Some(handle) = &participant_handle {
                                     manager.set_mute(handle, muted).await;
                                 }
+                                info!("Connection mute state set: {}", muted);
                             }
                             Ok(CallMessage::LoopbackReturn { data, seq }) => {
                                 // Loopback test: verify returned audio matches sent
@@ -771,6 +778,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                     }
                     Some(Ok(Message::Binary(data))) => {
                         // Binary audio data (raw i16 PCM, little-endian)
+                        // Skip processing if muted at connection level
+                        if is_muted {
+                            continue;
+                        }
                         if let Some(handle) = &participant_handle {
                             let samples = bytes_to_i16(&data);
                             manager.push_audio(handle, samples).await;
