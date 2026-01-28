@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use tonic::transport::Server;
 
 mod adapter_registry;
-mod batch_inference;
 mod grpc;
 mod lora;
 mod model;
+mod priority_queue;
 mod quantized_model;
 mod worker_pool;
 
