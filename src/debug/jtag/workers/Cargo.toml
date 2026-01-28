@@ -23,9 +23,10 @@ members = [
 [workspace.dependencies]
 # Candle ML framework (pin version for consistency)
 # accelerate = Apple's Accelerate framework for faster BLAS on macOS
+# metal = Apple Metal GPU acceleration
 candle-core = { version = "0.8", features = ["accelerate"] }
-candle-nn = "0.8"
-candle-transformers = "0.8"
+candle-nn = { version = "0.8", features = ["accelerate"] }
+candle-transformers = { version = "0.8", features = ["accelerate"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
