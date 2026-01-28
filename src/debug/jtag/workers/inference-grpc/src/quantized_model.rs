@@ -153,6 +153,13 @@ pub fn load_quantized_model(
     })
 }
 
+/// GPU sync frequency - sync every N tokens instead of every token
+/// Higher = faster but more memory pressure, Lower = slower but safer
+const GPU_SYNC_INTERVAL: usize = 16;
+
+/// Only check for NaN on first N tokens (NaN usually appears early from bad prompts)
+const NAN_CHECK_TOKENS: usize = 3;
+
 /// Generate text from a prompt using quantized model
 pub fn generate_text_quantized(
     state: &mut QuantizedModelState,
@@ -175,7 +182,7 @@ pub fn generate_text_quantized(
     }
 
     // Log prompt length for debugging
-    info!("📊 Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len());
+    log::debug!("📊 Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len());
 
     // Setup logits processor
     let seed = rand::thread_rng().gen::<u64>();
@@ -203,13 +210,14 @@ pub fn generate_text_quantized(
             .forward(&input, pos)
             .map_err(|e| format!("Forward pass failed: {e}"))?;
 
-        // CRITICAL: Synchronize GPU after each forward pass to prevent command buffer accumulation
-        // Without this, Metal command buffers queue up faster than GPU can process them,
-        // causing memory to explode (1M+ buffers, 25GB+ RAM, swap thrashing)
-        state
-            .device
-            .synchronize()
-            .map_err(|e| format!("GPU sync failed: {e}"))?;
+        // Batch GPU syncs - only sync every N tokens to prevent command buffer explosion
+        // while maintaining throughput. First token always syncs (prompt processing).
+        if i == 0 || (i + 1) % GPU_SYNC_INTERVAL == 0 {
+            state
+                .device
+                .synchronize()
+                .map_err(|e| format!("GPU sync failed: {e}"))?;
+        }
 
         // Get logits for last token
         let logits = logits
@@ -223,23 +231,25 @@ pub fn generate_text_quantized(
             logits
         };
 
-        // Protect against NaN/Inf in logits before sampling
-        // This can happen with long contexts or numerical instability
-        let (logits, had_nan) = sanitize_logits_with_flag(&logits, &state.device)?;
-
-        if had_nan {
-            nan_count += 1;
-            // If first token has NaN, the prompt itself is causing issues - abort early
-            if i == 0 {
-                log::error!("❌ NaN/Inf on first token - prompt may be malformed. First 500 chars: {}", &prompt[..prompt.len().min(500)]);
-                return Err("Model produced NaN on first token - prompt may be malformed or too long".to_string());
+        // Only check NaN on first few tokens - NaN from bad prompts appears immediately
+        // Skip check after NAN_CHECK_TOKENS to avoid CPU round-trip overhead
+        let logits = if i < NAN_CHECK_TOKENS {
+            let (sanitized, had_nan) = sanitize_logits_with_flag(&logits, &state.device)?;
+            if had_nan {
+                nan_count += 1;
+                if i == 0 {
+                    log::error!("❌ NaN/Inf on first token - prompt may be malformed");
+                    return Err("Model produced NaN on first token - prompt may be malformed or too long".to_string());
+                }
+                if nan_count > 2 {
+                    log::error!("❌ Multiple NaN tokens in first {} - aborting", NAN_CHECK_TOKENS);
+                    break;
+                }
             }
-            // If too many NaN tokens, abort to prevent garbage output
-            if nan_count > 5 {
-                log::error!("❌ Too many NaN tokens ({}) - aborting generation", nan_count);
-                break;
-            }
-        }
+            sanitized
+        } else {
+            logits
+        };
 
         let next_token = logits_processor
             .sample(&logits)
@@ -253,7 +263,6 @@ pub fn generate_text_quantized(
     }
 
     // Final GPU sync to ensure all work is complete before returning
-    // This allows GPU memory to be fully reclaimed
     state
         .device
         .synchronize()
