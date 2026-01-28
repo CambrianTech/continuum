@@ -101,12 +101,21 @@ export class SqliteQueryExecutor {
     }
 
     const row = rows[0];
-    const entityData: any = {};
+    // Build entity data with id - uses Record for assignment, cast to T at return
+    const entityData: Record<string, unknown> = {
+      // CRITICAL: id must be in entityData - BaseEntity requires it
+      id: row.id
+    };
 
     // Process fields from schema
     for (const field of schema.fields) {
-      // Skip base entity fields (handled separately in metadata)
-      if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+      // Skip metadata fields (handled in DataRecord.metadata) but NOT id
+      // id is part of BaseEntity and MUST be in entityData
+      if (['createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        continue;
+      }
+      // id already set above, skip from schema processing
+      if (field.name === 'id') {
         continue;
       }
 
@@ -189,12 +198,21 @@ export class SqliteQueryExecutor {
     log.debug(`[SCHEMA-PATH] Query ${query.collection} returned ${rows.length} rows`);
 
     const records: DataRecord<T>[] = rows.map(row => {
-      const entityData: any = {};
+      // Build entity data with id - uses Record for assignment, cast to T at return
+      const entityData: Record<string, unknown> = {
+        // CRITICAL: id must be in entityData - BaseEntity requires it
+        id: row.id
+      };
 
       // Process fields from schema
       for (const field of schema.fields) {
-        // Skip base entity fields (handled separately in metadata)
-        if (['id', 'createdAt', 'updatedAt', 'version'].includes(field.name)) {
+        // Skip metadata fields (handled in DataRecord.metadata) but NOT id
+        // id is part of BaseEntity and MUST be in entityData
+        if (['createdAt', 'updatedAt', 'version'].includes(field.name)) {
+          continue;
+        }
+        // id already set above, skip from schema processing
+        if (field.name === 'id') {
           continue;
         }
 
