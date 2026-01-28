@@ -40,6 +40,7 @@ message GenerateRequest {
   double temperature = 4;
   string persona_id = 5;    // Optional: persona making the request (for per-persona logging)
   string persona_name = 6;  // Optional: human-readable persona name
+  string priority = 7;      // Optional: "hot", "warm", "background" (default: "warm")
 }
 
 message GenerateResponse {
@@ -185,4 +186,15 @@ message StatusResponse {
   int32 requests_pending = 5;
   int32 requests_completed = 6;
   repeated string active_adapters = 7;
+  PriorityStats priority_stats = 8;  // Per-priority statistics
+}
+
+// Priority-level statistics for RTOS-style monitoring
+message PriorityStats {
+  int64 hot_completed = 1;      // HOT priority requests completed
+  double hot_avg_wait_ms = 2;   // Average wait time for HOT
+  int64 warm_completed = 3;     // WARM priority requests completed
+  double warm_avg_wait_ms = 4;  // Average wait time for WARM
+  int64 bg_completed = 5;       // BACKGROUND priority requests completed
+  double bg_avg_wait_ms = 6;    // Average wait time for BACKGROUND
 }
