@@ -155,12 +155,23 @@ export class GlobalAwarenessSource implements RAGSource {
         log.debug(`VOICE MODE detected - skipping semantic search for faster response`);
       }
 
-      // Build consciousness context (fast path for voice mode)
-      const consciousnessContext = await consciousness.getContext(
+      // TIMEOUT: GlobalAwarenessSource was taking 60+ seconds without this!
+      // The consciousness.getContext() calls multiple DB queries that can hang
+      // under lock contention when multiple personas respond concurrently.
+      const CONSCIOUSNESS_TIMEOUT_MS = 3000;  // 3 second hard limit
+
+      const contextPromise = consciousness.getContext(
         context.roomId,
         currentMessage,
         { skipSemanticSearch: isVoiceMode }  // Skip slow embedding search for voice
       );
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Consciousness context timeout')), CONSCIOUSNESS_TIMEOUT_MS)
+      );
+
+      // Build consciousness context with timeout (fast path for voice mode)
+      const consciousnessContext = await Promise.race([contextPromise, timeoutPromise]);
 
       // Format for prompt injection
       const systemPromptSection = formatConsciousnessForPrompt(consciousnessContext);
