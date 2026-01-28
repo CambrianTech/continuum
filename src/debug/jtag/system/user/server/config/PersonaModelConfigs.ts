@@ -19,7 +19,9 @@ export const SOTA_PROVIDERS = new Set([
   'openai',
   'together',
   'fireworks',
-  'xai'
+  'xai',
+  'google',
+  'alibaba'
 ]);
 
 /**
@@ -90,6 +92,27 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     contextWindow: 1024,  // GPT-2 max context length
     systemPrompt: 'You are Sentinel, powered by local pre-trained models from the Sentinel-AI model zoo. You provide helpful responses while keeping all data local and private.',
     promptFormat: 'base'  // GPT-2 is a base model, needs "User: ...\n\nAssistant:" format
+  },
+  'google': {
+    provider: 'google',
+    model: 'gemini-2.0-flash',
+    temperature: 0.7,
+    maxTokens: 2000,
+    systemPrompt: 'You are Gemini, powered by Google AI. You provide helpful, accurate responses with access to a broad knowledge base.'
+  },
+  'alibaba': {
+    provider: 'alibaba',
+    model: 'qwen3-omni-flash-realtime',
+    temperature: 0.7,
+    maxTokens: 2000,
+    systemPrompt: 'You are Qwen3-Omni, powered by Alibaba Cloud. You provide multimodal assistance with vision, audio, and text capabilities.'
+  },
+  'candle': {
+    provider: 'candle',
+    model: 'llama3.2:3b',
+    temperature: 0.7,
+    maxTokens: 150,
+    systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
   }
 };
 

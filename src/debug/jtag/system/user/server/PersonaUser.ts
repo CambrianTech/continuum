@@ -327,12 +327,13 @@ export class PersonaUser extends AIUser {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
 
     // Extract modelConfig from entity (stored via Object.assign during creation)
-    // Default to Candle (native Rust) if not configured
-    this.modelConfig = entity.modelConfig || {
-      provider: 'candle',
-      model: 'llama3.2:3b',
-      temperature: 0.7,
-      maxTokens: 150
+    // CRITICAL: Get provider defaults first, then merge with entity's explicit values
+    // This ensures REST providers get their correct default models (not llama3.2:3b)
+    const provider = entity.modelConfig?.provider || 'candle';
+    const providerDefaults = getModelConfigForProvider(provider);
+    this.modelConfig = {
+      ...providerDefaults,
+      ...entity.modelConfig  // Entity values override defaults if explicitly set
     };
 
     // Extract mediaConfig from entity, default to opt-out (no auto-loading)
