@@ -161,54 +161,35 @@ export class UnifiedConsciousness {
   /**
    * Build consciousness context for the current focus
    * This is the key method - provides unified awareness for decision making
+   *
+   * OPTIMIZATION: Runs all three data fetches in parallel for maximum throughput
+   *
+   * @param currentContextId - The context (room) to build awareness for
+   * @param currentMessage - Optional current message for semantic relevance
+   * @param options - Optional configuration
+   * @param options.skipSemanticSearch - If true, skip expensive embedding search (for voice mode)
    */
   async getContext(
     currentContextId: UUID,
-    currentMessage?: string
+    currentMessage?: string,
+    options?: { skipSemanticSearch?: boolean }
   ): Promise<ConsciousnessContext> {
     const startTime = performance.now();
 
     try {
-      // 1. Get temporal thread (what was I doing before?)
-      const temporalThread = await this.timeline.getTemporalThread(currentContextId);
+      // Run all three operations in PARALLEL for maximum throughput
+      // Previously these ran serially, causing 3x latency
+      const [temporalThread, crossContextEvents, peripheralSummary] = await Promise.all([
+        // 1. Get temporal thread (what was I doing before?)
+        this.timeline.getTemporalThread(currentContextId),
 
-      // 2. Get cross-context events (relevant knowledge from other rooms)
-      // Use semantic search if we have a message to search with
-      let crossContextEvents: ContextualEvent[];
-      if (currentMessage && currentMessage.length >= 10) {
-        // Semantic search - find events related by meaning
-        crossContextEvents = await this.timeline.semanticCrossContextSearch(
-          currentMessage,
-          currentContextId,
-          {
-            limit: 10,
-            minSimilarity: 0.4,
-            since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days for semantic
-          }
-        );
-        this.log.debug(`Semantic search found ${crossContextEvents.length} relevant events`);
+        // 2. Get cross-context events (relevant knowledge from other rooms)
+        // Skip semantic search in voice mode for faster response
+        this.getCrossContextEvents(currentContextId, currentMessage, options?.skipSemanticSearch),
 
-        // Fallback to importance-based if semantic search returned nothing
-        // (e.g., when embedding service is unavailable)
-        if (crossContextEvents.length === 0) {
-          this.log.debug('Semantic search empty, falling back to importance-based recency');
-          crossContextEvents = await this.timeline.getCrossContext(currentContextId, {
-            limit: 10,
-            minImportance: 0.4,
-            since: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
-          });
-        }
-      } else {
-        // No message or too short - use importance-based recency
-        crossContextEvents = await this.timeline.getCrossContext(currentContextId, {
-          limit: 10,
-          minImportance: 0.4,
-          since: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
-        });
-      }
-
-      // 3. Get peripheral summary (what's happening elsewhere)
-      const peripheralSummary = await this.timeline.getPeripheralSummary(currentContextId);
+        // 3. Get peripheral summary (what's happening elsewhere)
+        this.timeline.getPeripheralSummary(currentContextId)
+      ]);
 
       // 4. Get relevant intentions
       const relevantIntentions = this.getRelevantIntentions(currentContextId);
@@ -321,6 +302,62 @@ export class UnifiedConsciousness {
       i.status === 'active' &&
       (i.isGlobal || i.contexts.includes(contextId))
     );
+  }
+
+  /**
+   * Get cross-context events using semantic search or importance-based fallback
+   * Extracted to enable parallel execution in getContext()
+   *
+   * @param skipSemanticSearch - If true, use fast importance-based query only (for voice mode)
+   */
+  private async getCrossContextEvents(
+    currentContextId: UUID,
+    currentMessage?: string,
+    skipSemanticSearch?: boolean
+  ): Promise<ContextualEvent[]> {
+    // FAST PATH: Skip expensive semantic search for voice mode
+    if (skipSemanticSearch) {
+      this.log.debug('Skipping semantic search (voice mode) - using importance-based recency');
+      return this.timeline.getCrossContext(currentContextId, {
+        limit: 10,
+        minImportance: 0.4,
+        since: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
+      });
+    }
+
+    if (currentMessage && currentMessage.length >= 10) {
+      // Semantic search - find events related by meaning
+      const crossContextEvents = await this.timeline.semanticCrossContextSearch(
+        currentMessage,
+        currentContextId,
+        {
+          limit: 10,
+          minSimilarity: 0.4,
+          since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Last 7 days for semantic
+        }
+      );
+      this.log.debug(`Semantic search found ${crossContextEvents.length} relevant events`);
+
+      // Fallback to importance-based if semantic search returned nothing
+      // (e.g., when embedding service is unavailable)
+      if (crossContextEvents.length === 0) {
+        this.log.debug('Semantic search empty, falling back to importance-based recency');
+        return this.timeline.getCrossContext(currentContextId, {
+          limit: 10,
+          minImportance: 0.4,
+          since: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
+        });
+      }
+
+      return crossContextEvents;
+    }
+
+    // No message or too short - use importance-based recency
+    return this.timeline.getCrossContext(currentContextId, {
+      limit: 10,
+      minImportance: 0.4,
+      since: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
+    });
   }
 
   private getMinimalContext(): ConsciousnessContext {

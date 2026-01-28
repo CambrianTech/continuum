@@ -244,6 +244,10 @@ export class PersonaAutonomousLoop {
       // Extract message text (defensive: ensure string even if undefined)
       const messageText = item.content ?? '';
 
+      // VOICE DEBUG: Log voice metadata flow
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: item.sourceModality=${item.sourceModality}, item.voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: reconstructedEntity.sourceModality=${reconstructedEntity.sourceModality}, reconstructedEntity.voiceSessionId=${reconstructedEntity.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+
       // Process message using cognition-enhanced evaluation logic
       await this.personaUser.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);
 

@@ -519,6 +519,8 @@ export class PersonaResponseGenerator {
       // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
       this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+      // Voice mode detection - pass voiceSessionId to RAG for faster response (skips semantic search)
+      const voiceSessionId = (originalMessage as any).voiceSessionId;
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
         this.personaId,
@@ -527,6 +529,8 @@ export class PersonaResponseGenerator {
           maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
           includeArtifacts: true,  // Enable vision support for multimodal-capable models
           includeMemories: true,   // Enable Hippocampus LTM retrieval
+          // Voice mode: Pass session ID so RAG sources can optimize for speed
+          voiceSessionId,
           // ✅ FIX: Include current message even if not yet persisted to database
           currentMessage: {
             role: 'user',
@@ -840,17 +844,18 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
       let effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
 
-      // VOICE MODE: Limit response length for conversational voice
-      // Priority: 1) RAG context responseStyle (from recipe/source), 2) hard-coded fallback
-      // Voice responses need to be SHORT and conversational (10-15 seconds of speech max)
-      // 100 tokens ≈ 75 words ≈ 10 seconds of speech at 150 WPM
+      // VOICE MODE: Allow reasonable response length for natural conversation
+      // DON'T artificially truncate - that's robotic and cuts off mid-sentence
+      // Natural turn-taking should be handled by arbiter coordination, not hard limits
+      // Removed aggressive 100-token limit - now uses 800 tokens (~60 seconds of speech)
       const responseStyle = (fullRAGContext.metadata as any)?.responseStyle;
       const isVoiceMode = responseStyle?.voiceMode || originalMessage.sourceModality === 'voice';
       if (isVoiceMode) {
-        // Use responseStyle.maxTokens from RAG source if available, otherwise default
-        const VOICE_MAX_TOKENS = responseStyle?.maxTokens ?? 100;
+        // Voice mode: Use generous limit for natural speech (800 tokens ≈ 600 words ≈ 60 seconds)
+        // Previous 100-token limit caused mid-sentence cutoffs - unacceptable
+        const VOICE_MAX_TOKENS = 800;
         if (effectiveMaxTokens > VOICE_MAX_TOKENS) {
-          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${VOICE_MAX_TOKENS} tokens (source: ${responseStyle ? 'RAG' : 'default'})`);
+          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${VOICE_MAX_TOKENS} tokens`);
           effectiveMaxTokens = VOICE_MAX_TOKENS;
         }
       }
@@ -1552,7 +1557,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // VOICE ROUTING: If original message was from voice, route response to TTS
       // The VoiceOrchestrator listens for this event and sends to TTS
       // NOTE: sourceModality and voiceSessionId are DIRECT properties on InboxMessage, not nested in metadata
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: Checking voice routing - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId ? String(originalMessage.voiceSessionId).slice(0, 8) : 'undefined'}`);
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: EMITTING persona:response:generated for TTS (response: "${aiResponse.text.slice(0, 50)}...")`);
         this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${String(originalMessage.voiceSessionId).slice(0, 8)})`);
 
         // Emit voice response event for VoiceOrchestrator
@@ -1570,6 +1577,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             } as InboxMessage
           }
         );
+      } else {
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: NOT a voice message, skipping TTS routing`);
       }
 
       return {

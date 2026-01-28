@@ -37,17 +37,31 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
   protected async executeCommand(params: DecisionRankParams): Promise<DecisionRankResult> {
     try {
-      // Parse JSON strings if present (AIs may pass JSON strings instead of arrays)
+      // Parse string formats (AIs send various formats)
       if (typeof params.rankedChoices === 'string') {
-        this.log.warn('Parameter format conversion: rankedChoices received as JSON string instead of array', {
+        const rawValue = params.rankedChoices as string;
+        this.log.warn('Parameter format conversion: rankedChoices received as string instead of array', {
           command: 'decision/rank',
           proposalId: params.proposalId,
+          rawValue,
           sessionId: params.sessionId
         });
-        try {
-          params.rankedChoices = JSON.parse(params.rankedChoices);
-        } catch (e) {
-          return transformPayload(params, { success: false, error: 'rankedChoices must be a valid JSON array' });
+
+        const rawString = rawValue.trim();
+
+        // Try JSON parse first (handles ["a", "b"] format)
+        if (rawString.startsWith('[')) {
+          try {
+            params.rankedChoices = JSON.parse(rawString);
+          } catch (e) {
+            // JSON parse failed - might be [abc123] without quotes
+            // Extract values between brackets, split by comma
+            const inner = rawString.slice(1, -1).trim();
+            params.rankedChoices = inner.split(',').map((s: string) => s.trim().replace(/['"]/g, '')).filter((s: string) => s.length > 0);
+          }
+        } else {
+          // Comma-separated string: "uuid1,uuid2" or "uuid1, uuid2"
+          params.rankedChoices = rawString.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
         }
       }
 

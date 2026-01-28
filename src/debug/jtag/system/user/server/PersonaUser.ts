@@ -97,6 +97,7 @@ import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
+import { TimingHarness } from '../../core/shared/TimingHarness';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { PersonaTaskTracker } from './modules/PersonaTaskTracker';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
@@ -586,13 +587,16 @@ export class PersonaUser extends AIUser {
         timestamp: number;
         targetPersonaId: UUID;
       }) => {
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Received voice:transcription:directed event, targetPersonaId=${transcriptionData.targetPersonaId?.slice(0, 8)}, myId=${this.id?.slice(0, 8)}`);
         // Only process if directed at THIS persona
         if (transcriptionData.targetPersonaId === this.id) {
+          console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: MATCH! Processing directed voice transcription: "${transcriptionData.transcript.slice(0, 50)}..."`);
           this.log.info(`🎙️ ${this.displayName}: Received DIRECTED voice transcription`);
           await this.handleVoiceTranscription(transcriptionData);
         }
       }, undefined, this.id);
       this._eventUnsubscribes.push(unsubVoiceTranscription);
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Subscribed to voice:transcription:directed events (personaId=${this.id?.slice(0, 8)})`);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
 
       // Subscribe to TTS audio events and inject into CallServer
@@ -983,8 +987,11 @@ export class PersonaUser extends AIUser {
     language: string;
     timestamp?: string | number;
   }): Promise<void> {
+    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: handleVoiceTranscription CALLED with transcript: "${transcriptionData.transcript.slice(0, 50)}..."`);
+
     // STEP 1: Ignore our own transcriptions
     if (transcriptionData.speakerId === this.id) {
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Ignoring own transcription`);
       return;
     }
 
@@ -994,6 +1001,7 @@ export class PersonaUser extends AIUser {
     // Use transcript + timestamp as unique key
     const transcriptionKey = `${transcriptionData.speakerId}-${transcriptionData.timestamp || Date.now()}`;
     if (this.rateLimiter.hasEvaluatedMessage(transcriptionKey)) {
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Deduplication - already processed this transcription`);
       return;
     }
     this.rateLimiter.markMessageEvaluated(transcriptionKey);
@@ -1044,6 +1052,7 @@ export class PersonaUser extends AIUser {
     // Update inbox load in state (for mood calculation)
     this.personaState.updateInboxLoad(this.inbox.getSize());
 
+    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: ENQUEUED voice transcription to inbox (priority=${boostedPriority.toFixed(2)}, voiceSessionId=${transcriptionData.sessionId?.slice(0, 8)}, inboxSize=${this.inbox.getSize()})`);
     this.log.info(`🎙️ ${this.displayName}: Enqueued voice transcription (priority=${boostedPriority.toFixed(2)}, confidence=${transcriptionData.confidence}, inbox size=${this.inbox.getSize()})`);
 
     // UNIFIED CONSCIOUSNESS: Record voice event in global timeline
@@ -1203,6 +1212,13 @@ export class PersonaUser extends AIUser {
     systemPrompt?: string;
     context?: string;  // For logging/metrics (e.g., 'memory-synthesis', 'task-generation')
   }): Promise<string> {
+    const timer = TimingHarness.start('persona/generate-text', 'persona');
+    timer.setMeta('personaId', this.entity.uniqueId);
+    timer.setMeta('displayName', this.displayName);
+    timer.setMeta('context', request.context || 'unknown');
+    timer.setMeta('provider', this.modelConfig.provider || 'ollama');
+    timer.setMeta('model', this.modelConfig.model || 'llama3.2:3b');
+
     try {
       const messages: { role: 'system' | 'user'; content: string }[] = [];
 
@@ -1217,6 +1233,7 @@ export class PersonaUser extends AIUser {
         role: 'user',
         content: request.prompt
       });
+      timer.mark('build_messages');
 
       const genRequest: TextGenerationRequest = {
         messages,
@@ -1242,9 +1259,14 @@ export class PersonaUser extends AIUser {
         AIProviderDaemon.generateText(genRequest),
         timeoutPromise
       ]);
+      timer.mark('ai_generation');
+      timer.setMeta('outputLength', response.text.length);
 
+      timer.finish();
       return response.text;
     } catch (error) {
+      timer.setError(error instanceof Error ? error.message : String(error));
+      timer.finish();
       this.log.error(`❌ ${this.displayName}: Text generation failed (context=${request.context || 'unknown'}): ${error}`);
       throw error;
     }

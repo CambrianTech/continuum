@@ -104,7 +104,8 @@ export class VoiceOrchestrator {
   // Track when current speaker will FINISH - don't select new responder until then
   // This prevents interrupting the current speaker
   private lastSpeechEndTime: Map<UUID, number> = new Map();
-  private static readonly POST_SPEECH_BUFFER_MS = 2000; // 2 seconds after speaker finishes
+  private static readonly POST_SPEECH_BUFFER_MS = 500; // 0.5 seconds after speaker finishes (reduced for faster turn-taking)
+  private static readonly MAX_COOLDOWN_MS = 30000; // Maximum 30 seconds cooldown (safety net if speech event never fires)
 
   // Turn arbitration
   private arbiter: TurnArbiter;
@@ -293,13 +294,24 @@ export class VoiceOrchestrator {
     }
 
     // COOLDOWN CHECK - wait until current speaker finishes + buffer
+    // Safety net: MAX_COOLDOWN_MS ensures we eventually recover if speech event never fires
     const speechEndTime = this.lastSpeechEndTime.get(sessionId) || 0;
     const now = Date.now();
-    const waitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
-    if (now < waitUntil) {
-      const msLeft = waitUntil - now;
-      console.log(`🎙️ VoiceOrchestrator: Skipping - waiting for speaker to finish (${Math.round(msLeft / 1000)}s left)`);
+
+    // Normal cooldown: wait until speech ends + post-speech buffer
+    const normalWaitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
+
+    // Safety timeout: never wait more than MAX_COOLDOWN_MS from when cooldown started
+    // speechEndTime is typically set to "now + thinking_buffer", so we can infer start time
+    const cooldownExpired = now > (speechEndTime + VoiceOrchestrator.MAX_COOLDOWN_MS);
+
+    if (now < normalWaitUntil && !cooldownExpired) {
+      const msLeft = normalWaitUntil - now;
+      console.log(`🎙️ VoiceOrchestrator: Cooldown active (${Math.round(msLeft / 1000)}s left)`);
       return;
+    } else if (cooldownExpired && speechEndTime > 0) {
+      console.warn(`🎙️ VoiceOrchestrator: Cooldown EXPIRED (safety timeout) - clearing stale cooldown`);
+      this.lastSpeechEndTime.delete(sessionId);
     }
 
     // USE ARBITER to select ONE responder for coordinated turn-taking
@@ -316,12 +328,13 @@ export class VoiceOrchestrator {
     // Set IMMEDIATE cooldown - block other selections while AI is thinking/responding
     // This prevents multiple AIs being selected before first one speaks
     // Will be extended when AI actually speaks (via voice:ai:speech event with audioDurationMs)
-    const THINKING_BUFFER_MS = 10000; // 10 seconds for AI to think + respond + start speaking
+    const THINKING_BUFFER_MS = 3000; // 3 seconds for AI to start responding (reduced from 10s)
     this.lastSpeechEndTime.set(sessionId, Date.now() + THINKING_BUFFER_MS);
 
-    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 10s while thinking)`);
+    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 3s while thinking)`);
 
     // Send directed event ONLY to the selected responder
+    console.log(`🎙️🔊 VOICE-DEBUG: Emitting voice:transcription:directed to ${selectedResponder.displayName} (targetPersonaId=${selectedResponder.userId?.slice(0, 8)})`);
     Events.emit('voice:transcription:directed', {
       sessionId: event.sessionId,
       speakerId: event.speakerId,
@@ -371,14 +384,16 @@ export class VoiceOrchestrator {
     response: string,
     originalMessage: InboxMessage
   ): Promise<void> {
+    console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse CALLED - personaId=${personaId?.slice(0, 8)}, response="${response.slice(0, 50)}..."`);
     // Only handle voice messages
     if (originalMessage.sourceModality !== 'voice' || !originalMessage.voiceSessionId) {
+      console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse - NOT a voice message, returning early`);
       return;
     }
 
     const sessionId = originalMessage.voiceSessionId;
 
-    console.log(`🎙️ VoiceOrchestrator: Routing response to TTS for session ${sessionId.slice(0, 8)}`);
+    console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse - Routing to TTS for session ${sessionId.slice(0, 8)}`);
 
     // Clean up pending response
     this.pendingResponses.delete(originalMessage.id);
@@ -412,7 +427,10 @@ export class VoiceOrchestrator {
       response: string;
       originalMessage: InboxMessage;
     }) => {
+      console.log(`🎙️🔊 VOICE-DEBUG: VoiceOrchestrator RECEIVED persona:response:generated from ${event.personaId?.slice(0, 8)}`);
+      console.log(`🎙️🔊 VOICE-DEBUG: isVoiceMessage=${this.isVoiceMessage(event.originalMessage)}, sourceModality=${event.originalMessage?.sourceModality}, voiceSessionId=${event.originalMessage?.voiceSessionId?.slice(0, 8) || 'undefined'}`);
       if (this.isVoiceMessage(event.originalMessage)) {
+        console.log(`🎙️🔊 VOICE-DEBUG: Routing to TTS - calling onPersonaResponse`);
         await this.onPersonaResponse(event.personaId, event.response, event.originalMessage);
       }
     });
@@ -456,6 +474,8 @@ export class VoiceOrchestrator {
       audioDurationMs?: number;
       timestamp: number;
     }) => {
+      console.log(`🎙️ VoiceOrchestrator: RECEIVED voice:ai:speech event from ${event.speakerName} (audioDurationMs=${event.audioDurationMs})`);
+
       // Track when this speech will finish - prevents new selection until done + buffer
       if (event.audioDurationMs) {
         const speechEndTime = Date.now() + event.audioDurationMs;

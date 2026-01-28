@@ -191,4 +191,7 @@ export interface RAGBuildOptions {
   // NEW: Widget context for AI awareness (Positron Layer 1)
   sessionId?: string;  // Session ID for widget context lookup
   widgetContext?: string;  // Pre-formatted widget context string (if already available)
+
+  // Voice mode optimization: Skip expensive semantic search for faster responses
+  voiceSessionId?: UUID;  // Voice call session ID (if in voice mode)
 }

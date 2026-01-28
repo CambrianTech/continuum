@@ -30,6 +30,7 @@ import {
   isWorkerResponse,
   ErrorType
 } from './WorkerMessages.js';
+import { TimingHarness } from '../../system/core/shared/TimingHarness';
 
 // DEBUG LOGGING - COMPREHENSIVE
 const DEBUG_LOG = '/tmp/worker-client-debug.log';
@@ -261,10 +262,17 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
     payload: TReq,
     userId?: string
   ): Promise<WorkerResponse<TRes>> {
+    const timer = TimingHarness.start(`ipc/${type}`, 'ipc');
+    timer.setMeta('socketPath', this.socketPath);
+    timer.setMeta('type', type);
+
     debugLog(`send() called - type: ${type}, connected: ${this.isConnected()}`);
 
     if (!this.isConnected()) {
       debugLog(`send() not connected - queueing message (state: ${this.connectionState})`);
+      timer.setMeta('queued', true);
+      timer.mark('queued');
+      // Don't finish timer here - it will be finished when dequeued
       return this.queueMessage(type, payload, userId);
     }
 
@@ -275,6 +283,7 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
       payload,
       userId: userId ?? this.defaultUserId
     };
+    timer.mark('build_request');
 
     debugLog(`Created request with id: ${request.id}`);
 
@@ -283,27 +292,44 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
       const timeoutId = setTimeout(() => {
         debugLog(`Request ${request.id} timed out after ${this.timeout}ms`);
         this.pendingRequests.delete(request.id);
+        timer.setError(`Timeout after ${this.timeout}ms`);
+        timer.finish();
         reject(new Error(`Request timeout after ${this.timeout}ms`));
       }, this.timeout);
 
-      // Store pending request
+      // Store pending request with timer reference for completion
       this.pendingRequests.set(request.id, {
-        resolve,
-        reject,
+        resolve: (response) => {
+          timer.mark('response_received');
+          timer.setMeta('success', response.success);
+          timer.finish();
+          resolve(response);
+        },
+        reject: (error) => {
+          timer.setError(error.message);
+          timer.finish();
+          reject(error);
+        },
         timeoutId
       });
 
       // Send request (newline-delimited JSON)
       const json = JSON.stringify(request) + '\n';
+      timer.setMeta('requestBytes', json.length);
       debugLog(`Calling socket.write() with ${json.length} bytes`);
+      timer.mark('serialize');
+
       this.socket!.write(json, (err) => {
         if (err) {
           debugLog(`socket.write() error: ${err.message}`);
           clearTimeout(timeoutId);
           this.pendingRequests.delete(request.id);
+          timer.setError(err.message);
+          timer.finish();
           reject(err);
         } else {
           debugLog(`socket.write() callback - success, data sent`);
+          timer.mark('socket_write');
         }
       });
     });

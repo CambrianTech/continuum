@@ -78,10 +78,18 @@ export class GlobalAwarenessSource implements RAGSource {
       // Get current message text if available for semantic relevance
       const currentMessage = context.options.currentMessage?.content;
 
-      // Build consciousness context
+      // Detect voice mode - skip expensive semantic search for faster response
+      const voiceSessionId = (context.options as any)?.voiceSessionId;
+      const isVoiceMode = !!voiceSessionId;
+      if (isVoiceMode) {
+        console.log(`[GlobalAwarenessSource] VOICE MODE detected - skipping semantic search for faster response`);
+      }
+
+      // Build consciousness context (fast path for voice mode)
       const consciousnessContext = await consciousness.getContext(
         context.roomId,
-        currentMessage
+        currentMessage,
+        { skipSemanticSearch: isVoiceMode }  // Skip slow embedding search for voice
       );
 
       // Format for prompt injection

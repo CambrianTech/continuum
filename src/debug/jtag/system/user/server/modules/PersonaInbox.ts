@@ -110,6 +110,10 @@ export class PersonaInbox {
       // Defensive: handle undefined senderId
       const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
       this.log(`📬 Enqueued message: ${senderIdPreview} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
+      // VOICE DEBUG: Log voice metadata at enqueue time
+      if (item.sourceModality === 'voice') {
+        console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Enqueued VOICE message: sourceModality=${item.sourceModality}, voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+      }
     } else if (isInboxTask(item)) {
       this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     }
@@ -160,7 +164,14 @@ export class PersonaInbox {
    * Returns top N items by priority
    */
   async peek(limit: number = 10): Promise<QueueItem[]> {
-    return this.queue.slice(0, limit);
+    const items = this.queue.slice(0, limit);
+    // VOICE DEBUG: Log voice metadata when peeking
+    for (const item of items) {
+      if (isInboxMessage(item) && item.sourceModality === 'voice') {
+        console.log(`🎙️🔊 VOICE-DEBUG [Inbox.peek] VOICE message in queue: sourceModality=${item.sourceModality}, voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+      }
+    }
+    return items;
   }
 
   /**

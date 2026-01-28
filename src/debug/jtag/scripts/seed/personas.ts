@@ -53,6 +53,7 @@ export const PERSONA_CONFIGS: PersonaConfig[] = [
   { uniqueId: generateUniqueId('Fireworks'), displayName: 'Fireworks AI', provider: 'fireworks', type: 'persona', voiceId: '60' },
   { uniqueId: generateUniqueId('Local'), displayName: 'Local Assistant', provider: 'ollama', type: 'persona', voiceId: '90' },
   { uniqueId: generateUniqueId('Sentinel'), displayName: 'Sentinel', provider: 'sentinel', type: 'persona', voiceId: '240' },
+  { uniqueId: generateUniqueId('Gemini'), displayName: 'Gemini', provider: 'google', type: 'persona', voiceId: '115' },
 
   // Audio-native personas (no STT/TTS needed - direct audio I/O)
   {
@@ -93,6 +94,7 @@ export const PERSONA_UNIQUE_IDS = {
   FIREWORKS: generateUniqueId('Fireworks'),
   LOCAL: generateUniqueId('Local'),
   SENTINEL: generateUniqueId('Sentinel'),
+  GEMINI: generateUniqueId('Gemini'),
   // Audio-native models
   QWEN3_OMNI: generateUniqueId('Qwen3-Omni'),
   GEMINI_LIVE: generateUniqueId('Gemini-Live'),

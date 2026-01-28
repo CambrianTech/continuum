@@ -221,11 +221,12 @@ export class AIAudioBridge {
    *                If not provided, computed from userId for consistent per-AI voices.
    */
   async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
+    console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge.speak CALLED - userId=${userId?.slice(0, 8)}, text="${text.slice(0, 50)}..."`);
     const key = `${callId}-${userId}`;
     const connection = this.connections.get(key);
 
     if (!connection || !connection.isConnected) {
-      console.warn(`🤖 AIAudioBridge: Cannot speak - ${userId.slice(0, 8)} not in call`);
+      console.warn(`🤖 AIAudioBridge: Cannot speak - ${userId.slice(0, 8)} not in call (connection exists=${!!connection}, isConnected=${connection?.isConnected})`);
       return;
     }
 
@@ -233,6 +234,7 @@ export class AIAudioBridge {
       // Compute deterministic voice from userId if not provided
       // This ensures each AI always has the same voice
       const voiceId = voice ?? this.computeVoiceFromUserId(userId);
+      console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge calling VoiceService.synthesizeSpeech with voiceId=${voiceId}`);
 
       // Use VoiceService (handles TTS synthesis)
       const voiceService = getVoiceService();
@@ -246,6 +248,7 @@ export class AIAudioBridge {
       // result.audioSamples is already i16 array ready to send
       const samples = result.audioSamples;
       const audioDurationSec = samples.length / 16000;
+      console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge TTS result - samples=${samples.length}, duration=${audioDurationSec.toFixed(2)}s`);
 
       // SERVER-SIDE BUFFERING: Send ALL audio at once
       // Rust server has a 10-second ring buffer per AI participant
@@ -269,22 +272,29 @@ export class AIAudioBridge {
       // BROADCAST to browser + other AIs: Emit AFTER TTS synthesis and audio send
       // This syncs caption display with actual audio playback (audio is now in server buffer)
       // Browser LiveWidget subscribes to show AI caption/speaker highlight
+      const speechEvent = {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: connection.displayName,
+        text,
+        audioDurationMs: Math.round(audioDurationSec * 1000),
+        timestamp: Date.now()
+      };
+
       if (DataDaemon.jtagContext) {
+        console.log(`🤖 AIAudioBridge: Emitting voice:ai:speech (audioDurationMs=${speechEvent.audioDurationMs})`);
         await Events.emit(
           DataDaemon.jtagContext,
           'voice:ai:speech',
-          {
-            sessionId: callId,
-            speakerId: userId,
-            speakerName: connection.displayName,
-            text,
-            audioDurationMs: Math.round(audioDurationSec * 1000),
-            timestamp: Date.now()
-          },
+          speechEvent,
           {
             scope: EVENT_SCOPES.GLOBAL  // Broadcast to all environments including browser
           }
         );
+      } else {
+        // Fallback: emit without context (auto-context mode)
+        console.warn(`🤖 AIAudioBridge: DataDaemon.jtagContext is null, emitting voice:ai:speech without context`);
+        Events.emit('voice:ai:speech', speechEvent);
       }
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);

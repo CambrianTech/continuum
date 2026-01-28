@@ -122,6 +122,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
 
       // 1. Generate query vector if text provided
       let queryVector: VectorEmbedding;
+      const embeddingStart = Date.now();
       if (options.queryText) {
         const embeddingResult = await this.generateEmbedding({
           text: options.queryText,
@@ -134,6 +135,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
           };
         }
         queryVector = embeddingResult.data.embedding;
+        console.debug(`🔍 VECTOR-SEARCH-TIMING: Embedding generated in ${Date.now() - embeddingStart}ms`);
       } else if (options.queryVector) {
         queryVector = options.queryVector;
       } else {
@@ -144,6 +146,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
       }
 
       // 2. Rust worker REQUIRED - fail fast if unavailable
+      const rustAvailStart = Date.now();
       const rustClient = RustVectorSearchClient.instance;
       if (!await rustClient.isAvailable()) {
         return {
@@ -151,11 +154,13 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
           error: 'Rust data-daemon-worker not available. Start with: ./workers/start-workers.sh'
         };
       }
+      console.debug(`🔍 VECTOR-SEARCH-TIMING: Rust availability check in ${Date.now() - rustAvailStart}ms`);
 
       // 3. Execute vector search via Rust (no fallback)
       const tableName = SqlNamingConverter.toTableName(options.collection);
       const queryArr = toNumberArray(queryVector);
 
+      const rustSearchStart = Date.now();
       const rustResult = await rustClient.search(
         tableName,
         queryArr,
@@ -164,6 +169,8 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
         true,  // include_data - returns full records, avoids k IPC round trips
         this.dbPath  // Pass database path for per-persona databases
       );
+      console.debug(`🔍 VECTOR-SEARCH-TIMING: Rust search in ${Date.now() - rustSearchStart}ms (corpus=${rustResult.corpus_size})`);
+      console.debug(`🔍 VECTOR-SEARCH-TIMING: Total breakdown - embed=${Date.now() - embeddingStart}ms from start`);
 
       // 4. Convert Rust results to our format
       const results: VectorSearchResult<T>[] = rustResult.results.map(r => ({
@@ -216,14 +223,20 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
       const rustClient = RustEmbeddingClient.instance;
 
       // Check availability - fail fast if worker not running
+      const availCheckStart = Date.now();
       if (!await rustClient.isAvailable()) {
         return {
           success: false,
           error: 'Rust embedding worker not available. Start with: ./workers/start-workers.sh'
         };
       }
+      const availCheckTime = Date.now() - availCheckStart;
 
+      const embedStart = Date.now();
       const embedding = await rustClient.embed(request.text);
+      const embedTime = Date.now() - embedStart;
+
+      console.debug(`🧬 EMBED-TIMING: availCheck=${availCheckTime}ms, embed=${embedTime}ms, total=${Date.now() - startTime}ms`);
 
       return {
         success: true,
