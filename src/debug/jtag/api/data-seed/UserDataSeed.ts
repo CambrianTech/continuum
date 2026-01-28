@@ -456,8 +456,8 @@ export class UserDataSeed {
     };
     const fireworksPersona = new PersonaUser(fireworksPersonaData);
 
-    // Local Ollama Persona - Privacy-first local inference
-    const ollamaPersonaData: PersonaUserData = {
+    // Local Candle Persona - Privacy-first local inference (native Rust)
+    const localPersonaData: PersonaUserData = {
       userId: generateUUID(),
       sessionId: generateUUID(),
       displayName: 'Local Assistant',
@@ -471,11 +471,11 @@ export class UserDataSeed {
       intelligenceLevel: 55,  // Capable instruction-tuned model - basic reasoning
       modelConfig: {
         model: 'llama3.2:3b',
-        provider: 'ollama',
+        provider: 'candle',
         ragCertified: false,  // Not yet tested with complex RAG
         maxTokens: 2000,
         temperature: 0.7,
-        systemPrompt: 'You are Local Assistant, running privately on this machine via Ollama. You provide help while keeping all data local and private.',
+        systemPrompt: 'You are Local Assistant, running privately on this machine via Candle (native Rust inference). You provide help while keeping all data local and private.',
         capabilities: ['private-assistance', 'offline-help', 'local-inference']
       },
       personaStyle: 'privacy-conscious',
@@ -489,7 +489,7 @@ export class UserDataSeed {
       emotionalIntelligence: 70,
       conversationalDepth: 'moderate'
     };
-    const ollamaPersona = new PersonaUser(ollamaPersonaData);
+    const localPersona = new PersonaUser(localPersonaData);
 
     // Sentinel Simple Persona - Local GPT-2 inference (requires explicit mention)
     const sentinelSimplePersonaData: PersonaUserData = {
@@ -553,7 +553,7 @@ export class UserDataSeed {
       xaiPersona,
       togetherPersona,
       fireworksPersona,
-      ollamaPersona,
+      localPersona,
       sentinelSimplePersona,
       welcomeBot,
       helpBot

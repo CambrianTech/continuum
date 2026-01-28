@@ -174,11 +174,15 @@ pub fn generate_text_quantized(
         return Err("Empty prompt".to_string());
     }
 
+    // Log prompt length for debugging
+    info!("📊 Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len());
+
     // Setup logits processor
     let seed = rand::thread_rng().gen::<u64>();
     let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
 
     let mut all_tokens = prompt_tokens.clone();
+    let mut nan_count = 0;
 
     // Generate tokens
     for i in 0..max_tokens {
@@ -219,6 +223,24 @@ pub fn generate_text_quantized(
             logits
         };
 
+        // Protect against NaN/Inf in logits before sampling
+        // This can happen with long contexts or numerical instability
+        let (logits, had_nan) = sanitize_logits_with_flag(&logits, &state.device)?;
+
+        if had_nan {
+            nan_count += 1;
+            // If first token has NaN, the prompt itself is causing issues - abort early
+            if i == 0 {
+                log::error!("❌ NaN/Inf on first token - prompt may be malformed. First 500 chars: {}", &prompt[..prompt.len().min(500)]);
+                return Err("Model produced NaN on first token - prompt may be malformed or too long".to_string());
+            }
+            // If too many NaN tokens, abort to prevent garbage output
+            if nan_count > 5 {
+                log::error!("❌ Too many NaN tokens ({}) - aborting generation", nan_count);
+                break;
+            }
+        }
+
         let next_token = logits_processor
             .sample(&logits)
             .map_err(|e| format!("Sampling failed: {e}"))?;
@@ -252,6 +274,47 @@ pub fn generate_text_quantized(
     );
 
     Ok((output_text, generated_tokens.len()))
+}
+
+/// Sanitize logits to prevent NaN/Inf from crashing the sampler
+/// Returns (sanitized_tensor, had_nan_or_inf)
+///
+/// This can happen with:
+/// - Very long contexts (RoPE position overflow)
+/// - Numerical instability in quantized models
+/// - Edge case prompts
+fn sanitize_logits_with_flag(logits: &Tensor, device: &Device) -> Result<(Tensor, bool), String> {
+    // Move to CPU for inspection (fast for 1D vocab-size tensor)
+    let logits_vec: Vec<f32> = logits
+        .to_vec1()
+        .map_err(|e| format!("Failed to read logits: {e}"))?;
+
+    // Check for NaN/Inf
+    let has_bad_values = logits_vec.iter().any(|&x| x.is_nan() || x.is_infinite());
+
+    if has_bad_values {
+        log::warn!("⚠️ Detected NaN/Inf in logits, applying sanitization");
+
+        // Replace NaN with -100 (effectively zero probability), Inf with large finite value
+        let sanitized: Vec<f32> = logits_vec
+            .iter()
+            .map(|&x| {
+                if x.is_nan() {
+                    -100.0
+                } else if x.is_infinite() {
+                    if x > 0.0 { 100.0 } else { -100.0 }
+                } else {
+                    x
+                }
+            })
+            .collect();
+
+        let tensor = Tensor::from_vec(sanitized, logits.dims(), device)
+            .map_err(|e| format!("Failed to create sanitized tensor: {e}"))?;
+        Ok((tensor, true))
+    } else {
+        Ok((logits.clone(), false))
+    }
 }
 
 /// Load default quantized model (Q4_K_M for best speed/quality balance)

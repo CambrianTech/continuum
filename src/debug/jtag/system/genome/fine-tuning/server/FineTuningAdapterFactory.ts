@@ -2,7 +2,7 @@
  * FineTuningAdapterFactory - Returns the right fine-tuning adapter for each provider
  *
  * Each provider has its own training backend:
- * - Ollama: Local LoRA via llama.cpp
+ * - Local (PEFT): Native LoRA training with HuggingFace PEFT library
  * - OpenAI: Fine-tuning API (gpt-4o-mini, gpt-3.5-turbo)
  * - Together: Fine-tuning API
  * - Fireworks: Fine-tuning API
@@ -11,10 +11,12 @@
  * - Anthropic: Enterprise only (no public API)
  * - Groq: No fine-tuning (inference only)
  * - xAI: No fine-tuning (inference only)
+ *
+ * NOTE: Ollama is REMOVED. All local training uses PEFT (native Python/HuggingFace).
  */
 
 import { BaseLoRATrainer } from '../shared/BaseLoRATrainer';
-import { OllamaLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/ollama/server/OllamaFineTuningAdapter';
+// Ollama adapter REMOVED - Candle/PEFT is the only local path
 import { OpenAILoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/openai/server/OpenAIFineTuningAdapter';
 import { TogetherLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/together/server/TogetherFineTuningAdapter';
 import { FireworksLoRAAdapter } from '../../../../daemons/ai-provider-daemon/adapters/fireworks/server/FireworksFineTuningAdapter';
@@ -26,14 +28,14 @@ import { PEFTLoRAAdapter } from './adapters/PEFTLoRAAdapter';
  * Provider IDs that support fine-tuning
  */
 export type FineTuningProvider =
-  | 'ollama'
+  | 'candle'   // Native Rust inference (uses PEFT for training)
+  | 'local'    // Alias for candle
   | 'openai'
   | 'together'
   | 'fireworks'
   | 'deepseek'
   | 'mistral'
-  | 'peft'
-  | 'local';
+  | 'peft';
 
 /**
  * Provider IDs that don't support fine-tuning
@@ -68,8 +70,12 @@ export function getFineTuningAdapter(provider: ProviderType): BaseLoRATrainer | 
   let adapter: BaseLoRATrainer | null = null;
 
   switch (provider.toLowerCase()) {
-    case 'ollama':
-      adapter = new OllamaLoRAAdapter();
+    // Local training - all use PEFT (Ollama is removed)
+    case 'candle':
+    case 'local':
+    case 'peft':
+    case 'ollama': // Legacy - aliased to PEFT
+      adapter = new PEFTLoRAAdapter();
       break;
 
     case 'openai':
@@ -90,12 +96,6 @@ export function getFineTuningAdapter(provider: ProviderType): BaseLoRATrainer | 
 
     case 'mistral':
       adapter = new MistralLoRAAdapter();
-      break;
-
-    case 'peft':
-    case 'local':
-      // PEFT is the preferred local training method - supports any HuggingFace model
-      adapter = new PEFTLoRAAdapter();
       break;
 
     // Providers without fine-tuning support
@@ -131,7 +131,7 @@ export function supportsFineTuning(provider: ProviderType): boolean {
  * Get list of providers that support fine-tuning
  */
 export function getFineTuningProviders(): FineTuningProvider[] {
-  return ['peft', 'ollama', 'openai', 'together', 'fireworks', 'deepseek', 'mistral', 'local'];
+  return ['peft', 'candle', 'local', 'openai', 'together', 'fireworks', 'deepseek', 'mistral'];
 }
 
 /**

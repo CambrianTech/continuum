@@ -35,6 +35,7 @@ import {
   updatePersonaProfile,
   updatePersonaConfig,
   updateUserMetadata,
+  updateUserModelConfig,
   createUserViaCommand,
   loadUserByUniqueId,
   seedRecords
@@ -889,6 +890,11 @@ async function seedViaJTAG() {
         const existingUser = await loadUserByUniqueId(persona.uniqueId);
         if (existingUser) {
           userMap[persona.uniqueId] = existingUser;
+
+          // ALWAYS update provider for existing users (ensures ollama -> candle migration)
+          if (persona.provider) {
+            await updateUserModelConfig(existingUser.id, persona.provider);
+          }
 
           // Also update metadata for existing audio-native models (in case it was missed)
           if (persona.isAudioNative && persona.modelId) {

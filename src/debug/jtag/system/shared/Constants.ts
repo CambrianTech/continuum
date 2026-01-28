@@ -225,14 +225,13 @@ export const MODEL_IDS = {
 /**
  * LOCAL_MODELS - SINGLE SOURCE OF TRUTH for local inference
  *
- * ⚠️ CRITICAL: This is the canonical model configuration for Candle/local inference
+ * ⚠️ CRITICAL: This is the canonical model configuration for Candle (native Rust) inference
  * ⚠️ All model mappings, preloads, and defaults come from here
  * ⚠️ CandleAdapter reads from here - DO NOT duplicate mappings elsewhere
  *
- * Why this exists:
- * - Ollama uses names like 'llama3.2:3b'
- * - Candle needs HuggingFace IDs like 'Qwen/Qwen2-1.5B-Instruct'
- * - Having one central mapping prevents configuration nightmares
+ * OLLAMA IS REMOVED: Candle is the ONLY local inference path.
+ * The model name mappings below exist for backward compatibility with
+ * configs that reference Ollama-style names like 'llama3.2:3b'.
  *
  * Note: Using Qwen models as defaults because Meta's Llama requires HuggingFace access approval
  * To use real Llama: accept license at https://huggingface.co/meta-llama
@@ -250,7 +249,7 @@ export const LOCAL_MODELS = {
   /** Fast model for gating/classification tasks */
   GATING: 'Qwen/Qwen2-0.5B-Instruct',
 
-  /** Map Ollama-style model names → HuggingFace model IDs */
+  /** Map legacy model names → HuggingFace model IDs (Ollama naming style kept for backward compat) */
   OLLAMA_TO_HUGGINGFACE: {
     // Llama 3.2 family → Qwen fallback (Llama requires HF approval)
     'llama3.2:3b': 'Qwen/Qwen2-1.5B-Instruct',

@@ -876,7 +876,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
-        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
         intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
         // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
         personaContext: {
@@ -898,7 +898,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
-      const provider = this.modelConfig.provider || 'ollama';
+      const provider = this.modelConfig.provider || 'candle';
 
       // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
       // This enables tool_use blocks instead of XML parsing for more reliable tool execution
@@ -962,7 +962,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(getMessageText(m.content).length / 4), 0);  // ~4 chars/token
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
         const cost = calculateModelCost(
-          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.provider ?? 'candle',
           this.modelConfig.model ?? 'llama3.2:3b',
           inputTokenEstimate,
           outputTokenEstimate
@@ -971,7 +971,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.provider ?? 'candle',
           this.modelConfig.model ?? 'llama3.2:3b',
           `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           inputTokenEstimate,
@@ -1358,7 +1358,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider || 'ollama',
+          this.modelConfig.provider || 'candle',
           this.modelConfig.model || 'llama3.2:3b',
           messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
           messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,

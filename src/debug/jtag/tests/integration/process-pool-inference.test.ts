@@ -4,9 +4,10 @@
  * ========================================
  *
  * Tests the ACTUAL PRODUCTION INFERENCE FLOW:
- * ProcessPool.executeInference() -> IPC -> inference-worker.ts -> OllamaAdapter -> Response
+ * ProcessPool.executeInference() -> IPC -> inference-worker.ts -> CandleAdapter -> Response
  *
  * This tests what production actually uses, not just lifecycle management.
+ * Candle is the ONLY local inference path (Ollama removed).
  */
 
 import * as path from 'path';
@@ -42,15 +43,15 @@ describe('ProcessPool Inference Integration Tests', () => {
     }
   });
 
-  test('should execute inference through Ollama adapter', async () => {
-    console.log('\n🧪 TEST: Execute inference through ProcessPool');
+  test('should execute inference through Candle adapter', async () => {
+    console.log('\n🧪 TEST: Execute inference through ProcessPool (Candle)');
     console.log('================================================');
 
     const startTime = Date.now();
 
     const result = await pool.executeInference({
       prompt: 'Say "Hello from ProcessPool test!" and nothing else.',
-      provider: 'ollama',
+      provider: 'candle',
       model: 'llama3.2:1b',
       temperature: 0.7,
       maxTokens: 50,
@@ -80,7 +81,7 @@ describe('ProcessPool Inference Integration Tests', () => {
     const promises = prompts.map(prompt =>
       pool.executeInference({
         prompt,
-        provider: 'ollama',
+        provider: 'candle',
         model: 'llama3.2:1b',
         temperature: 0.7,
         maxTokens: 20,
@@ -112,7 +113,7 @@ describe('ProcessPool Inference Integration Tests', () => {
     // First request
     const result1 = await pool.executeInference({
       prompt: 'Say "first"',
-      provider: 'ollama',
+      provider: 'candle',
       model: 'llama3.2:1b',
       maxTokens: 10,
     });
@@ -125,7 +126,7 @@ describe('ProcessPool Inference Integration Tests', () => {
     // Second request - should reuse existing process
     const result2 = await pool.executeInference({
       prompt: 'Say "second"',
-      provider: 'ollama',
+      provider: 'candle',
       model: 'llama3.2:1b',
       maxTokens: 10,
     });
@@ -164,7 +165,7 @@ describe('ProcessPool Inference Integration Tests', () => {
     // Pool should still be functional after error
     const result = await pool.executeInference({
       prompt: 'Say "recovered"',
-      provider: 'ollama',
+      provider: 'candle',
       model: 'llama3.2:1b',
       maxTokens: 10,
     });

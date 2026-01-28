@@ -571,17 +571,18 @@ export class AIProviderDaemon extends DaemonBase {
    * Select best adapter based on preferences and availability
    *
    * Implements LOCAL MODEL ROUTING for the genome vision:
-   * - When preferredProvider is 'ollama', 'local', etc., route to Candle
-   * - When model name looks local AND no preferredProvider, route to Candle
-   * - This enables Candle (native Rust) to transparently replace Ollama
-   * - LoRA adapter composition only works with Candle, not Ollama
+   * - When preferredProvider is 'local' etc., route to Candle (native Rust)
+   * - Candle enables LoRA adapter composition for the genome vision
+   *
+   * OLLAMA IS REMOVED: Candle is the ONLY local inference path.
+   * Legacy 'ollama' provider requests are aliased to Candle for backward compat.
    *
    * IMPORTANT: Candle is ONLY used for local inference.
    * Cloud providers use their own adapters. This prevents queue bottlenecks.
    *
    * ROUTING PRIORITY (in order):
    * 1. Explicit preferredProvider (if specified and available)
-   * 2. Local provider aliasing (ollama/local → candle)
+   * 2. Local provider aliasing (legacy 'ollama'/local → candle)
    * 3. Default by priority (highest priority enabled adapter)
    *
    * @returns AdapterSelection with routing metadata for observability
@@ -592,8 +593,8 @@ export class AIProviderDaemon extends DaemonBase {
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (preferredProvider) {
       // LOCAL PROVIDER ALIASING: Route local providers to Candle
-      // Candle is the ONLY local inference path - Ollama is NOT registered
-      const localProviders = ['local', 'llamacpp', 'ollama']; // ollama kept for backward compat naming only
+      // Candle is the ONLY local inference path - 'ollama' kept for backward compat only
+      const localProviders = ['local', 'llamacpp', 'ollama']; // 'ollama' DEPRECATED - aliased to candle
       if (localProviders.includes(preferredProvider)) {
         const candleReg = this.adapters.get('candle');
         if (candleReg && candleReg.enabled) {

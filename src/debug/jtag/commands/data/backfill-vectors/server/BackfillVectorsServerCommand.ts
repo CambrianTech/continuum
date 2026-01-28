@@ -17,7 +17,7 @@ import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared
 const DEFAULT_CONFIG = {
   backfill: {
     defaultModel: 'all-minilm',
-    defaultProvider: 'ollama',
+    defaultProvider: 'candle',
     defaultBatchSize: 100,
     skipExisting: true
   }

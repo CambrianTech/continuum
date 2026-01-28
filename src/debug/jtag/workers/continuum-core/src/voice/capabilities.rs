@@ -33,7 +33,7 @@ impl AudioCapabilities {
         audio_perception: true,
     };
 
-    /// Text-only model (Claude, most Ollama models)
+    /// Text-only model (Claude, most local Candle models)
     pub const TEXT_ONLY: Self = Self {
         audio_input: false,
         audio_output: false,
@@ -106,7 +106,7 @@ impl ModelCapabilityRegistry {
         capabilities.insert("claude-3-haiku".into(), AudioCapabilities::TEXT_ONLY);
         capabilities.insert("claude-3.5-sonnet".into(), AudioCapabilities::TEXT_ONLY);
 
-        // Local/Ollama models (text only)
+        // Local Candle models (text only)
         capabilities.insert("llama3".into(), AudioCapabilities::TEXT_ONLY);
         capabilities.insert("llama3.1".into(), AudioCapabilities::TEXT_ONLY);
         capabilities.insert("llama3.2".into(), AudioCapabilities::TEXT_ONLY);

@@ -21,7 +21,7 @@ const DEFAULT_CONFIG = {
     maxK: 100,
     defaultSimilarityThreshold: 0.0,
     defaultEmbeddingModel: 'all-minilm',
-    defaultProvider: 'ollama'
+    defaultProvider: 'candle'
   }
 } as const;
 

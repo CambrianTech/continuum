@@ -41,7 +41,7 @@ interface ProviderConfig {
 }
 
 interface WorkerConfig {
-  providerType?: 'ollama' | 'openai' | 'anthropic' | 'mock';
+  providerType?: 'candle' | 'local' | 'openai' | 'anthropic' | 'mock';
   providerConfig?: ProviderConfig;
 }
 
@@ -56,8 +56,8 @@ interface WorkerConfig {
  *
  * Phase 3 Usage (with provider config):
  *   const worker = new PersonaWorkerThread('persona-id-123', {
- *     providerType: 'ollama',
- *     providerConfig: { baseUrl: 'http://localhost:11434', maxConcurrent: 1 }
+ *     providerType: 'candle',
+ *     providerConfig: { model: 'llama3.2:1b' }
  *   });
  */
 export class PersonaWorkerThread extends EventEmitter {

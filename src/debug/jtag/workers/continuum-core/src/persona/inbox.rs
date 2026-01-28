@@ -1,75 +1,63 @@
 use super::types::InboxMessage;
 use std::collections::BinaryHeap;
-use tokio::sync::{mpsc, Notify};
-use std::sync::Arc;
+use std::sync::Mutex;
 use uuid::Uuid;
 
 /// Concurrent persona inbox with priority queue
 ///
-/// Pattern: Message passing via Tokio channels (no locks)
-/// - enqueue() sends to channel (non-blocking)
-/// - Worker task drains channel into BinaryHeap
-/// - dequeue() pulls from heap (lock-free via channel)
+/// Pattern: Simple synchronous priority queue with mutex
+/// - enqueue() adds to heap (with lock)
+/// - dequeue() pops from heap (with lock)
+/// - No Tokio runtime required (safe to use from std::thread)
+///
+/// NOTE: This is a simpler implementation that doesn't require Tokio.
+/// For high-throughput async use cases, consider adding a Tokio-based
+/// variant with channels and spawned worker tasks.
 pub struct PersonaInbox {
     persona_id: Uuid,
-    enqueue_tx: mpsc::UnboundedSender<InboxMessage>,
-    dequeue_rx: mpsc::UnboundedReceiver<InboxMessage>,
-    signal: Arc<Notify>,
+    heap: Mutex<BinaryHeap<InboxMessage>>,
 }
 
 impl PersonaInbox {
     pub fn new(persona_id: Uuid) -> Self {
-        let (enqueue_tx, mut enqueue_rx) = mpsc::unbounded_channel::<InboxMessage>();
-        let (dequeue_tx, dequeue_rx) = mpsc::unbounded_channel::<InboxMessage>();
-        let signal = Arc::new(Notify::new());
-        let signal_clone = signal.clone();
-
-        // Spawn worker task to manage priority queue
-        tokio::spawn(async move {
-            let mut heap: BinaryHeap<InboxMessage> = BinaryHeap::new();
-
-            loop {
-                tokio::select! {
-                    // Receive new messages from enqueue channel
-                    Some(msg) = enqueue_rx.recv() => {
-                        heap.push(msg);
-                        // Don't notify here - let dequeue() trigger the pop
-                        // This ensures priority ordering is preserved across batches
-                    }
-
-                    // Send highest priority message to dequeue channel
-                    // Only triggered when dequeue() calls notify_one()
-                    _ = signal_clone.notified(), if !heap.is_empty() => {
-                        if let Some(msg) = heap.pop() {
-                            let _ = dequeue_tx.send(msg);
-                        }
-                    }
-                }
-            }
-        });
-
         Self {
             persona_id,
-            enqueue_tx,
-            dequeue_rx,
-            signal,
+            heap: Mutex::new(BinaryHeap::new()),
         }
     }
 
-    /// Enqueue message (non-blocking)
+    /// Enqueue message (non-blocking, uses mutex)
     pub fn enqueue(&self, message: InboxMessage) {
-        let _ = self.enqueue_tx.send(message);
+        if let Ok(mut heap) = self.heap.lock() {
+            heap.push(message);
+        }
     }
 
-    /// Dequeue highest priority message (async)
-    pub async fn dequeue(&mut self) -> Option<InboxMessage> {
-        self.signal.notify_one();
-        self.dequeue_rx.recv().await
+    /// Dequeue highest priority message (sync)
+    pub fn dequeue(&self) -> Option<InboxMessage> {
+        if let Ok(mut heap) = self.heap.lock() {
+            heap.pop()
+        } else {
+            None
+        }
     }
 
-    /// Wait for work available signal
-    pub async fn wait_for_work(&self) {
-        self.signal.notified().await;
+    /// Check if inbox has messages
+    pub fn has_messages(&self) -> bool {
+        if let Ok(heap) = self.heap.lock() {
+            !heap.is_empty()
+        } else {
+            false
+        }
+    }
+
+    /// Get message count
+    pub fn len(&self) -> usize {
+        if let Ok(heap) = self.heap.lock() {
+            heap.len()
+        } else {
+            0
+        }
     }
 
     pub fn persona_id(&self) -> Uuid {
@@ -82,10 +70,10 @@ mod tests {
     use super::*;
     use crate::persona::SenderType;
 
-    #[tokio::test]
-    async fn test_priority_ordering() {
+    #[test]
+    fn test_priority_ordering() {
         let persona_id = Uuid::new_v4();
-        let mut inbox = PersonaInbox::new(persona_id);
+        let inbox = PersonaInbox::new(persona_id);
 
         // Enqueue messages with different priorities
         let low_msg = InboxMessage {
@@ -117,14 +105,24 @@ mod tests {
         inbox.enqueue(low_msg.clone());
         inbox.enqueue(high_msg.clone());
 
-        // Wait for worker task to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        // Should get high priority first
-        let first = inbox.dequeue().await.unwrap();
+        // BinaryHeap is max-heap, so high priority should come first
+        let first = inbox.dequeue().unwrap();
         assert_eq!(first.priority, 0.9, "First message should be high priority");
 
-        let second = inbox.dequeue().await.unwrap();
+        let second = inbox.dequeue().unwrap();
         assert_eq!(second.priority, 0.3, "Second message should be low priority");
+
+        // Third should be None
+        assert!(inbox.dequeue().is_none(), "Should be empty now");
+    }
+
+    #[test]
+    fn test_empty_inbox() {
+        let persona_id = Uuid::new_v4();
+        let inbox = PersonaInbox::new(persona_id);
+
+        assert!(!inbox.has_messages());
+        assert_eq!(inbox.len(), 0);
+        assert!(inbox.dequeue().is_none());
     }
 }

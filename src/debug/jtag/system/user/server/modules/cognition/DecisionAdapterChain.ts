@@ -2,9 +2,14 @@
  * DecisionAdapterChain - Chain of Responsibility for decision-making
  *
  * Coordinates multiple decision adapters in priority order:
- * 1. FastPathAdapter (priority 100) - Mentions, always respond
- * 2. ThermalAdapter (priority 50) - Temperature-based gating
- * 3. LLMAdapter (priority 10) - Fallback LLM gating
+ * 1. ThermalAdapter (priority 50) - Temperature-based gating
+ * 2. LLMAdapter (priority 10) - Fallback LLM gating
+ *
+ * NOTE: FastPathAdapter was REMOVED - Rust cognition engine now handles:
+ * - Direct mention detection
+ * - Message deduplication
+ * - State-based gating (energy, mood, attention)
+ * See: workers/continuum-core/src/persona/cognition.rs
  *
  * Philosophy: Try fast/simple adapters first, fall back to expensive/complex ones.
  * Each adapter can say "I'll handle this" or "pass to next adapter".
@@ -12,7 +17,6 @@
 
 import type { IDecisionAdapter, DecisionContext, CognitiveDecision } from './adapters/IDecisionAdapter';
 import type { BaseEntity } from '../../../../data/entities/BaseEntity';
-import { FastPathAdapter } from './adapters/FastPathAdapter';
 import { ThermalAdapter } from './adapters/ThermalAdapter';
 import { LLMAdapter } from './adapters/LLMAdapter';
 import { CognitionLogger } from './CognitionLogger';
@@ -27,7 +31,7 @@ export class DecisionAdapterChain {
     this.log = logger || console.log.bind(console);
 
     // Register adapters in priority order (high to low)
-    this.registerAdapter(new FastPathAdapter());
+    // NOTE: FastPathAdapter removed - Rust cognition handles fast-path decisions
     this.registerAdapter(new ThermalAdapter());
     this.registerAdapter(new LLMAdapter());
   }

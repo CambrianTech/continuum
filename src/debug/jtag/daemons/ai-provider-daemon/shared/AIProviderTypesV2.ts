@@ -265,15 +265,15 @@ export interface EmbeddingRequest {
  */
 export interface RoutingInfo {
   /** Which adapter actually handled this request */
-  provider: string;           // 'candle' | 'ollama' | 'anthropic' | 'openai' | etc.
+  provider: string;           // 'candle' | 'anthropic' | 'openai' | 'groq' | etc.
 
-  /** Was this local inference (Candle/Ollama) vs cloud API? */
+  /** Was this local inference (Candle) vs cloud API? */
   isLocal: boolean;
 
   /** Why was this adapter selected? */
   routingReason:
     | 'explicit_provider'      // preferredProvider was specified
-    | 'provider_aliasing'      // 'ollama' aliased to 'candle'
+    | 'provider_aliasing'      // Legacy 'ollama' requests aliased to 'candle'
     | 'model_detection'        // Model name matched local pattern (DEPRECATED - to be removed)
     | 'default_priority'       // Selected by priority order
     | 'fallback';              // Primary failed, used fallback

@@ -84,7 +84,8 @@ import type { PersonaCentralNervousSystem } from './modules/central-nervous-syst
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
-import { DecisionAdapterChain } from './modules/cognition/DecisionAdapterChain';
+// NOTE: DecisionAdapterChain removed - Rust cognition engine handles fast-path decisions
+// See: workers/continuum-core/src/persona/cognition.rs
 import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
 import { WorkingMemoryManager } from './modules/cognition/memory/WorkingMemoryManager';
 import { PersonaSelfState } from './modules/cognition/PersonaSelfState';
@@ -262,8 +263,8 @@ export class PersonaUser extends AIUser {
     return this.limbic.trainingManager;
   }
 
-  // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
-  readonly decisionChain: DecisionAdapterChain;
+  // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
+  // See: workers/continuum-core/src/persona/cognition.rs (PersonaCognitionEngine)
 
   // CNS: Central Nervous System orchestrator
   readonly cns: PersonaCentralNervousSystem;
@@ -326,9 +327,9 @@ export class PersonaUser extends AIUser {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
 
     // Extract modelConfig from entity (stored via Object.assign during creation)
-    // Default to Ollama if not configured
+    // Default to Candle (native Rust) if not configured
     this.modelConfig = entity.modelConfig || {
-      provider: 'ollama',
+      provider: 'candle',
       model: 'llama3.2:3b',
       temperature: 0.7,
       maxTokens: 150
@@ -362,7 +363,7 @@ export class PersonaUser extends AIUser {
     // CRITICAL: Handle case where AIProviderDaemon isn't initialized yet (race condition on startup)
     this.inbox.setQueueStatsProvider(() => {
       try {
-        const adapter = AIProviderDaemon.getAdapter('ollama');
+        const adapter = AIProviderDaemon.getAdapter('candle');
         if (adapter && adapter.getQueueStats) {
           return adapter.getQueueStats();
         }
@@ -438,22 +439,20 @@ export class PersonaUser extends AIUser {
     registerConsciousness(this.id, this._consciousness);
     this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
 
-    // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
-    // Pass logger for cognition.log
+    // Logger for cognition.log (used by task executor and other modules)
     const cognitionLogger = (message: string, ...args: any[]) => {
       this.logger.enqueueLog('cognition.log', message);
     };
-    this.decisionChain = new DecisionAdapterChain(cognitionLogger);
-    this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
+    // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
 
     // Task execution module (delegated for modularity, uses this.memory getter)
-    // Pass provider so fine-tuning uses the correct adapter (Ollama, OpenAI, Together, etc.)
+    // Pass provider so fine-tuning uses the correct adapter (Candle, OpenAI, Together, etc.)
     this.taskExecutor = new PersonaTaskExecutor(
       this.id,
       this.displayName,
       this.memory,
       this.personaState,
-      this.modelConfig.provider || 'ollama',
+      this.modelConfig.provider || 'candle',
       cognitionLogger
     );
 
@@ -472,9 +471,8 @@ export class PersonaUser extends AIUser {
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
     this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'ollama',  // Always use Ollama for fast gating (1b model)
+      providerType: 'candle',  // Always use Candle (native Rust) for fast gating (1b model)
       providerConfig: {
-        apiEndpoint: 'http://localhost:11434',
         model: 'llama3.2:1b' // Fast model for gating decisions
       }
     });
@@ -558,6 +556,16 @@ export class PersonaUser extends AIUser {
     if (this.worker) {
       await this.worker.start();
       this.log.info(`🧵 ${this.displayName}: Worker thread started`);
+    }
+
+    // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
+    // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
+    try {
+      await this._rustCognition?.initialize();
+      this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected`);
+    } catch (error) {
+      this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
+      // Don't throw - let persona initialize, but message handling will fail loudly
     }
 
     // STEP 1.6: Register with ResourceManager for holistic resource allocation
@@ -713,14 +721,7 @@ export class PersonaUser extends AIUser {
         this.memory.genome.setAIProvider(candleAdapter);
         this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
       } else {
-        // Fall back to Ollama if Candle not available
-        const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
-        if (ollamaAdapter) {
-          this.memory.genome.setAIProvider(ollamaAdapter);
-          this.log.info(`🧬 ${this.displayName}: Genome wired to OllamaAdapter (stub mode - no multi-adapter)`);
-        } else {
-          this.log.warn(`⚠️ ${this.displayName}: No local AI provider available for genome`);
-        }
+        this.log.warn(`⚠️ ${this.displayName}: No Candle adapter available for genome`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1234,7 +1235,7 @@ export class PersonaUser extends AIUser {
     timer.setMeta('personaId', this.entity.uniqueId);
     timer.setMeta('displayName', this.displayName);
     timer.setMeta('context', request.context || 'unknown');
-    timer.setMeta('provider', this.modelConfig.provider || 'ollama');
+    timer.setMeta('provider', this.modelConfig.provider || 'candle');
     timer.setMeta('model', this.modelConfig.model || 'llama3.2:3b');
 
     try {
@@ -1258,7 +1259,7 @@ export class PersonaUser extends AIUser {
         model: this.modelConfig.model || 'llama3.2:3b',
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
-        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
         intelligenceLevel: this.entity.intelligenceLevel,
         personaContext: {
           uniqueId: this.entity.uniqueId,

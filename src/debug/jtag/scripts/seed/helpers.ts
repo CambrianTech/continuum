@@ -151,6 +151,35 @@ export async function updatePersonaConfig(userId: string, config: any): Promise<
 }
 
 /**
+ * Update user's modelConfig.provider field
+ * Used when seeding to ensure existing users get updated providers
+ */
+export async function updateUserModelConfig(
+  userId: string,
+  provider: string
+): Promise<boolean> {
+  const updateData = { modelConfig: { provider } };
+  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const result = JSON.parse(stdout);
+
+    if (result.success) {
+      console.log(`  ✅ Updated modelConfig.provider to '${provider}' for user ${userId.slice(0, 8)}...`);
+      return true;
+    } else {
+      console.error(`  ❌ Failed to update modelConfig: ${result.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`  ❌ Failed to update modelConfig: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Update user metadata with audio-native model info
  * Sets modelId and isAudioNative flags for VoiceOrchestrator routing
  */
