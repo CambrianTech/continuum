@@ -111,6 +111,7 @@ import { setPeerReviewLogger } from './modules/cognition/PeerReviewManager';
 import { LimbicSystem, type PersonaUserForLimbic } from './modules/being/LimbicSystem';
 import { PrefrontalCortex, type PersonaUserForPrefrontal } from './modules/being/PrefrontalCortex';
 import { MotorCortex, type PersonaUserForMotorCortex } from './modules/being/MotorCortex';
+import { RustCognitionBridge, type PersonaUserForRustCognition } from './modules/RustCognitionBridge';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
@@ -178,6 +179,10 @@ export class PersonaUser extends AIUser {
   // NEUROANATOMY: Motor cortex (action, execution, output)
   private motorCortex: MotorCortex | null = null;
 
+  // RUST COGNITION: Fast-path decision engine via IPC (<1ms)
+  // Handles priority calculation, deduplication, state-based gating in Rust
+  private _rustCognition: RustCognitionBridge | null = null;
+
   // UNIFIED CONSCIOUSNESS: Cross-context awareness layer (no severance!)
   // Sits ABOVE limbic/prefrontal - provides global timeline, intentions, peripheral awareness
   private _consciousness: UnifiedConsciousness | null = null;
@@ -195,6 +200,15 @@ export class PersonaUser extends AIUser {
   public get consciousness(): UnifiedConsciousness {
     if (!this._consciousness) throw new Error('Consciousness not initialized');
     return this._consciousness;
+  }
+
+  /**
+   * Get Rust cognition bridge for fast-path decisions
+   * Public for modules that need sub-1ms priority calculation or should-respond decisions
+   */
+  public get rustCognition(): RustCognitionBridge {
+    if (!this._rustCognition) throw new Error('Rust cognition bridge not initialized');
+    return this._rustCognition;
   }
 
   // NEUROANATOMY: Delegate to limbic for memory/genome/training/hippocampus
@@ -402,6 +416,10 @@ export class PersonaUser extends AIUser {
       logger: this.logger,
       memory: this.memory  // For accessing trained LoRA adapters during inference
     });
+
+    // RUST COGNITION: Fast-path decision engine via IPC
+    // Logs to: .continuum/personas/{uniqueId}/logs/rust-cognition.log
+    this._rustCognition = new RustCognitionBridge(this as any as PersonaUserForRustCognition);
 
     // UNIFIED CONSCIOUSNESS: Cross-context awareness (no severance!)
     // Sits above limbic/prefrontal, provides global timeline and peripheral awareness

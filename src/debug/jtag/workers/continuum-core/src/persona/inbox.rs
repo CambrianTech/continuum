@@ -80,6 +80,7 @@ impl PersonaInbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persona::SenderType;
 
     #[tokio::test]
     async fn test_priority_ordering() {
@@ -92,9 +93,12 @@ mod tests {
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
             sender_name: "Test".to_string(),
+            sender_type: SenderType::Human,
             content: "Low priority".to_string(),
             timestamp: 1000,
             priority: 0.3,
+            source_modality: None,
+            voice_session_id: None,
         };
 
         let high_msg = InboxMessage {
@@ -102,9 +106,12 @@ mod tests {
             room_id: Uuid::new_v4(),
             sender_id: Uuid::new_v4(),
             sender_name: "Test".to_string(),
+            sender_type: SenderType::Human,
             content: "High priority".to_string(),
             timestamp: 2000,
             priority: 0.9,
+            source_modality: None,
+            voice_session_id: None,
         };
 
         inbox.enqueue(low_msg.clone());

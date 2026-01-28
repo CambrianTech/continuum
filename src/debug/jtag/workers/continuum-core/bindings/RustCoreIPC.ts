@@ -10,6 +10,14 @@
 import net from 'net';
 import { EventEmitter } from 'events';
 
+// Import generated types from Rust (single source of truth)
+import type {
+	InboxMessageRequest,
+	CognitionDecision,
+	PriorityScore,
+	PersonaState,
+} from '../../../shared/generated';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -251,6 +259,108 @@ export class RustCoreIPCClient extends EventEmitter {
 		if (!response.success) {
 			throw new Error(response.error || 'Failed to create inbox');
 		}
+	}
+
+	// ========================================================================
+	// Cognition Engine Methods
+	// ========================================================================
+
+	/**
+	 * Create a cognition engine for a persona (call once on persona init)
+	 */
+	async cognitionCreateEngine(personaId: string, personaName: string): Promise<void> {
+		const response = await this.request({
+			command: 'cognition/create-engine',
+			persona_id: personaId,
+			persona_name: personaName,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create cognition engine');
+		}
+	}
+
+	/**
+	 * Calculate message priority (sub-1ms in Rust)
+	 */
+	async cognitionCalculatePriority(
+		personaId: string,
+		content: string,
+		senderType: 'human' | 'persona' | 'agent' | 'system',
+		isVoice: boolean,
+		roomId: string,
+		timestamp: number
+	): Promise<PriorityScore> {
+		const response = await this.request({
+			command: 'cognition/calculate-priority',
+			persona_id: personaId,
+			content,
+			sender_type: senderType,
+			is_voice: isVoice,
+			room_id: roomId,
+			timestamp,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to calculate priority');
+		}
+
+		return response.result as PriorityScore;
+	}
+
+	/**
+	 * Fast-path decision: should we respond? (sub-1ms in Rust)
+	 * Handles deduplication, mention detection, state-based gating
+	 */
+	async cognitionFastPathDecision(
+		personaId: string,
+		message: InboxMessageRequest
+	): Promise<CognitionDecision> {
+		const response = await this.request({
+			command: 'cognition/fast-path-decision',
+			persona_id: personaId,
+			message,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get fast-path decision');
+		}
+
+		return response.result as CognitionDecision;
+	}
+
+	/**
+	 * Enqueue message to persona's priority inbox
+	 */
+	async cognitionEnqueueMessage(
+		personaId: string,
+		message: InboxMessageRequest
+	): Promise<void> {
+		const response = await this.request({
+			command: 'cognition/enqueue-message',
+			persona_id: personaId,
+			message,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to enqueue message');
+		}
+	}
+
+	/**
+	 * Get persona's current state (energy, mood, attention)
+	 */
+	async cognitionGetState(personaId: string): Promise<PersonaState & { service_cadence_ms: number }> {
+		const response = await this.request({
+			command: 'cognition/get-state',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get persona state');
+		}
+
+		return response.result as PersonaState & { service_cadence_ms: number };
 	}
 
 	/**
