@@ -11,7 +11,8 @@ import type { PersonaGenomeParams, PersonaGenomeResult, LayerInfo } from '../sha
 import { createPersonaGenomeResultFromParams } from '../shared/PersonaGenomeTypes';
 import { Commands } from '@system/core/shared/Commands';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
-import type { DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { GenomeEntity } from '@system/genome/entities/GenomeEntity';
 import type { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
@@ -52,7 +53,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
       }
 
       // Look up the persona
-      const personaResult = await Commands.execute<any, DataReadResult<UserEntity>>(
+      const personaResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(
         'data/read',
         {
           collection: COLLECTIONS.USERS,
@@ -100,7 +101,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
       }
 
       // Load the genome
-      const genomeResult = await Commands.execute<any, DataReadResult<GenomeEntity>>(
+      const genomeResult = await Commands.execute<DataReadParams, DataReadResult<GenomeEntity>>(
         'data/read',
         {
           collection: 'genomes',
@@ -134,7 +135,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
       const traits = new Set<string>();
 
       for (const layerRef of genome.layers) {
-        const layerResult = await Commands.execute<any, DataReadResult<GenomeLayerEntity>>(
+        const layerResult = await Commands.execute<DataReadParams, DataReadResult<GenomeLayerEntity>>(
           'data/read',
           {
             collection: 'genome_layers',

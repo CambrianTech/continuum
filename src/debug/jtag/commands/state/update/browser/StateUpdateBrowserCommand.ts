@@ -11,7 +11,7 @@ import type { StateUpdateParams, StateUpdateResult } from '../shared/StateUpdate
 import { createStateUpdateResult } from '../shared/StateUpdateTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
-import type { DataUpdateResult } from '../../../data/update/shared/DataUpdateTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../data/update/shared/DataUpdateTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 export class StateUpdateBrowserCommand extends CommandBase<StateUpdateParams, StateUpdateResult<BaseEntity>> {
@@ -31,7 +31,7 @@ export class StateUpdateBrowserCommand extends CommandBase<StateUpdateParams, St
       }
 
       // Delegate to the elegant data/update command
-      const dataResult = await Commands.execute<any, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+      const dataResult = await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
         collection: params.collection,
         id: params.id,
         data: enhancedData

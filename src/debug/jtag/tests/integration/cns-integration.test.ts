@@ -7,6 +7,10 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Commands } from '../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { ChatSendParams, ChatSendResult } from '../../commands/collaboration/chat/send/shared/ChatSendTypes';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 
 describe('CNS Integration', () => {
   beforeAll(async () => {
@@ -17,7 +21,7 @@ describe('CNS Integration', () => {
 
   it('should have CNS initialized for all personas', async () => {
     // Get all PersonaUsers
-    const users = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+    const users = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'users',
       filter: { type: 'persona' }
     });
@@ -32,7 +36,7 @@ describe('CNS Integration', () => {
     // This test verifies the integration by sending a message
     // If CNS wasn't working, the system would crash or fall back
 
-    const rooms = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+    const rooms = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'rooms',
       limit: 1
     });
@@ -43,7 +47,7 @@ describe('CNS Integration', () => {
     const roomId = rooms.items[0].uniqueId;
 
     // Send a test message
-    const sendResult = await Commands.execute<any, any>('collaboration/chat/send', {
+    const sendResult = await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
       room: roomId,
       message: '[TEST] CNS integration test message'
     });

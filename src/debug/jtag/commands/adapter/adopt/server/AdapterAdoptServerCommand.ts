@@ -19,9 +19,9 @@ import { GenomeEntity, type GenomeLayerReference } from '@system/genome/entities
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '@system/core/types/CrossPlatformUUID';
-import type { DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
-import type { DataReadResult } from '@commands/data/read/shared/DataReadTypes';
-import type { DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
+import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 
 export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, AdapterAdoptResult> {
@@ -101,7 +101,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       }
 
       // Find the persona
-      const personaResult = await Commands.execute<any, DataReadResult<UserEntity>>(
+      const personaResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(
         'data/read',
         {
           collection: COLLECTIONS.USERS,
@@ -151,7 +151,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
         trainingDuration: 0,
       };
 
-      const createLayerResult = await Commands.execute<any, DataCreateResult<GenomeLayerEntity>>(
+      const createLayerResult = await Commands.execute<DataCreateParams, DataCreateResult<GenomeLayerEntity>>(
         'data/create',
         {
           collection: 'genome_layers',
@@ -171,7 +171,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
 
       if (targetPersona.genomeId) {
         // Load existing genome
-        const genomeResult = await Commands.execute<any, DataReadResult<GenomeEntity>>(
+        const genomeResult = await Commands.execute<DataReadParams, DataReadResult<GenomeEntity>>(
           'data/read',
           {
             collection: 'genomes',
@@ -215,7 +215,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       // Step 6: Save genome
       if (!isNewGenome) {
         // Update existing genome
-        const updateResult = await Commands.execute<any, DataUpdateResult<GenomeEntity>>(
+        const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<GenomeEntity>>(
           'data/update',
           {
             collection: 'genomes',
@@ -227,7 +227,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
           throw new Error(`Failed to update genome: ${updateResult.error}`);
         }
       } else {
-        const createGenomeResult = await Commands.execute<any, DataCreateResult<GenomeEntity>>(
+        const createGenomeResult = await Commands.execute<DataCreateParams, DataCreateResult<GenomeEntity>>(
           'data/create',
           {
             collection: 'genomes',
@@ -239,7 +239,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
         }
 
         // Update persona with genome ID
-        await Commands.execute<any, DataUpdateResult<UserEntity>>(
+        await Commands.execute<DataUpdateParams, DataUpdateResult<UserEntity>>(
           'data/update',
           {
             collection: COLLECTIONS.USERS,
