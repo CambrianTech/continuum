@@ -33,6 +33,9 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
       const registry = DatabaseHandleRegistry.getInstance();
       const adapter = registry.getAdapter(params.dbHandle);
 
+      // Ensure schema is cached on the per-persona adapter before updating
+      await DataDaemon.ensureAdapterSchema(adapter, collection);
+
       // Use adapter's update method directly
       // Note: Per-persona databases don't emit global events by design
       const result = await adapter.update<BaseEntity>(collection, params.id, params.data as Partial<BaseEntity>, true);

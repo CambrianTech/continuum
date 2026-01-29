@@ -69,6 +69,9 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         const registry = DatabaseHandleRegistry.getInstance();
         const adapter = registry.getAdapter(params.dbHandle);
 
+        // Ensure schema is cached on the per-persona adapter before querying
+        await DataDaemon.ensureAdapterSchema(adapter, collection);
+
         // Use adapter directly for count and query
         countResult = await adapter.count(countQuery);
         result = await adapter.query<BaseEntity>(storageQuery);

@@ -365,6 +365,11 @@ export class DataDaemon {
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(collection);
 
+    // Ensure schema exists before updating (prevents "no such table" errors)
+    if (adapter === this.adapter) {
+      await this.ensureSchema(collection);
+    }
+
     // Read existing entity to merge with partial update
     // TODO: Performance optimization - Consider adding skipValidation flag for trusted internal updates,
     // or only validating fields that are actually being updated rather than the entire merged entity
@@ -414,6 +419,11 @@ export class DataDaemon {
 
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(collection);
+
+    // Ensure schema exists before deleting (prevents "no such table" errors)
+    if (adapter === this.adapter) {
+      await this.ensureSchema(collection);
+    }
 
     // Read entity before deletion for event emission
     const readResult = await adapter.read(collection, id);
@@ -895,6 +905,23 @@ export class DataDaemon {
   public static jtagContext: JTAGContext | undefined;
 
   /**
+   * Ensure schema exists on any adapter for a collection.
+   * Extracts schema from entity decorators and caches it on the adapter.
+   *
+   * Use this when bypassing DataDaemon (e.g., per-persona dbHandle adapters)
+   * to ensure the adapter's schema manager has the schema before queries.
+   */
+  static async ensureAdapterSchema(adapter: DataStorageAdapter, collection: string): Promise<void> {
+    if (!DataDaemon.sharedInstance) {
+      throw new Error('DataDaemon not initialized');
+    }
+    const schema = DataDaemon.sharedInstance.extractCollectionSchema(collection);
+    if (schema) {
+      await adapter.ensureSchema(collection, schema);
+    }
+  }
+
+  /**
    * Initialize static DataDaemon context (called by system)
    */
   static initialize(
@@ -970,12 +997,10 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    const adapter = DataDaemon.sharedInstance.adapter;
-    if (!adapter) {
-      throw new Error('DataDaemon adapter not initialized');
-    }
+    // Ensure schema before counting (same as query() path)
+    await DataDaemon.sharedInstance.ensureSchema(query.collection);
 
-    return await adapter.count(query);
+    return await DataDaemon.sharedInstance.adapter.count(query);
   }
 
   /**
@@ -1003,12 +1028,15 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    const adapter = DataDaemon.sharedInstance.adapter;
-    if (!adapter) {
-      throw new Error('DataDaemon adapter not initialized');
+    // Ensure schema for main collection and all joined collections
+    await DataDaemon.sharedInstance.ensureSchema(query.collection);
+    if (query.joins) {
+      for (const join of query.joins) {
+        await DataDaemon.sharedInstance.ensureSchema(join.collection);
+      }
     }
 
-    return await adapter.queryWithJoin<T>(query);
+    return await DataDaemon.sharedInstance.adapter.queryWithJoin<T>(query);
   }
 
   /**
@@ -1245,6 +1273,9 @@ export class DataDaemon {
     if (!DataDaemon.sharedInstance) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
+
+    // Ensure schema before vector search
+    await DataDaemon.sharedInstance.ensureSchema(options.collection);
 
     // Check if adapter supports vector search
     const adapter = (DataDaemon.sharedInstance as any).adapter as any;

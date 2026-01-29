@@ -67,6 +67,9 @@ export class VectorSearchServerCommand extends CommandBase<VectorSearchParams, V
         const registry = DatabaseHandleRegistry.getInstance();
         const adapter = registry.getAdapter(params.dbHandle) as any;
 
+        // Ensure schema is cached on the per-persona adapter
+        await DataDaemon.ensureAdapterSchema(adapter, params.collection);
+
         if (!adapter.vectorSearch) {
           return createVectorSearchResultFromParams(params, {
             success: false,
