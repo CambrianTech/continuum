@@ -4,9 +4,10 @@
  * Generate a new command from a CommandSpec JSON definition
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Generate Command Parameters
@@ -69,3 +70,17 @@ export const createGenerateResultFromParams = (
   commandPath: '',
   ...differences
 });
+
+/**
+ * Generate — Type-safe command executor
+ *
+ * Usage:
+ *   import { Generate } from '...shared/GenerateTypes';
+ *   const result = await Generate.execute({ ... });
+ */
+export const Generate = {
+  execute(params: CommandInput<GenerateParams>): Promise<GenerateResult> {
+    return Commands.execute<GenerateParams, GenerateResult>('development/generate', params as Partial<GenerateParams>);
+  },
+  commandName: 'development/generate' as const,
+} as const;

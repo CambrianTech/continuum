@@ -9,8 +9,9 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomePagingAdapterRegisterParams extends CommandParams {
   adapterId: UUID;
@@ -39,3 +40,17 @@ export const createGenomePagingAdapterRegisterResultFromParams = (
   adapterId: params.adapterId,
   ...differences
 });
+
+/**
+ * GenomePagingAdapterRegister — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomePagingAdapterRegister } from '...shared/GenomePagingAdapterRegisterTypes';
+ *   const result = await GenomePagingAdapterRegister.execute({ ... });
+ */
+export const GenomePagingAdapterRegister = {
+  execute(params: CommandInput<GenomePagingAdapterRegisterParams>): Promise<GenomePagingAdapterRegisterResult> {
+    return Commands.execute<GenomePagingAdapterRegisterParams, GenomePagingAdapterRegisterResult>('genome/paging-adapter-register', params as Partial<GenomePagingAdapterRegisterParams>);
+  },
+  commandName: 'genome/paging-adapter-register' as const,
+} as const;

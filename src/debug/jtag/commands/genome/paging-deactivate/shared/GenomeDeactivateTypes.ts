@@ -5,8 +5,9 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomeDeactivateParams extends CommandParams {
   personaId: UUID;
@@ -30,3 +31,17 @@ export const createGenomeDeactivateResultFromParams = (
   unloaded: false,
   ...differences
 });
+
+/**
+ * GenomeDeactivate — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeDeactivate } from '...shared/GenomeDeactivateTypes';
+ *   const result = await GenomeDeactivate.execute({ ... });
+ */
+export const GenomeDeactivate = {
+  execute(params: CommandInput<GenomeDeactivateParams>): Promise<GenomeDeactivateResult> {
+    return Commands.execute<GenomeDeactivateParams, GenomeDeactivateResult>('genome/paging-deactivate', params as Partial<GenomeDeactivateParams>);
+  },
+  commandName: 'genome/paging-deactivate' as const,
+} as const;

@@ -4,10 +4,11 @@
  * Show git workspace status and changes
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Git Status Command Parameters
@@ -88,3 +89,17 @@ export const createGitStatusResultFromParams = (
   params: GitStatusParams,
   differences: Omit<GitStatusResult, 'context' | 'sessionId'>
 ): GitStatusResult => transformPayload(params, differences);
+
+/**
+ * GitStatus — Type-safe command executor
+ *
+ * Usage:
+ *   import { GitStatus } from '...shared/GitStatusTypes';
+ *   const result = await GitStatus.execute({ ... });
+ */
+export const GitStatus = {
+  execute(params: CommandInput<GitStatusParams>): Promise<GitStatusResult> {
+    return Commands.execute<GitStatusParams, GitStatusResult>('workspace/git/status', params as Partial<GitStatusParams>);
+  },
+  commandName: 'workspace/git/status' as const,
+} as const;

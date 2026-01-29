@@ -4,10 +4,11 @@
  * Follows data daemon command pattern for elegant entity state management
  */
 
-import type { JTAGPayload, JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** State get command parameters */
 export interface StateGetParams extends CommandParams {
@@ -52,3 +53,16 @@ export const createStateGetResult = <T extends BaseEntity>(
   timestamp: new Date().toISOString(),
   ...differences
 });
+/**
+ * StateGet — Type-safe command executor
+ *
+ * Usage:
+ *   import { StateGet } from '...shared/StateGetTypes';
+ *   const result = await StateGet.execute({ ... });
+ */
+export const StateGet = {
+  execute<T extends BaseEntity = BaseEntity>(params: CommandInput<StateGetParams>): Promise<StateGetResult<T>> {
+    return Commands.execute<StateGetParams, StateGetResult<T>>('state/get', params as Partial<StateGetParams>);
+  },
+  commandName: 'state/get' as const,
+} as const;

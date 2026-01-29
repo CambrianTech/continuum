@@ -7,9 +7,10 @@
  */
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '../../shared/FileTypes';
-import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** File save command parameters */
 export interface FileSaveParams extends CommandParams {
@@ -59,3 +60,16 @@ export const createFileSaveResult = (
   created: data.created ?? false,
   ...data
 });
+/**
+ * FileSave — Type-safe command executor
+ *
+ * Usage:
+ *   import { FileSave } from '...shared/FileSaveTypes';
+ *   const result = await FileSave.execute({ ... });
+ */
+export const FileSave = {
+  execute(params: CommandInput<FileSaveParams>): Promise<FileSaveResult> {
+    return Commands.execute<FileSaveParams, FileSaveResult>('file/save', params as Partial<FileSaveParams>);
+  },
+  commandName: 'file/save' as const,
+} as const;

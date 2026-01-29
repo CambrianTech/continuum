@@ -4,10 +4,11 @@
  * Follows data daemon command pattern for elegant entity state management
  */
 
-import type { JTAGPayload, JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** State create command parameters */
 export interface StateCreateParams extends CommandParams {
@@ -40,3 +41,16 @@ export function createStateCreateResult<T extends BaseEntity>(
     ...overrides
   });
 }
+/**
+ * StateCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { StateCreate } from '...shared/StateCreateTypes';
+ *   const result = await StateCreate.execute({ ... });
+ */
+export const StateCreate = {
+  execute<T extends BaseEntity = BaseEntity>(params: CommandInput<StateCreateParams>): Promise<StateCreateResult<T>> {
+    return Commands.execute<StateCreateParams, StateCreateResult<T>>('state/create', params as Partial<StateCreateParams>);
+  },
+  commandName: 'state/create' as const,
+} as const;

@@ -4,10 +4,11 @@
  * Stop an active voice chat session
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Voice Stop Command Parameters
@@ -78,3 +79,17 @@ export const createVoiceStopResultFromParams = (
   params: VoiceStopParams,
   differences: Omit<VoiceStopResult, 'context' | 'sessionId'>
 ): VoiceStopResult => transformPayload(params, differences);
+
+/**
+ * VoiceStop — Type-safe command executor
+ *
+ * Usage:
+ *   import { VoiceStop } from '...shared/VoiceStopTypes';
+ *   const result = await VoiceStop.execute({ ... });
+ */
+export const VoiceStop = {
+  execute(params: CommandInput<VoiceStopParams>): Promise<VoiceStopResult> {
+    return Commands.execute<VoiceStopParams, VoiceStopResult>('voice/stop', params as Partial<VoiceStopParams>);
+  },
+  commandName: 'voice/stop' as const,
+} as const;

@@ -5,8 +5,9 @@
  * Does NOT add to openItems - use content/open for that.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * State Content Switch Command Parameters
@@ -35,3 +36,17 @@ export interface StateContentSwitchResult extends CommandResult {
   /** Error message if operation failed (e.g., item not found in openItems) */
   readonly error?: string;
 }
+
+/**
+ * StateContentSwitch — Type-safe command executor
+ *
+ * Usage:
+ *   import { StateContentSwitch } from '...shared/StateContentSwitchTypes';
+ *   const result = await StateContentSwitch.execute({ ... });
+ */
+export const StateContentSwitch = {
+  execute(params: CommandInput<StateContentSwitchParams>): Promise<StateContentSwitchResult> {
+    return Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', params as Partial<StateContentSwitchParams>);
+  },
+  commandName: 'state/content/switch' as const,
+} as const;

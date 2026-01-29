@@ -20,9 +20,10 @@
  */
 
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface ClickParams extends CommandParams {
   readonly selector: string;
@@ -72,3 +73,16 @@ export const createClickResult = (
   timestamp: new Date().toISOString(),
   ...data
 });
+/**
+ * Click — Type-safe command executor
+ *
+ * Usage:
+ *   import { Click } from '...shared/ClickTypes';
+ *   const result = await Click.execute({ ... });
+ */
+export const Click = {
+  execute(params: CommandInput<ClickParams>): Promise<ClickResult> {
+    return Commands.execute<ClickParams, ClickResult>('interface/click', params as Partial<ClickParams>);
+  },
+  commandName: 'interface/click' as const,
+} as const;

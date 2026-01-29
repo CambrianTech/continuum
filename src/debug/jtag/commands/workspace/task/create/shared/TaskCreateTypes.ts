@@ -5,9 +5,10 @@
  * Tasks can be chat responses, code reviews, analysis, or self-improvement.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { TaskDomain, TaskType, TaskPriority } from '@system/data/entities/TaskEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for task/create command
@@ -86,3 +87,17 @@ export interface TaskCreateResult extends CommandResult {
     createdAt: string;
   };
 }
+
+/**
+ * TaskCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { TaskCreate } from '...shared/TaskCreateTypes';
+ *   const result = await TaskCreate.execute({ ... });
+ */
+export const TaskCreate = {
+  execute(params: CommandInput<TaskCreateParams>): Promise<TaskCreateResult> {
+    return Commands.execute<TaskCreateParams, TaskCreateResult>('workspace/task/create', params as Partial<TaskCreateParams>);
+  },
+  commandName: 'workspace/task/create' as const,
+} as const;

@@ -8,8 +8,9 @@
  * ./jtag genome/stats --format=json      # Machine-readable output
  */
 
-import type { CommandParams, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Genome Stats Request Parameters
@@ -290,4 +291,18 @@ export const GENOME_STATS_CONSTANTS = {
     MAX_LAYERS: 20,
     MAX_MEMORY_MB: 2048,
   },
+} as const;
+
+/**
+ * GenomeStats — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeStats } from '...shared/GenomeStatsTypes';
+ *   const result = await GenomeStats.execute({ ... });
+ */
+export const GenomeStats = {
+  execute(params: CommandInput<GenomeStatsParams>): Promise<GenomeStatsResult> {
+    return Commands.execute<GenomeStatsParams, GenomeStatsResult>('ai/genome/stats', params as Partial<GenomeStatsParams>);
+  },
+  commandName: 'ai/genome/stats' as const,
 } as const;

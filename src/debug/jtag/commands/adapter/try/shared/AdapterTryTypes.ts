@@ -4,7 +4,7 @@
  * Temporarily load a LoRA adapter and run A/B comparison test
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 // Simple error type for result transport
 export interface AdapterTryError {
@@ -12,6 +12,7 @@ export interface AdapterTryError {
   message: string;
 }
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Adapter Try Command Parameters
@@ -110,3 +111,17 @@ export const createAdapterTryResultFromParams = (
   params: AdapterTryParams,
   differences: Omit<AdapterTryResult, 'context' | 'sessionId'>
 ): AdapterTryResult => transformPayload(params, differences);
+
+/**
+ * AdapterTry — Type-safe command executor
+ *
+ * Usage:
+ *   import { AdapterTry } from '...shared/AdapterTryTypes';
+ *   const result = await AdapterTry.execute({ ... });
+ */
+export const AdapterTry = {
+  execute(params: CommandInput<AdapterTryParams>): Promise<AdapterTryResult> {
+    return Commands.execute<AdapterTryParams, AdapterTryResult>('adapter/try', params as Partial<AdapterTryParams>);
+  },
+  commandName: 'adapter/try' as const,
+} as const;

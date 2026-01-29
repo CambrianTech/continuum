@@ -3,9 +3,10 @@
  * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface PipeChainParams extends CommandParams {
   /** Commands to chain together, separated by pipe (|) */
@@ -76,3 +77,16 @@ export const createPipeChainResult = (
   totalExecutionTime: 0,
   ...differences
 });
+/**
+ * PipeChain — Type-safe command executor
+ *
+ * Usage:
+ *   import { PipeChain } from '...shared/PipeChainTypes';
+ *   const result = await PipeChain.execute({ ... });
+ */
+export const PipeChain = {
+  execute(params: CommandInput<PipeChainParams>): Promise<PipeChainResult> {
+    return Commands.execute<PipeChainParams, PipeChainResult>('utilities/pipe/chain', params as Partial<PipeChainParams>);
+  },
+  commandName: 'utilities/pipe/chain' as const,
+} as const;

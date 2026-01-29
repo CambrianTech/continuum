@@ -5,8 +5,9 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomeStatsParams extends CommandParams {
   personaId?: UUID;  // Optional: get stats for specific persona
@@ -60,3 +61,17 @@ export const createGenomeStatsResultFromParams = (
   personas: [],
   ...differences
 });
+
+/**
+ * GenomeStats — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeStats } from '...shared/GenomeStatsTypes';
+ *   const result = await GenomeStats.execute({ ... });
+ */
+export const GenomeStats = {
+  execute(params: CommandInput<GenomeStatsParams>): Promise<GenomeStatsResult> {
+    return Commands.execute<GenomeStatsParams, GenomeStatsResult>('genome/paging-stats', params as Partial<GenomeStatsParams>);
+  },
+  commandName: 'genome/paging-stats' as const,
+} as const;

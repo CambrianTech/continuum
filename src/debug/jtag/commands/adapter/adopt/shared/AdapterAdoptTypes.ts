@@ -4,9 +4,10 @@
  * Add an adapter to a persona's genome, making it a permanent trait
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 // Simple error type for result transport
 export interface AdapterAdoptError {
@@ -112,3 +113,17 @@ export const createAdapterAdoptResultFromParams = (
   params: AdapterAdoptParams,
   differences: Omit<AdapterAdoptResult, 'context' | 'sessionId'>
 ): AdapterAdoptResult => transformPayload(params, differences);
+
+/**
+ * AdapterAdopt — Type-safe command executor
+ *
+ * Usage:
+ *   import { AdapterAdopt } from '...shared/AdapterAdoptTypes';
+ *   const result = await AdapterAdopt.execute({ ... });
+ */
+export const AdapterAdopt = {
+  execute(params: CommandInput<AdapterAdoptParams>): Promise<AdapterAdoptResult> {
+    return Commands.execute<AdapterAdoptParams, AdapterAdoptResult>('adapter/adopt', params as Partial<AdapterAdoptParams>);
+  },
+  commandName: 'adapter/adopt' as const,
+} as const;

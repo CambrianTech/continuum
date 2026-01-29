@@ -1,5 +1,6 @@
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ChatAnalyzeParams extends CommandParams {
   /** Room ID (UUID) to analyze */
@@ -49,3 +50,17 @@ export interface ChatAnalyzeResult extends CommandResult {
   };
   error?: string;
 }
+
+/**
+ * ChatAnalyze — Type-safe command executor
+ *
+ * Usage:
+ *   import { ChatAnalyze } from '...shared/ChatAnalyzeTypes';
+ *   const result = await ChatAnalyze.execute({ ... });
+ */
+export const ChatAnalyze = {
+  execute(params: CommandInput<ChatAnalyzeParams>): Promise<ChatAnalyzeResult> {
+    return Commands.execute<ChatAnalyzeParams, ChatAnalyzeResult>('collaboration/chat/analyze', params as Partial<ChatAnalyzeParams>);
+  },
+  commandName: 'collaboration/chat/analyze' as const,
+} as const;

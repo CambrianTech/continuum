@@ -6,10 +6,11 @@
  * Follows data command pattern for consistency
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { TextGenerationRequest, TextGenerationResponse } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 // AI Generate Parameters
 export interface AIGenerateParams extends CommandParams {
@@ -130,3 +131,17 @@ export function createErrorResult(
     error,
   });
 }
+
+/**
+ * AIGenerate — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIGenerate } from '...shared/AIGenerateTypes';
+ *   const result = await AIGenerate.execute({ ... });
+ */
+export const AIGenerate = {
+  execute(params: CommandInput<AIGenerateParams>): Promise<AIGenerateResult> {
+    return Commands.execute<AIGenerateParams, AIGenerateResult>('ai/generate', params as Partial<AIGenerateParams>);
+  },
+  commandName: 'ai/generate' as const,
+} as const;

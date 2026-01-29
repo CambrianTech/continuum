@@ -4,10 +4,11 @@
  * Commit changes in git workspace with persona identity
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Git Commit Command Parameters
@@ -87,3 +88,17 @@ export const createGitCommitResultFromParams = (
   params: GitCommitParams,
   differences: Omit<GitCommitResult, 'context' | 'sessionId'>
 ): GitCommitResult => transformPayload(params, differences);
+
+/**
+ * GitCommit — Type-safe command executor
+ *
+ * Usage:
+ *   import { GitCommit } from '...shared/GitCommitTypes';
+ *   const result = await GitCommit.execute({ ... });
+ */
+export const GitCommit = {
+  execute(params: CommandInput<GitCommitParams>): Promise<GitCommitResult> {
+    return Commands.execute<GitCommitParams, GitCommitResult>('workspace/git/commit', params as Partial<GitCommitParams>);
+  },
+  commandName: 'workspace/git/commit' as const,
+} as const;

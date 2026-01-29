@@ -5,8 +5,9 @@
  * Used by PersonaUsers to report task completion.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for task/complete command
@@ -59,3 +60,17 @@ export interface TaskCompleteResult extends CommandResult {
     duration?: number; // Time from start to completion (ms)
   };
 }
+
+/**
+ * TaskComplete — Type-safe command executor
+ *
+ * Usage:
+ *   import { TaskComplete } from '...shared/TaskCompleteTypes';
+ *   const result = await TaskComplete.execute({ ... });
+ */
+export const TaskComplete = {
+  execute(params: CommandInput<TaskCompleteParams>): Promise<TaskCompleteResult> {
+    return Commands.execute<TaskCompleteParams, TaskCompleteResult>('workspace/task/complete', params as Partial<TaskCompleteParams>);
+  },
+  commandName: 'workspace/task/complete' as const,
+} as const;

@@ -4,10 +4,11 @@
  * Batch generates vector embeddings for existing records in a collection.
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { UniversalFilter } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Backfill vectors command parameters
@@ -52,3 +53,17 @@ export const createBackfillVectorsResultFromParams = (
   success: false,
   ...differences
 });
+
+/**
+ * BackfillVectors — Type-safe command executor
+ *
+ * Usage:
+ *   import { BackfillVectors } from '...shared/BackfillVectorsTypes';
+ *   const result = await BackfillVectors.execute({ ... });
+ */
+export const BackfillVectors = {
+  execute(params: CommandInput<BackfillVectorsParams>): Promise<BackfillVectorsResult> {
+    return Commands.execute<BackfillVectorsParams, BackfillVectorsResult>('data/backfill-vectors', params as Partial<BackfillVectorsParams>);
+  },
+  commandName: 'data/backfill-vectors' as const,
+} as const;

@@ -2,10 +2,11 @@
  * Dataset List Command Types
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import { createPayload, type JTAGContext } from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { DatasetArchiveInfo } from '../../shared/DatasetConfig';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface DatasetListParams extends CommandParams {
   /** Filter by output path */
@@ -37,3 +38,17 @@ export const createDatasetListResult = (
   sessionId: UUID,
   data: Omit<DatasetListResult, 'context' | 'sessionId'>
 ): DatasetListResult => createPayload(context, sessionId, data);
+
+/**
+ * DatasetList — Type-safe command executor
+ *
+ * Usage:
+ *   import { DatasetList } from '...shared/DatasetListTypes';
+ *   const result = await DatasetList.execute({ ... });
+ */
+export const DatasetList = {
+  execute(params: CommandInput<DatasetListParams>): Promise<DatasetListResult> {
+    return Commands.execute<DatasetListParams, DatasetListResult>('ai/dataset/list', params as Partial<DatasetListParams>);
+  },
+  commandName: 'ai/dataset/list' as const,
+} as const;

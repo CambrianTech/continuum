@@ -4,10 +4,11 @@
  * Capture a successful pattern for cross-AI learning. When an AI discovers a working solution, they share it with the team.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../../system/core/shared/Commands';
 
 /**
  * Persona Learning Pattern Capture Command Parameters
@@ -128,3 +129,17 @@ export const createPersonaLearningPatternCaptureResultFromParams = (
   params: PersonaLearningPatternCaptureParams,
   differences: Omit<PersonaLearningPatternCaptureResult, 'context' | 'sessionId'>
 ): PersonaLearningPatternCaptureResult => transformPayload(params, differences);
+
+/**
+ * PersonaLearningPatternCapture — Type-safe command executor
+ *
+ * Usage:
+ *   import { PersonaLearningPatternCapture } from '...shared/PersonaLearningPatternCaptureTypes';
+ *   const result = await PersonaLearningPatternCapture.execute({ ... });
+ */
+export const PersonaLearningPatternCapture = {
+  execute(params: CommandInput<PersonaLearningPatternCaptureParams>): Promise<PersonaLearningPatternCaptureResult> {
+    return Commands.execute<PersonaLearningPatternCaptureParams, PersonaLearningPatternCaptureResult>('persona/learning/pattern/capture', params as Partial<PersonaLearningPatternCaptureParams>);
+  },
+  commandName: 'persona/learning/pattern/capture' as const,
+} as const;

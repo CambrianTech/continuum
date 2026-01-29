@@ -4,10 +4,11 @@
  * Search for LoRA adapters across registries (HuggingFace, local, mesh)
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Source types for adapter registries
@@ -145,3 +146,17 @@ export const createAdapterSearchResultFromParams = (
   params: AdapterSearchParams,
   differences: Omit<AdapterSearchResult, 'context' | 'sessionId'>
 ): AdapterSearchResult => transformPayload(params, differences);
+
+/**
+ * AdapterSearch — Type-safe command executor
+ *
+ * Usage:
+ *   import { AdapterSearch } from '...shared/AdapterSearchTypes';
+ *   const result = await AdapterSearch.execute({ ... });
+ */
+export const AdapterSearch = {
+  execute(params: CommandInput<AdapterSearchParams>): Promise<AdapterSearchResult> {
+    return Commands.execute<AdapterSearchParams, AdapterSearchResult>('adapter/search', params as Partial<AdapterSearchParams>);
+  },
+  commandName: 'adapter/search' as const,
+} as const;

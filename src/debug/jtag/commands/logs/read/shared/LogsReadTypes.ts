@@ -1,5 +1,6 @@
-import type { CommandParams, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface LogsReadParams extends CommandParams {
   log: string;
@@ -75,3 +76,17 @@ export interface SpatialComponent {
   lines: number[];    // Array of line numbers
   eventCount: number;
 }
+
+/**
+ * LogsRead — Type-safe command executor
+ *
+ * Usage:
+ *   import { LogsRead } from '...shared/LogsReadTypes';
+ *   const result = await LogsRead.execute({ ... });
+ */
+export const LogsRead = {
+  execute(params: CommandInput<LogsReadParams>): Promise<LogsReadResult> {
+    return Commands.execute<LogsReadParams, LogsReadResult>('logs/read', params as Partial<LogsReadParams>);
+  },
+  commandName: 'logs/read' as const,
+} as const;

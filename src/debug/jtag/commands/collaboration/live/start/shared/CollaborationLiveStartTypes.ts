@@ -4,12 +4,13 @@
  * Start a live call with selected participants. Creates or finds the DM room for the participant set, then joins the call. Like Discord's group call - select users, click call.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { RoomEntity } from '@system/data/entities/RoomEntity';
 import type { CallEntity, CallParticipant } from '@system/data/entities/CallEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Collaboration Live Start Command Parameters
@@ -106,3 +107,17 @@ export const createCollaborationLiveStartResultFromParams = (
   params: CollaborationLiveStartParams,
   differences: Omit<CollaborationLiveStartResult, 'context' | 'sessionId'>
 ): CollaborationLiveStartResult => transformPayload(params, differences);
+
+/**
+ * CollaborationLiveStart — Type-safe command executor
+ *
+ * Usage:
+ *   import { CollaborationLiveStart } from '...shared/CollaborationLiveStartTypes';
+ *   const result = await CollaborationLiveStart.execute({ ... });
+ */
+export const CollaborationLiveStart = {
+  execute(params: CommandInput<CollaborationLiveStartParams>): Promise<CollaborationLiveStartResult> {
+    return Commands.execute<CollaborationLiveStartParams, CollaborationLiveStartResult>('collaboration/live/start', params as Partial<CollaborationLiveStartParams>);
+  },
+  commandName: 'collaboration/live/start' as const,
+} as const;

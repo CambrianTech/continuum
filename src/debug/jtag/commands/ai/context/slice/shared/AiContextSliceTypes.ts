@@ -4,11 +4,12 @@
  * Retrieve full content of a context item by ID - companion to context/search for getting complete entity data
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CollectionName } from '../../../context/search/shared/AiContextSearchTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 // Re-export for convenience
 export type { CollectionName } from '../../../context/search/shared/AiContextSearchTypes';
@@ -115,3 +116,17 @@ export const createAiContextSliceResultFromParams = (
   params: AiContextSliceParams,
   differences: Omit<AiContextSliceResult, 'context' | 'sessionId'>
 ): AiContextSliceResult => transformPayload(params, differences);
+
+/**
+ * AiContextSlice — Type-safe command executor
+ *
+ * Usage:
+ *   import { AiContextSlice } from '...shared/AiContextSliceTypes';
+ *   const result = await AiContextSlice.execute({ ... });
+ */
+export const AiContextSlice = {
+  execute(params: CommandInput<AiContextSliceParams>): Promise<AiContextSliceResult> {
+    return Commands.execute<AiContextSliceParams, AiContextSliceResult>('ai/context/slice', params as Partial<AiContextSliceParams>);
+  },
+  commandName: 'ai/context/slice' as const,
+} as const;

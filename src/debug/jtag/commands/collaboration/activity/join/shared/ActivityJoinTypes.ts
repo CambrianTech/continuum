@@ -2,9 +2,10 @@
  * Activity Join Command - Add a participant to an activity
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ActivityParticipant } from '@system/data/entities/ActivityEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ActivityJoinParams extends CommandParams {
   /**
@@ -34,3 +35,17 @@ export interface ActivityJoinResult extends CommandResult {
   activityId?: UUID;
   participant?: ActivityParticipant;
 }
+
+/**
+ * ActivityJoin — Type-safe command executor
+ *
+ * Usage:
+ *   import { ActivityJoin } from '...shared/ActivityJoinTypes';
+ *   const result = await ActivityJoin.execute({ ... });
+ */
+export const ActivityJoin = {
+  execute(params: CommandInput<ActivityJoinParams>): Promise<ActivityJoinResult> {
+    return Commands.execute<ActivityJoinParams, ActivityJoinResult>('collaboration/activity/join', params as Partial<ActivityJoinParams>);
+  },
+  commandName: 'collaboration/activity/join' as const,
+} as const;

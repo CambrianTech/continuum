@@ -8,8 +8,9 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomeActivateParams extends CommandParams {
   personaId: UUID;
@@ -36,3 +37,17 @@ export const createGenomeActivateResultFromParams = (
   loaded: false,
   ...differences
 });
+
+/**
+ * GenomeActivate — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeActivate } from '...shared/GenomeActivateTypes';
+ *   const result = await GenomeActivate.execute({ ... });
+ */
+export const GenomeActivate = {
+  execute(params: CommandInput<GenomeActivateParams>): Promise<GenomeActivateResult> {
+    return Commands.execute<GenomeActivateParams, GenomeActivateResult>('genome/paging-activate', params as Partial<GenomeActivateParams>);
+  },
+  commandName: 'genome/paging-activate' as const,
+} as const;

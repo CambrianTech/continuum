@@ -4,10 +4,11 @@
  * Simple hello world command for testing
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Hello Command Parameters
@@ -64,3 +65,17 @@ export const createHelloResultFromParams = (
   params: HelloParams,
   differences: Omit<HelloResult, 'context' | 'sessionId'>
 ): HelloResult => transformPayload(params, differences);
+
+/**
+ * Hello — Type-safe command executor
+ *
+ * Usage:
+ *   import { Hello } from '...shared/HelloTypes';
+ *   const result = await Hello.execute({ ... });
+ */
+export const Hello = {
+  execute(params: CommandInput<HelloParams>): Promise<HelloResult> {
+    return Commands.execute<HelloParams, HelloResult>('utilities/hello', params as Partial<HelloParams>);
+  },
+  commandName: 'utilities/hello' as const,
+} as const;

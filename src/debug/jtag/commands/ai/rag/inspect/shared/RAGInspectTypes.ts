@@ -5,9 +5,10 @@
  * Useful for debugging and validating RAG system behavior
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { RAGContext } from '../../../../../system/rag/shared/RAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for rag/inspect command
@@ -108,3 +109,17 @@ export interface RAGInspectResult extends CommandResult {
   /** Validation warnings */
   readonly warnings?: string[];
 }
+
+/**
+ * RAGInspect — Type-safe command executor
+ *
+ * Usage:
+ *   import { RAGInspect } from '...shared/RAGInspectTypes';
+ *   const result = await RAGInspect.execute({ ... });
+ */
+export const RAGInspect = {
+  execute(params: CommandInput<RAGInspectParams>): Promise<RAGInspectResult> {
+    return Commands.execute<RAGInspectParams, RAGInspectResult>('ai/rag/inspect', params as Partial<RAGInspectParams>);
+  },
+  commandName: 'ai/rag/inspect' as const,
+} as const;

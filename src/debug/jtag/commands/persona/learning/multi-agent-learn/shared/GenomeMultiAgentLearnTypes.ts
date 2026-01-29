@@ -6,7 +6,8 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Outcome of collaborative activity
@@ -167,3 +168,17 @@ export interface GenomeMultiAgentLearnResult extends CommandResult {
     };
   };
 }
+
+/**
+ * GenomeMultiAgentLearn — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeMultiAgentLearn } from '...shared/GenomeMultiAgentLearnTypes';
+ *   const result = await GenomeMultiAgentLearn.execute({ ... });
+ */
+export const GenomeMultiAgentLearn = {
+  execute(params: CommandInput<GenomeMultiAgentLearnParams>): Promise<GenomeMultiAgentLearnResult> {
+    return Commands.execute<GenomeMultiAgentLearnParams, GenomeMultiAgentLearnResult>('persona/learning/multi-agent-learn', params as Partial<GenomeMultiAgentLearnParams>);
+  },
+  commandName: 'persona/learning/multi-agent-learn' as const,
+} as const;

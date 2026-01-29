@@ -5,10 +5,11 @@
  * Uses multi-database handle system for isolation.
  */
 
-import type { CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Training Import Parameters
@@ -110,3 +111,17 @@ export const createTrainingImportResultFromParams = (
 
 // Re-export DbHandle type
 export type { DbHandle };
+
+/**
+ * TrainingImport — Type-safe command executor
+ *
+ * Usage:
+ *   import { TrainingImport } from '...shared/TrainingImportTypes';
+ *   const result = await TrainingImport.execute({ ... });
+ */
+export const TrainingImport = {
+  execute(params: CommandInput<TrainingImportParams>): Promise<TrainingImportResult> {
+    return Commands.execute<TrainingImportParams, TrainingImportResult>('training/import', params as Partial<TrainingImportParams>);
+  },
+  commandName: 'training/import' as const,
+} as const;

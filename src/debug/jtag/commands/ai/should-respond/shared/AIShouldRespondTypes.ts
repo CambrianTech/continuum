@@ -7,9 +7,10 @@
  * - hybrid: Fast filter → LLM confirmation
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { RAGContext } from '../../../../system/rag/shared/RAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Response detection strategy
@@ -108,3 +109,17 @@ export interface AIShouldRespondResult extends CommandResult {
     readonly recentlyActive: boolean;
   };
 }
+
+/**
+ * AIShouldRespond — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIShouldRespond } from '...shared/AIShouldRespondTypes';
+ *   const result = await AIShouldRespond.execute({ ... });
+ */
+export const AIShouldRespond = {
+  execute(params: CommandInput<AIShouldRespondParams>): Promise<AIShouldRespondResult> {
+    return Commands.execute<AIShouldRespondParams, AIShouldRespondResult>('ai/should-respond', params as Partial<AIShouldRespondParams>);
+  },
+  commandName: 'ai/should-respond' as const,
+} as const;

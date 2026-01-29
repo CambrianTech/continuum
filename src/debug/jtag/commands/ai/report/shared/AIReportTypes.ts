@@ -4,9 +4,10 @@
  * Analyze AI decision logs to generate actionable insights
  */
 
-import type { CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface AIReportParams extends CommandParams {
 
@@ -178,3 +179,17 @@ export interface AIReportResult {
     };
   };
 }
+
+/**
+ * AIReport — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIReport } from '...shared/AIReportTypes';
+ *   const result = await AIReport.execute({ ... });
+ */
+export const AIReport = {
+  execute(params: CommandInput<AIReportParams>): Promise<AIReportResult> {
+    return Commands.execute<AIReportParams, AIReportResult>('ai/report', params as Partial<AIReportParams>);
+  },
+  commandName: 'ai/report' as const,
+} as const;

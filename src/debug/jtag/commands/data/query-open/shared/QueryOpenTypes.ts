@@ -5,8 +5,9 @@
  * DataDaemon maintains the query state (filters, sorting, cursor position)
  */
 
-import type { CommandParams, JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface DataQueryOpenParams extends CommandParams {
   readonly collection: string;
@@ -24,3 +25,17 @@ export interface DataQueryOpenResult extends JTAGPayload {
   readonly error?: string;
   readonly timestamp: string; // Required by BaseDataResult
 }
+
+/**
+ * DataQueryOpen — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataQueryOpen } from '...shared/DataQueryOpenTypes';
+ *   const result = await DataQueryOpen.execute({ ... });
+ */
+export const DataQueryOpen = {
+  execute(params: CommandInput<DataQueryOpenParams>): Promise<DataQueryOpenResult> {
+    return Commands.execute<DataQueryOpenParams, DataQueryOpenResult>('data/query-open', params as Partial<DataQueryOpenParams>);
+  },
+  commandName: 'data/query-open' as const,
+} as const;

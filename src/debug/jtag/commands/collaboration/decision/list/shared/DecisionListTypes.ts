@@ -4,11 +4,12 @@
  * List all governance proposals with optional filtering
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DecisionEntity } from '@system/data/entities/DecisionEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Decision List Command Parameters
@@ -102,3 +103,17 @@ export const createDecisionListResultFromParams = (
   params: DecisionListParams,
   differences: Omit<DecisionListResult, 'context' | 'sessionId'>
 ): DecisionListResult => transformPayload(params, differences);
+
+/**
+ * DecisionList — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionList } from '...shared/DecisionListTypes';
+ *   const result = await DecisionList.execute({ ... });
+ */
+export const DecisionList = {
+  execute(params: CommandInput<DecisionListParams>): Promise<DecisionListResult> {
+    return Commands.execute<DecisionListParams, DecisionListResult>('collaboration/decision/list', params as Partial<DecisionListParams>);
+  },
+  commandName: 'collaboration/decision/list' as const,
+} as const;

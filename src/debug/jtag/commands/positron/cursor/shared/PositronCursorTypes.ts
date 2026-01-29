@@ -5,9 +5,10 @@
  * The cursor is the AI's "hand" - its spatial presence in the interface.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export type CursorAction = 'focus' | 'unfocus' | 'draw' | 'clear';
 export type DrawShape = 'circle' | 'rectangle' | 'arrow' | 'underline';
@@ -57,3 +58,17 @@ export const createPositronCursorResult = (
   action,
   ...data
 });
+
+/**
+ * PositronCursor — Type-safe command executor
+ *
+ * Usage:
+ *   import { PositronCursor } from '...shared/PositronCursorTypes';
+ *   const result = await PositronCursor.execute({ ... });
+ */
+export const PositronCursor = {
+  execute(params: CommandInput<PositronCursorParams>): Promise<PositronCursorResult> {
+    return Commands.execute<PositronCursorParams, PositronCursorResult>('positron/cursor', params as Partial<PositronCursorParams>);
+  },
+  commandName: 'positron/cursor' as const,
+} as const;

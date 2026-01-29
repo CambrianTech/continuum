@@ -2,9 +2,10 @@
  * Activity Update Command - Update activity state, phase, or config
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ActivityEntity, ActivityStatus } from '@system/data/entities/ActivityEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ActivityUpdateParams extends CommandParams {
   /**
@@ -59,3 +60,17 @@ export interface ActivityUpdateResult extends CommandResult {
   activity?: ActivityEntity;
   changedFields?: string[];
 }
+
+/**
+ * ActivityUpdate — Type-safe command executor
+ *
+ * Usage:
+ *   import { ActivityUpdate } from '...shared/ActivityUpdateTypes';
+ *   const result = await ActivityUpdate.execute({ ... });
+ */
+export const ActivityUpdate = {
+  execute(params: CommandInput<ActivityUpdateParams>): Promise<ActivityUpdateResult> {
+    return Commands.execute<ActivityUpdateParams, ActivityUpdateResult>('collaboration/activity/update', params as Partial<ActivityUpdateParams>);
+  },
+  commandName: 'collaboration/activity/update' as const,
+} as const;

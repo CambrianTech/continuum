@@ -12,10 +12,11 @@
  * - until_topic: Silent until a new topic is detected
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Valid sleep modes
@@ -108,3 +109,17 @@ export const createAiSleepResultFromParams = (
   params: AiSleepParams,
   differences: Omit<AiSleepResult, 'context' | 'sessionId'>
 ): AiSleepResult => transformPayload(params, differences);
+
+/**
+ * AiSleep — Type-safe command executor
+ *
+ * Usage:
+ *   import { AiSleep } from '...shared/AiSleepTypes';
+ *   const result = await AiSleep.execute({ ... });
+ */
+export const AiSleep = {
+  execute(params: CommandInput<AiSleepParams>): Promise<AiSleepResult> {
+    return Commands.execute<AiSleepParams, AiSleepResult>('ai/sleep', params as Partial<AiSleepParams>);
+  },
+  commandName: 'ai/sleep' as const,
+} as const;

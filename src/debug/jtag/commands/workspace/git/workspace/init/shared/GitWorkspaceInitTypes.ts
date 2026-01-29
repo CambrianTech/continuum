@@ -4,10 +4,11 @@
  * Initialize git workspace for persona collaboration with isolated worktree
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../../system/core/shared/Commands';
 
 /**
  * Git Workspace Init Command Parameters
@@ -92,3 +93,17 @@ export const createGitWorkspaceInitResultFromParams = (
   params: GitWorkspaceInitParams,
   differences: Omit<GitWorkspaceInitResult, 'context' | 'sessionId'>
 ): GitWorkspaceInitResult => transformPayload(params, differences);
+
+/**
+ * GitWorkspaceInit — Type-safe command executor
+ *
+ * Usage:
+ *   import { GitWorkspaceInit } from '...shared/GitWorkspaceInitTypes';
+ *   const result = await GitWorkspaceInit.execute({ ... });
+ */
+export const GitWorkspaceInit = {
+  execute(params: CommandInput<GitWorkspaceInitParams>): Promise<GitWorkspaceInitResult> {
+    return Commands.execute<GitWorkspaceInitParams, GitWorkspaceInitResult>('workspace/git/workspace/init', params as Partial<GitWorkspaceInitParams>);
+  },
+  commandName: 'workspace/git/workspace/init' as const,
+} as const;

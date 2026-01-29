@@ -2,9 +2,10 @@
  * HTML Inspector Types - Shadow DOM debugging
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface HtmlInspectorParams extends CommandParams {
   selector: string;
@@ -56,3 +57,16 @@ export const createHtmlInspectorResult = (
   structure: {},
   ...data
 });
+/**
+ * HtmlInspector — Type-safe command executor
+ *
+ * Usage:
+ *   import { HtmlInspector } from '...shared/HtmlInspectorTypes';
+ *   const result = await HtmlInspector.execute({ ... });
+ */
+export const HtmlInspector = {
+  execute(params: CommandInput<HtmlInspectorParams>): Promise<HtmlInspectorResult> {
+    return Commands.execute<HtmlInspectorParams, HtmlInspectorResult>('development/debug/html-inspector', params as Partial<HtmlInspectorParams>);
+  },
+  commandName: 'development/debug/html-inspector' as const,
+} as const;

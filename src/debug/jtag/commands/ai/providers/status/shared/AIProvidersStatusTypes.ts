@@ -5,7 +5,8 @@
  * Safe to call from browser - only returns boolean status.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface AIProvidersStatusParams extends CommandParams {
   // No additional params needed - returns all provider statuses
@@ -28,3 +29,17 @@ export interface AIProvidersStatusResult extends CommandResult {
   configuredCount: number;
   totalCount: number;
 }
+
+/**
+ * AIProvidersStatus — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIProvidersStatus } from '...shared/AIProvidersStatusTypes';
+ *   const result = await AIProvidersStatus.execute({ ... });
+ */
+export const AIProvidersStatus = {
+  execute(params: CommandInput<AIProvidersStatusParams>): Promise<AIProvidersStatusResult> {
+    return Commands.execute<AIProvidersStatusParams, AIProvidersStatusResult>('ai/providers/status', params as Partial<AIProvidersStatusParams>);
+  },
+  commandName: 'ai/providers/status' as const,
+} as const;

@@ -4,7 +4,7 @@
  * Performs semantic search over a collection using vector similarity.
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
@@ -13,6 +13,7 @@ import type {
   EmbeddingModel
 } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
 import type { RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Vector search command parameters
@@ -78,3 +79,17 @@ export const createVectorSearchResultFromParams = <T extends RecordData>(
   },
   ...differences
 });
+
+/**
+ * VectorSearch — Type-safe command executor
+ *
+ * Usage:
+ *   import { VectorSearch } from '...shared/VectorSearchTypes';
+ *   const result = await VectorSearch.execute({ ... });
+ */
+export const VectorSearch = {
+  execute<T extends RecordData = RecordData>(params: CommandInput<VectorSearchParams>): Promise<VectorSearchResult_CLI<T>> {
+    return Commands.execute<VectorSearchParams, VectorSearchResult_CLI<T>>('data/vector-search', params as Partial<VectorSearchParams>);
+  },
+  commandName: 'data/vector-search' as const,
+} as const;

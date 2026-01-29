@@ -6,7 +6,8 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for persona/learning/capture-interaction command
@@ -78,3 +79,17 @@ export interface GenomeCaptureInteractionResult extends CommandResult {
     readyForTraining: boolean;    // Has batch threshold been reached?
   };
 }
+
+/**
+ * GenomeCaptureInteraction — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeCaptureInteraction } from '...shared/GenomeCaptureInteractionTypes';
+ *   const result = await GenomeCaptureInteraction.execute({ ... });
+ */
+export const GenomeCaptureInteraction = {
+  execute(params: CommandInput<GenomeCaptureInteractionParams>): Promise<GenomeCaptureInteractionResult> {
+    return Commands.execute<GenomeCaptureInteractionParams, GenomeCaptureInteractionResult>('persona/learning/capture-interaction', params as Partial<GenomeCaptureInteractionParams>);
+  },
+  commandName: 'persona/learning/capture-interaction' as const,
+} as const;

@@ -1,7 +1,8 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GetTextParams extends CommandParams {
   readonly selector: string;
@@ -51,3 +52,16 @@ export const createGetTextResult = (
   timestamp: new Date().toISOString(),
   ...data
 });
+/**
+ * GetText — Type-safe command executor
+ *
+ * Usage:
+ *   import { GetText } from '...shared/GetTextTypes';
+ *   const result = await GetText.execute({ ... });
+ */
+export const GetText = {
+  execute(params: CommandInput<GetTextParams>): Promise<GetTextResult> {
+    return Commands.execute<GetTextParams, GetTextResult>('interface/get-text', params as Partial<GetTextParams>);
+  },
+  commandName: 'interface/get-text' as const,
+} as const;

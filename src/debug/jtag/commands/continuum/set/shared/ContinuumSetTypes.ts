@@ -9,7 +9,8 @@
  * and AIs - inspired by HAL 9000 and Tron aesthetics.
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface ContinuumSetParams extends CommandParams {
   /** Emoji to display in/near the Continuum dot */
@@ -62,3 +63,17 @@ export interface ContinuumSetResult extends CommandResult {
   /** Current Continuum status after update */
   status: ContinuumStatus;
 }
+
+/**
+ * ContinuumSet — Type-safe command executor
+ *
+ * Usage:
+ *   import { ContinuumSet } from '...shared/ContinuumSetTypes';
+ *   const result = await ContinuumSet.execute({ ... });
+ */
+export const ContinuumSet = {
+  execute(params: CommandInput<ContinuumSetParams>): Promise<ContinuumSetResult> {
+    return Commands.execute<ContinuumSetParams, ContinuumSetResult>('continuum/set', params as Partial<ContinuumSetParams>);
+  },
+  commandName: 'continuum/set' as const,
+} as const;

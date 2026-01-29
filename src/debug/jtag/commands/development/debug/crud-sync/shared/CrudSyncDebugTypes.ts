@@ -7,9 +7,10 @@
  * - user-list-widget: Users data
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface CrudSyncDebugParams extends CommandParams {
   collections?: string[]; // ['Room', 'ChatMessage', 'User'] by default
@@ -99,3 +100,16 @@ export const createCrudSyncDebugResult = (
   },
   ...data
 });
+/**
+ * CrudSyncDebug — Type-safe command executor
+ *
+ * Usage:
+ *   import { CrudSyncDebug } from '...shared/CrudSyncDebugTypes';
+ *   const result = await CrudSyncDebug.execute({ ... });
+ */
+export const CrudSyncDebug = {
+  execute(params: CommandInput<CrudSyncDebugParams>): Promise<CrudSyncDebugResult> {
+    return Commands.execute<CrudSyncDebugParams, CrudSyncDebugResult>('development/debug/crud-sync', params as Partial<CrudSyncDebugParams>);
+  },
+  commandName: 'development/debug/crud-sync' as const,
+} as const;

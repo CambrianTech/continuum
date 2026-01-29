@@ -5,8 +5,9 @@
  * Provides percentile analysis (P50/P95/P99) for performance monitoring.
  */
 
-import type { CommandParams, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Individual timing record from Rust worker
@@ -121,3 +122,17 @@ export interface TimingResult {
   /** Recommendations based on analysis */
   recommendations: string[];
 }
+
+/**
+ * Timing — Type-safe command executor
+ *
+ * Usage:
+ *   import { Timing } from '...shared/TimingTypes';
+ *   const result = await Timing.execute({ ... });
+ */
+export const Timing = {
+  execute(params: CommandInput<TimingParams>): Promise<TimingResult> {
+    return Commands.execute<TimingParams, TimingResult>('development/timing', params as Partial<TimingParams>);
+  },
+  commandName: 'development/timing' as const,
+} as const;

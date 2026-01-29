@@ -4,7 +4,8 @@
  * List all registered system daemons with their status
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface DaemonsParams extends CommandParams {
   // Optional filters
@@ -25,3 +26,17 @@ export interface DaemonsResult extends CommandResult {
   active: number;
   error?: string;
 }
+
+/**
+ * Daemons — Type-safe command executor
+ *
+ * Usage:
+ *   import { Daemons } from '...shared/DaemonsTypes';
+ *   const result = await Daemons.execute({ ... });
+ */
+export const Daemons = {
+  execute(params: CommandInput<DaemonsParams>): Promise<DaemonsResult> {
+    return Commands.execute<DaemonsParams, DaemonsResult>('system/daemons', params as Partial<DaemonsParams>);
+  },
+  commandName: 'system/daemons' as const,
+} as const;

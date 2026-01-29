@@ -2,8 +2,9 @@
  * logs/list Command Types
  */
 
-import type { CommandParams, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface LogsListParams extends CommandParams {
   category?: 'system' | 'persona' | 'session' | 'external';
@@ -39,3 +40,17 @@ export interface LogInfo {
   lastModified: string;
   isActive: boolean;
 }
+
+/**
+ * LogsList — Type-safe command executor
+ *
+ * Usage:
+ *   import { LogsList } from '...shared/LogsListTypes';
+ *   const result = await LogsList.execute({ ... });
+ */
+export const LogsList = {
+  execute(params: CommandInput<LogsListParams>): Promise<LogsListResult> {
+    return Commands.execute<LogsListParams, LogsListResult>('logs/list', params as Partial<LogsListParams>);
+  },
+  commandName: 'logs/list' as const,
+} as const;

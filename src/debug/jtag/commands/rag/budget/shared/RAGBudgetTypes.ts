@@ -1,4 +1,5 @@
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 
 /**
  * RAG Budget Command - Calculate token budget for RAG context
@@ -42,3 +43,17 @@ export interface RAGBudgetResult extends CommandResult {
 
   error?: string;
 }
+
+/**
+ * RAGBudget — Type-safe command executor
+ *
+ * Usage:
+ *   import { RAGBudget } from '...shared/RAGBudgetTypes';
+ *   const result = await RAGBudget.execute({ ... });
+ */
+export const RAGBudget = {
+  execute(params: CommandInput<RAGBudgetParams>): Promise<RAGBudgetResult> {
+    return Commands.execute<RAGBudgetParams, RAGBudgetResult>('rag/budget', params as Partial<RAGBudgetParams>);
+  },
+  commandName: 'rag/budget' as const,
+} as const;

@@ -4,10 +4,11 @@
  * Audit generated modules for issues and optionally fix them
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { AuditReport } from '@generator/audit/AuditTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Generate/Audit Command Parameters
@@ -85,3 +86,17 @@ export const createGenerateAuditResultFromParams = (
   },
   ...differences
 });
+
+/**
+ * GenerateAudit — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenerateAudit } from '...shared/GenerateAuditTypes';
+ *   const result = await GenerateAudit.execute({ ... });
+ */
+export const GenerateAudit = {
+  execute(params: CommandInput<GenerateAuditParams>): Promise<GenerateAuditResult> {
+    return Commands.execute<GenerateAuditParams, GenerateAuditResult>('development/generate/audit', params as Partial<GenerateAuditParams>);
+  },
+  commandName: 'development/generate/audit' as const,
+} as const;

@@ -1,7 +1,8 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface ScrollParams extends CommandParams {
   readonly x?: number;
@@ -56,3 +57,16 @@ export const createScrollResult = (
   timestamp: new Date().toISOString(),
   ...data
 });
+/**
+ * Scroll — Type-safe command executor
+ *
+ * Usage:
+ *   import { Scroll } from '...shared/ScrollTypes';
+ *   const result = await Scroll.execute({ ... });
+ */
+export const Scroll = {
+  execute(params: CommandInput<ScrollParams>): Promise<ScrollResult> {
+    return Commands.execute<ScrollParams, ScrollResult>('interface/scroll', params as Partial<ScrollParams>);
+  },
+  commandName: 'interface/scroll' as const,
+} as const;

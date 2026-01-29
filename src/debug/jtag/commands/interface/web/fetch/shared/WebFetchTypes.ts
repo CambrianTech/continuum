@@ -5,8 +5,9 @@
  * Returns clean text content from HTML pages.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Web fetch parameters
@@ -90,3 +91,17 @@ export function createWebFetchResultFromParams(
     error: data.error
   };
 }
+
+/**
+ * WebFetch — Type-safe command executor
+ *
+ * Usage:
+ *   import { WebFetch } from '...shared/WebFetchTypes';
+ *   const result = await WebFetch.execute({ ... });
+ */
+export const WebFetch = {
+  execute(params: CommandInput<WebFetchParams>): Promise<WebFetchResult> {
+    return Commands.execute<WebFetchParams, WebFetchResult>('interface/web/fetch', params as Partial<WebFetchParams>);
+  },
+  commandName: 'interface/web/fetch' as const,
+} as const;

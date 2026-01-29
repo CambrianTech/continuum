@@ -4,9 +4,10 @@
  * Query and visualize AI generation costs with filtering and time-series data
  */
 
-import type { CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface AICostParams extends CommandParams {
   // Time range filtering
@@ -155,3 +156,17 @@ export interface AICostResult {
     tokensPerDollar: number;       // How many tokens per $1
   };
 }
+
+/**
+ * AICost — Type-safe command executor
+ *
+ * Usage:
+ *   import { AICost } from '...shared/AICostTypes';
+ *   const result = await AICost.execute({ ... });
+ */
+export const AICost = {
+  execute(params: CommandInput<AICostParams>): Promise<AICostResult> {
+    return Commands.execute<AICostParams, AICostResult>('ai/cost', params as Partial<AICostParams>);
+  },
+  commandName: 'ai/cost' as const,
+} as const;

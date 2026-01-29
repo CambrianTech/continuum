@@ -1,7 +1,8 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface TypeParams extends CommandParams {
   readonly selector: string;
@@ -51,3 +52,16 @@ export const createTypeResult = (
   timestamp: new Date().toISOString(),
   ...data
 });
+/**
+ * Type — Type-safe command executor
+ *
+ * Usage:
+ *   import { Type } from '...shared/TypeTypes';
+ *   const result = await Type.execute({ ... });
+ */
+export const Type = {
+  execute(params: CommandInput<TypeParams>): Promise<TypeResult> {
+    return Commands.execute<TypeParams, TypeResult>('interface/type', params as Partial<TypeParams>);
+  },
+  commandName: 'interface/type' as const,
+} as const;

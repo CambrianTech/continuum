@@ -5,8 +5,9 @@
  * Uses search APIs to find relevant information.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Web search parameters
@@ -85,3 +86,17 @@ export function createWebSearchResultFromParams(
     error: data.error
   };
 }
+
+/**
+ * WebSearch — Type-safe command executor
+ *
+ * Usage:
+ *   import { WebSearch } from '...shared/WebSearchTypes';
+ *   const result = await WebSearch.execute({ ... });
+ */
+export const WebSearch = {
+  execute(params: CommandInput<WebSearchParams>): Promise<WebSearchResult> {
+    return Commands.execute<WebSearchParams, WebSearchResult>('interface/web/search', params as Partial<WebSearchParams>);
+  },
+  commandName: 'interface/web/search' as const,
+} as const;

@@ -1,5 +1,6 @@
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface SessionGetUserParams extends CommandParams {
   /**
@@ -15,3 +16,17 @@ export interface SessionGetUserResult extends CommandResult {
   readonly user?: UserEntity;
   readonly error?: string;
 }
+
+/**
+ * SessionGetUser — Type-safe command executor
+ *
+ * Usage:
+ *   import { SessionGetUser } from '...shared/SessionGetUserTypes';
+ *   const result = await SessionGetUser.execute({ ... });
+ */
+export const SessionGetUser = {
+  execute(params: CommandInput<SessionGetUserParams>): Promise<SessionGetUserResult> {
+    return Commands.execute<SessionGetUserParams, SessionGetUserResult>('session/get-user', params as Partial<SessionGetUserParams>);
+  },
+  commandName: 'session/get-user' as const,
+} as const;

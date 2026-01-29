@@ -7,9 +7,10 @@
  * - analyze: Structured analysis of the drawing
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export type VisionAction = 'describe' | 'transform' | 'analyze';
 
@@ -90,3 +91,17 @@ export const createCanvasVisionResult = (
   action,
   ...data
 });
+
+/**
+ * CanvasVision — Type-safe command executor
+ *
+ * Usage:
+ *   import { CanvasVision } from '...shared/CanvasVisionTypes';
+ *   const result = await CanvasVision.execute({ ... });
+ */
+export const CanvasVision = {
+  execute(params: CommandInput<CanvasVisionParams>): Promise<CanvasVisionResult> {
+    return Commands.execute<CanvasVisionParams, CanvasVisionResult>('canvas/vision', params as Partial<CanvasVisionParams>);
+  },
+  commandName: 'canvas/vision' as const,
+} as const;

@@ -1,3 +1,4 @@
+import type { CommandInput } from '../../../../system/core/types/JTAGTypes';
 /**
  * ExecCommand Types - Universal Script Execution System
  * 
@@ -6,6 +7,7 @@
  */
 
 import { type CommandParams, type CommandResult, type JTAGEnvironment, JTAG_ENVIRONMENTS } from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface ExecCommandParams extends CommandParams {
   code: CodeInput;                              // REQUIRED - discriminated union for all input types
@@ -335,3 +337,16 @@ export const DEFAULT_EXEC_PERMISSIONS: ExecPermissions = {
   allowDOMManipulation: true, 
   allowJTAGCommandAccess: true
 };
+/**
+ * ExecCommand — Type-safe command executor
+ *
+ * Usage:
+ *   import { ExecCommand } from '...shared/ExecCommandTypes';
+ *   const result = await ExecCommand.execute({ ... });
+ */
+export const ExecCommand = {
+  execute(params: CommandInput<ExecCommandParams>): Promise<ExecCommandResult> {
+    return Commands.execute<ExecCommandParams, ExecCommandResult>('development/exec', params as Partial<ExecCommandParams>);
+  },
+  commandName: 'development/exec' as const,
+} as const;

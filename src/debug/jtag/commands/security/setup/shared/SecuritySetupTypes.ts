@@ -1,4 +1,5 @@
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 
 export interface SecuritySetupParams extends CommandParams {
     /** Skip interactive prompts and show status only */
@@ -33,3 +34,17 @@ export interface SetupStep {
     requiresSudo: boolean;
     optional: boolean;
 }
+
+/**
+ * SecuritySetup — Type-safe command executor
+ *
+ * Usage:
+ *   import { SecuritySetup } from '...shared/SecuritySetupTypes';
+ *   const result = await SecuritySetup.execute({ ... });
+ */
+export const SecuritySetup = {
+  execute(params: CommandInput<SecuritySetupParams>): Promise<SecuritySetupResult> {
+    return Commands.execute<SecuritySetupParams, SecuritySetupResult>('security/setup', params as Partial<SecuritySetupParams>);
+  },
+  commandName: 'security/setup' as const,
+} as const;

@@ -6,8 +6,9 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JobConfiguration } from '../../../../daemons/data-daemon/shared/entities/FineTuningTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Parameters for genome/job-create command
@@ -122,3 +123,17 @@ export interface GenomeJobCreateResult extends CommandResult {
    */
   warnings?: string[];
 }
+
+/**
+ * GenomeJobCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeJobCreate } from '...shared/GenomeJobCreateTypes';
+ *   const result = await GenomeJobCreate.execute({ ... });
+ */
+export const GenomeJobCreate = {
+  execute(params: CommandInput<GenomeJobCreateParams>): Promise<GenomeJobCreateResult> {
+    return Commands.execute<GenomeJobCreateParams, GenomeJobCreateResult>('genome/job-create', params as Partial<GenomeJobCreateParams>);
+  },
+  commandName: 'genome/job-create' as const,
+} as const;

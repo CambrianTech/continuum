@@ -4,10 +4,11 @@
  * Semantic context navigation - search memories, messages, timeline across all entity types using cosine similarity via Rust embedding worker
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Common entity collections with semantic content
@@ -150,3 +151,17 @@ export const createAiContextSearchResultFromParams = (
   params: AiContextSearchParams,
   differences: Omit<AiContextSearchResult, 'context' | 'sessionId'>
 ): AiContextSearchResult => transformPayload(params, differences);
+
+/**
+ * AiContextSearch — Type-safe command executor
+ *
+ * Usage:
+ *   import { AiContextSearch } from '...shared/AiContextSearchTypes';
+ *   const result = await AiContextSearch.execute({ ... });
+ */
+export const AiContextSearch = {
+  execute(params: CommandInput<AiContextSearchParams>): Promise<AiContextSearchResult> {
+    return Commands.execute<AiContextSearchParams, AiContextSearchResult>('ai/context/search', params as Partial<AiContextSearchParams>);
+  },
+  commandName: 'ai/context/search' as const,
+} as const;

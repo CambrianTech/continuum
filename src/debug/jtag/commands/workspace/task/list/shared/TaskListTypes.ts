@@ -5,9 +5,10 @@
  * Used for monitoring AI work queues and debugging.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { TaskDomain, TaskType, TaskStatus, TaskPriority } from '@system/data/entities/TaskEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for task/list command
@@ -108,3 +109,17 @@ export interface TaskListResult extends CommandResult {
     cancelled: number;
   };
 }
+
+/**
+ * TaskList — Type-safe command executor
+ *
+ * Usage:
+ *   import { TaskList } from '...shared/TaskListTypes';
+ *   const result = await TaskList.execute({ ... });
+ */
+export const TaskList = {
+  execute(params: CommandInput<TaskListParams>): Promise<TaskListResult> {
+    return Commands.execute<TaskListParams, TaskListResult>('workspace/task/list', params as Partial<TaskListParams>);
+  },
+  commandName: 'workspace/task/list' as const,
+} as const;

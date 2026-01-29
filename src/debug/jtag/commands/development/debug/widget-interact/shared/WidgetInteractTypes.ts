@@ -5,9 +5,10 @@
  * Perfect for MCP integration where Claude needs full UI control
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export type WidgetInteractionType =
   | 'click'           // Click button/element
@@ -99,3 +100,16 @@ export const createWidgetInteractResult = (
   },
   ...data
 });
+/**
+ * WidgetInteract — Type-safe command executor
+ *
+ * Usage:
+ *   import { WidgetInteract } from '...shared/WidgetInteractTypes';
+ *   const result = await WidgetInteract.execute({ ... });
+ */
+export const WidgetInteract = {
+  execute(params: CommandInput<WidgetInteractParams>): Promise<WidgetInteractResult> {
+    return Commands.execute<WidgetInteractParams, WidgetInteractResult>('development/debug/widget-interact', params as Partial<WidgetInteractParams>);
+  },
+  commandName: 'development/debug/widget-interact' as const,
+} as const;

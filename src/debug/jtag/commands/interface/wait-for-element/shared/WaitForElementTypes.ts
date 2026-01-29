@@ -1,7 +1,8 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface WaitForElementParams extends CommandParams {
   readonly selector: string;
@@ -57,3 +58,16 @@ export const createWaitForElementResult = (
   timestamp: new Date().toISOString(),
   ...data
 });
+/**
+ * WaitForElement — Type-safe command executor
+ *
+ * Usage:
+ *   import { WaitForElement } from '...shared/WaitForElementTypes';
+ *   const result = await WaitForElement.execute({ ... });
+ */
+export const WaitForElement = {
+  execute(params: CommandInput<WaitForElementParams>): Promise<WaitForElementResult> {
+    return Commands.execute<WaitForElementParams, WaitForElementResult>('interface/wait-for-element', params as Partial<WaitForElementParams>);
+  },
+  commandName: 'interface/wait-for-element' as const,
+} as const;

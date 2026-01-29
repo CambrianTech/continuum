@@ -4,10 +4,11 @@
  * Detects if an AI's response is semantically too similar to recent messages, preventing repetitive loop behavior
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Ai Detect Semantic Loop Command Parameters
@@ -111,3 +112,17 @@ export const createAiDetectSemanticLoopResultFromParams = (
   params: AiDetectSemanticLoopParams,
   differences: Omit<AiDetectSemanticLoopResult, 'context' | 'sessionId'>
 ): AiDetectSemanticLoopResult => transformPayload(params, differences);
+
+/**
+ * AiDetectSemanticLoop — Type-safe command executor
+ *
+ * Usage:
+ *   import { AiDetectSemanticLoop } from '...shared/AiDetectSemanticLoopTypes';
+ *   const result = await AiDetectSemanticLoop.execute({ ... });
+ */
+export const AiDetectSemanticLoop = {
+  execute(params: CommandInput<AiDetectSemanticLoopParams>): Promise<AiDetectSemanticLoopResult> {
+    return Commands.execute<AiDetectSemanticLoopParams, AiDetectSemanticLoopResult>('ai/detect-semantic-loop', params as Partial<AiDetectSemanticLoopParams>);
+  },
+  commandName: 'ai/detect-semantic-loop' as const,
+} as const;

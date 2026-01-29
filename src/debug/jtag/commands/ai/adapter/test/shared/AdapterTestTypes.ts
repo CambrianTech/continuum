@@ -13,9 +13,10 @@
  * Status values: queued → running → completed (or failed)
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { ModelCapability } from '../../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface AdapterTestParams extends CommandParams {
   /** Which adapter to test (e.g., 'ollama', 'openai', 'anthropic') */
@@ -109,3 +110,17 @@ export interface CapabilityTest {
     details: unknown;
   }>;
 }
+
+/**
+ * AdapterTest — Type-safe command executor
+ *
+ * Usage:
+ *   import { AdapterTest } from '...shared/AdapterTestTypes';
+ *   const result = await AdapterTest.execute({ ... });
+ */
+export const AdapterTest = {
+  execute(params: CommandInput<AdapterTestParams>): Promise<AdapterTestResult> {
+    return Commands.execute<AdapterTestParams, AdapterTestResult>('ai/adapter/test', params as Partial<AdapterTestParams>);
+  },
+  commandName: 'ai/adapter/test' as const,
+} as const;

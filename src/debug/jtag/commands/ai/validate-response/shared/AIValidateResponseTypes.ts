@@ -5,7 +5,8 @@
  * Returns: SUBMIT (relevant) | CLARIFY (ask for context) | SILENT (off-topic)
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * AI's decision on what to do with generated response
@@ -57,3 +58,17 @@ export interface AIValidateResponseResult extends CommandResult {
     readonly aiResponse: string;  // Raw AI response
   };
 }
+
+/**
+ * AIValidateResponse — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIValidateResponse } from '...shared/AIValidateResponseTypes';
+ *   const result = await AIValidateResponse.execute({ ... });
+ */
+export const AIValidateResponse = {
+  execute(params: CommandInput<AIValidateResponseParams>): Promise<AIValidateResponseResult> {
+    return Commands.execute<AIValidateResponseParams, AIValidateResponseResult>('ai/validate-response', params as Partial<AIValidateResponseParams>);
+  },
+  commandName: 'ai/validate-response' as const,
+} as const;

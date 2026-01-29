@@ -1,4 +1,5 @@
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 
 /**
  * Session Get ID Command - Get current session ID
@@ -16,3 +17,17 @@ export interface SessionGetIdResult extends CommandResult {
   readonly error?: string;
   // Note: sessionId is already available via CommandResult -> JTAGPayload -> sessionId
 }
+
+/**
+ * SessionGetId — Type-safe command executor
+ *
+ * Usage:
+ *   import { SessionGetId } from '...shared/SessionGetIdTypes';
+ *   const result = await SessionGetId.execute({ ... });
+ */
+export const SessionGetId = {
+  execute(params: CommandInput<SessionGetIdParams>): Promise<SessionGetIdResult> {
+    return Commands.execute<SessionGetIdParams, SessionGetIdResult>('session/get-id', params as Partial<SessionGetIdParams>);
+  },
+  commandName: 'session/get-id' as const,
+} as const;

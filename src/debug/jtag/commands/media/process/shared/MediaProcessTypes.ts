@@ -5,7 +5,8 @@
  * Supports speed adjustment, format conversion, trimming, audio manipulation, and more.
  */
 
-import type { CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Media format types supported by ffmpeg
@@ -249,3 +250,17 @@ export function generateOutputPath(
 
   return path.join(outputDir, `${basename}${suffix}.${extension}`);
 }
+
+/**
+ * MediaProcess — Type-safe command executor
+ *
+ * Usage:
+ *   import { MediaProcess } from '...shared/MediaProcessTypes';
+ *   const result = await MediaProcess.execute({ ... });
+ */
+export const MediaProcess = {
+  execute(params: CommandInput<MediaProcessParams>): Promise<MediaProcessResult> {
+    return Commands.execute<MediaProcessParams, MediaProcessResult>('media/process', params as Partial<MediaProcessParams>);
+  },
+  commandName: 'media/process' as const,
+} as const;

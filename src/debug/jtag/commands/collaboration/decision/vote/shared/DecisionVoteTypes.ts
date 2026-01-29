@@ -4,10 +4,11 @@
  * Cast ranked-choice vote on a proposal
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Decision Vote Command Parameters
@@ -101,3 +102,17 @@ export const createDecisionVoteResultFromParams = (
   params: DecisionVoteParams,
   differences: Omit<DecisionVoteResult, 'context' | 'sessionId'>
 ): DecisionVoteResult => transformPayload(params, differences);
+
+/**
+ * DecisionVote — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionVote } from '...shared/DecisionVoteTypes';
+ *   const result = await DecisionVote.execute({ ... });
+ */
+export const DecisionVote = {
+  execute(params: CommandInput<DecisionVoteParams>): Promise<DecisionVoteResult> {
+    return Commands.execute<DecisionVoteParams, DecisionVoteResult>('collaboration/decision/vote', params as Partial<DecisionVoteParams>);
+  },
+  commandName: 'collaboration/decision/vote' as const,
+} as const;

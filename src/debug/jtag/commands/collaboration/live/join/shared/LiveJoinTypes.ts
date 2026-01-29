@@ -5,9 +5,10 @@
  * Creates call if none exists, or joins existing.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CallEntity, CallParticipant } from '@system/data/entities/CallEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface LiveJoinParams extends CommandParams {
   /**
@@ -40,3 +41,17 @@ export interface LiveJoinResult extends CommandResult {
   /** The current user's participant entry */
   myParticipant: CallParticipant;
 }
+
+/**
+ * LiveJoin — Type-safe command executor
+ *
+ * Usage:
+ *   import { LiveJoin } from '...shared/LiveJoinTypes';
+ *   const result = await LiveJoin.execute({ ... });
+ */
+export const LiveJoin = {
+  execute(params: CommandInput<LiveJoinParams>): Promise<LiveJoinResult> {
+    return Commands.execute<LiveJoinParams, LiveJoinResult>('collaboration/live/join', params as Partial<LiveJoinParams>);
+  },
+  commandName: 'collaboration/live/join' as const,
+} as const;

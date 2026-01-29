@@ -6,7 +6,8 @@
  * model's context window capacity.
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Fit strategies for resizing
@@ -120,3 +121,17 @@ export function createMediaResizeResult(
     sessionId: params.sessionId
   };
 }
+
+/**
+ * MediaResize — Type-safe command executor
+ *
+ * Usage:
+ *   import { MediaResize } from '...shared/MediaResizeTypes';
+ *   const result = await MediaResize.execute({ ... });
+ */
+export const MediaResize = {
+  execute(params: CommandInput<MediaResizeParams>): Promise<MediaResizeResult> {
+    return Commands.execute<MediaResizeParams, MediaResizeResult>('media/resize', params as Partial<MediaResizeParams>);
+  },
+  commandName: 'media/resize' as const,
+} as const;

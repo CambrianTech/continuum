@@ -4,7 +4,8 @@
  */
 
 import type { FileParams, FileResult } from '../../shared/FileTypes';
-import type { CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** File MIME type detection parameters */
 export interface FileMimeTypeParams extends CommandParams {
@@ -123,3 +124,17 @@ export function getMediaTypeFromMime(mimeType: string): 'image' | 'audio' | 'vid
   if (mimeType === 'application/pdf' || mimeType.startsWith('text/')) return 'document';
   return 'file';
 }
+
+/**
+ * FileMimeType — Type-safe command executor
+ *
+ * Usage:
+ *   import { FileMimeType } from '...shared/FileMimeTypeTypes';
+ *   const result = await FileMimeType.execute({ ... });
+ */
+export const FileMimeType = {
+  execute(params: CommandInput<FileMimeTypeParams>): Promise<FileMimeTypeResult> {
+    return Commands.execute<FileMimeTypeParams, FileMimeTypeResult>('file/mime-type', params as Partial<FileMimeTypeParams>);
+  },
+  commandName: 'file/mime-type' as const,
+} as const;

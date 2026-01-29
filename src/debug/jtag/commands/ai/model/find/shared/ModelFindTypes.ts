@@ -5,8 +5,9 @@
  * Like AVCaptureDevice.default(for:position:) - pick best matching device
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { ModelCapabilities, ModelInfo } from '../../list/shared/ModelListTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Model find params
@@ -35,3 +36,17 @@ export interface ModelFindResult extends CommandResult {
   fallbackUsed?: boolean;            // Did we have to use fallback logic?
   error?: string;
 }
+
+/**
+ * ModelFind — Type-safe command executor
+ *
+ * Usage:
+ *   import { ModelFind } from '...shared/ModelFindTypes';
+ *   const result = await ModelFind.execute({ ... });
+ */
+export const ModelFind = {
+  execute(params: CommandInput<ModelFindParams>): Promise<ModelFindResult> {
+    return Commands.execute<ModelFindParams, ModelFindResult>('ai/model/find', params as Partial<ModelFindParams>);
+  },
+  commandName: 'ai/model/find' as const,
+} as const;

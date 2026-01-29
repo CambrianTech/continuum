@@ -7,8 +7,9 @@
  * - Full vector search (all-to-all ranking)
  */
 
-import type { CommandParams, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Benchmark parameters
@@ -57,3 +58,17 @@ export interface BenchmarkVectorsResult {
     recommendations: string[];
   };
 }
+
+/**
+ * BenchmarkVectors — Type-safe command executor
+ *
+ * Usage:
+ *   import { BenchmarkVectors } from '...shared/BenchmarkVectorsTypes';
+ *   const result = await BenchmarkVectors.execute({ ... });
+ */
+export const BenchmarkVectors = {
+  execute(params: CommandInput<BenchmarkVectorsParams>): Promise<BenchmarkVectorsResult> {
+    return Commands.execute<BenchmarkVectorsParams, BenchmarkVectorsResult>('development/benchmark-vectors', params as Partial<BenchmarkVectorsParams>);
+  },
+  commandName: 'development/benchmark-vectors' as const,
+} as const;

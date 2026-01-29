@@ -1,5 +1,6 @@
-import type { CommandParams, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface DocsReadParams extends CommandParams {
   doc: string;           // Simple doc name from docs/list
@@ -25,3 +26,17 @@ export interface DocsReadResult {
   toc?: SectionInfo[];   // Only if --toc flag
   totalLines: number;
 }
+
+/**
+ * DocsRead — Type-safe command executor
+ *
+ * Usage:
+ *   import { DocsRead } from '...shared/DocsReadTypes';
+ *   const result = await DocsRead.execute({ ... });
+ */
+export const DocsRead = {
+  execute(params: CommandInput<DocsReadParams>): Promise<DocsReadResult> {
+    return Commands.execute<DocsReadParams, DocsReadResult>('utilities/docs/read', params as Partial<DocsReadParams>);
+  },
+  commandName: 'utilities/docs/read' as const,
+} as const;

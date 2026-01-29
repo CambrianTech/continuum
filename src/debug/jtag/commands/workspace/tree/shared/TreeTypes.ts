@@ -5,8 +5,9 @@
  * Shows parent/child relationships like a file tree.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Tree command parameters
@@ -90,3 +91,17 @@ export function createTreeResultFromParams(
     error: data.error
   };
 }
+
+/**
+ * Tree — Type-safe command executor
+ *
+ * Usage:
+ *   import { Tree } from '...shared/TreeTypes';
+ *   const result = await Tree.execute({ ... });
+ */
+export const Tree = {
+  execute(params: CommandInput<TreeParams>): Promise<TreeResult> {
+    return Commands.execute<TreeParams, TreeResult>('workspace/tree', params as Partial<TreeParams>);
+  },
+  commandName: 'workspace/tree' as const,
+} as const;

@@ -12,9 +12,10 @@
  * 5. Human can promote to main codebase if valuable
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Parameter specification for generated command
@@ -109,3 +110,17 @@ export const createProposeCommandResult = (
   success: false,
   ...data
 });
+
+/**
+ * ProposeCommand — Type-safe command executor
+ *
+ * Usage:
+ *   import { ProposeCommand } from '...shared/ProposeCommandTypes';
+ *   const result = await ProposeCommand.execute({ ... });
+ */
+export const ProposeCommand = {
+  execute(params: CommandInput<ProposeCommandParams>): Promise<ProposeCommandResult> {
+    return Commands.execute<ProposeCommandParams, ProposeCommandResult>('development/propose-command', params as Partial<ProposeCommandParams>);
+  },
+  commandName: 'development/propose-command' as const,
+} as const;

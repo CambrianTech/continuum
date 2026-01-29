@@ -5,8 +5,9 @@
  * Works with jobs created via genome/job-create.
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomeJobStatusParams extends CommandParams {
   /** Job ID (from database, not provider's job ID) */
@@ -73,3 +74,17 @@ export interface GenomeJobStatusResult extends CommandResult {
   /** True if status was refreshed from provider */
   refreshed?: boolean;
 }
+
+/**
+ * GenomeJobStatus — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeJobStatus } from '...shared/GenomeJobStatusTypes';
+ *   const result = await GenomeJobStatus.execute({ ... });
+ */
+export const GenomeJobStatus = {
+  execute(params: CommandInput<GenomeJobStatusParams>): Promise<GenomeJobStatusResult> {
+    return Commands.execute<GenomeJobStatusParams, GenomeJobStatusResult>('genome/job-status', params as Partial<GenomeJobStatusParams>);
+  },
+  commandName: 'genome/job-status' as const,
+} as const;

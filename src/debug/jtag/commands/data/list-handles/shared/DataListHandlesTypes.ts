@@ -2,7 +2,7 @@
  * Data List-Handles Command - Shared Types
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
@@ -10,6 +10,7 @@ import type {
   AdapterType,
   AdapterConfig
 } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Data List-Handles Parameters
@@ -64,3 +65,17 @@ export const createDataListHandlesResultFromParams = (
 
 // Re-export types for convenience
 export type { DbHandle, AdapterType, AdapterConfig };
+
+/**
+ * DataListHandles — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataListHandles } from '...shared/DataListHandlesTypes';
+ *   const result = await DataListHandles.execute({ ... });
+ */
+export const DataListHandles = {
+  execute(params: CommandInput<DataListHandlesParams>): Promise<DataListHandlesResult> {
+    return Commands.execute<DataListHandlesParams, DataListHandlesResult>('data/list-handles', params as Partial<DataListHandlesParams>);
+  },
+  commandName: 'data/list-handles' as const,
+} as const;
