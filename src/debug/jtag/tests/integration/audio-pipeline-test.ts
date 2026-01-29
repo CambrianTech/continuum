@@ -12,6 +12,8 @@
 import { Commands } from '../../system/core/shared/Commands';
 import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 
+import { VoiceSynthesize } from '../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { VoiceTranscribe } from '../../commands/voice/transcribe/shared/VoiceTranscribeTypes';
 const TEST_PHRASES = [
   'Hello world',
   'The quick brown fox',
@@ -35,7 +37,7 @@ async function testAudioPipeline() {
     try {
       // Step 1: Synthesize speech
       console.log('  1. Synthesizing with TTS...');
-      const synthResult = await Commands.execute('voice/synthesize', {
+      const synthResult = await VoiceSynthesize.execute({
         text: phrase,
         adapter: 'piper',
       });
@@ -53,7 +55,7 @@ async function testAudioPipeline() {
 
       // Step 2: Transcribe the audio back
       console.log('  2. Transcribing with STT...');
-      const transcribeResult = await Commands.execute('voice/transcribe', {
+      const transcribeResult = await VoiceTranscribe.execute({
         audio: audioData.toString('base64'),
         format: 'pcm16',
       });

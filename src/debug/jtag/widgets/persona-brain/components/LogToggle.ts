@@ -12,6 +12,7 @@
 
 import { Commands } from '../../../system/core/shared/Commands';
 
+import { LogsConfig } from '../../../commands/logs/config/shared/LogsConfigTypes';
 export interface LogToggleState {
   enabled: boolean;
   categories: string[];
@@ -74,7 +75,7 @@ export class LogToggle {
     const newEnabled = !currentState.enabled;
 
     try {
-      const result = await Commands.execute('logs/config', {
+      const result = await LogsConfig.execute({
         persona: this.personaId,
         action: newEnabled ? 'enable' : 'disable'
       } as any) as any;
@@ -104,7 +105,7 @@ export class LogToggle {
     const isEnabled = LogToggle.isCategoryEnabled(currentState, this.category!);
 
     try {
-      const result = await Commands.execute('logs/config', {
+      const result = await LogsConfig.execute({
         persona: this.personaId,
         action: isEnabled ? 'disable' : 'enable',
         category: this.category

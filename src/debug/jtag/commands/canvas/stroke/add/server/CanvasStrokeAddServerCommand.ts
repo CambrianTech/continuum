@@ -22,6 +22,8 @@ import type { DataCreateParams, DataCreateResult } from '@commands/data/create/s
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddParams, CanvasStrokeAddResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('canvas/stroke/add', context, subpath, commander);
@@ -127,9 +129,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
   private async notifyCanvasRoom(stroke: CanvasStrokeEntity, params: CanvasStrokeAddParams): Promise<void> {
     try {
       // Find the canvas room
-      const roomResult = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const roomResult = await DataList.execute<RoomEntity>({
           collection: RoomEntity.collection,
           filter: { name: ROOM_UNIQUE_IDS.CANVAS },
           limit: 1,
@@ -169,9 +169,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       };
 
       // Store message
-      await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(
-        DATA_COMMANDS.CREATE,
-        {
+      await DataCreate.execute<ChatMessageEntity>({
           collection: ChatMessageEntity.collection,
           data: messageEntity,
           context: params.context,

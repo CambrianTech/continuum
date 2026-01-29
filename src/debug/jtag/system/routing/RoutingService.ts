@@ -23,6 +23,7 @@ import type { UserEntity } from '../data/entities/UserEntity';
 import type { UUID } from '../core/types/CrossPlatformUUID';
 import { entityCache } from '../state/EntityCacheService';
 
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 /**
  * UUID regex pattern
  */
@@ -75,9 +76,7 @@ class RoutingServiceImpl {
       // 3. Database query - populate both caches
       // If already a UUID, look up directly
       if (isUUID(identifier)) {
-        const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-          DATA_COMMANDS.LIST,
-          {
+        const result = await DataList.execute<RoomEntity>({
             collection: 'rooms',
             filter: { id: identifier },
             limit: 1
@@ -101,9 +100,7 @@ class RoutingServiceImpl {
       }
 
       // Look up by uniqueId
-      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<RoomEntity>({
           collection: 'rooms',
           filter: { uniqueId: identifier },
           limit: 1
@@ -127,9 +124,7 @@ class RoutingServiceImpl {
       }
 
       // 4. Query by name (legacy support for commands using room name)
-      const nameResult = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const nameResult = await DataList.execute<RoomEntity>({
           collection: 'rooms',
           filter: { name: identifier },
           limit: 1
@@ -218,9 +213,7 @@ class RoutingServiceImpl {
       // 3. Database query - populate both caches
       // If already a UUID, look up directly
       if (isUUID(identifier)) {
-        const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-          DATA_COMMANDS.LIST,
-          {
+        const result = await DataList.execute<UserEntity>({
             collection: 'users',
             filter: { id: identifier },
             limit: 1
@@ -244,9 +237,7 @@ class RoutingServiceImpl {
       }
 
       // Look up by uniqueId
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: 'users',
           filter: { uniqueId: identifier },
           limit: 1

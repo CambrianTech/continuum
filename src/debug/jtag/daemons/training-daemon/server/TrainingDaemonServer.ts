@@ -38,6 +38,7 @@ import type { UserEntity } from '../../../system/data/entities/UserEntity';
 import { TrainingExampleEntity, type TrainingMessage } from '../../data-daemon/shared/entities/TrainingExampleEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 /**
  * Configuration for training data collection
  */
@@ -102,7 +103,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
     for (const roomUniqueId of this.config.enabledRooms) {
       try {
         // Use Commands.execute instead of DataDaemon.query for reliability
-        const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+        const result = await DataList.execute<RoomEntity>({
           collection: COLLECTIONS.ROOMS,
           filter: { uniqueId: roomUniqueId },
           limit: 1

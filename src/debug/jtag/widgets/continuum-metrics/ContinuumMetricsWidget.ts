@@ -18,6 +18,7 @@ import { AIGenerationEntity } from '../../system/data/entities/AIGenerationEntit
 // Types imported but cast to any due to browser-server communication
 import { styles } from './public/continuum-metrics.styles';
 
+import { AICost } from '../../commands/ai/cost/shared/AICostTypes';
 interface TimeSeriesPoint {
   timestamp: string;
   cost: number;
@@ -62,7 +63,7 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
 
   private async autoDetectTimeRange(): Promise<void> {
     // Fetch 7d data to analyze distribution
-    const result = await Commands.execute('ai/cost', {
+    const result = await AICost.execute({
       startTime: '7d',
       includeTimeSeries: true,
       interval: '1h',
@@ -183,7 +184,7 @@ export class ContinuumMetricsWidget extends ReactiveWidget {
 
   private async fetchData(): Promise<void> {
     try {
-      const result = await Commands.execute('ai/cost', {
+      const result = await AICost.execute({
         startTime: this.timeRange,
         includeTimeSeries: true,
         interval: '1h',

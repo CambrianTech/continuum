@@ -31,6 +31,7 @@ import { getAIAudioBridge } from './AIAudioBridge';
 import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 /**
  * Utterance event from voice transcription
  */
@@ -146,9 +147,7 @@ export class VoiceOrchestrator {
     // Look up users from database
     if (participantIds.length > 0) {
       try {
-        const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-          DATA_COMMANDS.LIST,
-          {
+        const result = await DataList.execute<UserEntity>({
             collection: 'users',
             filter: { id: { $in: participantIds } },
             limit: participantIds.length

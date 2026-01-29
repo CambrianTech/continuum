@@ -37,6 +37,11 @@ import { createWidgetSignals, watch, type WidgetSignalState, type Dispose } from
 // EntityCacheService - single source of truth for entity data (Positronic pattern)
 import { entityCache } from '../../../system/state/EntityCacheService';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { DataRead } from '../../../commands/data/read/shared/DataReadTypes';
+import { SessionGetUser } from '../../../commands/session/get-user/shared/SessionGetUserTypes';
+import { ChatSend } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 /**
  * ChatWidget signal state - React-like reactive state management
  * Changes to these values automatically trigger UI updates via watch()
@@ -441,7 +446,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Load NEWEST messages first (DESC) so recent messages appear after refresh
       // EntityScroller + CSS handle display order based on SCROLLER_PRESETS.CHAT direction
       // CRITICAL: backend='server' ensures we always fetch fresh data, not stale localStorage cache
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         filter: {
           roomId: this.currentRoomId,
@@ -974,7 +979,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     console.log(`🔍 ChatWidget.loadRoomData: Loading room ${roomId}`);
     try {
       // Load room entity - use server backend to ensure we get full data with members
-      const roomResult = await Commands.execute<DataReadParams, DataReadResult<RoomEntity>>(DATA_COMMANDS.READ, {
+      const roomResult = await DataRead.execute<RoomEntity>({
         collection: RoomEntity.collection,
         id: roomId,
         backend: 'server'
@@ -1013,7 +1018,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     try {
       // Uses MongoDB-style $in operator for batch ID lookup
       // Must use server backend - localStorage doesn't support $in operator
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
         filter: { id: { $in: memberIds } },
         limit: memberIds.length,
@@ -1040,14 +1045,14 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private async loadCurrentRoomFromUserState(): Promise<void> {
     try {
       // Get current user's ID from session
-      const sessionResult = await Commands.execute<SessionGetUserParams, SessionGetUserResult>('session/get-user', {});
+      const sessionResult = await SessionGetUser.execute({});
       if (!sessionResult?.success || !sessionResult.user?.id) {
         verbose() && console.log('📨 ChatWidget: No user session, using default General room');
         return;
       }
 
       // Query UserState to get current content item
-      const listResult = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await DataList.execute<UserStateEntity>({
         collection: 'user_states',
         filter: { userId: sessionResult.user.id },
         limit: 1
@@ -1637,7 +1642,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     // Use proper chat/send command - it generates proper UUIDs and handles all message setup
     // ARCHITECTURE: Directly replace temp message with real entity from response
     // This is deterministic - no relying on events/FIFO matching
-    Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+    ChatSend.execute({
       message: text,
       room: this.currentRoomId,
       senderId: DEFAULT_USERS.HUMAN as UUID,  // Explicitly send as Joel, not browser session identity
@@ -1699,7 +1704,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
     }
 
     try {
-      await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+      await DataCreate.execute<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         data: messageEntity,
         backend: 'server'

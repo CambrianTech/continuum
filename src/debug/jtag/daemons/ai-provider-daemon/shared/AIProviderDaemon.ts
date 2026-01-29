@@ -53,6 +53,7 @@ import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEn
 import { Commands } from '../../../system/core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 // AI Provider Payloads
 export interface AIProviderPayload extends JTAGPayload {
   readonly type: 'generate-text' | 'health-check' | 'list-providers';
@@ -320,9 +321,7 @@ export class AIProviderDaemon extends DaemonBase {
       }
 
       // Persist to database using data/create command
-      await Commands.execute<DataCreateParams, DataCreateResult<AIGenerationEntity>>(
-        DATA_COMMANDS.CREATE,
-        {
+      await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
           data: result.entity
@@ -371,9 +370,7 @@ export class AIProviderDaemon extends DaemonBase {
       }
 
       // Persist to database
-      await Commands.execute<DataCreateParams, DataCreateResult<AIGenerationEntity>>(
-        DATA_COMMANDS.CREATE,
-        {
+      await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
           data: result.entity

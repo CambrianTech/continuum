@@ -40,6 +40,7 @@ import { SystemPaths } from '../../core/config/SystemPaths';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { BlobStorage, storeIfLarge } from '../../storage/BlobStorage';
 
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Parameters for logging a decision
  */
@@ -197,7 +198,7 @@ export class CoordinationDecisionLogger {
       } as any;
 
       // Store to database (fire-and-forget in PersonaUser, but sync here for error handling)
-      await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+      await DataCreate.execute({
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         data: entity,
         backend: 'server',

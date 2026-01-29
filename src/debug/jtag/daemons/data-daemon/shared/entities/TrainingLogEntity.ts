@@ -27,6 +27,7 @@ import {
   EnumField
 } from '../../../../system/data/decorators/FieldDecorators';
 
+import { DataList } from '../../../../commands/data/list/shared/DataListTypes';
 /**
  * Log level enumeration
  */
@@ -54,7 +55,7 @@ export type LogSource = 'stdout' | 'stderr' | 'system' | 'provider';
  * });
  *
  * // Query error logs
- * const errors = await Commands.execute(DATA_COMMANDS.LIST, {
+ * const errors = await DataList.execute({
  *   collection: 'training_logs',
  *   filter: {
  *     sessionId: session.id,
@@ -65,7 +66,7 @@ export type LogSource = 'stdout' | 'stderr' | 'system' | 'provider';
  * });
  *
  * // Search logs
- * const cudaLogs = await Commands.execute(DATA_COMMANDS.LIST, {
+ * const cudaLogs = await DataList.execute({
  *   collection: 'training_logs',
  *   filter: {
  *     sessionId: session.id,

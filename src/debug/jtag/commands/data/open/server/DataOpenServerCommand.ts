@@ -11,6 +11,8 @@ import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/D
 import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
 import { createDataOpenResultFromParams } from '../shared/DataOpenTypes';
 
+import { DataOpen } from '../shared/DataOpenTypes';
+import { DataList } from '../../list/shared/DataListTypes';
 /**
  * Server-side command for opening database handles
  *
@@ -22,7 +24,7 @@ import { createDataOpenResultFromParams } from '../shared/DataOpenTypes';
  * @example
  * ```typescript
  * // Open training database
- * const result = await Commands.execute(DATA_COMMANDS.OPEN, {
+ * const result = await DataOpen.execute({
  *   adapter: 'sqlite',
  *   config: {
  *     path: '/datasets/prepared/continuum-git.sqlite',
@@ -31,7 +33,7 @@ import { createDataOpenResultFromParams } from '../shared/DataOpenTypes';
  * });
  *
  * // Use handle in other commands
- * const examples = await Commands.execute(DATA_COMMANDS.LIST, {
+ * const examples = await DataList.execute({
  *   dbHandle: result.dbHandle,
  *   collection: 'training_examples'
  * });

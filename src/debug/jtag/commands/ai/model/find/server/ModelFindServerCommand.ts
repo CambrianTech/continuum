@@ -12,6 +12,7 @@ import type { ModelListParams, ModelListResult } from '../../list/shared/ModelLi
 import type { ModelInfo } from '../../list/shared/ModelListTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+import { ModelList } from '../../list/shared/ModelListTypes';
 export class ModelFindServerCommand extends ModelFindCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('ai/model/find', context, subpath, commander);
@@ -26,9 +27,7 @@ export class ModelFindServerCommand extends ModelFindCommand {
         includeUnavailable: false // Only available models
       };
 
-      const listResult = await Commands.execute<ModelListParams, ModelListResult>(
-        'ai/model/list',
-        listParams
+      const listResult = await ModelList.execute(listParams
       );
 
       if (!listResult.success || listResult.models.length === 0) {
@@ -37,9 +36,7 @@ export class ModelFindServerCommand extends ModelFindCommand {
           // Try again without strict filtering
           console.log('🔍 MODEL FIND: No strict matches, trying fallback...');
           const fallbackParams = { ...listParams, capabilities: undefined };
-          const fallbackResult = await Commands.execute<ModelListParams, ModelListResult>(
-            'ai/model/list',
-            fallbackParams
+          const fallbackResult = await ModelList.execute(fallbackParams
           );
 
           if (fallbackResult.success && fallbackResult.models.length > 0) {

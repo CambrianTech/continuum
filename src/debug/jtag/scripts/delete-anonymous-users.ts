@@ -15,11 +15,13 @@ import type { DataDeleteParams, DataDeleteResult } from '../commands/data/delete
 import type { BaseEntity } from '../system/data/entities/BaseEntity';
 import type { UserEntity } from '../system/user/entities/UserEntity';
 
+import { DataList } from '../commands/data/list/shared/DataListTypes';
+import { DataDelete } from '../commands/data/delete/shared/DataDeleteTypes';
 async function main() {
 	console.log('🗑️  Deleting all anonymous users...\n');
 
 	// Get all users
-	const usersResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+	const usersResult = await DataList.execute({
 		collection: 'users',
 		limit: 1000,
 	});
@@ -55,7 +57,7 @@ async function main() {
 
 	for (const user of anonymousUsers) {
 		try {
-			const result = await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+			const result = await DataDelete.execute({
 				collection: 'users',
 				id: user.id,
 			});

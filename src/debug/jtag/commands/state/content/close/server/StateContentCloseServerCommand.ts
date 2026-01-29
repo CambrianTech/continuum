@@ -16,6 +16,8 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class StateContentCloseServerCommand extends CommandBase<StateContentCloseParams, StateContentCloseResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -35,7 +37,7 @@ export class StateContentCloseServerCommand extends CommandBase<StateContentClos
 
     try {
       // 1. Load user's UserStateEntity from database
-      const listResult = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await DataList.execute<UserStateEntity>({
         collection: 'user_states',
         filter: { userId: params.userId },
         limit: 1
@@ -55,7 +57,7 @@ export class StateContentCloseServerCommand extends CommandBase<StateContentClos
       userState.removeContentItem(params.contentItemId);
 
       // 3. Save updated userState to database
-      await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute({
         collection: 'user_states',
         id: userState.id,
         data: userState

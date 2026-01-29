@@ -24,6 +24,7 @@ import type { CommandParams, CommandResult } from '../../core/types/JTAGTypes';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import { getSearchWorkerClient } from '../../../shared/ipc/SearchWorkerClient';
 
+import { List } from '../../../commands/list/shared/ListTypes';
 /**
  * Type guard for command results that include a success field
  * Many commands add success: boolean to their result type
@@ -113,7 +114,7 @@ export class ToolRegistry {
     console.log('⚙️ ToolRegistry: Discovering available commands...');
 
     try {
-      const result = await Commands.execute('list', {}) as unknown as {
+      const result = await List.execute({}) as unknown as {
         commands?: CommandSignature[];
         success: boolean;
         error?: string;

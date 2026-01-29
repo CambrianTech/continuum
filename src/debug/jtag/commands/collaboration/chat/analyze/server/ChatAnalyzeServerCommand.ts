@@ -14,6 +14,7 @@ import { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import crypto from 'crypto';
 import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -42,9 +43,7 @@ export class ChatAnalyzeServerCommand extends ChatAnalyzeCommand {
     const resolvedRoomId = resolved.id;
 
     // Get all messages from room
-    const listResult = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const listResult = await DataList.execute<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         filter: { roomId: resolvedRoomId },
         orderBy: [{ field: 'timestamp', direction: 'asc' }],

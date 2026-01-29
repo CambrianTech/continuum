@@ -28,6 +28,9 @@ import type { CallEntity } from '../../system/data/entities/CallEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
 import { ContentService } from '../../system/state/ContentService';
 
+import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
+import { CollaborationLiveTranscription } from '../../commands/collaboration/live/transcription/shared/CollaborationLiveTranscriptionTypes';
 interface Participant {
   userId: UUID;
   displayName: string;
@@ -170,7 +173,7 @@ export class LiveWidget extends ReactiveWidget {
 
     // Persist via data/update
     try {
-      const result = await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>('data/update', {
+      const result = await DataUpdate.execute<UserStateEntity>({
         collection: 'user_states',
         id: this.userState.id as UUID,
         data: { callState: newCallState }
@@ -322,7 +325,7 @@ export class LiveWidget extends ReactiveWidget {
 
     try {
       // Query for active call in this room
-      const result = await Commands.execute<DataListParams, DataListResult<CallEntity>>('data/list', {
+      const result = await DataList.execute<CallEntity>({
         collection: 'calls',
         filter: { roomId: this.entityId, status: 'active' },
         limit: 1
@@ -479,7 +482,7 @@ export class LiveWidget extends ReactiveWidget {
             }
 
             try {
-              await Commands.execute<CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult>('collaboration/live/transcription', {
+              await CollaborationLiveTranscription.execute({
                 callSessionId: this.sessionId,
                 speakerId: transcription.userId,
                 speakerName: transcription.displayName,

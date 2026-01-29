@@ -13,6 +13,8 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { BaseEntity } from '@system/data/entities/BaseEntity';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, ActivityGetResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -34,7 +36,7 @@ export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, Act
 
     if (id) {
       // Get by primary key
-      const result = await Commands.execute<DataReadParams, DataReadResult>(DATA_COMMANDS.READ, {
+      const result = await DataRead.execute({
         collection: 'activities',
         id,
         context: params.context,
@@ -46,7 +48,7 @@ export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, Act
       }
     } else if (uniqueId) {
       // Get by uniqueId
-      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute({
         collection: 'activities',
         filter: { uniqueId },
         limit: 1,

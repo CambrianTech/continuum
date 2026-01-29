@@ -35,6 +35,7 @@ import { pageState, type PageState, type PageStateListener } from '../../system/
 import { widgetStateRegistry, type WidgetStateSlice } from '../../system/state/WidgetStateRegistry';
 import type { ReactiveStore } from '../../system/state/ReactiveStore';
 
+import { FileLoad } from '../../commands/file/load/shared/FileLoadTypes';
 // Global declarations for browser/server compatibility
 declare const performance: { now(): number };
 declare const document: { 
@@ -618,7 +619,7 @@ export abstract class BaseWidget extends HTMLElement {
     this.verbose() && console.log(`${emoji} ${this.config.widgetName}: Loading ${resourceType} from ${resourcePath}`);
     
     try {
-      const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+      const result = await FileLoad.execute({
         filepath: resourcePath
       });
       

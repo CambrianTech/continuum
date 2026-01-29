@@ -19,6 +19,8 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { RoutingService } from '@system/routing/RoutingService';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class ContentOpenServerCommand extends ContentOpenCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -31,7 +33,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       const userId = params.userId;
 
       // 1. Load user's UserStateEntity from database
-      const listResult = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await DataList.execute<UserStateEntity>({
         collection: 'user_states',
         filter: { userId },
         limit: 1
@@ -95,7 +97,7 @@ export class ContentOpenServerCommand extends ContentOpenCommand {
       }
 
       // 7. Save updated userState to database
-      await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute({
         collection: 'user_states',
         id: userState.id,
         data: userState

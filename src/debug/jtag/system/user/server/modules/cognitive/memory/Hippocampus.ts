@@ -43,6 +43,10 @@ import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../.
 import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { BackpressureService } from '../../../../../core/services/BackpressureService';
 
+import { DataOpen } from '../../../../../../commands/data/open/shared/DataOpenTypes';
+import { VectorSearch } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
+import { DataList } from '../../../../../../commands/data/list/shared/DataListTypes';
+import { DataCreate } from '../../../../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Snapshot of persona state at tick time
  * Used for logging and consolidation decisions
@@ -134,7 +138,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     try {
       this.log(`Opening LTM database: ${dbPath}`);
 
-      const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
+      const result = await DataOpen.execute({
         adapter: 'sqlite',
         config: {
           path: dbPath,
@@ -166,7 +170,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
           // Retry opening (will create fresh database)
           this.log(`🔄 Retrying database initialization with fresh file...`);
-          const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
+          const result = await DataOpen.execute({
             adapter: 'sqlite',
             config: {
               path: dbPath,
@@ -282,7 +286,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       };
 
       // Use Commands.execute to go through VectorSearchServerCommand which handles dbHandle
-      const result = await Commands.execute<VectorSearchParams, VectorSearchResult_CLI>('data/vector-search', searchOptions as VectorSearchParams);
+      const result = await VectorSearch.execute(searchOptions as VectorSearchParams);
 
       if (!result.success || !result.results) {
         this.log(`WARN: Vector search failed: ${result.error} - falling back to filter-based recall`);
@@ -335,7 +339,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       }
 
       // Query LTM
-      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute({
         dbHandle: this.memoryDbHandle,
         collection: 'memories',
         filter,
@@ -459,7 +463,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
       for (const memory of memories) {
         try {
-          const result = await Commands.execute<DataCreateParams, DataCreateResult<any>>(DATA_COMMANDS.CREATE, {
+          const result = await DataCreate.execute<any>({
             dbHandle: this.memoryDbHandle,
             collection: 'memories',
             data: memory
@@ -589,7 +593,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     let ltmCount = 0;
     if (this.memoryDbHandle) {
       try {
-        const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+        const result = await DataList.execute({
           dbHandle: this.memoryDbHandle,
           collection: 'memories',
           limit: 0  // Just get count

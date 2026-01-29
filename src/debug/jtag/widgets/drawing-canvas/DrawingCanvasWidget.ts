@@ -28,6 +28,9 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ACTIVITY_UNIQUE_IDS } from '../../system/data/constants/ActivityConstants';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 
+import { UserGetMe } from '../../commands/user/get-me/shared/UserGetMeTypes';
+import { CanvasStrokeList } from '../../commands/canvas/stroke/list/shared/CanvasStrokeListTypes';
+import { CanvasStrokeAdd } from '../../commands/canvas/stroke/add/shared/CanvasStrokeAddTypes';
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
@@ -175,7 +178,7 @@ export class DrawingCanvasWidget extends BaseWidget {
    */
   private async loadUserInfo(): Promise<void> {
     try {
-      const result = await Commands.execute<CommandParams, UserGetMeResult>('user/get-me', {});
+      const result = await UserGetMe.execute({});
       if (result.success && result.user) {
         this._userId = result.user.id;
         this._userName = result.user.displayName || 'Unknown';
@@ -221,9 +224,7 @@ export class DrawingCanvasWidget extends BaseWidget {
     if (!this.activityId) return;
 
     try {
-      const result = await Commands.execute<CanvasStrokeListParams, CanvasStrokeListResult>(
-        'canvas/stroke/list',
-        {
+      const result = await CanvasStrokeList.execute({
           canvasId: this.activityId,
           limit: 1000 // Load up to 1000 strokes for replay
         }
@@ -802,9 +803,7 @@ export class DrawingCanvasWidget extends BaseWidget {
       // Map DrawingTool to CanvasTool (they should be compatible except 'text')
       const tool = this.currentTool === 'text' ? 'brush' : this.currentTool;
 
-      const result = await Commands.execute<CanvasStrokeAddParams, CanvasStrokeAddResult>(
-        'canvas/stroke/add',
-        {
+      const result = await CanvasStrokeAdd.execute({
           canvasId: this.activityId,
           tool: tool as CanvasTool,
           points: this.currentStrokePoints,

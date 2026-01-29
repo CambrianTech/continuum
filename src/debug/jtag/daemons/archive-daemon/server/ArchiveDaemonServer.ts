@@ -19,6 +19,9 @@ import { Logger } from '../../../system/core/logging/Logger';
 import * as net from 'net';
 import type { ArchiveResponse } from '@shared/ipc/archive-worker/ArchiveMessageTypes';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
+import { DataDelete } from '../../../commands/data/delete/shared/DataDeleteTypes';
 export class ArchiveDaemonServer extends ArchiveDaemon {
   private checkCounter = 0;
   private archiveConfigs: Map<string, ArchiveConfig> = new Map(); // Cached configs (re-scanned periodically)
@@ -169,7 +172,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
       for (const [collectionName, archiveConfig] of this.archiveConfigs.entries()) {
         try {
           // Count rows in active table
-          const countResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+          const countResult = await DataList.execute({
             collection: collectionName,
             limit: 0
           });
@@ -228,7 +231,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
     const registry = DatabaseHandleRegistry.getInstance();
 
     // Count rows in current archive file
-    const countResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+    const countResult = await DataList.execute({
       collection,
       dbHandle: archiveConfig.destHandle,
       limit: 0
@@ -302,7 +305,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
 
     for (const row of rows) {
       try {
-        await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+        await DataCreate.execute({
           collection,
           data: row,
           dbHandle: destHandle,
@@ -322,7 +325,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
     }
 
     // Step 2: Verify all copied rows exist in archive
-    const verifyResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+    const verifyResult = await DataList.execute({
       collection,
       dbHandle: destHandle,
       filter: { id: { $in: copiedIds } },
@@ -341,7 +344,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
     let deletedCount = 0;
     for (const id of verifiedIds) {
       try {
-        await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+        await DataDelete.execute({
           collection,
           id,
           dbHandle: sourceHandle,
@@ -391,7 +394,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
     const destHandle = archiveConfig.destHandle;      // e.g., 'archive'
 
     // Get current count from source handle
-    const countResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+    const countResult = await DataList.execute({
       collection,
       dbHandle: sourceHandle,
       limit: 0
@@ -420,7 +423,7 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
       const batchSize = Math.min(rowsPerArchive, rowsThisCycle - totalArchived);
 
       // Get oldest rows from source handle (ordered by archiveConfig.orderByField)
-      const batchResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const batchResult = await DataList.execute({
         collection,
         dbHandle: sourceHandle,  // Read from source
         limit: batchSize,
@@ -464,14 +467,14 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
 
       try {
         // Count active rows from source handle
-        const activeResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+        const activeResult = await DataList.execute({
           collection: collectionName,
           dbHandle: archiveConfig.sourceHandle,
           limit: 0
         });
 
         // Count archived rows from destination handle (SAME collection name!)
-        const archiveResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+        const archiveResult = await DataList.execute({
           collection: collectionName,  // Same name, different handle = different database
           dbHandle: archiveConfig.destHandle,
           limit: 0

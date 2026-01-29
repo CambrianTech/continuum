@@ -13,6 +13,7 @@ import { Commands } from '../../../core/shared/Commands';
 import type { CommandSignature, ListResult } from '../../../../commands/list/shared/ListTypes';
 import { ToolRegistry } from '../../../tools/server/ToolRegistry';
 
+import { List } from '../../../../commands/list/shared/ListTypes';
 /**
  * Result from tool execution
  */
@@ -192,7 +193,7 @@ export async function refreshToolDefinitions(): Promise<void> {
     log('Refreshing tool cache from Commands system...');
 
     // Query list command to discover all available commands
-    const result = await Commands.execute('list', {}) as unknown as ListResult;
+    const result = await List.execute({}) as unknown as ListResult;
 
     if (!result.success || !result.commands) {
       log(`❌ Failed to refresh tools: ${result.error}`);

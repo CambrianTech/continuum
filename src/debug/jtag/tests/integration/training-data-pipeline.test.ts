@@ -29,6 +29,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+import { DataClose } from '../../commands/data/close/shared/DataCloseTypes';
+import { DataOpen } from '../../commands/data/open/shared/DataOpenTypes';
+import { DataCreate } from '../../commands/data/create/shared/DataCreateTypes';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 describe('Training Data Pipeline Integration Test', () => {
   let tempDbPath: string;
   let dbHandle: DbHandle;
@@ -44,7 +48,7 @@ describe('Training Data Pipeline Integration Test', () => {
     // Clean up: close database handle if still open
     if (dbHandle && dbHandle !== 'default') {
       try {
-        await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, {
+        await DataClose.execute({
           dbHandle
         });
         console.log(`✅ Closed database handle: ${dbHandle}`);
@@ -63,7 +67,7 @@ describe('Training Data Pipeline Integration Test', () => {
   it('should create training database and validate MLX-ready data', { timeout: 60000 }, async () => {
     // Step 1: Open training database
     console.log('\n🔧 Step 1: Opening training database...');
-    const openResult = await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, {
+    const openResult = await DataOpen.execute({
       adapter: 'sqlite',
       config: {
         path: tempDbPath,
@@ -119,7 +123,7 @@ describe('Training Data Pipeline Integration Test', () => {
       const example = trainingExamples[i];
       console.log(`  Creating example ${i + 1}/${trainingExamples.length}...`);
 
-      const createResult = await Commands.execute<DataCreateResult>(DATA_COMMANDS.CREATE, {
+      const createResult = await DataCreate.execute({
         collection: 'training_examples',
         data: example,
         dbHandle
@@ -137,7 +141,7 @@ describe('Training Data Pipeline Integration Test', () => {
     // Step 3: Query database to verify data exists
     console.log('\n🔧 Step 3: Querying database to verify data...');
 
-    const listResult = await Commands.execute<DataListResult>(DATA_COMMANDS.LIST, {
+    const listResult = await DataList.execute({
       collection: 'training_examples',
       dbHandle
     });
@@ -212,7 +216,7 @@ describe('Training Data Pipeline Integration Test', () => {
     // Step 7: Close database handle
     console.log('\n🔧 Step 7: Closing database handle...');
 
-    const closeResult = await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, {
+    const closeResult = await DataClose.execute({
       dbHandle
     });
 

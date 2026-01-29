@@ -26,6 +26,7 @@ import type {
   ShouldRespondFastResult
 } from '../../../../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 
+import { ShouldRespondFast } from '../../../../../../commands/ai/should-respond-fast/shared/ShouldRespondFastTypes';
 /**
  * Phase 1: Heuristic-based Sentinel (wraps ShouldRespondFast command)
  */
@@ -35,9 +36,7 @@ export class SentinelHeuristicAdapter implements ISentinelResponseAdapter {
    */
   async shouldRespond(input: SentinelResponseInput): Promise<SentinelResponseDecision> {
     // Call the existing ShouldRespondFast command
-    const result = await Commands.execute<ShouldRespondFastParams, ShouldRespondFastResult>(
-      'ai/should-respond-fast',
-      {
+    const result = await ShouldRespondFast.execute({
         personaId: input.personaId,
         contextId: input.contextId,
         messageId: input.messageId,

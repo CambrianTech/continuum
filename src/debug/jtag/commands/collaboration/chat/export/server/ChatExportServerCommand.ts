@@ -16,6 +16,7 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class ChatExportServerCommand extends ChatExportCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -88,9 +89,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
     }
 
     // Query messages using data/list command
-    const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<ChatMessageEntity>({
         collection: collection,
         filter: filter,
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -149,9 +148,7 @@ export class ChatExportServerCommand extends ChatExportCommand {
    */
   private async findRoom(roomIdOrName: string, params: ChatExportParams): Promise<{ id: import('@system/core/types/CrossPlatformUUID').UUID; entity: RoomEntity }> {
     // Query all rooms using data/list command
-    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<RoomEntity>({
         collection: RoomEntity.collection,
         filter: {},
         context: params.context,

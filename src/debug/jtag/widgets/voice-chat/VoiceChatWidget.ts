@@ -11,6 +11,8 @@ import { Commands } from '@system/core/shared/Commands';
 import type { VoiceStartParams, VoiceStartResult } from '@commands/voice/start/shared/VoiceStartTypes';
 import type { VoiceStopParams, VoiceStopResult } from '@commands/voice/stop/shared/VoiceStopTypes';
 
+import { VoiceStart } from '../../commands/voice/start/shared/VoiceStartTypes';
+import { VoiceStop } from '../../commands/voice/stop/shared/VoiceStopTypes';
 // Audio configuration
 const SAMPLE_RATE = 16000;     // Target sample rate for speech
 const CHUNK_DURATION_MS = 20;  // 20ms chunks
@@ -313,7 +315,7 @@ export class VoiceChatWidget {
 
       // Start voice session via command to get handle
       if (!this.handle) {
-        const result = await Commands.execute<VoiceStartParams, VoiceStartResult>('voice/start', {
+        const result = await VoiceStart.execute({
           room: this.roomId || 'general',
         });
 
@@ -353,7 +355,7 @@ export class VoiceChatWidget {
     // Stop session via command
     if (this.handle) {
       try {
-        await Commands.execute<VoiceStopParams, VoiceStopResult>('voice/stop', { handle: this.handle });
+        await VoiceStop.execute({ handle: this.handle });
       } catch (error) {
         console.warn('Failed to stop voice session:', error);
       }

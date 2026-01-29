@@ -18,6 +18,8 @@ import { Events } from '@system/core/shared/Events';
 import type { ActivityEntity, ActivityParticipant } from '@system/data/entities/ActivityEntity';
 import { generateActivityUniqueId } from '@system/activities/shared/ActivityTypes';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParams, ActivityCreateResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -38,7 +40,7 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     }
 
     // Verify recipe exists
-    const recipeResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+    const recipeResult = await DataList.execute({
       collection: 'recipes',
       filter: { uniqueId: recipeId },
       limit: 1,
@@ -106,7 +108,7 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     };
 
     // Persist via data/create
-    const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+    const createResult = await DataCreate.execute({
       collection: 'activities',
       data: activityData,
       context: params.context,

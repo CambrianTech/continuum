@@ -15,6 +15,7 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
 import type { BaseEntity } from '@system/data/entities/BaseEntity';
 
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
 export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParams, AiContextSliceResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -39,7 +40,7 @@ export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParam
 
     try {
       // Read the entity
-      const result = await Commands.execute<DataReadParams, DataReadResult<BaseEntity>>(DATA_COMMANDS.READ, {
+      const result = await DataRead.execute({
         collection,
         id: params.id
       });
@@ -140,7 +141,7 @@ export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParam
 
       // Thread context (replyTo field)
       if (data.replyTo) {
-        const parentResult = await Commands.execute<DataReadParams, DataReadResult<BaseEntity>>(DATA_COMMANDS.READ, {
+        const parentResult = await DataRead.execute({
           collection,
           id: data.replyTo
         });
@@ -155,7 +156,7 @@ export class AiContextSliceServerCommand extends CommandBase<AiContextSliceParam
       );
       if (relatedIdsField && data[relatedIdsField].length > 0) {
         for (const relatedId of data[relatedIdsField].slice(0, limit)) {
-          const relatedResult = await Commands.execute<DataReadParams, DataReadResult<BaseEntity>>(DATA_COMMANDS.READ, {
+          const relatedResult = await DataRead.execute({
             collection,
             id: relatedId
           });

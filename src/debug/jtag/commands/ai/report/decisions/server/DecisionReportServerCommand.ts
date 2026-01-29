@@ -22,6 +22,8 @@ import type { FileSaveParams, FileSaveResult } from '../../../../file/save/share
 import * as path from 'path';
 import * as fs from 'fs';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { FileSave } from '../../../../file/save/shared/FileSaveTypes';
 export class DecisionReportServerCommand extends CommandBase<DecisionReportParams, DecisionReportResult> {
   static readonly commandName = 'ai/report/decisions';
 
@@ -63,9 +65,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
     console.log(`🔍 SERVER: Querying decisions with filter:`, filter);
 
     // Execute data/list command
-    const listResult = await Commands.execute<DataListParams, DataListResult<CoordinationDecisionEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const listResult = await DataList.execute<CoordinationDecisionEntity>({
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         filter: Object.keys(filter).length > 0 ? filter : undefined,
         orderBy: [{ field: 'createdAt', direction: 'desc' }],  // ✅ FIX: Order by newest first
@@ -143,9 +143,7 @@ export class DecisionReportServerCommand extends CommandBase<DecisionReportParam
     console.log(`💾 SERVER: Saving report to ${outputPath}`);
 
     // Save to disk using file/save command
-    const saveResult = await Commands.execute<FileSaveParams, FileSaveResult>(
-      'file/save',
-      {
+    const saveResult = await FileSave.execute({
         filepath: outputPath,
         content: markdown,
         encoding: 'utf-8',

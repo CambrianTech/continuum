@@ -28,6 +28,7 @@ import {
   NumberField
 } from '../../../../system/data/decorators/FieldDecorators';
 
+import { DataList } from '../../../../commands/data/list/shared/DataListTypes';
 export type TrainingStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type TrainingProvider = 'peft' | 'mlx' | 'openai' | 'deepseek' | 'anthropic';
 
@@ -135,7 +136,7 @@ export class TrainingSessionEntity extends BaseEntity {
    *
    * Use this handle with data/list to fetch training examples:
    * ```typescript
-   * const examples = await Commands.execute(DATA_COMMANDS.LIST, {
+   * const examples = await DataList.execute({
    *   dbHandle: session.datasetHandle,
    *   collection: 'training_examples'
    * });

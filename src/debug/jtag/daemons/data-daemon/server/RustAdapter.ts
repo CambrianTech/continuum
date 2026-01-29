@@ -17,7 +17,7 @@
  * Usage:
  * ```typescript
  * // Via data/open command
- * const handle = await Commands.execute('data/open', {
+ * const handle = await DataOpen.execute({
  *   adapter: 'rust',
  *   config: {
  *     filename: '~/.continuum/data/test-rust.sqlite',
@@ -44,6 +44,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { Logger } from '../../../system/core/logging/Logger';
 import { DataWorkerClient } from '../../../shared/ipc/data-worker/DataWorkerClient';
 
+import { DataOpen } from '../../../commands/data/open/shared/DataOpenTypes';
 const log = Logger.create('RustAdapter', 'data/rust');
 
 /**

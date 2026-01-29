@@ -14,6 +14,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import { createDataListParams } from '../../../data/list/shared/DataListTypes';
 
+import { DataList } from '../../../data/list/shared/DataListTypes';
 export class AICostServerCommand extends AICostCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('ai/cost', context, subpath, commander);
@@ -52,9 +53,7 @@ export class AICostServerCommand extends AICostCommand {
         }
       );
 
-      const listResult = await Commands.execute<DataListParams, DataListResult<AIGenerationEntity>>(
-        DATA_COMMANDS.LIST,
-        listParams
+      const listResult = await DataList.execute<AIGenerationEntity>(listParams
       );
 
       if (!listResult.success || !listResult.items) {

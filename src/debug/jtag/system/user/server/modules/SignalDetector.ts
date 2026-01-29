@@ -20,6 +20,7 @@ import type { AIGenerateParams, AIGenerateResult } from '../../../../commands/ai
 import { Commands } from '../../../core/shared/Commands';
 import { contentPreview } from '../../../../shared/utils/StringUtils';
 
+import { AIGenerate } from '../../../../commands/ai/generate/shared/AIGenerateTypes';
 /**
  * Signal types that can trigger training
  */
@@ -231,7 +232,7 @@ export class SignalDetector {
         systemPrompt: 'You are a signal classifier. Output ONLY valid JSON, no other text.'
       };
 
-      const result = await Commands.execute('ai/generate', params) as AIGenerateResult;
+      const result = await AIGenerate.execute(params) as AIGenerateResult;
 
       if (!result.success || !result.text) {
         return this.quickClassify(userText);  // Fallback to heuristics

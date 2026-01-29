@@ -55,6 +55,8 @@ import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage } from './QueueItemTypes';
 
+import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Response generation result
  */
@@ -235,7 +237,7 @@ export class PersonaResponseGenerator {
         return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
       }
 
-      const result = await Commands.execute<AiDetectSemanticLoopParams, AiDetectSemanticLoopResult>('ai/detect-semantic-loop', {
+      const result = await AiDetectSemanticLoop.execute({
         messageText: responseText,
         personaId: this.personaId,
         roomId: roomId,
@@ -1464,7 +1466,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             backend: 'server',
             data: responseMessage
           })
-        : await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+        : await DataCreate.execute<ChatMessageEntity>({
             collection: ChatMessageEntity.collection,
             backend: 'server',
             data: responseMessage

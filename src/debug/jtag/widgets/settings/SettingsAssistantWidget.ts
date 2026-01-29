@@ -20,6 +20,7 @@ import {
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { Commands } from '../../system/core/shared/Commands';
 
+import { AIGenerate } from '../../commands/ai/generate/shared/AIGenerateTypes';
 interface ProviderTestedEvent {
   provider: string;
   configKey: string;
@@ -206,7 +207,7 @@ export class SettingsAssistantWidget extends ReactiveWidget {
 
     try {
       // Use ai/generate to create helpful response
-      const result = await Commands.execute('ai/generate', {
+      const result = await AIGenerate.execute({
         prompt: `The user is trying to configure ${provider} API in their settings. The test failed with status "${status}" and message: "${errorMessage || 'No details'}".
 
 Give a brief, helpful troubleshooting tip (2-3 sentences max). Focus on the most likely cause and solution. Be friendly and concise.`,

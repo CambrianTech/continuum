@@ -33,6 +33,11 @@ import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
+import { DataOpen } from '../../../../../commands/data/open/shared/DataOpenTypes';
+import { DataList } from '../../../../../commands/data/list/shared/DataListTypes';
+import { DataCreate } from '../../../../../commands/data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../../../commands/data/update/shared/DataUpdateTypes';
+import { VectorSearch } from '../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 /**
  * Timeline event - internal interface matching TimelineEventEntity
  */
@@ -172,7 +177,7 @@ export class PersonaTimeline {
     try {
       this.log.debug(`Opening timeline database: ${this.dbPath}`);
 
-      const result = await Commands.execute<DataOpenParams, DataOpenResult>(DATA_COMMANDS.OPEN, {
+      const result = await DataOpen.execute({
         adapter: 'sqlite',
         config: {
           path: this.dbPath,
@@ -216,7 +221,7 @@ export class PersonaTimeline {
       this.log.info(`Migrating ${legacyEvents.length} legacy timeline events to SQLite...`);
 
       // Check if we already have events in the database
-      const existingResult = await Commands.execute<DataListParams, DataListResult<TimelineEventEntity>>(DATA_COMMANDS.LIST, {
+      const existingResult = await DataList.execute<TimelineEventEntity>({
         dbHandle: this.dbHandle!,
         collection: TimelineEventEntity.collection,
         filter: { personaId: this.personaId },
@@ -236,7 +241,7 @@ export class PersonaTimeline {
       for (const event of legacyEvents) {
         try {
           const entity = this.eventToEntity(event);
-          await Commands.execute<DataCreateParams, DataCreateResult<TimelineEventEntity>>(DATA_COMMANDS.CREATE, {
+          await DataCreate.execute<TimelineEventEntity>({
             dbHandle: this.dbHandle!,
             collection: TimelineEventEntity.collection,
             data: entity
@@ -341,7 +346,7 @@ export class PersonaTimeline {
 
     // Store in database
     const entity = this.eventToEntity(event);
-    const result = await Commands.execute<DataCreateParams, DataCreateResult<TimelineEventEntity>>(DATA_COMMANDS.CREATE, {
+    const result = await DataCreate.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
       data: entity
@@ -367,7 +372,7 @@ export class PersonaTimeline {
   async getRecent(limit: number = 50): Promise<TimelineEvent[]> {
     await this.ensureInitialized();
 
-    const result = await Commands.execute<DataListParams, DataListResult<TimelineEventEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
       filter: { personaId: this.personaId },
@@ -388,7 +393,7 @@ export class PersonaTimeline {
   async getForContext(contextId: UUID, limit: number = 50): Promise<TimelineEvent[]> {
     await this.ensureInitialized();
 
-    const result = await Commands.execute<DataListParams, DataListResult<TimelineEventEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
       filter: { personaId: this.personaId, contextId },
@@ -436,7 +441,7 @@ export class PersonaTimeline {
       filter.timestamp = { $gte: options.since.toISOString() };
     }
 
-    const result = await Commands.execute<DataListParams, DataListResult<TimelineEventEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
       filter,
@@ -468,7 +473,7 @@ export class PersonaTimeline {
   ): Promise<TimelineEvent[]> {
     await this.ensureInitialized();
 
-    const result = await Commands.execute<DataListParams, DataListResult<TimelineEventEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
       filter: {
@@ -556,7 +561,7 @@ export class PersonaTimeline {
     await this.ensureInitialized();
 
     // Look up from database
-    const result = await Commands.execute<DataListParams, DataListResult<TimelineEventEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<TimelineEventEntity>({
       dbHandle: this.dbHandle!,
       collection: TimelineEventEntity.collection,
       filter: { personaId: this.personaId, contextId },
@@ -689,7 +694,7 @@ export class PersonaTimeline {
     await this.ensureInitialized();
 
     try {
-      await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute({
         dbHandle: this.dbHandle!,
         collection: TimelineEventEntity.collection,
         id: eventId,
@@ -736,7 +741,7 @@ export class PersonaTimeline {
         filter.timestamp = { $gte: options.since.toISOString() };
       }
 
-      const result = await Commands.execute<VectorSearchParams, VectorSearchResult_CLI<TimelineEventEntity>>('data/vector-search', {
+      const result = await VectorSearch.execute<TimelineEventEntity>({
         dbHandle: this.dbHandle!,
         collection: TimelineEventEntity.collection,
         queryText: query,

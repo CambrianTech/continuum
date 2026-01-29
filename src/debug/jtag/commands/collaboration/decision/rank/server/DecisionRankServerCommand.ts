@@ -29,6 +29,10 @@ import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { ChatSend } from '../../../chat/send/shared/ChatSendTypes';
 /**
  * DecisionRankServerCommand - Server implementation
  */
@@ -84,7 +88,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       if (params.voterId) {
         // Explicit voterId provided
-        const voterResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
+        const voterResult = await DataRead.execute<UserEntity>({
           collection: COLLECTIONS.USERS,
           id: params.voterId
         });
@@ -126,7 +130,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         const proposalShortId = normalizeShortId(params.proposalId);
 
         // Query for proposals ending with this short ID
-        const proposalsResult = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
+        const proposalsResult = await DataList.execute<DecisionProposalEntity>({
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });
@@ -141,7 +145,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Get proposal
-      const proposalResult = await Commands.execute<DataReadParams, DataReadResult<DecisionProposalEntity>>(DATA_COMMANDS.READ, {
+      const proposalResult = await DataRead.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });
@@ -180,7 +184,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       const now = Date.now();
       if (proposal.deadline && now > proposal.deadline) {
         // Proposal expired - mark as expired and don't accept vote
-        await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
+        await DataUpdate.execute<DecisionProposalEntity>({
           collection: COLLECTIONS.DECISION_PROPOSALS,
           id: resolvedProposalId,
           data: { status: 'expired' }
@@ -229,7 +233,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Update proposal with vote
-      await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId,
         data: { votes }
@@ -266,7 +270,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
         if (winner) {
           // Update proposal status
-          await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
+          await DataUpdate.execute<DecisionProposalEntity>({
             collection: COLLECTIONS.DECISION_PROPOSALS,
             id: resolvedProposalId,
             data: { status: 'complete' }
@@ -275,7 +279,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
           // Announce winner in chat
           const announcementMessage = `🏆 **Decision Complete: ${proposal.topic}**\n\n**Winner:** ${winner.label} (${winner.wins} pairwise wins)\n\nTotal votes: ${votes.length}\nProposal ID: ${resolvedProposalId}`;
 
-          await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+          await ChatSend.execute({
             message: announcementMessage,
             room: 'general'
           });

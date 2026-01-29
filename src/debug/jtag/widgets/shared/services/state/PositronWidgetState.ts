@@ -29,6 +29,8 @@
 
 import { Events } from '@system/core/shared/Events';
 
+import { WidgetStateDebug } from '../../../../commands/development/debug/widget-state/shared/WidgetStateDebugTypes';
+import { SessionGetId } from '../../../../commands/session/get-id/shared/SessionGetIdTypes';
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
@@ -214,7 +216,7 @@ class PositronWidgetStateService {
       const sessionId = await this.getSessionId();
 
       verbose() && console.log('🧠 PositronWidgetState: Calling widget-state command with session:', sessionId);
-      const result = await Commands.execute('development/debug/widget-state', {
+      const result = await WidgetStateDebug.execute({
         setContext: this.currentContext,
         contextSessionId: sessionId
       } as any);
@@ -231,7 +233,7 @@ class PositronWidgetStateService {
   private async getSessionId(): Promise<string> {
     try {
       const { Commands } = await import('../../../../system/core/shared/Commands');
-      const result = await Commands.execute('session/get-id', {} as any) as any;
+      const result = await SessionGetId.execute({} as any) as any;
       return result?.sessionId || 'unknown';
     } catch {
       return 'unknown';

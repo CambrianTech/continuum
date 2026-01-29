@@ -12,6 +12,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { Events } from '../../system/core/shared/Events';
 import type { LogInfo, LogsListResult } from '../../commands/logs/list/shared/LogsListTypes';
 
+import { LogsList } from '../../commands/logs/list/shared/LogsListTypes';
 export const LOGS_NAV_EVENTS = {
   LOG_SELECTED: 'logs:log:selected'
 } as const;
@@ -185,7 +186,7 @@ export class LogsNavWidget extends ReactiveWidget {
     this.isLoading = true;
 
     try {
-      const result = await Commands.execute('logs/list', {
+      const result = await LogsList.execute({
         includeStats: true
       } as any) as LogsListResult;
 

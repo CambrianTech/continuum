@@ -13,6 +13,8 @@ import { Events } from '@system/core/shared/Events';
 import type { ActivityParticipant } from '@system/data/entities/ActivityEntity';
 import type { ActivityGetResult } from '../../get/shared/ActivityGetTypes';
 
+import { ActivityGet } from '../../get/shared/ActivityGetTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, ActivityJoinResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -36,7 +38,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
     const isUUID = typeof activityId === 'string' && activityId.includes('-') && activityId.length === 36;
 
     // Get the activity
-    const getResult = await Commands.execute('collaboration/activity/get', {
+    const getResult = await ActivityGet.execute({
       id: isUUID ? activityId : undefined,
       uniqueId: isUUID ? undefined : activityId,
       context: params.context,
@@ -72,7 +74,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
     };
 
     // Update activity with new participant
-    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+    const updateResult = await DataUpdate.execute({
       collection: 'activities',
       id: activity.id,
       data: {

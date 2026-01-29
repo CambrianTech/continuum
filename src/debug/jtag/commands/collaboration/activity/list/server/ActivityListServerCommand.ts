@@ -12,6 +12,7 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { BaseEntity } from '@system/data/entities/BaseEntity';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class ActivityListServerCommand extends CommandBase<ActivityListParams, ActivityListResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -47,7 +48,7 @@ export class ActivityListServerCommand extends CommandBase<ActivityListParams, A
     }
 
     // Query activities
-    const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute({
       collection: 'activities',
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       limit,

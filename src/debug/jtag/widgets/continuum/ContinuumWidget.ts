@@ -25,6 +25,7 @@ import { ThemeRegistry } from '../shared/themes/ThemeTypes';
 import { positronicBridge } from '../../system/state/PositronicBridge';
 import { styles as CONTINUUM_STYLES } from './public/continuum-widget.styles';
 
+import { FileLoad } from '../../commands/file/load/shared/FileLoadTypes';
 export class ContinuumWidget extends ReactiveWidget {
   // Static styles using compiled SCSS
   static override styles = [
@@ -140,10 +141,10 @@ export class ContinuumWidget extends ReactiveWidget {
     try {
       // Always load base CSS first (provides layout and default variables)
       const [baseLayoutResult, baseThemeResult] = await Promise.all([
-        Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+        FileLoad.execute({
           filepath: 'widgets/shared/themes/base/base.css'
         }),
-        Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+        FileLoad.execute({
           filepath: 'widgets/shared/themes/base/theme.css'
         })
       ]);
@@ -164,7 +165,7 @@ export class ContinuumWidget extends ReactiveWidget {
 
         for (const fileName of themeFiles) {
           try {
-            const themeFileResult = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+            const themeFileResult = await FileLoad.execute({
               filepath: `widgets/shared/themes/${this.currentTheme}/${fileName}`
             });
             if (themeFileResult.content) {

@@ -27,6 +27,8 @@ import type { LoRATrainingRequest, TrainingDataset } from '../../../../system/ge
 import { getSecret } from '../../../../system/secrets/SecretManager';
 import * as fs from 'fs';
 
+import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
 /**
  * Create fine-tuning adapter instance for a given provider
  * Fire-and-forget pattern - instantiate when needed, let it handle persistence
@@ -246,7 +248,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       }
 
       // 6. Save to database
-      const createResult = await Commands.execute<DataCreateParams, DataCreateResult<FineTuningJobEntity>>(DATA_COMMANDS.CREATE, {
+      const createResult = await DataCreate.execute<FineTuningJobEntity>({
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         data: jobEntity
       });
@@ -286,7 +288,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       if (!trainingResult.success) {
         // Training failed - update job status
-        await Commands.execute<DataUpdateParams, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
+        await DataUpdate.execute<FineTuningJobEntity>({
           collection: COLLECTIONS.FINE_TUNING_JOBS,
           id: jobId,
           data: {
@@ -309,7 +311,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       console.log(`✅ GENOME JOB CREATE: Training started, session ID: ${trainingResult.modelId}`);
 
       // Update job entity with training session info
-      await Commands.execute<DataUpdateParams, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<FineTuningJobEntity>({
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: jobId,
         data: {

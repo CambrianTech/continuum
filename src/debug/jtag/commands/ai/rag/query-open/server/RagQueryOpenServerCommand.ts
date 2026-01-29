@@ -18,6 +18,8 @@ import type { CodeIndexEntity } from '../../../../../system/data/entities/CodeIn
 import type { DataListParams, DataListResult } from '../../../../data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../../system/data/entities/BaseEntity';
 
+import { EmbeddingGenerate } from '../../../embedding/generate/shared/EmbeddingGenerateTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 /**
  * Query handle state stored in memory
  * In production this would be persisted to database with TTL
@@ -64,7 +66,7 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
         console.log('🔎 Using provided embedding');
       } else {
         // Generate embedding for query
-        const embeddingResult = await Commands.execute('ai/embedding/generate', {
+        const embeddingResult = await EmbeddingGenerate.execute({
           input: params.query,
           model: embeddingModel,
           context: this.context,
@@ -97,7 +99,7 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
 
       // Step 2: Fetch all indexed entries from database
       // TODO: Add filters for fileType, exportType when fetching
-      const listResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await DataList.execute({
         collection: 'code_index',
         orderBy: [{ field: 'lastIndexed', direction: 'desc' }],
         context: this.context,

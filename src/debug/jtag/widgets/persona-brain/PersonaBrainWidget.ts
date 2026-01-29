@@ -40,6 +40,10 @@ import { styles as personaBrainStyles } from './styles/persona-brain-widget.styl
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { ALL_PANEL_STYLES } from '../shared/styles';
 
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
+import { LogsConfig } from '../../commands/logs/config/shared/LogsConfigTypes';
+import { LogsList } from '../../commands/logs/list/shared/LogsListTypes';
+import { AIStatus } from '../../commands/ai/status/shared/AIStatusTypes';
 interface PersonaData {
   id: UUID;
   uniqueId: string;
@@ -218,7 +222,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
         ? { id: this.personaId }
         : { uniqueId: this.personaId };
 
-      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute({
         collection: 'users',
         filter,
         limit: 1
@@ -260,7 +264,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
    */
   private async loadLoggingConfig(): Promise<void> {
     try {
-      const result = await Commands.execute('logs/config', {
+      const result = await LogsConfig.execute({
         persona: this.personaId
       } as any) as any;
 
@@ -281,7 +285,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
    */
   private async loadAvailableLogs(): Promise<void> {
     try {
-      const result = await Commands.execute('logs/list', {
+      const result = await LogsList.execute({
         personaUniqueId: this.personaId
       } as any) as any;
 
@@ -304,7 +308,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
    */
   private async togglePersonaLogging(enabled: boolean): Promise<void> {
     try {
-      const result = await Commands.execute('logs/config', {
+      const result = await LogsConfig.execute({
         persona: this.personaId,
         action: enabled ? 'enable' : 'disable'
       } as any) as any;
@@ -335,7 +339,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
     const isEnabled = this.isCategoryEnabled(category);
 
     try {
-      const result = await Commands.execute('logs/config', {
+      const result = await LogsConfig.execute({
         persona: this.personaId,
         action: isEnabled ? 'disable' : 'enable',
         category
@@ -390,15 +394,15 @@ export class PersonaBrainWidget extends ReactiveWidget {
       // Fetch all stats in parallel for better performance
       const [aiStatusResult, memoryCountResult, toolLogsResult] = await Promise.all([
         // 1. Get AI status (model, provider, health)
-        Commands.execute('ai/status', {} as any) as Promise<any>,
+        AIStatus.execute({} as any) as Promise<any>,
         // 2. Get memory count
-        Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+        DataList.execute({
           collection: 'memories',
           filter: { personaId: this.persona.id },
           limit: 1  // We just need the count
         }),
         // 3. Get tool execution count
-        Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+        DataList.execute({
           collection: 'tool_execution_logs',
           filter: { personaId: this.persona.id },
           limit: 1

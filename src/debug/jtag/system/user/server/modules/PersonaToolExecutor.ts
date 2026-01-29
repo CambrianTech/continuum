@@ -27,6 +27,7 @@ import { RoomResolver } from '../../../core/server/RoomResolver';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Parsed tool call from AI response
  */
@@ -522,9 +523,7 @@ ${result.error || 'Unknown error'}
     message.reactions = [];
 
     // Store via Commands system (universal pattern)
-    await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(
-      DATA_COMMANDS.CREATE,
-      {
+    await DataCreate.execute<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         backend: 'server',
         data: message

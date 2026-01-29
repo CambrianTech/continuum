@@ -34,6 +34,9 @@ import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/da
 import type { TrainingSessionEntity } from '../../../../system/data/entities/TrainingSessionEntity';
 import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 
+import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
+import { DataRead } from '../../../../commands/data/read/shared/DataReadTypes';
+import { DataUpdate } from '../../../../commands/data/update/shared/DataUpdateTypes';
 /**
  * Server-side base class with database operations
  *
@@ -237,7 +240,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     /* eslint-enable @typescript-eslint/naming-convention */
 
     // Create session entity
-    const result = await Commands.execute<DataCreateParams, DataCreateResult<TrainingSessionEntity>>(DATA_COMMANDS.CREATE, {
+    const result = await DataCreate.execute<TrainingSessionEntity>({
       collection: 'training_sessions',
       data: {
         personaId: request.personaId,
@@ -296,7 +299,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     const { Commands } = await import('../../../../system/core/shared/Commands');
     /* eslint-enable @typescript-eslint/naming-convention */
 
-    const result = await Commands.execute<DataReadParams, DataReadResult<TrainingSessionEntity>>(DATA_COMMANDS.READ, {
+    const result = await DataRead.execute<TrainingSessionEntity>({
       collection: 'training_sessions',
       id: sessionId
     });
@@ -343,7 +346,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       };
     }
 
-    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+    await DataUpdate.execute({
       collection: 'training_sessions',
       id: sessionId,
       data: updateData

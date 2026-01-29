@@ -19,6 +19,9 @@ import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/s
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { RoomResolver } from '@system/core/server/RoomResolver';
 
+import { DataList } from '../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
+import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
 export class DmServerCommand extends DmCommand {
 
 
@@ -92,9 +95,7 @@ export class DmServerCommand extends DmCommand {
     const callerIdFromParams = (params as any).callerId || (params as any).personaId;
 
     if (callerIdFromParams) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: callerIdFromParams },
           limit: 1,
@@ -113,9 +114,7 @@ export class DmServerCommand extends DmCommand {
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: identity.userId },
           limit: 1,
@@ -144,9 +143,7 @@ export class DmServerCommand extends DmCommand {
 
     for (const ref of participantRefs) {
       // Try by ID first
-      let result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      let result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: ref },
           limit: 1,
@@ -161,9 +158,7 @@ export class DmServerCommand extends DmCommand {
       }
 
       // Try by uniqueId
-      result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { uniqueId: ref },
           limit: 1,
@@ -196,9 +191,7 @@ export class DmServerCommand extends DmCommand {
     params: DmParams
   ): Promise<RoomEntity | null> {
     // Phase 1: Try by uniqueId (fast path)
-    const byUniqueId = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const byUniqueId = await DataList.execute<RoomEntity>({
         collection: RoomEntity.collection,
         filter: { uniqueId },
         limit: 1,
@@ -213,9 +206,7 @@ export class DmServerCommand extends DmCommand {
 
     // Phase 2: Search direct/private rooms and match by member set
     // This handles cases where user UUIDs changed (e.g., after reseed)
-    const directRooms = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const directRooms = await DataList.execute<RoomEntity>({
         collection: RoomEntity.collection,
         filter: { type: participantIds.length === 2 ? 'direct' : 'private' },
         limit: 100,
@@ -235,7 +226,7 @@ export class DmServerCommand extends DmCommand {
 
         if (isMatch) {
           // Found matching room - update its uniqueId to current format for future lookups
-          await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+          await DataUpdate.execute({
             collection: RoomEntity.collection,
             id: room.id,
             data: { uniqueId },
@@ -298,9 +289,7 @@ export class DmServerCommand extends DmCommand {
     room.tags = ['dm', 'private'];
 
     // Store using data/create
-    const createResult = await Commands.execute<DataCreateParams, DataCreateResult<RoomEntity>>(
-      DATA_COMMANDS.CREATE,
-      {
+    const createResult = await DataCreate.execute<RoomEntity>({
         collection: RoomEntity.collection,
         data: room,
         context: params.context,

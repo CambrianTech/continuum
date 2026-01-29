@@ -27,6 +27,8 @@ import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/s
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { UserEntity } from '@system/data/entities/UserEntity';
 
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, DecisionVoteResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -99,9 +101,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
     }
 
     // 7. Update proposal in database
-    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(
-      DATA_COMMANDS.UPDATE,
-      {
+    const updateResult = await DataUpdate.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: proposal.id,
         data: proposal,
@@ -129,9 +129,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
    * Find proposal by proposalId (which is the entity's `id` field)
    */
   private async findProposal(params: DecisionVoteParams): Promise<DecisionProposalEntity> {
-    const result = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         filter: { id: params.proposalId },
         limit: 1,
@@ -183,9 +181,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
 
     if (injectedCallerId) {
       // Look up user by injected ID
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: injectedCallerId },
           limit: 1,
@@ -205,9 +201,7 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
 
     // If user exists in database, return it
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: identity.userId },
           limit: 1,

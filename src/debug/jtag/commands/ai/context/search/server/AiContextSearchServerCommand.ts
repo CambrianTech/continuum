@@ -16,6 +16,7 @@ import { createAiContextSearchResultFromParams } from '../shared/AiContextSearch
 import { Commands } from '@system/core/shared/Commands';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '@commands/data/vector-search/shared/VectorSearchCommandTypes';
 
+import { VectorSearch } from '../../../../data/vector-search/shared/VectorSearchCommandTypes';
 // Default collections that typically have semantic content
 const DEFAULT_COLLECTIONS: CollectionName[] = [
   'chat_messages',
@@ -121,7 +122,7 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
       }
 
       // Use data/vector-search command (delegates to Rust embedding worker)
-      const result = await Commands.execute<VectorSearchParams, VectorSearchResult_CLI>('data/vector-search', {
+      const result = await VectorSearch.execute({
         collection,
         queryText: query,
         k: options.limit,

@@ -20,6 +20,7 @@ import { getVoiceOrchestrator } from '../../system/voice/server/VoiceOrchestrato
 import type { UtteranceEvent } from '../../system/voice/shared/VoiceTypes.js';
 import type { UserCreateParams, UserCreateResult } from '../../commands/user/create/shared/UserCreateTypes.js';
 
+import { UserCreate } from '../../commands/user/create/shared/UserCreateTypes';
 describe('Voice Transcription Relay (STEP 10)', () => {
   let capturedEvents: any[] = [];
   let testSessionId: UUID;
@@ -33,7 +34,7 @@ describe('Voice Transcription Relay (STEP 10)', () => {
     testRoomId = generateUUID();
 
     // Create human speaker
-    const speakerResult = await Commands.execute<UserCreateParams, UserCreateResult>('user/create', {
+    const speakerResult = await UserCreate.execute({
       uniqueId: `test-speaker-${Date.now()}`,
       displayName: 'Test Speaker',
       type: 'human'
@@ -45,7 +46,7 @@ describe('Voice Transcription Relay (STEP 10)', () => {
 
     // Create 2 AI participants
     for (let i = 0; i < 2; i++) {
-      const aiResult = await Commands.execute<UserCreateParams, UserCreateResult>('user/create', {
+      const aiResult = await UserCreate.execute({
         uniqueId: `test-ai-${i}-${Date.now()}`,
         displayName: `Test AI ${i}`,
         type: 'persona'

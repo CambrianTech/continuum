@@ -21,6 +21,10 @@ import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/cha
 import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
 
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { ChatSend } from '../../../chat/send/shared/ChatSendTypes';
 export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeParams, DecisionFinalizeResult> {
   private log = Logger.create('DecisionFinalizeServerCommand', 'tools');
 
@@ -35,7 +39,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Get proposal
-    const proposalResult = await Commands.execute<DataReadParams, DataReadResult<DecisionProposalEntity>>(DATA_COMMANDS.READ, {
+    const proposalResult = await DataRead.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId
     });
@@ -68,7 +72,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Get total eligible voters (all AIs for now)
-    const usersResult = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+    const usersResult = await DataList.execute<UserEntity>({
       collection: COLLECTIONS.USERS,
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100
@@ -86,7 +90,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Update proposal status to concluded
-    await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
+    await DataUpdate.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId,
       data: {
@@ -131,7 +135,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
 Proposal ID: ${params.proposalId}`;
 
-    await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+    await ChatSend.execute({
       message: announcementMessage,
       room: 'general'
     });

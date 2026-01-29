@@ -14,6 +14,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataUpdateParams, DataUpdateResult } from '../../../data/update/shared/DataUpdateTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
+import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
 export class StateUpdateBrowserCommand extends CommandBase<StateUpdateParams, StateUpdateResult<BaseEntity>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -31,7 +32,7 @@ export class StateUpdateBrowserCommand extends CommandBase<StateUpdateParams, St
       }
 
       // Delegate to the elegant data/update command
-      const dataResult = await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+      const dataResult = await DataUpdate.execute({
         collection: params.collection,
         id: params.id,
         data: enhancedData

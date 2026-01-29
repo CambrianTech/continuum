@@ -26,6 +26,10 @@ import { ContentService } from '../../system/state/ContentService';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { getWidgetEntityId } from '../shared/WidgetConstants';
 
+import { DataRead } from '../../commands/data/read/shared/DataReadTypes';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
+import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
+import { DataDelete } from '../../commands/data/delete/shared/DataDeleteTypes';
 export class UserProfileWidget extends BaseWidget {
   private user: UserEntity | null = null;
   private loading = true;
@@ -108,7 +112,7 @@ export class UserProfileWidget extends BaseWidget {
 
     try {
       // Try to find by uniqueId first, then by id
-      const result = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
+      const result = await DataRead.execute<UserEntity>({
         collection: 'users',
         id: entityId
       });
@@ -117,7 +121,7 @@ export class UserProfileWidget extends BaseWidget {
         this.user = result.data;
       } else {
         // Try finding by uniqueId
-        const listResult = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+        const listResult = await DataList.execute<UserEntity>({
           collection: 'users',
           filter: { uniqueId: entityId },
           limit: 1
@@ -159,7 +163,7 @@ export class UserProfileWidget extends BaseWidget {
     if (!this.user) return;
 
     try {
-      await Commands.execute<DataUpdateParams, DataUpdateResult<UserEntity>>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<UserEntity>({
         collection: 'users',
         id: this.user.id,
         data: { status: newStatus }
@@ -197,7 +201,7 @@ export class UserProfileWidget extends BaseWidget {
     }
 
     try {
-      await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+      await DataDelete.execute({
         collection: 'users',
         id: this.user.id
       });

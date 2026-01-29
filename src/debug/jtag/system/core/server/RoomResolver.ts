@@ -20,6 +20,7 @@ import { COLLECTIONS } from '../../shared/Constants';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 /**
  * Room info returned from resolver
  */
@@ -147,9 +148,7 @@ export class RoomResolver {
     }
 
     // Fetch from database
-    const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: {}
       }

@@ -10,6 +10,7 @@ import { Commands } from '../core/shared/Commands';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { Logger } from '../core/logging/Logger';
 
+import { ChatSend } from '../../commands/collaboration/chat/send/shared/ChatSendTypes';
 const log = Logger.create('GovernanceNotifications', 'governance');
 
 /**
@@ -27,7 +28,7 @@ export function initializeGovernanceNotifications(): void {
       const action = isUpdate ? 'updated their vote' : 'voted';
       const message = `🗳️ **${voterName}** ${action} on **${proposalTopic}** (${totalVotes} vote${totalVotes === 1 ? '' : 's'} cast)`;
 
-      await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+      await ChatSend.execute({
         message,
         room: 'general'
       });
@@ -50,7 +51,7 @@ export function initializeGovernanceNotifications(): void {
 **Turnout:** ${participationRate.toFixed(1)}%
 **Consensus:** ${(consensusStrength * 100).toFixed(0)}% pairwise victories`;
 
-      await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+      await ChatSend.execute({
         message,
         room: 'general'
       });

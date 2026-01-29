@@ -21,6 +21,8 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { TTS_ADAPTERS } from '../shared/VoiceConfig';
 import { AUDIO_SAMPLE_RATE, BYTES_PER_SAMPLE } from '../../../shared/AudioConstants';
 
+import { VoiceTranscribe } from '../../../commands/voice/transcribe/shared/VoiceTranscribeTypes';
+import { VoiceSynthesize } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 // Audio configuration - derived from constants
 const CHUNK_DURATION_MS = 20;
 const SAMPLES_PER_CHUNK = (AUDIO_SAMPLE_RATE * CHUNK_DURATION_MS) / 1000; // 320
@@ -215,9 +217,7 @@ export class VoiceWebSocketServer {
       // Step 1: Transcribe audio to text via Rust Whisper
       console.log(`🎤 Transcribing ${totalSamples} samples (${(totalSamples / AUDIO_SAMPLE_RATE * 1000).toFixed(0)}ms)`);
 
-      const transcribeResult = await Commands.execute<VoiceTranscribeParams, VoiceTranscribeResult>(
-        'voice/transcribe',
-        { audio: audioBase64 }
+      const transcribeResult = await VoiceTranscribe.execute({ audio: audioBase64 }
       );
 
       if (!transcribeResult.success || !transcribeResult.text.trim()) {
@@ -425,9 +425,7 @@ export class VoiceWebSocketServer {
   private async sendConfirmationBeep(connection: VoiceConnection): Promise<void> {
     // Use TTS to synthesize confirmation message through the mixer
     try {
-      const result = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
-        'voice/synthesize',
-        {
+      const result = await VoiceSynthesize.execute({
           text: 'Got it',
           adapter: TTS_ADAPTERS.PIPER,
           sampleRate: AUDIO_SAMPLE_RATE
@@ -544,9 +542,7 @@ export class VoiceWebSocketServer {
 
     try {
       // Synthesize via Rust TTS
-      const synthesizeResult = await Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>(
-        'voice/synthesize',
-        {
+      const synthesizeResult = await VoiceSynthesize.execute({
           text,
           adapter: TTS_ADAPTERS.KOKORO,
         }

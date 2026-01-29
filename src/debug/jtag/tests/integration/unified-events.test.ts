@@ -10,6 +10,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { STATE_COMMANDS } from '../../commands/state/shared/StateCommandConstants';
 import { DATA_EVENTS } from '../../system/core/shared/EventConstants';
 
+import { StateCreate } from '../../commands/state/create/shared/StateCreateTypes';
 async function testUnifiedEvents() {
   console.log('🎯 Testing Unified Events System');
   console.log('=====================================\n');
@@ -46,7 +47,7 @@ async function testUnifiedEvents() {
 
     // Test 3: Create a user to trigger events
     console.log('\n📋 Test 3: Creating user to trigger events');
-    const createResult = await Commands.execute(STATE_COMMANDS.CREATE, {
+    const createResult = await StateCreate.execute({
       collection: 'User',
       data: {
         displayName: 'Test User for Unified Events',

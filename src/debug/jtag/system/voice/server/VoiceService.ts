@@ -12,6 +12,7 @@ import { DEFAULT_VOICE_CONFIG, TTS_ADAPTERS } from '../shared/VoiceConfig';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 import { AUDIO_SAMPLE_RATE } from '../../../shared/AudioConstants';
 
+import { VoiceSynthesize } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 export interface SynthesizeSpeechRequest {
   text: string;
   userId?: string;         // For per-user preferences
@@ -81,7 +82,7 @@ export class VoiceService {
       }, timeout);
 
       // Call voice/synthesize command
-      Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>('voice/synthesize', {
+      VoiceSynthesize.execute({
         text,
         adapter,
         voice,

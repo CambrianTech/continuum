@@ -11,6 +11,7 @@
 import { JTAGClientServer } from '../system/core/client/server/JTAGClientServer';
 import * as fs from 'fs';
 
+import { VoiceSynthesize } from '../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 async function testTTSAudio() {
   // Initialize JTAG client in server mode
   const jtag = JTAGClientServer.sharedInstance();
@@ -38,7 +39,7 @@ async function testTTSAudio() {
     }, 30000);
 
     // Call synthesize command
-    Commands.execute('voice/synthesize', {
+    VoiceSynthesize.execute({
       text,
       adapter: 'piper',
       sampleRate: 16000,

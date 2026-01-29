@@ -17,6 +17,9 @@ import type { GenomeLayerEntity } from '../../../system/genome/entities/GenomeLa
 import type { GenomeEntity } from '../../../system/genome/entities/GenomeEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
+import { ChatSend } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
+import { DataDelete } from '../../../commands/data/delete/shared/DataDeleteTypes';
 // Track test data for cleanup
 const testRoomIds: UUID[] = [];
 const testPersonaIds: UUID[] = [];
@@ -33,7 +36,7 @@ export async function createTestRoom(
 ): Promise<RoomEntity> {
   const roomId = randomUUID();
 
-  const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+  const result = await DataCreate.execute({
     collection: 'rooms',
     data: {
       id: roomId,
@@ -65,7 +68,7 @@ export async function createTestPersona(
 ): Promise<UserEntity> {
   const personaId = randomUUID();
 
-  const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+  const result = await DataCreate.execute({
     collection: 'users',
     data: {
       id: personaId,
@@ -107,7 +110,7 @@ export async function seedConversationHistory(
     const messageId = randomUUID();
     const timestamp = msg.timestamp ?? Date.now() + index * 1000;
 
-    const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+    const result = await DataCreate.execute({
       collection: 'chat_messages',
       data: {
         id: messageId,
@@ -138,7 +141,7 @@ export async function sendMessage(
   sender: string,
   text: string
 ): Promise<ChatMessageEntity> {
-  const result = await Commands.execute('collaboration/chat/send', {
+  const result = await ChatSend.execute({
     roomId,
     senderId: sender,
     content: { text }
@@ -191,7 +194,7 @@ export async function createTestGenomeLayer(
   // Generate random 768-dim embedding if not provided
   const layerEmbedding = embedding ?? Array(768).fill(0).map(() => Math.random());
 
-  const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+  const result = await DataCreate.execute({
     collection: 'genome_layers',
     data: {
       id: layerId,
@@ -241,7 +244,7 @@ export async function createTestGenome(
   const compositeEmbedding = Array(768).fill(0);
   // For testing, just use zeros (would normally compute from layer embeddings)
 
-  const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+  const result = await DataCreate.execute({
     collection: 'genomes',
     data: {
       id: genomeId,
@@ -300,7 +303,7 @@ export function mockTypeScriptExpertEmbedding(): number[] {
  */
 export async function cleanupTestRooms(): Promise<void> {
   for (const roomId of testRoomIds) {
-    await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+    await DataDelete.execute({
       collection: 'rooms',
       id: roomId
     });
@@ -313,7 +316,7 @@ export async function cleanupTestRooms(): Promise<void> {
  */
 export async function cleanupTestPersonas(): Promise<void> {
   for (const personaId of testPersonaIds) {
-    await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+    await DataDelete.execute({
       collection: 'users',
       id: personaId
     });
@@ -326,7 +329,7 @@ export async function cleanupTestPersonas(): Promise<void> {
  */
 export async function cleanupTestMessages(): Promise<void> {
   for (const messageId of testMessageIds) {
-    await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+    await DataDelete.execute({
       collection: 'chat_messages',
       id: messageId
     });
@@ -339,7 +342,7 @@ export async function cleanupTestMessages(): Promise<void> {
  */
 export async function cleanupTestGenomeLayers(): Promise<void> {
   for (const layerId of testGenomeLayerIds) {
-    await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+    await DataDelete.execute({
       collection: 'genome_layers',
       id: layerId
     });
@@ -352,7 +355,7 @@ export async function cleanupTestGenomeLayers(): Promise<void> {
  */
 export async function cleanupTestGenomes(): Promise<void> {
   for (const genomeId of testGenomeIds) {
-    await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
+    await DataDelete.execute({
       collection: 'genomes',
       id: genomeId
     });

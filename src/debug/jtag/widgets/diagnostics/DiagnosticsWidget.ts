@@ -18,6 +18,7 @@ import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { ContentService } from '../../system/state/ContentService';
 
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
@@ -72,7 +73,7 @@ export class DiagnosticsWidget extends BasePanelWidget {
 
     try {
       // Get all users with persona type
-      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute({
         collection: 'users',
         filter: { type: 'persona' },
         limit: 50

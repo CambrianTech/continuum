@@ -34,6 +34,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import { BaseEntity } from '../../system/data/entities/BaseEntity';
 
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 // Re-export for subclasses
 export { html, css, unsafeCSS, nothing, reactive, type TemplateResult, type CSSResultGroup };
 
@@ -134,9 +135,7 @@ export abstract class ReactiveListWidget<T extends BaseEntity> extends ReactiveE
 
   protected getLoadFunction(): LoadFn<T> {
     return async (cursor?: string, limit?: number) => {
-      const result = await Commands.execute<DataListParams, DataListResult<T>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<T>({
           collection: this.collection,
           filter: this.loadFilter,
           orderBy: this.orderBy,

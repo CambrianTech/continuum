@@ -13,6 +13,7 @@ import { createDecisionListResultFromParams } from '../shared/DecisionListTypes'
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class DecisionListServerCommand extends CommandBase<DecisionListParams, DecisionListResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -36,7 +37,7 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
         filter.status = params.status;
       }
 
-      const listResult = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
+      const listResult = await DataList.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         filter,
         limit,

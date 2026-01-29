@@ -18,6 +18,7 @@ import { Commands } from '../../system/core/shared/Commands';
 import { STATE_COMMANDS } from '../../commands/state/shared/StateCommandConstants';
 import { DATA_EVENTS, getDataEventName } from '../../system/core/shared/EventConstants';
 
+import { StateCreate } from '../../commands/state/create/shared/StateCreateTypes';
 async function testAIAgentEventObservation() {
   console.log('🤖 AI Agent Event Observation Test');
   console.log('=====================================');
@@ -60,7 +61,7 @@ async function testAIAgentEventObservation() {
 
     // Test 3: Simulate browser creating chat message (AI agent should observe)
     console.log('\n📋 Test 3: Simulating browser creating chat message');
-    const messageResult = await Commands.execute(STATE_COMMANDS.CREATE, {
+    const messageResult = await StateCreate.execute({
       collection: 'ChatMessage',
       data: {
         roomId: '5e71a0c8-0303-4eb8-a478-3a121248',
@@ -105,7 +106,7 @@ async function testAIAgentEventObservation() {
 
     // Test 6: Simulate user action (AI agent should observe with elegant pattern)
     console.log('\n📋 Test 6: Simulating user update (AI agent observes with pattern)');
-    const userResult = await Commands.execute(STATE_COMMANDS.CREATE, {
+    const userResult = await StateCreate.execute({
       collection: 'User',
       data: {
         displayName: 'AI Test User',

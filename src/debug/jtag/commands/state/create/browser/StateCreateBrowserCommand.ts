@@ -13,6 +13,7 @@ import type { DataCreateParams, DataCreateResult } from '../../../data/create/sh
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
+import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
 export class StateCreateBrowserCommand extends CommandBase<StateCreateParams, StateCreateResult<BaseEntity>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -30,7 +31,7 @@ export class StateCreateBrowserCommand extends CommandBase<StateCreateParams, St
       }
 
       // Delegate to the elegant data/create command
-      const dataResult = await Commands.execute<DataCreateParams, DataCreateResult<BaseEntity>>(DATA_COMMANDS.CREATE, {
+      const dataResult = await DataCreate.execute({
         collection: params.collection,
         data: enhancedData
       });

@@ -19,6 +19,7 @@ import { Events } from '../../system/core/shared/Events';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import type { LogLine, LogsReadResult } from '../../commands/logs/read/shared/LogsReadTypes';
 
+import { LogsRead } from '../../commands/logs/read/shared/LogsReadTypes';
 interface LogViewerData {
   logPath: string;
   logName: string;
@@ -107,7 +108,7 @@ export class LogViewerWidget extends BasePanelWidget {
     this.renderWidget();
 
     try {
-      const result = await Commands.execute('logs/read', {
+      const result = await LogsRead.execute({
         log: this.logData.logPath,
         tail: 200, // Get last 200 lines initially
         level: this.logData.levelFilter !== 'ALL' ? this.logData.levelFilter : undefined
@@ -167,7 +168,7 @@ export class LogViewerWidget extends BasePanelWidget {
     if (!this.logData.autoFollow) return;
 
     try {
-      const result = await Commands.execute('logs/read', {
+      const result = await LogsRead.execute({
         log: this.logData.logPath,
         tail: 50, // Get just the latest lines
         level: this.logData.levelFilter !== 'ALL' ? this.logData.levelFilter : undefined

@@ -575,9 +575,14 @@ export interface CommandResult extends JTAGPayload {
 /**
  * Caller-facing command input type.
  * Strips auto-injected context/sessionId fields that Commands.execute() provides.
- * Use in command executor patterns so callers never specify infrastructure fields.
+ * Use in command executor patterns so callers don't need to specify infrastructure fields.
+ * context/sessionId are optional — Commands.execute() auto-injects them if missing.
+ * Server commands that forward context from a parent command can still pass them explicitly.
  */
-export type CommandInput<T extends CommandParams> = Omit<T, 'context' | 'sessionId'>;
+export type CommandInput<T extends CommandParams> = Omit<T, 'context' | 'sessionId'> & {
+  context?: JTAGContext;
+  sessionId?: UUID;
+};
 
 /**
  * Command Message type

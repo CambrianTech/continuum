@@ -21,6 +21,9 @@ import { isRoomUUID, sanitizeDocumentName } from '@commands/collaboration/wall/s
 import type { FileSaveParams, FileSaveResult } from '../../../commands/file/save/shared/FileSaveTypes';
 import type { FileLoadParams, FileLoadResult } from '../../../commands/file/load/shared/FileLoadTypes';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { FileLoad } from '../../../commands/file/load/shared/FileLoadTypes';
+import { FileSave } from '../../../commands/file/save/shared/FileSaveTypes';
 /**
  * Room path resolution result
  */
@@ -101,7 +104,7 @@ export class WallManager {
 
     if (isRoomUUID(roomNameOrId)) {
       // Query by UUID
-      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<RoomEntity>({
         collection: 'rooms',
         filter: { id: roomNameOrId },
         limit: 1
@@ -114,7 +117,7 @@ export class WallManager {
       roomEntity = result.items[0];
     } else {
       // Query by name
-      const result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<RoomEntity>({
         collection: 'rooms',
         filter: { name: roomNameOrId },
         limit: 1
@@ -157,7 +160,7 @@ export class WallManager {
 
     // Read old content if file exists (for diff stats)
     try {
-      const loadResult = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+      const loadResult = await FileLoad.execute({
         filepath: filePath,
         encoding: 'utf-8'
       });
@@ -170,7 +173,7 @@ export class WallManager {
     // Write content
     const finalContent = append && oldContent ? `${oldContent}\n${content}` : content;
 
-    const saveResult = await Commands.execute<FileSaveParams, FileSaveResult>('file/save', {
+    const saveResult = await FileSave.execute({
       filepath: filePath,
       content: finalContent,
       encoding: 'utf-8',
@@ -217,7 +220,7 @@ export class WallManager {
     const filePath = path.join(roomInfo.wallPath, sanitizedDoc);
 
     // Read content - throws if file doesn't exist
-    const loadResult = await Commands.execute<FileLoadParams, FileLoadResult>('file/load', {
+    const loadResult = await FileLoad.execute({
       filepath: filePath,
       encoding: 'utf-8'
     });
@@ -265,7 +268,7 @@ export class WallManager {
     const roomInfo = await this.resolveRoomPath(room);
 
     // Query WallDocumentEntity for this room
-    const result = await Commands.execute<DataListParams, DataListResult<WallDocumentEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<WallDocumentEntity>({
       collection: COLLECTIONS.WALL_DOCUMENTS,
       filter: { roomId: roomInfo.roomId }
     });

@@ -13,6 +13,8 @@ import { Events } from '@system/core/shared/Events';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 import type { ActivityGetResult } from '../../get/shared/ActivityGetTypes';
 
+import { ActivityGet } from '../../get/shared/ActivityGetTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class ActivityUpdateServerCommand extends CommandBase<ActivityUpdateParams, ActivityUpdateResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -27,7 +29,7 @@ export class ActivityUpdateServerCommand extends CommandBase<ActivityUpdateParam
     const isUUID = typeof activityId === 'string' && activityId.includes('-') && activityId.length === 36;
 
     // Get the activity
-    const getResult = await Commands.execute('collaboration/activity/get', {
+    const getResult = await ActivityGet.execute({
       id: isUUID ? activityId : undefined,
       uniqueId: isUUID ? undefined : activityId,
       context: params.context,
@@ -105,7 +107,7 @@ export class ActivityUpdateServerCommand extends CommandBase<ActivityUpdateParam
     }
 
     // Persist updates
-    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
+    const updateResult = await DataUpdate.execute({
       collection: 'activities',
       id: activity.id,
       data: updates,
