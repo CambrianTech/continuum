@@ -116,7 +116,7 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
         'new-session',
         '-d',                    // detached session
         '-s', sessionName,       // workdir-specific session name
-        `npm run start:direct 2>&1 | tee ${logFile}`  // server command with log redirection
+        `set -o pipefail; npm run start:direct 2>&1 | tee ${logFile}; EXIT=$?; if [ $EXIT -ne 0 ]; then echo "" >> ${logFile}; echo "=== STARTUP FAILED (exit code $EXIT) ===" >> ${logFile}; echo "=== STARTUP FAILED (exit code $EXIT) ==="; fi`
       ];
       
       console.log(`🔧 Creating persistent tmux session with logging: tmux ${tmuxCmd.join(' ')}`);
@@ -199,6 +199,32 @@ async function launchWithTmuxPersistence(): Promise<LaunchResult> {
                 const readinessCheckInterval = setInterval(async () => {
                   detectionAttempts++;
                   process.stdout.write('.');
+
+                  // Check if the server process crashed (failure marker in log)
+                  try {
+                    if (fs.existsSync(logFile)) {
+                      const logTail = fs.readFileSync(logFile, 'utf-8').slice(-500);
+                      if (logTail.includes('=== STARTUP FAILED')) {
+                        clearInterval(readinessCheckInterval);
+                        console.log('\n❌ STARTUP FAILED — check npm-start.log for details');
+                        console.log(`📋 Log: ${logFile}`);
+                        // Show last 30 lines
+                        const lines = fs.readFileSync(logFile, 'utf-8').split('\n');
+                        console.log('--- Last 30 lines ---');
+                        console.log(lines.slice(-30).join('\n'));
+                        console.log('--- End ---');
+                        resolve({
+                          success: false,
+                          reason: 'launch_failure',
+                          processId: tmuxPid,
+                          logFile,
+                          errorMessage: 'Server process crashed during startup — see npm-start.log',
+                          diagnostics: createDiagnostics()
+                        });
+                        return;
+                      }
+                    }
+                  } catch { /* ignore read errors */ }
 
                   try {
                     const signal = await signaler.generateReadySignal();
