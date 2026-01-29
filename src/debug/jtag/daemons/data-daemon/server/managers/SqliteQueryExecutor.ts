@@ -129,7 +129,14 @@ export class SqliteQueryExecutor {
             value = value === 1;
             break;
           case 'json':
-            value = typeof value === 'string' ? JSON.parse(value) : value;
+            if (typeof value === 'string') {
+              try {
+                value = JSON.parse(value);
+              } catch (e) {
+                console.error(`❌ JSON.parse failed for ${collection}.${field.name} (row ${row.id}): ${(e as Error).message}. Raw value: "${String(value).substring(0, 100)}"`);
+                throw e;
+              }
+            }
             break;
           case 'date':
             value = new Date(value);
@@ -226,7 +233,15 @@ export class SqliteQueryExecutor {
               value = value === 1;
               break;
             case 'json':
-              value = typeof value === 'string' ? JSON.parse(value) : value;
+              if (typeof value === 'string') {
+                try {
+                  value = JSON.parse(value);
+                } catch (e) {
+                  // Log the exact collection/field for debugging corrupted json data
+                  console.error(`❌ JSON.parse failed for ${query.collection}.${field.name} (row ${row.id}): ${(e as Error).message}. Raw value: "${String(value).substring(0, 100)}"`);
+                  throw e;
+                }
+              }
               break;
             case 'date':
               value = new Date(value);

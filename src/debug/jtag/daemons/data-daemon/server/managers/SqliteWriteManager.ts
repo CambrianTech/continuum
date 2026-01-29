@@ -139,7 +139,10 @@ export class SqliteWriteManager {
         placeholders.push('?');
 
         // Convert value based on schema type
-        if (field.type === 'json' && typeof fieldValue === 'object') {
+        if (field.type === 'json') {
+          // Always JSON.stringify json fields — not just objects.
+          // typeof string !== 'object', so raw strings like "conversation"
+          // were stored un-stringified, causing JSON.parse failures on read.
           values.push(JSON.stringify(fieldValue));
         } else if (field.type === 'boolean') {
           values.push(fieldValue ? 1 : 0);
@@ -234,7 +237,9 @@ export class SqliteWriteManager {
         setColumns.push(`${columnName} = ?`);
 
         // Convert value based on schema type
-        if (field.type === 'json' && typeof value === 'object') {
+        if (field.type === 'json') {
+          // Always JSON.stringify json fields — not just objects.
+          // typeof string !== 'object', so raw strings were stored un-stringified.
           params.push(JSON.stringify(value));
         } else if (field.type === 'boolean') {
           params.push(value ? 1 : 0);
