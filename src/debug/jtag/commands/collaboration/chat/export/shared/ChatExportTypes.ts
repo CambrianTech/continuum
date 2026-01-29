@@ -9,7 +9,8 @@
  * - Custom filter object (passed to data/list)
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export interface ChatExportParams extends CommandParams {
@@ -60,3 +61,17 @@ export interface ChatExportResult extends CommandResult {
   /** Collection/entity type exported */
   collection: string;
 }
+
+/**
+ * ChatExport — Type-safe command executor
+ *
+ * Usage:
+ *   import { ChatExport } from '@commands/collaboration/chat/export/shared/ChatExportTypes';
+ *   const result = await ChatExport.execute({ room: 'general', limit: 50 });
+ */
+export const ChatExport = {
+  execute(params?: CommandInput<ChatExportParams>): Promise<ChatExportResult> {
+    return Commands.execute<ChatExportParams, ChatExportResult>('collaboration/chat/export', params as Partial<ChatExportParams>);
+  },
+  commandName: 'collaboration/chat/export' as const,
+} as const;

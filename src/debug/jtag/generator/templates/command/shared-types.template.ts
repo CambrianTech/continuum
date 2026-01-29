@@ -4,8 +4,9 @@
  * {{DESCRIPTION}}
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
@@ -58,3 +59,17 @@ export const create{{CLASS_NAME}}ResultFromParams = (
   params: {{CLASS_NAME}}Params,
   differences: Omit<{{CLASS_NAME}}Result, 'context' | 'sessionId'>
 ): {{CLASS_NAME}}Result => transformPayload(params, differences);
+
+/**
+ * {{COMMAND_NAME}} — Type-safe command executor
+ *
+ * Usage:
+ *   import { {{CLASS_NAME}} } from '...shared/{{CLASS_NAME}}Types';
+ *   const result = await {{CLASS_NAME}}.execute({ ... });
+ */
+export const {{CLASS_NAME}} = {
+  execute(params: CommandInput<{{CLASS_NAME}}Params>): Promise<{{CLASS_NAME}}Result> {
+    return Commands.execute<{{CLASS_NAME}}Params, {{CLASS_NAME}}Result>('{{COMMAND_PATH}}', params as Partial<{{CLASS_NAME}}Params>);
+  },
+  commandName: '{{COMMAND_PATH}}' as const,
+} as const;

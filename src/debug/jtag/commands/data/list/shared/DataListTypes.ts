@@ -2,8 +2,9 @@
  * Data List Command - Shared Types
  */
 
-import type { JTAGPayload, JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, JTAGContext, CommandParams, CommandInput } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
@@ -68,3 +69,18 @@ export const createDataListResultFromParams = <T extends BaseEntity>(
   timestamp: new Date().toISOString(),
   ...differences
 });
+
+/**
+ * DataList — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataList } from '@commands/data/list/shared/DataListTypes';
+ *   const result = await DataList.execute({ collection: 'users', limit: 10 });
+ *   const typed = await DataList.execute<UserEntity>({ collection: 'users' });
+ */
+export const DataList = {
+  execute<T extends BaseEntity = BaseEntity>(params: CommandInput<DataListParams>): Promise<DataListResult<T>> {
+    return Commands.execute<DataListParams, DataListResult<T>>('data/list', params as Partial<DataListParams>);
+  },
+  commandName: 'data/list' as const,
+} as const;

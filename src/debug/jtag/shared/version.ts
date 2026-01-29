@@ -3,5 +3,5 @@
  * DO NOT EDIT MANUALLY
  */
 
-export const VERSION = '1.0.7442';
+export const VERSION = '1.0.7444';
 export const PACKAGE_NAME = '@continuum/jtag';

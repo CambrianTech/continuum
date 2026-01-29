@@ -53,6 +53,13 @@ export const createBaseDataParams = (
 });
 
 /**
+ * Caller-facing input type for data commands extending BaseDataParams.
+ * Strips context, sessionId, and backend (which defaults to 'server').
+ */
+export type DataCommandInput<T extends BaseDataParams> =
+  Omit<T, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment };
+
+/**
  * Transform params to result with proper timestamp
  */
 export const createBaseDataResultFromParams = (

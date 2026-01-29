@@ -3,7 +3,8 @@
  * Send chat messages directly to the database (no UI)
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 
@@ -40,3 +41,17 @@ export interface ChatSendResult extends CommandResult {
   /** Room ID message was sent to */
   roomId: UUID;
 }
+
+/**
+ * ChatSend — Type-safe command executor
+ *
+ * Usage:
+ *   import { ChatSend } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
+ *   const result = await ChatSend.execute({ message: 'Hello', room: 'general' });
+ */
+export const ChatSend = {
+  execute(params: CommandInput<ChatSendParams>): Promise<ChatSendResult> {
+    return Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', params as Partial<ChatSendParams>);
+  },
+  commandName: 'collaboration/chat/send' as const,
+} as const;

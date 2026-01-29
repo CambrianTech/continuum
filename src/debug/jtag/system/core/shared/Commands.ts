@@ -14,12 +14,6 @@
 
 import { JTAGClient } from '../client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../types/JTAGTypes';
-import type {
-  CommandName,
-  CommandInputFor,
-  CommandResultFor,
-  CommandParamsFor
-} from '../client/shared/CommandRegistry';
 
 export class Commands {
   /**

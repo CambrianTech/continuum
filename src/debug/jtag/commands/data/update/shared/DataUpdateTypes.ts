@@ -8,8 +8,9 @@ import type { JTAGContext, JTAGEnvironment } from '../../../../system/core/types
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import type { BaseDataParams, BaseDataResult } from '../../shared/BaseDataTypes';
+import type { BaseDataParams, BaseDataResult, DataCommandInput } from '../../shared/BaseDataTypes';
 import { createBaseDataParams } from '../../shared/BaseDataTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** Data update command parameters */
 export interface DataUpdateParams extends BaseDataParams {
@@ -69,3 +70,17 @@ export const createDataUpdateResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+
+/**
+ * DataUpdate — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
+ *   const result = await DataUpdate.execute({ collection: 'users', id: userId, data: { name: 'New' } });
+ */
+export const DataUpdate = {
+  execute<T extends BaseEntity = BaseEntity>(params: DataCommandInput<DataUpdateParams>): Promise<DataUpdateResult<T>> {
+    return Commands.execute<DataUpdateParams, DataUpdateResult<T>>('data/update', params as Partial<DataUpdateParams>);
+  },
+  commandName: 'data/update' as const,
+} as const;
