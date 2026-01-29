@@ -146,15 +146,15 @@ while read -r worker; do
     WORKER_PID=$!
     disown $WORKER_PID  # Fully detach from shell
 
-    # Wait for socket to be created with increased timeout for macOS
-    for i in {1..20}; do
+    # Wait for socket to be created (30s timeout)
+    for i in {1..60}; do
       if [ -S "$socket" ]; then
         echo -e "${GREEN}✅ ${name} started (PID: $WORKER_PID)${NC}"
         break
       fi
-      if [ $i -eq 20 ]; then
-        echo -e "${RED}❌ ${name} failed to start (socket not created after 10s)${NC}"
-        echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/rust-worker.log${NC}"
+      if [ $i -eq 60 ]; then
+        echo -e "${RED}❌ ${name} failed to start (socket not created after 30s)${NC}"
+        echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/${name}.log${NC}"
         exit 1
       fi
       sleep 0.5
