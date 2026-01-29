@@ -31,4 +31,5 @@ pub use persona::{
 pub use concurrent::*;
 pub use logging::{init_logger, logger, LogLevel};
 pub use ipc::start_server;
+pub use voice::call_server::CallManager;
 pub use rag::{RagEngine, RagContext, RagOptions, LlmMessage, MessageRole};

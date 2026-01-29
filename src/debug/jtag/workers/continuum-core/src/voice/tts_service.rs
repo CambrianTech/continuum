@@ -5,40 +5,37 @@
 
 use crate::voice::tts::{self, SynthesisResult, TTSError};
 
-/// Synthesize speech from text using the active TTS adapter
+/// Synthesize speech from text using a TTS adapter
 ///
 /// This is the ONLY function IPC should call for TTS.
 /// All TTS logic, initialization, error handling happens here.
 ///
-/// This is a synchronous wrapper that creates its own runtime if needed.
+/// If `adapter` is specified, uses that adapter directly.
+/// Otherwise, uses the active adapter from the registry.
+///
+/// This is a synchronous wrapper that creates its own tokio runtime.
+///
+/// IMPORTANT: Always creates a NEW runtime. IPC handler threads are spawned
+/// via std::thread::spawn from within #[tokio::main], so they inherit the
+/// global runtime handle. Calling handle.block_on() from such threads panics
+/// with "Cannot block the current thread from within a runtime". Creating a
+/// fresh runtime avoids this entirely.
 pub fn synthesize_speech_sync(
     text: &str,
     voice: Option<&str>,
-    _adapter: Option<&str>,
+    adapter: Option<&str>,
 ) -> Result<SynthesisResult, TTSError> {
-    // Try to use existing runtime, or create one
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're in an async context, use it
-            handle.block_on(async {
-                synthesize_speech_impl(text, voice, _adapter).await
-            })
-        },
-        Err(_) => {
-            // No runtime, create one
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create runtime: {}", e)))?;
-            rt.block_on(async {
-                synthesize_speech_impl(text, voice, _adapter).await
-            })
-        }
-    }
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create runtime: {}", e)))?;
+    rt.block_on(async {
+        synthesize_speech_impl(text, voice, adapter).await
+    })
 }
 
 async fn synthesize_speech_impl(
     text: &str,
     voice: Option<&str>,
-    _adapter: Option<&str>,
+    adapter: Option<&str>,
 ) -> Result<SynthesisResult, TTSError> {
     // Initialize TTS system if needed
     if !tts::is_initialized() {
@@ -46,9 +43,13 @@ async fn synthesize_speech_impl(
         tts::initialize().await?;
     }
 
-    // Use active adapter (configured in registry)
     let voice_id = voice.unwrap_or("default");
-    tts::synthesize(text, voice_id).await
+
+    // Use specific adapter if requested, otherwise use active adapter
+    match adapter {
+        Some(name) => tts::synthesize_with(text, voice_id, name).await,
+        None => tts::synthesize(text, voice_id).await,
+    }
 }
 
 /// Check if TTS system is ready

@@ -757,6 +757,55 @@ impl CallManager {
         }
     }
 
+    /// Synthesize text and inject directly into a call's mixer.
+    /// Audio never leaves the Rust process — TypeScript only gets metadata back.
+    /// Returns (num_samples, duration_ms, sample_rate) on success.
+    pub async fn speak_in_call(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        text: &str,
+        voice: Option<&str>,
+        adapter: Option<&str>,
+    ) -> Result<(usize, u64, u32), String> {
+        use crate::voice::tts_service;
+
+        // Step 1: Verify participant is in this call
+        let (handle, display_name) = {
+            let calls = self.calls.read().await;
+            let call = calls.get(call_id)
+                .ok_or_else(|| format!("Call '{}' not found", call_id))?;
+            let call = call.read().await;
+            let handle = call.mixer.find_handle_by_user_id(user_id)
+                .ok_or_else(|| format!("User '{}' not in call '{}'", user_id, call_id))?;
+            let display_name = call.mixer.get_participant(&handle)
+                .map(|p| p.display_name.clone())
+                .unwrap_or_else(|| user_id.to_string());
+            (handle, display_name)
+        };
+
+        // Step 2: Synthesize (blocking TTS, creates own runtime)
+        let synthesis = tts_service::synthesize_speech_sync(text, voice, adapter)
+            .map_err(|e| format!("TTS failed: {}", e))?;
+
+        let num_samples = synthesis.samples.len();
+        let duration_ms = synthesis.duration_ms;
+        let sample_rate = synthesis.sample_rate;
+
+        info!(
+            "🔊 speak_in_call: Synthesized {} samples ({:.1}s) for {} in call {}",
+            num_samples,
+            duration_ms as f64 / 1000.0,
+            display_name,
+            call_id
+        );
+
+        // Step 3: Inject directly into the call mixer (audio stays in Rust)
+        self.inject_tts_audio(call_id, &handle, &display_name, text, synthesis.samples).await;
+
+        Ok((num_samples, duration_ms, sample_rate))
+    }
+
     /// Get call stats
     pub async fn get_stats(&self, handle: &Handle) -> Option<(usize, u64)> {
         let call_id = {
@@ -939,10 +988,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
     sender_task.abort();
 }
 
-/// Start the WebSocket call server
-pub async fn start_call_server(addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Start the WebSocket call server with an externally-created CallManager.
+/// This allows the IPC server to share the same CallManager for direct audio injection.
+pub async fn start_call_server(addr: &str, manager: Arc<CallManager>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
-    let manager = Arc::new(CallManager::new());
 
     info!("Call server listening on {}", addr);
 

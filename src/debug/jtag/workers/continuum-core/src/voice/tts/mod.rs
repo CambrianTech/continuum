@@ -1,8 +1,8 @@
 //! Text-to-Speech (TTS) Adapter System
 //!
 //! Modular TTS with swappable backends:
-//! - Piper (local, ONNX, high-quality - PRIMARY)
-//! - Kokoro (local, alternative)
+//! - Kokoro (local, ONNX, 82M params - PRIMARY, fast)
+//! - Piper (local, ONNX - fallback)
 //! - Silence (fallback for testing)
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
@@ -193,22 +193,18 @@ pub fn init_registry() {
     let registry = TTS_REGISTRY.get_or_init(|| {
         let mut reg = TTSRegistry::new();
 
-        // Register Piper (local, ONNX) adapter - PRIMARY production adapter
-        // Piper is the default because it:
-        // - Works out of the box (ONNX, no Python)
-        // - High quality (LibriTTS dataset)
-        // - Battle-tested (used by Home Assistant)
-        reg.register(Arc::new(PiperTTS::new()));
-
-        // Register Kokoro (local) adapter - alternative
+        // Register Kokoro (local, ONNX, 82M) - PRIMARY
+        // Kokoro is the default because it:
+        // - Fast (~97ms TTFB, 82M params)
+        // - High quality voices (natural sounding)
+        // - Uses espeak-ng phonemizer (deterministic)
         reg.register(Arc::new(KokoroTTS::new()));
 
-        // Register Silence adapter - fallback for testing/development
-        reg.register(Arc::new(SilenceTTS::new()));
+        // Register Piper (local, ONNX) - fallback
+        reg.register(Arc::new(PiperTTS::new()));
 
-        // Future: Register API-based adapters
-        // reg.register(Arc::new(ElevenLabsTTS::new()));
-        // reg.register(Arc::new(OpenAITTS::new()));
+        // Register Silence adapter - testing fallback
+        reg.register(Arc::new(SilenceTTS::new()));
 
         Arc::new(RwLock::new(reg))
     });
@@ -242,14 +238,42 @@ pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSE
     adapter.synthesize(text, voice).await
 }
 
-/// Initialize the active adapter
+/// Initialize the active adapter, falling back to next adapter on failure
 pub async fn initialize() -> Result<(), TTSError> {
+    let registry = get_registry();
+    let adapter_names: Vec<&'static str> = registry.read().list().iter().map(|(name, _)| *name).collect();
+
+    for name in &adapter_names {
+        let adapter = registry.read().get(name);
+        if let Some(adapter) = adapter {
+            match adapter.initialize().await {
+                Ok(()) => {
+                    tracing::info!("TTS: '{}' initialized successfully", name);
+                    let _ = registry.write().set_active(name);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("TTS: '{}' failed to initialize: {}, trying next...", name, e);
+                }
+            }
+        }
+    }
+
+    Err(TTSError::ModelNotLoaded("No TTS adapter could be initialized".into()))
+}
+
+/// Synthesize using a specific adapter by name (bypasses active adapter)
+pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str) -> Result<SynthesisResult, TTSError> {
     let adapter = get_registry()
         .read()
-        .get_active()
-        .ok_or_else(|| TTSError::AdapterNotFound("No active TTS adapter".to_string()))?;
+        .get(adapter_name)
+        .ok_or_else(|| TTSError::AdapterNotFound(format!("Adapter '{}' not found", adapter_name)))?;
 
-    adapter.initialize().await
+    if !adapter.is_initialized() {
+        adapter.initialize().await?;
+    }
+
+    adapter.synthesize(text, voice).await
 }
 
 /// Get available voices from active adapter

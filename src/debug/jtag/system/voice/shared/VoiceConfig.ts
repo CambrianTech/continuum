@@ -4,14 +4,17 @@
  * Centralized config for TTS/STT with easy adapter swapping.
  *
  * Quality tiers:
- * - local: Fast, free, robotic (Piper, Kokoro)
- * - api: High quality, paid (ElevenLabs, Azure, Google)
+ * - local fast: Kokoro (82M, ONNX, ~97ms TTFB) — PRIMARY
+ * - local slow: Piper (ONNX, ~42s) — fallback
+ * - cloud free: Edge-TTS (Microsoft neural voices) — no API key
+ * - cloud paid: ElevenLabs, Azure, Google — high quality
  */
 
 // TTS Adapter Constants
 export const TTS_ADAPTERS = {
-  PIPER: 'piper',
   KOKORO: 'kokoro',
+  PIPER: 'piper',
+  EDGE_TTS: 'edge-tts',
   SILENCE: 'silence',
   ELEVENLABS: 'elevenlabs',
   AZURE: 'azure',
@@ -35,9 +38,16 @@ export interface VoiceConfig {
 
     // Per-adapter config
     adapters: {
+      kokoro?: {
+        voice: string;        // e.g., 'af' (default female), 'am_adam', 'bf_emma'
+        speed: number;        // 0.5-2.0
+      };
       piper?: {
         voice: string;        // e.g., 'af' (default female)
         speed: number;        // 0.5-2.0
+      };
+      'edge-tts'?: {
+        voice: string;        // e.g., 'en-US-AriaNeural'
       };
       elevenlabs?: {
         apiKey?: string;
@@ -57,18 +67,23 @@ export interface VoiceConfig {
   };
 
   // Performance
-  maxSynthesisTimeMs: number;  // Timeout before failure
   streamingEnabled: boolean;   // Stream audio chunks vs batch
+  // Note: TTS timeout is activity-based (VoiceService two-phase strategy),
+  // not a static limit. Synthesis runs as long as the adapter is active.
 }
 
 // Default configuration (easily overrideable)
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   tts: {
-    adapter: TTS_ADAPTERS.PIPER,  // Use constants, NO fallbacks
+    adapter: TTS_ADAPTERS.KOKORO,  // Kokoro 82M — fast, high quality, local
 
     adapters: {
+      kokoro: {
+        voice: 'af',    // American Female (default)
+        speed: 1.0,
+      },
       piper: {
-        voice: 'af',    // Female American English
+        voice: 'af',    // Fallback
         speed: 1.0,
       },
     },
@@ -78,7 +93,6 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
     adapter: STT_ADAPTERS.WHISPER,  // Use constants, NO fallbacks
   },
 
-  maxSynthesisTimeMs: 30000,  // 30s timeout - Piper runs at real-time (RTF≈1.0), need time for synthesis
   streamingEnabled: false,    // Batch mode for now
 };
 
@@ -104,8 +118,13 @@ export function getVoiceConfigForUser(
     config.tts.adapter = userPrefs.preferredTTSAdapter;
   }
 
-  if (userPrefs?.speechRate && config.tts.adapters.piper) {
-    config.tts.adapters.piper.speed = userPrefs.speechRate;
+  if (userPrefs?.speechRate) {
+    if (config.tts.adapters.kokoro) {
+      config.tts.adapters.kokoro.speed = userPrefs.speechRate;
+    }
+    if (config.tts.adapters.piper) {
+      config.tts.adapters.piper.speed = userPrefs.speechRate;
+    }
   }
 
   return config;
@@ -118,14 +137,12 @@ export function getVoiceConfigForUser(
  * - ElevenLabs Turbo v2: 80%+ win rate, $$$
  * - Azure Neural: Professional quality, $$
  *
- * Tier 2 (Good, affordable):
- * - Kokoro: 80.9% TTS Arena win rate, free local
- * - Google Cloud: Good quality, $
+ * Tier 2 (Good, local):
+ * - Kokoro: 80.9% TTS Arena win rate, ~97ms TTFB, free local (CURRENT)
+ * - Edge-TTS: Microsoft neural voices, free cloud, no API key
  *
  * Tier 3 (Functional, free):
- * - Piper: Basic quality, fast, free local (CURRENT)
- * - macOS say: Basic quality, free system
+ * - Piper: Basic quality, slow (~42s), free local (fallback)
  *
- * Recommendation: Start with Piper, upgrade to Kokoro or ElevenLabs
- * when quality matters (demos, production).
+ * Current: Kokoro (primary) — fast, natural, local ONNX inference
  */

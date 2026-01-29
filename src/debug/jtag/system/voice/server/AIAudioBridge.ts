@@ -227,6 +227,25 @@ export class AIAudioBridge {
 
     if (!connection || !connection.isConnected) {
       console.warn(`🤖 AIAudioBridge: Cannot speak - ${userId.slice(0, 8)} not in call (connection exists=${!!connection}, isConnected=${connection?.isConnected})`);
+
+      // CRITICAL: Emit speech event even on failure so VoiceOrchestrator
+      // can clear cooldown lock and chain to the next responder.
+      // Without this, the voice coordination chain breaks permanently.
+      const failedEvent = {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: 'unknown',
+        text,
+        audioDurationMs: 0,
+        failed: true,
+        timestamp: Date.now()
+      };
+
+      if (DataDaemon.jtagContext) {
+        await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', failedEvent, { scope: EVENT_SCOPES.GLOBAL });
+      } else {
+        Events.emit('voice:ai:speech', failedEvent);
+      }
       return;
     }
 
@@ -242,7 +261,7 @@ export class AIAudioBridge {
         text,
         userId,
         voice: voiceId,  // Speaker ID for multi-speaker models
-        adapter: TTS_ADAPTERS.PIPER,  // Local, fast TTS
+        adapter: TTS_ADAPTERS.KOKORO,  // Kokoro 82M — fast, natural voices
       });
 
       // result.audioSamples is already i16 array ready to send
@@ -301,6 +320,25 @@ export class AIAudioBridge {
 
     } catch (error) {
       console.error(`🤖 AIAudioBridge: TTS/send error:`, error);
+
+      // CRITICAL: Emit speech event on failure so VoiceOrchestrator
+      // can clear cooldown lock and chain to the next responder.
+      // Without this, TTS timeout (30s) permanently blocks the voice chain.
+      const failedEvent = {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: connection.displayName,
+        text,
+        audioDurationMs: 0,
+        failed: true,
+        timestamp: Date.now()
+      };
+
+      if (DataDaemon.jtagContext) {
+        await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', failedEvent, { scope: EVENT_SCOPES.GLOBAL });
+      } else {
+        Events.emit('voice:ai:speech', failedEvent);
+      }
     }
   }
 

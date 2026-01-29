@@ -405,7 +405,20 @@ export class VoiceOrchestrator {
       // Fallback to external TTS callback if set
       await this.ttsCallback(sessionId, personaId, response);
     } else {
-      console.warn('🎙️ VoiceOrchestrator: AI not in call and no TTS callback');
+      console.warn('🎙️ VoiceOrchestrator: AI not in call and no TTS callback — emitting failed speech to unblock chain');
+
+      // CRITICAL: Emit failed speech event so the voice chain can continue
+      // to the next AI. Without this, onUtterance cooldown stays active
+      // and no other AI can ever be selected.
+      Events.emit('voice:ai:speech', {
+        sessionId,
+        speakerId: personaId,
+        speakerName: 'unknown',
+        text: response,
+        audioDurationMs: 0,
+        failed: true,
+        timestamp: Date.now()
+      });
     }
   }
 
@@ -471,17 +484,21 @@ export class VoiceOrchestrator {
       speakerName: string;
       text: string;
       audioDurationMs?: number;
+      failed?: boolean;
       timestamp: number;
     }) => {
-      console.log(`🎙️ VoiceOrchestrator: RECEIVED voice:ai:speech event from ${event.speakerName} (audioDurationMs=${event.audioDurationMs})`);
+      console.log(`🎙️ VoiceOrchestrator: RECEIVED voice:ai:speech event from ${event.speakerName} (audioDurationMs=${event.audioDurationMs}, failed=${event.failed ?? false})`);
 
       // Track when this speech will finish - prevents new selection until done + buffer
-      if (event.audioDurationMs) {
+      if (event.failed || !event.audioDurationMs || event.audioDurationMs === 0) {
+        // Speech FAILED (TTS timeout, AI not in call, etc.) — clear cooldown immediately
+        // This is CRITICAL: without clearing, the voice chain permanently stalls
+        this.lastSpeechEndTime.delete(event.sessionId as UUID);
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speech FAILED — cooldown CLEARED (chain continues)`);
+      } else {
         const speechEndTime = Date.now() + event.audioDurationMs;
         this.lastSpeechEndTime.set(event.sessionId as UUID, speechEndTime);
         console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speaking for ${Math.round(event.audioDurationMs / 1000)}s - will wait until finished`);
-      } else {
-        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke: "${event.text.slice(0, 50)}..."`);
       }
 
       // Get participants for this session

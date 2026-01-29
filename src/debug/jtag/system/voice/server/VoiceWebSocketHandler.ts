@@ -427,7 +427,7 @@ export class VoiceWebSocketServer {
     try {
       const result = await VoiceSynthesize.execute({
           text: 'Got it',
-          adapter: TTS_ADAPTERS.PIPER,
+          adapter: TTS_ADAPTERS.KOKORO,
           sampleRate: AUDIO_SAMPLE_RATE
         }
       );

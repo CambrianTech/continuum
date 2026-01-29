@@ -8,8 +8,9 @@
 /// Usage: continuum-core-server <socket-path> <logger-socket-path>
 /// Example: continuum-core-server /tmp/continuum-core.sock /tmp/jtag-logger-worker.sock
 
-use continuum_core::{init_logger, start_server};
+use continuum_core::{init_logger, start_server, CallManager};
 use std::env;
+use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -53,9 +54,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("   IPC Socket: {socket_path}");
     info!("   Logger: {logger_socket_path}");
 
+    // Create shared CallManager — used by BOTH the IPC server and WebSocket call server.
+    // This enables voice/speak-in-call: TypeScript sends text → Rust synthesizes → injects
+    // directly into the call mixer → audio streams to browsers via WebSocket.
+    // Audio never leaves the Rust process.
+    let call_manager = Arc::new(CallManager::new());
+
+    // Capture tokio runtime handle for IPC thread to call async CallManager methods
+    let rt_handle = tokio::runtime::Handle::current();
+
     // Start IPC server in background thread FIRST (creates socket immediately)
+    let ipc_call_manager = call_manager.clone();
     let ipc_handle = std::thread::spawn(move || {
-        if let Err(e) = start_server(&socket_path) {
+        if let Err(e) = start_server(&socket_path, ipc_call_manager, rt_handle) {
             tracing::error!("❌ IPC server error: {}", e);
         }
     });
@@ -63,12 +74,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Give IPC server time to create socket (satisfies start-workers.sh check)
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    // Start WebSocket call server for live audio
+    // Start WebSocket call server for live audio (shares the same CallManager)
     let call_port = get_call_server_port();
     let call_addr = format!("127.0.0.1:{call_port}");
     info!("🎙️  Call WebSocket server starting on ws://{call_addr}");
+    let ws_call_manager = call_manager.clone();
     let call_server_handle = tokio::spawn(async move {
-        if let Err(e) = continuum_core::voice::call_server::start_call_server(&call_addr).await {
+        if let Err(e) = continuum_core::voice::call_server::start_call_server(&call_addr, ws_call_manager).await {
             tracing::error!("❌ Call server error: {}", e);
         }
     });

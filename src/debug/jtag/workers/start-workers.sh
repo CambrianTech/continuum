@@ -155,7 +155,10 @@ while read -r worker; do
       if [ $i -eq 60 ]; then
         echo -e "${RED}❌ ${name} failed to start (socket not created after 30s)${NC}"
         echo -e "${YELLOW}💡 Try: tail -20 .continuum/jtag/logs/system/${name}.log${NC}"
-        exit 1
+        # Don't exit — non-critical workers shouldn't block server startup.
+        # The server will degrade gracefully without search/archive.
+        # CRITICAL workers (continuum-core, data-daemon, logger) are checked below.
+        break
       fi
       sleep 0.5
     done

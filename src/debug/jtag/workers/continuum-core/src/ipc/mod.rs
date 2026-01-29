@@ -107,6 +107,17 @@ enum Request {
         adapter: Option<String>,
     },
 
+    /// Synthesize and inject audio directly into a call's mixer.
+    /// Audio never leaves the Rust process — TypeScript gets back metadata only.
+    #[serde(rename = "voice/speak-in-call")]
+    VoiceSpeakInCall {
+        call_id: String,
+        user_id: String,
+        text: String,
+        voice: Option<String>,
+        adapter: Option<String>,
+    },
+
     #[serde(rename = "voice/transcribe")]
     VoiceTranscribe {
         /// Base64-encoded i16 PCM samples, 16kHz mono
@@ -206,19 +217,26 @@ struct ServerState {
     inboxes: Arc<Mutex<HashMap<Uuid, PersonaInbox>>>,
     cognition_engines: Arc<Mutex<HashMap<Uuid, PersonaCognitionEngine>>>,
     rag_engine: Arc<RagEngine>,
+    /// Shared CallManager for direct audio injection (speak-in-call).
+    /// Audio never leaves Rust — IPC only returns metadata.
+    call_manager: Arc<crate::voice::call_server::CallManager>,
+    /// Tokio runtime handle for calling async CallManager methods from IPC threads.
+    rt_handle: tokio::runtime::Handle,
 }
 
 impl ServerState {
-    fn new() -> Self {
+    fn new(call_manager: Arc<crate::voice::call_server::CallManager>, rt_handle: tokio::runtime::Handle) -> Self {
         Self {
             voice_service: Arc::new(crate::voice::voice_service::VoiceService::new()),
             inboxes: Arc::new(Mutex::new(HashMap::new())),
             cognition_engines: Arc::new(Mutex::new(HashMap::new())),
             rag_engine: Arc::new(RagEngine::new()),
+            call_manager,
+            rt_handle,
         }
     }
 
-    fn handle_request(&self, request: Request) -> Response {
+    fn handle_request(&self, request: Request) -> HandleResult {
         match request {
             Request::VoiceRegisterSession {
                 session_id,
@@ -227,21 +245,21 @@ impl ServerState {
             } => {
                 let _timer = TimingGuard::new("ipc", "voice_register_session");
 
-                match self.voice_service.register_session(&session_id, &room_id, participants) {
+                HandleResult::Json(match self.voice_service.register_session(&session_id, &room_id, participants) {
                     Ok(_) => Response::success(serde_json::json!({ "registered": true })),
                     Err(e) => Response::error(e),
-                }
+                })
             }
 
             Request::VoiceOnUtterance { event } => {
                 let _timer = TimingGuard::new("ipc", "voice_on_utterance").with_threshold(10);
 
-                match self.voice_service.on_utterance(event) {
+                HandleResult::Json(match self.voice_service.on_utterance(event) {
                     Ok(responder_ids) => Response::success(serde_json::json!({
                         VOICE_RESPONSE_FIELD_RESPONDER_IDS: responder_ids.into_iter().map(|id| id.to_string()).collect::<Vec<String>>()
                     })),
                     Err(e) => Response::error(e),
-                }
+                })
             }
 
             Request::VoiceShouldRouteTts {
@@ -250,10 +268,10 @@ impl ServerState {
             } => {
                 let _timer = TimingGuard::new("ipc", "voice_should_route_tts");
 
-                match self.voice_service.should_route_tts(&session_id, &persona_id) {
+                HandleResult::Json(match self.voice_service.should_route_tts(&session_id, &persona_id) {
                     Ok(should_route) => Response::success(serde_json::json!({ "should_route": should_route })),
                     Err(e) => Response::error(e),
-                }
+                })
             }
 
             Request::VoiceSynthesize { text, voice, adapter } => {
@@ -261,7 +279,6 @@ impl ServerState {
 
                 // Delegate to TTS service (synchronous wrapper handles runtime)
                 use crate::voice::tts_service;
-                use base64::Engine;
 
                 let result = tts_service::synthesize_speech_sync(
                     &text,
@@ -271,34 +288,75 @@ impl ServerState {
 
                 match result {
                     Ok(synthesis) => {
-                        // Convert to base64 for transport
-                        let bytes: Vec<u8> = synthesis.samples.iter()
+                        // Raw PCM bytes — NO base64, NO JSON encoding of audio.
+                        // Binary framing sends these bytes directly over the socket.
+                        let pcm_bytes: Vec<u8> = synthesis.samples.iter()
                             .flat_map(|s| s.to_le_bytes())
                             .collect();
-                        let audio_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
                         log_info!(
                             "ipc", "voice_synthesize",
-                            "Synthesized {} samples at {}Hz ({:.1}s)",
+                            "Synthesized {} samples at {}Hz ({:.1}s) → {} bytes raw PCM",
                             synthesis.samples.len(),
                             synthesis.sample_rate,
-                            synthesis.duration_ms as f64 / 1000.0
+                            synthesis.duration_ms as f64 / 1000.0,
+                            pcm_bytes.len()
                         );
 
-                        // CRITICAL: Return ACTUAL sample rate from TTS, not a default
-                        // TTS adapters resample to 16kHz, so this should always be 16000
-                        Response::success(serde_json::json!({
-                            "audio": audio_base64,
-                            "sample_rate": synthesis.sample_rate,  // Actual rate from TTS (16000)
-                            "duration_ms": synthesis.duration_ms,
-                            "adapter": adapter.unwrap_or_else(|| "default".to_string())
-                        }))
+                        // JSON header carries metadata only — audio travels as raw binary
+                        HandleResult::Binary {
+                            json_header: Response::success(serde_json::json!({
+                                "sample_rate": synthesis.sample_rate,
+                                "duration_ms": synthesis.duration_ms,
+                                "adapter": adapter.unwrap_or_else(|| "default".to_string()),
+                                "num_samples": synthesis.samples.len(),
+                                "binary_pcm": true
+                            })),
+                            binary_data: pcm_bytes,
+                        }
                     },
                     Err(e) => {
                         log_error!("ipc", "voice_synthesize", "TTS failed: {}", e);
-                        Response::error(format!("TTS failed: {}", e))
+                        HandleResult::Json(Response::error(format!("TTS failed: {}", e)))
                     }
                 }
+            }
+
+            Request::VoiceSpeakInCall { call_id, user_id, text, voice, adapter } => {
+                let _timer = TimingGuard::new("ipc", "voice_speak_in_call");
+
+                // Direct injection: synthesize + inject into call mixer.
+                // Audio NEVER leaves the Rust process. TypeScript gets metadata only.
+                let call_manager = self.call_manager.clone();
+                let result = self.rt_handle.block_on(async {
+                    call_manager.speak_in_call(
+                        &call_id,
+                        &user_id,
+                        &text,
+                        voice.as_deref(),
+                        adapter.as_deref(),
+                    ).await
+                });
+
+                HandleResult::Json(match result {
+                    Ok((num_samples, duration_ms, sample_rate)) => {
+                        log_info!(
+                            "ipc", "voice_speak_in_call",
+                            "Injected {} samples ({:.1}s) into call {} for user {}",
+                            num_samples, duration_ms as f64 / 1000.0, call_id, user_id
+                        );
+                        Response::success(serde_json::json!({
+                            "num_samples": num_samples,
+                            "duration_ms": duration_ms,
+                            "sample_rate": sample_rate,
+                            "injected": true
+                        }))
+                    },
+                    Err(e) => {
+                        log_error!("ipc", "voice_speak_in_call", "Failed: {}", e);
+                        Response::error(e)
+                    }
+                })
             }
 
             Request::VoiceTranscribe { audio, language } => {
@@ -307,18 +365,18 @@ impl ServerState {
                 use crate::voice::stt_service;
                 use base64::Engine;
 
-                // Decode base64 audio
+                // Decode base64 audio (STT input is small — base64 is acceptable here)
                 let bytes = match base64::engine::general_purpose::STANDARD.decode(&audio) {
                     Ok(b) => b,
                     Err(e) => {
                         log_error!("ipc", "voice_transcribe", "Base64 decode failed: {}", e);
-                        return Response::error(format!("Base64 decode failed: {}", e));
+                        return HandleResult::Json(Response::error(format!("Base64 decode failed: {}", e)));
                     }
                 };
 
                 // Convert bytes to i16 samples
                 if bytes.len() % 2 != 0 {
-                    return Response::error("Audio data must have even length (i16 samples)".into());
+                    return HandleResult::Json(Response::error("Audio data must have even length (i16 samples)".into()));
                 }
                 let samples: Vec<i16> = bytes
                     .chunks_exact(2)
@@ -332,13 +390,12 @@ impl ServerState {
                     samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64
                 );
 
-                // Transcribe
                 let result = stt_service::transcribe_speech_sync(
                     &samples,
                     language.as_deref()
                 );
 
-                match result {
+                HandleResult::Json(match result {
                     Ok(transcript) => {
                         log_info!(
                             "ipc", "voice_transcribe",
@@ -364,7 +421,7 @@ impl ServerState {
                         log_error!("ipc", "voice_transcribe", "STT failed: {}", e);
                         Response::error(format!("STT failed: {}", e))
                     }
-                }
+                })
             }
 
             Request::InboxCreate { persona_id } => {
@@ -372,17 +429,17 @@ impl ServerState {
 
                 let persona_uuid = match Uuid::parse_str(&persona_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
                 let inbox = PersonaInbox::new(persona_uuid);
                 let mut inboxes = match self.inboxes.lock() {
                     Ok(i) => i,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
                 };
                 inboxes.insert(persona_uuid, inbox);
 
-                Response::success(serde_json::json!({ "created": true }))
+                HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
             }
 
             // ================================================================
@@ -394,7 +451,7 @@ impl ServerState {
 
                 let persona_uuid = match Uuid::parse_str(&persona_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
                 let (_, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -407,12 +464,12 @@ impl ServerState {
 
                 let mut engines = match self.cognition_engines.lock() {
                     Ok(e) => e,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
                 };
                 engines.insert(persona_uuid, engine);
 
                 log_info!("ipc", "cognition", "Created cognition engine for {}", persona_id);
-                Response::success(serde_json::json!({ "created": true }))
+                HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
             }
 
             Request::CognitionCalculatePriority {
@@ -422,12 +479,12 @@ impl ServerState {
 
                 let persona_uuid = match Uuid::parse_str(&persona_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
                 let room_uuid = match Uuid::parse_str(&room_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid room_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid room_id: {e}"))),
                 };
 
                 let sender = match sender_type.as_str() {
@@ -435,22 +492,22 @@ impl ServerState {
                     "persona" => SenderType::Persona,
                     "agent" => SenderType::Agent,
                     "system" => SenderType::System,
-                    _ => return Response::error(format!("Invalid sender_type: {}", sender_type)),
+                    _ => return HandleResult::Json(Response::error(format!("Invalid sender_type: {}", sender_type))),
                 };
 
                 let engines = match self.cognition_engines.lock() {
                     Ok(e) => e,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
                 };
 
                 let engine = match engines.get(&persona_uuid) {
                     Some(e) => e,
-                    None => return Response::error(format!("No cognition engine for {}", persona_id)),
+                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
 
                 let score = engine.calculate_priority(&content, sender, is_voice, room_uuid, timestamp);
 
-                Response::success(serde_json::json!({
+                HandleResult::Json(Response::success(serde_json::json!({
                     "score": score.score,
                     "factors": {
                         "recency_score": score.factors.recency_score,
@@ -459,7 +516,7 @@ impl ServerState {
                         "sender_score": score.factors.sender_score,
                         "voice_boost": score.factors.voice_boost,
                     }
-                }))
+                })))
             }
 
             Request::CognitionFastPathDecision { persona_id, message } => {
@@ -467,33 +524,33 @@ impl ServerState {
 
                 let persona_uuid = match Uuid::parse_str(&persona_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
                 let inbox_msg = match message.to_inbox_message() {
                     Ok(m) => m,
-                    Err(e) => return Response::error(e),
+                    Err(e) => return HandleResult::Json(Response::error(e)),
                 };
 
                 let engines = match self.cognition_engines.lock() {
                     Ok(e) => e,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
                 };
 
                 let engine = match engines.get(&persona_uuid) {
                     Some(e) => e,
-                    None => return Response::error(format!("No cognition engine for {}", persona_id)),
+                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
 
                 let decision = engine.fast_path_decision(&inbox_msg);
 
-                Response::success(serde_json::json!({
+                HandleResult::Json(Response::success(serde_json::json!({
                     "should_respond": decision.should_respond,
                     "confidence": decision.confidence,
                     "reason": decision.reason,
                     "decision_time_ms": decision.decision_time_ms,
                     "fast_path_used": decision.fast_path_used,
-                }))
+                })))
             }
 
             Request::CognitionEnqueueMessage { persona_id, message } => {
@@ -501,27 +558,27 @@ impl ServerState {
 
                 let persona_uuid = match Uuid::parse_str(&persona_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
                 let inbox_msg = match message.to_inbox_message() {
                     Ok(m) => m,
-                    Err(e) => return Response::error(e),
+                    Err(e) => return HandleResult::Json(Response::error(e)),
                 };
 
                 let engines = match self.cognition_engines.lock() {
                     Ok(e) => e,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
                 };
 
                 let engine = match engines.get(&persona_uuid) {
                     Some(e) => e,
-                    None => return Response::error(format!("No cognition engine for {}", persona_id)),
+                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
 
                 engine.enqueue_message(inbox_msg);
 
-                Response::success(serde_json::json!({ "enqueued": true }))
+                HandleResult::Json(Response::success(serde_json::json!({ "enqueued": true })))
             }
 
             Request::CognitionGetState { persona_id } => {
@@ -529,22 +586,22 @@ impl ServerState {
 
                 let persona_uuid = match Uuid::parse_str(&persona_id) {
                     Ok(u) => u,
-                    Err(e) => return Response::error(format!("Invalid persona_id: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
                 let engines = match self.cognition_engines.lock() {
                     Ok(e) => e,
-                    Err(e) => return Response::error(format!("Lock poisoned: {e}")),
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
                 };
 
                 let engine = match engines.get(&persona_uuid) {
                     Some(e) => e,
-                    None => return Response::error(format!("No cognition engine for {}", persona_id)),
+                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
 
                 let state = engine.state();
 
-                Response::success(serde_json::json!({
+                HandleResult::Json(Response::success(serde_json::json!({
                     "energy": state.energy,
                     "attention": state.attention,
                     "mood": format!("{:?}", state.mood).to_lowercase(),
@@ -553,43 +610,88 @@ impl ServerState {
                     "response_count": state.response_count,
                     "compute_budget": state.compute_budget,
                     "service_cadence_ms": state.service_cadence_ms(),
-                }))
+                })))
             }
 
             Request::HealthCheck => {
-                Response::success(serde_json::json!({ "healthy": true }))
+                HandleResult::Json(Response::success(serde_json::json!({ "healthy": true })))
             }
 
             Request::GetStats { category: _ } => {
-                Response::success(serde_json::json!({
+                HandleResult::Json(Response::success(serde_json::json!({
                     "note": "Performance stats tracking not yet implemented"
-                }))
+                })))
             }
         }
     }
 }
 
 // ============================================================================
-// Connection Handler
+// Handle Result - supports JSON and binary responses
 // ============================================================================
 
-/// Helper to send JSON response, handling serialization errors gracefully
-fn send_response(stream: &mut UnixStream, response: Response) -> std::io::Result<()> {
-    let json = match serde_json::to_string(&response) {
+/// Result from handling an IPC request.
+/// Binary variant allows raw PCM audio to bypass base64 encoding entirely.
+enum HandleResult {
+    /// Standard JSON response (all non-audio commands)
+    Json(Response),
+    /// Binary response: JSON metadata + raw bytes (audio commands)
+    /// Eliminates base64 encoding overhead for audio data.
+    Binary {
+        json_header: Response,
+        binary_data: Vec<u8>,
+    },
+}
+
+// ============================================================================
+// Connection Handler - Length-Prefixed Binary Framing
+// ============================================================================
+
+/// Send a length-prefixed JSON response frame.
+/// Frame format: [4 bytes u32 BE length][JSON payload bytes]
+fn send_json_frame(stream: &mut UnixStream, response: &Response) -> std::io::Result<()> {
+    let json = match serde_json::to_string(response) {
         Ok(j) => j,
         Err(e) => {
             log_error!("ipc", "server", "Failed to serialize response: {}", e);
-            // Fallback: send simple error JSON
             r#"{"success":false,"error":"Internal serialization error"}"#.to_string()
         }
     };
-    writeln!(stream, "{json}")
+    let payload = json.as_bytes();
+    let length = payload.len() as u32;
+
+    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(payload)?;
+    stream.flush()
+}
+
+/// Send a length-prefixed binary response frame.
+/// Frame format: [4 bytes u32 BE total_length][JSON header bytes][\0][raw binary bytes]
+/// The \0 separator is unambiguous — serde_json encodes null chars as \u0000.
+fn send_binary_frame(stream: &mut UnixStream, response: &Response, binary_data: &[u8]) -> std::io::Result<()> {
+    let json = match serde_json::to_string(response) {
+        Ok(j) => j,
+        Err(e) => {
+            log_error!("ipc", "server", "Failed to serialize binary response header: {}", e);
+            r#"{"success":false,"error":"Internal serialization error"}"#.to_string()
+        }
+    };
+    let json_bytes = json.as_bytes();
+    let total_length = (json_bytes.len() + 1 + binary_data.len()) as u32; // +1 for \0 separator
+
+    stream.write_all(&total_length.to_be_bytes())?;
+    stream.write_all(json_bytes)?;
+    stream.write_all(&[0u8])?; // separator
+    stream.write_all(binary_data)?;
+    stream.flush()
 }
 
 fn handle_client(mut stream: UnixStream, state: Arc<ServerState>) -> std::io::Result<()> {
     let peer_addr = stream.peer_addr()?;
     log_debug!("ipc", "server", "Client connected: {:?}", peer_addr);
 
+    // Requests still arrive as newline-delimited JSON (small control messages).
+    // Responses use length-prefixed binary framing (supports large audio payloads).
     let reader = BufReader::new(stream.try_clone()?);
 
     for line in reader.lines() {
@@ -603,7 +705,7 @@ fn handle_client(mut stream: UnixStream, state: Arc<ServerState>) -> std::io::Re
             Ok(v) => v,
             Err(e) => {
                 let response = Response::error(format!("Invalid JSON: {e}"));
-                send_response(&mut stream, response)?;
+                send_json_frame(&mut stream, &response)?;
                 continue;
             }
         };
@@ -616,16 +718,25 @@ fn handle_client(mut stream: UnixStream, state: Arc<ServerState>) -> std::io::Re
             Ok(r) => r,
             Err(e) => {
                 let response = Response::error(format!("Invalid request: {e}")).with_request_id(request_id);
-                send_response(&mut stream, response)?;
+                send_json_frame(&mut stream, &response)?;
                 continue;
             }
         };
 
-        // Handle request and attach requestId to response
-        let response = state.handle_request(request).with_request_id(request_id);
+        // Handle request
+        let result = state.handle_request(request);
 
-        // Send response
-        send_response(&mut stream, response)?;
+        // Send response using appropriate framing
+        match result {
+            HandleResult::Json(response) => {
+                let response = response.with_request_id(request_id);
+                send_json_frame(&mut stream, &response)?;
+            }
+            HandleResult::Binary { json_header, binary_data } => {
+                let json_header = json_header.with_request_id(request_id);
+                send_binary_frame(&mut stream, &json_header, &binary_data)?;
+            }
+        }
     }
 
     log_debug!("ipc", "server", "Client disconnected: {:?}", peer_addr);
@@ -636,7 +747,11 @@ fn handle_client(mut stream: UnixStream, state: Arc<ServerState>) -> std::io::Re
 // Server Main Loop
 // ============================================================================
 
-pub fn start_server(socket_path: &str) -> std::io::Result<()> {
+pub fn start_server(
+    socket_path: &str,
+    call_manager: Arc<crate::voice::call_server::CallManager>,
+    rt_handle: tokio::runtime::Handle,
+) -> std::io::Result<()> {
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
         std::fs::remove_file(socket_path)?;
@@ -645,7 +760,7 @@ pub fn start_server(socket_path: &str) -> std::io::Result<()> {
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
     let listener = UnixListener::bind(socket_path)?;
-    let state = Arc::new(ServerState::new());
+    let state = Arc::new(ServerState::new(call_manager, rt_handle));
 
     log_info!("ipc", "server", "IPC server ready");
 

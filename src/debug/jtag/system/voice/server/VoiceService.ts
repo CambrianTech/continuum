@@ -5,13 +5,10 @@
  * Handles adapter selection, fallback, and audio format conversion.
  */
 
-import { Commands } from '../../core/shared/Commands';
 import { Events } from '../../core/shared/Events';
 import type { VoiceConfig, TTSAdapter } from '../shared/VoiceConfig';
-import { DEFAULT_VOICE_CONFIG, TTS_ADAPTERS } from '../shared/VoiceConfig';
-import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { DEFAULT_VOICE_CONFIG } from '../shared/VoiceConfig';
 import { AUDIO_SAMPLE_RATE } from '../../../shared/AudioConstants';
-
 import { VoiceSynthesize } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
 export interface SynthesizeSpeechRequest {
   text: string;
@@ -67,6 +64,14 @@ export class VoiceService {
 
   /**
    * Synthesize with specific adapter
+   *
+   * Two-phase timeout strategy:
+   * Phase 1: Command must return a handle (should be instant, ~15s safety)
+   * Phase 2: Once handle received, Piper IS generating — no timeout.
+   *          Only a catastrophic safety net (5 min) for total process death.
+   *
+   * We KNOW synthesis is active once the handle returns. Don't kill
+   * expensive GPU/CPU work just because it takes longer than expected.
    */
   private async synthesizeWithAdapter(
     text: string,
@@ -74,12 +79,21 @@ export class VoiceService {
     voice: string,
     speed: number
   ): Promise<SynthesizeSpeechResult> {
-    const timeout = this.config.maxSynthesisTimeMs;
+    const COMMAND_TIMEOUT_MS = 15_000;          // Handle must arrive fast
+    const SAFETY_TIMEOUT_MS = 5 * 60 * 1_000;  // 5 min — catastrophic only
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`TTS synthesis timeout (${timeout}ms)`));
-      }, timeout);
+      let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+      let settled = false;
+
+      const settle = () => { settled = true; };
+
+      // Phase 1: Command execution timeout
+      const commandTimer = setTimeout(() => {
+        if (settled) return;
+        settle();
+        reject(new Error(`TTS command timeout — failed to start synthesis within ${COMMAND_TIMEOUT_MS}ms`));
+      }, COMMAND_TIMEOUT_MS);
 
       // Call voice/synthesize command
       VoiceSynthesize.execute({
@@ -89,10 +103,25 @@ export class VoiceService {
         speed,
         sampleRate: AUDIO_SAMPLE_RATE,
       }).then((result) => {
+        // Phase 1 complete — handle received, synthesis is actively running
+        clearTimeout(commandTimer);
+        if (settled) return;
+
         const handle = result.handle;
+        console.log(`🔊 VoiceService: Synthesis started (handle=${handle.slice(0, 8)}), adapter is generating...`);
+
+        // Phase 2: Safety-only timeout — adapter is actively working
+        safetyTimer = setTimeout(() => {
+          if (settled) return;
+          settle();
+          unsubAudio();
+          unsubError();
+          reject(new Error(`TTS synthesis unresponsive — no audio or error after ${SAFETY_TIMEOUT_MS / 1000}s (catastrophic failure)`));
+        }, SAFETY_TIMEOUT_MS);
 
         // Subscribe to audio event
         const unsubAudio = Events.subscribe(`voice:audio:${handle}`, (event: any) => {
+          if (settled) return;
           try {
             // Decode base64 to buffer
             const audioBuffer = Buffer.from(event.audio, 'base64');
@@ -103,8 +132,10 @@ export class VoiceService {
               audioSamples[i] = audioBuffer.readInt16LE(i * 2);
             }
 
-            clearTimeout(timer);
+            settle();
+            if (safetyTimer) clearTimeout(safetyTimer);
             unsubAudio();
+            unsubError();
 
             resolve({
               audioSamples,
@@ -113,20 +144,27 @@ export class VoiceService {
               adapter: event.adapter,
             });
           } catch (err) {
-            clearTimeout(timer);
+            settle();
+            if (safetyTimer) clearTimeout(safetyTimer);
             unsubAudio();
+            unsubError();
             reject(err);
           }
         });
 
         // Subscribe to error event
-        Events.subscribe(`voice:error:${handle}`, (event: any) => {
-          clearTimeout(timer);
+        const unsubError = Events.subscribe(`voice:error:${handle}`, (event: any) => {
+          if (settled) return;
+          settle();
+          if (safetyTimer) clearTimeout(safetyTimer);
           unsubAudio();
+          unsubError();
           reject(new Error(event.error));
         });
       }).catch((err) => {
-        clearTimeout(timer);
+        clearTimeout(commandTimer);
+        if (settled) return;
+        settle();
         reject(err);
       });
     });

@@ -1,11 +1,11 @@
 //! Kokoro TTS Adapter
 //!
-//! Local TTS inference using Kokoro (~82M params) via ONNX Runtime.
-//! Excellent quality for a lightweight model.
+//! Local TTS inference using Kokoro-82M v1.0 via ONNX Runtime.
+//! Uses espeak-ng for phonemization + Kokoro vocab for tokenization.
 //!
 //! GPU Acceleration:
-//! - CUDA (NVIDIA GPUs like RTX 5090) - Linux/Windows
 //! - CoreML (Apple Silicon) - macOS
+//! - CUDA (NVIDIA GPUs) - Linux/Windows
 
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use async_trait::async_trait;
@@ -14,19 +14,28 @@ use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Global Kokoro session
+/// Global Kokoro session + tokenizer
 static KOKORO_SESSION: OnceCell<Arc<Mutex<KokoroModel>>> = OnceCell::new();
 
 /// Kokoro model wrapper
 struct KokoroModel {
     session: Session,
+    vocab: HashMap<char, i64>,
+    voices_dir: PathBuf,
+    /// Cached voice embeddings: voice_id -> (N, 256) float32 array
+    voice_cache: HashMap<String, Vec<Vec<f32>>>,
     #[allow(dead_code)]
     sample_rate: u32,
 }
+
+/// Max phoneme/token length for Kokoro v1.0
+const MAX_TOKEN_LENGTH: usize = 510;
 
 /// Available Kokoro voices
 const KOKORO_VOICES: &[(&str, &str, &str)] = &[
@@ -53,13 +62,14 @@ impl KokoroTTS {
         Self { model_path: None }
     }
 
+    #[allow(dead_code)]
     pub fn with_model_path(model_path: PathBuf) -> Self {
         Self {
             model_path: Some(model_path),
         }
     }
 
-    /// Find model in common locations
+    /// Find model ONNX file in common locations
     fn find_model_path(&self) -> Option<PathBuf> {
         if let Some(ref path) = self.model_path {
             if path.exists() {
@@ -68,26 +78,165 @@ impl KokoroTTS {
         }
 
         let candidates = [
-            PathBuf::from("models/kokoro/kokoro-v0_19.onnx"),
+            // v1.0 quantized (preferred — smaller, faster)
+            PathBuf::from("models/kokoro/kokoro-v1.0-q8.onnx"),
+            // v1.0 full precision
+            PathBuf::from("models/kokoro/kokoro-v1.0.onnx"),
+            // Generic names
+            PathBuf::from("models/kokoro/model_quantized.onnx"),
+            PathBuf::from("models/kokoro/model.onnx"),
             PathBuf::from("models/kokoro/kokoro.onnx"),
-            PathBuf::from("models/tts/kokoro.onnx"),
-            dirs::data_dir()
-                .unwrap_or_default()
-                .join("kokoro/kokoro-v0_19.onnx"),
-            PathBuf::from("/usr/local/share/kokoro/kokoro.onnx"),
+            // Legacy v0.19
+            PathBuf::from("models/kokoro/kokoro-v0_19.onnx"),
         ];
 
         candidates.into_iter().find(|path| path.exists())
     }
 
-    /// Normalize voice ID
-    fn normalize_voice(voice: &str) -> &'static str {
+    /// Find voices directory
+    fn find_voices_dir() -> Option<PathBuf> {
+        let candidates = [
+            PathBuf::from("models/kokoro/voices"),
+            PathBuf::from("models/kokoro"),
+        ];
+        candidates.into_iter().find(|path| path.is_dir())
+    }
+
+    /// Load Kokoro vocab from JSON file
+    fn load_vocab() -> Result<HashMap<char, i64>, TTSError> {
+        let vocab_path = PathBuf::from("models/kokoro/vocab.json");
+        if !vocab_path.exists() {
+            return Err(TTSError::ModelNotLoaded(
+                "Kokoro vocab.json not found at models/kokoro/vocab.json".into(),
+            ));
+        }
+
+        let content = std::fs::read_to_string(&vocab_path)
+            .map_err(|e| TTSError::IoError(e))?;
+
+        let raw: HashMap<String, i64> = serde_json::from_str(&content)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab.json: {e}")))?;
+
+        // Convert string keys to char keys
+        let mut vocab = HashMap::new();
+        for (key, value) in raw {
+            if let Some(ch) = key.chars().next() {
+                vocab.insert(ch, value);
+            }
+        }
+
+        info!("Kokoro vocab loaded: {} entries", vocab.len());
+        Ok(vocab)
+    }
+
+    /// Load voice embedding from .bin file
+    fn load_voice_embedding(voices_dir: &PathBuf, voice_id: &str) -> Result<Vec<Vec<f32>>, TTSError> {
+        let voice_path = voices_dir.join(format!("{}.bin", voice_id));
+        if !voice_path.exists() {
+            // Try default voice
+            let default_path = voices_dir.join("af.bin");
+            if !default_path.exists() {
+                return Err(TTSError::VoiceNotFound(format!(
+                    "Voice file not found: {} (and default af.bin also missing)",
+                    voice_path.display()
+                )));
+            }
+            warn!("Voice '{}' not found, using default 'af'", voice_id);
+            return Self::load_voice_embedding(voices_dir, "af");
+        }
+
+        let bytes = std::fs::read(&voice_path)
+            .map_err(|e| TTSError::IoError(e))?;
+
+        // Parse as float32 array
+        let num_floats = bytes.len() / 4;
+        let mut floats = Vec::with_capacity(num_floats);
+        for chunk in bytes.chunks_exact(4) {
+            floats.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        }
+
+        // Reshape to (N, 256)
+        let embedding_dim = 256;
+        let num_rows = num_floats / embedding_dim;
+        let mut embeddings = Vec::with_capacity(num_rows);
+        for row in 0..num_rows {
+            let start = row * embedding_dim;
+            let end = start + embedding_dim;
+            embeddings.push(floats[start..end].to_vec());
+        }
+
+        info!(
+            "Loaded voice '{}': {} style vectors ({}x{})",
+            voice_id, num_rows, num_rows, embedding_dim
+        );
+
+        Ok(embeddings)
+    }
+
+    /// Normalize voice ID to a known voice
+    fn normalize_voice(voice: &str) -> &str {
         for (id, _, _) in KOKORO_VOICES {
             if *id == voice {
                 return id;
             }
         }
         "af" // Default
+    }
+
+    /// Call espeak-ng to phonemize text (same as Piper, but returns raw IPA string)
+    fn phonemize(text: &str) -> Result<String, TTSError> {
+        let output = Command::new("/opt/homebrew/bin/espeak-ng")
+            .args(&["-v", "en-us", "-q", "--ipa=3"])
+            .arg(text)
+            .output()
+            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to run espeak-ng: {e}")))?;
+
+        if !output.status.success() {
+            return Err(TTSError::SynthesisFailed(format!(
+                "espeak-ng failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let phonemes = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .to_string()
+            .replace('\u{200D}', "") // Zero-width joiner
+            .replace('\u{200C}', "") // Zero-width non-joiner
+            .replace('\u{FEFF}', "") // Zero-width no-break space
+            .replace('\n', " ")
+            .replace('\r', " ");
+
+        Ok(phonemes)
+    }
+
+    /// Tokenize phoneme string using Kokoro vocab
+    fn tokenize(phonemes: &str, vocab: &HashMap<char, i64>) -> Vec<i64> {
+        let mut tokens = Vec::with_capacity(phonemes.len() + 2);
+
+        // Start padding token
+        tokens.push(0);
+
+        // Map each phoneme character through vocab (skip unknown chars)
+        for ch in phonemes.chars() {
+            if let Some(&id) = vocab.get(&ch) {
+                tokens.push(id);
+            }
+            // Unknown chars are silently skipped (filtered out)
+        }
+
+        // End padding token
+        tokens.push(0);
+
+        // Enforce max length
+        if tokens.len() > MAX_TOKEN_LENGTH + 2 {
+            tokens.truncate(MAX_TOKEN_LENGTH + 2);
+            // Ensure end padding
+            let last = tokens.len() - 1;
+            tokens[last] = 0;
+        }
+
+        tokens
     }
 
     /// Synchronous synthesis
@@ -102,33 +251,61 @@ impl KokoroTTS {
         }
 
         let voice_id = Self::normalize_voice(voice);
-        let model = session.lock();
+        let mut model = session.lock();
 
-        // Tokenize text
-        let text_tokens: Vec<i64> = text
-            .chars()
-            .filter_map(|c| if c.is_ascii() { Some(c as i64) } else { None })
-            .collect();
-        let text_array = ndarray::Array1::from_vec(text_tokens);
+        // Step 1: Phonemize text via espeak-ng
+        let phonemes = Self::phonemize(text)?;
+        info!("Kokoro phonemized: '{}' -> '{}'", &text[..text.len().min(40)], &phonemes[..phonemes.len().min(60)]);
 
-        // Voice embedding (simplified)
-        let voice_embedding = Self::get_voice_embedding(voice_id);
-        let voice_array = ndarray::Array1::from_vec(voice_embedding);
+        // Step 2: Tokenize using Kokoro vocab
+        let tokens = Self::tokenize(&phonemes, &model.vocab);
+        let token_count = tokens.len();
+        info!("Kokoro tokenized: {} tokens", token_count);
 
-        // Speed
-        let speed_array = ndarray::Array1::from_vec(vec![speed]);
+        if token_count < 3 {
+            return Err(TTSError::InvalidText("Text produced no valid tokens".into()));
+        }
 
-        // Run inference
+        // Step 3: Get voice embedding for this token count
+        // Load voice if not cached
+        if !model.voice_cache.contains_key(voice_id) {
+            let embeddings = Self::load_voice_embedding(&model.voices_dir, voice_id)?;
+            model.voice_cache.insert(voice_id.to_string(), embeddings);
+        }
+
+        let voice_embeddings = model.voice_cache.get(voice_id).unwrap();
+
+        // Select style vector based on token count (clamped to available range)
+        let style_idx = token_count.min(voice_embeddings.len().saturating_sub(1));
+        let style_vector = &voice_embeddings[style_idx];
+
+        // Step 4: Build ONNX input tensors
+        // input_ids: shape (1, token_count)
+        let input_ids = ndarray::Array2::from_shape_vec(
+            (1, token_count),
+            tokens,
+        ).map_err(|e| TTSError::SynthesisFailed(format!("Failed to create input_ids tensor: {e}")))?;
+
+        // style: shape (1, 256)
+        let style = ndarray::Array2::from_shape_vec(
+            (1, 256),
+            style_vector.clone(),
+        ).map_err(|e| TTSError::SynthesisFailed(format!("Failed to create style tensor: {e}")))?;
+
+        // speed: shape (1,)
+        let speed_tensor = ndarray::Array1::from_vec(vec![speed]);
+
+        // Step 5: Run ONNX inference
         let outputs = model
             .session
             .run(ort::inputs![
-                "tokens" => text_array,
-                "voice" => voice_array,
-                "speed" => speed_array
+                "input_ids" => input_ids,
+                "style" => style,
+                "speed" => speed_tensor
             ]?)
             .map_err(|e| TTSError::SynthesisFailed(format!("ONNX inference failed: {e}")))?;
 
-        // Extract audio
+        // Step 6: Extract audio output
         let audio_output = outputs
             .iter()
             .next()
@@ -139,13 +316,12 @@ impl KokoroTTS {
             .try_extract_raw_tensor::<f32>()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to extract audio: {e}")))?;
 
-        // Convert f32 to i16 and resample from 24kHz to 16kHz
+        // Step 7: Convert f32 to i16 and resample from 24kHz to 16kHz
         let samples_24k: Vec<i16> = audio_data
             .iter()
             .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
             .collect();
 
-        // Resample from Kokoro's 24kHz to standard audio rate
         use crate::audio_constants::AUDIO_SAMPLE_RATE;
         let samples_resampled = Self::resample_24k_to_target(&samples_24k, AUDIO_SAMPLE_RATE);
 
@@ -163,20 +339,6 @@ impl KokoroTTS {
             sample_rate: AUDIO_SAMPLE_RATE,
             duration_ms,
         })
-    }
-
-    /// Voice embedding (placeholder - real impl loads from disk)
-    fn get_voice_embedding(voice_id: &str) -> Vec<f32> {
-        let seed = voice_id
-            .bytes()
-            .fold(0u32, |acc, b| acc.wrapping_add(b as u32));
-        let mut embedding = vec![0.0f32; 256];
-
-        for (i, val) in embedding.iter_mut().enumerate() {
-            *val = ((seed.wrapping_mul(i as u32 + 1) % 1000) as f32 / 1000.0) * 2.0 - 1.0;
-        }
-
-        embedding
     }
 
     /// Resample from 24kHz to target rate (simple linear interpolation)
@@ -224,7 +386,7 @@ impl TextToSpeech for KokoroTTS {
     }
 
     fn description(&self) -> &'static str {
-        "Local Kokoro TTS (82M params, ONNX)"
+        "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)"
     }
 
     fn is_initialized(&self) -> bool {
@@ -237,17 +399,27 @@ impl TextToSpeech for KokoroTTS {
             return Ok(());
         }
 
+        // Find model
         let model_path = match self.find_model_path() {
             Some(path) => path,
             None => {
                 warn!("Kokoro model not found. Download from:");
-                warn!("  https://huggingface.co/hexgrad/Kokoro-82M/tree/main");
-                warn!("Place ONNX file in: models/kokoro/kokoro-v0_19.onnx");
+                warn!("  https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX");
+                warn!("Place ONNX file in: models/kokoro/kokoro-v1.0-q8.onnx");
                 return Err(TTSError::ModelNotLoaded(
                     "Kokoro ONNX model not found".into(),
                 ));
             }
         };
+
+        // Find voices directory
+        let voices_dir = Self::find_voices_dir().unwrap_or_else(|| {
+            warn!("Kokoro voices directory not found, using models/kokoro/voices");
+            PathBuf::from("models/kokoro/voices")
+        });
+
+        // Load vocab
+        let vocab = Self::load_vocab()?;
 
         info!("Loading Kokoro model from: {:?}", model_path);
 
@@ -258,6 +430,9 @@ impl TextToSpeech for KokoroTTS {
 
         let model = KokoroModel {
             session,
+            vocab,
+            voices_dir,
+            voice_cache: HashMap::new(),
             sample_rate: 24000,
         };
 
@@ -328,10 +503,26 @@ mod tests {
 
     #[test]
     fn test_resample() {
-        // 6 samples at 24kHz should become 4 samples at AUDIO_SAMPLE_RATE
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
         let output = KokoroTTS::resample_24k_to_target(&input, AUDIO_SAMPLE_RATE);
-        // 6 * 16000 / 24000 = 4 samples
         assert_eq!(output.len(), 4);
+    }
+
+    #[test]
+    fn test_tokenize_basic() {
+        let mut vocab = HashMap::new();
+        vocab.insert('h', 50);
+        vocab.insert('e', 47);
+        vocab.insert('l', 54);
+        vocab.insert('o', 57);
+
+        let tokens = KokoroTTS::tokenize("helo", &vocab);
+        // Should be: [0, 50, 47, 54, 57, 0]
+        assert_eq!(tokens[0], 0); // Start padding
+        assert_eq!(tokens[1], 50); // h
+        assert_eq!(tokens[2], 47); // e
+        assert_eq!(tokens[3], 54); // l
+        assert_eq!(tokens[4], 57); // o
+        assert_eq!(tokens[tokens.len() - 1], 0); // End padding
     }
 }

@@ -543,6 +543,13 @@ impl AudioMixer {
     pub fn frame_size(&self) -> usize {
         self.frame_size
     }
+
+    /// Find a participant's handle by user_id
+    pub fn find_handle_by_user_id(&self, user_id: &str) -> Option<Handle> {
+        self.participants.iter()
+            .find(|(_, stream)| stream.user_id == user_id)
+            .map(|(handle, _)| *handle)
+    }
 }
 
 #[cfg(test)]
