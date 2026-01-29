@@ -10,6 +10,8 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 // import { ValidationError } from '@system/core/types/ErrorTypes';  // Uncomment when adding validation
 import type { DecisionListParams, DecisionListResult } from '../shared/DecisionListTypes';
 import { createDecisionListResultFromParams } from '../shared/DecisionListTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 
 export class DecisionListServerCommand extends CommandBase<DecisionListParams, DecisionListResult> {
 
@@ -34,11 +36,10 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
         filter.status = params.status;
       }
 
-      const listResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+      const listResult = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         filter,
         limit,
-        offset,
         orderBy: [{ field: 'sequenceNumber', direction: 'desc' }]  // Newest first
       });
 
@@ -53,7 +54,7 @@ export class DecisionListServerCommand extends CommandBase<DecisionListParams, D
       }
 
       const proposals = listResult.items || [];
-      const total = listResult.total || proposals.length;
+      const total = listResult.count || proposals.length;
 
       // Proposals automatically have .shortId from BaseEntity getter
       return createDecisionListResultFromParams(params, {

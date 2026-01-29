@@ -10,6 +10,9 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { toShortId } from '@system/core/types/CrossPlatformUUID';
 import type { DecisionViewParams, DecisionViewResult } from '../shared/DecisionViewTypes';
 import { createDecisionViewResultFromParams } from '../shared/DecisionViewTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 
 export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, DecisionViewResult> {
 
@@ -45,7 +48,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         const proposalShortId = normalizeShortId(params.proposalId);
 
         // Query for proposals ending with this short ID
-        const proposalsResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+        const proposalsResult = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });
@@ -59,7 +62,7 @@ export class DecisionViewServerCommand extends CommandBase<DecisionViewParams, D
         }
       }
 
-      const proposalResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+      const proposalResult = await Commands.execute<DataReadParams, DataReadResult<DecisionProposalEntity>>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });

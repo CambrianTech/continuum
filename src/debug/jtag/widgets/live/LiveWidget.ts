@@ -22,7 +22,9 @@ import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboratio
 import type { LiveLeaveParams, LiveLeaveResult } from '../../commands/collaboration/live/leave/shared/LiveLeaveTypes';
 import type { CollaborationLiveTranscriptionParams, CollaborationLiveTranscriptionResult } from '../../commands/collaboration/live/transcription/shared/CollaborationLiveTranscriptionTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../commands/data/update/shared/DataUpdateTypes';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
+import type { CallEntity } from '../../system/data/entities/CallEntity';
 import { AudioStreamClient, type TranscriptionResult } from './AudioStreamClient';
 import { ContentService } from '../../system/state/ContentService';
 
@@ -320,7 +322,7 @@ export class LiveWidget extends ReactiveWidget {
 
     try {
       // Query for active call in this room
-      const result = await Commands.execute<any, any>('data/list', {
+      const result = await Commands.execute<DataListParams, DataListResult<CallEntity>>('data/list', {
         collection: 'calls',
         filter: { roomId: this.entityId, status: 'active' },
         limit: 1
@@ -694,13 +696,14 @@ export class LiveWidget extends ReactiveWidget {
       }
     }
 
-    // Notify server
-    if (this.sessionId) {
-      await Commands.execute<any, any>('live/camera', {
-        sessionId: this.sessionId,
-        enabled: this.cameraEnabled
-      });
-    }
+    // TODO: Notify server about camera state change (command doesn't exist yet)
+    // When live/camera command is implemented, uncomment:
+    // if (this.sessionId) {
+    //   await Commands.execute<LiveCameraParams, LiveCameraResult>('live/camera', {
+    //     sessionId: this.sessionId,
+    //     enabled: this.cameraEnabled
+    //   });
+    // }
   }
 
   private async toggleScreenShare(): Promise<void> {
@@ -719,13 +722,14 @@ export class LiveWidget extends ReactiveWidget {
       }
     }
 
-    // Notify server
-    if (this.sessionId) {
-      await Commands.execute<any, any>('live/share', {
-        sessionId: this.sessionId,
-        enabled: this.screenShareEnabled
-      });
-    }
+    // TODO: Notify server about screen share state change (command doesn't exist yet)
+    // When live/share command is implemented, uncomment:
+    // if (this.sessionId) {
+    //   await Commands.execute<LiveShareParams, LiveShareResult>('live/share', {
+    //     sessionId: this.sessionId,
+    //     enabled: this.screenShareEnabled
+    //   });
+    // }
   }
 
   /**

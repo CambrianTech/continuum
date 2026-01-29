@@ -16,7 +16,9 @@ import { Events } from '../../../system/core/shared/Events';
 import { COLLECTIONS } from '../../../system/shared/Constants';
 import type { DecisionProposalEntity } from '../../../system/data/entities/DecisionProposalEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
 import type { DecisionFinalizeParams, DecisionFinalizeResult } from '@commands/collaboration/decision/finalize/shared/DecisionFinalizeTypes';
+import type { UserEntity } from '../../../system/data/entities/UserEntity';
 
 /**
  * Governance Daemon - Universal governance workflow handler
@@ -173,7 +175,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
    */
   protected async checkLowParticipation(proposal: DecisionProposalEntity): Promise<boolean> {
     // Get total eligible voters (all AIs for now)
-    const usersResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+    const usersResult = await Commands.execute<DataListParams, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
       collection: COLLECTIONS.USERS,
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100
@@ -197,7 +199,7 @@ export abstract class GovernanceDaemon extends DaemonBase {
   protected async flagForManualReview(proposal: DecisionProposalEntity, reason: string): Promise<void> {
     try {
       // Update proposal status to require manual review
-      await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+      await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: proposal.id,
         data: {

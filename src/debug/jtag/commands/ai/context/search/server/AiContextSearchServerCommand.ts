@@ -14,6 +14,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { AiContextSearchParams, AiContextSearchResult, ContextSearchItem, CollectionName } from '../shared/AiContextSearchTypes';
 import { createAiContextSearchResultFromParams } from '../shared/AiContextSearchTypes';
 import { Commands } from '@system/core/shared/Commands';
+import type { VectorSearchParams, VectorSearchResult_CLI } from '@commands/data/vector-search/shared/VectorSearchCommandTypes';
 
 // Default collections that typically have semantic content
 const DEFAULT_COLLECTIONS: CollectionName[] = [
@@ -120,7 +121,7 @@ export class AiContextSearchServerCommand extends CommandBase<AiContextSearchPar
       }
 
       // Use data/vector-search command (delegates to Rust embedding worker)
-      const result = await Commands.execute<any, any>('data/vector-search', {
+      const result = await Commands.execute<VectorSearchParams, VectorSearchResult_CLI>('data/vector-search', {
         collection,
         queryText: query,
         k: options.limit,

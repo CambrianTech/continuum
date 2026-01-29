@@ -39,6 +39,7 @@ import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
 import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
 import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
 import type { VectorSearchOptions, VectorSearchResponse } from '../../../../../../daemons/data-daemon/shared/VectorSearchTypes';
+import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { BackpressureService } from '../../../../../core/services/BackpressureService';
 
 /**
@@ -280,7 +281,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       };
 
       // Use Commands.execute to go through VectorSearchServerCommand which handles dbHandle
-      const result = await Commands.execute<any, any>('data/vector-search', searchOptions);
+      const result = await Commands.execute<VectorSearchParams, VectorSearchResult_CLI>('data/vector-search', searchOptions as VectorSearchParams);
 
       if (!result.success || !result.results) {
         this.log(`WARN: Vector search failed: ${result.error} - falling back to filter-based recall`);

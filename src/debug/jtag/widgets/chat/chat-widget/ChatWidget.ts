@@ -11,11 +11,13 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { ChatMessageEntity, type MediaItem, type MediaType } from '../../../system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
+import type { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
+import type { SessionGetUserParams, SessionGetUserResult } from '../../../commands/session/get-user/shared/SessionGetUserTypes';
 import { Commands } from '../../../system/core/shared/Commands';
 import { Events } from '../../../system/core/shared/Events';
 import { SCROLLER_PRESETS, type RenderFn, type LoadFn, type ScrollerConfig } from '../../shared/EntityScroller';
@@ -1038,16 +1040,16 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
   private async loadCurrentRoomFromUserState(): Promise<void> {
     try {
       // Get current user's ID from session
-      const sessionResult = await Commands.execute<any, any>('session/get-user', {});
-      if (!sessionResult?.success || !sessionResult.userId) {
+      const sessionResult = await Commands.execute<SessionGetUserParams, SessionGetUserResult>('session/get-user', {});
+      if (!sessionResult?.success || !sessionResult.user?.id) {
         verbose() && console.log('📨 ChatWidget: No user session, using default General room');
         return;
       }
 
       // Query UserState to get current content item
-      const listResult = await Commands.execute<DataListParams, DataListResult<any>>(DATA_COMMANDS.LIST, {
+      const listResult = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
         collection: 'user_states',
-        filter: { userId: sessionResult.userId },
+        filter: { userId: sessionResult.user.id },
         limit: 1
       });
 

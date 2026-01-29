@@ -20,7 +20,11 @@ import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionRankCommand } from '../shared/DecisionRankCommand';
 import type { DecisionRankParams, DecisionRankResult } from '../shared/DecisionRankTypes';
 import type { DecisionProposalEntity, RankedVote } from '@system/data/entities/DecisionProposalEntity';
+import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
@@ -80,7 +84,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       if (params.voterId) {
         // Explicit voterId provided
-        const voterResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+        const voterResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
           collection: COLLECTIONS.USERS,
           id: params.voterId
         });
@@ -122,7 +126,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         const proposalShortId = normalizeShortId(params.proposalId);
 
         // Query for proposals ending with this short ID
-        const proposalsResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+        const proposalsResult = await Commands.execute<DataListParams, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });
@@ -137,7 +141,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Get proposal
-      const proposalResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+      const proposalResult = await Commands.execute<DataReadParams, DataReadResult<DecisionProposalEntity>>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });
@@ -176,7 +180,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       const now = Date.now();
       if (proposal.deadline && now > proposal.deadline) {
         // Proposal expired - mark as expired and don't accept vote
-        await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+        await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
           collection: COLLECTIONS.DECISION_PROPOSALS,
           id: resolvedProposalId,
           data: { status: 'expired' }
@@ -225,7 +229,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Update proposal with vote
-      await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+      await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId,
         data: { votes }
@@ -262,7 +266,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
         if (winner) {
           // Update proposal status
-          await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+          await Commands.execute<DataUpdateParams, DataUpdateResult<DecisionProposalEntity>>(DATA_COMMANDS.UPDATE, {
             collection: COLLECTIONS.DECISION_PROPOSALS,
             id: resolvedProposalId,
             data: { status: 'complete' }

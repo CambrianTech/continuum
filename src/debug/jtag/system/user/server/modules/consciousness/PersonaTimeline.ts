@@ -29,6 +29,7 @@ import type { DataOpenParams, DataOpenResult } from '../../../../../commands/dat
 import type { DataListParams, DataListResult } from '../../../../../commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '../../../../../commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../../../commands/data/update/shared/DataUpdateTypes';
+import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
@@ -735,7 +736,7 @@ export class PersonaTimeline {
         filter.timestamp = { $gte: options.since.toISOString() };
       }
 
-      const result = await Commands.execute<any, any>('data/vector-search', {
+      const result = await Commands.execute<VectorSearchParams, VectorSearchResult_CLI<TimelineEventEntity>>('data/vector-search', {
         dbHandle: this.dbHandle!,
         collection: TimelineEventEntity.collection,
         queryText: query,

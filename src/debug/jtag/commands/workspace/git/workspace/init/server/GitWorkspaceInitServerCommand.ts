@@ -11,7 +11,7 @@ import type { GitWorkspaceInitParams, GitWorkspaceInitResult } from '../shared/G
 import { createGitWorkspaceInitResultFromParams } from '../shared/GitWorkspaceInitTypes';
 import { generateUUID, toShortId, type UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
-import type { DataReadResult } from '@daemons/data-daemon/shared/DataTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { DataRecord } from '@daemons/data-daemon/shared/DataStorageAdapter';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
@@ -44,7 +44,7 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
       }
 
       // 2. Get persona user entity to get display name and email
-      const userResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+      const userResult = await Commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
         collection: COLLECTIONS.USERS,
         id: personaId
       });

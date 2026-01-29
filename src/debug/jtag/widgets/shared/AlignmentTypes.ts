@@ -54,7 +54,7 @@ export class ChatMessageAlignment implements AlignmentStrategy<{ senderId: strin
 /**
  * Generic left-aligned strategy (for user lists, file lists, etc.)
  */
-export class LeftAlignedStrategy implements AlignmentStrategy<any, any> {
+export class LeftAlignedStrategy implements AlignmentStrategy<unknown, unknown> {
   getAlignment(): { alignment: ItemAlignment; cssClasses: string[] } {
     return {
       alignment: 'left',
@@ -66,7 +66,7 @@ export class LeftAlignedStrategy implements AlignmentStrategy<any, any> {
 /**
  * Generic center-aligned strategy (for notifications, status items, etc.)
  */
-export class CenterAlignedStrategy implements AlignmentStrategy<any, any> {
+export class CenterAlignedStrategy implements AlignmentStrategy<unknown, unknown> {
   getAlignment(): { alignment: ItemAlignment; cssClasses: string[] } {
     return {
       alignment: 'center',
