@@ -255,7 +255,7 @@ impl KokoroTTS {
 
         // Step 1: Phonemize text via espeak-ng
         let phonemes = Self::phonemize(text)?;
-        info!("Kokoro phonemized: '{}' -> '{}'", &text[..text.len().min(40)], &phonemes[..phonemes.len().min(60)]);
+        info!("Kokoro phonemized: '{}' -> '{}'", super::truncate_str(text, 40), super::truncate_str(&phonemes, 60));
 
         // Step 2: Tokenize using Kokoro vocab
         let tokens = Self::tokenize(&phonemes, &model.vocab);
@@ -273,7 +273,8 @@ impl KokoroTTS {
             model.voice_cache.insert(voice_id.to_string(), embeddings);
         }
 
-        let voice_embeddings = model.voice_cache.get(voice_id).unwrap();
+        let voice_embeddings = model.voice_cache.get(voice_id)
+            .ok_or_else(|| TTSError::VoiceNotFound(format!("Voice '{}' missing from cache after load", voice_id)))?;
 
         // Select style vector based on token count (clamped to available range)
         let style_idx = token_count.min(voice_embeddings.len().saturating_sub(1));
@@ -331,7 +332,7 @@ impl KokoroTTS {
             "Kokoro synthesized {} samples ({}ms) for '{}...'",
             samples_resampled.len(),
             duration_ms,
-            &text[..text.len().min(30)]
+            super::truncate_str(&text, 30)
         );
 
         Ok(SynthesisResult {
@@ -484,32 +485,62 @@ impl TextToSpeech for KokoroTTS {
 mod tests {
     use super::*;
     use crate::audio_constants::AUDIO_SAMPLE_RATE;
+    use std::path::PathBuf;
+
+    // ========================================================================
+    // Unit Tests (no model files needed)
+    // ========================================================================
 
     #[test]
-    fn test_kokoro_adapter() {
+    fn test_kokoro_adapter_basics() {
         let adapter = KokoroTTS::new();
         assert_eq!(adapter.name(), "kokoro");
         assert!(!adapter.is_initialized());
         assert_eq!(adapter.default_voice(), "af");
+        assert_eq!(adapter.description(), "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)");
     }
 
     #[test]
-    fn test_available_voices() {
+    fn test_available_voices_non_empty() {
         let adapter = KokoroTTS::new();
         let voices = adapter.available_voices();
-        assert!(!voices.is_empty());
-        assert!(voices.iter().any(|v| v.id == "af"));
+        assert!(!voices.is_empty(), "Should have at least one voice");
+        assert!(voices.iter().any(|v| v.id == "af"), "Should have default 'af' voice");
+        assert!(voices.iter().any(|v| v.id == "am_adam"), "Should have 'am_adam' voice");
+        // Verify gender tagging
+        let adam = voices.iter().find(|v| v.id == "am_adam").unwrap();
+        assert_eq!(adam.gender.as_deref(), Some("male"));
+        let bella = voices.iter().find(|v| v.id == "af_bella").unwrap();
+        assert_eq!(bella.gender.as_deref(), Some("female"));
     }
 
     #[test]
-    fn test_resample() {
+    fn test_resample_24k_to_16k() {
+        // 24kHz -> 16kHz = ratio 1.5, so 6 input samples -> 4 output samples
         let input: Vec<i16> = vec![100, 200, 300, 400, 500, 600];
         let output = KokoroTTS::resample_24k_to_target(&input, AUDIO_SAMPLE_RATE);
         assert_eq!(output.len(), 4);
+        // First sample should be close to input[0]
+        assert_eq!(output[0], 100);
     }
 
     #[test]
-    fn test_tokenize_basic() {
+    fn test_resample_preserves_silence() {
+        let silence: Vec<i16> = vec![0; 240]; // 10ms at 24kHz
+        let output = KokoroTTS::resample_24k_to_target(&silence, 16000);
+        assert_eq!(output.len(), 160); // 10ms at 16kHz
+        assert!(output.iter().all(|&s| s == 0), "Silence should remain silent");
+    }
+
+    #[test]
+    fn test_resample_empty() {
+        let empty: Vec<i16> = vec![];
+        let output = KokoroTTS::resample_24k_to_target(&empty, 16000);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_tokenize_basic_vocab() {
         let mut vocab = HashMap::new();
         vocab.insert('h', 50);
         vocab.insert('e', 47);
@@ -518,11 +549,202 @@ mod tests {
 
         let tokens = KokoroTTS::tokenize("helo", &vocab);
         // Should be: [0, 50, 47, 54, 57, 0]
-        assert_eq!(tokens[0], 0); // Start padding
+        assert_eq!(tokens[0], 0, "Start padding");
         assert_eq!(tokens[1], 50); // h
         assert_eq!(tokens[2], 47); // e
         assert_eq!(tokens[3], 54); // l
         assert_eq!(tokens[4], 57); // o
-        assert_eq!(tokens[tokens.len() - 1], 0); // End padding
+        assert_eq!(*tokens.last().unwrap(), 0, "End padding");
+        assert_eq!(tokens.len(), 6);
+    }
+
+    #[test]
+    fn test_tokenize_unknown_chars_skipped() {
+        let mut vocab = HashMap::new();
+        vocab.insert('a', 10);
+        vocab.insert('b', 11);
+
+        // 'x' and 'y' are not in vocab — should be silently skipped
+        let tokens = KokoroTTS::tokenize("axby", &vocab);
+        // Should be: [0, 10, 11, 0] — only a and b mapped
+        assert_eq!(tokens[0], 0);
+        assert_eq!(tokens[1], 10); // a
+        assert_eq!(tokens[2], 11); // b
+        assert_eq!(*tokens.last().unwrap(), 0);
+        assert_eq!(tokens.len(), 4);
+    }
+
+    #[test]
+    fn test_tokenize_empty_phonemes() {
+        let vocab = HashMap::new();
+        let tokens = KokoroTTS::tokenize("", &vocab);
+        // Should be: [0, 0] — start and end padding only
+        assert_eq!(tokens, vec![0, 0]);
+    }
+
+    #[test]
+    fn test_tokenize_max_length_enforced() {
+        let mut vocab = HashMap::new();
+        vocab.insert('a', 10);
+
+        // Create a string longer than MAX_TOKEN_LENGTH
+        let long_input: String = "a".repeat(600);
+        let tokens = KokoroTTS::tokenize(&long_input, &vocab);
+        assert!(tokens.len() <= MAX_TOKEN_LENGTH + 2, "Should not exceed max length + padding");
+        assert_eq!(tokens[0], 0, "Start padding");
+        assert_eq!(*tokens.last().unwrap(), 0, "End padding preserved after truncation");
+    }
+
+    #[test]
+    fn test_normalize_voice_known() {
+        assert_eq!(KokoroTTS::normalize_voice("af"), "af");
+        assert_eq!(KokoroTTS::normalize_voice("am_adam"), "am_adam");
+        assert_eq!(KokoroTTS::normalize_voice("bf_emma"), "bf_emma");
+    }
+
+    #[test]
+    fn test_normalize_voice_unknown_defaults() {
+        assert_eq!(KokoroTTS::normalize_voice("nonexistent"), "af");
+        assert_eq!(KokoroTTS::normalize_voice(""), "af");
+    }
+
+    // ========================================================================
+    // Integration Tests (require model files on disk)
+    // These tests are #[ignore]d by default. Run with:
+    //   cargo test --package continuum-core -- --ignored kokoro
+    // ========================================================================
+
+    /// Helper: resolve model directory (tests may run from different CWDs)
+    fn find_models_dir() -> Option<PathBuf> {
+        let candidates = [
+            PathBuf::from("models/kokoro"),                    // from jtag/ CWD
+            PathBuf::from("../../models/kokoro"),              // from workers/continuum-core/
+            PathBuf::from("../../../models/kokoro"),           // from workers/continuum-core/src/
+        ];
+        candidates.into_iter().find(|p| p.is_dir())
+    }
+
+    /// Helper: set CWD to jtag root so hardcoded model paths resolve.
+    /// Returns the original CWD to restore later.
+    /// KokoroTTS uses "models/kokoro/..." paths relative to jtag root.
+    fn set_jtag_cwd() -> PathBuf {
+        let original = std::env::current_dir().unwrap();
+        let models_dir = find_models_dir().expect("Kokoro models directory not found");
+        // Canonicalize to absolute path, then go up to jtag root
+        let abs_models = std::fs::canonicalize(&models_dir).expect("Failed to canonicalize models dir");
+        // abs_models = /Volumes/.../jtag/models/kokoro → parent().parent() = jtag root
+        let jtag_root = abs_models.parent().unwrap().parent().unwrap();
+        std::env::set_current_dir(jtag_root).expect("Failed to set CWD to jtag root");
+        original
+    }
+
+    #[test]
+    #[ignore] // Requires models/kokoro/vocab.json on disk
+    fn test_load_vocab_real() {
+        let original_cwd = set_jtag_cwd();
+
+        let vocab = KokoroTTS::load_vocab().expect("Failed to load vocab");
+
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert!(vocab.len() > 50, "Vocab should have >50 entries, got {}", vocab.len());
+        // Kokoro vocab should contain common IPA symbols
+        assert!(vocab.contains_key(&'ə'), "Vocab should contain schwa (ə)");
+        assert!(vocab.contains_key(&' '), "Vocab should contain space");
+    }
+
+    #[test]
+    #[ignore] // Requires espeak-ng installed
+    fn test_phonemize_real() {
+        let phonemes = KokoroTTS::phonemize("Hello world").expect("Phonemization failed");
+        assert!(!phonemes.is_empty(), "Phonemes should not be empty");
+        // Should contain IPA characters, not ASCII text
+        assert!(phonemes.contains('ə') || phonemes.contains('ɛ') || phonemes.contains('ˈ'),
+            "Expected IPA characters in output, got: '{}'", phonemes);
+        println!("Phonemized 'Hello world' -> '{}'", phonemes);
+    }
+
+    #[test]
+    #[ignore] // Requires espeak-ng installed
+    fn test_phonemize_empty_input() {
+        // espeak-ng with empty string should return empty or minimal output
+        let result = KokoroTTS::phonemize("");
+        // Either succeeds with empty/whitespace or fails gracefully
+        match result {
+            Ok(phonemes) => println!("Empty input phonemized to: '{}'", phonemes),
+            Err(e) => println!("Empty input correctly failed: {}", e),
+        }
+    }
+
+    #[test]
+    #[ignore] // Requires models/kokoro/voices/af.bin
+    fn test_load_voice_embedding_real() {
+        let models_dir = find_models_dir().expect("Kokoro models directory not found");
+        let voices_dir = models_dir.join("voices");
+        assert!(voices_dir.is_dir(), "voices dir must exist");
+
+        let embeddings = KokoroTTS::load_voice_embedding(&voices_dir, "af")
+            .expect("Failed to load af voice embedding");
+
+        assert!(!embeddings.is_empty(), "Should have at least one style vector");
+        assert_eq!(embeddings[0].len(), 256, "Each style vector should be 256-dim");
+        println!("Loaded af voice: {} style vectors ({}x256)", embeddings.len(), embeddings.len());
+
+        // Values should be finite floating point
+        for (i, vec) in embeddings.iter().enumerate().take(3) {
+            for &val in vec {
+                assert!(val.is_finite(), "Style vector {} contains non-finite value", i);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore] // Requires model files
+    fn test_load_voice_embedding_fallback_to_default() {
+        let models_dir = find_models_dir().expect("Kokoro models directory not found");
+        let voices_dir = models_dir.join("voices");
+
+        // Requesting a nonexistent voice should fall back to "af"
+        let embeddings = KokoroTTS::load_voice_embedding(&voices_dir, "nonexistent_voice_xyz")
+            .expect("Should fall back to default voice");
+        assert!(!embeddings.is_empty(), "Fallback voice should load");
+    }
+
+    #[test]
+    #[ignore] // Requires full model (ONNX + vocab + voices + espeak-ng)
+    fn test_kokoro_initialize_and_synthesize() {
+        let original_cwd = set_jtag_cwd();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let adapter = KokoroTTS::new();
+
+        // Initialize: loads ONNX model, vocab, sets global session
+        rt.block_on(async {
+            adapter.initialize().await.expect("Kokoro initialization failed");
+        });
+
+        assert!(adapter.is_initialized(), "Should be initialized after init");
+
+        // Synthesize a short phrase
+        let result = rt.block_on(async {
+            adapter.synthesize("Hello, this is a test.", "af").await
+        });
+
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        let synthesis = result.expect("Synthesis failed");
+        assert!(synthesis.samples.len() > 1000, "Should produce >1000 samples, got {}", synthesis.samples.len());
+        assert_eq!(synthesis.sample_rate, AUDIO_SAMPLE_RATE, "Should be resampled to {}Hz", AUDIO_SAMPLE_RATE);
+        assert!(synthesis.duration_ms > 100, "Should be >100ms for a sentence, got {}ms", synthesis.duration_ms);
+        assert!(synthesis.duration_ms < 30_000, "Should be <30s, got {}ms", synthesis.duration_ms);
+
+        // Audio should not be silence
+        let max_amplitude = synthesis.samples.iter().map(|s| s.abs()).max().unwrap_or(0);
+        assert!(max_amplitude > 100, "Audio should not be near-silent, max amplitude: {}", max_amplitude);
+
+        println!(
+            "Kokoro synthesized: {} samples, {}Hz, {}ms, max amplitude: {}",
+            synthesis.samples.len(), synthesis.sample_rate, synthesis.duration_ms, max_amplitude
+        );
     }
 }

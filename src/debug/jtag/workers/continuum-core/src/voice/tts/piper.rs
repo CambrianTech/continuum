@@ -137,7 +137,7 @@ impl PiperTTS {
             "Piper synthesized {} samples ({}ms) for '{}...'",
             samples_resampled.len(),
             duration_ms,
-            &text[..text.len().min(30)]
+            super::truncate_str(&text, 30)
         );
 
         Ok(SynthesisResult {

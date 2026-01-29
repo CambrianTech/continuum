@@ -24,6 +24,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 
+/// Safely truncate a UTF-8 string to at most `max_bytes` bytes at a char boundary.
+/// IPA phoneme strings contain multi-byte characters (ˈ, ə, ɪ, etc.) — byte-slicing panics.
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Global TTS registry
 static TTS_REGISTRY: OnceCell<Arc<RwLock<TTSRegistry>>> = OnceCell::new();
 
@@ -283,4 +296,98 @@ pub fn available_voices() -> Vec<VoiceInfo> {
         .get_active()
         .map(|a| a.available_voices())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tts_registry_basics() {
+        let mut registry = TTSRegistry::new();
+        assert!(!registry.is_initialized());
+        assert!(registry.get_active().is_none());
+        assert!(registry.list().is_empty());
+
+        // Register silence adapter (always available, no model files needed)
+        registry.register(Arc::new(SilenceTTS::new()));
+        assert_eq!(registry.list().len(), 1);
+
+        // First registered adapter becomes active
+        let active = registry.get_active().expect("Should have active adapter");
+        assert_eq!(active.name(), "silence");
+    }
+
+    #[test]
+    fn test_tts_registry_adapter_lookup() {
+        let mut registry = TTSRegistry::new();
+        registry.register(Arc::new(SilenceTTS::new()));
+        registry.register(Arc::new(KokoroTTS::new()));
+
+        // Get by name
+        let silence = registry.get("silence").expect("Should find silence adapter");
+        assert_eq!(silence.name(), "silence");
+
+        let kokoro = registry.get("kokoro").expect("Should find kokoro adapter");
+        assert_eq!(kokoro.name(), "kokoro");
+
+        // Unknown adapter returns None
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_tts_registry_set_active() {
+        let mut registry = TTSRegistry::new();
+        registry.register(Arc::new(SilenceTTS::new()));
+        registry.register(Arc::new(KokoroTTS::new()));
+
+        // Initially silence is active (first registered)
+        assert_eq!(registry.get_active().unwrap().name(), "silence");
+
+        // Switch to kokoro
+        registry.set_active("kokoro").expect("Should succeed");
+        assert_eq!(registry.get_active().unwrap().name(), "kokoro");
+
+        // Invalid adapter name
+        assert!(registry.set_active("nonexistent").is_err());
+    }
+
+    #[test]
+    fn test_silence_adapter_synthesize() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let silence = SilenceTTS::new();
+
+        // Must initialize first
+        rt.block_on(async { silence.initialize().await }).expect("Init should succeed");
+        assert!(silence.is_initialized());
+
+        let result = rt.block_on(async {
+            silence.synthesize("test text", "default").await
+        });
+
+        let synthesis = result.expect("Silence adapter should always succeed");
+        assert!(synthesis.samples.len() > 0, "Should produce some samples");
+        assert_eq!(synthesis.sample_rate, crate::audio_constants::AUDIO_SAMPLE_RATE);
+        // All samples should be zero (silence)
+        assert!(synthesis.samples.iter().all(|&s| s == 0), "Silence adapter should produce silence");
+    }
+
+    #[test]
+    fn test_tts_error_variants() {
+        // Ensure error types are constructible and displayable
+        let e1 = TTSError::ModelNotLoaded("test".into());
+        assert!(format!("{}", e1).contains("test"));
+
+        let e2 = TTSError::SynthesisFailed("synthesis error".into());
+        assert!(format!("{}", e2).contains("synthesis error"));
+
+        let e3 = TTSError::InvalidText("empty".into());
+        assert!(format!("{}", e3).contains("empty"));
+
+        let e4 = TTSError::VoiceNotFound("unknown".into());
+        assert!(format!("{}", e4).contains("unknown"));
+
+        let e5 = TTSError::AdapterNotFound("missing".into());
+        assert!(format!("{}", e5).contains("missing"));
+    }
 }
