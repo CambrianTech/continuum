@@ -28,8 +28,9 @@ import type {
   TrainingStatus
 } from '../shared/FineTuningTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
-import type { DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
+import type { DataReadParams, DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import type { TrainingSessionEntity } from '../../../../system/data/entities/TrainingSessionEntity';
 import { DATA_COMMANDS } from '../../../../commands/data/shared/DataCommandConstants';
 
@@ -236,7 +237,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     /* eslint-enable @typescript-eslint/naming-convention */
 
     // Create session entity
-    const rawResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+    const result = await Commands.execute<DataCreateParams, DataCreateResult<TrainingSessionEntity>>(DATA_COMMANDS.CREATE, {
       collection: 'training_sessions',
       data: {
         personaId: request.personaId,
@@ -274,9 +275,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
           traitType: request.traitType
         }
       }
-    } as never);
-
-    const result = rawResult as DataCreateResult<TrainingSessionEntity>;
+    });
     return result.data!.id;
   }
   /* eslint-enable @typescript-eslint/naming-convention */
@@ -297,12 +296,10 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
     const { Commands } = await import('../../../../system/core/shared/Commands');
     /* eslint-enable @typescript-eslint/naming-convention */
 
-    const rawResult = await Commands.execute(DATA_COMMANDS.READ, {
+    const result = await Commands.execute<DataReadParams, DataReadResult<TrainingSessionEntity>>(DATA_COMMANDS.READ, {
       collection: 'training_sessions',
       id: sessionId
-    } as never);
-
-    const result = rawResult as DataReadResult<TrainingSessionEntity>;
+    });
     return {
       providerJobId: result.data!.providerJobId as string,
       status: result.data!.status as string,
@@ -346,11 +343,11 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
       };
     }
 
-    await Commands.execute(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'training_sessions',
       id: sessionId,
       data: updateData
-    } as never);
+    });
   }
   /* eslint-enable @typescript-eslint/naming-convention */
 }

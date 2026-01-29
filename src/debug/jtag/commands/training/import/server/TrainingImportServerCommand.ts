@@ -15,7 +15,7 @@ import type { TrainingImportParams, TrainingImportResult } from '../shared/Train
 import { createTrainingImportResultFromParams } from '../shared/TrainingImportTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataOpenResult } from '../../../data/open/shared/DataOpenTypes';
-import type { DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 import type { DataCloseResult } from '../../../data/close/shared/DataCloseTypes';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type { TrainingMessage } from '../../../../daemons/data-daemon/shared/entities/TrainingExampleEntity';
@@ -196,8 +196,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
         const tokenCount = Math.ceil(totalContent.length / 4); // Rough token estimate
 
         // Create TrainingExampleEntity (pass partial data, DataDaemon constructs full entity)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+        const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
           collection: 'training_examples',
           data: {
             messages: data.messages,
@@ -208,9 +207,9 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
               targetSkill: params.targetSkill,
               importedAt: new Date().toISOString()
             }
-          } as any, // TypeScript types expect full BaseEntity, but DataDaemon handles partial data
+          },
           dbHandle
-        } as any) as DataCreateResult;
+        });
 
         if (!createResult.success) {
           console.warn(`Failed to create example ${processedCount + 1}: ${createResult.error}`);

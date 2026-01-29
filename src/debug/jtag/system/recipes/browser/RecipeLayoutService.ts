@@ -11,6 +11,8 @@
 
 import { Commands } from '../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '../../data/entities/BaseEntity';
 import type { ActivityUILayout, RightPanelConfig } from '../shared/RecipeTypes';
 
 /**
@@ -76,7 +78,7 @@ export class RecipeLayoutService {
       if (verbose) console.log('📚 RecipeLayoutService: Loading recipe layouts via data/list...');
 
       // Query recipes with field projection - only fetch what we need
-      const result = await Commands.execute(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
         collection: 'recipes',
         limit: 100,
         fields: ['uniqueId', 'displayName', 'layout'] // Only fetch layout-relevant fields

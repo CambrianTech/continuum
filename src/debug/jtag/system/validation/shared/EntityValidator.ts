@@ -10,6 +10,8 @@
 
 import { Commands } from '../../core/shared/Commands';
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '../../data/entities/BaseEntity';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -33,11 +35,11 @@ export async function validateEntityRef(collection: string, value: string): Prom
 
   const filter = isUUID(value) ? { id: value } : { uniqueId: value };
 
-  const result = await Commands.execute(DATA_COMMANDS.LIST, {
+  const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
     collection,
     filter,
     limit: 1
-  }) as unknown as { success: boolean; items?: unknown[] };
+  });
 
   return result.success && (result.items?.length ?? 0) > 0;
 }
@@ -55,7 +57,7 @@ export async function resolveEntityRef<T>(collection: string, value: string): Pr
 
   const filter = isUUID(value) ? { id: value } : { uniqueId: value };
 
-  const result = await Commands.execute(DATA_COMMANDS.LIST, {
+  const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
     collection,
     filter,
     limit: 1

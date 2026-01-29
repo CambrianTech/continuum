@@ -11,6 +11,9 @@ import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityCreateParams, ActivityCreateResult } from '../shared/ActivityCreateTypes';
 import { Commands } from '@system/core/shared/Commands';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
+import type { BaseEntity } from '@system/data/entities/BaseEntity';
 import { Events } from '@system/core/shared/Events';
 import type { ActivityEntity, ActivityParticipant } from '@system/data/entities/ActivityEntity';
 import { generateActivityUniqueId } from '@system/activities/shared/ActivityTypes';
@@ -35,13 +38,13 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     }
 
     // Verify recipe exists
-    const recipeResult = await Commands.execute(DATA_COMMANDS.LIST, {
+    const recipeResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'recipes',
       filter: { uniqueId: recipeId },
       limit: 1,
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; items?: unknown[] };
+    });
 
     if (!recipeResult.success || !recipeResult.items?.length) {
       return transformPayload(params, {
@@ -103,12 +106,12 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     };
 
     // Persist via data/create
-    const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+    const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
       collection: 'activities',
       data: activityData,
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; error?: string; data?: unknown };
+    });
 
     if (!createResult.success) {
       return transformPayload(params, {

@@ -21,6 +21,7 @@ import { Commands } from '../../../../../core/shared/Commands';
 import { SystemPaths } from '../../../../../core/config/SystemPaths';
 import type { DataOpenParams, DataOpenResult } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import type { DataListParams, DataListResult } from '../../../../../../commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '../../../../../data/entities/BaseEntity';
 import type { DataCreateParams, DataCreateResult } from '../../../../../../commands/data/create/shared/DataCreateTypes';
 import type { DbHandle } from '../../../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { generateUUID } from '../../../../../core/types/CrossPlatformUUID';
@@ -334,20 +335,20 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       }
 
       // Query LTM
-      const result = (await Commands.execute(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
         dbHandle: this.memoryDbHandle,
         collection: 'memories',
         filter,
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
         limit: params.limit || 100
-      } as any)) as any;
+      });
 
       if (!result.success || !result.items) {
         return [];
       }
 
       // Return items as mutable array - database stores ISO strings which match our interface
-      return [...result.items] as MemoryEntity[];
+      return [...result.items] as unknown as MemoryEntity[];
     } catch (error) {
       this.log(`ERROR: LTM search failed: ${error}`);
       return [];
@@ -588,12 +589,12 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     let ltmCount = 0;
     if (this.memoryDbHandle) {
       try {
-        const result = await Commands.execute(DATA_COMMANDS.LIST, {
+        const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
           dbHandle: this.memoryDbHandle,
           collection: 'memories',
           limit: 0  // Just get count
-        } as any) as any;
-        ltmCount = result.totalCount || result.items?.length || 0;
+        });
+        ltmCount = result.count || result.items?.length || 0;
       } catch (error) {
         this.log(`WARN: Could not get LTM count: ${error}`);
       }

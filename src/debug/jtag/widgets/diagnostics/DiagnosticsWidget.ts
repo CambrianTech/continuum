@@ -12,6 +12,8 @@
 import { BasePanelWidget } from '../shared/BasePanelWidget';
 import { Commands } from '../../system/core/shared/Commands';
 import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { PositronWidgetState } from '../shared/services/state/PositronWidgetState';
 import { ContentService } from '../../system/state/ContentService';
@@ -70,11 +72,11 @@ export class DiagnosticsWidget extends BasePanelWidget {
 
     try {
       // Get all users with persona type
-      const result = await Commands.execute(DATA_COMMANDS.LIST, {
+      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
         collection: 'users',
         filter: { type: 'persona' },
         limit: 50
-      } as any) as any;
+      });
 
       if (result.success && result.items) {
         this.personas = await Promise.all(

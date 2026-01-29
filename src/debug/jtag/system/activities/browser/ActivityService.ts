@@ -20,6 +20,11 @@ import type {
   ACTIVITY_EVENTS
 } from '../shared/ActivityTypes';
 import { generateActivityUniqueId } from '../shared/ActivityTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
+import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '../../data/entities/BaseEntity';
+import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
 
 /**
  * Browser-side Activity Service
@@ -90,7 +95,7 @@ export class ActivityService implements IActivityService {
   async createActivity(params: CreateActivityParams): Promise<ActivityEntity> {
     const uniqueId = params.uniqueId || generateActivityUniqueId(params.recipeId, params.ownerId);
 
-    const result = await Commands.execute(DATA_COMMANDS.CREATE, {
+    const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
       collection: 'activities',
       data: {
         uniqueId,
@@ -138,7 +143,7 @@ export class ActivityService implements IActivityService {
     }
 
     // Fetch from server
-    const result = await Commands.execute(DATA_COMMANDS.READ, {
+    const result = await Commands.execute<DataReadParams, DataReadResult>(DATA_COMMANDS.READ, {
       collection: 'activities',
       id: activityId
     });
@@ -160,7 +165,7 @@ export class ActivityService implements IActivityService {
     }
 
     // Fetch from server
-    const result = await Commands.execute(DATA_COMMANDS.LIST, {
+    const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: { uniqueId },
       limit: 1
@@ -194,7 +199,7 @@ export class ActivityService implements IActivityService {
       filter.tags = { $contains: filters.tags };
     }
 
-    const result = await Commands.execute(DATA_COMMANDS.LIST, {
+    const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       limit,
@@ -246,7 +251,7 @@ export class ActivityService implements IActivityService {
 
     updates.lastActivityAt = new Date();
 
-    const result = await Commands.execute(DATA_COMMANDS.UPDATE, {
+    const result = await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: params.activityId,
       data: updates
@@ -283,7 +288,7 @@ export class ActivityService implements IActivityService {
       roleConfig: params.roleConfig
     };
 
-    await Commands.execute(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: params.activityId,
       data: {
@@ -312,7 +317,7 @@ export class ActivityService implements IActivityService {
       return p;
     });
 
-    await Commands.execute(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: params.activityId,
       data: {
@@ -336,7 +341,7 @@ export class ActivityService implements IActivityService {
 
     const previousPhase = activity.state.phase;
 
-    await Commands.execute(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activityId,
       data: {
@@ -365,7 +370,7 @@ export class ActivityService implements IActivityService {
       throw new Error(`Activity not found: ${activityId}`);
     }
 
-    await Commands.execute(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activityId,
       data: {
@@ -389,7 +394,7 @@ export class ActivityService implements IActivityService {
     });
 
     // Set end time
-    await Commands.execute(DATA_COMMANDS.UPDATE, {
+    await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activityId,
       data: { endedAt: new Date() }
@@ -408,7 +413,7 @@ export class ActivityService implements IActivityService {
 
   async getActivitiesForUser(userId: UUID, activeOnly = true): Promise<ActivityEntity[]> {
     // Get activities where user is owner
-    const ownedResult = await Commands.execute(DATA_COMMANDS.LIST, {
+    const ownedResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: {
         ownerId: userId,
@@ -428,7 +433,7 @@ export class ActivityService implements IActivityService {
   }
 
   async getCurrentActivityForRecipe(recipeId: string, userId: UUID): Promise<ActivityEntity | null> {
-    const result = await Commands.execute(DATA_COMMANDS.LIST, {
+    const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: {
         recipeId,

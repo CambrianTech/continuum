@@ -21,6 +21,7 @@ import { COLLECTIONS } from '../../system/shared/Constants';
 import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { DataCreateParams, DataCreateResult } from '../../commands/data/create/shared/DataCreateTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
 describe('Logging Entities Integration Test', () => {
@@ -69,7 +70,7 @@ describe('Logging Entities Integration Test', () => {
       entity.sequenceNumber = 1;
 
       // Create
-      const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+      const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entity
       });
@@ -137,7 +138,7 @@ describe('Logging Entities Integration Test', () => {
       entity.sequenceNumber = 2;
 
       // Create
-      const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+      const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entity
       });
@@ -207,7 +208,7 @@ describe('Logging Entities Integration Test', () => {
       entity.sequenceNumber = 3;
 
       // Create
-      const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+      const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entity
       });

@@ -8,7 +8,7 @@ import { IndexCreateCommand } from '../shared/IndexCreateCommand';
 import type { JTAGContext } from '../../../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../../../daemons/command-daemon/shared/CommandBase';
 import type { IndexCreateParams, IndexCreateResult } from '../shared/IndexCreateTypes';
-import type { DataCreateResult } from '../../../../../data/create/shared/DataCreateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../../../data/create/shared/DataCreateTypes';
 import type { EmbeddingGenerateResult } from '../../../../embedding/generate/shared/EmbeddingGenerateTypes';
 import { CodeIndexEntity } from '../../../../../../system/data/entities/CodeIndexEntity';
 import { Commands } from '../../../../../../system/core/shared/Commands';
@@ -86,12 +86,12 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
       }
 
       // Store in database using Commands.execute
-      const result = await Commands.execute(DATA_COMMANDS.CREATE, {
+      const result = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
         collection: CodeIndexEntity.collection,
         data: entry,
         context: this.context,
         sessionId: params.sessionId
-      }) as DataCreateResult<CodeIndexEntity>;
+      });
 
       const durationMs = Date.now() - startTime;
 

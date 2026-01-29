@@ -15,6 +15,7 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { RoomResolver } from '@system/core/server/RoomResolver';
 
@@ -234,7 +235,7 @@ export class DmServerCommand extends DmCommand {
 
         if (isMatch) {
           // Found matching room - update its uniqueId to current format for future lookups
-          await Commands.execute(DATA_COMMANDS.UPDATE, {
+          await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
             collection: RoomEntity.collection,
             id: room.id,
             data: { uniqueId },

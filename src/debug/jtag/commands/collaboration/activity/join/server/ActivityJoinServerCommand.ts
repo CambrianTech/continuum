@@ -8,6 +8,7 @@ import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityJoinParams, ActivityJoinResult } from '../shared/ActivityJoinTypes';
 import { Commands } from '@system/core/shared/Commands';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { Events } from '@system/core/shared/Events';
 import type { ActivityParticipant } from '@system/data/entities/ActivityEntity';
 import type { ActivityGetResult } from '../../get/shared/ActivityGetTypes';
@@ -71,7 +72,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
     };
 
     // Update activity with new participant
-    const updateResult = await Commands.execute(DATA_COMMANDS.UPDATE, {
+    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult>(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activity.id,
       data: {
@@ -80,7 +81,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
       },
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; error?: string };
+    });
 
     if (!updateResult.success) {
       return transformPayload(params, {

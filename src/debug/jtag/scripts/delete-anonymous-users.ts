@@ -10,23 +10,26 @@
 
 import { Commands } from '../system/core/shared/Commands';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../commands/data/list/shared/DataListTypes';
+import type { DataDeleteParams, DataDeleteResult } from '../commands/data/delete/shared/DataDeleteTypes';
+import type { BaseEntity } from '../system/data/entities/BaseEntity';
 import type { UserEntity } from '../system/user/entities/UserEntity';
 
 async function main() {
 	console.log('🗑️  Deleting all anonymous users...\n');
 
 	// Get all users
-	const usersResult = await Commands.execute(DATA_COMMANDS.LIST, {
+	const usersResult = await Commands.execute<DataListParams, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
 		collection: 'users',
 		limit: 1000,
 	});
 
-	if (!usersResult.success || !usersResult.data) {
+	if (!usersResult.success || !usersResult.items) {
 		console.error('❌ Failed to list users:', usersResult.error);
 		process.exit(1);
 	}
 
-	const users = usersResult.data as UserEntity[];
+	const users = usersResult.items as unknown as UserEntity[];
 
 	// Filter anonymous users (uniqueId starts with "anon-" or displayName is "Anonymous User")
 	const anonymousUsers = users.filter(
@@ -52,12 +55,12 @@ async function main() {
 
 	for (const user of anonymousUsers) {
 		try {
-			const result = await Commands.execute(DATA_COMMANDS.DELETE, {
+			const result = await Commands.execute<DataDeleteParams, DataDeleteResult>(DATA_COMMANDS.DELETE, {
 				collection: 'users',
 				id: user.id,
 			});
 
-			if (result.success) {
+			if (result.deleted) {
 				console.log(`  ✅ Deleted: ${user.displayName} (${user.id.slice(0, 8)}...)`);
 				deleted++;
 			} else {
