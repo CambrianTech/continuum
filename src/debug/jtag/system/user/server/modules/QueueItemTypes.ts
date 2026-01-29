@@ -21,6 +21,7 @@ export interface BaseQueueItem {
   priority: number;          // 0.0-1.0 for queue ordering (higher = more urgent)
   timestamp: number;         // When item was created (ms since epoch)
   domain: TaskDomain;        // Which domain this work belongs to (chat, code, self, etc.)
+  enqueuedAt?: number;       // When item entered the inbox queue (ms since epoch, set by inbox)
 }
 
 /**

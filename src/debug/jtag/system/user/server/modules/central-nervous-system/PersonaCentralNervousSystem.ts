@@ -12,6 +12,7 @@ import type { CNSConfig } from './CNSTypes';
 import type { CognitiveContext } from '../cognitive-schedulers/ICognitiveScheduler';
 import { ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
 import { SubsystemLogger } from '../being/logging/SubsystemLogger';
+import { getEffectivePriority } from '../PersonaInbox';
 
 export class PersonaCentralNervousSystem {
   private readonly config: CNSConfig;
@@ -109,10 +110,12 @@ export class PersonaCentralNervousSystem {
     }
 
     const message = candidates[0];
+    const effectivePriority = getEffectivePriority(message);
 
-    // Check if we should engage based on mood/energy (existing behavior)
-    if (!this.config.personaState.shouldEngage(message.priority)) {
-      this.logger.debug(`Skipping message (priority=${message.priority.toFixed(2)}, mood=${this.config.personaState.getState().mood})`);
+    // Check if we should engage based on mood/energy
+    // Uses EFFECTIVE priority (base + aging) so aged items eventually pass the threshold
+    if (!this.config.personaState.shouldEngage(effectivePriority)) {
+      this.logger.debug(`Skipping message (base=${message.priority.toFixed(2)}, effective=${effectivePriority.toFixed(2)}, mood=${this.config.personaState.getState().mood})`);
 
       // Rest while skipping to recover energy
       const cadence = this.config.personaState.getCadence();
@@ -123,7 +126,8 @@ export class PersonaCentralNervousSystem {
     // Pop message from inbox (we're processing it now)
     await this.config.inbox.pop(0); // Immediate pop (no timeout)
 
-    this.logger.info(`Processing message (priority=${message.priority.toFixed(2)}, mood=${this.config.personaState.getState().mood}, inbox remaining=${this.config.inbox.getSize()})`);
+    const waitMs = message.enqueuedAt ? Date.now() - message.enqueuedAt : 0;
+    this.logger.info(`Processing message (base=${message.priority.toFixed(2)}, effective=${effectivePriority.toFixed(2)}, waitMs=${waitMs}, mood=${this.config.personaState.getState().mood}, inbox=${this.config.inbox.getSize()})`);
 
     // Delegate to PersonaUser via callback (existing logic)
     await this.config.handleChatMessage(message);
