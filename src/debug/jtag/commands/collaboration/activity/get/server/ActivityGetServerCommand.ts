@@ -7,6 +7,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityGetParams, ActivityGetResult } from '../shared/ActivityGetTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 
 export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, ActivityGetResult> {
@@ -30,7 +31,7 @@ export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, Act
 
     if (id) {
       // Get by primary key
-      const result = await Commands.execute('data/read', {
+      const result = await Commands.execute(DATA_COMMANDS.READ, {
         collection: 'activities',
         id,
         context: params.context,
@@ -42,7 +43,7 @@ export class ActivityGetServerCommand extends CommandBase<ActivityGetParams, Act
       }
     } else if (uniqueId) {
       // Get by uniqueId
-      const result = await Commands.execute('data/list', {
+      const result = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: 'activities',
         filter: { uniqueId },
         limit: 1,

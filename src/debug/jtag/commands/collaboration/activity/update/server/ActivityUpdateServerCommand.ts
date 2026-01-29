@@ -7,6 +7,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityUpdateParams, ActivityUpdateResult } from '../shared/ActivityUpdateTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { Events } from '@system/core/shared/Events';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 import type { ActivityGetResult } from '../../get/shared/ActivityGetTypes';
@@ -103,7 +104,7 @@ export class ActivityUpdateServerCommand extends CommandBase<ActivityUpdateParam
     }
 
     // Persist updates
-    const updateResult = await Commands.execute('data/update', {
+    const updateResult = await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activity.id,
       data: updates,

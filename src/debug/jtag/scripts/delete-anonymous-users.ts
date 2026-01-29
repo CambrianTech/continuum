@@ -9,13 +9,14 @@
  */
 
 import { Commands } from '../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 import type { UserEntity } from '../system/user/entities/UserEntity';
 
 async function main() {
 	console.log('🗑️  Deleting all anonymous users...\n');
 
 	// Get all users
-	const usersResult = await Commands.execute('data/list', {
+	const usersResult = await Commands.execute(DATA_COMMANDS.LIST, {
 		collection: 'users',
 		limit: 1000,
 	});
@@ -51,7 +52,7 @@ async function main() {
 
 	for (const user of anonymousUsers) {
 		try {
-			const result = await Commands.execute('data/delete', {
+			const result = await Commands.execute(DATA_COMMANDS.DELETE, {
 				collection: 'users',
 				id: user.id,
 			});

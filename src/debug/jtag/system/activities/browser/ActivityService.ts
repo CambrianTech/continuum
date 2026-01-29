@@ -7,6 +7,7 @@
  */
 
 import { Commands } from '../../core/shared/Commands';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import { Events } from '../../core/shared/Events';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { ActivityEntity } from '../../data/entities/ActivityEntity';
@@ -89,7 +90,7 @@ export class ActivityService implements IActivityService {
   async createActivity(params: CreateActivityParams): Promise<ActivityEntity> {
     const uniqueId = params.uniqueId || generateActivityUniqueId(params.recipeId, params.ownerId);
 
-    const result = await Commands.execute('data/create', {
+    const result = await Commands.execute(DATA_COMMANDS.CREATE, {
       collection: 'activities',
       data: {
         uniqueId,
@@ -137,7 +138,7 @@ export class ActivityService implements IActivityService {
     }
 
     // Fetch from server
-    const result = await Commands.execute('data/read', {
+    const result = await Commands.execute(DATA_COMMANDS.READ, {
       collection: 'activities',
       id: activityId
     });
@@ -159,7 +160,7 @@ export class ActivityService implements IActivityService {
     }
 
     // Fetch from server
-    const result = await Commands.execute('data/list', {
+    const result = await Commands.execute(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: { uniqueId },
       limit: 1
@@ -193,7 +194,7 @@ export class ActivityService implements IActivityService {
       filter.tags = { $contains: filters.tags };
     }
 
-    const result = await Commands.execute('data/list', {
+    const result = await Commands.execute(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       limit,
@@ -245,7 +246,7 @@ export class ActivityService implements IActivityService {
 
     updates.lastActivityAt = new Date();
 
-    const result = await Commands.execute('data/update', {
+    const result = await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: params.activityId,
       data: updates
@@ -282,7 +283,7 @@ export class ActivityService implements IActivityService {
       roleConfig: params.roleConfig
     };
 
-    await Commands.execute('data/update', {
+    await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: params.activityId,
       data: {
@@ -311,7 +312,7 @@ export class ActivityService implements IActivityService {
       return p;
     });
 
-    await Commands.execute('data/update', {
+    await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: params.activityId,
       data: {
@@ -335,7 +336,7 @@ export class ActivityService implements IActivityService {
 
     const previousPhase = activity.state.phase;
 
-    await Commands.execute('data/update', {
+    await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activityId,
       data: {
@@ -364,7 +365,7 @@ export class ActivityService implements IActivityService {
       throw new Error(`Activity not found: ${activityId}`);
     }
 
-    await Commands.execute('data/update', {
+    await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activityId,
       data: {
@@ -388,7 +389,7 @@ export class ActivityService implements IActivityService {
     });
 
     // Set end time
-    await Commands.execute('data/update', {
+    await Commands.execute(DATA_COMMANDS.UPDATE, {
       collection: 'activities',
       id: activityId,
       data: { endedAt: new Date() }
@@ -407,7 +408,7 @@ export class ActivityService implements IActivityService {
 
   async getActivitiesForUser(userId: UUID, activeOnly = true): Promise<ActivityEntity[]> {
     // Get activities where user is owner
-    const ownedResult = await Commands.execute('data/list', {
+    const ownedResult = await Commands.execute(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: {
         ownerId: userId,
@@ -427,7 +428,7 @@ export class ActivityService implements IActivityService {
   }
 
   async getCurrentActivityForRecipe(recipeId: string, userId: UUID): Promise<ActivityEntity | null> {
-    const result = await Commands.execute('data/list', {
+    const result = await Commands.execute(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: {
         recipeId,

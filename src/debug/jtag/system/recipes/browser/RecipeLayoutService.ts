@@ -10,6 +10,7 @@
  */
 
 import { Commands } from '../../core/shared/Commands';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { ActivityUILayout, RightPanelConfig } from '../shared/RecipeTypes';
 
 /**
@@ -75,7 +76,7 @@ export class RecipeLayoutService {
       if (verbose) console.log('📚 RecipeLayoutService: Loading recipe layouts via data/list...');
 
       // Query recipes with field projection - only fetch what we need
-      const result = await Commands.execute('data/list', {
+      const result = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: 'recipes',
         limit: 100,
         fields: ['uniqueId', 'displayName', 'layout'] // Only fetch layout-relevant fields

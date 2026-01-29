@@ -234,7 +234,7 @@ export class DmServerCommand extends DmCommand {
 
         if (isMatch) {
           // Found matching room - update its uniqueId to current format for future lookups
-          await Commands.execute('data/update', {
+          await Commands.execute(DATA_COMMANDS.UPDATE, {
             collection: RoomEntity.collection,
             id: room.id,
             data: { uniqueId },

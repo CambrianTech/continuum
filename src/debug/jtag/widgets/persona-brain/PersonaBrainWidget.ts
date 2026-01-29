@@ -30,6 +30,7 @@ import {
 import { unsafeSVG } from 'lit/directives/unsafe-svg.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { Commands } from '../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import { ContentService } from '../../system/state/ContentService';
 import { LogToggle, type LogToggleState } from './components/LogToggle';
@@ -215,7 +216,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
         ? { id: this.personaId }
         : { uniqueId: this.personaId };
 
-      const result = await Commands.execute('data/list', {
+      const result = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: 'users',
         filter,
         limit: 1
@@ -389,13 +390,13 @@ export class PersonaBrainWidget extends ReactiveWidget {
         // 1. Get AI status (model, provider, health)
         Commands.execute('ai/status', {} as any) as Promise<any>,
         // 2. Get memory count
-        Commands.execute('data/list', {
+        Commands.execute(DATA_COMMANDS.LIST, {
           collection: 'memories',
           filter: { personaId: this.persona.id },
           limit: 1  // We just need the count
         } as any) as Promise<any>,
         // 3. Get tool execution count
-        Commands.execute('data/list', {
+        Commands.execute(DATA_COMMANDS.LIST, {
           collection: 'tool_execution_logs',
           filter: { personaId: this.persona.id },
           limit: 1

@@ -7,6 +7,7 @@ import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityListParams, ActivityListResult } from '../shared/ActivityListTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 
 export class ActivityListServerCommand extends CommandBase<ActivityListParams, ActivityListResult> {
@@ -44,7 +45,7 @@ export class ActivityListServerCommand extends CommandBase<ActivityListParams, A
     }
 
     // Query activities
-    const result = await Commands.execute('data/list', {
+    const result = await Commands.execute(DATA_COMMANDS.LIST, {
       collection: 'activities',
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       limit,

@@ -11,6 +11,7 @@ import type { CanvasStrokeListParams, CanvasStrokeListResult, StrokeSummary } fr
 import { createCanvasStrokeListResult } from '../shared/CanvasStrokeListTypes';
 import { CanvasStrokeEntity } from '@system/data/entities/CanvasStrokeEntity';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
 
@@ -42,7 +43,7 @@ export class CanvasStrokeListServerCommand extends CommandBase<CanvasStrokeListP
       }
 
       // Query strokes (oldest first for proper replay)
-      const result = await Commands.execute('data/list', {
+      const result = await Commands.execute(DATA_COMMANDS.LIST, {
         collection: COLLECTIONS.CANVAS_STROKES,
         filter,
         orderBy: [{ field: 'timestamp', direction: 'asc' }],
