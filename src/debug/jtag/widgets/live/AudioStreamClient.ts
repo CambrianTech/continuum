@@ -196,6 +196,9 @@ export class AudioStreamClient {
    * Uses AudioWorklet for processing on audio thread (NOT main thread)
    */
   async startMicrophone(): Promise<void> {
+    // Idempotent: already streaming, nothing to do
+    if (this.micWorkletNode) return;
+
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to call server');
     }
