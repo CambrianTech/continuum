@@ -16,7 +16,7 @@
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { getVoiceService } from './VoiceService';
-import { TTS_ADAPTERS } from '../shared/VoiceConfig';
+// Note: adapter selection is now handled by VoiceService config (no hardcoded adapter here)
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
@@ -39,7 +39,7 @@ interface LeaveMessage {
   type: 'Leave';
 }
 
-// Only messages we send/receive - MixedAudio is ignored (transcription done in Rust)
+// Messages we send/receive over the WebSocket (audio flows as binary frames)
 type CallMessage = JoinMessage | AudioMessage | LeaveMessage | { type: string };
 
 interface AIConnection {
@@ -217,22 +217,47 @@ export class AIAudioBridge {
 
   /**
    * Inject TTS audio into the call (AI speaking)
-   * @param voice - Speaker ID for multi-speaker TTS models (0-246 for LibriTTS).
-   *                If not provided, computed from userId for consistent per-AI voices.
+   * @param voice - Voice identifier passed to Rust TTS adapter. Can be:
+   *                - Named voice ("af", "am_adam") → used directly
+   *                - Numeric seed ("42") → modulo into adapter's voice list
+   *                - Any string (uniqueId, UUID, display name) → hashed to pick voice
+   *                If not provided, uses userId so each AI gets a consistent unique voice.
+   *                The Rust adapter's resolve_voice() handles all mapping.
    */
   async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
+    console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge.speak CALLED - userId=${userId?.slice(0, 8)}, text="${text.slice(0, 50)}..."`);
     const key = `${callId}-${userId}`;
     const connection = this.connections.get(key);
 
     if (!connection || !connection.isConnected) {
-      console.warn(`🤖 AIAudioBridge: Cannot speak - ${userId.slice(0, 8)} not in call`);
+      console.warn(`🤖 AIAudioBridge: Cannot speak - ${userId.slice(0, 8)} not in call (connection exists=${!!connection}, isConnected=${connection?.isConnected})`);
+
+      // CRITICAL: Emit speech event even on failure so VoiceOrchestrator
+      // can clear cooldown lock and chain to the next responder.
+      // Without this, the voice coordination chain breaks permanently.
+      const failedEvent = {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: 'unknown',
+        text,
+        audioDurationMs: 0,
+        failed: true,
+        timestamp: Date.now()
+      };
+
+      if (DataDaemon.jtagContext) {
+        await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', failedEvent, { scope: EVENT_SCOPES.GLOBAL });
+      } else {
+        Events.emit('voice:ai:speech', failedEvent);
+      }
       return;
     }
 
     try {
-      // Compute deterministic voice from userId if not provided
-      // This ensures each AI always has the same voice
-      const voiceId = voice ?? this.computeVoiceFromUserId(userId);
+      // Pass userId as voice identifier — Rust adapter's resolve_voice() handles mapping
+      // This ensures each AI always gets a consistent unique voice per adapter
+      const voiceId = voice ?? userId;
+      console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge calling VoiceService.synthesizeSpeech with voiceId=${voiceId.slice(0, 8)}...`);
 
       // Use VoiceService (handles TTS synthesis)
       const voiceService = getVoiceService();
@@ -240,22 +265,22 @@ export class AIAudioBridge {
         text,
         userId,
         voice: voiceId,  // Speaker ID for multi-speaker models
-        adapter: TTS_ADAPTERS.PIPER,  // Local, fast TTS
+        // adapter comes from VoiceService config (default: kokoro)
       });
 
       // result.audioSamples is already i16 array ready to send
       const samples = result.audioSamples;
       const audioDurationSec = samples.length / 16000;
+      console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge TTS result - samples=${samples.length}, duration=${audioDurationSec.toFixed(2)}s`);
 
       // SERVER-SIDE BUFFERING: Send ALL audio at once
-      // Rust server has a 10-second ring buffer per AI participant
+      // Rust server has a 60-second ring buffer per AI participant
       // Server pulls frames at precise 32ms intervals (tokio::time::interval)
       // This eliminates JavaScript timing jitter from the audio pipeline
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} sending ${samples.length} samples (${audioDurationSec.toFixed(1)}s) to server buffer`);
 
-      // Send entire audio as one binary WebSocket frame
-      // For very long audio (>10s), chunk into ~5 second segments to avoid buffer overflow
+      // Send audio in chunks to avoid WebSocket frame size limits
       const chunkSize = 16000 * 5; // 5 seconds per chunk
       for (let offset = 0; offset < samples.length; offset += chunkSize) {
         const chunk = samples.slice(offset, Math.min(offset + chunkSize, samples.length));
@@ -269,28 +294,54 @@ export class AIAudioBridge {
       // BROADCAST to browser + other AIs: Emit AFTER TTS synthesis and audio send
       // This syncs caption display with actual audio playback (audio is now in server buffer)
       // Browser LiveWidget subscribes to show AI caption/speaker highlight
+      const speechEvent = {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: connection.displayName,
+        text,
+        audioDurationMs: Math.round(audioDurationSec * 1000),
+        timestamp: Date.now()
+      };
+
       if (DataDaemon.jtagContext) {
+        console.log(`🤖 AIAudioBridge: Emitting voice:ai:speech (audioDurationMs=${speechEvent.audioDurationMs})`);
         await Events.emit(
           DataDaemon.jtagContext,
           'voice:ai:speech',
-          {
-            sessionId: callId,
-            speakerId: userId,
-            speakerName: connection.displayName,
-            text,
-            audioDurationMs: Math.round(audioDurationSec * 1000),
-            timestamp: Date.now()
-          },
+          speechEvent,
           {
             scope: EVENT_SCOPES.GLOBAL  // Broadcast to all environments including browser
           }
         );
+      } else {
+        // Fallback: emit without context (auto-context mode)
+        console.warn(`🤖 AIAudioBridge: DataDaemon.jtagContext is null, emitting voice:ai:speech without context`);
+        Events.emit('voice:ai:speech', speechEvent);
       }
 
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);
 
     } catch (error) {
       console.error(`🤖 AIAudioBridge: TTS/send error:`, error);
+
+      // CRITICAL: Emit speech event on failure so VoiceOrchestrator
+      // can clear cooldown lock and chain to the next responder.
+      // Without this, TTS timeout (30s) permanently blocks the voice chain.
+      const failedEvent = {
+        sessionId: callId,
+        speakerId: userId,
+        speakerName: connection.displayName,
+        text,
+        audioDurationMs: 0,
+        failed: true,
+        timestamp: Date.now()
+      };
+
+      if (DataDaemon.jtagContext) {
+        await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', failedEvent, { scope: EVENT_SCOPES.GLOBAL });
+      } else {
+        Events.emit('voice:ai:speech', failedEvent);
+      }
     }
   }
 
@@ -306,42 +357,11 @@ export class AIAudioBridge {
     // So server-side AIs don't need to process them here
     try {
       const msg = JSON.parse(data.toString()) as CallMessage;
-      // Log for debugging but don't process audio
-      if (msg.type !== 'MixedAudio') {
-        // console.log(`🤖 AIAudioBridge: Received ${msg.type} message`);
-      }
+      // JSON messages are control/transcription only; audio arrives as binary frames
+      void msg;
     } catch {
       // Binary data - ignore
     }
-  }
-
-  /**
-   * Convert Int16Array to base64
-   */
-  private int16ToBase64(samples: Int16Array): string {
-    const buffer = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
-    return buffer.toString('base64');
-  }
-
-  /**
-   * Sleep helper
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Compute a deterministic voice ID from userId
-   * Uses a simple hash to map UUID to speaker ID (0-246 for LibriTTS)
-   */
-  private computeVoiceFromUserId(userId: string): string {
-    // Simple hash: sum char codes and mod by number of speakers
-    let hash = 0;
-    for (let i = 0; i < userId.length; i++) {
-      hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;  // Unsigned 32-bit
-    }
-    const speakerId = hash % 247;  // 0-246 for LibriTTS
-    return speakerId.toString();
   }
 
   /**

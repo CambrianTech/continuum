@@ -4,8 +4,9 @@
  * Follows working data create pattern with strong typing
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
@@ -57,3 +58,17 @@ export const createDataDeleteResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+
+/**
+ * DataDelete — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataDelete } from '@commands/data/delete/shared/DataDeleteTypes';
+ *   const result = await DataDelete.execute({ collection: 'users', id: userId });
+ */
+export const DataDelete = {
+  execute(params: CommandInput<DataDeleteParams>): Promise<DataDeleteResult> {
+    return Commands.execute<DataDeleteParams, DataDeleteResult>('data/delete', params as Partial<DataDeleteParams>);
+  },
+  commandName: 'data/delete' as const,
+} as const;

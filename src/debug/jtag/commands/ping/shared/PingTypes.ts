@@ -1,4 +1,5 @@
-import type { CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput } from '../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../system/core/shared/Commands';
 
 export interface PingParams extends CommandParams {
   server?: ServerEnvironmentInfo;
@@ -65,3 +66,17 @@ export interface PingResult extends CommandResult {
     checkDuration?: number;  // Milliseconds taken to check status
   };
 }
+
+/**
+ * Ping — Type-safe command executor
+ *
+ * Usage:
+ *   import { Ping } from '@commands/ping/shared/PingTypes';
+ *   const result = await Ping.execute({ verbose: true });
+ */
+export const Ping = {
+  execute(params?: CommandInput<PingParams>): Promise<PingResult> {
+    return Commands.execute<PingParams, PingResult>('ping', params as Partial<PingParams>);
+  },
+  commandName: 'ping' as const,
+} as const;

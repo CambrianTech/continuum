@@ -6,6 +6,9 @@
  * - Semantic recall (contextually relevant memories based on query)
  * - Deduplication between core and semantic results
  * - Graceful fallback if no semantic query provided
+ *
+ * PERFORMANCE: Caches core memories per persona for 30 seconds to reduce DB load.
+ * Semantic recall is NOT cached since it depends on the specific query.
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
@@ -16,6 +19,37 @@ const log = Logger.create('SemanticMemorySource', 'rag');
 
 // Memory tokens are usually dense - estimate higher
 const TOKENS_PER_MEMORY_ESTIMATE = 80;
+
+/**
+ * Cache entry for core memories
+ */
+interface CoreMemoriesCache {
+  memories: any[];
+  cachedAt: number;
+}
+
+/**
+ * Cache TTL for core memories (30 seconds)
+ * Core memories are high-importance and don't change frequently
+ */
+const CORE_MEMORY_CACHE_TTL_MS = 30_000;
+
+/**
+ * Cache for core memories by personaId
+ */
+const coreMemoriesCache = new Map<string, CoreMemoriesCache>();
+
+/**
+ * Clear expired core memory cache entries
+ */
+function clearExpiredCoreMemoryCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of coreMemoriesCache) {
+    if (now - entry.cachedAt > CORE_MEMORY_CACHE_TTL_MS) {
+      coreMemoriesCache.delete(key);
+    }
+  }
+}
 
 export class SemanticMemorySource implements RAGSource {
   readonly name = 'semantic-memory';
@@ -62,27 +96,50 @@ export class SemanticMemorySource implements RAGSource {
       let memories: any[] = [];
       let coreMemoryCount = 0;
       const RECALL_TIMEOUT_MS = 3000;  // 3 second timeout for any memory operation
+      const now = Date.now();
+
+      // Clear expired cache entries periodically
+      if (coreMemoriesCache.size > 50) {
+        clearExpiredCoreMemoryCache();
+      }
 
       // 1. ALWAYS fetch core memories first (high-importance learnings)
       // These are tool usage learnings, key insights, etc. that should never be forgotten
-      try {
-        const corePromise = recallableUser.recallMemories({
-          minImportance: 0.8,
-          limit: Math.min(3, maxMemories),
-          since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-        });
-        const coreTimeout = new Promise<any[]>((_, reject) =>
-          setTimeout(() => reject(new Error('Core memory recall timeout')), RECALL_TIMEOUT_MS)
-        );
-        const coreMemories = await Promise.race([corePromise, coreTimeout]);
-
-        if (coreMemories.length > 0) {
-          log.debug(`Core memories: ${coreMemories.length} (importance >= 0.8)`);
-          memories = [...coreMemories];
-          coreMemoryCount = coreMemories.length;
+      // Check cache first to reduce DB load
+      const cached = coreMemoriesCache.get(context.personaId);
+      if (cached && now - cached.cachedAt < CORE_MEMORY_CACHE_TTL_MS) {
+        // Cache hit for core memories (no logging to avoid overhead)
+        if (cached.memories.length > 0) {
+          memories = [...cached.memories];
+          coreMemoryCount = cached.memories.length;
         }
-      } catch (e: any) {
-        log.warn(`Core memory recall failed (${e.message}), continuing without core memories`);
+      } else {
+        // Cache miss - fetch from DB
+        try {
+          const corePromise = recallableUser.recallMemories({
+            minImportance: 0.8,
+            limit: Math.min(3, maxMemories),
+            since: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+          });
+          const coreTimeout = new Promise<any[]>((_, reject) =>
+            setTimeout(() => reject(new Error('Core memory recall timeout')), RECALL_TIMEOUT_MS)
+          );
+          const coreMemories = await Promise.race([corePromise, coreTimeout]);
+
+          // Cache the result
+          coreMemoriesCache.set(context.personaId, {
+            memories: coreMemories,
+            cachedAt: now
+          });
+
+          if (coreMemories.length > 0) {
+            log.debug(`Core memories loaded: ${coreMemories.length} (importance >= 0.8)`);
+            memories = [...coreMemories];
+            coreMemoryCount = coreMemories.length;
+          }
+        } catch (e: any) {
+          log.warn(`Core memory recall failed (${e.message}), continuing without core memories`);
+        }
       }
 
       // 2. Semantic recall if query available (with timeout to prevent blocking)

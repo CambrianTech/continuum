@@ -4,9 +4,10 @@
  * Get comprehensive status of all AI personas in the system
  */
 
-import type { CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface AIStatusParams extends CommandParams {
   // Filtering
@@ -80,3 +81,17 @@ export interface AIStatusResult {
     thoughtStreamRejections: number;
   };
 }
+
+/**
+ * AIStatus — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIStatus } from '...shared/AIStatusTypes';
+ *   const result = await AIStatus.execute({ ... });
+ */
+export const AIStatus = {
+  execute(params: CommandInput<AIStatusParams>): Promise<AIStatusResult> {
+    return Commands.execute<AIStatusParams, AIStatusResult>('ai/status', params as Partial<AIStatusParams>);
+  },
+  commandName: 'ai/status' as const,
+} as const;

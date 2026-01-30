@@ -7,9 +7,10 @@
  */
 
 import { type FileParams, type FileResult, createFileParams, createFileResult } from '../../shared/FileTypes';
-import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** File load command parameters */
 export interface FileLoadParams extends CommandParams {
@@ -49,3 +50,16 @@ export const createFileLoadResult = (
   bytesRead: data.bytesRead ?? 0,
   ...data
 });
+/**
+ * FileLoad — Type-safe command executor
+ *
+ * Usage:
+ *   import { FileLoad } from '...shared/FileLoadTypes';
+ *   const result = await FileLoad.execute({ ... });
+ */
+export const FileLoad = {
+  execute(params: CommandInput<FileLoadParams>): Promise<FileLoadResult> {
+    return Commands.execute<FileLoadParams, FileLoadResult>('file/load', params as Partial<FileLoadParams>);
+  },
+  commandName: 'file/load' as const,
+} as const;

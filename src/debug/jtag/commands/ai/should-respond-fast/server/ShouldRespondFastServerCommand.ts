@@ -20,6 +20,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 
+import { DataList } from '../../../data/list/shared/DataListTypes';
 export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
   // Cache of recent message timestamps per persona per room
   private lastMessageTimes: Map<string, number> = new Map();
@@ -244,7 +245,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
       // Check if persona sent message in last 10 minutes
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
 
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<ChatMessageEntity>({
         collection: 'chat_messages',
         filter: {
           roomId: contextId,
@@ -274,7 +275,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
     try {
       const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
 
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<ChatMessageEntity>({
         collection: 'chat_messages',
         filter: { roomId: contextId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -309,7 +310,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
     try {
       const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
-      const result = await Commands.execute<DataListParams, DataListResult<ChatMessageEntity>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<ChatMessageEntity>({
         collection: 'chat_messages',
         filter: { roomId: contextId },
         orderBy: [{ field: 'timestamp', direction: 'desc' }],
@@ -338,7 +339,7 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
     if (!senderId) return false;
 
     try {
-      const result = await Commands.execute<DataListParams, DataListResult<any>>(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute<any>({
         collection: 'users',
         filter: { id: senderId },
         limit: 1

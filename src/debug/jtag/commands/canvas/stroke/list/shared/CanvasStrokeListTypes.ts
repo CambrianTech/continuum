@@ -5,10 +5,11 @@
  * Supports pagination and viewport filtering.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CanvasTool, StrokePoint, StrokeBounds } from '@system/data/entities/CanvasStrokeEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface CanvasStrokeListParams extends CommandParams {
   /** Activity ID (canvas instance) to get strokes from */
@@ -75,3 +76,17 @@ export const createCanvasStrokeListResult = (
   success: true,
   ...data
 });
+
+/**
+ * CanvasStrokeList — Type-safe command executor
+ *
+ * Usage:
+ *   import { CanvasStrokeList } from '...shared/CanvasStrokeListTypes';
+ *   const result = await CanvasStrokeList.execute({ ... });
+ */
+export const CanvasStrokeList = {
+  execute(params: CommandInput<CanvasStrokeListParams>): Promise<CanvasStrokeListResult> {
+    return Commands.execute<CanvasStrokeListParams, CanvasStrokeListResult>('canvas/stroke/list', params as Partial<CanvasStrokeListParams>);
+  },
+  commandName: 'canvas/stroke/list' as const,
+} as const;

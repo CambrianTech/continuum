@@ -7,17 +7,24 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Commands } from '../../system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
+import type { ChatSendParams, ChatSendResult } from '../../commands/collaboration/chat/send/shared/ChatSendTypes';
+import type { BaseEntity } from '../../system/data/entities/BaseEntity';
 
+import { Ping } from '../../commands/ping/shared/PingTypes';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
+import { ChatSend } from '../../commands/collaboration/chat/send/shared/ChatSendTypes';
 describe('CNS Integration', () => {
   beforeAll(async () => {
     // Ensure system is ready
-    const pingResult = await Commands.execute('ping', {});
+    const pingResult = await Ping.execute({});
     expect(pingResult.success).toBe(true);
   });
 
   it('should have CNS initialized for all personas', async () => {
     // Get all PersonaUsers
-    const users = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+    const users = await DataList.execute({
       collection: 'users',
       filter: { type: 'persona' }
     });
@@ -32,7 +39,7 @@ describe('CNS Integration', () => {
     // This test verifies the integration by sending a message
     // If CNS wasn't working, the system would crash or fall back
 
-    const rooms = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+    const rooms = await DataList.execute({
       collection: 'rooms',
       limit: 1
     });
@@ -43,7 +50,7 @@ describe('CNS Integration', () => {
     const roomId = rooms.items[0].uniqueId;
 
     // Send a test message
-    const sendResult = await Commands.execute<any, any>('collaboration/chat/send', {
+    const sendResult = await ChatSend.execute({
       room: roomId,
       message: '[TEST] CNS integration test message'
     });

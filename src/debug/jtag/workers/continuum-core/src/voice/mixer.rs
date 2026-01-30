@@ -7,7 +7,7 @@ use crate::audio_constants::AUDIO_FRAME_SIZE;
 use crate::voice::handle::Handle;
 use crate::voice::vad::{ProductionVAD, VADError};
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Audio test utilities for generating synthetic audio
 pub mod test_utils {
@@ -72,8 +72,14 @@ pub mod test_utils {
 /// Standard frame size - uses AUDIO_FRAME_SIZE from constants (single source of truth)
 pub const FRAME_SIZE: usize = AUDIO_FRAME_SIZE;
 
-/// Ring buffer size for AI audio (10 seconds at sample rate)
-const AI_RING_BUFFER_SIZE: usize = crate::audio_constants::AUDIO_SAMPLE_RATE as usize * 10;
+/// Ring buffer duration for AI audio (seconds)
+/// Must be large enough for the longest possible TTS response.
+/// A conversational response can be 30-60 seconds of speech.
+/// 60 seconds * 16kHz * 2 bytes = ~1.9MB per AI participant — acceptable.
+const AI_RING_BUFFER_SECONDS: usize = 60;
+
+/// Ring buffer size for AI audio (samples)
+const AI_RING_BUFFER_SIZE: usize = crate::audio_constants::AUDIO_SAMPLE_RATE as usize * AI_RING_BUFFER_SECONDS;
 
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
@@ -92,7 +98,8 @@ pub struct ParticipantStream {
     // === AI Audio Ring Buffer ===
     // AI participants dump all TTS audio at once, we buffer and pull frame-by-frame
     // This eliminates JavaScript timing jitter from the audio pipeline
-    ai_ring_buffer: Option<Box<[i16; AI_RING_BUFFER_SIZE]>>,
+    // Vec<i16> instead of Box<[i16; N]> to avoid stack overflow during allocation
+    ai_ring_buffer: Option<Vec<i16>>,
     ai_ring_write: usize,  // Write position
     ai_ring_read: usize,   // Read position
     ai_ring_available: usize, // Samples available
@@ -128,7 +135,7 @@ impl ParticipantStream {
             frame_len: 0,
             muted: false,
             is_ai: false,
-            ai_ring_buffer: None, // Humans don't need ring buffer
+            ai_ring_buffer: None, // Humans don't need ring buffer (Vec not allocated)
             ai_ring_write: 0,
             ai_ring_read: 0,
             ai_ring_available: 0,
@@ -140,8 +147,8 @@ impl ParticipantStream {
     /// Create AI participant (no VAD needed - we already have their text from TTS)
     /// AI participants get a ring buffer for server-side audio pacing
     pub fn new_ai(handle: Handle, user_id: String, display_name: String) -> Self {
-        // Allocate ring buffer on heap (10 seconds = 320KB)
-        let ring_buffer = Box::new([0i16; AI_RING_BUFFER_SIZE]);
+        // Allocate ring buffer on heap via Vec (60 seconds ≈ 1.9MB)
+        let ring_buffer = vec![0i16; AI_RING_BUFFER_SIZE];
 
         Self {
             handle,
@@ -191,10 +198,13 @@ impl ParticipantStream {
                 let samples_to_write = samples.len().min(AI_RING_BUFFER_SIZE - self.ai_ring_available);
 
                 if samples_to_write < samples.len() {
-                    debug!(
-                        "⚠️ AI ring buffer overflow for {}: dropping {} samples",
+                    warn!(
+                        "⚠️ AI ring buffer overflow for {}: dropping {} of {} samples (buffer: {}/{}s used)",
                         self.display_name,
-                        samples.len() - samples_to_write
+                        samples.len() - samples_to_write,
+                        samples.len(),
+                        self.ai_ring_available as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32,
+                        AI_RING_BUFFER_SECONDS
                     );
                 }
 
@@ -542,6 +552,13 @@ impl AudioMixer {
     /// Get frame size
     pub fn frame_size(&self) -> usize {
         self.frame_size
+    }
+
+    /// Find a participant's handle by user_id
+    pub fn find_handle_by_user_id(&self, user_id: &str) -> Option<Handle> {
+        self.participants.iter()
+            .find(|(_, stream)| stream.user_id == user_id)
+            .map(|(handle, _)| *handle)
     }
 }
 

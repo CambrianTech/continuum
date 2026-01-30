@@ -21,7 +21,7 @@ export class EmbeddingGenerateServerCommand extends EmbeddingGenerateCommand {
     try {
       // Select model based on content type
       const model = params.model ?? this.selectModelForContentType(params.contentType);
-      const provider = params.provider ?? 'ollama';
+      const provider = params.provider ?? 'candle';
 
       console.log(`🔢 Generating embedding(s) with ${provider}/${model}`);
 
@@ -62,7 +62,7 @@ export class EmbeddingGenerateServerCommand extends EmbeddingGenerateCommand {
         error: error instanceof Error ? error.message : String(error),
         embeddings: [],
         model: params.model ?? 'unknown',
-        provider: params.provider ?? 'ollama',
+        provider: params.provider ?? 'candle',
         dimensions: 0,
         durationMs,
         context: this.context,

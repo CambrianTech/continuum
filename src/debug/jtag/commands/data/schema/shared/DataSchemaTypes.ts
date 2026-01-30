@@ -5,10 +5,11 @@
  * Allows callers to understand entity structure, constraints, and validation rules
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { FieldMetadata } from '../../../../system/data/decorators/FieldDecorators';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Request parameters for data/schema command
@@ -107,3 +108,16 @@ export const createDataSchemaResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+/**
+ * DataSchema — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataSchema } from '...shared/DataSchemaTypes';
+ *   const result = await DataSchema.execute({ ... });
+ */
+export const DataSchema = {
+  execute(params: CommandInput<DataSchemaParams>): Promise<DataSchemaResult> {
+    return Commands.execute<DataSchemaParams, DataSchemaResult>('data/schema', params as Partial<DataSchemaParams>);
+  },
+  commandName: 'data/schema' as const,
+} as const;

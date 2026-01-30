@@ -11,6 +11,7 @@ import { type TreeParams, type TreeResult, type TreeNode, createTreeResultFromPa
 import { Commands } from '@system/core/shared/Commands';
 import type { CommandSignature } from '@commands/list/shared/ListTypes';
 
+import { List } from '../../../list/shared/ListTypes';
 export class TreeCommand extends CommandBase<TreeParams, TreeResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -28,7 +29,7 @@ export class TreeCommand extends CommandBase<TreeParams, TreeResult> {
 
     try {
       // Get all commands from list command (dynamic discovery)
-      const listResult = await Commands.execute('list', {}) as unknown as {
+      const listResult = await List.execute({}) as unknown as {
         commands?: CommandSignature[];
         success: boolean;
         error?: string;

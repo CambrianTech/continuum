@@ -16,6 +16,8 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 
+import { DataRead } from '../../../../../data/read/shared/DataReadTypes';
+import { DataUpdate } from '../../../../../data/update/shared/DataUpdateTypes';
 // Training candidate threshold: confidence >= 0.8 and successCount >= 5
 const TRAINING_CONFIDENCE_THRESHOLD = 0.8;
 const TRAINING_SUCCESS_THRESHOLD = 5;
@@ -40,7 +42,7 @@ export class PersonaLearningPatternEndorseServerCommand extends CommandBase<Pers
     }
 
     // Fetch the pattern from database
-    const readResult = await Commands.execute<DataReadParams, DataReadResult<FeedbackEntity>>('data/read', {
+    const readResult = await DataRead.execute<FeedbackEntity>({
       collection: FeedbackEntity.collection,
       id: params.patternId as UUID,
       context: params.context,
@@ -68,7 +70,7 @@ export class PersonaLearningPatternEndorseServerCommand extends CommandBase<Pers
     }
 
     // Update the pattern in database
-    const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<FeedbackEntity>>('data/update', {
+    const updateResult = await DataUpdate.execute<FeedbackEntity>({
       collection: FeedbackEntity.collection,
       id: params.patternId as UUID,
       data: {

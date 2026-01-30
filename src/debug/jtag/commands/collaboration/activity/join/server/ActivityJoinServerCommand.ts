@@ -7,10 +7,14 @@ import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityJoinParams, ActivityJoinResult } from '../shared/ActivityJoinTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { Events } from '@system/core/shared/Events';
 import type { ActivityParticipant } from '@system/data/entities/ActivityEntity';
 import type { ActivityGetResult } from '../../get/shared/ActivityGetTypes';
 
+import { ActivityGet } from '../../get/shared/ActivityGetTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, ActivityJoinResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -34,7 +38,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
     const isUUID = typeof activityId === 'string' && activityId.includes('-') && activityId.length === 36;
 
     // Get the activity
-    const getResult = await Commands.execute('collaboration/activity/get', {
+    const getResult = await ActivityGet.execute({
       id: isUUID ? activityId : undefined,
       uniqueId: isUUID ? undefined : activityId,
       context: params.context,
@@ -70,7 +74,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
     };
 
     // Update activity with new participant
-    const updateResult = await Commands.execute('data/update', {
+    const updateResult = await DataUpdate.execute({
       collection: 'activities',
       id: activity.id,
       data: {
@@ -79,7 +83,7 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
       },
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; error?: string };
+    });
 
     if (!updateResult.success) {
       return transformPayload(params, {

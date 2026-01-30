@@ -4,8 +4,9 @@
  * Low-level primitive for storing a single code entry with embeddings
  */
 
-import type { CommandParams, CommandResult } from '../../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../../system/core/types/JTAGTypes';
 import type { CodeExportType } from '../../../../../../system/data/entities/CodeIndexEntity';
+import { Commands } from '../../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for creating a code index entry
@@ -46,3 +47,17 @@ export interface IndexCreateResult extends CommandResult {
   readonly entryId?: string;  // UUID of created entry
   readonly indexed: boolean;  // Whether the entry was successfully indexed
 }
+
+/**
+ * IndexCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { IndexCreate } from '...shared/IndexCreateTypes';
+ *   const result = await IndexCreate.execute({ ... });
+ */
+export const IndexCreate = {
+  execute(params: CommandInput<IndexCreateParams>): Promise<IndexCreateResult> {
+    return Commands.execute<IndexCreateParams, IndexCreateResult>('ai/rag/index/create', params as Partial<IndexCreateParams>);
+  },
+  commandName: 'ai/rag/index/create' as const,
+} as const;

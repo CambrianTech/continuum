@@ -5,9 +5,10 @@
  * Replaces raw exec commands for widget event debugging
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface WidgetEventsDebugParams extends CommandParams {
   widgetSelector?: string;
@@ -96,3 +97,16 @@ export const createWidgetEventsDebugResult = (
   },
   ...data
 });
+/**
+ * WidgetEventsDebug — Type-safe command executor
+ *
+ * Usage:
+ *   import { WidgetEventsDebug } from '...shared/WidgetEventsDebugTypes';
+ *   const result = await WidgetEventsDebug.execute({ ... });
+ */
+export const WidgetEventsDebug = {
+  execute(params: CommandInput<WidgetEventsDebugParams>): Promise<WidgetEventsDebugResult> {
+    return Commands.execute<WidgetEventsDebugParams, WidgetEventsDebugResult>('development/debug/widget-events', params as Partial<WidgetEventsDebugParams>);
+  },
+  commandName: 'development/debug/widget-events' as const,
+} as const;

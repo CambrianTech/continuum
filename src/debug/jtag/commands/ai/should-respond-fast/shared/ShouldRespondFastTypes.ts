@@ -5,8 +5,9 @@
  * Deterministic, lightweight, and configurable per-persona
  */
 
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Scoring weights for different signal types
@@ -151,3 +152,17 @@ export const DEFAULT_SCORING_WEIGHTS: ResponseScoringWeights = {
  * - Random message: 0 → Never respond
  */
 export const DEFAULT_RESPONSE_THRESHOLD = 35;
+
+/**
+ * ShouldRespondFast — Type-safe command executor
+ *
+ * Usage:
+ *   import { ShouldRespondFast } from '...shared/ShouldRespondFastTypes';
+ *   const result = await ShouldRespondFast.execute({ ... });
+ */
+export const ShouldRespondFast = {
+  execute(params: CommandInput<ShouldRespondFastParams>): Promise<ShouldRespondFastResult> {
+    return Commands.execute<ShouldRespondFastParams, ShouldRespondFastResult>('ai/should-respond-fast', params as Partial<ShouldRespondFastParams>);
+  },
+  commandName: 'ai/should-respond-fast' as const,
+} as const;

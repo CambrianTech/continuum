@@ -18,6 +18,8 @@ import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/s
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class LiveLeaveServerCommand extends LiveLeaveCommand {
 
   protected async executeLeave(params: LiveLeaveParams): Promise<LiveLeaveResult> {
@@ -92,9 +94,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
     const callerIdFromParams = (params as any).callerId || (params as any).personaId;
 
     if (callerIdFromParams) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: callerIdFromParams },
           limit: 1,
@@ -112,9 +112,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: identity.userId },
           limit: 1,
@@ -135,9 +133,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
    * Find call by ID
    */
   private async findCall(callId: string, params: LiveLeaveParams): Promise<CallEntity | null> {
-    const result = await Commands.execute<DataListParams, DataListResult<CallEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<CallEntity>({
         collection: CallEntity.collection,
         filter: { id: callId },
         limit: 1,
@@ -161,9 +157,7 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
    * Save updated call
    */
   private async saveCall(call: CallEntity, params: LiveLeaveParams): Promise<void> {
-    await Commands.execute<DataUpdateParams, DataUpdateResult<CallEntity>>(
-      DATA_COMMANDS.UPDATE,
-      {
+    await DataUpdate.execute<CallEntity>({
         collection: CallEntity.collection,
         id: call.id,
         data: {

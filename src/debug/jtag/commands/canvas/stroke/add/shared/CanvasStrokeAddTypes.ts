@@ -10,10 +10,11 @@
  * - All clients receive and render the stroke
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CanvasTool, StrokePoint } from '@system/data/entities/CanvasStrokeEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface CanvasStrokeAddParams extends CommandParams {
   /** Activity ID (canvas instance) to add stroke to */
@@ -70,4 +71,18 @@ export const CANVAS_STROKE_EVENTS = {
   STROKE_ADDED: 'canvas:stroke:added',
   STROKE_DELETED: 'canvas:stroke:deleted',
   CANVAS_CLEARED: 'canvas:cleared'
+} as const;
+
+/**
+ * CanvasStrokeAdd — Type-safe command executor
+ *
+ * Usage:
+ *   import { CanvasStrokeAdd } from '...shared/CanvasStrokeAddTypes';
+ *   const result = await CanvasStrokeAdd.execute({ ... });
+ */
+export const CanvasStrokeAdd = {
+  execute(params: CommandInput<CanvasStrokeAddParams>): Promise<CanvasStrokeAddResult> {
+    return Commands.execute<CanvasStrokeAddParams, CanvasStrokeAddResult>('canvas/stroke/add', params as Partial<CanvasStrokeAddParams>);
+  },
+  commandName: 'canvas/stroke/add' as const,
 } as const;

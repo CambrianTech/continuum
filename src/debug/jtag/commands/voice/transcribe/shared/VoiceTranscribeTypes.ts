@@ -4,10 +4,11 @@
  * Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Word-level transcript segment with timing
@@ -106,3 +107,17 @@ export const createVoiceTranscribeResultFromParams = (
   params: VoiceTranscribeParams,
   differences: Omit<VoiceTranscribeResult, 'context' | 'sessionId'>
 ): VoiceTranscribeResult => transformPayload(params, differences);
+
+/**
+ * VoiceTranscribe — Type-safe command executor
+ *
+ * Usage:
+ *   import { VoiceTranscribe } from '...shared/VoiceTranscribeTypes';
+ *   const result = await VoiceTranscribe.execute({ ... });
+ */
+export const VoiceTranscribe = {
+  execute(params: CommandInput<VoiceTranscribeParams>): Promise<VoiceTranscribeResult> {
+    return Commands.execute<VoiceTranscribeParams, VoiceTranscribeResult>('voice/transcribe', params as Partial<VoiceTranscribeParams>);
+  },
+  commandName: 'voice/transcribe' as const,
+} as const;

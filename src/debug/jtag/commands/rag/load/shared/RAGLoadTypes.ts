@@ -1,5 +1,6 @@
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * RAG Load Command - Test incremental message loading with token counting
@@ -52,3 +53,17 @@ export interface RAGLoadResult extends CommandResult {
 
   error?: string;
 }
+
+/**
+ * RAGLoad — Type-safe command executor
+ *
+ * Usage:
+ *   import { RAGLoad } from '...shared/RAGLoadTypes';
+ *   const result = await RAGLoad.execute({ ... });
+ */
+export const RAGLoad = {
+  execute(params: CommandInput<RAGLoadParams>): Promise<RAGLoadResult> {
+    return Commands.execute<RAGLoadParams, RAGLoadResult>('rag/load', params as Partial<RAGLoadParams>);
+  },
+  commandName: 'rag/load' as const,
+} as const;

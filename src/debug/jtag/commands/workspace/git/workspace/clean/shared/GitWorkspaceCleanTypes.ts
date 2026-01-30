@@ -4,10 +4,11 @@
  * Clean up git workspace and remove worktree
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../../system/core/shared/Commands';
 
 /**
  * Git Workspace Clean Command Parameters
@@ -83,3 +84,17 @@ export const createGitWorkspaceCleanResultFromParams = (
   params: GitWorkspaceCleanParams,
   differences: Omit<GitWorkspaceCleanResult, 'context' | 'sessionId'>
 ): GitWorkspaceCleanResult => transformPayload(params, differences);
+
+/**
+ * GitWorkspaceClean — Type-safe command executor
+ *
+ * Usage:
+ *   import { GitWorkspaceClean } from '...shared/GitWorkspaceCleanTypes';
+ *   const result = await GitWorkspaceClean.execute({ ... });
+ */
+export const GitWorkspaceClean = {
+  execute(params: CommandInput<GitWorkspaceCleanParams>): Promise<GitWorkspaceCleanResult> {
+    return Commands.execute<GitWorkspaceCleanParams, GitWorkspaceCleanResult>('workspace/git/workspace/clean', params as Partial<GitWorkspaceCleanParams>);
+  },
+  commandName: 'workspace/git/workspace/clean' as const,
+} as const;

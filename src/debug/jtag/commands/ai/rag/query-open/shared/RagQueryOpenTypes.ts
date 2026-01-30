@@ -5,9 +5,10 @@
  * Results are ranked by relevance score (cosine similarity)
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { CodeIndexEntity } from '../../../../../system/data/entities/CodeIndexEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for opening a RAG similarity search
@@ -99,3 +100,17 @@ export function normalizeRagQueryOpenParams(params: Partial<RagQueryOpenParams>)
 
   return { pageSize, minRelevance, embeddingModel };
 }
+
+/**
+ * RagQueryOpen — Type-safe command executor
+ *
+ * Usage:
+ *   import { RagQueryOpen } from '...shared/RagQueryOpenTypes';
+ *   const result = await RagQueryOpen.execute({ ... });
+ */
+export const RagQueryOpen = {
+  execute(params: CommandInput<RagQueryOpenParams>): Promise<RagQueryOpenResult> {
+    return Commands.execute<RagQueryOpenParams, RagQueryOpenResult>('ai/rag/query-open', params as Partial<RagQueryOpenParams>);
+  },
+  commandName: 'ai/rag/query-open' as const,
+} as const;

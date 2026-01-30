@@ -4,10 +4,11 @@
  * Test an API key before saving it. Makes a minimal API call to verify the key is valid and has sufficient permissions.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Ai Key Test Command Parameters
@@ -85,3 +86,17 @@ export const createAiKeyTestResultFromParams = (
   params: AiKeyTestParams,
   differences: Omit<AiKeyTestResult, 'context' | 'sessionId'>
 ): AiKeyTestResult => transformPayload(params, differences);
+
+/**
+ * AiKeyTest — Type-safe command executor
+ *
+ * Usage:
+ *   import { AiKeyTest } from '...shared/AiKeyTestTypes';
+ *   const result = await AiKeyTest.execute({ ... });
+ */
+export const AiKeyTest = {
+  execute(params: CommandInput<AiKeyTestParams>): Promise<AiKeyTestResult> {
+    return Commands.execute<AiKeyTestParams, AiKeyTestResult>('ai/key/test', params as Partial<AiKeyTestParams>);
+  },
+  commandName: 'ai/key/test' as const,
+} as const;

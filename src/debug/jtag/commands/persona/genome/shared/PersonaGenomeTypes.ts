@@ -4,9 +4,10 @@
  * Get persona genome information including base model, layers, and traits
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 // Simple error type for result transport
 export interface PersonaGenomeError {
@@ -113,3 +114,17 @@ export const createPersonaGenomeResultFromParams = (
   params: PersonaGenomeParams,
   differences: Omit<PersonaGenomeResult, 'context' | 'sessionId'>
 ): PersonaGenomeResult => transformPayload(params, differences);
+
+/**
+ * PersonaGenome — Type-safe command executor
+ *
+ * Usage:
+ *   import { PersonaGenome } from '...shared/PersonaGenomeTypes';
+ *   const result = await PersonaGenome.execute({ ... });
+ */
+export const PersonaGenome = {
+  execute(params: CommandInput<PersonaGenomeParams>): Promise<PersonaGenomeResult> {
+    return Commands.execute<PersonaGenomeParams, PersonaGenomeResult>('persona/genome', params as Partial<PersonaGenomeParams>);
+  },
+  commandName: 'persona/genome' as const,
+} as const;

@@ -15,6 +15,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
+import { DataList } from '../../../data/list/shared/DataListTypes';
 // Raw message data from database (not the decorated entity class)
 interface RawChatMessage {
   id: string;
@@ -172,7 +173,7 @@ export class AiDetectSemanticLoopServerCommand extends CommandBase<AiDetectSeman
 
     let recentMessages: RawChatMessage[];
     try {
-      const result = await Commands.execute<DataListParams, DataListResult<BaseEntity>>('data/list', {
+      const result = await DataList.execute({
         collection: 'chat_messages',
         filter,
         limit: lookbackCount,

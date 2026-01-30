@@ -9,8 +9,9 @@
  *   ./jtag schema/generate --interface="DataReadParams" --file="commands/data/read/shared/DataReadTypes.ts"
  */
 
-import type { CommandParams, JTAGPayload } from '@system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, CommandInput} from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface SchemaGenerateParams extends CommandParams {
   /**
@@ -94,3 +95,17 @@ export function createSchemaGenerateResult(
     ...differences
   });
 }
+
+/**
+ * SchemaGenerate — Type-safe command executor
+ *
+ * Usage:
+ *   import { SchemaGenerate } from '...shared/SchemaGenerateTypes';
+ *   const result = await SchemaGenerate.execute({ ... });
+ */
+export const SchemaGenerate = {
+  execute(params: CommandInput<SchemaGenerateParams>): Promise<SchemaGenerateResult> {
+    return Commands.execute<SchemaGenerateParams, SchemaGenerateResult>('development/schema/generate', params as Partial<SchemaGenerateParams>);
+  },
+  commandName: 'development/schema/generate' as const,
+} as const;

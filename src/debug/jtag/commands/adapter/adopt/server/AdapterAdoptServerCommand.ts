@@ -19,11 +19,14 @@ import { GenomeEntity, type GenomeLayerReference } from '@system/genome/entities
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '@system/core/types/CrossPlatformUUID';
-import type { DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
-import type { DataReadResult } from '@commands/data/read/shared/DataReadTypes';
-import type { DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
+import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 
+import { DataRead } from '../../../data/read/shared/DataReadTypes';
+import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
 export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, AdapterAdoptResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -101,9 +104,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       }
 
       // Find the persona
-      const personaResult = await Commands.execute<any, DataReadResult<UserEntity>>(
-        'data/read',
-        {
+      const personaResult = await DataRead.execute<UserEntity>({
           collection: COLLECTIONS.USERS,
           id: targetPersonaId,
         }
@@ -151,9 +152,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
         trainingDuration: 0,
       };
 
-      const createLayerResult = await Commands.execute<any, DataCreateResult<GenomeLayerEntity>>(
-        'data/create',
-        {
+      const createLayerResult = await DataCreate.execute<GenomeLayerEntity>({
           collection: 'genome_layers',
           data: layer,
         }
@@ -171,9 +170,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
 
       if (targetPersona.genomeId) {
         // Load existing genome
-        const genomeResult = await Commands.execute<any, DataReadResult<GenomeEntity>>(
-          'data/read',
-          {
+        const genomeResult = await DataRead.execute<GenomeEntity>({
             collection: 'genomes',
             id: targetPersona.genomeId,
           }
@@ -215,9 +212,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
       // Step 6: Save genome
       if (!isNewGenome) {
         // Update existing genome
-        const updateResult = await Commands.execute<any, DataUpdateResult<GenomeEntity>>(
-          'data/update',
-          {
+        const updateResult = await DataUpdate.execute<GenomeEntity>({
             collection: 'genomes',
             id: genome.id,
             data: { layers: genome.layers, metadata: genome.metadata, updatedAt: genome.updatedAt },
@@ -227,9 +222,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
           throw new Error(`Failed to update genome: ${updateResult.error}`);
         }
       } else {
-        const createGenomeResult = await Commands.execute<any, DataCreateResult<GenomeEntity>>(
-          'data/create',
-          {
+        const createGenomeResult = await DataCreate.execute<GenomeEntity>({
             collection: 'genomes',
             data: genome,
           }
@@ -239,9 +232,7 @@ export class AdapterAdoptServerCommand extends CommandBase<AdapterAdoptParams, A
         }
 
         // Update persona with genome ID
-        await Commands.execute<any, DataUpdateResult<UserEntity>>(
-          'data/update',
-          {
+        await DataUpdate.execute<UserEntity>({
             collection: COLLECTIONS.USERS,
             id: targetPersonaId_resolved,
             data: { genomeId: genome.id },

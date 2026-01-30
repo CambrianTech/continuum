@@ -4,9 +4,10 @@
  * Truncate all records from a specific collection using adapter methods
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Data Truncate Parameters
@@ -47,3 +48,16 @@ export const createDataTruncateResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+/**
+ * DataTruncate — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataTruncate } from '...shared/DataTruncateTypes';
+ *   const result = await DataTruncate.execute({ ... });
+ */
+export const DataTruncate = {
+  execute(params: CommandInput<DataTruncateParams>): Promise<DataTruncateResult> {
+    return Commands.execute<DataTruncateParams, DataTruncateResult>('data/truncate', params as Partial<DataTruncateParams>);
+  },
+  commandName: 'data/truncate' as const,
+} as const;

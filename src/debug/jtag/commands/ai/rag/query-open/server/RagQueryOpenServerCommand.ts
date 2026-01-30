@@ -15,8 +15,11 @@ import type { EmbeddingGenerateResult } from '../../../embedding/generate/shared
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { v4 as uuidv4 } from 'uuid';
 import type { CodeIndexEntity } from '../../../../../system/data/entities/CodeIndexEntity';
-import type { DataListResult } from '../../../../data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '../../../../data/list/shared/DataListTypes';
+import type { BaseEntity } from '../../../../../system/data/entities/BaseEntity';
 
+import { EmbeddingGenerate } from '../../../embedding/generate/shared/EmbeddingGenerateTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 /**
  * Query handle state stored in memory
  * In production this would be persisted to database with TTL
@@ -63,7 +66,7 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
         console.log('🔎 Using provided embedding');
       } else {
         // Generate embedding for query
-        const embeddingResult = await Commands.execute('ai/embedding/generate', {
+        const embeddingResult = await EmbeddingGenerate.execute({
           input: params.query,
           model: embeddingModel,
           context: this.context,
@@ -96,12 +99,12 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
 
       // Step 2: Fetch all indexed entries from database
       // TODO: Add filters for fileType, exportType when fetching
-      const listResult = await Commands.execute(DATA_COMMANDS.LIST, {
+      const listResult = await DataList.execute({
         collection: 'code_index',
         orderBy: [{ field: 'lastIndexed', direction: 'desc' }],
         context: this.context,
         sessionId: params.sessionId
-      }) as DataListResult<CodeIndexEntity>;
+      });
 
       if (!listResult.success || !listResult.items) {
         return {
@@ -125,7 +128,7 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
       // Step 3: Calculate cosine similarity for each entry
       const scoredResults: CodeSearchResult[] = [];
 
-      for (const entry of listResult.items) {
+      for (const entry of listResult.items as readonly CodeIndexEntity[]) {
         // Skip entries without embeddings
         if (!entry.embedding || entry.embedding.length === 0) {
           continue;

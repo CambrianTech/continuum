@@ -4,10 +4,11 @@
  * Start voice chat session for real-time audio communication with AI
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Voice Start Command Parameters
@@ -88,3 +89,17 @@ export const createVoiceStartResultFromParams = (
   params: VoiceStartParams,
   differences: Omit<VoiceStartResult, 'context' | 'sessionId'>
 ): VoiceStartResult => transformPayload(params, differences);
+
+/**
+ * VoiceStart — Type-safe command executor
+ *
+ * Usage:
+ *   import { VoiceStart } from '...shared/VoiceStartTypes';
+ *   const result = await VoiceStart.execute({ ... });
+ */
+export const VoiceStart = {
+  execute(params: CommandInput<VoiceStartParams>): Promise<VoiceStartResult> {
+    return Commands.execute<VoiceStartParams, VoiceStartResult>('voice/start', params as Partial<VoiceStartParams>);
+  },
+  commandName: 'voice/start' as const,
+} as const;

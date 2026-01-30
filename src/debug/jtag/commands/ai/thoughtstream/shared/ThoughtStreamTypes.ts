@@ -5,7 +5,8 @@
  * Shows thought broadcasts, rankings, and final decisions
  */
 
-import type { CommandParams, JTAGContext, UUID } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGContext, UUID, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface ThoughtStreamParams extends CommandParams {
   messageId?: string;                  // Specific message to inspect
@@ -132,3 +133,17 @@ export interface ThoughtStreamResult {
     }>;
   };
 }
+
+/**
+ * ThoughtStream — Type-safe command executor
+ *
+ * Usage:
+ *   import { ThoughtStream } from '...shared/ThoughtStreamTypes';
+ *   const result = await ThoughtStream.execute({ ... });
+ */
+export const ThoughtStream = {
+  execute(params: CommandInput<ThoughtStreamParams>): Promise<ThoughtStreamResult> {
+    return Commands.execute<ThoughtStreamParams, ThoughtStreamResult>('ai/thoughtstream', params as Partial<ThoughtStreamParams>);
+  },
+  commandName: 'ai/thoughtstream' as const,
+} as const;

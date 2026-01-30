@@ -17,6 +17,7 @@ import { Commands } from '@system/core/shared/Commands';
 import type { ScreenshotParams, ScreenshotResult } from './ScreenshotTypes';
 import { createScreenshotParams } from './ScreenshotTypes';
 
+import { Screenshot } from './ScreenshotTypes';
 export class ScreenshotCommand {
   /**
    * Execute screenshot command with clean typing
@@ -26,9 +27,7 @@ export class ScreenshotCommand {
   static async execute(
     params: Omit<ScreenshotParams, 'context' | 'sessionId'>
   ): Promise<ScreenshotResult> {
-    return await Commands.execute<ScreenshotParams, ScreenshotResult>(
-      'screenshot',
-      params
+    return await Screenshot.execute(params
     );
   }
 

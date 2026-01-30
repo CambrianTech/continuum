@@ -5,9 +5,10 @@
  * Emits content:opened event for widgets to respond to.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ContentType } from '@system/data/entities/UserStateEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ContentOpenParams extends CommandParams {
   readonly userId: UUID;             // User ID (REQUIRED - infrastructure should inject from session)
@@ -39,3 +40,17 @@ export interface ContentOpenedEvent {
   readonly currentItemId?: UUID;
   readonly setAsCurrent?: boolean;   // Whether this content should be displayed immediately
 }
+
+/**
+ * ContentOpen — Type-safe command executor
+ *
+ * Usage:
+ *   import { ContentOpen } from '...shared/ContentOpenTypes';
+ *   const result = await ContentOpen.execute({ ... });
+ */
+export const ContentOpen = {
+  execute(params: CommandInput<ContentOpenParams>): Promise<ContentOpenResult> {
+    return Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', params as Partial<ContentOpenParams>);
+  },
+  commandName: 'collaboration/content/open' as const,
+} as const;

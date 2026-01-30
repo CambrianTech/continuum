@@ -15,6 +15,7 @@
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
 import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
+import type { ProcessableMessage } from '../../QueueItemTypes';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
 import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
 import { PERSONA_RAG_CONTEXTS_COLLECTION } from '../../../../../data/entities/PersonaRAGContextEntity';
@@ -132,7 +133,7 @@ export class PersonaMemory {
   /**
    * Update RAG Context - Add new message to context and trim if needed
    */
-  async updateRAGContext(roomId: UUID, message: ChatMessageEntity): Promise<void> {
+  async updateRAGContext(roomId: UUID, message: ProcessableMessage): Promise<void> {
     // Load existing context or create new
     let context = await this.loadRAGContext(roomId);
     if (!context) {
@@ -146,19 +147,8 @@ export class PersonaMemory {
     }
 
     // Add new message to context
-    // Handle different timestamp formats: Date object, ISO string, or number (Unix timestamp)
-    let timestampStr: string;
-    if (typeof message.timestamp === 'string') {
-      timestampStr = message.timestamp;
-    } else if (message.timestamp instanceof Date) {
-      timestampStr = message.timestamp.toISOString();
-    } else if (typeof message.timestamp === 'number') {
-      timestampStr = new Date(message.timestamp).toISOString();
-    } else {
-      // Fallback to current time if timestamp is invalid
-      this.log(`⚠️ Invalid timestamp type for message ${message.id}, using current time`);
-      timestampStr = new Date().toISOString();
-    }
+    // ProcessableMessage.timestamp is always a number (ms since epoch)
+    const timestampStr = new Date(message.timestamp).toISOString();
 
     context.messages.push({
       senderId: message.senderId,

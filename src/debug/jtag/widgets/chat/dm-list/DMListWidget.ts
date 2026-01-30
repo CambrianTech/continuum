@@ -26,6 +26,7 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import { COMMANDS } from '../../../shared/generated-command-constants';
 import type { CollaborationLiveStartParams, CollaborationLiveStartResult } from '../../../commands/collaboration/live/start/shared/CollaborationLiveStartTypes';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 const styles = `
   :host {
     display: block;
@@ -375,9 +376,7 @@ export class DMListWidget extends ReactiveListWidget<RoomEntity> {
 
     // Fetch all users in one query
     try {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: { $in: Array.from(userIds) } },
           limit: userIds.size

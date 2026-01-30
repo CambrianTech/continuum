@@ -2,29 +2,29 @@
  * Voice Configuration
  *
  * Centralized config for TTS/STT with easy adapter swapping.
+ * Adapter names MUST match Rust adapter name() returns exactly.
  *
- * Quality tiers:
- * - local: Fast, free, robotic (Piper, Kokoro)
- * - api: High quality, paid (ElevenLabs, Azure, Google)
+ * TTS: Kokoro (primary), Edge (cloud), Orpheus (expressive), Piper, Silence
+ * STT: Whisper (primary), Moonshine (fast), OpenAI Realtime, Stub
  */
 
-// TTS Adapter Constants
+// TTS Adapter Constants — names MUST match Rust adapter name() returns
 export const TTS_ADAPTERS = {
-  PIPER: 'piper',
   KOKORO: 'kokoro',
+  PIPER: 'piper',
+  EDGE: 'edge',          // Rust msedge-tts crate (free Microsoft neural voices)
+  ORPHEUS: 'orpheus',    // Candle GGUF Llama-3B (expressive, emotion tags)
   SILENCE: 'silence',
-  ELEVENLABS: 'elevenlabs',
-  AZURE: 'azure',
-  GOOGLE: 'google',
 } as const;
 
 export type TTSAdapter = typeof TTS_ADAPTERS[keyof typeof TTS_ADAPTERS];
 
-// STT Adapter Constants
+// STT Adapter Constants — names MUST match Rust adapter name() returns
 export const STT_ADAPTERS = {
   WHISPER: 'whisper',
-  DEEPGRAM: 'deepgram',
-  AZURE: 'azure',
+  MOONSHINE: 'moonshine',  // ONNX, sub-100ms, great for live transcription
+  OPENAI_REALTIME: 'openai-realtime',
+  STUB: 'stub',
 } as const;
 
 export type STTAdapter = typeof STT_ADAPTERS[keyof typeof STT_ADAPTERS];
@@ -35,19 +35,19 @@ export interface VoiceConfig {
 
     // Per-adapter config
     adapters: {
+      kokoro?: {
+        voice: string;        // e.g., 'af' (default female), 'am_adam', 'bf_emma'
+        speed: number;        // 0.5-2.0
+      };
       piper?: {
         voice: string;        // e.g., 'af' (default female)
         speed: number;        // 0.5-2.0
       };
-      elevenlabs?: {
-        apiKey?: string;
-        voiceId: string;      // e.g., 'EXAVITQu4vr4xnSDxMaL' (Bella)
-        model: string;        // e.g., 'eleven_turbo_v2'
+      edge?: {
+        voice: string;        // e.g., 'en-US-AriaNeural'
       };
-      azure?: {
-        apiKey?: string;
-        region: string;
-        voice: string;
+      orpheus?: {
+        voice: string;        // e.g., 'tara', 'leo', 'zoe' (8 built-in voices)
       };
     };
   };
@@ -57,18 +57,23 @@ export interface VoiceConfig {
   };
 
   // Performance
-  maxSynthesisTimeMs: number;  // Timeout before failure
   streamingEnabled: boolean;   // Stream audio chunks vs batch
+  // Note: TTS timeout is activity-based (VoiceService two-phase strategy),
+  // not a static limit. Synthesis runs as long as the adapter is active.
 }
 
 // Default configuration (easily overrideable)
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   tts: {
-    adapter: TTS_ADAPTERS.PIPER,  // Use constants, NO fallbacks
+    adapter: TTS_ADAPTERS.KOKORO,  // Kokoro 82M — fast, high quality, local
 
     adapters: {
+      kokoro: {
+        voice: 'af',    // American Female (default)
+        speed: 1.0,
+      },
       piper: {
-        voice: 'af',    // Female American English
+        voice: 'af',    // Fallback
         speed: 1.0,
       },
     },
@@ -78,7 +83,6 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
     adapter: STT_ADAPTERS.WHISPER,  // Use constants, NO fallbacks
   },
 
-  maxSynthesisTimeMs: 30000,  // 30s timeout - Piper runs at real-time (RTF≈1.0), need time for synthesis
   streamingEnabled: false,    // Batch mode for now
 };
 
@@ -104,28 +108,29 @@ export function getVoiceConfigForUser(
     config.tts.adapter = userPrefs.preferredTTSAdapter;
   }
 
-  if (userPrefs?.speechRate && config.tts.adapters.piper) {
-    config.tts.adapters.piper.speed = userPrefs.speechRate;
+  if (userPrefs?.speechRate) {
+    if (config.tts.adapters.kokoro) {
+      config.tts.adapters.kokoro.speed = userPrefs.speechRate;
+    }
+    if (config.tts.adapters.piper) {
+      config.tts.adapters.piper.speed = userPrefs.speechRate;
+    }
   }
 
   return config;
 }
 
 /**
- * Quality comparison (based on TTS Arena rankings + real-world usage)
+ * Adapter comparison (all registered in Rust TTS registry):
  *
- * Tier 1 (Natural, expensive):
- * - ElevenLabs Turbo v2: 80%+ win rate, $$$
- * - Azure Neural: Professional quality, $$
+ * Tier 1 (Fast, local):
+ * - Kokoro: 82M ONNX, ~97ms TTFB, 80.9% TTS Arena — PRIMARY
+ * - Edge: Microsoft neural voices, <200ms, free cloud, no API key
  *
- * Tier 2 (Good, affordable):
- * - Kokoro: 80.9% TTS Arena win rate, free local
- * - Google Cloud: Good quality, $
+ * Tier 2 (Expressive, local):
+ * - Orpheus: 3B Candle GGUF, emotion tags <laugh> <sigh>, ~2-5s CPU
  *
- * Tier 3 (Functional, free):
- * - Piper: Basic quality, fast, free local (CURRENT)
- * - macOS say: Basic quality, free system
- *
- * Recommendation: Start with Piper, upgrade to Kokoro or ElevenLabs
- * when quality matters (demos, production).
+ * Tier 3 (Functional):
+ * - Piper: ONNX, ~42s, local
+ * - Silence: Testing only (produces zeros)
  */

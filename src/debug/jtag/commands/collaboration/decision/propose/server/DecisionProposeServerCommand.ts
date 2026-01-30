@@ -30,11 +30,17 @@ interface DecisionProposeParamsWithCaller extends DecisionProposeParams {
 }
 import type { DecisionProposalEntity, DecisionOption } from '@system/data/entities/DecisionProposalEntity';
 import type { UserEntity } from '@system/data/entities/UserEntity';
-import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { Logger } from '@system/core/logging/Logger';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
+import { ChatSend } from '../../../chat/send/shared/ChatSendTypes';
 /**
  * Calculate voting deadline based on significance level
  */
@@ -93,7 +99,7 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
       return [];
     }
 
-    const result = await Commands.execute<any, DataListResult<DecisionProposalEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       orderBy: [{ field: 'sequenceNumber', direction: 'desc' }],
       limit: 100
@@ -142,7 +148,7 @@ async function findRelatedProposals(tags: string[]): Promise<UUID[]> {
  */
 async function getUsersInScope(scope: string): Promise<UserEntity[]> {
   try {
-    const result = await Commands.execute<any, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+    const result = await DataList.execute<UserEntity>({
       collection: COLLECTIONS.USERS,
       limit: 100
     });
@@ -303,7 +309,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
 
     if (params.proposerId) {
       // Explicit proposerId provided
-      const proposerResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+      const proposerResult = await DataRead.execute<UserEntity>({
         collection: COLLECTIONS.USERS,
         id: params.proposerId
       });
@@ -316,7 +322,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       proposerName = proposerResult.data.displayName;
     } else if (injectedCallerId) {
       // Use injected callerId from AI tool execution
-      const proposerResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+      const proposerResult = await DataRead.execute<UserEntity>({
         collection: COLLECTIONS.USERS,
         id: injectedCallerId
       });
@@ -373,7 +379,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
     const relatedProposals = await findRelatedProposals(tags);
 
     // Get next sequence number
-    const countResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+    const countResult = await DataList.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       limit: 1,
       orderBy: [{ field: 'sequenceNumber', direction: 'desc' }]
@@ -405,7 +411,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       updatedAt: new Date(Date.now())
     };
 
-    const createResult = await Commands.execute<any, any>(DATA_COMMANDS.CREATE, {
+    const createResult = await DataCreate.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       data: proposalData
     });
@@ -432,7 +438,7 @@ ${options.map((opt, idx) => `${idx + 1}. **${opt.label}**: ${opt.description}`).
 Use \`decision/rank\` to submit your ranked preferences.
 Proposal ID: ${proposalId}`;
 
-    await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+    await ChatSend.execute({
       message: notificationMessage,
       room: 'general'
     });

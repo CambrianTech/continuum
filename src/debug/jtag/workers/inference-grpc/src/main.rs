@@ -14,6 +14,7 @@ mod adapter_registry;
 mod grpc;
 mod lora;
 mod model;
+mod priority_queue;
 mod quantized_model;
 mod worker_pool;
 

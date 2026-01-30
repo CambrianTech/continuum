@@ -15,10 +15,11 @@ import type {
 } from '../shared/GenomeJobStatusTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import { COLLECTIONS } from '../../../../system/shared/Constants';
-import type { DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
+import type { DataReadParams, DataReadResult } from '../../../../commands/data/read/shared/DataReadTypes';
 import type { FineTuningJobEntity } from '../../../../daemons/data-daemon/shared/entities/FineTuningJobEntity';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
+import { DataRead } from '../../../data/read/shared/DataReadTypes';
 export class GenomeJobStatusServerCommand extends CommandBase<
   GenomeJobStatusParams,
   GenomeJobStatusResult
@@ -43,7 +44,7 @@ export class GenomeJobStatusServerCommand extends CommandBase<
       }
 
       // 2. Query database for job
-      const result = await Commands.execute<any, DataReadResult<FineTuningJobEntity>>(DATA_COMMANDS.READ, {
+      const result = await DataRead.execute<FineTuningJobEntity>({
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: statusParams.jobId
       });

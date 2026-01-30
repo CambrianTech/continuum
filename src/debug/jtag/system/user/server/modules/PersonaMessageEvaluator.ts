@@ -17,6 +17,7 @@ import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import type { ProcessableMessage } from './QueueItemTypes';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { RoomEntity } from '../../../data/entities/RoomEntity';
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -32,6 +33,8 @@ import { contentPreview, truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
+import { toInboxMessageRequest } from './RustCognitionBridge';
+import type { SenderType } from '../../../../shared/generated';
 import { personaSleepManager } from '@commands/ai/sleep/server/AiSleepServerCommand';
 import {
   AI_DECISION_EVENTS,
@@ -74,7 +77,7 @@ export class PersonaMessageEvaluator {
    * we capture that as a training signal for the appropriate trait adapter.
    */
   private async detectAndBufferTrainingSignal(
-    messageEntity: ChatMessageEntity
+    messageEntity: ProcessableMessage
   ): Promise<void> {
     // Signal detection focuses on MESSAGE CONTENT, not sender type
     // The AI classifier determines if it's feedback based on what's written
@@ -115,7 +118,7 @@ export class PersonaMessageEvaluator {
   /**
    * Get the preceding AI message before a human message (for correction detection)
    */
-  private async getPrecedingAIMessage(humanMessage: ChatMessageEntity): Promise<ChatMessageEntity | null> {
+  private async getPrecedingAIMessage(humanMessage: ProcessableMessage): Promise<ChatMessageEntity | null> {
     try {
       const result = await DataDaemon.query<ChatMessageEntity>({
         collection: COLLECTIONS.CHAT_MESSAGES,
@@ -184,7 +187,7 @@ export class PersonaMessageEvaluator {
    * Creates Task → Plan → Updates SelfState → Executes → Logs to CognitionLogger
    */
   async evaluateAndPossiblyRespondWithCognition(
-    messageEntity: ChatMessageEntity,
+    messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
@@ -369,7 +372,7 @@ export class PersonaMessageEvaluator {
    * NOTE: Now called from evaluateAndPossiblyRespondWithCognition wrapper
    */
   async evaluateAndPossiblyRespond(
-    messageEntity: ChatMessageEntity,
+    messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     safeMessageText: string
   ): Promise<void> {
@@ -486,7 +489,7 @@ export class PersonaMessageEvaluator {
           reasoning: gatingResult.reason,
           responseContent: undefined,
           modelUsed: gatingResult.model,
-          modelProvider: this.personaUser.modelConfig.provider ?? 'ollama',
+          modelProvider: this.personaUser.modelConfig.provider ?? 'candle',
           tokensUsed: undefined,
           responseTime: Date.now() - decisionStartTime,
           sessionId: DataDaemon.jtagContext!.uuid,
@@ -548,7 +551,7 @@ export class PersonaMessageEvaluator {
       confidence: gatingResult.confidence,
       reasoning: gatingResult.reason,
       modelUsed: gatingResult.model,
-      modelProvider: this.personaUser.modelConfig.provider ?? 'ollama',
+      modelProvider: this.personaUser.modelConfig.provider ?? 'candle',
       sessionId: DataDaemon.jtagContext!.uuid,
       contextId: messageEntity.roomId,
       tags: [
@@ -826,7 +829,7 @@ export class PersonaMessageEvaluator {
    * Calculate heuristics for response decision (Phase 2)
    * NO API calls - pure logic based on conversation history
    */
-  private async calculateResponseHeuristics(messageEntity: ChatMessageEntity): Promise<{
+  private async calculateResponseHeuristics(messageEntity: ProcessableMessage): Promise<{
     containsQuestion: boolean;
     conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD';
     myParticipationRatio: number;
@@ -1024,7 +1027,7 @@ export class PersonaMessageEvaluator {
    * when another AI already answered during our inference time.
    */
   private checkResponseAdequacy(
-    originalMessage: ChatMessageEntity,
+    originalMessage: ProcessableMessage,
     otherResponses: ChatMessageEntity[]
   ): { isAdequate: boolean; confidence: number; reason: string } {
     const originalText = originalMessage.content?.text || '';
@@ -1062,7 +1065,7 @@ export class PersonaMessageEvaluator {
    * Instead of hardcoded logic, delegates to chain of decision adapters.
    */
   async evaluateShouldRespond(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<{
@@ -1085,31 +1088,47 @@ export class PersonaMessageEvaluator {
     const startTime = Date.now();
 
     try {
-      // PHASE 6: Use Decision Adapter Chain for all decisions
-      const context: DecisionContext<ChatMessageEntity> = {
-        triggerEvent: message,
-        eventContent: message.content?.text ?? '',  // Defensive: handle missing content
-        personaId: this.personaUser.id,
-        personaDisplayName: this.personaUser.displayName,
-        senderIsHuman,
-        isMentioned,
-        gatingModel: (this.personaUser.entity?.personaConfig as any)?.gatingModel,
-        contextWindowMinutes: (this.personaUser.entity?.personaConfig as any)?.contextWindowMinutes ?? 30,
-        minContextMessages: (this.personaUser.entity?.personaConfig as any)?.minContextMessages ?? 15
-      };
+      // RUST COGNITION: Fast-path decision via IPC (<1ms target)
+      // Handles mention detection, deduplication, state-based gating
+      const senderType: SenderType = senderIsHuman ? 'human' : 'persona';
+      const priority = calculateMessagePriority(
+        {
+          content: message.content?.text ?? '',
+          timestamp: this.personaUser.timestampToNumber(message.timestamp),
+          roomId: message.roomId
+        },
+        {
+          displayName: this.personaUser.displayName,
+          id: this.personaUser.id
+        }
+      );
 
-      const decision = await this.personaUser.decisionChain.processDecision(context);
+      const inboxRequest = toInboxMessageRequest(
+        {
+          id: message.id,
+          roomId: message.roomId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          content: message.content?.text ?? '',
+          timestamp: this.personaUser.timestampToNumber(message.timestamp)
+        },
+        senderType,
+        priority,
+        'chat'
+      );
 
-      this.log(`🔗 ${this.personaUser.displayName}: Adapter decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} via ${decision.model}`);
+      const rustDecision = await this.personaUser.rustCognition.fastPathDecision(inboxRequest);
 
-      // Build RAG context for decision logging (all adapters need this)
+      this.log(`🦀 ${this.personaUser.displayName}: Rust decision: ${rustDecision.should_respond ? 'RESPOND' : 'SILENT'} (${rustDecision.decision_time_ms.toFixed(2)}ms, fast_path=${rustDecision.fast_path_used})`);
+
+      // Build RAG context for decision logging
       // IMPORTANT: Exclude processed tool results to prevent infinite loops
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,
         {
-          modelId: decision.model,  // Bug #5 fix: Pass model ID for dynamic message count calculation
+          modelId: this.personaUser.modelConfig.model,  // Use persona's model
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,
@@ -1124,15 +1143,15 @@ export class PersonaMessageEvaluator {
       );
 
       return {
-        shouldRespond: decision.shouldRespond,
-        confidence: decision.confidence,
-        reason: decision.reason,
-        model: decision.model,
+        shouldRespond: rustDecision.should_respond,
+        confidence: rustDecision.confidence,
+        reason: rustDecision.reason,
+        model: rustDecision.fast_path_used ? 'RustFastPath' : 'RustCognition',
         filteredRagContext: ragContext,
         ragContextSummary: {
           totalMessages: ragContext.conversationHistory.length,
           filteredMessages: ragContext.conversationHistory.length,
-          timeWindowMinutes: context.contextWindowMinutes
+          timeWindowMinutes: 30  // Default context window
         }
       };
 

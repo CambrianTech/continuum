@@ -15,6 +15,7 @@ import { Events } from '@system/core/shared/Events';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 
+import { DataCreate } from '../../../../../data/create/shared/DataCreateTypes';
 // Map string inputs to FeedbackType enum
 function mapToFeedbackType(type: string): FeedbackType {
   const typeMap: Record<string, FeedbackType> = {
@@ -115,7 +116,7 @@ export class PersonaLearningPatternCaptureServerCommand extends CommandBase<Pers
     }
 
     // Store in database
-    const storeResult = await Commands.execute<DataCreateParams, DataCreateResult<FeedbackEntity>>('data/create', {
+    const storeResult = await DataCreate.execute<FeedbackEntity>({
       collection: FeedbackEntity.collection,
       data: entity,
       context: params.context,

@@ -11,6 +11,8 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
 
+import { DataOpen } from '../shared/DataOpenTypes';
+import { DataList } from '../../list/shared/DataListTypes';
 /**
  * Browser-side command for opening database handles
  *
@@ -21,7 +23,7 @@ import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
  * @example
  * ```typescript
  * // From browser code
- * const result = await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, {
+ * const result = await DataOpen.execute({
  *   adapter: 'sqlite',
  *   config: {
  *     path: '/datasets/prepared/continuum-git.sqlite',
@@ -30,7 +32,7 @@ import type { DataOpenParams, DataOpenResult } from '../shared/DataOpenTypes';
  * });
  *
  * // Use handle in other commands
- * const examples = await Commands.execute<DataListResult>(DATA_COMMANDS.LIST, {
+ * const examples = await DataList.execute({
  *   dbHandle: result.dbHandle,
  *   collection: 'training_examples'
  * });
@@ -44,6 +46,6 @@ export class DataOpenBrowserCommand {
    * @returns Result from server with dbHandle on success
    */
   async execute(params: DataOpenParams): Promise<DataOpenResult> {
-    return await Commands.execute<DataOpenResult>(DATA_COMMANDS.OPEN, params) as DataOpenResult;
+    return await DataOpen.execute(params) as DataOpenResult;
   }
 }

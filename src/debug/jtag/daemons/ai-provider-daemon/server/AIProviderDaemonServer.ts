@@ -91,7 +91,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     this.log.info('🤖 AIProviderDaemonServer: Registering AI provider adapters (parallel)...');
 
     // STEP 1: Load all secrets in parallel (fast)
-    const [sentinelPath, deepseekKey, groqKey, xaiKey, openaiKey, anthropicKey, togetherKey, fireworksKey] = await Promise.all([
+    const [sentinelPath, deepseekKey, groqKey, xaiKey, openaiKey, anthropicKey, togetherKey, fireworksKey, googleKey] = await Promise.all([
       getSecret('SENTINEL_PATH'),
       getSecret('DEEPSEEK_API_KEY'),
       getSecret('GROQ_API_KEY'),
@@ -100,6 +100,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       getSecret('ANTHROPIC_API_KEY'),
       getSecret('TOGETHER_API_KEY'),
       getSecret('FIREWORKS_API_KEY'),
+      getSecret('GOOGLE_API_KEY'),
     ]);
 
     // STEP 2: Register LOCAL adapter - Candle gRPC (native Rust inference)
@@ -156,6 +157,11 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
         const { FireworksAdapter } = await import('../adapters/fireworks/shared/FireworksAdapter');
         await this.registerAdapter(new FireworksAdapter(fireworksKey), { priority: 70, enabled: true });
         this.log.info('✅ Fireworks adapter registered');
+      })(),
+      googleKey && (async () => {
+        const { GoogleAdapter } = await import('../adapters/google/shared/GoogleAdapter');
+        await this.registerAdapter(new GoogleAdapter(googleKey), { priority: 75, enabled: true });
+        this.log.info('✅ Google Gemini adapter registered');
       })(),
     ].filter(Boolean) as Promise<void>[];
 

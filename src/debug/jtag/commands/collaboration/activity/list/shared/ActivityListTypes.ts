@@ -2,9 +2,10 @@
  * Activity List Command - Query activities with filters
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ActivityEntity, ActivityStatus } from '@system/data/entities/ActivityEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ActivityListParams extends CommandParams {
   /**
@@ -54,3 +55,17 @@ export interface ActivityListResult extends CommandResult {
   activities?: ActivityEntity[];
   total?: number;
 }
+
+/**
+ * ActivityList — Type-safe command executor
+ *
+ * Usage:
+ *   import { ActivityList } from '...shared/ActivityListTypes';
+ *   const result = await ActivityList.execute({ ... });
+ */
+export const ActivityList = {
+  execute(params: CommandInput<ActivityListParams>): Promise<ActivityListResult> {
+    return Commands.execute<ActivityListParams, ActivityListResult>('collaboration/activity/list', params as Partial<ActivityListParams>);
+  },
+  commandName: 'collaboration/activity/list' as const,
+} as const;

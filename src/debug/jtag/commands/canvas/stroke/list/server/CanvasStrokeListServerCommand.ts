@@ -11,9 +11,12 @@ import type { CanvasStrokeListParams, CanvasStrokeListResult, StrokeSummary } fr
 import { createCanvasStrokeListResult } from '../shared/CanvasStrokeListTypes';
 import { CanvasStrokeEntity } from '@system/data/entities/CanvasStrokeEntity';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { COLLECTIONS } from '@system/shared/Constants';
-import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '@system/data/entities/BaseEntity';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class CanvasStrokeListServerCommand extends CommandBase<CanvasStrokeListParams, CanvasStrokeListResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('canvas/stroke/list', context, subpath, commander);
@@ -42,14 +45,14 @@ export class CanvasStrokeListServerCommand extends CommandBase<CanvasStrokeListP
       }
 
       // Query strokes (oldest first for proper replay)
-      const result = await Commands.execute('data/list', {
+      const result = await DataList.execute({
         collection: COLLECTIONS.CANVAS_STROKES,
         filter,
         orderBy: [{ field: 'timestamp', direction: 'asc' }],
         limit: limit + 1, // Get one extra to check hasMore
         context: listParams.context,
         sessionId: listParams.sessionId
-      }) as DataListResult<CanvasStrokeEntity>;
+      });
 
       let strokes: CanvasStrokeEntity[] = (result.items || []) as CanvasStrokeEntity[];
       const hasMore = strokes.length > limit;

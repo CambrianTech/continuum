@@ -76,15 +76,17 @@ import { RateLimiter } from './modules/RateLimiter';
 import { PersonaInbox, calculateMessagePriority } from './modules/PersonaInbox';
 import { PersonaStateManager } from './modules/PersonaState';
 import type { InboxMessage } from './modules/PersonaInbox';
-import type { InboxTask, TaskStatus } from './modules/QueueItemTypes';
+import type { InboxTask, TaskStatus, ProcessableMessage } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
 import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
 import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome';
 import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
+import type { BaseQueueItem } from './modules/channels/BaseQueueItem';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
-import { DecisionAdapterChain } from './modules/cognition/DecisionAdapterChain';
+// NOTE: DecisionAdapterChain removed - Rust cognition engine handles fast-path decisions
+// See: workers/continuum-core/src/persona/cognition.rs
 import type { DecisionContext } from './modules/cognition/adapters/IDecisionAdapter';
 import { WorkingMemoryManager } from './modules/cognition/memory/WorkingMemoryManager';
 import { PersonaSelfState } from './modules/cognition/PersonaSelfState';
@@ -97,6 +99,7 @@ import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
+import { TimingHarness } from '../../core/shared/TimingHarness';
 import { PersonaMessageEvaluator } from './modules/PersonaMessageEvaluator';
 import { PersonaTaskTracker } from './modules/PersonaTaskTracker';
 import { PersonaGenomeManager } from './modules/PersonaGenomeManager';
@@ -110,6 +113,7 @@ import { setPeerReviewLogger } from './modules/cognition/PeerReviewManager';
 import { LimbicSystem, type PersonaUserForLimbic } from './modules/being/LimbicSystem';
 import { PrefrontalCortex, type PersonaUserForPrefrontal } from './modules/being/PrefrontalCortex';
 import { MotorCortex, type PersonaUserForMotorCortex } from './modules/being/MotorCortex';
+import { RustCognitionBridge, type PersonaUserForRustCognition } from './modules/RustCognitionBridge';
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
@@ -177,6 +181,10 @@ export class PersonaUser extends AIUser {
   // NEUROANATOMY: Motor cortex (action, execution, output)
   private motorCortex: MotorCortex | null = null;
 
+  // RUST COGNITION: Fast-path decision engine via IPC (<1ms)
+  // Handles priority calculation, deduplication, state-based gating in Rust
+  private _rustCognition: RustCognitionBridge | null = null;
+
   // UNIFIED CONSCIOUSNESS: Cross-context awareness layer (no severance!)
   // Sits ABOVE limbic/prefrontal - provides global timeline, intentions, peripheral awareness
   private _consciousness: UnifiedConsciousness | null = null;
@@ -194,6 +202,15 @@ export class PersonaUser extends AIUser {
   public get consciousness(): UnifiedConsciousness {
     if (!this._consciousness) throw new Error('Consciousness not initialized');
     return this._consciousness;
+  }
+
+  /**
+   * Get Rust cognition bridge for fast-path decisions
+   * Public for modules that need sub-1ms priority calculation or should-respond decisions
+   */
+  public get rustCognition(): RustCognitionBridge {
+    if (!this._rustCognition) throw new Error('Rust cognition bridge not initialized');
+    return this._rustCognition;
   }
 
   // NEUROANATOMY: Delegate to limbic for memory/genome/training/hippocampus
@@ -247,8 +264,8 @@ export class PersonaUser extends AIUser {
     return this.limbic.trainingManager;
   }
 
-  // PHASE 6: Decision Adapter Chain (fast-path, thermal, LLM gating)
-  readonly decisionChain: DecisionAdapterChain;
+  // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
+  // See: workers/continuum-core/src/persona/cognition.rs (PersonaCognitionEngine)
 
   // CNS: Central Nervous System orchestrator
   readonly cns: PersonaCentralNervousSystem;
@@ -311,12 +328,13 @@ export class PersonaUser extends AIUser {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
 
     // Extract modelConfig from entity (stored via Object.assign during creation)
-    // Default to Ollama if not configured
-    this.modelConfig = entity.modelConfig || {
-      provider: 'ollama',
-      model: 'llama3.2:3b',
-      temperature: 0.7,
-      maxTokens: 150
+    // CRITICAL: Get provider defaults first, then merge with entity's explicit values
+    // This ensures REST providers get their correct default models (not llama3.2:3b)
+    const provider = entity.modelConfig?.provider || 'candle';
+    const providerDefaults = getModelConfigForProvider(provider);
+    this.modelConfig = {
+      ...providerDefaults,
+      ...entity.modelConfig  // Entity values override defaults if explicitly set
     };
 
     // Extract mediaConfig from entity, default to opt-out (no auto-loading)
@@ -347,7 +365,7 @@ export class PersonaUser extends AIUser {
     // CRITICAL: Handle case where AIProviderDaemon isn't initialized yet (race condition on startup)
     this.inbox.setQueueStatsProvider(() => {
       try {
-        const adapter = AIProviderDaemon.getAdapter('ollama');
+        const adapter = AIProviderDaemon.getAdapter('candle');
         if (adapter && adapter.getQueueStats) {
           return adapter.getQueueStats();
         }
@@ -402,6 +420,10 @@ export class PersonaUser extends AIUser {
       memory: this.memory  // For accessing trained LoRA adapters during inference
     });
 
+    // RUST COGNITION: Fast-path decision engine via IPC
+    // Logs to: .continuum/personas/{uniqueId}/logs/rust-cognition.log
+    this._rustCognition = new RustCognitionBridge(this as any as PersonaUserForRustCognition);
+
     // UNIFIED CONSCIOUSNESS: Cross-context awareness (no severance!)
     // Sits above limbic/prefrontal, provides global timeline and peripheral awareness
     this._consciousness = new UnifiedConsciousness(
@@ -419,22 +441,20 @@ export class PersonaUser extends AIUser {
     registerConsciousness(this.id, this._consciousness);
     this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
 
-    // PHASE 6: Decision adapter chain (fast-path, thermal, LLM gating)
-    // Pass logger for cognition.log
+    // Logger for cognition.log (used by task executor and other modules)
     const cognitionLogger = (message: string, ...args: any[]) => {
       this.logger.enqueueLog('cognition.log', message);
     };
-    this.decisionChain = new DecisionAdapterChain(cognitionLogger);
-    this.log.info(`🔗 ${this.displayName}: Decision adapter chain initialized with ${this.decisionChain.getAllAdapters().length} adapters`);
+    // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
 
     // Task execution module (delegated for modularity, uses this.memory getter)
-    // Pass provider so fine-tuning uses the correct adapter (Ollama, OpenAI, Together, etc.)
+    // Pass provider so fine-tuning uses the correct adapter (Candle, OpenAI, Together, etc.)
     this.taskExecutor = new PersonaTaskExecutor(
       this.id,
       this.displayName,
       this.memory,
       this.personaState,
-      this.modelConfig.provider || 'ollama',
+      this.modelConfig.provider || 'candle',
       cognitionLogger
     );
 
@@ -453,9 +473,8 @@ export class PersonaUser extends AIUser {
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
     this.worker = new PersonaWorkerThread(this.id, {
-      providerType: 'ollama',  // Always use Ollama for fast gating (1b model)
+      providerType: 'candle',  // Always use Candle (native Rust) for fast gating (1b model)
       providerConfig: {
-        apiEndpoint: 'http://localhost:11434',
         model: 'llama3.2:1b' // Fast model for gating decisions
       }
     });
@@ -541,6 +560,16 @@ export class PersonaUser extends AIUser {
       this.log.info(`🧵 ${this.displayName}: Worker thread started`);
     }
 
+    // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
+    // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
+    try {
+      await this._rustCognition?.initialize();
+      this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected`);
+    } catch (error) {
+      this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
+      // Don't throw - let persona initialize, but message handling will fail loudly
+    }
+
     // STEP 1.6: Register with ResourceManager for holistic resource allocation
     try {
       const { getResourceManager } = await import('../../resources/shared/ResourceManager.js');
@@ -586,13 +615,16 @@ export class PersonaUser extends AIUser {
         timestamp: number;
         targetPersonaId: UUID;
       }) => {
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Received voice:transcription:directed event, targetPersonaId=${transcriptionData.targetPersonaId?.slice(0, 8)}, myId=${this.id?.slice(0, 8)}`);
         // Only process if directed at THIS persona
         if (transcriptionData.targetPersonaId === this.id) {
+          console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: MATCH! Processing directed voice transcription: "${transcriptionData.transcript.slice(0, 50)}..."`);
           this.log.info(`🎙️ ${this.displayName}: Received DIRECTED voice transcription`);
           await this.handleVoiceTranscription(transcriptionData);
         }
       }, undefined, this.id);
       this._eventUnsubscribes.push(unsubVoiceTranscription);
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Subscribed to voice:transcription:directed events (personaId=${this.id?.slice(0, 8)})`);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
 
       // Subscribe to TTS audio events and inject into CallServer
@@ -691,14 +723,7 @@ export class PersonaUser extends AIUser {
         this.memory.genome.setAIProvider(candleAdapter);
         this.log.info(`🧬 ${this.displayName}: Genome wired to CandleAdapter (LoRA composition enabled)`);
       } else {
-        // Fall back to Ollama if Candle not available
-        const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
-        if (ollamaAdapter) {
-          this.memory.genome.setAIProvider(ollamaAdapter);
-          this.log.info(`🧬 ${this.displayName}: Genome wired to OllamaAdapter (stub mode - no multi-adapter)`);
-        } else {
-          this.log.warn(`⚠️ ${this.displayName}: No local AI provider available for genome`);
-        }
+        this.log.warn(`⚠️ ${this.displayName}: No Candle adapter available for genome`);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -884,6 +909,15 @@ export class PersonaUser extends AIUser {
       return;
     }
 
+    // STEP 1c: Skip audio-native models for text chat (they only work in voice calls)
+    // Audio-native models like Gemini Live and Qwen3-Omni communicate via direct audio I/O,
+    // not through the text generation pipeline.
+    const metadata = this.entity.metadata as Record<string, unknown> | undefined;
+    if (metadata?.isAudioNative === true) {
+      this.log.debug(`⏭️ ${this.displayName}: Skipping chat (audio-native model, voice-only)`);
+      return;
+    }
+
     // STEP 2: Deduplication - prevent evaluating same message multiple times
     if (this.rateLimiter.hasEvaluatedMessage(messageEntity.id)) {
       return; // Already evaluated this message
@@ -974,8 +1008,11 @@ export class PersonaUser extends AIUser {
     language: string;
     timestamp?: string | number;
   }): Promise<void> {
+    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: handleVoiceTranscription CALLED with transcript: "${transcriptionData.transcript.slice(0, 50)}..."`);
+
     // STEP 1: Ignore our own transcriptions
     if (transcriptionData.speakerId === this.id) {
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Ignoring own transcription`);
       return;
     }
 
@@ -985,6 +1022,7 @@ export class PersonaUser extends AIUser {
     // Use transcript + timestamp as unique key
     const transcriptionKey = `${transcriptionData.speakerId}-${transcriptionData.timestamp || Date.now()}`;
     if (this.rateLimiter.hasEvaluatedMessage(transcriptionKey)) {
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Deduplication - already processed this transcription`);
       return;
     }
     this.rateLimiter.markMessageEvaluated(transcriptionKey);
@@ -1015,26 +1053,27 @@ export class PersonaUser extends AIUser {
     const boostedPriority = Math.min(1.0, priority + 0.2);
 
     // STEP 4: Enqueue to inbox as InboxMessage
+    // Voice flows through the same CNS/inbox pipeline as all other modalities —
+    // the inbox IS the autonomous entity's brain and decision-making system.
     const inboxMessage: InboxMessage = {
-      id: generateUUID(),  // Generate new UUID for transcription event
+      id: generateUUID(),
       type: 'message',
-      domain: 'chat',  // Chat domain (voice is just another input modality for chat)
-      roomId: transcriptionData.sessionId,  // Call session is the "room"
+      domain: 'chat',
+      roomId: transcriptionData.sessionId,
       content: transcriptionData.transcript,
       senderId: transcriptionData.speakerId,
       senderName: transcriptionData.speakerName,
-      senderType: transcriptionData.speakerType || 'human',  // Use speakerType from event (human/persona/agent)
+      senderType: transcriptionData.speakerType || 'human',
       timestamp,
       priority: boostedPriority,
-      sourceModality: 'voice',  // Mark as coming from voice (for response routing)
-      voiceSessionId: transcriptionData.sessionId  // Store voice call session ID
+      sourceModality: 'voice',
+      voiceSessionId: transcriptionData.sessionId,
     };
 
     await this.inbox.enqueue(inboxMessage);
-
-    // Update inbox load in state (for mood calculation)
     this.personaState.updateInboxLoad(this.inbox.getSize());
 
+    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Enqueued voice message to inbox (priority=${boostedPriority.toFixed(2)}, voiceSessionId=${transcriptionData.sessionId?.slice(0, 8)}, inboxSize=${this.inbox.getSize()})`);
     this.log.info(`🎙️ ${this.displayName}: Enqueued voice transcription (priority=${boostedPriority.toFixed(2)}, confidence=${transcriptionData.confidence}, inbox size=${this.inbox.getSize()})`);
 
     // UNIFIED CONSCIOUSNESS: Record voice event in global timeline
@@ -1064,11 +1103,11 @@ export class PersonaUser extends AIUser {
    * 5. Update SelfState with focus and cognitive load
    */
   public async evaluateAndPossiblyRespondWithCognition(
-    messageEntity: ChatMessageEntity,
+    message: ProcessableMessage,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
-    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(messageEntity, senderIsHuman, messageText);
+    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(message, senderIsHuman, messageText);
   }
 
   /**
@@ -1077,7 +1116,7 @@ export class PersonaUser extends AIUser {
    * NOTE: Now called from evaluateAndPossiblyRespondWithCognition wrapper
    */
   private async evaluateAndPossiblyRespond(
-    messageEntity: ChatMessageEntity,
+    messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
@@ -1154,7 +1193,7 @@ export class PersonaUser extends AIUser {
    * **Dormancy filtering**: Checks dormancy state before responding
    */
   public async respondToMessage(
-    originalMessage: ChatMessageEntity,
+    originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {
     // Check dormancy state before responding
@@ -1194,6 +1233,13 @@ export class PersonaUser extends AIUser {
     systemPrompt?: string;
     context?: string;  // For logging/metrics (e.g., 'memory-synthesis', 'task-generation')
   }): Promise<string> {
+    const timer = TimingHarness.start('persona/generate-text', 'persona');
+    timer.setMeta('personaId', this.entity.uniqueId);
+    timer.setMeta('displayName', this.displayName);
+    timer.setMeta('context', request.context || 'unknown');
+    timer.setMeta('provider', this.modelConfig.provider || 'candle');
+    timer.setMeta('model', this.modelConfig.model || 'llama3.2:3b');
+
     try {
       const messages: { role: 'system' | 'user'; content: string }[] = [];
 
@@ -1208,13 +1254,14 @@ export class PersonaUser extends AIUser {
         role: 'user',
         content: request.prompt
       });
+      timer.mark('build_messages');
 
       const genRequest: TextGenerationRequest = {
         messages,
         model: this.modelConfig.model || 'llama3.2:3b',
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
-        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
         intelligenceLevel: this.entity.intelligenceLevel,
         personaContext: {
           uniqueId: this.entity.uniqueId,
@@ -1233,9 +1280,14 @@ export class PersonaUser extends AIUser {
         AIProviderDaemon.generateText(genRequest),
         timeoutPromise
       ]);
+      timer.mark('ai_generation');
+      timer.setMeta('outputLength', response.text.length);
 
+      timer.finish();
       return response.text;
     } catch (error) {
+      timer.setError(error instanceof Error ? error.message : String(error));
+      timer.finish();
       this.log.error(`❌ ${this.displayName}: Text generation failed (context=${request.context || 'unknown'}): ${error}`);
       throw error;
     }
@@ -1642,7 +1694,7 @@ export class PersonaUser extends AIUser {
    * Instead of hardcoded logic, delegates to chain of decision adapters.
    */
   private async evaluateShouldRespond(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<{
@@ -1710,6 +1762,16 @@ export class PersonaUser extends AIUser {
    */
   public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
     await this.autonomousLoop.handleChatMessageFromCNS(item);
+  }
+
+  /**
+   * CNS callback: Handle channel-routed queue item from CNS orchestrator
+   *
+   * This is called by PersonaCentralNervousSystem.serviceChannels() via callback pattern.
+   * Dispatches by item type to appropriate processing pipeline (voice, chat, task).
+   */
+  public async handleQueueItemFromCNS(item: BaseQueueItem): Promise<void> {
+    await this.autonomousLoop.handleQueueItemFromCNS(item);
   }
 
   /**

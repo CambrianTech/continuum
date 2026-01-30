@@ -7,9 +7,10 @@
  * 3. Poll for all messages after your question
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Chat poll parameters
@@ -42,3 +43,17 @@ export interface ChatPollResult extends JTAGPayload {
   readonly timestamp: string;
   readonly error?: string;
 }
+
+/**
+ * ChatPoll — Type-safe command executor
+ *
+ * Usage:
+ *   import { ChatPoll } from '...shared/ChatPollTypes';
+ *   const result = await ChatPoll.execute({ ... });
+ */
+export const ChatPoll = {
+  execute(params: CommandInput<ChatPollParams>): Promise<ChatPollResult> {
+    return Commands.execute<ChatPollParams, ChatPollResult>('collaboration/chat/poll', params as Partial<ChatPollParams>);
+  },
+  commandName: 'collaboration/chat/poll' as const,
+} as const;

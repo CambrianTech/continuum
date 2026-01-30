@@ -21,6 +21,8 @@ import type { DataCreateResult } from '@commands/data/create/shared/DataCreateTy
 import type { DataListParams } from '@commands/data/list/shared/DataListTypes';
 import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
 
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParams, DecisionCreateResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -123,9 +125,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
     }
 
     // Store in database using data/create command
-    await Commands.execute<DataCreateParams, DataCreateResult<DecisionEntity>>(
-      DATA_COMMANDS.CREATE,
-      {
+    await DataCreate.execute<DecisionEntity>({
         collection: DecisionEntity.collection,
         data: decision,
         context: params.context,
@@ -153,9 +153,7 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
     const uniqueId = identity.uniqueId;
 
     // Find user by uniqueId in database using Commands.execute
-    const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
         filter: { uniqueId },
         limit: 1,

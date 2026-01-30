@@ -12,6 +12,7 @@ import { FeedbackEntity, FeedbackStatus } from '@system/data/entities/FeedbackEn
 import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 
+import { DataList } from '../../../../../data/list/shared/DataListTypes';
 export class PersonaLearningPatternQueryServerCommand extends CommandBase<PersonaLearningPatternQueryParams, PersonaLearningPatternQueryResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -51,7 +52,7 @@ export class PersonaLearningPatternQueryServerCommand extends CommandBase<Person
     const orderBy = [{ field: orderByField, direction: 'desc' as const }];
 
     // Execute database query
-    const listResult = await Commands.execute<DataListParams, DataListResult<FeedbackEntity>>('data/list', {
+    const listResult = await DataList.execute<FeedbackEntity>({
       collection: FeedbackEntity.collection,
       filter,
       orderBy,

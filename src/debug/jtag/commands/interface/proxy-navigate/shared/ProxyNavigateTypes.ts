@@ -6,9 +6,10 @@
  */
 
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
-import type { JTAGContext } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface ProxyNavigateParams extends CommandParams {
   readonly url: string;
@@ -61,3 +62,16 @@ export const createProxyNavigateResult = (
   originalUrl: data.originalUrl || '',
   ...data
 });
+/**
+ * ProxyNavigate — Type-safe command executor
+ *
+ * Usage:
+ *   import { ProxyNavigate } from '...shared/ProxyNavigateTypes';
+ *   const result = await ProxyNavigate.execute({ ... });
+ */
+export const ProxyNavigate = {
+  execute(params: CommandInput<ProxyNavigateParams>): Promise<ProxyNavigateResult> {
+    return Commands.execute<ProxyNavigateParams, ProxyNavigateResult>('interface/proxy-navigate', params as Partial<ProxyNavigateParams>);
+  },
+  commandName: 'interface/proxy-navigate' as const,
+} as const;

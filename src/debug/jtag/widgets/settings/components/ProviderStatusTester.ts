@@ -7,6 +7,7 @@
 
 import { Commands } from '@system/core/shared/Commands';
 
+import { AiKeyTest } from '../../../commands/ai/key/test/shared/AiKeyTestTypes';
 export type TestStatus = 'idle' | 'testing' | 'operational' | 'invalid' | 'out-of-funds' | 'rate-limited' | 'error';
 
 export interface ProviderTestResult {
@@ -47,7 +48,7 @@ export class ProviderStatusTester {
     this.onUpdate();
 
     try {
-      const result = await Commands.execute('ai/key/test', {
+      const result = await AiKeyTest.execute({
         provider: params.provider,
         key: params.key,
         useStored: params.useStored

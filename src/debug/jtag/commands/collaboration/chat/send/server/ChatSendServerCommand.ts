@@ -18,6 +18,10 @@ import type { DataCreateParams, DataCreateResult } from '@commands/data/create/s
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { FileMimeType } from '../../../../file/mime-type/shared/FileMimeTypeTypes';
+import { FileLoad } from '../../../../file/load/shared/FileLoadTypes';
 export class ChatSendServerCommand extends ChatSendCommand {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -92,9 +96,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     // 4. Store message using data/create command (proper delegation)
     // data/create handles validation, storage, and event broadcast
-    const createResult = await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(
-      DATA_COMMANDS.CREATE,
-      {
+    const createResult = await DataCreate.execute<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         data: messageEntity,
         context: params.context,
@@ -126,9 +128,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
    * Find user by ID
    */
   private async findUserById(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
-    const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
         filter: { id: userId },
         limit: 1,
@@ -163,9 +163,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
 
     // If user exists in database, return it
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: identity.userId },
           limit: 1,
@@ -200,7 +198,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
         console.log(`🔧 processMediaPaths: Processing file: ${filePath}`);
 
         // Step 1: Detect MIME type using file/mime-type command
-        const mimeResult = await Commands.execute<{ filepath: string; context: JTAGContext; sessionId: UUID }, any>('file/mime-type', {
+        const mimeResult = await FileMimeType.execute({
           filepath: filePath,
           context,
           sessionId
@@ -216,7 +214,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
         }
 
         // Step 2: Load file content as base64 using file/load command
-        const fileResult = await Commands.execute<{ filepath: string; encoding: string; context: JTAGContext; sessionId: UUID }, any>('file/load', {
+        const fileResult = await FileLoad.execute({
           filepath: filePath,
           encoding: 'base64',
           context,

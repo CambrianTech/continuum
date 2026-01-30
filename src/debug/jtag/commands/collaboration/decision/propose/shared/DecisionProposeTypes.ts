@@ -11,7 +11,8 @@
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { SignificanceLevel, ProposalScope, DecisionOption } from '@system/data/entities/DecisionProposalEntity';
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface DecisionProposeParams extends CommandParams {
   /** What decision is being made */
@@ -52,3 +53,17 @@ export interface DecisionProposeResult extends CommandResult {
   relatedProposals?: UUID[];
   error?: string;
 }
+
+/**
+ * DecisionPropose — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionPropose } from '...shared/DecisionProposeTypes';
+ *   const result = await DecisionPropose.execute({ ... });
+ */
+export const DecisionPropose = {
+  execute(params: CommandInput<DecisionProposeParams>): Promise<DecisionProposeResult> {
+    return Commands.execute<DecisionProposeParams, DecisionProposeResult>('collaboration/decision/propose', params as Partial<DecisionProposeParams>);
+  },
+  commandName: 'collaboration/decision/propose' as const,
+} as const;

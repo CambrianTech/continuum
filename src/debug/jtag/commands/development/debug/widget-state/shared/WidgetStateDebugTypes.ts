@@ -5,9 +5,10 @@
  * Enables inspection of widget internal state, event listeners, and DOM structure
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface WidgetStateDebugParams extends CommandParams {
   widgetSelector?: string;
@@ -165,3 +166,16 @@ export const createWidgetStateDebugResult = (
   },
   ...data
 });
+/**
+ * WidgetStateDebug — Type-safe command executor
+ *
+ * Usage:
+ *   import { WidgetStateDebug } from '...shared/WidgetStateDebugTypes';
+ *   const result = await WidgetStateDebug.execute({ ... });
+ */
+export const WidgetStateDebug = {
+  execute(params: CommandInput<WidgetStateDebugParams>): Promise<WidgetStateDebugResult> {
+    return Commands.execute<WidgetStateDebugParams, WidgetStateDebugResult>('development/debug/widget-state', params as Partial<WidgetStateDebugParams>);
+  },
+  commandName: 'development/debug/widget-state' as const,
+} as const;

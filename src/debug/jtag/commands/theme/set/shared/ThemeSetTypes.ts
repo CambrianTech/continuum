@@ -3,9 +3,10 @@
  */
 
 import { type ThemeParams, type ThemeResult, createThemeParams, createThemeResult } from '../../shared/ThemeTypes';
-import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** Theme set command parameters */
 export interface ThemeSetParams extends CommandParams {
@@ -49,3 +50,16 @@ export const createThemeSetResult = (
   previousTheme: data.previousTheme,
   applied: data.applied ?? data.success
 });
+/**
+ * ThemeSet — Type-safe command executor
+ *
+ * Usage:
+ *   import { ThemeSet } from '...shared/ThemeSetTypes';
+ *   const result = await ThemeSet.execute({ ... });
+ */
+export const ThemeSet = {
+  execute(params: CommandInput<ThemeSetParams>): Promise<ThemeSetResult> {
+    return Commands.execute<ThemeSetParams, ThemeSetResult>('theme/set', params as Partial<ThemeSetParams>);
+  },
+  commandName: 'theme/set' as const,
+} as const;

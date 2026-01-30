@@ -21,6 +21,7 @@ export interface BaseQueueItem {
   priority: number;          // 0.0-1.0 for queue ordering (higher = more urgent)
   timestamp: number;         // When item was created (ms since epoch)
   domain: TaskDomain;        // Which domain this work belongs to (chat, code, self, etc.)
+  enqueuedAt?: number;       // When item entered the inbox queue (ms since epoch, set by inbox)
 }
 
 /**
@@ -79,6 +80,55 @@ export interface InboxTask extends BaseQueueItem {
 }
 
 /**
+ * ProcessableMessage - Typed contract for the evaluation/response pipeline.
+ *
+ * NOT a database entity. This replaces the `any` type previously used
+ * when reconstructing messages from inbox items for the response generator.
+ *
+ * Every field is explicitly typed — `undefined` is impossible for required fields.
+ * `sourceModality` is REQUIRED (defaults to 'text'), eliminating the class of bugs
+ * where voice metadata silently becomes `undefined`.
+ */
+export interface ProcessableMessage {
+  id: UUID;
+  roomId: UUID;
+  senderId: UUID;
+  senderName: string;
+  senderType: 'human' | 'persona' | 'agent' | 'system';
+  content: { text: string };
+  timestamp: number;
+
+  // Modality — REQUIRED, never undefined
+  sourceModality: 'text' | 'voice';
+  voiceSessionId?: UUID;  // Present when sourceModality === 'voice'
+
+  // Metadata for pipeline compatibility (system test detection, etc.)
+  metadata?: {
+    isSystemTest?: boolean;
+    testType?: string;
+    source?: 'user' | 'system' | 'bot' | 'webhook';
+  };
+}
+
+/**
+ * Convert InboxMessage to ProcessableMessage.
+ * Type-safe factory — no `any` casts.
+ */
+export function inboxMessageToProcessable(item: InboxMessage): ProcessableMessage {
+  return {
+    id: item.id,
+    roomId: item.roomId,
+    senderId: item.senderId,
+    senderName: item.senderName,
+    senderType: item.senderType,
+    content: { text: item.content },
+    timestamp: item.timestamp,
+    sourceModality: item.sourceModality ?? 'text',
+    voiceSessionId: item.voiceSessionId,
+  };
+}
+
+/**
  * Union type for all queue items
  * TypeScript discriminated union enables exhaustive type checking
  */
@@ -96,6 +146,104 @@ export function isInboxMessage(item: QueueItem): item is InboxMessage {
  */
 export function isInboxTask(item: QueueItem): item is InboxTask {
   return item.type === 'task';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CHANNEL ITEM FACTORIES
+// Bridge from existing data interfaces → new behavioral class hierarchy
+// External code constructs InboxMessage/InboxTask; factories wrap them.
+// ═══════════════════════════════════════════════════════════════════
+
+import { BaseQueueItem as ChannelBaseQueueItem } from './channels/BaseQueueItem';
+import { VoiceQueueItem } from './channels/VoiceQueueItem';
+import { ChatQueueItem } from './channels/ChatQueueItem';
+import { TaskQueueItem } from './channels/TaskQueueItem';
+
+// Re-export for external use
+export { ChannelBaseQueueItem, VoiceQueueItem, ChatQueueItem, TaskQueueItem };
+
+/**
+ * Convert InboxMessage → VoiceQueueItem (for voice modality messages)
+ */
+export function toVoiceQueueItem(msg: InboxMessage): VoiceQueueItem {
+  return new VoiceQueueItem({
+    id: msg.id,
+    timestamp: msg.timestamp,
+    enqueuedAt: msg.enqueuedAt,
+    roomId: msg.roomId,
+    content: msg.content,
+    senderId: msg.senderId,
+    senderName: msg.senderName,
+    senderType: msg.senderType,
+    voiceSessionId: msg.voiceSessionId!,  // Voice messages must have voiceSessionId
+  });
+}
+
+/**
+ * Convert InboxMessage → ChatQueueItem (for text modality messages)
+ */
+export function toChatQueueItem(msg: InboxMessage): ChatQueueItem {
+  return new ChatQueueItem({
+    id: msg.id,
+    timestamp: msg.timestamp,
+    enqueuedAt: msg.enqueuedAt,
+    roomId: msg.roomId,
+    content: msg.content,
+    senderId: msg.senderId,
+    senderName: msg.senderName,
+    senderType: msg.senderType,
+    mentions: msg.mentions ?? false,
+    priority: msg.priority,
+  });
+}
+
+/**
+ * Convert InboxTask → TaskQueueItem
+ */
+export function toTaskQueueItem(task: InboxTask): TaskQueueItem {
+  return new TaskQueueItem({
+    id: task.id,
+    timestamp: task.timestamp,
+    enqueuedAt: task.enqueuedAt,
+    taskId: task.taskId,
+    assigneeId: task.assigneeId,
+    createdBy: task.createdBy,
+    taskDomain: task.domain,
+    taskType: task.taskType,
+    contextId: task.contextId,
+    description: task.description,
+    priority: task.priority,
+    status: task.status,
+    dueDate: task.dueDate,
+    estimatedDuration: task.estimatedDuration,
+    dependsOn: task.dependsOn,
+    blockedBy: task.blockedBy,
+    metadata: task.metadata as Record<string, unknown> | undefined,
+  });
+}
+
+/**
+ * Route any QueueItem to the appropriate channel item class.
+ * This is the main entry point for converting legacy data interfaces
+ * to behavioral class instances.
+ */
+export function toChannelItem(item: QueueItem): ChannelBaseQueueItem {
+  if (isInboxMessage(item)) {
+    // Voice messages route to VoiceQueueItem
+    if (item.sourceModality === 'voice' && item.voiceSessionId) {
+      return toVoiceQueueItem(item);
+    }
+    // Text messages route to ChatQueueItem
+    return toChatQueueItem(item);
+  }
+
+  if (isInboxTask(item)) {
+    return toTaskQueueItem(item);
+  }
+
+  // Exhaustive check — should never reach here with proper discriminated union
+  const _exhaustive: never = item;
+  throw new Error(`Unknown queue item type: ${(item as QueueItem).type}`);
 }
 
 /**

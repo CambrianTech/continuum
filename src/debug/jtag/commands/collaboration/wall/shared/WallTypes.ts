@@ -8,8 +8,9 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { isUUID } from '@system/routing/RoutingService';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Parameters for writing to a room wall
@@ -275,3 +276,73 @@ export function sanitizeDocumentName(doc: string): string {
 
   return sanitized;
 }
+
+/**
+ * WallWrite — Type-safe command executor
+ *
+ * Usage:
+ *   import { WallWrite } from '...shared/WallWriteTypes';
+ *   const result = await WallWrite.execute({ ... });
+ */
+export const WallWrite = {
+  execute(params: CommandInput<WallWriteParams>): Promise<WallWriteResult> {
+    return Commands.execute<WallWriteParams, WallWriteResult>('collaboration/wall/write', params as Partial<WallWriteParams>);
+  },
+  commandName: 'collaboration/wall/write' as const,
+} as const;
+
+/**
+ * WallRead — Type-safe command executor
+ *
+ * Usage:
+ *   import { WallRead } from '...shared/WallReadTypes';
+ *   const result = await WallRead.execute({ ... });
+ */
+export const WallRead = {
+  execute(params: CommandInput<WallReadParams>): Promise<WallReadResult> {
+    return Commands.execute<WallReadParams, WallReadResult>('collaboration/wall/read', params as Partial<WallReadParams>);
+  },
+  commandName: 'collaboration/wall/read' as const,
+} as const;
+
+/**
+ * WallList — Type-safe command executor
+ *
+ * Usage:
+ *   import { WallList } from '...shared/WallListTypes';
+ *   const result = await WallList.execute({ ... });
+ */
+export const WallList = {
+  execute(params: CommandInput<WallListParams>): Promise<WallListResult> {
+    return Commands.execute<WallListParams, WallListResult>('collaboration/wall/list', params as Partial<WallListParams>);
+  },
+  commandName: 'collaboration/wall/list' as const,
+} as const;
+
+/**
+ * WallHistory — Type-safe command executor
+ *
+ * Usage:
+ *   import { WallHistory } from '...shared/WallHistoryTypes';
+ *   const result = await WallHistory.execute({ ... });
+ */
+export const WallHistory = {
+  execute(params: CommandInput<WallHistoryParams>): Promise<WallHistoryResult> {
+    return Commands.execute<WallHistoryParams, WallHistoryResult>('collaboration/wall/history', params as Partial<WallHistoryParams>);
+  },
+  commandName: 'collaboration/wall/history' as const,
+} as const;
+
+/**
+ * WallDiff — Type-safe command executor
+ *
+ * Usage:
+ *   import { WallDiff } from '...shared/WallDiffTypes';
+ *   const result = await WallDiff.execute({ ... });
+ */
+export const WallDiff = {
+  execute(params: CommandInput<WallDiffParams>): Promise<WallDiffResult> {
+    return Commands.execute<WallDiffParams, WallDiffResult>('collaboration/wall/diff', params as Partial<WallDiffParams>);
+  },
+  commandName: 'collaboration/wall/diff' as const,
+} as const;

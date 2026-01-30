@@ -120,7 +120,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           model: params.model || 'llama3.2:1b',
           temperature: params.temperature ?? 0.7,
           maxTokens: params.maxTokens ?? 150,
-          preferredProvider: params.preferredProvider || 'ollama',
+          preferredProvider: params.preferredProvider || 'candle',
           personaContext: {
             uniqueId: targetPersonaId,
             displayName: ragContext.identity?.name || personaDisplayName,

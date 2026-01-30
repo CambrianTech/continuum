@@ -12,6 +12,7 @@ import type { UserGetMeParams, UserGetMeResult } from '../shared/UserGetMeTypes'
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { SessionGetUserParams, SessionGetUserResult } from '../../../session/get-user/shared/SessionGetUserTypes';
 
+import { SessionGetUser } from '../../../session/get-user/shared/SessionGetUserTypes';
 export class UserGetMeServerCommand extends CommandBase<UserGetMeParams, UserGetMeResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -23,7 +24,7 @@ export class UserGetMeServerCommand extends CommandBase<UserGetMeParams, UserGet
 
     try {
       // Call session/get-user without targetSessionId - uses caller's auto-injected sessionId
-      const userResult = await Commands.execute<SessionGetUserParams, SessionGetUserResult>('session/get-user', {}) as SessionGetUserResult;
+      const userResult = await SessionGetUser.execute({}) as SessionGetUserResult;
 
       if (!userResult.success || !userResult.user) {
         return transformPayload(getMeParams, {

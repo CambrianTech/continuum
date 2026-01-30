@@ -11,11 +11,13 @@ import type { PersonaGenomeParams, PersonaGenomeResult, LayerInfo } from '../sha
 import { createPersonaGenomeResultFromParams } from '../shared/PersonaGenomeTypes';
 import { Commands } from '@system/core/shared/Commands';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
-import type { DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { GenomeEntity } from '@system/genome/entities/GenomeEntity';
 import type { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 
+import { DataRead } from '../../../data/read/shared/DataReadTypes';
 export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams, PersonaGenomeResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -52,9 +54,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
       }
 
       // Look up the persona
-      const personaResult = await Commands.execute<any, DataReadResult<UserEntity>>(
-        'data/read',
-        {
+      const personaResult = await DataRead.execute<UserEntity>({
           collection: COLLECTIONS.USERS,
           id: personaId,
         }
@@ -100,9 +100,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
       }
 
       // Load the genome
-      const genomeResult = await Commands.execute<any, DataReadResult<GenomeEntity>>(
-        'data/read',
-        {
+      const genomeResult = await DataRead.execute<GenomeEntity>({
           collection: 'genomes',
           id: persona.genomeId,
         }
@@ -134,9 +132,7 @@ export class PersonaGenomeServerCommand extends CommandBase<PersonaGenomeParams,
       const traits = new Set<string>();
 
       for (const layerRef of genome.layers) {
-        const layerResult = await Commands.execute<any, DataReadResult<GenomeLayerEntity>>(
-          'data/read',
-          {
+        const layerResult = await DataRead.execute<GenomeLayerEntity>({
             collection: 'genome_layers',
             id: layerRef.layerId,
           }

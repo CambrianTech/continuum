@@ -44,7 +44,8 @@ export interface RustVectorSearchResponse {
 /**
  * Rust Vector Search Client - Fast native vector search
  *
- * Singleton pattern for connection reuse.
+ * Singleton pattern with PERSISTENT CONNECTION for maximum throughput.
+ * Request queue serializes concurrent requests over single socket.
  */
 export class RustVectorSearchClient {
   private static _instance: RustVectorSearchClient | null = null;
@@ -58,6 +59,26 @@ export class RustVectorSearchClient {
   private _available: boolean | null = null;
   private _lastAvailabilityCheck: number = 0;
   private static readonly AVAILABILITY_CACHE_MS = 5000;
+
+  // Persistent connection
+  private socket: net.Socket | null = null;
+  private buffer: string = '';
+  private isConnecting: boolean = false;
+  private connectPromise: Promise<void> | null = null;
+
+  // Serialized request queue (one at a time over persistent connection)
+  private requestQueue: Array<{
+    request: Record<string, any>;
+    timeout: number;
+    resolve: (value: RustResponse) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  private isProcessingQueue: boolean = false;
+  private currentRequest: {
+    resolve: (value: RustResponse) => void;
+    reject: (error: Error) => void;
+    timeoutHandle: NodeJS.Timeout;
+  } | null = null;
 
   private constructor(socketPath: string = DEFAULT_SOCKET_PATH) {
     this.socketPath = socketPath;
@@ -203,69 +224,177 @@ export class RustVectorSearchClient {
   }
 
   // ============================================================================
+  // Connection Management (Persistent)
+  // ============================================================================
+
+  /**
+   * Ensure persistent connection is established
+   */
+  private async ensureConnected(): Promise<void> {
+    if (this.socket && !this.socket.destroyed) {
+      return; // Already connected
+    }
+
+    if (this.isConnecting && this.connectPromise) {
+      return this.connectPromise; // Wait for existing connection attempt
+    }
+
+    this.isConnecting = true;
+    this.connectPromise = new Promise((resolve, reject) => {
+      const socket = net.createConnection(this.socketPath);
+
+      const connectTimeout = setTimeout(() => {
+        socket.destroy();
+        this.isConnecting = false;
+        reject(new Error(`Connection timeout after 10s`));
+      }, 10000);
+
+      socket.on('connect', () => {
+        clearTimeout(connectTimeout);
+        this.socket = socket;
+        this.isConnecting = false;
+        this.setupSocketHandlers();
+        log.info('Persistent connection established to Rust worker');
+        resolve();
+      });
+
+      socket.on('error', (err) => {
+        clearTimeout(connectTimeout);
+        this.isConnecting = false;
+        reject(err);
+      });
+    });
+
+    return this.connectPromise;
+  }
+
+  /**
+   * Set up socket event handlers for persistent connection
+   */
+  private setupSocketHandlers(): void {
+    if (!this.socket) return;
+
+    this.socket.on('data', (data) => {
+      this.buffer += data.toString();
+      this.processBuffer();
+    });
+
+    this.socket.on('error', (err) => {
+      log.error(`Socket error: ${err.message}`);
+      this.handleDisconnect();
+    });
+
+    this.socket.on('close', () => {
+      log.warn('Socket closed, will reconnect on next request');
+      this.handleDisconnect();
+    });
+  }
+
+  /**
+   * Process buffered data - resolve current request
+   */
+  private processBuffer(): void {
+    const lines = this.buffer.split('\n');
+    this.buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const response = JSON.parse(line);
+        // Resolve current request (serialized - one at a time)
+        if (this.currentRequest) {
+          clearTimeout(this.currentRequest.timeoutHandle);
+          this.currentRequest.resolve(response);
+          this.currentRequest = null;
+          // Process next in queue
+          this.processQueue();
+        }
+      } catch (error) {
+        log.error(`Failed to parse response: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Handle disconnection - reject all pending requests
+   */
+  private handleDisconnect(): void {
+    this.socket = null;
+    // Reject current request
+    if (this.currentRequest) {
+      clearTimeout(this.currentRequest.timeoutHandle);
+      this.currentRequest.reject(new Error('Connection lost'));
+      this.currentRequest = null;
+    }
+    // Reject queued requests
+    for (const queued of this.requestQueue) {
+      queued.reject(new Error('Connection lost'));
+    }
+    this.requestQueue = [];
+    this.isProcessingQueue = false;
+  }
+
+  /**
+   * Process next request in queue
+   */
+  private async processQueue(): Promise<void> {
+    if (this.isProcessingQueue || this.requestQueue.length === 0) return;
+    if (this.currentRequest) return; // Wait for current to complete
+
+    this.isProcessingQueue = true;
+
+    while (this.requestQueue.length > 0) {
+      const next = this.requestQueue.shift()!;
+
+      try {
+        await this.ensureConnected();
+
+        const timeoutHandle = setTimeout(() => {
+          if (this.currentRequest) {
+            this.currentRequest.reject(new Error(`Request timeout: ${next.request.command}`));
+            this.currentRequest = null;
+            this.processQueue();
+          }
+        }, next.timeout);
+
+        this.currentRequest = {
+          resolve: next.resolve,
+          reject: next.reject,
+          timeoutHandle
+        };
+
+        this.socket!.write(JSON.stringify(next.request) + '\n');
+        // Wait for response (processBuffer will call resolve)
+        await new Promise<void>((resolve) => {
+          const checkDone = setInterval(() => {
+            if (!this.currentRequest) {
+              clearInterval(checkDone);
+              resolve();
+            }
+          }, 1);
+        });
+      } catch (error) {
+        next.reject(error as Error);
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+
+  // ============================================================================
   // Private Methods
   // ============================================================================
 
   /**
-   * Send request to Rust worker via Unix socket
+   * Send request to Rust worker via persistent Unix socket
    *
-   * Uses one-shot connection per request to avoid concurrency issues.
-   * Simple and reliable - each request gets its own socket.
+   * Uses serialized request queue over persistent connection.
+   * Connection is reused across requests - eliminates connection setup overhead.
    */
   private async sendRequest(request: Record<string, any>, timeout: number = 30000): Promise<RustResponse> {
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
-      let buffer = '';
-      let responded = false;
-
-      const timeoutHandle = setTimeout(() => {
-        if (!responded) {
-          responded = true;
-          socket.destroy();
-          reject(new Error(`Request timeout: ${request.command}`));
-        }
-      }, timeout);
-
-      socket.on('connect', () => {
-        socket.write(JSON.stringify(request) + '\n');
-      });
-
-      socket.on('data', (data) => {
-        buffer += data.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const response: RustResponse = JSON.parse(line);
-            if (!responded) {
-              responded = true;
-              clearTimeout(timeoutHandle);
-              socket.destroy();
-              resolve(response);
-            }
-          } catch (error) {
-            log.error(`Failed to parse response: ${error}`);
-          }
-        }
-      });
-
-      socket.on('error', (error) => {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeoutHandle);
-          reject(error);
-        }
-      });
-
-      socket.on('close', () => {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeoutHandle);
-          reject(new Error('Connection closed'));
-        }
-      });
+      this.requestQueue.push({ request, timeout, resolve, reject });
+      this.processQueue();
     });
   }
 }

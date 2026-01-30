@@ -5,9 +5,10 @@
  * Supports bidirectional navigation and random access
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { CodeSearchResult } from '../../query-open/shared/RagQueryOpenTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for fetching results from a query handle
@@ -86,3 +87,17 @@ export interface RagQueryFetchResult extends CommandResult {
   readonly hasMore: boolean;      // Can go forward
   readonly hasPrevious: boolean;  // Can go backward
 }
+
+/**
+ * RagQueryFetch — Type-safe command executor
+ *
+ * Usage:
+ *   import { RagQueryFetch } from '...shared/RagQueryFetchTypes';
+ *   const result = await RagQueryFetch.execute({ ... });
+ */
+export const RagQueryFetch = {
+  execute(params: CommandInput<RagQueryFetchParams>): Promise<RagQueryFetchResult> {
+    return Commands.execute<RagQueryFetchParams, RagQueryFetchResult>('ai/rag/query-fetch', params as Partial<RagQueryFetchParams>);
+  },
+  commandName: 'ai/rag/query-fetch' as const,
+} as const;

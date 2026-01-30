@@ -7,11 +7,13 @@
  *
  * Phase 1: Skeleton (ping-pong)
  * Phase 2: Mock evaluation
- * Phase 3: Real Ollama inference
+ * Phase 3: Real Candle (native Rust) inference
+ *
+ * NOTE: Ollama is REMOVED. Candle is the ONLY local inference path.
  */
 
 import { parentPort, workerData } from 'worker_threads';
-import { OllamaAdapter } from '../../daemons/ai-provider-daemon/adapters/ollama/shared/OllamaAdapter';
+import { CandleGrpcAdapter } from '../../daemons/ai-provider-daemon/adapters/candle-grpc/shared/CandleGrpcAdapter';
 import type { BaseAIProviderAdapter } from '../../daemons/ai-provider-daemon/shared/BaseAIProviderAdapter';
 
 if (!parentPort) {
@@ -20,7 +22,7 @@ if (!parentPort) {
 
 const personaId: string = workerData.personaId;
 const providerType: string = workerData.providerType || 'mock';
-const providerConfig: Record<string, unknown> = workerData.providerConfig || {};
+const _providerConfig: Record<string, unknown> = workerData.providerConfig || {};
 
 console.log(`🧵 PersonaWorker[${personaId}]: Starting...`);
 console.log(`🧵 PersonaWorker[${personaId}]: Provider type: ${providerType}`);
@@ -29,16 +31,14 @@ console.log(`🧵 PersonaWorker[${personaId}]: Provider type: ${providerType}`);
 let provider: BaseAIProviderAdapter | null = null;
 
 async function initializeProvider(): Promise<void> {
-  if (providerType === 'ollama') {
-    console.log(`🧵 PersonaWorker[${personaId}]: Initializing OllamaAdapter...`);
+  // 'candle' or legacy 'ollama' both use Candle now
+  if (providerType === 'candle' || providerType === 'ollama' || providerType === 'local') {
+    console.log(`🧵 PersonaWorker[${personaId}]: Initializing CandleGrpcAdapter...`);
 
-    const adapter = new OllamaAdapter({
-      apiEndpoint: (providerConfig.apiEndpoint as string) || 'http://localhost:11434',
-      defaultModel: (providerConfig.model as string) || 'llama3.2:1b'
-    });
+    const adapter = new CandleGrpcAdapter();
     await adapter.initialize();
     provider = adapter;
-    console.log(`✅ PersonaWorker[${personaId}]: OllamaAdapter initialized`);
+    console.log(`✅ PersonaWorker[${personaId}]: CandleGrpcAdapter initialized`);
   }
 }
 
@@ -97,7 +97,7 @@ REASONING: <brief explanation>`;
             messages: [
               { role: 'user', content: prompt }
             ],
-            model: (providerConfig.model as string) || 'llama3.2:1b',
+            model: (_providerConfig.model as string) || 'llama3.2:1b',
             temperature: 0.7,
             maxTokens: 200
           });

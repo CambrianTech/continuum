@@ -12,6 +12,7 @@ import type { DataListResult } from '../../../../commands/data/list/shared/DataL
 import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import type { UserStateEntity } from '../../../../system/data/entities/UserStateEntity';
 
+import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
 export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSetResult> {
   private themeStyleElement: HTMLStyleElement | null = null;
 
@@ -188,7 +189,7 @@ export class ThemeSetBrowserCommand extends CommandBase<ThemeSetParams, ThemeSet
 
       // Update existing UserState's preferences
       const { DATA_COMMANDS } = await import('../../../data/shared/DataCommandConstants');
-      await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<UserStateEntity>({
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',

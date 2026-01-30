@@ -11,7 +11,13 @@ use crate::utils::audio::i16_to_f32;
 /// This is the ONLY function IPC should call for STT.
 /// All STT logic, initialization, error handling happens here.
 ///
-/// This is a synchronous wrapper that creates its own runtime if needed.
+/// This is a synchronous wrapper that creates its own tokio runtime.
+///
+/// IMPORTANT: Always creates a NEW runtime. IPC handler threads are spawned
+/// via std::thread::spawn from within #[tokio::main], so they inherit the
+/// global runtime handle. Calling handle.block_on() from such threads panics
+/// with "Cannot block the current thread from within a runtime". Creating a
+/// fresh runtime avoids this entirely.
 ///
 /// # Arguments
 /// * `samples` - Audio samples as i16 PCM, 16kHz mono
@@ -23,23 +29,11 @@ pub fn transcribe_speech_sync(
     // Convert i16 to f32 for STT
     let f32_samples = i16_to_f32(samples);
 
-    // Try to use existing runtime, or create one
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            // We're in an async context, use it
-            handle.block_on(async {
-                transcribe_speech_impl(f32_samples, language).await
-            })
-        },
-        Err(_) => {
-            // No runtime, create one
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| STTError::InferenceFailed(format!("Failed to create runtime: {}", e)))?;
-            rt.block_on(async {
-                transcribe_speech_impl(f32_samples, language).await
-            })
-        }
-    }
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| STTError::InferenceFailed(format!("Failed to create runtime: {}", e)))?;
+    rt.block_on(async {
+        transcribe_speech_impl(f32_samples, language).await
+    })
 }
 
 async fn transcribe_speech_impl(

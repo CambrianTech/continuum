@@ -4,10 +4,11 @@
  * Discover and display help documentation from command READMEs, auto-generating templates for gaps
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../system/core/shared/Commands';
 
 /**
  * A discovered help topic (command group or individual command)
@@ -112,3 +113,17 @@ export const createHelpResultFromParams = (
   params: HelpParams,
   differences: Omit<HelpResult, 'context' | 'sessionId'>
 ): HelpResult => transformPayload(params, differences);
+
+/**
+ * Help — Type-safe command executor
+ *
+ * Usage:
+ *   import { Help } from '...shared/HelpTypes';
+ *   const result = await Help.execute({ ... });
+ */
+export const Help = {
+  execute(params: CommandInput<HelpParams>): Promise<HelpResult> {
+    return Commands.execute<HelpParams, HelpResult>('help', params as Partial<HelpParams>);
+  },
+  commandName: 'help' as const,
+} as const;

@@ -1,3 +1,4 @@
+import type { CommandInput } from '../../../../system/core/types/JTAGTypes';
 // ISSUES: 0 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 /**
@@ -22,6 +23,7 @@
 import { CommandParams, CommandResult, createPayload, type JTAGContext } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface CompileTypescriptParams extends CommandParams {
   readonly source: string;
@@ -80,3 +82,16 @@ export const createCompileTypescriptResult = (
   timestamp: new Date().toISOString(),
   ...data
 });
+/**
+ * CompileTypescript — Type-safe command executor
+ *
+ * Usage:
+ *   import { CompileTypescript } from '...shared/CompileTypescriptTypes';
+ *   const result = await CompileTypescript.execute({ ... });
+ */
+export const CompileTypescript = {
+  execute(params: CommandInput<CompileTypescriptParams>): Promise<CompileTypescriptResult> {
+    return Commands.execute<CompileTypescriptParams, CompileTypescriptResult>('development/compile-typescript', params as Partial<CompileTypescriptParams>);
+  },
+  commandName: 'development/compile-typescript' as const,
+} as const;

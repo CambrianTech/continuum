@@ -17,6 +17,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection, RAGCompositionResult } from './RAGSource';
 import { Logger } from '../../core/logging/Logger';
+import { TimingHarness } from '../../core/shared/TimingHarness';
 
 const log = Logger.create('RAGComposer', 'rag');
 
@@ -63,7 +64,10 @@ export class RAGComposer {
    * @returns Composition result with all sections
    */
   async compose(context: RAGSourceContext): Promise<RAGCompositionResult> {
-    const startTime = performance.now();
+    const timer = TimingHarness.start('rag/compose', 'rag');
+    timer.setMeta('personaId', context.personaId || 'unknown');
+    timer.setMeta('roomId', context.roomId || 'unknown');
+    timer.setMeta('totalBudget', context.totalBudget);
 
     // 1. Filter to applicable sources
     const applicableSources: RAGSource[] = [];
@@ -76,29 +80,37 @@ export class RAGComposer {
         skippedSources.push(source.name);
       }
     }
+    timer.mark('filter_sources');
+    timer.setMeta('applicableSources', applicableSources.length);
+    timer.setMeta('skippedSources', skippedSources.length);
 
     log.debug(`RAG compose: ${applicableSources.length} applicable, ${skippedSources.length} skipped`);
 
     // 2. Allocate budget proportionally
     const budgetAllocations = this.allocateBudget(applicableSources, context.totalBudget);
+    timer.mark('allocate_budget');
 
     // 3. Load all sources in parallel (with per-source timing)
     const loadPromises = applicableSources.map(async (source, index) => {
       const allocated = budgetAllocations[index];
-      const sourceStartTime = performance.now();
+      const sourceTimer = TimingHarness.start(`rag/source/${source.name}`, 'rag');
+      sourceTimer.setMeta('budget', allocated);
       try {
         const section = await source.load(context, allocated);
-        const sourceLoadTime = performance.now() - sourceStartTime;
-        log.debug(`Source ${source.name} loaded in ${sourceLoadTime.toFixed(1)}ms`);
-        return { success: true as const, section, sourceName: source.name, loadTime: sourceLoadTime };
+        sourceTimer.mark('load');
+        sourceTimer.setMeta('tokenCount', section.tokenCount);
+        const record = sourceTimer.finish();
+        return { success: true as const, section, sourceName: source.name, loadTime: record.totalMs };
       } catch (error: any) {
-        const sourceLoadTime = performance.now() - sourceStartTime;
-        log.error(`RAG source ${source.name} failed after ${sourceLoadTime.toFixed(1)}ms: ${error.message}`);
-        return { success: false as const, source: source.name, error: error.message, loadTime: sourceLoadTime };
+        sourceTimer.setError(error.message);
+        const record = sourceTimer.finish();
+        log.error(`RAG source ${source.name} failed after ${record.totalMs.toFixed(1)}ms: ${error.message}`);
+        return { success: false as const, source: source.name, error: error.message, loadTime: record.totalMs };
       }
     });
 
     const results = await Promise.all(loadPromises);
+    timer.mark('load_sources');
 
     // Log slow sources (> 1 second)
     const slowSources = results.filter(r => r.loadTime > 1000);
@@ -117,17 +129,20 @@ export class RAGComposer {
         failedSources.push({ source: result.source, error: result.error });
       }
     }
+    timer.mark('collect_results');
 
     // Calculate totals
     const totalTokens = sections.reduce((sum, s) => sum + s.tokenCount, 0);
-    const totalLoadTimeMs = performance.now() - startTime;
+    timer.setMeta('totalTokens', totalTokens);
+    timer.setMeta('failedSources', failedSources.length);
 
-    log.info(`RAG composed: ${sections.length} sections, ${totalTokens} tokens, ${totalLoadTimeMs.toFixed(1)}ms`);
+    const record = timer.finish();
+    log.info(`RAG composed: ${sections.length} sections, ${totalTokens} tokens, ${record.totalMs.toFixed(1)}ms`);
 
     return {
       sections,
       totalTokens,
-      totalLoadTimeMs,
+      totalLoadTimeMs: record.totalMs,
       skippedSources,
       failedSources
     };

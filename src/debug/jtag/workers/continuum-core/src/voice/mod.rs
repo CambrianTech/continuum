@@ -1,3 +1,4 @@
+pub mod audio_buffer;
 pub mod audio_router;
 pub mod call_server;
 pub mod capabilities;

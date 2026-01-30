@@ -4,8 +4,9 @@
  * Common types and interfaces used by both browser and server screenshot implementations.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { MediaItem } from '@system/data/entities/ChatMessageEntity';
@@ -287,3 +288,17 @@ export interface ScreenshotMetadata {
   resolutionCount?: number;
   successfulCaptures?: number;
 }
+
+/**
+ * Screenshot — Type-safe command executor
+ *
+ * Usage:
+ *   import { Screenshot } from '@commands/interface/screenshot/shared/ScreenshotTypes';
+ *   const result = await Screenshot.execute({ querySelector: 'body', resultType: 'file' });
+ */
+export const Screenshot = {
+  execute(params: CommandInput<ScreenshotParams>): Promise<ScreenshotResult> {
+    return Commands.execute<ScreenshotParams, ScreenshotResult>('screenshot', params as Partial<ScreenshotParams>);
+  },
+  commandName: 'screenshot' as const,
+} as const;

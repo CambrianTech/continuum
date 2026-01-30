@@ -10,10 +10,11 @@
  * PersonaUser.create(), AgentUser.create(), or HumanUser.create()
  */
 
-import type { CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { UserEntity, UserCapabilities } from '../../../../system/data/entities/UserEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * User type discriminated union
@@ -92,3 +93,17 @@ export function createUserCreateResult(
     error: data.error
   });
 }
+
+/**
+ * UserCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { UserCreate } from '...shared/UserCreateTypes';
+ *   const result = await UserCreate.execute({ ... });
+ */
+export const UserCreate = {
+  execute(params: CommandInput<UserCreateParams>): Promise<UserCreateResult> {
+    return Commands.execute<UserCreateParams, UserCreateResult>('user/create', params as Partial<UserCreateParams>);
+  },
+  commandName: 'user/create' as const,
+} as const;

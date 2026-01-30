@@ -5,9 +5,10 @@
  * Handles session creation by routing to SessionDaemon internally.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { SessionCategory, SessionMetadata, EnhancedConnectionContext } from '../../../../daemons/session-daemon/shared/SessionTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Session create command parameters
@@ -78,3 +79,16 @@ export function createSessionCreateResult(
     error: data.error
   };
 }
+/**
+ * SessionCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { SessionCreate } from '...shared/SessionCreateTypes';
+ *   const result = await SessionCreate.execute({ ... });
+ */
+export const SessionCreate = {
+  execute(params: CommandInput<SessionCreateParams>): Promise<SessionCreateResult> {
+    return Commands.execute<SessionCreateParams, SessionCreateResult>('session/create', params as Partial<SessionCreateParams>);
+  },
+  commandName: 'session/create' as const,
+} as const;

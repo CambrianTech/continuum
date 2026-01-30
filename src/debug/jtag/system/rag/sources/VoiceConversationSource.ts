@@ -143,11 +143,11 @@ export class VoiceConversationSource implements RAGSource {
           personaId: context.personaId,
           speakerBreakdown: this.getSpeakerBreakdown(utterances),
           // Voice response style configuration - used by PersonaResponseGenerator
+          // NOTE: Don't limit tokens artificially - that causes robotic mid-sentence cutoffs
+          // Natural turn-taking handled by arbiter coordination, not hard limits
           responseStyle: {
             voiceMode: true,
-            maxTokens: 100,          // ~10-15 seconds of speech at 150 WPM
             conversational: true,
-            maxSentences: 3,
             preferQuestions: true,   // Ask clarifying questions vs long explanations
             avoidFormatting: true    // No bullet points, code blocks, markdown
           }
@@ -178,19 +178,15 @@ You are in a LIVE VOICE CONVERSATION. Your response will be spoken aloud via TTS
 
 **Session:** ${humanCount} human + ${aiCount} AI utterances
 
-**⚡ CRITICAL - VOICE RESPONSE RULES:**
+**VOICE CONVERSATION STYLE:**
 
-1. **MAXIMUM 2-3 SENTENCES** - This is voice, not text chat
-2. **NO FORMATTING** - No bullets, lists, code blocks, or markdown
-3. **SPEAK NATURALLY** - As if talking face-to-face
-4. **ASK, DON'T LECTURE** - "Want me to explain more?" vs long explanations
-5. **WAIT YOUR TURN** - Don't interrupt, let others finish
+1. **NO FORMATTING** - No bullets, lists, code blocks, or markdown
+2. **SPEAK NATURALLY** - As if talking face-to-face in a real conversation
+3. **CONVERSATIONAL FLOW** - Complete your thoughts naturally, don't cut off mid-sentence
+4. **BE RESPONSIVE** - Listen to what others are saying, engage with their points
+5. **NATURAL PACING** - Speak at a comfortable length, neither too brief nor too long
 
-❌ BAD: "There are several approaches. First, you could try X. Second, another option is Y. Third, you might also consider Z. Additionally, some people prefer..."
-
-✅ GOOD: "I'd suggest trying X first. Want me to walk through the other options?"
-
-Remember: 10 seconds of speech, not an essay.`;
+You may speak for as long as needed to complete your thought. Natural conversation has varying lengths.`;
   }
 
   /**

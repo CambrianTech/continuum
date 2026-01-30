@@ -6,7 +6,8 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Parameters for genome/batch-micro-tune command
@@ -76,3 +77,17 @@ export interface GenomeBatchMicroTuneResult extends CommandResult {
     };
   };
 }
+
+/**
+ * GenomeBatchMicroTune — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeBatchMicroTune } from '...shared/GenomeBatchMicroTuneTypes';
+ *   const result = await GenomeBatchMicroTune.execute({ ... });
+ */
+export const GenomeBatchMicroTune = {
+  execute(params: CommandInput<GenomeBatchMicroTuneParams>): Promise<GenomeBatchMicroTuneResult> {
+    return Commands.execute<GenomeBatchMicroTuneParams, GenomeBatchMicroTuneResult>('genome/batch-micro-tune', params as Partial<GenomeBatchMicroTuneParams>);
+  },
+  commandName: 'genome/batch-micro-tune' as const,
+} as const;

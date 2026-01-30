@@ -1,5 +1,6 @@
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * User Get Me Command - Get current user info
@@ -17,3 +18,17 @@ export interface UserGetMeResult extends CommandResult {
   readonly user?: UserEntity;
   readonly error?: string;
 }
+
+/**
+ * UserGetMe — Type-safe command executor
+ *
+ * Usage:
+ *   import { UserGetMe } from '...shared/UserGetMeTypes';
+ *   const result = await UserGetMe.execute({ ... });
+ */
+export const UserGetMe = {
+  execute(params: CommandInput<UserGetMeParams>): Promise<UserGetMeResult> {
+    return Commands.execute<UserGetMeParams, UserGetMeResult>('user/get-me', params as Partial<UserGetMeParams>);
+  },
+  commandName: 'user/get-me' as const,
+} as const;

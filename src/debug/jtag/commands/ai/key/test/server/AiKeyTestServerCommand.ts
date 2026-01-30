@@ -52,6 +52,16 @@ const PROVIDER_ENDPOINTS: Record<string, {
     testEndpoint: 'https://api.fireworks.ai/inference/v1/models',
     headerName: 'Authorization',
     headerPrefix: 'Bearer '
+  },
+  alibaba: {
+    testEndpoint: 'https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text-generation/generation',
+    headerName: 'Authorization',
+    headerPrefix: 'Bearer '
+  },
+  google: {
+    testEndpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    headerName: 'x-goog-api-key',
+    headerPrefix: ''
   }
 };
 
@@ -69,7 +79,9 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
     deepseek: 'DEEPSEEK_API_KEY',
     xai: 'XAI_API_KEY',
     together: 'TOGETHER_API_KEY',
-    fireworks: 'FIREWORKS_API_KEY'
+    fireworks: 'FIREWORKS_API_KEY',
+    alibaba: 'DASHSCOPE_API_KEY',  // Also check QWEN_API_KEY as fallback
+    google: 'GOOGLE_API_KEY',
   };
 
   async execute(params: AiKeyTestParams): Promise<AiKeyTestResult> {
@@ -91,6 +103,11 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
       if (envKey) {
         const secrets = SecretManager.getInstance();
         key = secrets.get(envKey) || '';
+
+        // Alibaba: also check QWEN_API_KEY as fallback
+        if (!key && provider === 'alibaba') {
+          key = secrets.get('QWEN_API_KEY') || '';
+        }
       }
     }
 
@@ -124,6 +141,17 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
           model: 'claude-3-haiku-20240307',
           max_tokens: 1,
           messages: [{ role: 'user', content: 'test' }]
+        })
+      });
+    } else if (provider === 'alibaba') {
+      // DashScope uses POST with model in request body
+      response = await fetch(config.testEndpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: 'qwen-turbo',
+          input: { messages: [{ role: 'user', content: 'test' }] },
+          parameters: { max_tokens: 1 }
         })
       });
     } else {

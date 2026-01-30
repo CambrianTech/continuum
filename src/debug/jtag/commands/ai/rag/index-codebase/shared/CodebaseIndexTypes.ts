@@ -5,8 +5,9 @@
  * for semantic code search via RAG
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { CodeExportType } from '../../../../../system/data/entities/CodeIndexEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for rag/index-codebase command
@@ -76,3 +77,17 @@ export interface CodebaseIndexResult extends CommandResult {
   /** Warnings */
   readonly warnings?: string[];
 }
+
+/**
+ * CodebaseIndex — Type-safe command executor
+ *
+ * Usage:
+ *   import { CodebaseIndex } from '...shared/CodebaseIndexTypes';
+ *   const result = await CodebaseIndex.execute({ ... });
+ */
+export const CodebaseIndex = {
+  execute(params: CommandInput<CodebaseIndexParams>): Promise<CodebaseIndexResult> {
+    return Commands.execute<CodebaseIndexParams, CodebaseIndexResult>('ai/rag/index-codebase', params as Partial<CodebaseIndexParams>);
+  },
+  commandName: 'ai/rag/index-codebase' as const,
+} as const;

@@ -48,14 +48,14 @@ impl VoiceOrchestrator {
     /// Each AI will decide if they want to respond via their own logic
     pub fn on_utterance(&self, event: UtteranceEvent) -> Vec<Uuid> {
         println!("🎙️ VoiceOrchestrator: Utterance from {}: \"{}...\"",
-                 event.speaker_name, &event.transcript[..event.transcript.len().min(50)]);
+                 event.speaker_name, crate::voice::tts::truncate_str(&event.transcript, 50));
 
         // Get context
         let mut contexts = self.session_contexts.lock().unwrap();
         let context = match contexts.get_mut(&event.session_id) {
             Some(ctx) => ctx,
             None => {
-                println!("🎙️ VoiceOrchestrator: No context for session {}", &event.session_id.to_string()[..8]);
+                println!("🎙️ VoiceOrchestrator: No context for session {}", crate::voice::tts::truncate_str(&event.session_id.to_string(), 8));
                 return Vec::new();
             }
         };

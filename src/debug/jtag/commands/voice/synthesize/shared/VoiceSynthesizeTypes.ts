@@ -4,10 +4,11 @@
  * Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Voice Synthesize Command Parameters
@@ -117,3 +118,17 @@ export const createVoiceSynthesizeResultFromParams = (
   params: VoiceSynthesizeParams,
   differences: Omit<VoiceSynthesizeResult, 'context' | 'sessionId'>
 ): VoiceSynthesizeResult => transformPayload(params, differences);
+
+/**
+ * VoiceSynthesize — Type-safe command executor
+ *
+ * Usage:
+ *   import { VoiceSynthesize } from '...shared/VoiceSynthesizeTypes';
+ *   const result = await VoiceSynthesize.execute({ ... });
+ */
+export const VoiceSynthesize = {
+  execute(params: CommandInput<VoiceSynthesizeParams>): Promise<VoiceSynthesizeResult> {
+    return Commands.execute<VoiceSynthesizeParams, VoiceSynthesizeResult>('voice/synthesize', params as Partial<VoiceSynthesizeParams>);
+  },
+  commandName: 'voice/synthesize' as const,
+} as const;

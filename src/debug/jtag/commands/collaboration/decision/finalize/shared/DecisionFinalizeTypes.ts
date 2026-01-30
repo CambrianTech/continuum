@@ -4,11 +4,12 @@
  * Close voting and calculate winner using ranked-choice voting
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { RoundResult } from '@system/data/entities/DecisionEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Decision Finalize Command Parameters
@@ -94,3 +95,17 @@ export const createDecisionFinalizeResultFromParams = (
   params: DecisionFinalizeParams,
   differences: Omit<DecisionFinalizeResult, 'context' | 'sessionId'>
 ): DecisionFinalizeResult => transformPayload(params, differences);
+
+/**
+ * DecisionFinalize — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionFinalize } from '...shared/DecisionFinalizeTypes';
+ *   const result = await DecisionFinalize.execute({ ... });
+ */
+export const DecisionFinalize = {
+  execute(params: CommandInput<DecisionFinalizeParams>): Promise<DecisionFinalizeResult> {
+    return Commands.execute<DecisionFinalizeParams, DecisionFinalizeResult>('collaboration/decision/finalize', params as Partial<DecisionFinalizeParams>);
+  },
+  commandName: 'collaboration/decision/finalize' as const,
+} as const;

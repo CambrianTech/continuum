@@ -4,10 +4,11 @@
  * Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../../system/core/shared/Commands';
 
 /**
  * Persona Learning Pattern Endorse Command Parameters
@@ -106,3 +107,17 @@ export const createPersonaLearningPatternEndorseResultFromParams = (
   params: PersonaLearningPatternEndorseParams,
   differences: Omit<PersonaLearningPatternEndorseResult, 'context' | 'sessionId'>
 ): PersonaLearningPatternEndorseResult => transformPayload(params, differences);
+
+/**
+ * PersonaLearningPatternEndorse — Type-safe command executor
+ *
+ * Usage:
+ *   import { PersonaLearningPatternEndorse } from '...shared/PersonaLearningPatternEndorseTypes';
+ *   const result = await PersonaLearningPatternEndorse.execute({ ... });
+ */
+export const PersonaLearningPatternEndorse = {
+  execute(params: CommandInput<PersonaLearningPatternEndorseParams>): Promise<PersonaLearningPatternEndorseResult> {
+    return Commands.execute<PersonaLearningPatternEndorseParams, PersonaLearningPatternEndorseResult>('persona/learning/pattern/endorse', params as Partial<PersonaLearningPatternEndorseParams>);
+  },
+  commandName: 'persona/learning/pattern/endorse' as const,
+} as const;

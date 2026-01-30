@@ -5,8 +5,9 @@
  * Supports environment-specific triggers and multi-level error testing.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Error trigger types for comprehensive testing
@@ -120,3 +121,16 @@ export function createTestErrorResult(
     ...result
   };
 }
+/**
+ * TestError — Type-safe command executor
+ *
+ * Usage:
+ *   import { TestError } from '...shared/TestErrorTypes';
+ *   const result = await TestError.execute({ ... });
+ */
+export const TestError = {
+  execute(params: CommandInput<TestErrorParams>): Promise<TestErrorResult> {
+    return Commands.execute<TestErrorParams, TestErrorResult>('development/debug/error', params as Partial<TestErrorParams>);
+  },
+  commandName: 'development/debug/error' as const,
+} as const;

@@ -4,11 +4,12 @@
  * Create a new governance proposal with voting options
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DecisionOption } from '@system/data/entities/DecisionEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Decision Create Command Parameters
@@ -119,3 +120,17 @@ export const createDecisionCreateResultFromParams = (
   params: DecisionCreateParams,
   differences: Omit<DecisionCreateResult, 'context' | 'sessionId'>
 ): DecisionCreateResult => transformPayload(params, differences);
+
+/**
+ * DecisionCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionCreate } from '...shared/DecisionCreateTypes';
+ *   const result = await DecisionCreate.execute({ ... });
+ */
+export const DecisionCreate = {
+  execute(params: CommandInput<DecisionCreateParams>): Promise<DecisionCreateResult> {
+    return Commands.execute<DecisionCreateParams, DecisionCreateResult>('collaboration/decision/create', params as Partial<DecisionCreateParams>);
+  },
+  commandName: 'collaboration/decision/create' as const,
+} as const;

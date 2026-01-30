@@ -8,6 +8,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { UserEntity } from '../../system/data/entities/UserEntity';
 import type { UserCreateResult } from '../../commands/user/create/shared/UserCreateTypes';
+import { DATA_COMMANDS } from '../../commands/data/shared/DataCommandConstants';
 
 const execAsync = promisify(exec);
 
@@ -145,6 +146,64 @@ export async function updatePersonaConfig(userId: string, config: any): Promise<
     }
   } catch (error: any) {
     console.error(`  ❌ Failed to update persona config: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Update user's modelConfig.provider field
+ * Used when seeding to ensure existing users get updated providers
+ */
+export async function updateUserModelConfig(
+  userId: string,
+  provider: string
+): Promise<boolean> {
+  const updateData = { modelConfig: { provider } };
+  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const result = JSON.parse(stdout);
+
+    if (result.success) {
+      console.log(`  ✅ Updated modelConfig.provider to '${provider}' for user ${userId.slice(0, 8)}...`);
+      return true;
+    } else {
+      console.error(`  ❌ Failed to update modelConfig: ${result.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`  ❌ Failed to update modelConfig: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Update user metadata with audio-native model info
+ * Sets modelId and isAudioNative flags for VoiceOrchestrator routing
+ */
+export async function updateUserMetadata(
+  userId: string,
+  metadata: { modelId?: string; isAudioNative?: boolean }
+): Promise<boolean> {
+  const updateData = { metadata };
+  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
+
+  try {
+    const { stdout } = await execAsync(cmd);
+    const result = JSON.parse(stdout);
+
+    if (result.success) {
+      console.log(`  ✅ Updated metadata for user ${userId.slice(0, 8)}... (modelId: ${metadata.modelId})`);
+      return true;
+    } else {
+      console.error(`  ❌ Failed to update metadata: ${result.error || 'Unknown error'}`);
+      return false;
+    }
+  } catch (error: any) {
+    console.error(`  ❌ Failed to update metadata: ${error.message}`);
     return false;
   }
 }

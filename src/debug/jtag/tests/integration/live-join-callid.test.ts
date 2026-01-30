@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { Commands } from '../../system/core/shared/Commands';
 import type { LiveJoinParams, LiveJoinResult } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 
+import { LiveJoin } from '../../commands/collaboration/live/join/shared/LiveJoinTypes';
 describe('LiveJoin callId integration', () => {
   beforeAll(async () => {
     // Give system time to start
@@ -16,7 +17,7 @@ describe('LiveJoin callId integration', () => {
   });
 
   it('should return callId that matches CallEntity.id', async () => {
-    const result = await Commands.execute<LiveJoinParams, LiveJoinResult>('collaboration/live/join', {
+    const result = await LiveJoin.execute({
       entityId: 'general'  // Use general room
     });
 
@@ -34,7 +35,7 @@ describe('LiveJoin callId integration', () => {
   });
 
   it('should NOT return JTAG sessionId as callId', async () => {
-    const result = await Commands.execute<LiveJoinParams, LiveJoinResult>('collaboration/live/join', {
+    const result = await LiveJoin.execute({
       entityId: 'general'
     });
 

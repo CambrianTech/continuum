@@ -6,21 +6,17 @@
  *
  * Usage:
  *   // Type-safe! params and result types inferred automatically
- *   const result = await Commands.execute('screenshot', { querySelector: 'body' });
+ *   const result = await Screenshot.execute({ querySelector: 'body' });
  *
  *   // IntelliSense shows all available commands
- *   await Commands.execute('file/save', { filepath: 'test.txt', content: 'hello' });
+ *   await FileSave.execute({ filepath: 'test.txt', content: 'hello' });
  */
 
 import { JTAGClient } from '../client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../types/JTAGTypes';
-import type {
-  CommandName,
-  CommandInputFor,
-  CommandResultFor,
-  CommandParamsFor
-} from '../client/shared/CommandRegistry';
 
+import { Screenshot } from '../../../commands/interface/screenshot/shared/ScreenshotTypes';
+import { FileSave } from '../../../commands/file/save/shared/FileSaveTypes';
 export class Commands {
   /**
    * Execute a command with full type safety

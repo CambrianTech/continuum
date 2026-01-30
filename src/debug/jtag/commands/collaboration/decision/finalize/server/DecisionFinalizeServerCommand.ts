@@ -14,11 +14,17 @@ import { Events } from '@system/core/shared/Events';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 import type { UserEntity } from '@system/data/entities/UserEntity';
-import type { DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
 
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { ChatSend } from '../../../chat/send/shared/ChatSendTypes';
 export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeParams, DecisionFinalizeResult> {
   private log = Logger.create('DecisionFinalizeServerCommand', 'tools');
 
@@ -33,7 +39,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Get proposal
-    const proposalResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+    const proposalResult = await DataRead.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId
     });
@@ -66,7 +72,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Get total eligible voters (all AIs for now)
-    const usersResult = await Commands.execute<any, DataListResult<UserEntity>>(DATA_COMMANDS.LIST, {
+    const usersResult = await DataList.execute<UserEntity>({
       collection: COLLECTIONS.USERS,
       filter: { type: { $in: ['agent', 'persona'] } },
       limit: 100
@@ -84,7 +90,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
     }
 
     // Update proposal status to concluded
-    await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+    await DataUpdate.execute<DecisionProposalEntity>({
       collection: COLLECTIONS.DECISION_PROPOSALS,
       id: params.proposalId,
       data: {
@@ -129,7 +135,7 @@ export class DecisionFinalizeServerCommand extends CommandBase<DecisionFinalizeP
 
 Proposal ID: ${params.proposalId}`;
 
-    await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+    await ChatSend.execute({
       message: announcementMessage,
       room: 'general'
     });

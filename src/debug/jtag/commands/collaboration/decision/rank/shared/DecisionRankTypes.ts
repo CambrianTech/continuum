@@ -4,7 +4,8 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface DecisionRankParams extends CommandParams {
   proposalId: UUID;
@@ -23,3 +24,17 @@ export interface DecisionRankResult extends CommandResult {
   };
   error?: string;
 }
+
+/**
+ * DecisionRank — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionRank } from '...shared/DecisionRankTypes';
+ *   const result = await DecisionRank.execute({ ... });
+ */
+export const DecisionRank = {
+  execute(params: CommandInput<DecisionRankParams>): Promise<DecisionRankResult> {
+    return Commands.execute<DecisionRankParams, DecisionRankResult>('collaboration/decision/rank', params as Partial<DecisionRankParams>);
+  },
+  commandName: 'collaboration/decision/rank' as const,
+} as const;

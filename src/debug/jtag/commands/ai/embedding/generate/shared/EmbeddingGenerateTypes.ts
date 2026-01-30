@@ -4,7 +4,8 @@
  * Low-level primitive for generating embeddings from text
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for ai/embedding/generate command
@@ -51,3 +52,17 @@ export interface EmbeddingGenerateResult extends CommandResult {
     totalTokens: number;
   };
 }
+
+/**
+ * EmbeddingGenerate — Type-safe command executor
+ *
+ * Usage:
+ *   import { EmbeddingGenerate } from '...shared/EmbeddingGenerateTypes';
+ *   const result = await EmbeddingGenerate.execute({ ... });
+ */
+export const EmbeddingGenerate = {
+  execute(params: CommandInput<EmbeddingGenerateParams>): Promise<EmbeddingGenerateResult> {
+    return Commands.execute<EmbeddingGenerateParams, EmbeddingGenerateResult>('ai/embedding/generate', params as Partial<EmbeddingGenerateParams>);
+  },
+  commandName: 'ai/embedding/generate' as const,
+} as const;

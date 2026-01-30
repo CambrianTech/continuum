@@ -18,8 +18,8 @@ import { PARAMETER_RANGES, type JobConfiguration } from '../../../../daemons/dat
 import { COLLECTIONS, FINE_TUNING_PROVIDERS } from '../../../../system/shared/Constants';
 import { Commands } from '../../../../system/core/shared/Commands';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import type { DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
-import type { DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../../commands/data/update/shared/DataUpdateTypes';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
@@ -27,6 +27,8 @@ import type { LoRATrainingRequest, TrainingDataset } from '../../../../system/ge
 import { getSecret } from '../../../../system/secrets/SecretManager';
 import * as fs from 'fs';
 
+import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
 /**
  * Create fine-tuning adapter instance for a given provider
  * Fire-and-forget pattern - instantiate when needed, let it handle persistence
@@ -246,7 +248,7 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       }
 
       // 6. Save to database
-      const createResult = await Commands.execute<any, DataCreateResult<FineTuningJobEntity>>(DATA_COMMANDS.CREATE, {
+      const createResult = await DataCreate.execute<FineTuningJobEntity>({
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         data: jobEntity
       });
@@ -286,10 +288,10 @@ export class GenomeJobCreateServerCommand extends CommandBase<
 
       if (!trainingResult.success) {
         // Training failed - update job status
-        await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
+        await DataUpdate.execute<FineTuningJobEntity>({
           collection: COLLECTIONS.FINE_TUNING_JOBS,
           id: jobId,
-          updates: {
+          data: {
             status: 'failed',
             error: {
               code: 'TRAINING_START_FAILED',
@@ -309,10 +311,10 @@ export class GenomeJobCreateServerCommand extends CommandBase<
       console.log(`✅ GENOME JOB CREATE: Training started, session ID: ${trainingResult.modelId}`);
 
       // Update job entity with training session info
-      await Commands.execute<any, DataUpdateResult<FineTuningJobEntity>>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<FineTuningJobEntity>({
         collection: COLLECTIONS.FINE_TUNING_JOBS,
         id: jobId,
-        updates: {
+        data: {
           status: 'running',
           providerJobId: trainingResult.modelId || jobEntity.providerJobId,
           startedAt: Date.now(),

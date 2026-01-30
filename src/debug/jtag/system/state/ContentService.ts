@@ -25,6 +25,9 @@ import type { StateContentSwitchParams, StateContentSwitchResult } from '../../c
 import type { StateContentCloseParams, StateContentCloseResult } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 import { getRecipeLayoutService } from '../recipes/browser/RecipeLayoutService';
 
+import { ContentOpen } from '../../commands/collaboration/content/open/shared/ContentOpenTypes';
+import { StateContentSwitch } from '../../commands/state/content/switch/shared/StateContentSwitchTypes';
+import { StateContentClose } from '../../commands/state/content/close/shared/StateContentCloseTypes';
 // Map content types to their associated entity collections
 const CONTENT_TYPE_COLLECTIONS: Record<string, string> = {
   chat: 'chat_messages',
@@ -117,7 +120,7 @@ class ContentServiceImpl {
 
     // 6. Persist to server (background, non-blocking)
     if (this.currentUserId) {
-      Commands.execute<ContentOpenParams, ContentOpenResult>('collaboration/content/open', {
+      ContentOpen.execute({
         userId: this.currentUserId,
         contentType: contentType as ContentType,
         entityId: entityId as UUID,
@@ -166,7 +169,7 @@ class ContentServiceImpl {
 
     // 4. Persist to server (background)
     if (this.currentUserId) {
-      Commands.execute<StateContentSwitchParams, StateContentSwitchResult>('state/content/switch', {
+      StateContentSwitch.execute({
         userId: this.currentUserId,
         contentItemId: tabId as UUID
       }).catch(err => {
@@ -200,7 +203,7 @@ class ContentServiceImpl {
 
     // 3. Persist to server (background)
     if (this.currentUserId) {
-      Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', {
+      StateContentClose.execute({
         userId: this.currentUserId,
         contentItemId: tabId as UUID
       }).catch(err => {

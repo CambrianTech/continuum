@@ -10,10 +10,16 @@ import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityCreateParams, ActivityCreateResult } from '../shared/ActivityCreateTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
+import type { BaseEntity } from '@system/data/entities/BaseEntity';
 import { Events } from '@system/core/shared/Events';
 import type { ActivityEntity, ActivityParticipant } from '@system/data/entities/ActivityEntity';
 import { generateActivityUniqueId } from '@system/activities/shared/ActivityTypes';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParams, ActivityCreateResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -34,13 +40,13 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     }
 
     // Verify recipe exists
-    const recipeResult = await Commands.execute('data/list', {
+    const recipeResult = await DataList.execute({
       collection: 'recipes',
       filter: { uniqueId: recipeId },
       limit: 1,
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; items?: unknown[] };
+    });
 
     if (!recipeResult.success || !recipeResult.items?.length) {
       return transformPayload(params, {
@@ -102,12 +108,12 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     };
 
     // Persist via data/create
-    const createResult = await Commands.execute('data/create', {
+    const createResult = await DataCreate.execute({
       collection: 'activities',
       data: activityData,
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; error?: string; data?: unknown };
+    });
 
     if (!createResult.success) {
       return transformPayload(params, {

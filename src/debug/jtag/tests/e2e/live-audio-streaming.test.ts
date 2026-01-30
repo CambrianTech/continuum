@@ -334,7 +334,7 @@ class LiveAudioStreamingTest {
           return new Promise(function(resolve) {
             var ws1Ready = false;
             var ws2Ready = false;
-            var receivedMixedAudio = false;
+            var receivedBinaryAudio = false;
             var timedOut = false;
 
             var ws1 = new WebSocket('ws://127.0.0.1:' + port);
@@ -366,7 +366,7 @@ class LiveAudioStreamingTest {
                   clearTimeout(timeoutId);
                   ws1.close();
                   ws2.close();
-                  resolve({ success: true, receivedAudio: receivedMixedAudio });
+                  resolve({ success: true, receivedAudio: receivedBinaryAudio });
                 }
               }, 1000);
             }
@@ -393,13 +393,11 @@ class LiveAudioStreamingTest {
               if (ws1Ready) sendAudio();
             };
 
+            ws2.binaryType = 'arraybuffer';
             ws2.onmessage = function(event) {
-              try {
-                var msg = JSON.parse(event.data);
-                if (msg.type === 'MixedAudio') {
-                  receivedMixedAudio = true;
-                }
-              } catch (e) {}
+              if (event.data instanceof ArrayBuffer) {
+                receivedBinaryAudio = true;
+              }
             };
 
             ws1.onerror = ws2.onerror = function() {

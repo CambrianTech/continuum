@@ -4,9 +4,10 @@
  * Clear all data from all collections using adapter methods
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Data Clear Parameters
@@ -46,3 +47,16 @@ export const createDataClearResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+/**
+ * DataClear — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataClear } from '...shared/DataClearTypes';
+ *   const result = await DataClear.execute({ ... });
+ */
+export const DataClear = {
+  execute(params: CommandInput<DataClearParams>): Promise<DataClearResult> {
+    return Commands.execute<DataClearParams, DataClearResult>('data/clear', params as Partial<DataClearParams>);
+  },
+  commandName: 'data/clear' as const,
+} as const;

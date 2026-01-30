@@ -16,7 +16,7 @@ import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared
 const DEFAULT_CONFIG = {
   embedding: {
     defaultModel: 'all-minilm',
-    defaultProvider: 'ollama'
+    defaultProvider: 'candle'
   }
 } as const;
 

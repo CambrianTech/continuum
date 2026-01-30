@@ -5,8 +5,9 @@
  * Enables P2P mesh networking by preventing process collision during startup/cleanup.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../system/core/shared/Commands';
 
 export type ProcessType = 'server' | 'browser' | 'test' | 'client';
 export type ProcessCapability = 
@@ -168,3 +169,44 @@ export function createCleanupProcessesParams(
     ...options
   };
 }
+/**
+ * RegisterProcess — Type-safe command executor
+ *
+ * Usage:
+ *   import { RegisterProcess } from '...shared/RegisterProcessTypes';
+ *   const result = await RegisterProcess.execute({ ... });
+ */
+export const RegisterProcess = {
+  execute(params: CommandInput<RegisterProcessParams>): Promise<RegisterProcessResult> {
+    return Commands.execute<RegisterProcessParams, RegisterProcessResult>('process-registry', params as Partial<RegisterProcessParams>);
+  },
+  commandName: 'process-registry' as const,
+} as const;
+
+/**
+ * ListProcesses — Type-safe command executor
+ *
+ * Usage:
+ *   import { ListProcesses } from '...shared/ListProcessesTypes';
+ *   const result = await ListProcesses.execute({ ... });
+ */
+export const ListProcesses = {
+  execute(params: CommandInput<ListProcessesParams>): Promise<ListProcessesResult> {
+    return Commands.execute<ListProcessesParams, ListProcessesResult>('process-registry', params as Partial<ListProcessesParams>);
+  },
+  commandName: 'process-registry' as const,
+} as const;
+
+/**
+ * CleanupProcesses — Type-safe command executor
+ *
+ * Usage:
+ *   import { CleanupProcesses } from '...shared/CleanupProcessesTypes';
+ *   const result = await CleanupProcesses.execute({ ... });
+ */
+export const CleanupProcesses = {
+  execute(params: CommandInput<CleanupProcessesParams>): Promise<CleanupProcessesResult> {
+    return Commands.execute<CleanupProcessesParams, CleanupProcessesResult>('process-registry', params as Partial<CleanupProcessesParams>);
+  },
+  commandName: 'process-registry' as const,
+} as const;

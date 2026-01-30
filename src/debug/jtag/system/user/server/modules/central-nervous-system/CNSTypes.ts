@@ -10,6 +10,8 @@ import type { ICognitiveScheduler, ActivityDomain } from '../cognitive-scheduler
 import type { PersonaInbox, QueueItem } from '../PersonaInbox';
 import type { PersonaStateManager } from '../PersonaState';
 import type { PersonaGenome } from '../PersonaGenome';
+import type { ChannelRegistry } from '../channels/ChannelRegistry';
+import type { BaseQueueItem } from '../channels/BaseQueueItem';
 
 /**
  * Configuration for PersonaCentralNervousSystem
@@ -21,6 +23,9 @@ export interface CNSConfig {
   readonly personaState: PersonaStateManager;
   readonly genome: PersonaGenome;
 
+  // Channel system (new: item-centric OOP)
+  readonly channelRegistry: ChannelRegistry;
+
   // Persona reference (for delegating chat handling)
   readonly personaId: UUID;
   readonly personaName: string;
@@ -28,6 +33,7 @@ export interface CNSConfig {
 
   // Callbacks for delegating to PersonaUser (avoids circular dependency)
   readonly handleChatMessage: (item: QueueItem) => Promise<void>;
+  readonly handleQueueItem: (item: BaseQueueItem) => Promise<void>;
   readonly pollTasks: () => Promise<void>;
   readonly generateSelfTasks: () => Promise<void>;
 

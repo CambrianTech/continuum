@@ -32,7 +32,15 @@
 import { Commands } from '../../core/shared/Commands';
 import { Events } from '../../core/shared/Events';
 import { SystemConfigEntity } from '../../data/entities/SystemConfigEntity';
+import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
+import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
+import type { BaseEntity } from '../../data/entities/BaseEntity';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../commands/data/update/shared/DataUpdateTypes';
 export type AICountScalingPolicy = 'none' | 'linear' | 'sqrt' | 'log';
 
 export class SystemSchedulingState {
@@ -65,7 +73,7 @@ export class SystemSchedulingState {
 
     try {
       // Query for singleton config entity
-      const result = await Commands.execute(DATA_COMMANDS.LIST, {
+      const result = await DataList.execute({
         collection: SystemConfigEntity.collection,
         filter: { name: 'default' },
         limit: 1,
@@ -99,7 +107,7 @@ export class SystemSchedulingState {
     const config = new SystemSchedulingConfigEntity();
 
     // Use data/create command to persist
-    const result = await Commands.execute(DATA_COMMANDS.CREATE, {
+    const result = await DataCreate.execute({
       collection: SystemSchedulingConfigEntity.collection,
       entity: config,
     });
@@ -276,7 +284,7 @@ export class SystemSchedulingState {
 
     // Persist to database
     try {
-      await Commands.execute(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute({
         collection: SystemSchedulingConfigEntity.collection,
         id: this._config.id,
         updates: {

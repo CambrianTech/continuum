@@ -7,7 +7,7 @@
  * See docs/MULTI-DATABASE-HANDLES.md for architecture
  */
 
-import type { CommandParams, JTAGPayload, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type {
@@ -19,6 +19,7 @@ import type {
   VectorConfig,
   GraphConfig
 } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Data Open Parameters
@@ -74,3 +75,17 @@ export type {
   VectorConfig,
   GraphConfig
 };
+
+/**
+ * DataOpen — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataOpen } from '...shared/DataOpenTypes';
+ *   const result = await DataOpen.execute({ ... });
+ */
+export const DataOpen = {
+  execute(params: CommandInput<DataOpenParams>): Promise<DataOpenResult> {
+    return Commands.execute<DataOpenParams, DataOpenResult>('data/open', params as Partial<DataOpenParams>);
+  },
+  commandName: 'data/open' as const,
+} as const;

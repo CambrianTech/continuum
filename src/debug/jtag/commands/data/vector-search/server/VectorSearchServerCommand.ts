@@ -21,7 +21,7 @@ const DEFAULT_CONFIG = {
     maxK: 100,
     defaultSimilarityThreshold: 0.0,
     defaultEmbeddingModel: 'all-minilm',
-    defaultProvider: 'ollama'
+    defaultProvider: 'candle'
   }
 } as const;
 
@@ -66,6 +66,9 @@ export class VectorSearchServerCommand extends CommandBase<VectorSearchParams, V
         // Per-persona database: get adapter from registry and use its vectorSearch
         const registry = DatabaseHandleRegistry.getInstance();
         const adapter = registry.getAdapter(params.dbHandle) as any;
+
+        // Ensure schema is cached on the per-persona adapter
+        await DataDaemon.ensureAdapterSchema(adapter, params.collection);
 
         if (!adapter.vectorSearch) {
           return createVectorSearchResultFromParams(params, {

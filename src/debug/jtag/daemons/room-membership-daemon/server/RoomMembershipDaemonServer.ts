@@ -129,7 +129,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       }
 
       // Extract user entities from query results
-      // record.data IS the UserEntity, no need to spread/reconstruct
+      // SqliteQueryExecutor now includes id in record.data (BaseEntity requirement)
       const users: UserEntity[] = queryResult.data.map(record => record.data);
       this.log.info(`🔄 MembershipDaemon: Found ${users.length} existing users to process`);
 

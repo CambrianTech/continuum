@@ -4,10 +4,11 @@
  * Push workspace branch to remote repository
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Git Push Command Parameters
@@ -83,3 +84,17 @@ export const createGitPushResultFromParams = (
   params: GitPushParams,
   differences: Omit<GitPushResult, 'context' | 'sessionId'>
 ): GitPushResult => transformPayload(params, differences);
+
+/**
+ * GitPush — Type-safe command executor
+ *
+ * Usage:
+ *   import { GitPush } from '...shared/GitPushTypes';
+ *   const result = await GitPush.execute({ ... });
+ */
+export const GitPush = {
+  execute(params: CommandInput<GitPushParams>): Promise<GitPushResult> {
+    return Commands.execute<GitPushParams, GitPushResult>('workspace/git/push', params as Partial<GitPushParams>);
+  },
+  commandName: 'workspace/git/push' as const,
+} as const;

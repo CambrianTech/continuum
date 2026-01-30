@@ -27,6 +27,7 @@ import type { JTAGContext, JTAGMessage, JTAGPayload } from '../../../system/core
 import { createPayload } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
+import { TimingHarness } from '../../../system/core/shared/TimingHarness';
 
 import type {
   AIProviderAdapter,
@@ -52,6 +53,7 @@ import { AIGenerationEntity } from '../../../system/data/entities/AIGenerationEn
 import { Commands } from '../../../system/core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 // AI Provider Payloads
 export interface AIProviderPayload extends JTAGPayload {
   readonly type: 'generate-text' | 'health-check' | 'list-providers';
@@ -136,8 +138,14 @@ export class AIProviderDaemon extends DaemonBase {
    * - Which LoRA adapters were applied (if any)
    */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
+    const timer = TimingHarness.start('ai/generate-text', 'ai');
+    timer.setMeta('preferredProvider', request.preferredProvider || 'auto');
+    timer.setMeta('model', request.model || 'default');
+    timer.setMeta('userId', request.userId || 'unknown');
 
     if (!this.initialized) {
+      timer.setError('NOT_INITIALIZED');
+      timer.finish();
       throw new AIProviderError(
         'AIProviderDaemon is not initialized',
         'daemon',
@@ -147,7 +155,11 @@ export class AIProviderDaemon extends DaemonBase {
 
     // Select provider (considers both preferredProvider AND model name)
     const selection = this.selectAdapter(request.preferredProvider, request.model);
+    timer.mark('select_adapter');
+
     if (!selection) {
+      timer.setError('NO_PROVIDER_AVAILABLE');
+      timer.finish();
       throw new AIProviderError(
         'No suitable AI provider available',
         'daemon',
@@ -157,6 +169,8 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     const { adapter, routingReason, isLocal } = selection;
+    timer.setMeta('provider', adapter.providerId);
+    timer.setMeta('isLocal', isLocal);
 
     // Build base routing info (will be enhanced by adapter response)
     const baseRouting: RoutingInfo = {
@@ -171,13 +185,14 @@ export class AIProviderDaemon extends DaemonBase {
     const processPool = this.getProcessPoolInstance() as any;
     if (processPool && typeof processPool.executeInference === 'function') {
       this.log.info(`🏊 AIProviderDaemon: Routing ${adapter.providerId} inference through ProcessPool`);
+      timer.setMeta('route', 'ProcessPool');
 
       try {
         // Convert chat messages to prompt
         const { prompt } = chatMessagesToPrompt(request.messages);
+        timer.mark('build_prompt');
 
         // Route through ProcessPool
-        const startTime = Date.now();
         const output = await processPool.executeInference({
           prompt,
           provider: adapter.providerId,
@@ -186,8 +201,9 @@ export class AIProviderDaemon extends DaemonBase {
           maxTokens: request.maxTokens,
           config: {}, // Adapter will use defaults
         });
+        timer.mark('inference');
 
-        const responseTime = Date.now() - startTime;
+        const record = timer.finish();
 
         // Return formatted response with routing info
         return {
@@ -201,20 +217,24 @@ export class AIProviderDaemon extends DaemonBase {
             totalTokens: 0,
             estimatedCost: 0,
           },
-          responseTime,
+          responseTime: record.totalMs,
           requestId: request.requestId || `req-${Date.now()}`,
           routing: baseRouting,
         };
       } catch (error) {
         this.log.error(`❌ AIProviderDaemon: ProcessPool inference failed, falling back to direct adapter call`);
+        timer.mark('processpool_failed');
         // Fall through to direct adapter call
       }
     }
 
     // Direct adapter call (browser-side or fallback)
     this.log.info(`🤖 AIProviderDaemon: Using direct ${adapter.providerId} adapter call (no ProcessPool)`);
+    timer.setMeta('route', 'DirectAdapter');
 
     if (!adapter.generateText) {
+      timer.setError('UNSUPPORTED_OPERATION');
+      timer.finish();
       throw new AIProviderError(
         `Adapter ${adapter.providerId} does not support text generation`,
         'adapter',
@@ -224,6 +244,7 @@ export class AIProviderDaemon extends DaemonBase {
 
     try {
       const response = await adapter.generateText(request);
+      timer.mark('inference');
 
       // Merge adapter's routing info with our base routing
       // Adapter may have additional info (e.g., CandleAdapter has adaptersApplied, modelMapped)
@@ -243,14 +264,18 @@ export class AIProviderDaemon extends DaemonBase {
       // Log successful generation to database for cost tracking
       // This is the SINGLE source of truth - only daemon logs, not individual adapters
       await this.logGeneration(finalResponse, request);
+      timer.mark('log_generation');
 
       // Log routing info for observability (routing is guaranteed to exist since we just built it)
       const r = finalResponse.routing!;
       this.log.info(`✅ AIProviderDaemon: Generation complete. Routing: provider=${r.provider}, isLocal=${r.isLocal}, reason=${r.routingReason}, adapters=[${r.adaptersApplied.join(',')}]`);
 
+      timer.setMeta('outputTokens', response.usage?.outputTokens || 0);
+      timer.finish();
       return finalResponse;
     } catch (error) {
       this.log.error(`❌ AIProviderDaemon: Text generation failed with ${adapter.providerId}`);
+      timer.setError(error instanceof Error ? error.message : String(error));
 
       // Log failed generation to database
       await this.logFailedGeneration(
@@ -261,6 +286,7 @@ export class AIProviderDaemon extends DaemonBase {
         adapter.providerId
       );
 
+      timer.finish();
       // TODO: Implement failover to alternative providers
       throw error;
     }
@@ -295,9 +321,7 @@ export class AIProviderDaemon extends DaemonBase {
       }
 
       // Persist to database using data/create command
-      await Commands.execute<DataCreateParams, DataCreateResult<AIGenerationEntity>>(
-        DATA_COMMANDS.CREATE,
-        {
+      await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
           data: result.entity
@@ -346,9 +370,7 @@ export class AIProviderDaemon extends DaemonBase {
       }
 
       // Persist to database
-      await Commands.execute<DataCreateParams, DataCreateResult<AIGenerationEntity>>(
-        DATA_COMMANDS.CREATE,
-        {
+      await DataCreate.execute<AIGenerationEntity>({
           collection: 'ai_generations',
           backend: 'server',
           data: result.entity
@@ -546,17 +568,18 @@ export class AIProviderDaemon extends DaemonBase {
    * Select best adapter based on preferences and availability
    *
    * Implements LOCAL MODEL ROUTING for the genome vision:
-   * - When preferredProvider is 'ollama', 'local', etc., route to Candle
-   * - When model name looks local AND no preferredProvider, route to Candle
-   * - This enables Candle (native Rust) to transparently replace Ollama
-   * - LoRA adapter composition only works with Candle, not Ollama
+   * - When preferredProvider is 'local' etc., route to Candle (native Rust)
+   * - Candle enables LoRA adapter composition for the genome vision
+   *
+   * OLLAMA IS REMOVED: Candle is the ONLY local inference path.
+   * Legacy 'ollama' provider requests are aliased to Candle for backward compat.
    *
    * IMPORTANT: Candle is ONLY used for local inference.
    * Cloud providers use their own adapters. This prevents queue bottlenecks.
    *
    * ROUTING PRIORITY (in order):
    * 1. Explicit preferredProvider (if specified and available)
-   * 2. Local provider aliasing (ollama/local → candle)
+   * 2. Local provider aliasing (legacy 'ollama'/local → candle)
    * 3. Default by priority (highest priority enabled adapter)
    *
    * @returns AdapterSelection with routing metadata for observability
@@ -567,8 +590,8 @@ export class AIProviderDaemon extends DaemonBase {
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (preferredProvider) {
       // LOCAL PROVIDER ALIASING: Route local providers to Candle
-      // Candle is the ONLY local inference path - Ollama is NOT registered
-      const localProviders = ['local', 'llamacpp', 'ollama']; // ollama kept for backward compat naming only
+      // Candle is the ONLY local inference path - 'ollama' kept for backward compat only
+      const localProviders = ['local', 'llamacpp', 'ollama']; // 'ollama' DEPRECATED - aliased to candle
       if (localProviders.includes(preferredProvider)) {
         const candleReg = this.adapters.get('candle');
         if (candleReg && candleReg.enabled) {

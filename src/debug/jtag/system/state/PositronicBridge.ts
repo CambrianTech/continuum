@@ -15,6 +15,9 @@
 
 import { positronicContext } from './PositronicRAGContext';
 
+import { Ping } from '../../commands/ping/shared/PingTypes';
+import { WidgetStateDebug } from '../../commands/development/debug/widget-state/shared/WidgetStateDebugTypes';
+import { SessionGetId } from '../../commands/session/get-id/shared/SessionGetIdTypes';
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
 
@@ -132,7 +135,7 @@ class PositronicBridgeImpl {
       // First verify basic command routing works
       this.showDiagnostic('Testing ping...');
       verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Testing with ping command...');
-      const pingResult = await Commands.execute('ping', {} as any);
+      const pingResult = await Ping.execute({} as any);
       testResults.pingSucceeded = true;
       this.showDiagnostic('Ping succeeded!');
       verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: Ping succeeded!', JSON.stringify(pingResult).slice(0, 100));
@@ -142,7 +145,7 @@ class PositronicBridgeImpl {
       const testString = `## Test RAG String\nGenerated at: ${new Date().toISOString()}\nSource: PositronicBridge.testBridgeConnection`;
       verbose() && console.log('🌉 PositronicBridge.testBridgeConnection: About to call widget-state command...');
 
-      const result = await Commands.execute('development/debug/widget-state', {
+      const result = await WidgetStateDebug.execute({
         setRAGString: testString,
         contextSessionId: 'positronic-test'
       } as any);
@@ -235,7 +238,7 @@ class PositronicBridgeImpl {
       const { Commands } = await import('../core/shared/Commands');
       const sessionId = await this.getSessionId();
 
-      await Commands.execute('development/debug/widget-state', {
+      await WidgetStateDebug.execute({
         setRAGString: ragString,
         contextSessionId: sessionId
       } as any);
@@ -252,7 +255,7 @@ class PositronicBridgeImpl {
   private async getSessionId(): Promise<string> {
     try {
       const { Commands } = await import('../core/shared/Commands');
-      const result = await Commands.execute('session/get-id', {} as any) as any;
+      const result = await SessionGetId.execute({} as any) as any;
       return result?.sessionId || 'unknown';
     } catch {
       return 'unknown';

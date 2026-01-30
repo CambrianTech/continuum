@@ -2,9 +2,10 @@
  * Dataset Create Command Types
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import { createPayload, type JTAGContext } from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface DatasetCreateParams extends CommandParams {
   /** Project ID to archive (if omitted, archives all enabled projects) */
@@ -55,3 +56,17 @@ export const createDatasetCreateResult = (
   sessionId: UUID,
   data: Omit<DatasetCreateResult, 'context' | 'sessionId'>
 ): DatasetCreateResult => createPayload(context, sessionId, data);
+
+/**
+ * DatasetCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { DatasetCreate } from '...shared/DatasetCreateTypes';
+ *   const result = await DatasetCreate.execute({ ... });
+ */
+export const DatasetCreate = {
+  execute(params: CommandInput<DatasetCreateParams>): Promise<DatasetCreateResult> {
+    return Commands.execute<DatasetCreateParams, DatasetCreateResult>('ai/dataset/create', params as Partial<DatasetCreateParams>);
+  },
+  commandName: 'ai/dataset/create' as const,
+} as const;

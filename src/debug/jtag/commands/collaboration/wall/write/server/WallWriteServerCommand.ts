@@ -21,6 +21,9 @@ import { sanitizeDocumentName } from '../../shared/WallTypes';
 import { Logger, type ComponentLogger } from '@system/core/logging/Logger';
 import { SessionStateHelper } from '@daemons/session-daemon/server/SessionStateHelper';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 export class WallWriteServerCommand extends WallWriteCommand {
   private wallManager: WallManager;
   private log: ComponentLogger;
@@ -100,7 +103,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
       const sanitizedName = sanitizeDocumentName(params.doc);
 
       // Check if WallDocumentEntity already exists
-      const existingDocs = await Commands.execute<DataListParams, DataListResult<WallDocumentEntity>>(DATA_COMMANDS.LIST, {
+      const existingDocs = await DataList.execute<WallDocumentEntity>({
         collection: COLLECTIONS.WALL_DOCUMENTS,
         filter: { roomId: roomInfo.roomId, name: sanitizedName },
         limit: 1
@@ -109,7 +112,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
       // Create or update WallDocumentEntity
       if (existingDocs.items && existingDocs.items.length > 0) {
         // Update existing document
-        await Commands.execute<DataUpdateParams, DataUpdateResult<WallDocumentEntity>>(DATA_COMMANDS.UPDATE, {
+        await DataUpdate.execute<WallDocumentEntity>({
           collection: COLLECTIONS.WALL_DOCUMENTS,
           id: existingDocs.items[0].id,
           data: {
@@ -133,7 +136,7 @@ export class WallWriteServerCommand extends WallWriteCommand {
         newDoc.byteCount = writeResult.byteCount;
         newDoc.lastCommitHash = writeResult.commitHash;
 
-        await Commands.execute<DataCreateParams, DataCreateResult<WallDocumentEntity>>(DATA_COMMANDS.CREATE, {
+        await DataCreate.execute<WallDocumentEntity>({
           collection: COLLECTIONS.WALL_DOCUMENTS,
           data: newDoc
         });

@@ -24,6 +24,9 @@ import type { UserStateEntity } from '../../system/data/entities/UserStateEntity
 import { LocalStorageStateManager } from '../../system/core/browser/LocalStorageStateManager';
 import { PositronWidgetState } from './services/state/PositronWidgetState';
 
+import { FileLoad } from '../../commands/file/load/shared/FileLoadTypes';
+import { DataUpdate } from '../../commands/data/update/shared/DataUpdateTypes';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 export class ThemeWidget extends BaseWidget {
   private currentTheme: string = 'base';
   private themeStyleElement: HTMLStyleElement | null = null;
@@ -245,7 +248,7 @@ export class ThemeWidget extends BaseWidget {
         cssFiles.map(async (fileName) => {
           try {
             const filePath = `widgets/shared/themes/${directoryName}/${fileName}`;
-            const result = await Commands.execute<FileLoadParams, FileLoadResult>(FILE_COMMANDS.LOAD, {
+            const result = await FileLoad.execute({
               filepath: filePath
             });
             const fileData = (result as FileLoadResult & { commandResult?: FileLoadResult }).commandResult ?? result;
@@ -346,7 +349,7 @@ export class ThemeWidget extends BaseWidget {
       this.verbose() && console.log(`🔧 ThemeWidget: Updating UserState ${userStateId.substring(0, 8)}...`);
 
       // Update existing UserState's preferences
-      await Commands.execute<DataUpdateParams, DataUpdateResult<UserStateEntity>>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<UserStateEntity>({
         collection: 'UserState',
         id: userStateId,
         backend: 'browser',
@@ -391,7 +394,7 @@ export class ThemeWidget extends BaseWidget {
       this.verbose() && console.log(`🔧 ThemeWidget: Loading theme for device ${identity.deviceId.substring(0, 12)}...`);
 
       // Find the user's UserState in localStorage (get most recent first)
-      const userStates = await Commands.execute<DataListParams, DataListResult<UserStateEntity>>(DATA_COMMANDS.LIST, {
+      const userStates = await DataList.execute<UserStateEntity>({
         collection: 'UserState',
         filter: {
           userId: identity.userId,
@@ -399,7 +402,7 @@ export class ThemeWidget extends BaseWidget {
         },
         orderBy: [{ field: 'updatedAt', direction: 'desc' }],
         limit: 1
-      } as Partial<DataListParams>);
+      });
 
       if (userStates.success && userStates.items && userStates.items.length > 0) {
         const userState = userStates.items[0];

@@ -50,7 +50,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
         model: params.model ?? 'llama3.2:3b',  // Instruction-tuned model
         temperature: 0.3,
         maxTokens: 200,
-        preferredProvider: 'ollama'
+        preferredProvider: 'candle'
       };
 
       const response = await AIProviderDaemon.generateText(request);
@@ -74,7 +74,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           model: 'llama3.2:3b',  // Better model for JSON repair
           temperature: 0.1,  // Low temp for structured output
           maxTokens: 200,
-          preferredProvider: 'ollama'
+          preferredProvider: 'candle'
         };
 
         const fixedResponse = await AIProviderDaemon.generateText(fixRequest);

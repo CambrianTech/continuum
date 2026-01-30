@@ -26,6 +26,7 @@ import {
   NumberField
 } from '../../../../system/data/decorators/FieldDecorators';
 
+import { DataList } from '../../../../commands/data/list/shared/DataListTypes';
 /**
  * Training Metrics Entity
  *
@@ -48,7 +49,7 @@ import {
  * });
  *
  * // Query metrics for charting
- * const allMetrics = await Commands.execute(DATA_COMMANDS.LIST, {
+ * const allMetrics = await DataList.execute({
  *   collection: 'training_metrics',
  *   filter: { sessionId: session.id },
  *   orderBy: [{ field: 'step', direction: 'asc' }]

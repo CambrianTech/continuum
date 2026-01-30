@@ -7,8 +7,12 @@ import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { ActivityListParams, ActivityListResult } from '../shared/ActivityListTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '@system/data/entities/BaseEntity';
 import type { ActivityEntity } from '@system/data/entities/ActivityEntity';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
 export class ActivityListServerCommand extends CommandBase<ActivityListParams, ActivityListResult> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -44,14 +48,14 @@ export class ActivityListServerCommand extends CommandBase<ActivityListParams, A
     }
 
     // Query activities
-    const result = await Commands.execute('data/list', {
+    const result = await DataList.execute({
       collection: 'activities',
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       limit,
       orderBy: [{ field: orderBy, direction: orderDirection }],
       context: params.context,
       sessionId: params.sessionId
-    }) as unknown as { success: boolean; error?: string; items?: unknown[] };
+    });
 
     if (!result.success) {
       return transformPayload(params, {

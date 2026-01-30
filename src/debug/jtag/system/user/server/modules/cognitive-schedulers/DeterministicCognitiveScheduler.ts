@@ -57,30 +57,28 @@ export class DeterministicCognitiveScheduler extends BaseCognitiveScheduler {
   }
 
   /**
-   * Simple domain check - only service chat
+   * Deterministic scheduler: only external interactive + maintenance domains.
+   * No internal cognitive domains (dreaming, reflecting, etc.) for simple models.
+   * Inherits base class defaults for domain ordering (time-critical first).
    */
+  private static readonly ALLOWED_DOMAINS = new Set([
+    ActivityDomain.AUDIO,
+    ActivityDomain.CHAT,
+    ActivityDomain.BACKGROUND,
+  ]);
+
   async shouldServiceDomain(
     domain: ActivityDomain,
     _context: CognitiveContext
   ): Promise<boolean> {
-    // Check system overrides first
     if (!this.isDomainAllowed(domain)) {
       return false;
     }
-
-    // Only service chat and background
-    return domain === ActivityDomain.CHAT || domain === ActivityDomain.BACKGROUND;
+    return DeterministicCognitiveScheduler.ALLOWED_DOMAINS.has(domain);
   }
 
-  /**
-   * Fixed priority order
-   */
-  getDomainPriority(_context: CognitiveContext): ActivityDomain[] {
-    return [
-      ActivityDomain.CHAT,        // Only priority
-      ActivityDomain.BACKGROUND   // Maintenance if nothing else
-    ];
-  }
+  // getDomainPriority() inherited from BaseCognitiveScheduler
+  // Returns ALL domains in priority order — shouldServiceDomain gates which are active
 
   /**
    * No learning - deterministic doesn't adapt

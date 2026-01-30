@@ -10,9 +10,10 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { StateGetParams, StateGetResult } from '../shared/StateGetTypes';
 import { createStateGetResult } from '../shared/StateGetTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
-import type { DataListResult } from '../../../data/list/shared/DataListTypes';
+import type { DataListParams, DataListResult } from '../../../data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 
+import { DataList } from '../../../data/list/shared/DataListTypes';
 export class StateGetBrowserCommand extends CommandBase<StateGetParams, StateGetResult<BaseEntity>> {
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -30,7 +31,7 @@ export class StateGetBrowserCommand extends CommandBase<StateGetParams, StateGet
       }
 
       // Delegate to the elegant data/list command
-      const dataResult = await Commands.execute<any, DataListResult<BaseEntity>>(DATA_COMMANDS.LIST, {
+      const dataResult = await DataList.execute({
         collection: params.collection,
         filter,
         limit: params.limit,

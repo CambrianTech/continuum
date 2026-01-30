@@ -27,6 +27,7 @@ import {
   BooleanField
 } from '../../../../system/data/decorators/FieldDecorators';
 
+import { DataList } from '../../../../commands/data/list/shared/DataListTypes';
 /**
  * Validation metrics for checkpoint evaluation
  *
@@ -64,7 +65,7 @@ export interface ValidationMetrics {
  * });
  *
  * // Query best checkpoint for deployment
- * const bestCheckpoint = await Commands.execute(DATA_COMMANDS.LIST, {
+ * const bestCheckpoint = await DataList.execute({
  *   collection: 'training_checkpoints',
  *   filter: {
  *     sessionId: session.id,

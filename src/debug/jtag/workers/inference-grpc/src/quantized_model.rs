@@ -153,6 +153,13 @@ pub fn load_quantized_model(
     })
 }
 
+/// GPU sync frequency - sync every N tokens instead of every token
+/// Higher = faster but more memory pressure, Lower = slower but safer
+const GPU_SYNC_INTERVAL: usize = 16;
+
+/// Only check for NaN on first N tokens (NaN usually appears early from bad prompts)
+const NAN_CHECK_TOKENS: usize = 3;
+
 /// Generate text from a prompt using quantized model
 pub fn generate_text_quantized(
     state: &mut QuantizedModelState,
@@ -174,11 +181,15 @@ pub fn generate_text_quantized(
         return Err("Empty prompt".to_string());
     }
 
+    // Log prompt length for debugging
+    log::debug!("📊 Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len());
+
     // Setup logits processor
     let seed = rand::thread_rng().gen::<u64>();
     let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
 
     let mut all_tokens = prompt_tokens.clone();
+    let mut nan_count = 0;
 
     // Generate tokens
     for i in 0..max_tokens {
@@ -199,13 +210,14 @@ pub fn generate_text_quantized(
             .forward(&input, pos)
             .map_err(|e| format!("Forward pass failed: {e}"))?;
 
-        // CRITICAL: Synchronize GPU after each forward pass to prevent command buffer accumulation
-        // Without this, Metal command buffers queue up faster than GPU can process them,
-        // causing memory to explode (1M+ buffers, 25GB+ RAM, swap thrashing)
-        state
-            .device
-            .synchronize()
-            .map_err(|e| format!("GPU sync failed: {e}"))?;
+        // Batch GPU syncs - only sync every N tokens to prevent command buffer explosion
+        // while maintaining throughput. First token always syncs (prompt processing).
+        if i == 0 || (i + 1) % GPU_SYNC_INTERVAL == 0 {
+            state
+                .device
+                .synchronize()
+                .map_err(|e| format!("GPU sync failed: {e}"))?;
+        }
 
         // Get logits for last token
         let logits = logits
@@ -215,6 +227,26 @@ pub fn generate_text_quantized(
             logits
                 .get(logits.dims()[0] - 1)
                 .map_err(|e| format!("Get last failed: {e}"))?
+        } else {
+            logits
+        };
+
+        // Only check NaN on first few tokens - NaN from bad prompts appears immediately
+        // Skip check after NAN_CHECK_TOKENS to avoid CPU round-trip overhead
+        let logits = if i < NAN_CHECK_TOKENS {
+            let (sanitized, had_nan) = sanitize_logits_with_flag(&logits, &state.device)?;
+            if had_nan {
+                nan_count += 1;
+                if i == 0 {
+                    log::error!("❌ NaN/Inf on first token - prompt may be malformed");
+                    return Err("Model produced NaN on first token - prompt may be malformed or too long".to_string());
+                }
+                if nan_count > 2 {
+                    log::error!("❌ Multiple NaN tokens in first {} - aborting", NAN_CHECK_TOKENS);
+                    break;
+                }
+            }
+            sanitized
         } else {
             logits
         };
@@ -231,7 +263,6 @@ pub fn generate_text_quantized(
     }
 
     // Final GPU sync to ensure all work is complete before returning
-    // This allows GPU memory to be fully reclaimed
     state
         .device
         .synchronize()
@@ -252,6 +283,47 @@ pub fn generate_text_quantized(
     );
 
     Ok((output_text, generated_tokens.len()))
+}
+
+/// Sanitize logits to prevent NaN/Inf from crashing the sampler
+/// Returns (sanitized_tensor, had_nan_or_inf)
+///
+/// This can happen with:
+/// - Very long contexts (RoPE position overflow)
+/// - Numerical instability in quantized models
+/// - Edge case prompts
+fn sanitize_logits_with_flag(logits: &Tensor, device: &Device) -> Result<(Tensor, bool), String> {
+    // Move to CPU for inspection (fast for 1D vocab-size tensor)
+    let logits_vec: Vec<f32> = logits
+        .to_vec1()
+        .map_err(|e| format!("Failed to read logits: {e}"))?;
+
+    // Check for NaN/Inf
+    let has_bad_values = logits_vec.iter().any(|&x| x.is_nan() || x.is_infinite());
+
+    if has_bad_values {
+        log::warn!("⚠️ Detected NaN/Inf in logits, applying sanitization");
+
+        // Replace NaN with -100 (effectively zero probability), Inf with large finite value
+        let sanitized: Vec<f32> = logits_vec
+            .iter()
+            .map(|&x| {
+                if x.is_nan() {
+                    -100.0
+                } else if x.is_infinite() {
+                    if x > 0.0 { 100.0 } else { -100.0 }
+                } else {
+                    x
+                }
+            })
+            .collect();
+
+        let tensor = Tensor::from_vec(sanitized, logits.dims(), device)
+            .map_err(|e| format!("Failed to create sanitized tensor: {e}"))?;
+        Ok((tensor, true))
+    } else {
+        Ok((logits.clone(), false))
+    }
 }
 
 /// Load default quantized model (Q4_K_M for best speed/quality balance)

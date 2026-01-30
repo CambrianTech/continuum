@@ -44,6 +44,7 @@ import {
   type OperationMeta
 } from '../../system/data/entities/CollaborativeOperationEntity';
 
+import { UserGetMe } from '../../commands/user/get-me/shared/UserGetMeTypes';
 /**
  * Configuration for CollaborativeActivityWidget
  */
@@ -249,7 +250,7 @@ export abstract class CollaborativeActivityWidget<
   /** Load current user info for operation attribution */
   protected async loadUserInfo(): Promise<void> {
     try {
-      const result = await Commands.execute<CommandParams, UserGetMeResult>('user/get-me', {});
+      const result = await UserGetMe.execute({});
       if (result.success && result.user) {
         this._userId = result.user.id;
         this._userName = result.user.displayName || 'Unknown';

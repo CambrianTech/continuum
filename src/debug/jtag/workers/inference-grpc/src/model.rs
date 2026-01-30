@@ -40,6 +40,46 @@ impl ModelState {
     }
 }
 
+/// Sanitize logits to prevent NaN/Inf from crashing the sampler
+///
+/// This can happen with:
+/// - Very long contexts (RoPE position overflow)
+/// - Numerical instability
+/// - Edge case prompts
+fn sanitize_logits(logits: &Tensor, device: &Device) -> Result<Tensor, String> {
+    // Move to CPU for inspection (fast for 1D vocab-size tensor)
+    let logits_vec: Vec<f32> = logits
+        .to_dtype(DType::F32)
+        .and_then(|t| t.to_vec1())
+        .map_err(|e| format!("Failed to read logits: {e}"))?;
+
+    // Check for NaN/Inf
+    let has_bad_values = logits_vec.iter().any(|&x| x.is_nan() || x.is_infinite());
+
+    if has_bad_values {
+        log::warn!("⚠️ Detected NaN/Inf in logits, applying sanitization");
+
+        // Replace NaN with -100 (effectively zero probability), Inf with large finite value
+        let sanitized: Vec<f32> = logits_vec
+            .iter()
+            .map(|&x| {
+                if x.is_nan() {
+                    -100.0
+                } else if x.is_infinite() {
+                    if x > 0.0 { 100.0 } else { -100.0 }
+                } else {
+                    x
+                }
+            })
+            .collect();
+
+        Tensor::from_vec(sanitized, logits.dims(), device)
+            .map_err(|e| format!("Failed to create sanitized tensor: {e}"))
+    } else {
+        Ok(logits.clone())
+    }
+}
+
 /// Generate text from a prompt using the loaded model
 pub fn generate_text(
     state: &mut ModelState,
@@ -125,6 +165,9 @@ pub fn generate_text(
                 last_logits.dtype()
             );
         }
+
+        // Protect against NaN/Inf in logits before sampling
+        let last_logits = sanitize_logits(&last_logits, &state.device)?;
 
         let next_token = logits_processor
             .sample(&last_logits)

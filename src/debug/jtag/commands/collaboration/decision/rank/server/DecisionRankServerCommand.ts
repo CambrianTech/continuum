@@ -20,11 +20,19 @@ import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionRankCommand } from '../shared/DecisionRankCommand';
 import type { DecisionRankParams, DecisionRankResult } from '../shared/DecisionRankTypes';
 import type { DecisionProposalEntity, RankedVote } from '@system/data/entities/DecisionProposalEntity';
+import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
+import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/DataReadTypes';
+import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
+import { DataRead } from '../../../../data/read/shared/DataReadTypes';
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { ChatSend } from '../../../chat/send/shared/ChatSendTypes';
 /**
  * DecisionRankServerCommand - Server implementation
  */
@@ -37,17 +45,31 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
   protected async executeCommand(params: DecisionRankParams): Promise<DecisionRankResult> {
     try {
-      // Parse JSON strings if present (AIs may pass JSON strings instead of arrays)
+      // Parse string formats (AIs send various formats)
       if (typeof params.rankedChoices === 'string') {
-        this.log.warn('Parameter format conversion: rankedChoices received as JSON string instead of array', {
+        const rawValue = params.rankedChoices as string;
+        this.log.warn('Parameter format conversion: rankedChoices received as string instead of array', {
           command: 'decision/rank',
           proposalId: params.proposalId,
+          rawValue,
           sessionId: params.sessionId
         });
-        try {
-          params.rankedChoices = JSON.parse(params.rankedChoices);
-        } catch (e) {
-          return transformPayload(params, { success: false, error: 'rankedChoices must be a valid JSON array' });
+
+        const rawString = rawValue.trim();
+
+        // Try JSON parse first (handles ["a", "b"] format)
+        if (rawString.startsWith('[')) {
+          try {
+            params.rankedChoices = JSON.parse(rawString);
+          } catch (e) {
+            // JSON parse failed - might be [abc123] without quotes
+            // Extract values between brackets, split by comma
+            const inner = rawString.slice(1, -1).trim();
+            params.rankedChoices = inner.split(',').map((s: string) => s.trim().replace(/['"]/g, '')).filter((s: string) => s.length > 0);
+          }
+        } else {
+          // Comma-separated string: "uuid1,uuid2" or "uuid1, uuid2"
+          params.rankedChoices = rawString.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
         }
       }
 
@@ -66,7 +88,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
       if (params.voterId) {
         // Explicit voterId provided
-        const voterResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+        const voterResult = await DataRead.execute<UserEntity>({
           collection: COLLECTIONS.USERS,
           id: params.voterId
         });
@@ -108,7 +130,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         const proposalShortId = normalizeShortId(params.proposalId);
 
         // Query for proposals ending with this short ID
-        const proposalsResult = await Commands.execute<any, any>(DATA_COMMANDS.LIST, {
+        const proposalsResult = await DataList.execute<DecisionProposalEntity>({
           collection: COLLECTIONS.DECISION_PROPOSALS,
           limit: 100
         });
@@ -123,7 +145,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Get proposal
-      const proposalResult = await Commands.execute<any, any>(DATA_COMMANDS.READ, {
+      const proposalResult = await DataRead.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId
       });
@@ -162,7 +184,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       const now = Date.now();
       if (proposal.deadline && now > proposal.deadline) {
         // Proposal expired - mark as expired and don't accept vote
-        await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+        await DataUpdate.execute<DecisionProposalEntity>({
           collection: COLLECTIONS.DECISION_PROPOSALS,
           id: resolvedProposalId,
           data: { status: 'expired' }
@@ -211,7 +233,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Update proposal with vote
-      await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+      await DataUpdate.execute<DecisionProposalEntity>({
         collection: COLLECTIONS.DECISION_PROPOSALS,
         id: resolvedProposalId,
         data: { votes }
@@ -248,7 +270,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
 
         if (winner) {
           // Update proposal status
-          await Commands.execute<any, any>(DATA_COMMANDS.UPDATE, {
+          await DataUpdate.execute<DecisionProposalEntity>({
             collection: COLLECTIONS.DECISION_PROPOSALS,
             id: resolvedProposalId,
             data: { status: 'complete' }
@@ -257,7 +279,7 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
           // Announce winner in chat
           const announcementMessage = `🏆 **Decision Complete: ${proposal.topic}**\n\n**Winner:** ${winner.label} (${winner.wins} pairwise wins)\n\nTotal votes: ${votes.length}\nProposal ID: ${resolvedProposalId}`;
 
-          await Commands.execute<ChatSendParams, ChatSendResult>('collaboration/chat/send', {
+          await ChatSend.execute({
             message: announcementMessage,
             room: 'general'
           });

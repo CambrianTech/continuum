@@ -6,9 +6,10 @@
  * Works with any number of participants (2+ for group DM)
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { RoomEntity } from '@system/data/entities/RoomEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface DmParams extends CommandParams {
   /**
@@ -41,3 +42,17 @@ export interface DmResult extends CommandResult {
   /** All participants in the room */
   participantIds: UUID[];
 }
+
+/**
+ * Dm — Type-safe command executor
+ *
+ * Usage:
+ *   import { Dm } from '...shared/DmTypes';
+ *   const result = await Dm.execute({ ... });
+ */
+export const Dm = {
+  execute(params: CommandInput<DmParams>): Promise<DmResult> {
+    return Commands.execute<DmParams, DmResult>('collaboration/dm', params as Partial<DmParams>);
+  },
+  commandName: 'collaboration/dm' as const,
+} as const;

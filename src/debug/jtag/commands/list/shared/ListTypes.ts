@@ -5,8 +5,9 @@
  * Essential command that all JTAG systems must implement for client discovery.
  */
 
-import type { JTAGContext, CommandParams, JTAGPayload } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../system/core/shared/Commands';
 
 /**
  * List command parameters
@@ -93,3 +94,16 @@ export function createListResultFromParams(
 ): ListResult {
   return createListResult(params.context, params.sessionId, overrides);
 }
+/**
+ * List — Type-safe command executor
+ *
+ * Usage:
+ *   import { List } from '...shared/ListTypes';
+ *   const result = await List.execute({ ... });
+ */
+export const List = {
+  execute(params: CommandInput<ListParams>): Promise<ListResult> {
+    return Commands.execute<ListParams, ListResult>('list', params as Partial<ListParams>);
+  },
+  commandName: 'list' as const,
+} as const;

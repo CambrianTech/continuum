@@ -4,8 +4,9 @@
  * Close a content item (remove from user's open tabs). Handles currentItemId reassignment if closing the active tab.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * State Content Close Command Parameters
@@ -30,3 +31,17 @@ export interface StateContentCloseResult extends CommandResult {
   /** Error message if operation failed */
   readonly error?: string;
 }
+
+/**
+ * StateContentClose — Type-safe command executor
+ *
+ * Usage:
+ *   import { StateContentClose } from '...shared/StateContentCloseTypes';
+ *   const result = await StateContentClose.execute({ ... });
+ */
+export const StateContentClose = {
+  execute(params: CommandInput<StateContentCloseParams>): Promise<StateContentCloseResult> {
+    return Commands.execute<StateContentCloseParams, StateContentCloseResult>('state/content/close', params as Partial<StateContentCloseParams>);
+  },
+  commandName: 'state/content/close' as const,
+} as const;

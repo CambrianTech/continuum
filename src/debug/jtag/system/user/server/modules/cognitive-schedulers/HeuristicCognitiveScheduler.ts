@@ -139,8 +139,8 @@ export class HeuristicCognitiveScheduler extends BaseCognitiveScheduler {
 
     // Energy gating - only honor critical contracts when exhausted
     if (context.energy < 0.2) {
-      // When exhausted, only honor realtime contracts
-      return domain === ActivityDomain.REALTIME_GAME;
+      // When exhausted, only honor realtime contracts (games and voice)
+      return domain === ActivityDomain.REALTIME_GAME || domain === ActivityDomain.AUDIO;
     }
 
     if (context.energy < 0.4) {
@@ -152,6 +152,7 @@ export class HeuristicCognitiveScheduler extends BaseCognitiveScheduler {
     if (context.cpuPressure > 0.8 || context.memoryPressure > 0.9) {
       const criticalDomains = [
         ActivityDomain.REALTIME_GAME,
+        ActivityDomain.AUDIO,
         ActivityDomain.CHAT
       ];
       return criticalDomains.includes(domain);
@@ -161,23 +162,9 @@ export class HeuristicCognitiveScheduler extends BaseCognitiveScheduler {
     return true;
   }
 
-  /**
-   * Get priority order for domains
-   * Higher priority = serviced first when resources limited
-   */
-  getDomainPriority(context: CognitiveContext): ActivityDomain[] {
-    // Fixed priority order (heuristic - doesn't change)
-    return [
-      ActivityDomain.REALTIME_GAME,  // Highest priority (contractual obligation)
-      ActivityDomain.SIMULATING,     // Think before acting
-      ActivityDomain.CHAT,           // Social presence
-      ActivityDomain.CODE_REVIEW,    // Deep work
-      ActivityDomain.TRAINING,       // Continuous learning
-      ActivityDomain.REFLECTING,     // Self-improvement
-      ActivityDomain.DREAMING,       // Memory consolidation
-      ActivityDomain.BACKGROUND      // Lowest priority (maintenance)
-    ];
-  }
+  // getDomainPriority() inherited from BaseCognitiveScheduler
+  // Returns ALL domains in priority order (time-critical → interactive → cognitive → maintenance)
+  // Energy gating in shouldServiceDomain() controls which domains are actually serviced
 
   /**
    * Update policy (no-op for heuristic scheduler)

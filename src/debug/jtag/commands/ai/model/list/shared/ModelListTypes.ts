@@ -5,7 +5,8 @@
  * Like AVCaptureDevice.DiscoverySession - enumerate available devices
  */
 
-import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Model capability constraints (like camera position, resolution)
@@ -87,3 +88,17 @@ export interface ModelListResult extends CommandResult {
   providers: string[];               // List of providers with models
   error?: string;
 }
+
+/**
+ * ModelList — Type-safe command executor
+ *
+ * Usage:
+ *   import { ModelList } from '...shared/ModelListTypes';
+ *   const result = await ModelList.execute({ ... });
+ */
+export const ModelList = {
+  execute(params: CommandInput<ModelListParams>): Promise<ModelListResult> {
+    return Commands.execute<ModelListParams, ModelListResult>('ai/model/list', params as Partial<ModelListParams>);
+  },
+  commandName: 'ai/model/list' as const,
+} as const;

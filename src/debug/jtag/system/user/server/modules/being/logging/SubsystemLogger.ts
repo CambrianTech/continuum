@@ -34,7 +34,7 @@ import { Logger, FileMode } from '../../../../../core/logging/Logger';
 import type { ComponentLogger } from '../../../../../core/logging/Logger';
 import { LoggingConfig } from '../../../../../core/logging/LoggingConfig';
 
-export type Subsystem = 'prefrontal' | 'motor-cortex' | 'limbic' | 'hippocampus' | 'cns';
+export type Subsystem = 'prefrontal' | 'motor-cortex' | 'limbic' | 'hippocampus' | 'cns' | 'rust-cognition';
 
 export interface LoggerConfig {
   /**

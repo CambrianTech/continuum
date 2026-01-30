@@ -26,6 +26,8 @@ import { Events } from '../../../../../system/core/shared/Events';
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, AsyncTestResult> {
   constructor(
     context: JTAGContext,
@@ -74,14 +76,13 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
     };
 
     // Save to database using data/create command
-    const createResult = await Commands.execute<DataCreateParams, DataCreateResult>(DATA_COMMANDS.CREATE, {
+    const createResult = await DataCreate.execute({
       collection: TestExecutionEntity.collection,
-      data: execution,
-      id: testId,
+      data: { ...execution, id: testId },
     });
 
     if (!createResult.success) {
-      throw new Error(`Failed to create test execution: ${createResult.error?.message ?? 'Unknown error'}`);
+      throw new Error(`Failed to create test execution: ${createResult.error ?? 'Unknown error'}`);
     }
 
     console.log(`✅ Test execution ${testId} queued`);
@@ -173,7 +174,7 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
    * Helper to update test status in database
    */
   private async updateTestStatus(testId: string, updates: Partial<TestExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams, CommandResult>(DATA_COMMANDS.UPDATE, {
+    await DataUpdate.execute({
       collection: TestExecutionEntity.collection,
       id: testId,
       data: {

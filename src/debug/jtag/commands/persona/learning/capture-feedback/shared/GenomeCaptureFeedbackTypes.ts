@@ -6,7 +6,8 @@
  */
 
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Type of feedback being provided
@@ -115,3 +116,17 @@ export interface GenomeCaptureFeedbackResult extends CommandResult {
     };
   };
 }
+
+/**
+ * GenomeCaptureFeedback — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeCaptureFeedback } from '...shared/GenomeCaptureFeedbackTypes';
+ *   const result = await GenomeCaptureFeedback.execute({ ... });
+ */
+export const GenomeCaptureFeedback = {
+  execute(params: CommandInput<GenomeCaptureFeedbackParams>): Promise<GenomeCaptureFeedbackResult> {
+    return Commands.execute<GenomeCaptureFeedbackParams, GenomeCaptureFeedbackResult>('persona/learning/capture-feedback', params as Partial<GenomeCaptureFeedbackParams>);
+  },
+  commandName: 'persona/learning/capture-feedback' as const,
+} as const;

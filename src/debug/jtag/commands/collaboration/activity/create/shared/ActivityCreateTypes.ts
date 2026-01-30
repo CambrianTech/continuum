@@ -7,9 +7,10 @@
  * - Configuration (can override recipe defaults)
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ActivityEntity, ActivityConfig } from '@system/data/entities/ActivityEntity';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ActivityCreateParams extends CommandParams {
   /**
@@ -65,3 +66,17 @@ export interface ActivityCreateResult extends CommandResult {
    */
   activity?: ActivityEntity;
 }
+
+/**
+ * ActivityCreate — Type-safe command executor
+ *
+ * Usage:
+ *   import { ActivityCreate } from '...shared/ActivityCreateTypes';
+ *   const result = await ActivityCreate.execute({ ... });
+ */
+export const ActivityCreate = {
+  execute(params: CommandInput<ActivityCreateParams>): Promise<ActivityCreateResult> {
+    return Commands.execute<ActivityCreateParams, ActivityCreateResult>('collaboration/activity/create', params as Partial<ActivityCreateParams>);
+  },
+  commandName: 'collaboration/activity/create' as const,
+} as const;

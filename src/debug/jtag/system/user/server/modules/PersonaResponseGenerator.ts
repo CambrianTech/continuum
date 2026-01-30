@@ -53,8 +53,10 @@ import { ResponseCleaner } from './ResponseCleaner';
 import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
-import type { InboxMessage } from './QueueItemTypes';
+import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 
+import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Response generation result
  */
@@ -235,7 +237,7 @@ export class PersonaResponseGenerator {
         return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
       }
 
-      const result = await Commands.execute<AiDetectSemanticLoopParams, AiDetectSemanticLoopResult>('ai/detect-semantic-loop', {
+      const result = await AiDetectSemanticLoop.execute({
         messageText: responseText,
         personaId: this.personaId,
         roomId: roomId,
@@ -451,7 +453,7 @@ export class PersonaResponseGenerator {
    * @returns true if should respond, false if should skip
    */
   shouldRespondToMessage(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     dormancyState?: { level: 'active' | 'mention-only' | 'human-only' }
   ): boolean {
     // If no dormancy state, default to active (backward compatible)
@@ -505,13 +507,12 @@ export class PersonaResponseGenerator {
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
   async generateAndPostResponse(
-    originalMessage: ChatMessageEntity,
+    originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
-    // Debug: Log voice modality properties
-    const msgAny = originalMessage as any;
-    this.log(`🔧 ${this.personaName}: Voice check - sourceModality=${msgAny.sourceModality}, voiceSessionId=${msgAny.voiceSessionId ? String(msgAny.voiceSessionId).slice(0,8) : 'undefined'}`);
+    // Voice modality is a typed field — no cast needed
+    this.log(`🔧 ${this.personaName}: Voice check - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
     const generateStartTime = Date.now();  // Track total response time for decision logging
     const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
@@ -519,6 +520,8 @@ export class PersonaResponseGenerator {
       // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
       this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+      // Voice mode detection - pass voiceSessionId to RAG for faster response (skips semantic search)
+      const voiceSessionId = originalMessage.voiceSessionId;
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
         this.personaId,
@@ -527,6 +530,8 @@ export class PersonaResponseGenerator {
           maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
           includeArtifacts: true,  // Enable vision support for multimodal-capable models
           includeMemories: true,   // Enable Hippocampus LTM retrieval
+          // Voice mode: Pass session ID so RAG sources can optimize for speed
+          voiceSessionId,
           // ✅ FIX: Include current message even if not yet persisted to database
           currentMessage: {
             role: 'user',
@@ -840,17 +845,18 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
       let effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
 
-      // VOICE MODE: Limit response length for conversational voice
-      // Priority: 1) RAG context responseStyle (from recipe/source), 2) hard-coded fallback
-      // Voice responses need to be SHORT and conversational (10-15 seconds of speech max)
-      // 100 tokens ≈ 75 words ≈ 10 seconds of speech at 150 WPM
+      // VOICE MODE: Allow reasonable response length for natural conversation
+      // DON'T artificially truncate - that's robotic and cuts off mid-sentence
+      // Natural turn-taking should be handled by arbiter coordination, not hard limits
+      // Removed aggressive 100-token limit - now uses 800 tokens (~60 seconds of speech)
       const responseStyle = (fullRAGContext.metadata as any)?.responseStyle;
       const isVoiceMode = responseStyle?.voiceMode || originalMessage.sourceModality === 'voice';
       if (isVoiceMode) {
-        // Use responseStyle.maxTokens from RAG source if available, otherwise default
-        const VOICE_MAX_TOKENS = responseStyle?.maxTokens ?? 100;
+        // Voice mode: Use generous limit for natural speech (800 tokens ≈ 600 words ≈ 60 seconds)
+        // Previous 100-token limit caused mid-sentence cutoffs - unacceptable
+        const VOICE_MAX_TOKENS = 800;
         if (effectiveMaxTokens > VOICE_MAX_TOKENS) {
-          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${VOICE_MAX_TOKENS} tokens (source: ${responseStyle ? 'RAG' : 'default'})`);
+          this.log(`🔊 ${this.personaName}: VOICE MODE - limiting response from ${effectiveMaxTokens} to ${VOICE_MAX_TOKENS} tokens`);
           effectiveMaxTokens = VOICE_MAX_TOKENS;
         }
       }
@@ -871,7 +877,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
-        preferredProvider: (this.modelConfig.provider || 'ollama') as TextGenerationRequest['preferredProvider'],
+        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
         intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
         // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
         personaContext: {
@@ -893,7 +899,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
-      const provider = this.modelConfig.provider || 'ollama';
+      const provider = this.modelConfig.provider || 'candle';
 
       // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
       // This enables tool_use blocks instead of XML parsing for more reliable tool execution
@@ -957,7 +963,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(getMessageText(m.content).length / 4), 0);  // ~4 chars/token
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
         const cost = calculateModelCost(
-          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.provider ?? 'candle',
           this.modelConfig.model ?? 'llama3.2:3b',
           inputTokenEstimate,
           outputTokenEstimate
@@ -966,7 +972,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider ?? 'ollama',
+          this.modelConfig.provider ?? 'candle',
           this.modelConfig.model ?? 'llama3.2:3b',
           `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           inputTokenEstimate,
@@ -1353,7 +1359,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider || 'ollama',
+          this.modelConfig.provider || 'candle',
           this.modelConfig.model || 'llama3.2:3b',
           messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
           messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,
@@ -1459,7 +1465,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             backend: 'server',
             data: responseMessage
           })
-        : await Commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
+        : await DataCreate.execute<ChatMessageEntity>({
             collection: ChatMessageEntity.collection,
             backend: 'server',
             data: responseMessage
@@ -1550,10 +1556,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
 
       // VOICE ROUTING: If original message was from voice, route response to TTS
-      // The VoiceOrchestrator listens for this event and sends to TTS
-      // NOTE: sourceModality and voiceSessionId are DIRECT properties on InboxMessage, not nested in metadata
+      // sourceModality is a typed field on ProcessableMessage — never undefined
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: Checking voice routing - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
-        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${String(originalMessage.voiceSessionId).slice(0, 8)})`);
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: EMITTING persona:response:generated for TTS (response: "${aiResponse.text.slice(0, 50)}...")`);
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
 
         // Emit voice response event for VoiceOrchestrator
         await Events.emit(
@@ -1565,11 +1572,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             originalMessage: {
               id: originalMessage.id,
               roomId: originalMessage.roomId,
-              sourceModality: 'voice',
-              voiceSessionId: originalMessage.voiceSessionId
-            } as InboxMessage
+              sourceModality: 'voice' as const,
+              voiceSessionId: originalMessage.voiceSessionId,
+            }
           }
         );
+      } else {
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: sourceModality=${originalMessage.sourceModality}, skipping TTS routing`);
       }
 
       return {

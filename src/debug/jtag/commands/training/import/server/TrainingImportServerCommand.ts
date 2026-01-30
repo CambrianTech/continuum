@@ -15,7 +15,7 @@ import type { TrainingImportParams, TrainingImportResult } from '../shared/Train
 import { createTrainingImportResultFromParams } from '../shared/TrainingImportTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { DataOpenResult } from '../../../data/open/shared/DataOpenTypes';
-import type { DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../data/create/shared/DataCreateTypes';
 import type { DataCloseResult } from '../../../data/close/shared/DataCloseTypes';
 import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type { TrainingMessage } from '../../../../daemons/data-daemon/shared/entities/TrainingExampleEntity';
@@ -24,6 +24,9 @@ import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import * as fs from 'fs';
 import * as readline from 'readline';
 
+import { DataOpen } from '../../../data/open/shared/DataOpenTypes';
+import { DataClose } from '../../../data/close/shared/DataCloseTypes';
+import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
 interface JSONLLine {
   messages: TrainingMessage[];
   [key: string]: unknown;
@@ -66,7 +69,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
 
       // Step 3: Open training database
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const openResult = await Commands.execute(DATA_COMMANDS.OPEN, {
+      const openResult = await DataOpen.execute({
         adapter: 'sqlite',
         config: {
           path: dbPath,
@@ -126,7 +129,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
       // Close database if opened
       if (dbHandle !== 'default') {
         try {
-          await Commands.execute<DataCloseResult>(DATA_COMMANDS.CLOSE, { dbHandle });
+          await DataClose.execute({ dbHandle });
         } catch (closeError) {
           console.error('Failed to close database after error:', closeError);
         }
@@ -196,8 +199,7 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
         const tokenCount = Math.ceil(totalContent.length / 4); // Rough token estimate
 
         // Create TrainingExampleEntity (pass partial data, DataDaemon constructs full entity)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const createResult = await Commands.execute(DATA_COMMANDS.CREATE, {
+        const createResult = await DataCreate.execute({
           collection: 'training_examples',
           data: {
             messages: data.messages,
@@ -208,9 +210,9 @@ export class TrainingImportServerCommand extends CommandBase<TrainingImportParam
               targetSkill: params.targetSkill,
               importedAt: new Date().toISOString()
             }
-          } as any, // TypeScript types expect full BaseEntity, but DataDaemon handles partial data
+          },
           dbHandle
-        } as any) as DataCreateResult;
+        });
 
         if (!createResult.success) {
           console.warn(`Failed to create example ${processedCount + 1}: ${createResult.error}`);

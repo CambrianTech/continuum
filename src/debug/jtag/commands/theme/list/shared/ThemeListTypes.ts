@@ -3,9 +3,10 @@
  */
 
 import { type ThemeParams, type ThemeResult, type ThemeManifest, createThemeParams, createThemeResult } from '../../shared/ThemeTypes';
-import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** Theme list command parameters */
 export interface ThemeListParams extends CommandParams {
@@ -58,3 +59,16 @@ export const createThemeListResult = (
   themeCount: data.themes.length,
   ...(data.manifests && { manifests: data.manifests })
 });
+/**
+ * ThemeList — Type-safe command executor
+ *
+ * Usage:
+ *   import { ThemeList } from '...shared/ThemeListTypes';
+ *   const result = await ThemeList.execute({ ... });
+ */
+export const ThemeList = {
+  execute(params: CommandInput<ThemeListParams>): Promise<ThemeListResult> {
+    return Commands.execute<ThemeListParams, ThemeListResult>('theme/list', params as Partial<ThemeListParams>);
+  },
+  commandName: 'theme/list' as const,
+} as const;

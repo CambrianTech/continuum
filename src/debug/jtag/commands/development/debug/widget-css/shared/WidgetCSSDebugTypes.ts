@@ -3,7 +3,8 @@
  * Hot-inject CSS into widgets for rapid iteration without full deployment
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export type CSSInjectionMode = 'append' | 'replace' | 'replaceAll' | 'debugOnly';
 
@@ -51,3 +52,17 @@ export function createWidgetCSSDebugResult(
     ...data
   };
 }
+
+/**
+ * WidgetCSSDebug — Type-safe command executor
+ *
+ * Usage:
+ *   import { WidgetCSSDebug } from '...shared/WidgetCSSDebugTypes';
+ *   const result = await WidgetCSSDebug.execute({ ... });
+ */
+export const WidgetCSSDebug = {
+  execute(params: CommandInput<WidgetCSSDebugParams>): Promise<WidgetCSSDebugResult> {
+    return Commands.execute<WidgetCSSDebugParams, WidgetCSSDebugResult>('development/debug/widget-css', params as Partial<WidgetCSSDebugParams>);
+  },
+  commandName: 'development/debug/widget-css' as const,
+} as const;

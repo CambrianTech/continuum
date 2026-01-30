@@ -4,10 +4,11 @@
  * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 // Note: Using simple error string like ai/generate for consistency
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Inference Generate Command Parameters
@@ -134,3 +135,17 @@ export const createInferenceGenerateResultFromParams = (
   params: InferenceGenerateParams,
   differences: Omit<InferenceGenerateResult, 'context' | 'sessionId'>
 ): InferenceGenerateResult => transformPayload(params, differences);
+
+/**
+ * InferenceGenerate — Type-safe command executor
+ *
+ * Usage:
+ *   import { InferenceGenerate } from '...shared/InferenceGenerateTypes';
+ *   const result = await InferenceGenerate.execute({ ... });
+ */
+export const InferenceGenerate = {
+  execute(params: CommandInput<InferenceGenerateParams>): Promise<InferenceGenerateResult> {
+    return Commands.execute<InferenceGenerateParams, InferenceGenerateResult>('inference/generate', params as Partial<InferenceGenerateParams>);
+  },
+  commandName: 'inference/generate' as const,
+} as const;

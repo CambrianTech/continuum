@@ -5,8 +5,9 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomeUnregisterParams extends CommandParams {
   personaId: UUID;
@@ -29,3 +30,17 @@ export const createGenomeUnregisterResultFromParams = (
   unregistered: false,
   ...differences
 });
+
+/**
+ * GenomeUnregister — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeUnregister } from '...shared/GenomeUnregisterTypes';
+ *   const result = await GenomeUnregister.execute({ ... });
+ */
+export const GenomeUnregister = {
+  execute(params: CommandInput<GenomeUnregisterParams>): Promise<GenomeUnregisterResult> {
+    return Commands.execute<GenomeUnregisterParams, GenomeUnregisterResult>('genome/paging-unregister', params as Partial<GenomeUnregisterParams>);
+  },
+  commandName: 'genome/paging-unregister' as const,
+} as const;

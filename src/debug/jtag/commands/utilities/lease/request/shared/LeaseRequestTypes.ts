@@ -4,10 +4,11 @@
  * Command to request a file lease for editing
  */
 
-import type { JTAGContext, CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { FileLease } from '@shared/LeaseTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Lease Request Parameters
@@ -84,3 +85,17 @@ export const createLeaseRequestResultFromParams = (
   timestamp: new Date().toISOString(),
   ...differences
 });
+
+/**
+ * LeaseRequest — Type-safe command executor
+ *
+ * Usage:
+ *   import { LeaseRequest } from '...shared/LeaseRequestTypes';
+ *   const result = await LeaseRequest.execute({ ... });
+ */
+export const LeaseRequest = {
+  execute(params: CommandInput<LeaseRequestParams>): Promise<LeaseRequestResult> {
+    return Commands.execute<LeaseRequestParams, LeaseRequestResult>('utilities/lease/request', params as Partial<LeaseRequestParams>);
+  },
+  commandName: 'utilities/lease/request' as const,
+} as const;

@@ -12,6 +12,7 @@ import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
 // Rust-style config defaults for generic data access
@@ -38,15 +39,20 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
-      // FIRST: Get total count using SQL COUNT(*) - NOT fetching all rows!
+      // CRITICAL FIX: Use dbHandle when provided!
+      // Previously, dbHandle was IGNORED and all queries went to the main database,
+      // causing massive lock contention when multiple personas responded concurrently.
+      // PersonaTimeline and other per-persona data structures pass their own dbHandle.
+
+      let countResult;
+      let result;
+
+      // Build queries
       const countQuery = {
         collection,
         filter: params.filter  // Use 'filter' (new) not 'filters' (legacy) for operator support
       };
-      const countResult = await DataDaemon.count(countQuery);
-      const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
-      // SECOND: Get paginated data with sorting, cursor, and limit
       const storageQuery = {
         collection,
         filter: params.filter,  // Use 'filter' (new) not 'filters' (legacy) for operator support
@@ -57,9 +63,25 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         cursor: params.cursor,
         limit
       };
-      //console.debug(`🔧 CURSOR-DEBUG: Received cursor from client: ${params.cursor ? JSON.stringify(params.cursor) : 'NONE'}`);
 
-      const result = await DataDaemon.query<BaseEntity>(storageQuery);
+      if (params.dbHandle) {
+        // Per-persona database: get adapter from registry
+        const registry = DatabaseHandleRegistry.getInstance();
+        const adapter = registry.getAdapter(params.dbHandle);
+
+        // Ensure schema is cached on the per-persona adapter before querying
+        await DataDaemon.ensureAdapterSchema(adapter, collection);
+
+        // Use adapter directly for count and query
+        countResult = await adapter.count(countQuery);
+        result = await adapter.query<BaseEntity>(storageQuery);
+      } else {
+        // Main database: use DataDaemon (backwards compatible)
+        countResult = await DataDaemon.count(countQuery);
+        result = await DataDaemon.query<BaseEntity>(storageQuery);
+      }
+
+      const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
       if (!result.success) {
         const availableCollections = Object.values(COLLECTIONS).join(', ');

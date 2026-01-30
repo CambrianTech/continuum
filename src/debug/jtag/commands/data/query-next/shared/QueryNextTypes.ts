@@ -5,9 +5,10 @@
  * DataDaemon manages cursor position internally
  */
 
-import type { CommandParams, JTAGPayload, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, JTAGPayload, JTAGEnvironment, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface DataQueryNextParams extends CommandParams {
   readonly queryHandle: UUID; // Handle from query-open
@@ -24,3 +25,17 @@ export interface DataQueryNextResult<T extends BaseEntity = BaseEntity> extends 
   readonly error?: string;
   readonly timestamp: string; // Required by BaseDataResult
 }
+
+/**
+ * DataQueryNext — Type-safe command executor
+ *
+ * Usage:
+ *   import { DataQueryNext } from '...shared/DataQueryNextTypes';
+ *   const result = await DataQueryNext.execute({ ... });
+ */
+export const DataQueryNext = {
+  execute<T extends BaseEntity = BaseEntity>(params: CommandInput<DataQueryNextParams>): Promise<DataQueryNextResult<T>> {
+    return Commands.execute<DataQueryNextParams, DataQueryNextResult<T>>('data/query-next', params as Partial<DataQueryNextParams>);
+  },
+  commandName: 'data/query-next' as const,
+} as const;

@@ -34,6 +34,8 @@ import {
   createStateRecord,
   updatePersonaProfile,
   updatePersonaConfig,
+  updateUserMetadata,
+  updateUserModelConfig,
   createUserViaCommand,
   loadUserByUniqueId,
   seedRecords
@@ -874,12 +876,33 @@ async function seedViaJTAG() {
         const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
         if (user) {
           userMap[persona.uniqueId] = user;
+
+          // Update metadata for audio-native models (Qwen3-Omni, etc.)
+          if (persona.isAudioNative && persona.modelId) {
+            await updateUserMetadata(user.id, {
+              modelId: persona.modelId,
+              isAudioNative: true,
+            });
+          }
         }
       } else {
         // User already exists - load from database using uniqueId
         const existingUser = await loadUserByUniqueId(persona.uniqueId);
         if (existingUser) {
           userMap[persona.uniqueId] = existingUser;
+
+          // ALWAYS update provider for existing users (ensures ollama -> candle migration)
+          if (persona.provider) {
+            await updateUserModelConfig(existingUser.id, persona.provider);
+          }
+
+          // Also update metadata for existing audio-native models (in case it was missed)
+          if (persona.isAudioNative && persona.modelId) {
+            await updateUserMetadata(existingUser.id, {
+              modelId: persona.modelId,
+              isAudioNative: true,
+            });
+          }
         }
       }
     }
@@ -905,6 +928,7 @@ async function seedViaJTAG() {
     const helperPersona = userMap[PERSONA_UNIQUE_IDS.HELPER];
     const teacherPersona = userMap[PERSONA_UNIQUE_IDS.TEACHER];
     const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
+    const qwen3OmniPersona = userMap[PERSONA_UNIQUE_IDS.QWEN3_OMNI];
 
     // If rooms already existed, ensure system rooms have Helper AI then exit
     if (!needsRooms) {
@@ -944,7 +968,7 @@ async function seedViaJTAG() {
 
     // Update persona profiles with distinct personalities
     console.log('🎭 Updating persona profiles with distinct personalities...');
-    await Promise.all([
+    const profileUpdates = [
       updatePersonaProfile(helperPersona.id, {
         bio: 'A friendly, concise assistant who provides quick practical help and actionable solutions',
         speciality: 'practical-assistance'
@@ -957,7 +981,19 @@ async function seedViaJTAG() {
         bio: 'A critical analyst who evaluates code quality, security, and best practices with constructive feedback',
         speciality: 'code-analysis'
       })
-    ]);
+    ];
+
+    // Add Qwen3-Omni profile if created (requires DASHSCOPE_API_KEY)
+    if (qwen3OmniPersona) {
+      profileUpdates.push(
+        updatePersonaProfile(qwen3OmniPersona.id, {
+          bio: 'Audio-native AI that hears and speaks directly without text conversion. Open-source, multilingual, real-time.',
+          speciality: 'voice-conversation'
+        })
+      );
+    }
+
+    await Promise.all(profileUpdates);
     console.log('✅ Persona profiles updated with personalities');
 
     // Ensure system rooms have Helper AI as default assistant

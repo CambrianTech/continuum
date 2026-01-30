@@ -20,6 +20,8 @@ import { DatasetExecutionEntity, type DatasetArchiveInfo } from '../../../../../
 import type { CompressionType } from '../../shared/DatasetConfig';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class DatasetCreateServerCommand {
   /**
    * Execute - returns UUID immediately, runs archive creation in background
@@ -58,14 +60,13 @@ export class DatasetCreateServerCommand {
     };
 
     // Save to database
-    const createResult = await Commands.execute<DataCreateParams, DataCreateResultType>(DATA_COMMANDS.CREATE, {
+    const createResult = await DataCreate.execute({
       collection: DatasetExecutionEntity.collection,
-      data: execution,
-      id: jobId,
+      data: { ...execution, id: jobId },
     });
 
     if (!createResult.success) {
-      throw new Error(`Failed to create dataset execution: ${createResult.error?.message ?? 'Unknown error'}`);
+      throw new Error(`Failed to create dataset execution: ${createResult.error ?? 'Unknown error'}`);
     }
 
     console.log(`✅ Dataset job ${jobId} queued (${projectsToArchive.length} projects)`);
@@ -193,7 +194,7 @@ export class DatasetCreateServerCommand {
    * Update job status in database
    */
   private async updateJobStatus(jobId: string, updates: Partial<DatasetExecutionEntity>): Promise<void> {
-    await Commands.execute<DataUpdateParams, any>(DATA_COMMANDS.UPDATE, {
+    await DataUpdate.execute({
       collection: DatasetExecutionEntity.collection,
       id: jobId,
       data: updates,

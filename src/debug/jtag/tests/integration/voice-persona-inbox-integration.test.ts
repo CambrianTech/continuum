@@ -19,6 +19,8 @@ import { generateUUID } from '../../system/core/types/CrossPlatformUUID';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
 
+import { Ping } from '../../commands/ping/shared/PingTypes';
+import { DataList } from '../../commands/data/list/shared/DataListTypes';
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -34,7 +36,7 @@ async function testSystemRunning(): Promise<void> {
   console.log('\n🔍 Test 1: Verify system is running');
 
   try {
-    const result = await Commands.execute('ping', {});
+    const result = await Ping.execute({});
     assert(result.success, 'System is running');
   } catch (error) {
     throw new Error('❌ System not running. Run "npm start" first.');
@@ -44,7 +46,7 @@ async function testSystemRunning(): Promise<void> {
 async function findAIPersonas(): Promise<UserEntity[]> {
   console.log('\n🔍 Test 2: Find AI personas');
 
-  const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>('data/list', {
+  const result = await DataList.execute<UserEntity>({
     collection: 'users',
     filter: { type: 'persona' },
     limit: 10,

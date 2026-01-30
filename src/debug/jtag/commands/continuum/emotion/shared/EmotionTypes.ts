@@ -1,4 +1,5 @@
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 
 export interface EmotionParams extends CommandParams {
   emoji: string;        // Emoji to display (e.g., '❤️', '😊', '🤔')
@@ -15,3 +16,17 @@ export interface EmotionResult extends CommandResult {
 }
 
 export const EMOTION_EVENT = 'continuum:emotion' as const;
+
+/**
+ * Emotion — Type-safe command executor
+ *
+ * Usage:
+ *   import { Emotion } from '...shared/EmotionTypes';
+ *   const result = await Emotion.execute({ ... });
+ */
+export const Emotion = {
+  execute(params: CommandInput<EmotionParams>): Promise<EmotionResult> {
+    return Commands.execute<EmotionParams, EmotionResult>('continuum/emotion', params as Partial<EmotionParams>);
+  },
+  commandName: 'continuum/emotion' as const,
+} as const;

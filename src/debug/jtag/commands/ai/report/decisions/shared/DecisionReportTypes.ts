@@ -7,10 +7,11 @@
  * 3. file/save (write report to disk)
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '../../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { DecisionAction } from '../../../../../system/data/entities/CoordinationDecisionEntity';
 import type { JTAGError } from '../../../../../system/core/types/ErrorTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Parameters for generating decision report
@@ -244,3 +245,17 @@ export interface DecisionForReport {
     tags?: string[];
   };
 }
+
+/**
+ * DecisionReport — Type-safe command executor
+ *
+ * Usage:
+ *   import { DecisionReport } from '...shared/DecisionReportTypes';
+ *   const result = await DecisionReport.execute({ ... });
+ */
+export const DecisionReport = {
+  execute(params: CommandInput<DecisionReportParams>): Promise<DecisionReportResult> {
+    return Commands.execute<DecisionReportParams, DecisionReportResult>('ai/report/decisions', params as Partial<DecisionReportParams>);
+  },
+  commandName: 'ai/report/decisions' as const,
+} as const;

@@ -1,6 +1,12 @@
 /**
  * Continuum Core IPC Client - TypeScript <-> Rust via Unix Socket
  *
+ * Binary framing protocol (length-prefixed):
+ * - Requests: Newline-delimited JSON (TypeScript → Rust)
+ * - Responses: [4 bytes u32 BE length][payload] (Rust → TypeScript)
+ *   - JSON-only: payload = JSON bytes
+ *   - Binary: payload = JSON bytes + \0 + raw binary bytes
+ *
  * Event-driven architecture:
  * - Socket.on('data') wakes when response ready (no polling)
  * - Async/await for request/response
@@ -9,6 +15,14 @@
 
 import net from 'net';
 import { EventEmitter } from 'events';
+
+// Import generated types from Rust (single source of truth)
+import type {
+	InboxMessageRequest,
+	CognitionDecision,
+	PriorityScore,
+	PersonaState,
+} from '../../../shared/generated';
 
 // ============================================================================
 // Types
@@ -37,14 +51,21 @@ interface Response {
 	error?: string;
 }
 
+/** Full IPC response including optional binary payload */
+interface IPCResponse {
+	response: Response;
+	binaryData?: Buffer;
+}
+
 // ============================================================================
 // IPC Client
 // ============================================================================
 
 export class RustCoreIPCClient extends EventEmitter {
 	private socket: net.Socket | null = null;
-	private buffer = '';
-	private pendingRequests: Map<number, (response: Response) => void> = new Map();
+	/** Binary buffer for length-prefixed frame parsing */
+	private _buffer: Buffer = Buffer.alloc(0);
+	private pendingRequests: Map<number, (result: IPCResponse) => void> = new Map();
 	private nextRequestId = 1;
 	private connected = false;
 
@@ -69,18 +90,8 @@ export class RustCoreIPCClient extends EventEmitter {
 				resolve();
 			});
 
-			this.socket.on('data', (data) => {
-				this.buffer += data.toString();
-
-				// Process complete lines
-				const lines = this.buffer.split('\n');
-				this.buffer = lines.pop() || '';
-
-				for (const line of lines) {
-					if (line.trim()) {
-						this.handleResponse(line);
-					}
-				}
+			this.socket.on('data', (data: Buffer) => {
+				this.onData(data);
 			});
 
 			this.socket.on('error', (err) => {
@@ -95,26 +106,69 @@ export class RustCoreIPCClient extends EventEmitter {
 		});
 	}
 
-	private handleResponse(line: string): void {
-		try {
-			const response: Response & { requestId?: number } = JSON.parse(line);
-			if (response.requestId !== undefined) {
-				const callback = this.pendingRequests.get(response.requestId);
-				if (callback) {
-					callback(response);
-					this.pendingRequests.delete(response.requestId);
-				}
+	/**
+	 * Process incoming binary data using length-prefixed framing.
+	 * Frame format: [4 bytes u32 BE length][payload]
+	 * - JSON-only: payload = UTF-8 JSON
+	 * - Binary: payload = UTF-8 JSON + \0 separator + raw binary
+	 */
+	private onData(data: Buffer): void {
+		this._buffer = Buffer.concat([this._buffer, data]);
+
+		// Process all complete frames in buffer
+		while (this._buffer.length >= 4) {
+			const totalLength = this._buffer.readUInt32BE(0);
+			const frameEnd = 4 + totalLength;
+
+			if (this._buffer.length < frameEnd) {
+				break; // Need more data
 			}
-		} catch (e) {
-			console.error('Failed to parse response:', e, line);
+
+			// Extract complete frame payload
+			const payload = this._buffer.subarray(4, frameEnd);
+			this._buffer = this._buffer.subarray(frameEnd);
+
+			// Find \0 separator — unambiguous because serde_json encodes
+			// null chars as \u0000 (never raw 0x00 in JSON output)
+			const separatorIndex = payload.indexOf(0);
+
+			let jsonBytes: Buffer;
+			let binaryData: Buffer | undefined;
+
+			if (separatorIndex !== -1) {
+				// Binary frame: [JSON][\0][raw binary bytes]
+				jsonBytes = payload.subarray(0, separatorIndex);
+				binaryData = payload.subarray(separatorIndex + 1);
+			} else {
+				// JSON-only frame
+				jsonBytes = payload;
+			}
+
+			// Parse JSON response
+			try {
+				const response: Response & { requestId?: number } = JSON.parse(jsonBytes.toString('utf8'));
+				this.handleResponse(response, binaryData);
+			} catch (e) {
+				console.error('Failed to parse IPC response JSON:', e);
+			}
+		}
+	}
+
+	private handleResponse(response: Response & { requestId?: number }, binaryData?: Buffer): void {
+		if (response.requestId !== undefined) {
+			const callback = this.pendingRequests.get(response.requestId);
+			if (callback) {
+				callback({ response, binaryData });
+				this.pendingRequests.delete(response.requestId);
+			}
 		}
 	}
 
 	/**
-	 * Send a request and wait for response (event-driven, no polling)
-	 * Supports concurrent requests via request IDs
+	 * Send a request and wait for full response (including optional binary data).
+	 * Used internally by request() and by methods that need binary payloads.
 	 */
-	private async request(command: any): Promise<Response> {
+	private async requestFull(command: any): Promise<IPCResponse> {
 		if (!this.connected || !this.socket) {
 			throw new Error('Not connected to continuum-core server');
 		}
@@ -126,12 +180,12 @@ export class RustCoreIPCClient extends EventEmitter {
 			const json = JSON.stringify(requestWithId) + '\n';
 			const start = performance.now();
 
-			this.pendingRequests.set(requestId, (response) => {
+			this.pendingRequests.set(requestId, (result) => {
 				const duration = performance.now() - start;
 				if (duration > 10) {
 					console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(2)}ms`);
 				}
-				resolve(response);
+				resolve(result);
 			});
 
 			this.socket!.write(json, (err) => {
@@ -141,6 +195,15 @@ export class RustCoreIPCClient extends EventEmitter {
 				}
 			});
 		});
+	}
+
+	/**
+	 * Send a request and wait for JSON response (ignores binary payload).
+	 * Used by most IPC methods that don't need raw binary data.
+	 */
+	private async request(command: any): Promise<Response> {
+		const { response } = await this.requestFull(command);
+		return response;
 	}
 
 	/**
@@ -208,15 +271,20 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
-	 * Synthesize text to speech (currently returns hold music)
+	 * Synthesize text to speech and return raw PCM audio via binary IPC framing.
+	 * Returns raw i16 LE PCM bytes — no base64 encoding overhead.
+	 *
+	 * NOTE: For live voice calls, prefer voiceSpeakInCall() which injects audio
+	 * directly into the Rust call mixer without audio ever leaving the Rust process.
 	 */
 	async voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<{
 		audio: Buffer;
 		sampleRate: number;
 		durationMs: number;
+		numSamples: number;
 		adapter: string;
 	}> {
-		const response = await this.request({
+		const { response, binaryData } = await this.requestFull({
 			command: 'voice/synthesize',
 			text,
 			voice,
@@ -227,15 +295,53 @@ export class RustCoreIPCClient extends EventEmitter {
 			throw new Error(response.error || 'Failed to synthesize speech');
 		}
 
-		// Convert base64 audio to Buffer
-		const audioBase64 = response.result?.audio || '';
-		const audio = Buffer.from(audioBase64, 'base64');
+		// Binary framing: raw PCM bytes arrive as binaryData (no base64 decode needed)
+		const audio = binaryData || Buffer.alloc(0);
 
 		return {
 			audio,
 			sampleRate: response.result?.sample_rate || 16000,
 			durationMs: response.result?.duration_ms || 0,
+			numSamples: response.result?.num_samples || 0,
 			adapter: response.result?.adapter || 'unknown',
+		};
+	}
+
+	/**
+	 * Synthesize text and inject audio directly into a live call's mixer.
+	 * Audio NEVER leaves the Rust process — this method only returns metadata.
+	 *
+	 * Flow: TypeScript sends text → Rust synthesizes → injects into call mixer →
+	 * audio streams to browsers via existing WebSocket binary frames.
+	 *
+	 * @param callId - The call to inject audio into
+	 * @param userId - The participant (persona) who is "speaking"
+	 * @param text - The text to synthesize
+	 * @param voice - Optional voice name
+	 * @param adapter - Optional TTS adapter (e.g., "kokoro")
+	 */
+	async voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string): Promise<{
+		numSamples: number;
+		durationMs: number;
+		sampleRate: number;
+	}> {
+		const response = await this.request({
+			command: 'voice/speak-in-call',
+			call_id: callId,
+			user_id: userId,
+			text,
+			voice,
+			adapter,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to speak in call');
+		}
+
+		return {
+			numSamples: response.result?.num_samples || 0,
+			durationMs: response.result?.duration_ms || 0,
+			sampleRate: response.result?.sample_rate || 16000,
 		};
 	}
 
@@ -251,6 +357,108 @@ export class RustCoreIPCClient extends EventEmitter {
 		if (!response.success) {
 			throw new Error(response.error || 'Failed to create inbox');
 		}
+	}
+
+	// ========================================================================
+	// Cognition Engine Methods
+	// ========================================================================
+
+	/**
+	 * Create a cognition engine for a persona (call once on persona init)
+	 */
+	async cognitionCreateEngine(personaId: string, personaName: string): Promise<void> {
+		const response = await this.request({
+			command: 'cognition/create-engine',
+			persona_id: personaId,
+			persona_name: personaName,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create cognition engine');
+		}
+	}
+
+	/**
+	 * Calculate message priority (sub-1ms in Rust)
+	 */
+	async cognitionCalculatePriority(
+		personaId: string,
+		content: string,
+		senderType: 'human' | 'persona' | 'agent' | 'system',
+		isVoice: boolean,
+		roomId: string,
+		timestamp: number
+	): Promise<PriorityScore> {
+		const response = await this.request({
+			command: 'cognition/calculate-priority',
+			persona_id: personaId,
+			content,
+			sender_type: senderType,
+			is_voice: isVoice,
+			room_id: roomId,
+			timestamp,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to calculate priority');
+		}
+
+		return response.result as PriorityScore;
+	}
+
+	/**
+	 * Fast-path decision: should we respond? (sub-1ms in Rust)
+	 * Handles deduplication, mention detection, state-based gating
+	 */
+	async cognitionFastPathDecision(
+		personaId: string,
+		message: InboxMessageRequest
+	): Promise<CognitionDecision> {
+		const response = await this.request({
+			command: 'cognition/fast-path-decision',
+			persona_id: personaId,
+			message,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get fast-path decision');
+		}
+
+		return response.result as CognitionDecision;
+	}
+
+	/**
+	 * Enqueue message to persona's priority inbox
+	 */
+	async cognitionEnqueueMessage(
+		personaId: string,
+		message: InboxMessageRequest
+	): Promise<void> {
+		const response = await this.request({
+			command: 'cognition/enqueue-message',
+			persona_id: personaId,
+			message,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to enqueue message');
+		}
+	}
+
+	/**
+	 * Get persona's current state (energy, mood, attention)
+	 */
+	async cognitionGetState(personaId: string): Promise<PersonaState & { service_cadence_ms: number }> {
+		const response = await this.request({
+			command: 'cognition/get-state',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get persona state');
+		}
+
+		return response.result as PersonaState & { service_cadence_ms: number };
 	}
 
 	/**

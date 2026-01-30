@@ -14,7 +14,8 @@
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Parameters for muting/unmuting an AI
@@ -83,3 +84,17 @@ export interface AIMuteResult extends CommandResult {
   readonly error?: string;
   readonly message?: string;
 }
+
+/**
+ * AIMute — Type-safe command executor
+ *
+ * Usage:
+ *   import { AIMute } from '...shared/AIMuteTypes';
+ *   const result = await AIMute.execute({ ... });
+ */
+export const AIMute = {
+  execute(params: CommandInput<AIMuteParams>): Promise<AIMuteResult> {
+    return Commands.execute<AIMuteParams, AIMuteResult>('ai/mute', params as Partial<AIMuteParams>);
+  },
+  commandName: 'ai/mute' as const,
+} as const;

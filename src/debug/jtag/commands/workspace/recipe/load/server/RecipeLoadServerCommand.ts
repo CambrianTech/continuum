@@ -20,6 +20,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
 // Use process.cwd() to get consistent path from project root
 const RECIPES_DIR = path.join(process.cwd(), 'system/recipes');
 const COLLECTION = 'recipes'; // TODO: Add to DATABASE_CONFIG.COLLECTIONS
@@ -70,10 +73,10 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
           const definition: RecipeDefinition = JSON.parse(fileContent);
 
           // Check if recipe already exists
-          const existingResult = await Commands.execute<DataListParams, DataListResult<RecipeEntity>>(DATA_COMMANDS.LIST, {
+          const existingResult = await DataList.execute<RecipeEntity>({
             collection: COLLECTION,
             filter: { uniqueId: definition.uniqueId }
-          } as Partial<DataListParams>);
+          });
 
           const now = new Date();
 
@@ -81,7 +84,7 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
             // Recipe exists
             if (params.reload) {
               // Update existing recipe
-              const updateResult = await Commands.execute<DataUpdateParams, DataUpdateResult<RecipeEntity>>(DATA_COMMANDS.UPDATE, {
+              const updateResult = await DataUpdate.execute<RecipeEntity>({
                 backend: 'server',
                 collection: COLLECTION,
                 id: existingResult.items[0].id,
@@ -127,7 +130,7 @@ export class RecipeLoadServerCommand extends RecipeLoadCommand {
               lastUsedAt: now
             });
 
-            const createResult = await Commands.execute<DataCreateParams, DataCreateResult<RecipeEntity>>(DATA_COMMANDS.CREATE, {
+            const createResult = await DataCreate.execute<RecipeEntity>({
               backend: 'server',
               collection: COLLECTION,
               data: entity

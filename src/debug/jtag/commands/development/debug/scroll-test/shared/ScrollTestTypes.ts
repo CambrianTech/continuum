@@ -5,7 +5,8 @@
  * Useful for testing infinite scroll, chat positioning, and scroll restoration.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface ScrollTestParams extends CommandParams {
   readonly target: 'top' | 'bottom' | 'position';
@@ -78,3 +79,16 @@ export function createScrollTestResult(
     sessionId
   };
 }
+/**
+ * ScrollTest — Type-safe command executor
+ *
+ * Usage:
+ *   import { ScrollTest } from '...shared/ScrollTestTypes';
+ *   const result = await ScrollTest.execute({ ... });
+ */
+export const ScrollTest = {
+  execute(params: CommandInput<ScrollTestParams>): Promise<ScrollTestResult> {
+    return Commands.execute<ScrollTestParams, ScrollTestResult>('development/debug/scroll-test', params as Partial<ScrollTestParams>);
+  },
+  commandName: 'development/debug/scroll-test' as const,
+} as const;

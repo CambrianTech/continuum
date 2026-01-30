@@ -5,9 +5,10 @@
  * "Bag of words" = collection of AI personas interacting naturally based on conversation context.
  */
 
-import type { CommandParams, CommandResult, JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Parameters for bag-of-words command
@@ -120,3 +121,17 @@ export const createBagOfWordsResult = (
   sessionId: UUID,
   data: Omit<BagOfWordsResult, 'context' | 'sessionId'>
 ): BagOfWordsResult => createPayload(context, sessionId, data);
+
+/**
+ * BagOfWords — Type-safe command executor
+ *
+ * Usage:
+ *   import { BagOfWords } from '...shared/BagOfWordsTypes';
+ *   const result = await BagOfWords.execute({ ... });
+ */
+export const BagOfWords = {
+  execute(params: CommandInput<BagOfWordsParams>): Promise<BagOfWordsResult> {
+    return Commands.execute<BagOfWordsParams, BagOfWordsResult>('ai/bag-of-words', params as Partial<BagOfWordsParams>);
+  },
+  commandName: 'ai/bag-of-words' as const,
+} as const;

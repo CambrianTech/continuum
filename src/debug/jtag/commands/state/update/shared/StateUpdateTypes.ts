@@ -5,9 +5,10 @@
  * Following the established state command pattern for simple delegation
  */
 
-import type { JTAGPayload, CommandParams } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGPayload, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { Commands } from '../../../../system/core/shared/Commands';
 
 /** State update command parameters */
 export interface StateUpdateParams extends CommandParams {
@@ -43,3 +44,16 @@ export function createStateUpdateResult<T extends BaseEntity>(
     ...overrides
   };
 }
+/**
+ * StateUpdate — Type-safe command executor
+ *
+ * Usage:
+ *   import { StateUpdate } from '...shared/StateUpdateTypes';
+ *   const result = await StateUpdate.execute({ ... });
+ */
+export const StateUpdate = {
+  execute<T extends BaseEntity = BaseEntity>(params: CommandInput<StateUpdateParams>): Promise<StateUpdateResult<T>> {
+    return Commands.execute<StateUpdateParams, StateUpdateResult<T>>('state/update', params as Partial<StateUpdateParams>);
+  },
+  commandName: 'state/update' as const,
+} as const;

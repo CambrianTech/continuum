@@ -19,9 +19,12 @@ import { DeterministicCognitiveScheduler } from '../cognitive-schedulers/Determi
 import type { PersonaInbox } from '../PersonaInbox';
 import type { PersonaStateManager } from '../PersonaState';
 import type { PersonaGenome } from '../PersonaGenome';
-// Future imports:
-// import { HeuristicCognitiveScheduler } from '../cognitive-schedulers/HeuristicCognitiveScheduler';
-// import { NeuralCognitiveScheduler } from '../cognitive-schedulers/NeuralCognitiveScheduler';
+import { ChannelRegistry } from '../channels/ChannelRegistry';
+import { ChannelQueue } from '../channels/ChannelQueue';
+import type { BaseQueueItem } from '../channels/BaseQueueItem';
+
+// Import QueueItem type for handleChatMessageFromCNS signature
+import type { QueueItem } from '../PersonaInbox';
 
 // Type for PersonaUser (avoid circular dependency)
 // Matches PersonaUser's interface for CNS creation
@@ -44,12 +47,10 @@ interface PersonaUserLike {
     genome: PersonaGenome;  // Phase 2: genome moved inside memory module
   };
   handleChatMessageFromCNS: (item: QueueItem) => Promise<void>;
+  handleQueueItemFromCNS: (item: BaseQueueItem) => Promise<void>;
   pollTasksFromCNS: () => Promise<void>;
   generateSelfTasksFromCNS: () => Promise<void>;
 }
-
-// Import QueueItem type for handleChatMessageFromCNS signature
-import type { QueueItem } from '../PersonaInbox';
 
 export class CNSFactory {
   /**
@@ -148,11 +149,41 @@ export class CNSFactory {
   }
 
   /**
+   * Create per-domain channel queues and register in a ChannelRegistry.
+   * Each domain gets its own ChannelQueue — items control behavior via polymorphism.
+   */
+  private static createChannelRegistry(personaName: string): ChannelRegistry {
+    const registry = new ChannelRegistry();
+
+    // Voice channel: instant processing, never consolidate, never kick
+    registry.register(ActivityDomain.AUDIO, new ChannelQueue({
+      domain: ActivityDomain.AUDIO,
+      name: `${personaName}:voice`,
+      maxSize: 50,  // Voice shouldn't queue up — if it does, something is wrong
+    }));
+
+    // Chat channel: per-room consolidation, RTOS aging, mention urgency
+    registry.register(ActivityDomain.CHAT, new ChannelQueue({
+      domain: ActivityDomain.CHAT,
+      name: `${personaName}:chat`,
+      maxSize: 500,  // Can handle many messages (consolidation reduces effective count)
+    }));
+
+    // Background/Task channel: dependency-aware, lower priority
+    registry.register(ActivityDomain.BACKGROUND, new ChannelQueue({
+      domain: ActivityDomain.BACKGROUND,
+      name: `${personaName}:tasks`,
+      maxSize: 200,
+    }));
+
+    return registry;
+  }
+
+  /**
    * Create Deterministic CNS (Phase 1 - simplest scheduler)
    * Works with ANY model - no capability requirements
    */
   private static createDeterministicCNS(persona: PersonaUserLike): PersonaCentralNervousSystem {
-    // DeterministicCognitiveScheduler takes no constructor arguments
     const scheduler = new DeterministicCognitiveScheduler();
 
     // Assert non-null: prefrontal must be initialized before CNS creation
@@ -160,28 +191,37 @@ export class CNSFactory {
       throw new Error('CNSFactory.create() called before PrefrontalCortex initialized');
     }
 
+    const personaName = persona.entity.displayName || 'Unknown';
+
+    // Create channel registry with per-domain queues
+    const channelRegistry = this.createChannelRegistry(personaName);
+
+    // Wire channels to inbox: items routed to channels on enqueue, signals unified
+    persona.inbox.setChannelRegistry(channelRegistry);
+
     return new PersonaCentralNervousSystem({
       scheduler,
       inbox: persona.inbox,
-      personaState: persona.prefrontal.personaState,  // NEUROANATOMY: personaState in PrefrontalCortex
-      genome: persona.memory.genome,  // Phase 2: genome moved inside memory module
+      personaState: persona.prefrontal.personaState,
+      genome: persona.memory.genome,
+      channelRegistry,
       personaId: persona.entity.id,
-      personaName: persona.entity.displayName || 'Unknown',
+      personaName,
       uniqueId: persona.entity.uniqueId,
       handleChatMessage: async (item: QueueItem): Promise<void> => {
-        // Delegate to PersonaUser's existing chat handler
         await persona.handleChatMessageFromCNS(item);
       },
+      handleQueueItem: async (item: BaseQueueItem): Promise<void> => {
+        await persona.handleQueueItemFromCNS(item);
+      },
       pollTasks: async (): Promise<void> => {
-        // Delegate to PersonaUser's task polling
         await persona.pollTasksFromCNS();
       },
       generateSelfTasks: async (): Promise<void> => {
-        // Delegate to PersonaUser's self-task generation
         await persona.generateSelfTasksFromCNS();
       },
-      enabledDomains: [ActivityDomain.CHAT, ActivityDomain.BACKGROUND],
-      allowBackgroundThreads: false  // Phase 1: Chat only
+      enabledDomains: [ActivityDomain.CHAT, ActivityDomain.AUDIO, ActivityDomain.BACKGROUND],
+      allowBackgroundThreads: false,
     });
   }
 

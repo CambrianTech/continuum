@@ -5,7 +5,8 @@
  * Commands are whitelisted and sanitized to prevent security issues.
  */
 
-import type { CommandParams, CommandResult } from '@system/core/types/JTAGTypes';
+import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
+import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
  * Whitelisted shell commands that can be executed
@@ -167,3 +168,17 @@ export function normalizeMaxOutputSize(maxOutputSize?: number): number {
 
   return Math.min(Math.max(maxOutputSize, 0), MAX_SIZE);
 }
+
+/**
+ * ShellExecute — Type-safe command executor
+ *
+ * Usage:
+ *   import { ShellExecute } from '...shared/ShellExecuteTypes';
+ *   const result = await ShellExecute.execute({ ... });
+ */
+export const ShellExecute = {
+  execute(params: CommandInput<ShellExecuteParams>): Promise<ShellExecuteResult> {
+    return Commands.execute<ShellExecuteParams, ShellExecuteResult>('development/shell/execute', params as Partial<ShellExecuteParams>);
+  },
+  commandName: 'development/shell/execute' as const,
+} as const;

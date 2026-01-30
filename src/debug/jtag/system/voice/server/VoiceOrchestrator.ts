@@ -28,8 +28,10 @@ import type { DataListParams, DataListResult } from '../../../commands/data/list
 import { DATA_COMMANDS } from '../../../commands/data/shared/DataCommandConstants';
 import type { ChatSendParams, ChatSendResult } from '../../../commands/collaboration/chat/send/shared/ChatSendTypes';
 import { getAIAudioBridge } from './AIAudioBridge';
+import { getAudioNativeBridge } from './AudioNativeBridge';
 import { registerVoiceOrchestrator } from '../../rag/sources/VoiceConversationSource';
 
+import { DataList } from '../../../commands/data/list/shared/DataListTypes';
 /**
  * Utterance event from voice transcription
  */
@@ -53,6 +55,8 @@ interface VoiceParticipant {
   type: 'human' | 'persona' | 'agent';
   personaUser?: unknown;     // PersonaUser instance if AI
   expertise?: string[];      // For relevance scoring
+  modelId?: string;          // AI model ID (e.g., 'qwen3-omni', 'claude-3-sonnet')
+  isAudioNative?: boolean;   // True if model supports direct audio I/O
 }
 
 /**
@@ -101,7 +105,8 @@ export class VoiceOrchestrator {
   // Track when current speaker will FINISH - don't select new responder until then
   // This prevents interrupting the current speaker
   private lastSpeechEndTime: Map<UUID, number> = new Map();
-  private static readonly POST_SPEECH_BUFFER_MS = 2000; // 2 seconds after speaker finishes
+  private static readonly POST_SPEECH_BUFFER_MS = 500; // 0.5 seconds after speaker finishes (reduced for faster turn-taking)
+  private static readonly MAX_COOLDOWN_MS = 30000; // Maximum 30 seconds cooldown (safety net if speech event never fires)
 
   // Turn arbitration
   private arbiter: TurnArbiter;
@@ -142,9 +147,7 @@ export class VoiceOrchestrator {
     // Look up users from database
     if (participantIds.length > 0) {
       try {
-        const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-          DATA_COMMANDS.LIST,
-          {
+        const result = await DataList.execute<UserEntity>({
             collection: 'users',
             filter: { id: { $in: participantIds } },
             limit: participantIds.length
@@ -152,12 +155,19 @@ export class VoiceOrchestrator {
         );
 
         if (result.success && result.items) {
+          const audioNativeBridge = getAudioNativeBridge();
           for (const user of result.items) {
+            const metadata = user.metadata as Record<string, unknown> | undefined;
+            const modelId = metadata?.modelId as string | undefined;
+            const isAudioNative = modelId ? audioNativeBridge.isAudioNativeModel(modelId) : false;
+
             participants.push({
               userId: user.id as UUID,
               displayName: user.displayName || user.uniqueId,
               type: user.type as 'human' | 'persona' | 'agent',
-              expertise: (user.metadata as Record<string, unknown>)?.expertise as string[] | undefined
+              expertise: metadata?.expertise as string[] | undefined,
+              modelId,
+              isAudioNative,
             });
           }
         }
@@ -176,19 +186,36 @@ export class VoiceOrchestrator {
 
     console.log(`🎙️ VoiceOrchestrator: Registered session ${sessionId.slice(0, 8)} for room ${roomId.slice(0, 8)} with ${participants.length} participants`);
 
-    // Connect AI participants to the audio call server
+    // Connect AI participants to the appropriate audio bridge
     const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
     if (aiParticipants.length > 0) {
-      const bridge = getAIAudioBridge();
+      const textBridge = getAIAudioBridge();
+      const audioNativeBridge = getAudioNativeBridge();
+
       for (const ai of aiParticipants) {
-        console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} to audio call...`);
-        bridge.joinCall(sessionId, ai.userId, ai.displayName).then(success => {
-          if (success) {
-            console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected to audio`);
-          } else {
-            console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect to audio`);
-          }
-        });
+        if (ai.isAudioNative && ai.modelId) {
+          // Audio-native models: connect via AudioNativeBridge (direct audio I/O)
+          console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} (${ai.modelId}) as AUDIO-NATIVE...`);
+          audioNativeBridge.joinCall(sessionId, ai.userId, ai.displayName, ai.modelId).then(success => {
+            if (success) {
+              console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected as audio-native`);
+            } else {
+              console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect (falling back to text)`);
+              // Fallback to text-based bridge
+              textBridge.joinCall(sessionId, ai.userId, ai.displayName);
+            }
+          });
+        } else {
+          // Text-based models: connect via AIAudioBridge (STT → LLM → TTS)
+          console.log(`🎙️ VoiceOrchestrator: Connecting ${ai.displayName} as TEXT-BASED...`);
+          textBridge.joinCall(sessionId, ai.userId, ai.displayName).then(success => {
+            if (success) {
+              console.log(`🎙️ VoiceOrchestrator: ${ai.displayName} connected to audio`);
+            } else {
+              console.warn(`🎙️ VoiceOrchestrator: ${ai.displayName} failed to connect to audio`);
+            }
+          });
+        }
       }
     }
   }
@@ -197,13 +224,19 @@ export class VoiceOrchestrator {
    * Unregister a voice session
    */
   unregisterSession(sessionId: UUID): void {
-    // Disconnect AI participants from audio call
+    // Disconnect AI participants from both bridges
     const participants = this.sessionParticipants.get(sessionId);
     if (participants) {
-      const bridge = getAIAudioBridge();
+      const textBridge = getAIAudioBridge();
+      const audioNativeBridge = getAudioNativeBridge();
       const aiParticipants = participants.filter(p => p.type === 'persona' || p.type === 'agent');
+
       for (const ai of aiParticipants) {
-        bridge.leaveCall(sessionId, ai.userId);
+        if (ai.isAudioNative) {
+          audioNativeBridge.leaveCall(sessionId, ai.userId);
+        } else {
+          textBridge.leaveCall(sessionId, ai.userId);
+        }
       }
     }
 
@@ -260,13 +293,24 @@ export class VoiceOrchestrator {
     }
 
     // COOLDOWN CHECK - wait until current speaker finishes + buffer
+    // Safety net: MAX_COOLDOWN_MS ensures we eventually recover if speech event never fires
     const speechEndTime = this.lastSpeechEndTime.get(sessionId) || 0;
     const now = Date.now();
-    const waitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
-    if (now < waitUntil) {
-      const msLeft = waitUntil - now;
-      console.log(`🎙️ VoiceOrchestrator: Skipping - waiting for speaker to finish (${Math.round(msLeft / 1000)}s left)`);
+
+    // Normal cooldown: wait until speech ends + post-speech buffer
+    const normalWaitUntil = speechEndTime + VoiceOrchestrator.POST_SPEECH_BUFFER_MS;
+
+    // Safety timeout: never wait more than MAX_COOLDOWN_MS from when cooldown started
+    // speechEndTime is typically set to "now + thinking_buffer", so we can infer start time
+    const cooldownExpired = now > (speechEndTime + VoiceOrchestrator.MAX_COOLDOWN_MS);
+
+    if (now < normalWaitUntil && !cooldownExpired) {
+      const msLeft = normalWaitUntil - now;
+      console.log(`🎙️ VoiceOrchestrator: Cooldown active (${Math.round(msLeft / 1000)}s left)`);
       return;
+    } else if (cooldownExpired && speechEndTime > 0) {
+      console.warn(`🎙️ VoiceOrchestrator: Cooldown EXPIRED (safety timeout) - clearing stale cooldown`);
+      this.lastSpeechEndTime.delete(sessionId);
     }
 
     // USE ARBITER to select ONE responder for coordinated turn-taking
@@ -283,12 +327,13 @@ export class VoiceOrchestrator {
     // Set IMMEDIATE cooldown - block other selections while AI is thinking/responding
     // This prevents multiple AIs being selected before first one speaks
     // Will be extended when AI actually speaks (via voice:ai:speech event with audioDurationMs)
-    const THINKING_BUFFER_MS = 10000; // 10 seconds for AI to think + respond + start speaking
+    const THINKING_BUFFER_MS = 3000; // 3 seconds for AI to start responding (reduced from 10s)
     this.lastSpeechEndTime.set(sessionId, Date.now() + THINKING_BUFFER_MS);
 
-    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 10s while thinking)`);
+    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 3s while thinking)`);
 
     // Send directed event ONLY to the selected responder
+    console.log(`🎙️🔊 VOICE-DEBUG: Emitting voice:transcription:directed to ${selectedResponder.displayName} (targetPersonaId=${selectedResponder.userId?.slice(0, 8)})`);
     Events.emit('voice:transcription:directed', {
       sessionId: event.sessionId,
       speakerId: event.speakerId,
@@ -338,14 +383,16 @@ export class VoiceOrchestrator {
     response: string,
     originalMessage: InboxMessage
   ): Promise<void> {
+    console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse CALLED - personaId=${personaId?.slice(0, 8)}, response="${response.slice(0, 50)}..."`);
     // Only handle voice messages
     if (originalMessage.sourceModality !== 'voice' || !originalMessage.voiceSessionId) {
+      console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse - NOT a voice message, returning early`);
       return;
     }
 
     const sessionId = originalMessage.voiceSessionId;
 
-    console.log(`🎙️ VoiceOrchestrator: Routing response to TTS for session ${sessionId.slice(0, 8)}`);
+    console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse - Routing to TTS for session ${sessionId.slice(0, 8)}`);
 
     // Clean up pending response
     this.pendingResponses.delete(originalMessage.id);
@@ -358,7 +405,20 @@ export class VoiceOrchestrator {
       // Fallback to external TTS callback if set
       await this.ttsCallback(sessionId, personaId, response);
     } else {
-      console.warn('🎙️ VoiceOrchestrator: AI not in call and no TTS callback');
+      console.warn('🎙️ VoiceOrchestrator: AI not in call and no TTS callback — emitting failed speech to unblock chain');
+
+      // CRITICAL: Emit failed speech event so the voice chain can continue
+      // to the next AI. Without this, onUtterance cooldown stays active
+      // and no other AI can ever be selected.
+      Events.emit('voice:ai:speech', {
+        sessionId,
+        speakerId: personaId,
+        speakerName: 'unknown',
+        text: response,
+        audioDurationMs: 0,
+        failed: true,
+        timestamp: Date.now()
+      });
     }
   }
 
@@ -379,7 +439,10 @@ export class VoiceOrchestrator {
       response: string;
       originalMessage: InboxMessage;
     }) => {
+      console.log(`🎙️🔊 VOICE-DEBUG: VoiceOrchestrator RECEIVED persona:response:generated from ${event.personaId?.slice(0, 8)}`);
+      console.log(`🎙️🔊 VOICE-DEBUG: isVoiceMessage=${this.isVoiceMessage(event.originalMessage)}, sourceModality=${event.originalMessage?.sourceModality}, voiceSessionId=${event.originalMessage?.voiceSessionId?.slice(0, 8) || 'undefined'}`);
       if (this.isVoiceMessage(event.originalMessage)) {
+        console.log(`🎙️🔊 VOICE-DEBUG: Routing to TTS - calling onPersonaResponse`);
         await this.onPersonaResponse(event.personaId, event.response, event.originalMessage);
       }
     });
@@ -421,15 +484,21 @@ export class VoiceOrchestrator {
       speakerName: string;
       text: string;
       audioDurationMs?: number;
+      failed?: boolean;
       timestamp: number;
     }) => {
+      console.log(`🎙️ VoiceOrchestrator: RECEIVED voice:ai:speech event from ${event.speakerName} (audioDurationMs=${event.audioDurationMs}, failed=${event.failed ?? false})`);
+
       // Track when this speech will finish - prevents new selection until done + buffer
-      if (event.audioDurationMs) {
+      if (event.failed || !event.audioDurationMs || event.audioDurationMs === 0) {
+        // Speech FAILED (TTS timeout, AI not in call, etc.) — clear cooldown immediately
+        // This is CRITICAL: without clearing, the voice chain permanently stalls
+        this.lastSpeechEndTime.delete(event.sessionId as UUID);
+        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speech FAILED — cooldown CLEARED (chain continues)`);
+      } else {
         const speechEndTime = Date.now() + event.audioDurationMs;
         this.lastSpeechEndTime.set(event.sessionId as UUID, speechEndTime);
         console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} speaking for ${Math.round(event.audioDurationMs / 1000)}s - will wait until finished`);
-      } else {
-        console.log(`🎙️ VoiceOrchestrator: AI ${event.speakerName} spoke: "${event.text.slice(0, 50)}..."`);
       }
 
       // Get participants for this session

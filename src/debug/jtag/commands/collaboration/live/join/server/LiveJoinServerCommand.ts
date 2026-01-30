@@ -21,6 +21,9 @@ import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/s
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
 
+import { DataList } from '../../../../data/list/shared/DataListTypes';
+import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
+import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class LiveJoinServerCommand extends LiveJoinCommand {
 
   protected async executeJoin(params: LiveJoinParams): Promise<LiveJoinResult> {
@@ -103,9 +106,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    */
   private async resolveRoom(roomRef: string, params: LiveJoinParams): Promise<RoomEntity | null> {
     // Try by ID first
-    let result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    let result = await DataList.execute<RoomEntity>({
         collection: RoomEntity.collection,
         filter: { id: roomRef },
         limit: 1,
@@ -119,9 +120,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     }
 
     // Try by uniqueId
-    result = await Commands.execute<DataListParams, DataListResult<RoomEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    result = await DataList.execute<RoomEntity>({
         collection: RoomEntity.collection,
         filter: { uniqueId: roomRef },
         limit: 1,
@@ -144,9 +143,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     const callerIdFromParams = (params as any).callerId || (params as any).personaId;
 
     if (callerIdFromParams) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: callerIdFromParams },
           limit: 1,
@@ -164,9 +161,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
-      const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-        DATA_COMMANDS.LIST,
-        {
+      const result = await DataList.execute<UserEntity>({
           collection: UserEntity.collection,
           filter: { id: identity.userId },
           limit: 1,
@@ -244,9 +239,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    * Find active call for room
    */
   private async findActiveCall(roomId: UUID, params: LiveJoinParams): Promise<CallEntity | null> {
-    const result = await Commands.execute<DataListParams, DataListResult<CallEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<CallEntity>({
         collection: CallEntity.collection,
         filter: { roomId, status: 'active' },
         limit: 1,
@@ -277,9 +270,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
     call.peakParticipants = 0;
     call.totalParticipants = 0;
 
-    const createResult = await Commands.execute<DataCreateParams, DataCreateResult<CallEntity>>(
-      DATA_COMMANDS.CREATE,
-      {
+    const createResult = await DataCreate.execute<CallEntity>({
         collection: CallEntity.collection,
         data: call,
         context: params.context,
@@ -301,9 +292,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
    * Save updated call
    */
   private async saveCall(call: CallEntity, params: LiveJoinParams): Promise<void> {
-    await Commands.execute<DataUpdateParams, DataUpdateResult<CallEntity>>(
-      DATA_COMMANDS.UPDATE,
-      {
+    await DataUpdate.execute<CallEntity>({
         collection: CallEntity.collection,
         id: call.id,
         data: {
@@ -325,9 +314,7 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
   private async lookupUsers(userIds: UUID[], params: LiveJoinParams): Promise<readonly UserEntity[]> {
     if (userIds.length === 0) return [];
 
-    const result = await Commands.execute<DataListParams, DataListResult<UserEntity>>(
-      DATA_COMMANDS.LIST,
-      {
+    const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
         filter: { id: { $in: userIds } },
         limit: userIds.length,

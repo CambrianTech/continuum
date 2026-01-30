@@ -196,6 +196,9 @@ export class AudioStreamClient {
    * Uses AudioWorklet for processing on audio thread (NOT main thread)
    */
   async startMicrophone(): Promise<void> {
+    // Idempotent: already streaming, nothing to do
+    if (this.micWorkletNode) return;
+
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Not connected to call server');
     }
@@ -337,11 +340,6 @@ export class AudioStreamClient {
             language: msg.language,
           });
           break;
-        case 'MixedAudio':
-          // DEPRECATED: Audio now comes as binary frames
-          // Keep for backwards compatibility during transition
-          this.handleMixedAudio(msg.data);
-          break;
       }
     } catch (error) {
       console.error('AudioStreamClient: Failed to parse message:', error);
@@ -384,39 +382,6 @@ export class AudioStreamClient {
     const int16Data = new Int16Array(arrayBuffer);
 
     // Convert Int16 to Float32 for Web Audio API
-    const samples = new Float32Array(int16Data.length);
-    for (let i = 0; i < int16Data.length; i++) {
-      samples[i] = int16Data[i] / 32768;
-    }
-
-    // Transfer Float32Array to worklet (zero-copy via transferable)
-    this.playbackWorkletNode.port.postMessage(
-      { type: 'audio', samples },
-      [samples.buffer]  // Transfer ownership - zero-copy
-    );
-  }
-
-  /**
-   * Handle received mixed audio (DEPRECATED - for backwards compatibility)
-   * Decode on main thread (fast), transfer Float32Array to worklet (zero-copy)
-   */
-  private handleMixedAudio(base64Data: string): void {
-    // Ensure audio context is running (needed after user interaction)
-    if (this.audioContext?.state === 'suspended') {
-      this.audioContext.resume();
-    }
-
-    if (!this.playbackWorkletNode) return;
-
-    // Decode base64 on main thread (atob not available in AudioWorkletGlobalScope)
-    const binaryString = atob(base64Data);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    const int16Data = new Int16Array(bytes.buffer);
-
-    // Convert Int16 to Float32
     const samples = new Float32Array(int16Data.length);
     for (let i = 0; i < int16Data.length; i++) {
       samples[i] = int16Data[i] / 32768;

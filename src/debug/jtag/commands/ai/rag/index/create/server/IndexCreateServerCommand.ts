@@ -8,12 +8,14 @@ import { IndexCreateCommand } from '../shared/IndexCreateCommand';
 import type { JTAGContext } from '../../../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../../../daemons/command-daemon/shared/CommandBase';
 import type { IndexCreateParams, IndexCreateResult } from '../shared/IndexCreateTypes';
-import type { DataCreateResult } from '../../../../../data/create/shared/DataCreateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../../../data/create/shared/DataCreateTypes';
 import type { EmbeddingGenerateResult } from '../../../../embedding/generate/shared/EmbeddingGenerateTypes';
 import { CodeIndexEntity } from '../../../../../../system/data/entities/CodeIndexEntity';
 import { Commands } from '../../../../../../system/core/shared/Commands';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 
+import { EmbeddingGenerate } from '../../../../embedding/generate/shared/EmbeddingGenerateTypes';
+import { DataCreate } from '../../../../../data/create/shared/DataCreateTypes';
 export class IndexCreateServerCommand extends IndexCreateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('ai/rag/index/create', context, subpath, commander);
@@ -31,7 +33,7 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
 
       if (!embedding) {
         console.log(`🧬 Generating embedding for content (${params.content.length} chars)`);
-        const embeddingResult = await Commands.execute('ai/embedding/generate', {
+        const embeddingResult = await EmbeddingGenerate.execute({
           input: params.content,
           model: embeddingModel,
           context: this.context,
@@ -86,12 +88,12 @@ export class IndexCreateServerCommand extends IndexCreateCommand {
       }
 
       // Store in database using Commands.execute
-      const result = await Commands.execute(DATA_COMMANDS.CREATE, {
+      const result = await DataCreate.execute({
         collection: CodeIndexEntity.collection,
         data: entry,
         context: this.context,
         sessionId: params.sessionId
-      }) as DataCreateResult<CodeIndexEntity>;
+      });
 
       const durationMs = Date.now() - startTime;
 

@@ -19,7 +19,7 @@
 import * as path from 'path';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Commands } from '../../core/shared/Commands';
-import type { DataCreateParams } from '../../../commands/data/create/shared/DataCreateTypes';
+import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import type {
@@ -40,6 +40,7 @@ import { SystemPaths } from '../../core/config/SystemPaths';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { BlobStorage, storeIfLarge } from '../../storage/BlobStorage';
 
+import { DataCreate } from '../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Parameters for logging a decision
  */
@@ -197,7 +198,7 @@ export class CoordinationDecisionLogger {
       } as any;
 
       // Store to database (fire-and-forget in PersonaUser, but sync here for error handling)
-      await Commands.execute(DATA_COMMANDS.CREATE, {
+      await DataCreate.execute({
         collection: COLLECTIONS.COORDINATION_DECISIONS,
         data: entity,
         backend: 'server',
