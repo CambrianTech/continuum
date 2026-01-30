@@ -109,6 +109,10 @@ ndarray = "0.16"
 tokio-tungstenite = "0.21"
 futures-util = "0.3"
 
+# Edge-TTS (Microsoft Edge Read Aloud API — free, no API key)
+msedge-tts = "0.3"
+
+
 [workspace.package]
 edition = "2021"
 version = "0.1.0"

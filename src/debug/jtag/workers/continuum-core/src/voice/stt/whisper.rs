@@ -32,45 +32,84 @@ impl WhisperSTT {
         }
     }
 
-    /// Find the model file in common locations
+    /// Model preference order: best quality/speed ratio first.
+    /// turbo is nearly as accurate as large-v3 but ~3x faster.
+    const MODEL_PREFERENCE: &'static [(&'static str, &'static str)] = &[
+        ("large-v3-turbo", "ggml-large-v3-turbo.bin"),
+        ("large-v3", "ggml-large-v3.bin"),
+        ("medium", "ggml-medium.en.bin"),
+        ("small", "ggml-small.en.bin"),
+        ("base", "ggml-base.en.bin"),
+    ];
+
+    /// Search directories for model files
+    fn model_search_dirs() -> Vec<PathBuf> {
+        let mut dirs = vec![PathBuf::from("models/whisper")];
+        if let Some(data_dir) = dirs::data_dir() {
+            dirs.push(data_dir.join("whisper"));
+        }
+        dirs.push(PathBuf::from("/usr/local/share/whisper"));
+        dirs
+    }
+
+    /// Find the best available model on disk.
+    ///
+    /// Priority:
+    /// 1. Explicit `model_path` field (constructor override)
+    /// 2. `WHISPER_MODEL` env var (user override)
+    /// 3. Auto-select: scan disk for best available (turbo > large-v3 > medium > small > base)
     fn find_model_path(&self) -> PathBuf {
+        // 1. Explicit model path from constructor
         if let Some(ref path) = self.model_path {
             return path.clone();
         }
 
-        // Get model preference from WHISPER_MODEL env var (default: base)
-        let model_name = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "base".to_string());
+        let search_dirs = Self::model_search_dirs();
 
-        // Map model name to filename
-        let model_file = match model_name.as_str() {
-            "base" => "ggml-base.en.bin",
-            "small" => "ggml-small.en.bin",
-            "medium" => "ggml-medium.en.bin",
-            "large-v3" => "ggml-large-v3.bin",
-            "large-v3-turbo" => "ggml-large-v3-turbo.bin",
-            _ => {
-                tracing::warn!("Unknown WHISPER_MODEL='{}', defaulting to base", model_name);
-                "ggml-base.en.bin"
-            }
-        };
+        // 2. WHISPER_MODEL env var override
+        if let Ok(model_name) = std::env::var("WHISPER_MODEL") {
+            let model_file = Self::MODEL_PREFERENCE
+                .iter()
+                .find(|(name, _)| *name == model_name)
+                .map(|(_, file)| *file);
 
-        // Search for the model in common locations
-        let candidates = vec![
-            PathBuf::from(format!("models/whisper/{}", model_file)),
-            dirs::data_dir()
-                .unwrap_or_default()
-                .join(format!("whisper/{}", model_file)),
-            PathBuf::from(format!("/usr/local/share/whisper/{}", model_file)),
-        ];
-
-        for path in &candidates {
-            if path.exists() {
-                return path.clone();
+            if let Some(file) = model_file {
+                for dir in &search_dirs {
+                    let path = dir.join(file);
+                    if path.exists() {
+                        info!("Whisper: Using model from WHISPER_MODEL env: {} ({:?})", model_name, path);
+                        return path;
+                    }
+                }
+                warn!(
+                    "Whisper: WHISPER_MODEL='{}' set but file not found, falling back to auto-select",
+                    model_name
+                );
+            } else {
+                warn!(
+                    "Whisper: Unknown WHISPER_MODEL='{}', falling back to auto-select",
+                    model_name
+                );
             }
         }
 
-        // Default - will fail if not found, but error message will be helpful
-        PathBuf::from(format!("models/whisper/{}", model_file))
+        // 3. Auto-select: scan for best available model
+        for (name, file) in Self::MODEL_PREFERENCE {
+            for dir in &search_dirs {
+                let path = dir.join(file);
+                if path.exists() {
+                    info!("Whisper: Auto-selected best available model: {} ({:?})", name, path);
+                    return path;
+                }
+            }
+        }
+
+        // Nothing found — return default path so the error message is helpful
+        warn!("Whisper: No model files found. Download from:");
+        warn!("  https://huggingface.co/ggerganov/whisper.cpp/tree/main");
+        warn!("  Recommended: ggml-large-v3-turbo.bin (best speed/quality)");
+        warn!("  Place in: models/whisper/");
+        PathBuf::from("models/whisper/ggml-large-v3-turbo.bin")
     }
 
     /// Synchronous transcription (runs on blocking thread)
@@ -281,5 +320,28 @@ mod tests {
         let adapter = WhisperSTT::new();
         assert_eq!(adapter.name(), "whisper");
         assert!(!adapter.is_initialized());
+    }
+
+    #[test]
+    fn test_model_preference_order() {
+        // turbo should be first (best speed/quality ratio)
+        assert_eq!(WhisperSTT::MODEL_PREFERENCE[0].0, "large-v3-turbo");
+        assert_eq!(WhisperSTT::MODEL_PREFERENCE[1].0, "large-v3");
+        assert_eq!(WhisperSTT::MODEL_PREFERENCE[4].0, "base");
+    }
+
+    #[test]
+    fn test_explicit_model_path() {
+        let path = PathBuf::from("/tmp/test-model.bin");
+        let adapter = WhisperSTT::with_model_path(path.clone());
+        // Explicit path should be returned directly regardless of existence
+        assert_eq!(adapter.find_model_path(), path);
+    }
+
+    #[test]
+    fn test_model_search_dirs_not_empty() {
+        let dirs = WhisperSTT::model_search_dirs();
+        assert!(!dirs.is_empty());
+        assert!(dirs[0].ends_with("models/whisper"));
     }
 }

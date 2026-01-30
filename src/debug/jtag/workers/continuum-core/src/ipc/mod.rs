@@ -118,6 +118,32 @@ enum Request {
         adapter: Option<String>,
     },
 
+    /// Synthesize audio and store in server-side buffer pool.
+    /// Returns a Handle (UUID) + metadata. Audio stays in Rust memory.
+    /// Use voice/play-handle to inject into a call, or voice/discard-handle to free.
+    #[serde(rename = "voice/synthesize-handle")]
+    VoiceSynthesizeHandle {
+        text: String,
+        voice: Option<String>,
+        adapter: Option<String>,
+    },
+
+    /// Inject previously synthesized audio (by handle) into a call's mixer.
+    /// Audio never crosses IPC — Rust reads from buffer pool and injects directly.
+    #[serde(rename = "voice/play-handle")]
+    VoicePlayHandle {
+        handle: String,
+        call_id: String,
+        user_id: String,
+    },
+
+    /// Explicitly free a synthesized audio buffer.
+    /// Buffers also auto-expire after 5 minutes.
+    #[serde(rename = "voice/discard-handle")]
+    VoiceDiscardHandle {
+        handle: String,
+    },
+
     #[serde(rename = "voice/transcribe")]
     VoiceTranscribe {
         /// Base64-encoded i16 PCM samples, 16kHz mono
@@ -220,6 +246,9 @@ struct ServerState {
     /// Shared CallManager for direct audio injection (speak-in-call).
     /// Audio never leaves Rust — IPC only returns metadata.
     call_manager: Arc<crate::voice::call_server::CallManager>,
+    /// Server-side audio buffer pool for handle-based synthesis.
+    /// Audio stays in Rust — TypeScript gets Handle + metadata only.
+    audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
     /// Tokio runtime handle for calling async CallManager methods from IPC threads.
     rt_handle: tokio::runtime::Handle,
 }
@@ -232,6 +261,7 @@ impl ServerState {
             cognition_engines: Arc::new(Mutex::new(HashMap::new())),
             rag_engine: Arc::new(RagEngine::new()),
             call_manager,
+            audio_pool: Arc::new(crate::voice::audio_buffer::AudioBufferPool::new()),
             rt_handle,
         }
     }
@@ -357,6 +387,120 @@ impl ServerState {
                         Response::error(e)
                     }
                 })
+            }
+
+            Request::VoiceSynthesizeHandle { text, voice, adapter } => {
+                let _timer = TimingGuard::new("ipc", "voice_synthesize_handle");
+
+                use crate::voice::tts_service;
+
+                let result = tts_service::synthesize_speech_sync(
+                    &text,
+                    voice.as_deref(),
+                    adapter.as_deref()
+                );
+
+                HandleResult::Json(match result {
+                    Ok(synthesis) => {
+                        let adapter_name = adapter.unwrap_or_else(|| "default".to_string());
+                        let info = self.audio_pool.store(
+                            synthesis.samples,
+                            synthesis.sample_rate,
+                            synthesis.duration_ms,
+                            &adapter_name,
+                        );
+
+                        log_info!(
+                            "ipc", "voice_synthesize_handle",
+                            "Stored handle {} ({} samples, {}ms, {})",
+                            &info.handle[..8], info.sample_count, info.duration_ms, info.adapter
+                        );
+
+                        Response::success(serde_json::json!({
+                            "handle": info.handle,
+                            "sample_count": info.sample_count,
+                            "sample_rate": info.sample_rate,
+                            "duration_ms": info.duration_ms,
+                            "adapter": info.adapter,
+                        }))
+                    },
+                    Err(e) => {
+                        log_error!("ipc", "voice_synthesize_handle", "TTS failed: {}", e);
+                        Response::error(format!("TTS failed: {}", e))
+                    }
+                })
+            }
+
+            Request::VoicePlayHandle { handle, call_id, user_id } => {
+                let _timer = TimingGuard::new("ipc", "voice_play_handle");
+
+                use crate::voice::handle::Handle as VoiceHandle;
+
+                let voice_handle: VoiceHandle = match handle.parse() {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return HandleResult::Json(Response::error(
+                            format!("Invalid handle UUID: {}", e)
+                        ));
+                    }
+                };
+
+                // Retrieve audio from buffer pool
+                let samples = match self.audio_pool.get(&voice_handle) {
+                    Some(s) => s,
+                    None => {
+                        return HandleResult::Json(Response::error(
+                            format!("Audio handle not found or expired: {}", &handle[..8.min(handle.len())])
+                        ));
+                    }
+                };
+
+                let sample_count = samples.len();
+                let duration_ms = (sample_count as u64 * 1000) / crate::audio_constants::AUDIO_SAMPLE_RATE as u64;
+
+                // Inject into call mixer
+                let call_manager = self.call_manager.clone();
+                let result = self.rt_handle.block_on(async {
+                    call_manager.inject_audio(&call_id, &user_id, samples).await
+                });
+
+                HandleResult::Json(match result {
+                    Ok(()) => {
+                        log_info!(
+                            "ipc", "voice_play_handle",
+                            "Injected handle {} into call {} ({} samples, {}ms)",
+                            &handle[..8.min(handle.len())], call_id, sample_count, duration_ms
+                        );
+                        Response::success(serde_json::json!({
+                            "injected": true,
+                            "sample_count": sample_count,
+                            "duration_ms": duration_ms,
+                        }))
+                    },
+                    Err(e) => {
+                        log_error!("ipc", "voice_play_handle", "Injection failed: {}", e);
+                        Response::error(format!("Audio injection failed: {}", e))
+                    }
+                })
+            }
+
+            Request::VoiceDiscardHandle { handle } => {
+                use crate::voice::handle::Handle as VoiceHandle;
+
+                let voice_handle: VoiceHandle = match handle.parse() {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return HandleResult::Json(Response::error(
+                            format!("Invalid handle UUID: {}", e)
+                        ));
+                    }
+                };
+
+                let discarded = self.audio_pool.discard(&voice_handle);
+
+                HandleResult::Json(Response::success(serde_json::json!({
+                    "discarded": discarded,
+                })))
             }
 
             Request::VoiceTranscribe { audio, language } => {
@@ -972,6 +1116,50 @@ mod tests {
 
         let result = request.to_inbox_message();
         assert!(result.is_err(), "Invalid UUIDs should fail");
+    }
+
+    // ========================================================================
+    // Handle-Based Audio IPC Request Deserialization
+    // ========================================================================
+
+    #[test]
+    fn test_request_deserialization_synthesize_handle() {
+        let json = r#"{"command":"voice/synthesize-handle","text":"Hello world","voice":"af","adapter":"kokoro"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse synthesize-handle");
+        match request {
+            Request::VoiceSynthesizeHandle { text, voice, adapter } => {
+                assert_eq!(text, "Hello world");
+                assert_eq!(voice, Some("af".to_string()));
+                assert_eq!(adapter, Some("kokoro".to_string()));
+            }
+            _ => panic!("Expected VoiceSynthesizeHandle variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_play_handle() {
+        let json = r#"{"command":"voice/play-handle","handle":"550e8400-e29b-41d4-a716-446655440000","call_id":"call-1","user_id":"user-1"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse play-handle");
+        match request {
+            Request::VoicePlayHandle { handle, call_id, user_id } => {
+                assert_eq!(handle, "550e8400-e29b-41d4-a716-446655440000");
+                assert_eq!(call_id, "call-1");
+                assert_eq!(user_id, "user-1");
+            }
+            _ => panic!("Expected VoicePlayHandle variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_discard_handle() {
+        let json = r#"{"command":"voice/discard-handle","handle":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse discard-handle");
+        match request {
+            Request::VoiceDiscardHandle { handle } => {
+                assert_eq!(handle, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("Expected VoiceDiscardHandle variant"),
+        }
     }
 
     // ========================================================================

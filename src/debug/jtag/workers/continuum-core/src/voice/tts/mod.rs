@@ -2,18 +2,24 @@
 //!
 //! Modular TTS with swappable backends:
 //! - Kokoro (local, ONNX, 82M params - PRIMARY, fast)
+//! - Edge (Microsoft Edge neural voices - online, free, <200ms)
+//! - Orpheus (local, Candle GGUF, 3B params - expressive with emotion tags)
 //! - Piper (local, ONNX - fallback)
 //! - Silence (fallback for testing)
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
-mod piper;
+mod edge;
 mod kokoro;
-mod silence;
+mod orpheus;
+mod piper;
 mod phonemizer;
+mod silence;
 
-pub use piper::PiperTTS;
+pub use edge::EdgeTTS;
 pub use kokoro::KokoroTTS;
+pub use orpheus::OrpheusTts;
+pub use piper::PiperTTS;
 pub use silence::SilenceTTS;
 pub(crate) use phonemizer::Phonemizer;
 
@@ -213,8 +219,15 @@ pub fn init_registry() {
         // - Uses espeak-ng phonemizer (deterministic)
         reg.register(Arc::new(KokoroTTS::new()));
 
+        // Register Edge-TTS (online, Microsoft neural voices) - fast online option
+        // No model files needed, <200ms latency, 300+ voices
+        reg.register(Arc::new(EdgeTTS::new()));
+
         // Register Piper (local, ONNX) - fallback
         reg.register(Arc::new(PiperTTS::new()));
+
+        // Register Orpheus (local, Candle GGUF, 3B) - expressive with emotion tags
+        reg.register(Arc::new(OrpheusTts::new()));
 
         // Register Silence adapter - testing fallback
         reg.register(Arc::new(SilenceTTS::new()));

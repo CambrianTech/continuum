@@ -39,7 +39,7 @@ interface LeaveMessage {
   type: 'Leave';
 }
 
-// Only messages we send/receive - MixedAudio is ignored (transcription done in Rust)
+// Messages we send/receive over the WebSocket (audio flows as binary frames)
 type CallMessage = JoinMessage | AudioMessage | LeaveMessage | { type: string };
 
 interface AIConnection {
@@ -354,10 +354,8 @@ export class AIAudioBridge {
     // So server-side AIs don't need to process them here
     try {
       const msg = JSON.parse(data.toString()) as CallMessage;
-      // Log for debugging but don't process audio
-      if (msg.type !== 'MixedAudio') {
-        // console.log(`🤖 AIAudioBridge: Received ${msg.type} message`);
-      }
+      // JSON messages are control/transcription only; audio arrives as binary frames
+      void msg;
     } catch {
       // Binary data - ignore
     }

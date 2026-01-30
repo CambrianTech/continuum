@@ -9,10 +9,12 @@
 //!
 //! Uses trait-based polymorphism (OpenCV-style) for runtime flexibility.
 
+mod moonshine;
 mod openai_realtime;
 mod stub;
 mod whisper;
 
+pub use moonshine::MoonshineStt;
 pub use openai_realtime::{OpenAIRealtimeSTT, TurnDetection, TurnDetectionType};
 pub use stub::StubSTT;
 pub use whisper::WhisperSTT;
@@ -193,6 +195,9 @@ pub fn init_registry() {
         // Register OpenAI Realtime adapter - streaming + semantic VAD
         // Will be used when OPENAI_API_KEY is set and fast response needed
         reg.register(Arc::new(OpenAIRealtimeSTT::new()));
+
+        // Register Moonshine adapter - fast local ONNX, sub-100ms on short audio
+        reg.register(Arc::new(MoonshineStt::new()));
 
         // Register Stub adapter - for testing/development
         reg.register(Arc::new(StubSTT::new()));

@@ -78,8 +78,14 @@ impl KokoroTTS {
         }
 
         let candidates = [
-            // v1.0 quantized (preferred — smaller, faster)
+            // v1.0 q4 (smallest, fastest — ~40MB)
+            PathBuf::from("models/kokoro/kokoro-v1.0-q4.onnx"),
+            // v1.0 q4f16 hybrid (good quality/speed balance)
+            PathBuf::from("models/kokoro/kokoro-v1.0-q4f16.onnx"),
+            // v1.0 q8 (preferred quality — ~80MB)
             PathBuf::from("models/kokoro/kokoro-v1.0-q8.onnx"),
+            // v1.0 fp16 (high quality)
+            PathBuf::from("models/kokoro/kokoro-v1.0-fp16.onnx"),
             // v1.0 full precision
             PathBuf::from("models/kokoro/kokoro-v1.0.onnx"),
             // Generic names
@@ -422,11 +428,23 @@ impl TextToSpeech for KokoroTTS {
         // Load vocab
         let vocab = Self::load_vocab()?;
 
-        info!("Loading Kokoro model from: {:?}", model_path);
+        let num_threads = num_cpus::get();
+        // Use all available cores for intra-op parallelism (matrix ops within a node).
+        // On Apple Silicon M-series: 8-12 performance cores.
+        // On server CPUs: 16-64 cores. Cap at 8 to avoid scheduler overhead.
+        let intra_threads = num_threads.min(8);
+        // Inter-op: parallelize independent graph nodes (2 threads is optimal for Kokoro's graph)
+        let inter_threads = 2;
+
+        info!(
+            "Loading Kokoro model from: {:?} (intra_threads={}, inter_threads={})",
+            model_path, intra_threads, inter_threads
+        );
 
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(num_cpus::get().min(4))?
+            .with_intra_threads(intra_threads)?
+            .with_inter_threads(inter_threads)?
             .commit_from_file(&model_path)?;
 
         let model = KokoroModel {
