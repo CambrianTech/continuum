@@ -15,6 +15,7 @@
  */
 
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import type { ProcessableMessage } from './QueueItemTypes';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import type { AIGenerateParams, AIGenerateResult } from '../../../../commands/ai/generate/shared/AIGenerateTypes';
 import { Commands } from '../../../core/shared/Commands';
@@ -40,7 +41,7 @@ export interface TrainingSignal {
   polarity: SignalPolarity;
   confidence: number;  // 0-1, how confident we are this is a real signal
   originalMessage: ChatMessageEntity | null;  // The AI message being corrected/approved
-  userResponse: ChatMessageEntity;  // The user's feedback
+  userResponse: ProcessableMessage;  // The user's feedback
   context: string;  // Formatted conversation context for training
   detectedAt: number;  // Timestamp
 }
@@ -79,7 +80,7 @@ export class SignalDetector {
    * Detect a training signal from a user message using AI classification
    */
   async detectSignalAsync(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     precedingAIMessage: ChatMessageEntity | null,
     conversationHistory: ChatMessageEntity[]
   ): Promise<TrainingSignal | null> {
@@ -116,7 +117,7 @@ export class SignalDetector {
    * Only catches obvious signals - AI classification handles nuanced cases
    */
   detectSignal(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     precedingAIMessage: ChatMessageEntity | null,
     conversationHistory: ChatMessageEntity[]
   ): TrainingSignal | null {
@@ -357,7 +358,7 @@ Output JSON only:
    * Build training context from conversation history
    */
   private buildContext(
-    userMessage: ChatMessageEntity,
+    userMessage: ProcessableMessage,
     aiMessage: ChatMessageEntity | null,
     history: ChatMessageEntity[]
   ): string {
@@ -383,7 +384,7 @@ Output JSON only:
    * Check for repeated questions (frustration indicator)
    */
   checkForRepetition(
-    userMessage: ChatMessageEntity,
+    userMessage: ProcessableMessage,
     recentUserMessages: ChatMessageEntity[]
   ): boolean {
     const currentText = (userMessage.content?.text || '').toLowerCase().trim();

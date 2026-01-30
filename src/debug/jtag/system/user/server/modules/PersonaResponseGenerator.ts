@@ -53,7 +53,7 @@ import { ResponseCleaner } from './ResponseCleaner';
 import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
-import type { InboxMessage } from './QueueItemTypes';
+import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 
 import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
@@ -453,7 +453,7 @@ export class PersonaResponseGenerator {
    * @returns true if should respond, false if should skip
    */
   shouldRespondToMessage(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     dormancyState?: { level: 'active' | 'mention-only' | 'human-only' }
   ): boolean {
     // If no dormancy state, default to active (backward compatible)
@@ -507,13 +507,12 @@ export class PersonaResponseGenerator {
    * Phase 2: AI-powered responses with RAG context via AIProviderDaemon
    */
   async generateAndPostResponse(
-    originalMessage: ChatMessageEntity,
+    originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
-    // Debug: Log voice modality properties
-    const msgAny = originalMessage as any;
-    this.log(`🔧 ${this.personaName}: Voice check - sourceModality=${msgAny.sourceModality}, voiceSessionId=${msgAny.voiceSessionId ? String(msgAny.voiceSessionId).slice(0,8) : 'undefined'}`);
+    // Voice modality is a typed field — no cast needed
+    this.log(`🔧 ${this.personaName}: Voice check - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
     const generateStartTime = Date.now();  // Track total response time for decision logging
     const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
@@ -522,7 +521,7 @@ export class PersonaResponseGenerator {
       this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       // Voice mode detection - pass voiceSessionId to RAG for faster response (skips semantic search)
-      const voiceSessionId = (originalMessage as any).voiceSessionId;
+      const voiceSessionId = originalMessage.voiceSessionId;
       const fullRAGContext = await ragBuilder.buildContext(
         originalMessage.roomId,
         this.personaId,
@@ -1557,12 +1556,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
 
       // VOICE ROUTING: If original message was from voice, route response to TTS
-      // The VoiceOrchestrator listens for this event and sends to TTS
-      // NOTE: sourceModality and voiceSessionId are DIRECT properties on InboxMessage, not nested in metadata
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: Checking voice routing - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId ? String(originalMessage.voiceSessionId).slice(0, 8) : 'undefined'}`);
+      // sourceModality is a typed field on ProcessableMessage — never undefined
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: Checking voice routing - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
         console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: EMITTING persona:response:generated for TTS (response: "${aiResponse.text.slice(0, 50)}...")`);
-        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${String(originalMessage.voiceSessionId).slice(0, 8)})`);
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
 
         // Emit voice response event for VoiceOrchestrator
         await Events.emit(
@@ -1574,13 +1572,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             originalMessage: {
               id: originalMessage.id,
               roomId: originalMessage.roomId,
-              sourceModality: 'voice',
-              voiceSessionId: originalMessage.voiceSessionId
-            } as InboxMessage
+              sourceModality: 'voice' as const,
+              voiceSessionId: originalMessage.voiceSessionId,
+            }
           }
         );
       } else {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: NOT a voice message, skipping TTS routing`);
+        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: sourceModality=${originalMessage.sourceModality}, skipping TTS routing`);
       }
 
       return {

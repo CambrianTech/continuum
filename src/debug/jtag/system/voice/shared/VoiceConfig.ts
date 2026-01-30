@@ -2,32 +2,29 @@
  * Voice Configuration
  *
  * Centralized config for TTS/STT with easy adapter swapping.
+ * Adapter names MUST match Rust adapter name() returns exactly.
  *
- * Quality tiers:
- * - local fast: Kokoro (82M, ONNX, ~97ms TTFB) — PRIMARY
- * - local slow: Piper (ONNX, ~42s) — fallback
- * - cloud free: Edge-TTS (Microsoft neural voices) — no API key
- * - cloud paid: ElevenLabs, Azure, Google — high quality
+ * TTS: Kokoro (primary), Edge (cloud), Orpheus (expressive), Piper, Silence
+ * STT: Whisper (primary), Moonshine (fast), OpenAI Realtime, Stub
  */
 
-// TTS Adapter Constants
+// TTS Adapter Constants — names MUST match Rust adapter name() returns
 export const TTS_ADAPTERS = {
   KOKORO: 'kokoro',
   PIPER: 'piper',
-  EDGE_TTS: 'edge-tts',
+  EDGE: 'edge',          // Rust msedge-tts crate (free Microsoft neural voices)
+  ORPHEUS: 'orpheus',    // Candle GGUF Llama-3B (expressive, emotion tags)
   SILENCE: 'silence',
-  ELEVENLABS: 'elevenlabs',
-  AZURE: 'azure',
-  GOOGLE: 'google',
 } as const;
 
 export type TTSAdapter = typeof TTS_ADAPTERS[keyof typeof TTS_ADAPTERS];
 
-// STT Adapter Constants
+// STT Adapter Constants — names MUST match Rust adapter name() returns
 export const STT_ADAPTERS = {
   WHISPER: 'whisper',
-  DEEPGRAM: 'deepgram',
-  AZURE: 'azure',
+  MOONSHINE: 'moonshine',  // ONNX, sub-100ms, great for live transcription
+  OPENAI_REALTIME: 'openai-realtime',
+  STUB: 'stub',
 } as const;
 
 export type STTAdapter = typeof STT_ADAPTERS[keyof typeof STT_ADAPTERS];
@@ -46,18 +43,11 @@ export interface VoiceConfig {
         voice: string;        // e.g., 'af' (default female)
         speed: number;        // 0.5-2.0
       };
-      'edge-tts'?: {
+      edge?: {
         voice: string;        // e.g., 'en-US-AriaNeural'
       };
-      elevenlabs?: {
-        apiKey?: string;
-        voiceId: string;      // e.g., 'EXAVITQu4vr4xnSDxMaL' (Bella)
-        model: string;        // e.g., 'eleven_turbo_v2'
-      };
-      azure?: {
-        apiKey?: string;
-        region: string;
-        voice: string;
+      orpheus?: {
+        voice: string;        // e.g., 'tara', 'leo', 'zoe' (8 built-in voices)
       };
     };
   };
@@ -131,18 +121,16 @@ export function getVoiceConfigForUser(
 }
 
 /**
- * Quality comparison (based on TTS Arena rankings + real-world usage)
+ * Adapter comparison (all registered in Rust TTS registry):
  *
- * Tier 1 (Natural, expensive):
- * - ElevenLabs Turbo v2: 80%+ win rate, $$$
- * - Azure Neural: Professional quality, $$
+ * Tier 1 (Fast, local):
+ * - Kokoro: 82M ONNX, ~97ms TTFB, 80.9% TTS Arena — PRIMARY
+ * - Edge: Microsoft neural voices, <200ms, free cloud, no API key
  *
- * Tier 2 (Good, local):
- * - Kokoro: 80.9% TTS Arena win rate, ~97ms TTFB, free local (CURRENT)
- * - Edge-TTS: Microsoft neural voices, free cloud, no API key
+ * Tier 2 (Expressive, local):
+ * - Orpheus: 3B Candle GGUF, emotion tags <laugh> <sigh>, ~2-5s CPU
  *
- * Tier 3 (Functional, free):
- * - Piper: Basic quality, slow (~42s), free local (fallback)
- *
- * Current: Kokoro (primary) — fast, natural, local ONNX inference
+ * Tier 3 (Functional):
+ * - Piper: ONNX, ~42s, local
+ * - Silence: Testing only (produces zeros)
  */

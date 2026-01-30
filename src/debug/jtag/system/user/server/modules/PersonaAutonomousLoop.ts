@@ -18,7 +18,12 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
-import { taskEntityToInboxTask, type InboxTask, type QueueItem } from './QueueItemTypes';
+import { taskEntityToInboxTask, inboxMessageToProcessable, type InboxTask, type QueueItem } from './QueueItemTypes';
+import type { BaseQueueItem } from './channels/BaseQueueItem';
+import { VoiceQueueItem } from './channels/VoiceQueueItem';
+import { ChatQueueItem } from './channels/ChatQueueItem';
+import { TaskQueueItem } from './channels/TaskQueueItem';
+import type { ProcessableMessage } from './QueueItemTypes';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
@@ -212,44 +217,15 @@ export class PersonaAutonomousLoop {
 
     // Type-safe handling: Check if this is a message or task
     if (item.type === 'message') {
-      // Reconstruct minimal ChatMessageEntity from inbox message
-      const reconstructedEntity: any = {
-        id: item.id,
-        roomId: item.roomId,
-        senderId: item.senderId,
-        senderName: item.senderName,
-        senderType: item.senderType,  // Preserve actual sender type
-        content: { text: item.content },
-        timestamp: item.timestamp,
-        // Fields not critical for evaluation:
-        senderDisplayName: item.senderName,
-        status: 'delivered',
-        priority: item.priority,
-        // Voice modality for TTS routing - DIRECT PROPERTIES (not nested in metadata)
-        // PersonaResponseGenerator checks these as direct properties on the message
-        sourceModality: item.sourceModality,      // 'text' | 'voice'
-        voiceSessionId: item.voiceSessionId,      // UUID if voice
-        metadata: {},
-        reactions: [],
-        attachments: [],
-        mentions: [],
-        replyTo: undefined,
-        editedAt: undefined,
-        deletedAt: undefined
-      };
-
-      // Determine if sender is human (from actual senderType, not ID prefix)
+      // Convert InboxMessage → ProcessableMessage (typed, no `any`)
+      const processable = inboxMessageToProcessable(item);
       const senderIsHuman = item.senderType === 'human';
-
-      // Extract message text (defensive: ensure string even if undefined)
       const messageText = item.content ?? '';
 
-      // VOICE DEBUG: Log voice metadata flow
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: item.sourceModality=${item.sourceModality}, item.voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: reconstructedEntity.sourceModality=${reconstructedEntity.sourceModality}, reconstructedEntity.voiceSessionId=${reconstructedEntity.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: sourceModality=${processable.sourceModality}, voiceSessionId=${processable.voiceSessionId?.slice(0, 8) ?? 'none'}`);
 
       // Process message using cognition-enhanced evaluation logic
-      await this.personaUser.evaluateAndPossiblyRespondWithCognition(reconstructedEntity, senderIsHuman, messageText);
+      await this.personaUser.evaluateAndPossiblyRespondWithCognition(processable, senderIsHuman, messageText);
 
       // Update bookmark AFTER processing complete - enables true pause/resume
       // Shutdown mid-processing will re-query this message on restart
@@ -264,6 +240,130 @@ export class PersonaAutonomousLoop {
 
     // Note: No cadence adjustment needed with signal-based waiting
     // Loop naturally adapts: fast when busy (instant signal), slow when idle (blocked on wait)
+  }
+
+  /**
+   * CNS callback: Handle a channel-routed queue item (new multi-channel path).
+   *
+   * Dispatches by itemType to the appropriate processing pipeline.
+   * Items are BaseQueueItem subclasses (VoiceQueueItem, ChatQueueItem, TaskQueueItem).
+   */
+  async handleQueueItemFromCNS(item: BaseQueueItem): Promise<void> {
+    // Activate LoRA adapter based on domain
+    const domainToAdapter: Record<string, string> = {
+      'chat': 'conversational',
+      'audio': 'conversational',  // Voice uses same conversational adapter
+      'code_review': 'typescript-expertise',
+      'background': 'self-improvement',
+    };
+    const adapterName = domainToAdapter[item.domain] || 'conversational';
+    await this.personaUser.memory.genome.activateSkill(adapterName);
+
+    // Dispatch by concrete item type
+    if (item instanceof VoiceQueueItem) {
+      await this.handleVoiceItem(item);
+    } else if (item instanceof ChatQueueItem) {
+      await this.handleChatItem(item);
+    } else if (item instanceof TaskQueueItem) {
+      await this.handleTaskItem(item);
+    } else {
+      this.log(`⚠️ ${this.personaUser.displayName}: Unknown queue item type: ${item.itemType}`);
+    }
+
+    // Update inbox load in state (affects mood calculation)
+    this.personaUser.personaState.updateInboxLoad(
+      this.personaUser.inbox.getSize()
+    );
+  }
+
+  /**
+   * Handle a voice queue item — convert to ProcessableMessage with voice modality.
+   */
+  private async handleVoiceItem(item: VoiceQueueItem): Promise<void> {
+    const processable: ProcessableMessage = {
+      id: item.id,
+      roomId: item.roomId,
+      senderId: item.senderId,
+      senderName: item.senderName,
+      senderType: item.senderType,
+      content: { text: item.content },
+      timestamp: item.timestamp,
+      sourceModality: 'voice',
+      voiceSessionId: item.voiceSessionId,
+    };
+
+    const senderIsHuman = item.senderType === 'human';
+    console.log(`🎙️ [${this.personaUser.displayName}] Channel: Processing VOICE item, voiceSessionId=${item.voiceSessionId.slice(0, 8)}`);
+
+    await this.personaUser.evaluateAndPossiblyRespondWithCognition(
+      processable, senderIsHuman, item.content
+    );
+
+    await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
+  }
+
+  /**
+   * Handle a chat queue item — convert to ProcessableMessage with text modality.
+   * If consolidated, logs how many messages were merged.
+   */
+  private async handleChatItem(item: ChatQueueItem): Promise<void> {
+    if (item.consolidatedCount > 1) {
+      this.log(`📦 ${this.personaUser.displayName}: Processing consolidated chat (${item.consolidatedCount} messages from room ${item.roomId.slice(0, 8)})`);
+    }
+
+    const processable: ProcessableMessage = {
+      id: item.id,
+      roomId: item.roomId,
+      senderId: item.senderId,
+      senderName: item.senderName,
+      senderType: item.senderType,
+      content: { text: item.content },
+      timestamp: item.timestamp,
+      sourceModality: 'text',
+    };
+
+    const senderIsHuman = item.senderType === 'human';
+
+    await this.personaUser.evaluateAndPossiblyRespondWithCognition(
+      processable, senderIsHuman, item.content
+    );
+
+    await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
+  }
+
+  /**
+   * Handle a task queue item — update status and delegate to task executor.
+   */
+  private async handleTaskItem(item: TaskQueueItem): Promise<void> {
+    // Mark as in_progress in database (prevents re-polling)
+    await DataDaemon.update<TaskEntity>(
+      COLLECTIONS.TASKS,
+      item.taskId,
+      { status: 'in_progress', startedAt: new Date() }
+    );
+
+    // Convert to InboxTask for backward compatibility with task executor
+    const inboxTask: InboxTask = {
+      id: item.id,
+      type: 'task',
+      taskId: item.taskId,
+      assigneeId: item.assigneeId,
+      createdBy: item.createdBy,
+      domain: item.taskDomain,
+      taskType: item.taskType,
+      contextId: item.contextId,
+      description: item.description,
+      priority: item.basePriority,
+      status: item.status,
+      timestamp: item.timestamp,
+      dueDate: item.dueDate,
+      estimatedDuration: item.estimatedDuration,
+      dependsOn: item.dependsOn,
+      blockedBy: item.blockedBy,
+      metadata: item.metadata as InboxTask['metadata'],
+    };
+
+    await this.executeTask(inboxTask);
   }
 
   /**

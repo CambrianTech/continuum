@@ -1,13 +1,10 @@
 /**
  * Voice Synthesize Command - Server Implementation
  *
- * Synthesize text to speech using Kokoro (primary, local ONNX) or Edge-TTS (cloud).
+ * ALL adapters route through Rust IPC to continuum-core worker.
+ * Adapters: kokoro (primary), edge, orpheus, piper, silence
  *
- * Architecture:
- * - Kokoro/Piper/Silence: TypeScript -> IPC -> Rust continuum-core worker
- * - Edge-TTS: TypeScript -> Microsoft Edge TTS API (no Rust, no IPC)
- *
- * Kokoro is the default — 82M params, ~97ms TTFB, natural voices.
+ * Kokoro is the default — 82M ONNX, ~97ms TTFB, natural voices.
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
@@ -20,10 +17,9 @@ import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/R
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import { Events } from '@system/core/shared/Events';
 
-// Valid TTS adapters: Rust-side (IPC) and TypeScript-side (direct)
-const RUST_ADAPTERS = ['kokoro', 'piper', 'silence'];
-const TS_ADAPTERS = ['edge-tts'];
-const VALID_ADAPTERS = [...RUST_ADAPTERS, ...TS_ADAPTERS];
+// Valid TTS adapters — ALL route through Rust IPC now.
+// Names MUST match Rust adapter name() returns exactly.
+const VALID_ADAPTERS = ['kokoro', 'edge', 'orpheus', 'piper', 'silence'];
 
 // Max queued Piper requests — Piper blocks the Rust event loop (~42s/request).
 // Kokoro is fast enough (~97ms) that queuing is unnecessary.
@@ -146,17 +142,14 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
   }
 
   /**
-   * Async synthesis — routes to the correct adapter:
-   * - Piper: queued (blocks Rust event loop, ~42s)
-   * - Kokoro: direct IPC (fast, spawn_blocking, ~97ms)
-   * - Edge-TTS: direct TypeScript (no IPC, Microsoft cloud)
-   * - Silence: direct IPC (instant)
+   * Async synthesis — ALL adapters route through Rust IPC.
+   * Piper gets queued (blocks Rust event loop ~42s), everything else is direct.
    */
   private async synthesizeAndEmit(
     handle: string,
     params: VoiceSynthesizeParams,
     adapter: string,
-    speed: number
+    _speed: number
   ): Promise<void> {
     console.log(`🔊 synthesizeAndEmit [${adapter}] started for handle ${handle.slice(0, 8)}`);
 
@@ -164,20 +157,15 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
       let response: { audio: Buffer; sampleRate: number; durationMs: number; adapter: string };
 
       if (adapter === 'piper') {
-        // Piper: sequential queue (blocks Rust event loop)
+        // Piper: sequential queue (blocks Rust event loop ~42s)
         response = await this.enqueuePiper(handle, () =>
           this.voiceClient.voiceSynthesize(params.text, params.voice || 'af', adapter)
         );
-      } else if (RUST_ADAPTERS.includes(adapter)) {
-        // Kokoro, Silence: direct IPC (no queue needed)
+      } else {
+        // All other adapters: direct Rust IPC (kokoro ~97ms, edge <200ms, orpheus ~2-5s, silence instant)
         response = await this.voiceClient.voiceSynthesize(
           params.text, params.voice || 'af', adapter
         );
-      } else if (adapter === 'edge-tts') {
-        // Edge-TTS: TypeScript-only, no Rust IPC
-        response = await this.synthesizeWithEdgeTTS(params.text, params.voice);
-      } else {
-        throw new Error(`Unknown adapter: ${adapter}`);
       }
 
       const audioBase64 = response.audio.toString('base64');
@@ -203,59 +191,6 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
     } catch (err) {
       console.error(`🔊 [${adapter}] TTS synthesis failed:`, err);
       throw err;
-    }
-  }
-
-  /**
-   * Edge-TTS synthesis — runs entirely in TypeScript via Microsoft's free TTS API.
-   * No Rust IPC needed. Returns MP3 decoded to PCM i16 at 16kHz.
-   */
-  private async synthesizeWithEdgeTTS(
-    text: string,
-    voice?: string
-  ): Promise<{ audio: Buffer; sampleRate: number; durationMs: number; adapter: string }> {
-    const { MsEdgeTTS, OUTPUT_FORMAT } = await import('edge-tts-node');
-
-    const edgeTTS = new MsEdgeTTS({ enableLogger: false });
-    const edgeVoice = voice || 'en-US-AriaNeural';
-    await edgeTTS.setMetadata(edgeVoice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-
-    // Collect MP3 stream into buffer
-    const stream = edgeTTS.toStream(text);
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    const mp3Buffer = Buffer.concat(chunks);
-    edgeTTS.close();
-
-    // Decode MP3 to PCM i16 at 16kHz using ffmpeg
-    const { execSync } = await import('child_process');
-    const tmpInput = `/tmp/edge-tts-${Date.now()}.mp3`;
-    const tmpOutput = `/tmp/edge-tts-${Date.now()}.raw`;
-
-    const fs = await import('fs');
-    fs.writeFileSync(tmpInput, mp3Buffer);
-
-    try {
-      execSync(
-        `ffmpeg -y -i "${tmpInput}" -f s16le -acodec pcm_s16le -ar ${AUDIO_SAMPLE_RATE} -ac 1 "${tmpOutput}"`,
-        { stdio: 'pipe', timeout: 30000 }
-      );
-
-      const pcmBuffer = fs.readFileSync(tmpOutput);
-      const durationMs = (pcmBuffer.length / 2 / AUDIO_SAMPLE_RATE) * 1000;
-
-      return {
-        audio: pcmBuffer,
-        sampleRate: AUDIO_SAMPLE_RATE,
-        durationMs,
-        adapter: 'edge-tts'
-      };
-    } finally {
-      // Clean up temp files
-      try { fs.unlinkSync(tmpInput); } catch {}
-      try { fs.unlinkSync(tmpOutput); } catch {}
     }
   }
 }

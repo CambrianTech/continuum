@@ -17,6 +17,7 @@ import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import type { ProcessableMessage } from './QueueItemTypes';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { RoomEntity } from '../../../data/entities/RoomEntity';
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -76,7 +77,7 @@ export class PersonaMessageEvaluator {
    * we capture that as a training signal for the appropriate trait adapter.
    */
   private async detectAndBufferTrainingSignal(
-    messageEntity: ChatMessageEntity
+    messageEntity: ProcessableMessage
   ): Promise<void> {
     // Signal detection focuses on MESSAGE CONTENT, not sender type
     // The AI classifier determines if it's feedback based on what's written
@@ -117,7 +118,7 @@ export class PersonaMessageEvaluator {
   /**
    * Get the preceding AI message before a human message (for correction detection)
    */
-  private async getPrecedingAIMessage(humanMessage: ChatMessageEntity): Promise<ChatMessageEntity | null> {
+  private async getPrecedingAIMessage(humanMessage: ProcessableMessage): Promise<ChatMessageEntity | null> {
     try {
       const result = await DataDaemon.query<ChatMessageEntity>({
         collection: COLLECTIONS.CHAT_MESSAGES,
@@ -186,7 +187,7 @@ export class PersonaMessageEvaluator {
    * Creates Task → Plan → Updates SelfState → Executes → Logs to CognitionLogger
    */
   async evaluateAndPossiblyRespondWithCognition(
-    messageEntity: ChatMessageEntity,
+    messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
@@ -371,7 +372,7 @@ export class PersonaMessageEvaluator {
    * NOTE: Now called from evaluateAndPossiblyRespondWithCognition wrapper
    */
   async evaluateAndPossiblyRespond(
-    messageEntity: ChatMessageEntity,
+    messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     safeMessageText: string
   ): Promise<void> {
@@ -828,7 +829,7 @@ export class PersonaMessageEvaluator {
    * Calculate heuristics for response decision (Phase 2)
    * NO API calls - pure logic based on conversation history
    */
-  private async calculateResponseHeuristics(messageEntity: ChatMessageEntity): Promise<{
+  private async calculateResponseHeuristics(messageEntity: ProcessableMessage): Promise<{
     containsQuestion: boolean;
     conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD';
     myParticipationRatio: number;
@@ -1026,7 +1027,7 @@ export class PersonaMessageEvaluator {
    * when another AI already answered during our inference time.
    */
   private checkResponseAdequacy(
-    originalMessage: ChatMessageEntity,
+    originalMessage: ProcessableMessage,
     otherResponses: ChatMessageEntity[]
   ): { isAdequate: boolean; confidence: number; reason: string } {
     const originalText = originalMessage.content?.text || '';
@@ -1064,7 +1065,7 @@ export class PersonaMessageEvaluator {
    * Instead of hardcoded logic, delegates to chain of decision adapters.
    */
   async evaluateShouldRespond(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<{

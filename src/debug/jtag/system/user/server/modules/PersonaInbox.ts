@@ -17,8 +17,9 @@
 import { EventEmitter } from 'events';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
-import { isInboxMessage, isInboxTask } from './QueueItemTypes';
+import { isInboxMessage, isInboxTask, toChannelItem } from './QueueItemTypes';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
+import type { ChannelRegistry } from './channels/ChannelRegistry';
 
 // Re-export types for backward compatibility and external use
 export type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
@@ -78,6 +79,9 @@ export class PersonaInbox {
   private readonly personaName: string;
   private readonly signal: EventEmitter;
 
+  // Multi-channel routing: items converted to BaseQueueItem subclasses and routed to channels
+  private channelRegistry: ChannelRegistry | null = null;
+
   // Load-aware deduplication (feedback-driven)
   private queueStatsProvider: (() => { queueSize: number; activeRequests: number; maxConcurrent: number; load: number }) | null = null;
   private readonly DEDUP_WINDOW_MS = 3000; // Look back 3s for duplicates
@@ -100,6 +104,23 @@ export class PersonaInbox {
   }
 
   /**
+   * Inject channel registry for multi-channel routing.
+   * Items are converted to BaseQueueItem subclasses and routed to per-domain channels.
+   * Each channel's signal is wired to this inbox's signal emitter for unified wakeup.
+   */
+  setChannelRegistry(registry: ChannelRegistry): void {
+    this.channelRegistry = registry;
+
+    // Wire each channel's signal to this inbox's signal emitter
+    // When items are added to channels, the service loop wakes up
+    for (const channel of registry.all()) {
+      channel.setSignal(this.signal);
+    }
+
+    this.log(`🔗 Channel registry connected (${registry.domains().length} channels, signals wired)`);
+  }
+
+  /**
    * Add item to inbox (non-blocking)
    * Accepts both messages and tasks
    * Traffic management: Drop lowest priority when full
@@ -119,6 +140,32 @@ export class PersonaInbox {
         return true; // Silently skip, don't add to queue
       }
     }
+
+    // MULTI-CHANNEL PATH: Route to per-domain channel if registry available
+    if (this.channelRegistry) {
+      const channelItem = toChannelItem(item);
+      const channel = this.channelRegistry.route(channelItem);
+      if (channel) {
+        // Channel's enqueue stamps enqueuedAt, sorts, handles kicks, and emits signal
+        channel.enqueue(channelItem);
+
+        // Log with type-specific details
+        if (isInboxMessage(item)) {
+          const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
+          this.log(`📬 Routed ${channelItem.itemType} → ${channel.name}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, channelSize=${channel.size})`);
+          if (item.sourceModality === 'voice') {
+            console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → ${channel.name}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+          }
+        } else if (isInboxTask(item)) {
+          this.log(`📬 Routed task → ${channel.name}: ${item.taskType} (priority=${item.priority.toFixed(2)}, channelSize=${channel.size})`);
+        }
+
+        return true; // Item routed to channel — not added to legacy queue
+      }
+      // No channel registered for this domain — fall through to legacy queue
+    }
+
+    // LEGACY PATH: Flat priority queue (for items without a channel)
 
     // Check if over capacity
     if (this.queue.length >= this.config.maxSize) {
@@ -293,8 +340,11 @@ export class PersonaInbox {
    * Otherwise blocks until signal received or timeout
    */
   async waitForWork(timeoutMs: number = 30000): Promise<boolean> {
-    // Immediate check - if work available, return instantly
+    // Immediate check - if work available in legacy queue OR channels, return instantly
     if (this.queue.length > 0) {
+      return true;
+    }
+    if (this.channelRegistry?.hasWork()) {
       return true;
     }
 

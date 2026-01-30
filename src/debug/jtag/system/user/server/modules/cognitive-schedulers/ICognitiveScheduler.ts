@@ -170,7 +170,7 @@ export interface ICognitiveScheduler {
   /**
    * Get priority order for domains (which to service first)
    */
-  getDomainPriority(context: CognitiveContext): ActivityDomain[];
+  getDomainPriority(context: CognitiveContext): readonly ActivityDomain[];
 
   /**
    * Update scheduler policy based on results (learning)
@@ -287,12 +287,52 @@ export abstract class BaseCognitiveScheduler implements ICognitiveScheduler {
 
   abstract getNextServiceInterval(context: CognitiveContext): number;
 
-  abstract shouldServiceDomain(
+  /**
+   * Default: service ALL allowed domains.
+   * Subclasses override to add energy gating, capability checks, etc.
+   * New domains are automatically included — opt-out, not opt-in.
+   */
+  async shouldServiceDomain(
     domain: ActivityDomain,
-    context: CognitiveContext
-  ): Promise<boolean>;
+    _context: CognitiveContext
+  ): Promise<boolean> {
+    return this.isDomainAllowed(domain);
+  }
 
-  abstract getDomainPriority(context: CognitiveContext): ActivityDomain[];
+  /**
+   * Default: return ALL ActivityDomain values in a sensible priority order.
+   * Time-critical domains first, internal cognitive last.
+   * Subclasses override to reorder — but all domains are included by default.
+   * New domains added to the enum are automatically scheduled.
+   */
+  getDomainPriority(_context: CognitiveContext): readonly ActivityDomain[] {
+    return BaseCognitiveScheduler.ALL_DOMAINS_BY_PRIORITY;
+  }
+
+  /**
+   * Default priority ordering for all domains.
+   * Time-critical → interactive → deep work → internal cognitive → maintenance.
+   * This is the structural guarantee: new enum values added here are automatically
+   * available to all schedulers that don't override getDomainPriority().
+   */
+  static readonly ALL_DOMAINS_BY_PRIORITY: readonly ActivityDomain[] = [
+    // Time-critical (realtime contracts)
+    ActivityDomain.REALTIME_GAME,
+    ActivityDomain.AUDIO,
+    // Interactive (social presence)
+    ActivityDomain.CHAT,
+    // Deep work
+    ActivityDomain.CODE_REVIEW,
+    ActivityDomain.VISION,
+    // Internal cognitive
+    ActivityDomain.SIMULATING,
+    ActivityDomain.PLANNING,
+    ActivityDomain.TRAINING,
+    ActivityDomain.REFLECTING,
+    ActivityDomain.DREAMING,
+    // Maintenance
+    ActivityDomain.BACKGROUND,
+  ];
 
   abstract updatePolicy(results: Map<ActivityDomain, ServiceResult>): Promise<void>;
 }

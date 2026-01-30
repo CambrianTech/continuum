@@ -76,13 +76,14 @@ import { RateLimiter } from './modules/RateLimiter';
 import { PersonaInbox, calculateMessagePriority } from './modules/PersonaInbox';
 import { PersonaStateManager } from './modules/PersonaState';
 import type { InboxMessage } from './modules/PersonaInbox';
-import type { InboxTask, TaskStatus } from './modules/QueueItemTypes';
+import type { InboxTask, TaskStatus, ProcessableMessage } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
 import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
 import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome';
 import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
+import type { BaseQueueItem } from './modules/channels/BaseQueueItem';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 // NOTE: DecisionAdapterChain removed - Rust cognition engine handles fast-path decisions
 // See: workers/continuum-core/src/persona/cognition.rs
@@ -1052,27 +1053,27 @@ export class PersonaUser extends AIUser {
     const boostedPriority = Math.min(1.0, priority + 0.2);
 
     // STEP 4: Enqueue to inbox as InboxMessage
+    // Voice flows through the same CNS/inbox pipeline as all other modalities —
+    // the inbox IS the autonomous entity's brain and decision-making system.
     const inboxMessage: InboxMessage = {
-      id: generateUUID(),  // Generate new UUID for transcription event
+      id: generateUUID(),
       type: 'message',
-      domain: 'chat',  // Chat domain (voice is just another input modality for chat)
-      roomId: transcriptionData.sessionId,  // Call session is the "room"
+      domain: 'chat',
+      roomId: transcriptionData.sessionId,
       content: transcriptionData.transcript,
       senderId: transcriptionData.speakerId,
       senderName: transcriptionData.speakerName,
-      senderType: transcriptionData.speakerType || 'human',  // Use speakerType from event (human/persona/agent)
+      senderType: transcriptionData.speakerType || 'human',
       timestamp,
       priority: boostedPriority,
-      sourceModality: 'voice',  // Mark as coming from voice (for response routing)
-      voiceSessionId: transcriptionData.sessionId  // Store voice call session ID
+      sourceModality: 'voice',
+      voiceSessionId: transcriptionData.sessionId,
     };
 
     await this.inbox.enqueue(inboxMessage);
-
-    // Update inbox load in state (for mood calculation)
     this.personaState.updateInboxLoad(this.inbox.getSize());
 
-    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: ENQUEUED voice transcription to inbox (priority=${boostedPriority.toFixed(2)}, voiceSessionId=${transcriptionData.sessionId?.slice(0, 8)}, inboxSize=${this.inbox.getSize()})`);
+    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Enqueued voice message to inbox (priority=${boostedPriority.toFixed(2)}, voiceSessionId=${transcriptionData.sessionId?.slice(0, 8)}, inboxSize=${this.inbox.getSize()})`);
     this.log.info(`🎙️ ${this.displayName}: Enqueued voice transcription (priority=${boostedPriority.toFixed(2)}, confidence=${transcriptionData.confidence}, inbox size=${this.inbox.getSize()})`);
 
     // UNIFIED CONSCIOUSNESS: Record voice event in global timeline
@@ -1102,11 +1103,11 @@ export class PersonaUser extends AIUser {
    * 5. Update SelfState with focus and cognitive load
    */
   public async evaluateAndPossiblyRespondWithCognition(
-    messageEntity: ChatMessageEntity,
+    message: ProcessableMessage,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
-    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(messageEntity, senderIsHuman, messageText);
+    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(message, senderIsHuman, messageText);
   }
 
   /**
@@ -1115,7 +1116,7 @@ export class PersonaUser extends AIUser {
    * NOTE: Now called from evaluateAndPossiblyRespondWithCognition wrapper
    */
   private async evaluateAndPossiblyRespond(
-    messageEntity: ChatMessageEntity,
+    messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
     messageText: string
   ): Promise<void> {
@@ -1192,7 +1193,7 @@ export class PersonaUser extends AIUser {
    * **Dormancy filtering**: Checks dormancy state before responding
    */
   public async respondToMessage(
-    originalMessage: ChatMessageEntity,
+    originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
   ): Promise<void> {
     // Check dormancy state before responding
@@ -1693,7 +1694,7 @@ export class PersonaUser extends AIUser {
    * Instead of hardcoded logic, delegates to chain of decision adapters.
    */
   private async evaluateShouldRespond(
-    message: ChatMessageEntity,
+    message: ProcessableMessage,
     senderIsHuman: boolean,
     isMentioned: boolean
   ): Promise<{
@@ -1761,6 +1762,16 @@ export class PersonaUser extends AIUser {
    */
   public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
     await this.autonomousLoop.handleChatMessageFromCNS(item);
+  }
+
+  /**
+   * CNS callback: Handle channel-routed queue item from CNS orchestrator
+   *
+   * This is called by PersonaCentralNervousSystem.serviceChannels() via callback pattern.
+   * Dispatches by item type to appropriate processing pipeline (voice, chat, task).
+   */
+  public async handleQueueItemFromCNS(item: BaseQueueItem): Promise<void> {
+    await this.autonomousLoop.handleQueueItemFromCNS(item);
   }
 
   /**

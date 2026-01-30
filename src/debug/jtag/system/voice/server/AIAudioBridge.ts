@@ -16,7 +16,7 @@
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { getVoiceService } from './VoiceService';
-import { TTS_ADAPTERS } from '../shared/VoiceConfig';
+// Note: adapter selection is now handled by VoiceService config (no hardcoded adapter here)
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
@@ -261,7 +261,7 @@ export class AIAudioBridge {
         text,
         userId,
         voice: voiceId,  // Speaker ID for multi-speaker models
-        adapter: TTS_ADAPTERS.KOKORO,  // Kokoro 82M — fast, natural voices
+        // adapter comes from VoiceService config (default: kokoro)
       });
 
       // result.audioSamples is already i16 array ready to send
@@ -359,21 +359,6 @@ export class AIAudioBridge {
     } catch {
       // Binary data - ignore
     }
-  }
-
-  /**
-   * Convert Int16Array to base64
-   */
-  private int16ToBase64(samples: Int16Array): string {
-    const buffer = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
-    return buffer.toString('base64');
-  }
-
-  /**
-   * Sleep helper
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
