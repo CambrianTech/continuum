@@ -83,7 +83,6 @@ import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome
 import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
-import type { BaseQueueItem } from './modules/channels/BaseQueueItem';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 // NOTE: DecisionAdapterChain removed - Rust cognition engine handles fast-path decisions
 // See: workers/continuum-core/src/persona/cognition.rs
@@ -1774,16 +1773,6 @@ export class PersonaUser extends AIUser {
    */
   public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
     await this.autonomousLoop.handleChatMessageFromCNS(item);
-  }
-
-  /**
-   * CNS callback: Handle channel-routed queue item from CNS orchestrator
-   *
-   * This is called by PersonaCentralNervousSystem.serviceChannels() via callback pattern.
-   * Dispatches by item type to appropriate processing pipeline (voice, chat, task).
-   */
-  public async handleQueueItemFromCNS(item: BaseQueueItem): Promise<void> {
-    await this.autonomousLoop.handleQueueItemFromCNS(item);
   }
 
   /**

@@ -6,26 +6,22 @@
  */
 
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import type { ICognitiveScheduler, ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
 import type { PersonaInbox, QueueItem } from '../PersonaInbox';
 import type { PersonaStateManager } from '../PersonaState';
-import type { PersonaGenome } from '../PersonaGenome';
-import type { ChannelRegistry } from '../channels/ChannelRegistry';
-import type { BaseQueueItem } from '../channels/BaseQueueItem';
 import type { RustCognitionBridge } from '../RustCognitionBridge';
 
 /**
  * Configuration for PersonaCentralNervousSystem
+ *
+ * All scheduling is delegated to Rust. TS handles execution.
  */
 export interface CNSConfig {
-  // Core modules (existing)
-  readonly scheduler: ICognitiveScheduler;
+  // Core modules
   readonly inbox: PersonaInbox;
   readonly personaState: PersonaStateManager;
-  readonly genome: PersonaGenome;
 
-  // Channel system (new: item-centric OOP)
-  readonly channelRegistry: ChannelRegistry;
+  // Rust cognition bridge (required — all scheduling delegates to Rust)
+  readonly rustBridge: RustCognitionBridge;
 
   // Persona reference (for delegating chat handling)
   readonly personaId: UUID;
@@ -34,15 +30,10 @@ export interface CNSConfig {
 
   // Callbacks for delegating to PersonaUser (avoids circular dependency)
   readonly handleChatMessage: (item: QueueItem) => Promise<void>;
-  readonly handleQueueItem: (item: BaseQueueItem) => Promise<void>;
   readonly pollTasks: () => Promise<void>;
   readonly generateSelfTasks: () => Promise<void>;
 
-  // Rust cognition bridge (Phase 2): when available, scheduling delegates to Rust
-  readonly rustBridge?: RustCognitionBridge;
-
-  // Domain configuration
-  readonly enabledDomains: ReadonlyArray<ActivityDomain>;
+  // Configuration
   readonly allowBackgroundThreads: boolean;
   readonly maxBackgroundThreads?: number;
 }

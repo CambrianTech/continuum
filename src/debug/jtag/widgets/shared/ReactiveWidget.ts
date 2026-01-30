@@ -103,19 +103,35 @@ export { html, css, unsafeCSS, type TemplateResult, type CSSResultGroup };
 export type { InteractionHint };
 
 /**
- * Property decorator that works with TC39 standard decorators
+ * Property decorator that works with TC39 standard decorators.
  * Use: @reactive() myProp = initialValue;
- * NOTE: Must call requestUpdate() after changing state until decorator is fixed
+ *
+ * TC39 class fields shadow Lit's prototype accessor (from createProperty),
+ * so we schedule a microtask to remove the own property after field
+ * initialization completes. This makes Lit's reactive setter visible,
+ * and subsequent assignments trigger requestUpdate() automatically.
  */
 export function reactive(options?: PropertyDeclaration) {
   return function(target: undefined, context: ClassFieldDecoratorContext) {
     const fieldName = String(context.name);
     context.addInitializer(function(this: unknown) {
-      // Register as reactive property on the class
+      // Register as reactive property on the class (creates prototype accessor)
       const ctor = (this as { constructor: typeof ReactiveWidget }).constructor;
       ctor.createProperty(fieldName, {
         ...options,
         state: true // Internal state, not reflected to attribute
+      });
+
+      // Fix TC39 class field shadowing: after field initialization completes,
+      // the own property shadows Lit's prototype accessor. Remove it so
+      // Lit's reactive setter becomes visible and triggers re-renders.
+      const instance = this as Record<string, unknown>;
+      queueMicrotask(() => {
+        if (Object.prototype.hasOwnProperty.call(instance, fieldName)) {
+          const value = instance[fieldName];
+          delete instance[fieldName];
+          instance[fieldName] = value; // Now goes through Lit's accessor
+        }
       });
     });
   };
@@ -124,6 +140,8 @@ export function reactive(options?: PropertyDeclaration) {
 /**
  * Attribute property decorator - reflects to/from HTML attribute
  * Use: @attr() label = 'default';
+ *
+ * Same TC39 field shadowing fix as @reactive().
  */
 export function attr(options?: PropertyDeclaration) {
   return function(target: undefined, context: ClassFieldDecoratorContext) {
@@ -133,6 +151,15 @@ export function attr(options?: PropertyDeclaration) {
       ctor.createProperty(fieldName, {
         ...options,
         reflect: true
+      });
+
+      const instance = this as Record<string, unknown>;
+      queueMicrotask(() => {
+        if (Object.prototype.hasOwnProperty.call(instance, fieldName)) {
+          const value = instance[fieldName];
+          delete instance[fieldName];
+          instance[fieldName] = value;
+        }
       });
     });
   };
