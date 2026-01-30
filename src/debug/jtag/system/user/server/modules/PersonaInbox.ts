@@ -134,26 +134,37 @@ export class PersonaInbox {
       }
     }
 
-    // RUST CHANNEL PATH: Route through Rust IPC
+    // RUST CHANNEL PATH: Route through Rust IPC (fire-and-forget — don't block event loop)
     if (this.rustBridge) {
       const enqueueRequest = toChannelEnqueueRequest(item);
-      const result = await this.rustBridge.channelEnqueue(enqueueRequest);
+      const enqueueStart = performance.now();
 
-      // Log with type-specific details
-      if (isInboxMessage(item)) {
-        const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
-        this.log(`🦀 Routed ${enqueueRequest.item_type} → Rust ${result.routed_to}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size})`);
-        if (item.sourceModality === 'voice') {
-          console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → Rust ${result.routed_to}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-        }
-      } else if (isInboxTask(item)) {
-        this.log(`🦀 Routed task → Rust ${result.routed_to}: ${item.taskType} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size})`);
-      }
+      // Fire-and-forget: send IPC request but don't await response
+      // The response will be processed async via the pendingRequests map (requestId matching).
+      // Rust processes requests sequentially per socket, so the item WILL be enqueued
+      // before the next serviceCycleFull() call on the same connection.
+      this.rustBridge.channelEnqueue(enqueueRequest)
+        .then(result => {
+          const enqueueMs = performance.now() - enqueueStart;
+          // Async logging — not on critical path
+          if (isInboxMessage(item)) {
+            const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
+            this.log(`🦀 Routed ${enqueueRequest.item_type} → Rust ${result.routed_to}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
+            if (item.sourceModality === 'voice') {
+              console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → Rust ${result.routed_to}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+            }
+          } else if (isInboxTask(item)) {
+            this.log(`🦀 Routed task → Rust ${result.routed_to}: ${item.taskType} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
+          }
+        })
+        .catch(error => {
+          this.log(`❌ channelEnqueue FAILED: ${error}`);
+        });
 
-      // Signal TS service loop that work is available
+      // Signal TS service loop IMMEDIATELY — don't wait for IPC response
       this.signal.emit('work-available');
 
-      return true; // Item routed to Rust channel
+      return true; // Item sent to Rust channel (fire-and-forget)
     }
 
     // LEGACY PATH: Flat priority queue (Rust bridge not yet initialized during startup)

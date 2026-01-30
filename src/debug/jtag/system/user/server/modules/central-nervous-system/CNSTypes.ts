@@ -11,6 +11,18 @@ import type { PersonaStateManager } from '../PersonaState';
 import type { RustCognitionBridge } from '../RustCognitionBridge';
 
 /**
+ * Pre-computed fast-path decision from Rust's serviceCycleFull.
+ * Eliminates a separate fastPathDecision IPC round-trip.
+ */
+export interface FastPathDecision {
+  should_respond: boolean;
+  confidence: number;
+  reason: string;
+  decision_time_ms: number;
+  fast_path_used: boolean;
+}
+
+/**
  * Configuration for PersonaCentralNervousSystem
  *
  * All scheduling is delegated to Rust. TS handles execution.
@@ -28,10 +40,9 @@ export interface CNSConfig {
   readonly personaName: string;
   readonly uniqueId: string;  // Format: {name}-{shortId} for log paths
 
-  // Callbacks for delegating to PersonaUser (avoids circular dependency)
-  readonly handleChatMessage: (item: QueueItem) => Promise<void>;
-  readonly pollTasks: () => Promise<void>;
-  readonly generateSelfTasks: () => Promise<void>;
+  // Callback for delegating to PersonaUser (avoids circular dependency)
+  // decision is the pre-computed fast-path decision from Rust's serviceCycleFull
+  readonly handleChatMessage: (item: QueueItem, decision?: FastPathDecision) => Promise<void>;
 
   // Configuration
   readonly allowBackgroundThreads: boolean;

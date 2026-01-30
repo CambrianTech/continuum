@@ -32,66 +32,96 @@ export class PersonaCentralNervousSystem {
   /**
    * Single service cycle — the heart of the autonomous entity.
    *
-   * Delegates ALL scheduling to Rust:
-   * - Rust handles: consolidation, state gating, priority ordering, item selection
-   * - TS handles: task polling, self-task generation, item execution (LLM, DB, tools)
+   * HOT PATH ONLY: wait → Rust schedule → execute → drain → repeat.
+   * DB polling and self-task generation run on separate timers (see PersonaAutonomousLoop).
+   *
+   * Drain loop: after processing one item, immediately check for more.
+   * Only returns to waitForWork when Rust says the queue is empty.
    */
   async serviceCycle(): Promise<void> {
-    // STEP 0a: Poll task database for pending tasks assigned to this persona
-    await this.config.pollTasks();
-
-    // STEP 0b: Generate self-tasks for autonomous work creation
-    await this.config.generateSelfTasks();
-
     // STEP 1: Wait for work (signal-based, delegates to inbox)
     const cadence = this.config.personaState.getCadence();
     const hasWork = await this.config.inbox.waitForWork(cadence);
 
     if (!hasWork) {
-      await this.config.personaState.rest(cadence);
-      return;
+      return; // No work — loop will call us again
     }
 
-    // STEP 2: Rust-delegated scheduling
-    await this.serviceViaRust();
+    // STEP 2: Drain loop — process all queued items before returning to wait
+    await this.drainQueue();
   }
 
   /**
-   * Rust-delegated service cycle.
+   * Drain all queued items from Rust.
+   * Keeps calling Rust service_cycle() until no more work is available.
+   * This eliminates the overhead of re-entering waitForWork between items.
+   */
+  private async drainQueue(): Promise<void> {
+    let itemsProcessed = 0;
+    const MAX_DRAIN = 20; // Safety cap — don't monopolize the event loop forever
+
+    while (itemsProcessed < MAX_DRAIN) {
+      const processed = await this.serviceViaRust();
+      if (!processed) {
+        break; // Queue empty, return to wait
+      }
+      itemsProcessed++;
+    }
+
+    if (itemsProcessed > 1) {
+      this.logger.info(`Drained ${itemsProcessed} items in burst`);
+    }
+  }
+
+  /**
+   * Rust-delegated service cycle (MERGED: schedule + fast-path decision in ONE IPC call).
    *
-   * Rust's service_cycle() does ALL scheduling work in <1ms:
+   * Rust's serviceCycleFull() does ALL scheduling + cognition in <1ms:
    * - Consolidates all channels (items decide merge policy)
    * - Updates persona state (inbox_load, mood)
    * - Checks urgent channels first (AUDIO → CHAT → BACKGROUND)
    * - State-gates non-urgent items (mood/energy threshold)
-   * - Returns next item to process or adaptive wait cadence
+   * - Runs fast-path decision on the dequeued item (dedup, mention detection, state gating)
+   * - Returns next item + decision in ONE IPC round-trip
    *
    * TS just executes what Rust decided.
+   * Returns true if an item was processed (drain loop continues).
    */
-  private async serviceViaRust(): Promise<void> {
+  private async serviceViaRust(): Promise<boolean> {
     const bridge = this.config.rustBridge;
+    const ipcStart = performance.now();
 
-    const result = await bridge.serviceCycle();
+    const result = await bridge.serviceCycleFull();
+
+    const ipcMs = performance.now() - ipcStart;
 
     if (result.should_process && result.item) {
       // Convert Rust JSON item → TS QueueItem
+      const parseStart = performance.now();
       const queueItem = fromRustServiceItem(result.item as Record<string, unknown>);
+      const parseMs = performance.now() - parseStart;
+
       if (!queueItem) {
         this.logger.warn(`Rust returned unparseable item: ${JSON.stringify(result.item).slice(0, 200)}`);
-        return;
+        return false;
       }
 
       const channelName = result.channel ?? 'unknown';
-      this.logger.info(`[rust:${channelName}] Processing ${queueItem.type} (priority=${queueItem.priority.toFixed(2)}, stats=${result.stats.total_size} total)`);
+      const decisionStr = result.decision
+        ? `respond=${result.decision.should_respond}`
+        : 'no-decision';
+      this.logger.info(`[rust:${channelName}] Processing ${queueItem.type} (priority=${queueItem.priority.toFixed(2)}, stats=${result.stats.total_size} total) [ipc=${ipcMs.toFixed(1)}ms, parse=${parseMs.toFixed(1)}ms, ${decisionStr}]`);
 
-      // Delegate to PersonaUser via callback
-      await this.config.handleChatMessage(queueItem);
-    } else {
-      // No work — Rust says rest for wait_ms
-      // Note: wait_ms is advisory; the outer loop will call waitForWork() next cycle
-      // which provides signal-based wakeup if new work arrives before wait_ms
-      this.logger.debug(`Rust service cycle: no work (wait_ms=${result.wait_ms}, stats=${result.stats.total_size} total)`);
+      // Delegate to PersonaUser via callback — pass pre-computed decision
+      const handlerStart = performance.now();
+      await this.config.handleChatMessage(queueItem, result.decision ?? undefined);
+      const handlerMs = performance.now() - handlerStart;
+
+      this.logger.info(`[rust:${channelName}] Handler complete (${handlerMs.toFixed(1)}ms total, ipc=${ipcMs.toFixed(1)}ms)`);
+      return true;
     }
+
+    return false;
   }
 
   /**

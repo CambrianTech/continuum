@@ -14,6 +14,7 @@ import type { PersonaStateManager } from '../PersonaState';
 
 // Import QueueItem type for handleChatMessageFromCNS signature
 import type { QueueItem } from '../PersonaInbox';
+import type { FastPathDecision } from './CNSTypes';
 
 // Import RustCognitionBridge type
 import type { RustCognitionBridge } from '../RustCognitionBridge';
@@ -34,9 +35,7 @@ interface PersonaUserLike {
   } | null;
   // Rust cognition bridge (required for scheduling)
   rustCognitionBridge: RustCognitionBridge | null;
-  handleChatMessageFromCNS: (item: QueueItem) => Promise<void>;
-  pollTasksFromCNS: () => Promise<void>;
-  generateSelfTasksFromCNS: () => Promise<void>;
+  handleChatMessageFromCNS: (item: QueueItem, decision?: FastPathDecision) => Promise<void>;
 }
 
 export class CNSFactory {
@@ -137,14 +136,8 @@ export class CNSFactory {
       personaId: persona.entity.id,
       personaName,
       uniqueId: persona.entity.uniqueId,
-      handleChatMessage: async (item: QueueItem): Promise<void> => {
-        await persona.handleChatMessageFromCNS(item);
-      },
-      pollTasks: async (): Promise<void> => {
-        await persona.pollTasksFromCNS();
-      },
-      generateSelfTasks: async (): Promise<void> => {
-        await persona.generateSelfTasksFromCNS();
+      handleChatMessage: async (item: QueueItem, decision?: FastPathDecision): Promise<void> => {
+        await persona.handleChatMessageFromCNS(item, decision);
       },
       allowBackgroundThreads: false,
     });

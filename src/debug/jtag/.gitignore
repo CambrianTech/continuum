@@ -47,3 +47,4 @@ Cargo.lock
 # Rust backup files
 **/*.rs.bk
 **/*.rs.bk.*
+.fastembed_cache/

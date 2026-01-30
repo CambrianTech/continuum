@@ -19,6 +19,7 @@ pub mod ipc;
 pub mod ffi;
 pub mod utils;
 pub mod rag;
+pub mod memory;
 
 pub use audio_constants::*;
 

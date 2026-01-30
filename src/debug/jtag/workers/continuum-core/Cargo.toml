@@ -50,5 +50,8 @@ tracing-subscriber.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
+# Memory/Hippocampus — pure compute engine (data from TS ORM via IPC)
+fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC hop)
+
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,82 +1,39 @@
 /**
- * GlobalAwarenessSource - Injects cross-context awareness into RAG
+ * GlobalAwarenessSource - Injects cross-context awareness into RAG via Rust IPC
  *
- * This is the bridge between UnifiedConsciousness and the RAG pipeline.
- * It provides the persona with:
- * - Temporal continuity (what was I doing before?)
- * - Cross-context knowledge (relevant info from other rooms)
- * - Active intentions/goals
- * - Peripheral awareness (what's happening elsewhere)
+ * Delegates to Rust's consciousness context builder which runs:
+ * - Temporal continuity queries (what was I doing before?)
+ * - Cross-context event aggregation (what happened in other rooms?)
+ * - Active intention detection (interrupted tasks)
+ * - Peripheral activity check
+ *
+ * All queries run concurrently in Rust with separate SQLite read connections,
+ * bypassing the Node.js event loop entirely.
+ *
+ * Previous implementation used TS UnifiedConsciousness through the event loop
+ * (3-60s under load, frequently timing out).
  *
  * Priority 85 - After identity (95), before conversation history (80).
- * This ensures the persona knows WHO they are first, then WHERE they've been,
- * then WHAT's been said in this room.
- *
- * PERFORMANCE: Caches consciousness context per persona+room for 30 seconds
- * to reduce DB query load when multiple personas process messages concurrently.
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import { Logger } from '../../core/logging/Logger';
-import {
-  UnifiedConsciousness,
-  formatConsciousnessForPrompt,
-  type ConsciousnessContext
-} from '../../user/server/modules/consciousness/UnifiedConsciousness';
 
 const log = Logger.create('GlobalAwarenessSource', 'rag');
 
 /**
- * Cache entry for consciousness context
+ * Registry for consciousness instances — kept for backward compatibility.
+ * The actual consciousness context is now built in Rust via IPC,
+ * but we still need the registry to check if a persona has been initialized.
  */
-interface CachedContext {
-  context: ConsciousnessContext;
-  formattedPrompt: string | undefined;
-  cachedAt: number;
-}
+const initializedPersonas = new Set<string>();
 
 /**
- * Cache TTL in milliseconds (30 seconds)
- * Cross-context awareness doesn't change rapidly, so caching is safe
+ * Register a persona as having consciousness initialized.
+ * Called during PersonaUser startup after memory/init succeeds.
  */
-const CACHE_TTL_MS = 30_000;
-
-/**
- * Cache for consciousness contexts by persona+room key
- * Key format: `${personaId}:${roomId}`
- */
-const contextCache = new Map<string, CachedContext>();
-
-/**
- * Registry to store UnifiedConsciousness instances by personaId
- * This allows the RAG source to access the consciousness for any persona
- */
-const consciousnessRegistry = new Map<string, UnifiedConsciousness>();
-
-/**
- * Clear expired cache entries
- */
-function clearExpiredCache(): void {
-  const now = Date.now();
-  for (const [key, entry] of contextCache) {
-    if (now - entry.cachedAt > CACHE_TTL_MS) {
-      contextCache.delete(key);
-    }
-  }
-}
-
-/**
- * Get cache key for persona+room
- */
-function getCacheKey(personaId: string, roomId: string): string {
-  return `${personaId}:${roomId}`;
-}
-
-/**
- * Register a persona's consciousness for RAG access
- */
-export function registerConsciousness(personaId: string, consciousness: UnifiedConsciousness): void {
-  consciousnessRegistry.set(personaId, consciousness);
+export function registerConsciousness(personaId: string, _consciousness?: any): void {
+  initializedPersonas.add(personaId);
   log.debug(`Registered consciousness for persona ${personaId}`);
 }
 
@@ -84,15 +41,15 @@ export function registerConsciousness(personaId: string, consciousness: UnifiedC
  * Unregister a persona's consciousness
  */
 export function unregisterConsciousness(personaId: string): void {
-  consciousnessRegistry.delete(personaId);
+  initializedPersonas.delete(personaId);
   log.debug(`Unregistered consciousness for persona ${personaId}`);
 }
 
 /**
- * Get a persona's consciousness
+ * Check if a persona has consciousness registered
  */
-export function getConsciousness(personaId: string): UnifiedConsciousness | undefined {
-  return consciousnessRegistry.get(personaId);
+export function getConsciousness(personaId: string): boolean {
+  return initializedPersonas.has(personaId);
 }
 
 export class GlobalAwarenessSource implements RAGSource {
@@ -101,104 +58,71 @@ export class GlobalAwarenessSource implements RAGSource {
   readonly defaultBudgetPercent = 10;
 
   isApplicable(context: RAGSourceContext): boolean {
-    // Applicable if we have consciousness registered for this persona
-    const hasConsciousness = consciousnessRegistry.has(context.personaId);
-    console.log(`[GlobalAwarenessSource] isApplicable: personaId=${context.personaId}, has=${hasConsciousness}, registrySize=${consciousnessRegistry.size}`);
-    return hasConsciousness;
+    return initializedPersonas.has(context.personaId);
   }
 
   async load(context: RAGSourceContext, _allocatedBudget: number): Promise<RAGSection> {
     const startTime = performance.now();
 
     try {
-      const consciousness = consciousnessRegistry.get(context.personaId);
+      // Get PersonaUser to access Rust bridge
+      const { UserDaemonServer } = await import('../../../daemons/user-daemon/server/UserDaemonServer');
+      const userDaemon = UserDaemonServer.getInstance();
 
-      if (!consciousness) {
-        log.debug(`No consciousness found for persona ${context.personaId}`);
+      if (!userDaemon) {
+        log.debug('UserDaemon not available, skipping awareness');
         return this.emptySection(startTime);
       }
 
-      // Check cache first (reduces DB queries from ~4 per request to ~4 per 30s)
-      const cacheKey = getCacheKey(context.personaId, context.roomId);
-      const cached = contextCache.get(cacheKey);
-      const now = Date.now();
-
-      if (cached && now - cached.cachedAt < CACHE_TTL_MS) {
-        // Cache hit - return cached result immediately (no logging to avoid overhead)
-        const loadTimeMs = performance.now() - startTime;
-
-        if (!cached.formattedPrompt) {
-          return this.emptySection(startTime);
-        }
-
-        return {
-          sourceName: this.name,
-          tokenCount: this.estimateTokens(cached.formattedPrompt),
-          loadTimeMs,
-          systemPromptSection: cached.formattedPrompt,
-          metadata: { ...this.buildMetadata(cached.context), cached: true }
-        };
+      const personaUser = userDaemon.getPersonaUser(context.personaId);
+      if (!personaUser) {
+        return this.emptySection(startTime);
       }
 
-      // Clear expired entries periodically
-      if (contextCache.size > 50) {
-        clearExpiredCache();
+      // Access the Rust cognition bridge (nullable getter — no throw)
+      const bridge = (personaUser as any).rustCognitionBridge;
+      if (!bridge) {
+        log.debug('Rust cognition bridge not available, skipping awareness');
+        return this.emptySection(startTime);
       }
 
-      // Cache miss - fetch consciousness context
-      const currentMessage = context.options.currentMessage?.content;
-
-      // Detect voice mode - skip expensive semantic search for faster response
+      // Detect voice mode — skip expensive semantic search for faster response
       const voiceSessionId = (context.options as any)?.voiceSessionId;
       const isVoiceMode = !!voiceSessionId;
-      if (isVoiceMode) {
-        log.debug(`VOICE MODE detected - skipping semantic search for faster response`);
-      }
 
-      // TIMEOUT: GlobalAwarenessSource was taking 60+ seconds without this!
-      // The consciousness.getContext() calls multiple DB queries that can hang
-      // under lock contention when multiple personas respond concurrently.
-      const CONSCIOUSNESS_TIMEOUT_MS = 3000;  // 3 second hard limit
+      const currentMessage = context.options.currentMessage?.content;
 
-      const contextPromise = consciousness.getContext(
+      // Single IPC call → Rust builds consciousness context with concurrent SQLite reads
+      // Rust handles its own 30s TTL cache internally
+      const result = await bridge.memoryConsciousnessContext(
         context.roomId,
         currentMessage,
-        { skipSemanticSearch: isVoiceMode }  // Skip slow embedding search for voice
+        isVoiceMode  // skipSemanticSearch
       );
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Consciousness context timeout')), CONSCIOUSNESS_TIMEOUT_MS)
-      );
-
-      // Build consciousness context with timeout (fast path for voice mode)
-      const consciousnessContext = await Promise.race([contextPromise, timeoutPromise]);
-
-      // Format for prompt injection
-      const systemPromptSection = formatConsciousnessForPrompt(consciousnessContext);
-
-      // Cache the result
-      contextCache.set(cacheKey, {
-        context: consciousnessContext,
-        formattedPrompt: systemPromptSection,
-        cachedAt: now
-      });
-
-      if (!systemPromptSection) {
-        log.debug(`Cache miss, no cross-context content for room ${context.roomId}`);
+      if (!result.formatted_prompt) {
+        log.debug(`No cross-context content for room ${context.roomId}`);
         return this.emptySection(startTime);
       }
 
       const loadTimeMs = performance.now() - startTime;
-      const tokenCount = this.estimateTokens(systemPromptSection);
+      const tokenCount = this.estimateTokens(result.formatted_prompt);
 
-      log.debug(`Loaded global awareness in ${loadTimeMs.toFixed(1)}ms (${tokenCount} tokens)`);
+      log.debug(`Loaded global awareness in ${loadTimeMs.toFixed(1)}ms (${tokenCount} tokens) rust=${result.build_time_ms.toFixed(1)}ms`);
 
       return {
         sourceName: this.name,
         tokenCount,
         loadTimeMs,
-        systemPromptSection,
-        metadata: this.buildMetadata(consciousnessContext)
+        systemPromptSection: result.formatted_prompt,
+        metadata: {
+          crossContextEventCount: result.cross_context_event_count,
+          activeIntentionCount: result.active_intention_count,
+          hasPeripheralActivity: result.has_peripheral_activity,
+          wasInterrupted: result.temporal.was_interrupted,
+          lastActiveContext: result.temporal.last_active_context_name,
+          rustBuildMs: result.build_time_ms
+        }
       };
 
     } catch (error: any) {
@@ -222,17 +146,6 @@ export class GlobalAwarenessSource implements RAGSource {
       tokenCount: 0,
       loadTimeMs: performance.now() - startTime,
       metadata: { error }
-    };
-  }
-
-  private buildMetadata(ctx: ConsciousnessContext): Record<string, unknown> {
-    return {
-      crossContextEventCount: ctx.crossContext.relevantEvents.length,
-      activeIntentionCount: ctx.intentions.active.length,
-      relevantIntentionCount: ctx.intentions.relevantHere.length,
-      hasPeripheralActivity: ctx.crossContext.peripheralSummary !== 'Other contexts: Quiet',
-      wasInterrupted: ctx.temporal.wasInterrupted,
-      lastActiveContext: ctx.temporal.lastActiveContextName
     };
   }
 

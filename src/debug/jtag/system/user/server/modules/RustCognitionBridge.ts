@@ -29,6 +29,14 @@ import type {
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
 
+// Memory subsystem types (Hippocampus in Rust — corpus-based, no SQL)
+import type { CorpusMemory } from '../../../../workers/continuum-core/bindings/CorpusMemory';
+import type { CorpusTimelineEvent } from '../../../../workers/continuum-core/bindings/CorpusTimelineEvent';
+import type { LoadCorpusResponse } from '../../../../workers/continuum-core/bindings/LoadCorpusResponse';
+import type { MemoryRecallResponse } from '../../../../workers/continuum-core/bindings/MemoryRecallResponse';
+import type { MultiLayerRecallRequest } from '../../../../workers/continuum-core/bindings/MultiLayerRecallRequest';
+import type { ConsciousnessContextResponse } from '../../../../workers/continuum-core/bindings/ConsciousnessContextResponse';
+
 const SOCKET_PATH = '/tmp/continuum-core.sock';
 
 /**
@@ -319,6 +327,43 @@ export class RustCognitionBridge {
   }
 
   /**
+   * Service cycle + fast-path decision in ONE IPC call.
+   * Eliminates a separate IPC round-trip for fastPathDecision.
+   * Returns scheduling result + cognition decision together.
+   * THROWS on failure
+   */
+  async serviceCycleFull(): Promise<{
+    should_process: boolean;
+    item: any | null;
+    channel: ActivityDomain | null;
+    wait_ms: number;
+    stats: ChannelRegistryStatus;
+    decision: { should_respond: boolean; confidence: number; reason: string; decision_time_ms: number; fast_path_used: boolean } | null;
+  }> {
+    this.assertReady('serviceCycleFull');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.channelServiceCycleFull(this.personaId);
+      const elapsed = performance.now() - start;
+
+      if (result.should_process) {
+        const decisionStr = result.decision
+          ? `respond=${result.decision.should_respond}, reason="${result.decision.reason}"`
+          : 'no-decision';
+        this.logger.info(`Service cycle full: process ${result.channel} item [${decisionStr}] (${elapsed.toFixed(2)}ms) total=${result.stats.total_size}`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`serviceCycleFull FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
    * Get per-channel status snapshot
    * THROWS on failure
    */
@@ -355,6 +400,155 @@ export class RustCognitionBridge {
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`channelClear FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Memory Subsystem (Hippocampus in Rust — corpus-based, no SQL)
+  // Corpus loaded at startup, recall/consciousness bypass TS event loop
+  // ========================================================================
+
+  /**
+   * Load a persona's full memory corpus into Rust's in-memory cache.
+   * Called at persona startup — sends all memories + timeline events from TS ORM.
+   * Subsequent recall/consciousness operations run on this cached corpus.
+   * THROWS on failure
+   */
+  async memoryLoadCorpus(
+    memories: CorpusMemory[],
+    events: CorpusTimelineEvent[]
+  ): Promise<LoadCorpusResponse> {
+    this.assertReady('memoryLoadCorpus');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.memoryLoadCorpus(this.personaId, memories, events);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Corpus loaded: ${result.memory_count} memories (${result.embedded_memory_count} embedded), ${result.timeline_event_count} events (${result.embedded_event_count} embedded) in ${result.load_time_ms.toFixed(1)}ms (ipc=${elapsed.toFixed(1)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`memoryLoadCorpus FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`memories=${memories.length}, events=${events.length}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Append a single memory to the cached corpus (incremental update).
+   * Called after Hippocampus stores a new memory to the DB.
+   * Keeps Rust cache coherent with the ORM without full reload.
+   * THROWS on failure
+   */
+  async memoryAppendMemory(memory: CorpusMemory): Promise<void> {
+    this.assertReady('memoryAppendMemory');
+    const start = performance.now();
+
+    try {
+      await this.client.memoryAppendMemory(this.personaId, memory);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Memory appended: ${memory.record.id} type=${memory.record.memory_type} embedded=${!!memory.embedding} (${elapsed.toFixed(1)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`memoryAppendMemory FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`memory_id=${memory.record.id}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Append a single timeline event to the cached corpus (incremental update).
+   * THROWS on failure
+   */
+  async memoryAppendEvent(event: CorpusTimelineEvent): Promise<void> {
+    this.assertReady('memoryAppendEvent');
+    const start = performance.now();
+
+    try {
+      await this.client.memoryAppendEvent(this.personaId, event);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Event appended: ${event.event.id} type=${event.event.event_type} embedded=${!!event.embedding} (${elapsed.toFixed(1)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`memoryAppendEvent FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`event_id=${event.event.id}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 6-layer parallel multi-recall — the primary recall API
+   * Runs Core, Semantic, Temporal, Associative, DecayResurface, CrossContext in parallel
+   * THROWS on failure
+   */
+  async memoryMultiLayerRecall(params: MultiLayerRecallRequest): Promise<MemoryRecallResponse> {
+    this.assertReady('memoryMultiLayerRecall');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.memoryMultiLayerRecall(this.personaId, params);
+      const elapsed = performance.now() - start;
+
+      const layerSummary = result.layer_timings
+        .map(l => `${l.layer}(${l.results_found}/${l.time_ms.toFixed(1)}ms)`)
+        .join(', ');
+      this.logger.info(`Multi-layer recall: ${result.memories.length}/${result.total_candidates} memories, layers=[${layerSummary}] total=${result.recall_time_ms.toFixed(1)}ms (ipc=${elapsed.toFixed(1)}ms)`);
+
+      if (elapsed > 100) {
+        this.logger.warn(`Multi-layer recall SLOW: ${elapsed.toFixed(1)}ms (target <50ms)`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`memoryMultiLayerRecall FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`query="${params.query_text}", room=${params.room_id}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Build consciousness context for RAG injection
+   * Replaces UnifiedConsciousness.getContext() — temporal + cross-context + intentions
+   * THROWS on failure
+   */
+  async memoryConsciousnessContext(
+    roomId: string,
+    currentMessage?: string,
+    skipSemanticSearch?: boolean
+  ): Promise<ConsciousnessContextResponse> {
+    this.assertReady('memoryConsciousnessContext');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.memoryConsciousnessContext(
+        this.personaId,
+        roomId,
+        currentMessage,
+        skipSemanticSearch
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Consciousness context: events=${result.cross_context_event_count}, intentions=${result.active_intention_count}, peripheral=${result.has_peripheral_activity} (build=${result.build_time_ms.toFixed(1)}ms, ipc=${elapsed.toFixed(1)}ms)`);
+
+      if (elapsed > 100) {
+        this.logger.warn(`Consciousness context SLOW: ${elapsed.toFixed(1)}ms (target <20ms)`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`memoryConsciousnessContext FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`roomId=${roomId}`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

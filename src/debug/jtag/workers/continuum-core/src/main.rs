@@ -9,6 +9,7 @@
 /// Example: continuum-core-server /tmp/continuum-core.sock /tmp/jtag-logger-worker.sock
 
 use continuum_core::{init_logger, start_server, CallManager};
+use continuum_core::memory::{EmbeddingProvider, FastEmbedProvider, PersonaMemoryManager};
 use std::env;
 use std::sync::Arc;
 use tracing::{info, Level};
@@ -60,13 +61,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Audio never leaves the Rust process.
     let call_manager = Arc::new(CallManager::new());
 
+    // Initialize Hippocampus memory subsystem — inline embedding for query vectors.
+    // Rust is a pure compute engine. Memory data comes from the TS ORM via IPC.
+    // Embedding model loads once (~100ms), then ~5ms per embed (no IPC hop).
+    info!("🧠 Initializing Hippocampus embedding provider...");
+    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> = match FastEmbedProvider::new() {
+        Ok(provider) => {
+            info!("✅ Hippocampus embedding ready: {} ({}D)", provider.name(), provider.dimensions());
+            Arc::new(provider)
+        }
+        Err(e) => {
+            tracing::error!("❌ Failed to load embedding model: {}", e);
+            tracing::error!("   Memory operations will not have semantic search.");
+            tracing::error!("   Ensure fastembed model cache is available.");
+            std::process::exit(1);
+        }
+    };
+    let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
+
     // Capture tokio runtime handle for IPC thread to call async CallManager methods
     let rt_handle = tokio::runtime::Handle::current();
 
     // Start IPC server in background thread FIRST (creates socket immediately)
     let ipc_call_manager = call_manager.clone();
+    let ipc_memory_manager = memory_manager.clone();
     let ipc_handle = std::thread::spawn(move || {
-        if let Err(e) = start_server(&socket_path, ipc_call_manager, rt_handle) {
+        if let Err(e) = start_server(&socket_path, ipc_call_manager, rt_handle, ipc_memory_manager) {
             tracing::error!("❌ IPC server error: {}", e);
         }
     });
