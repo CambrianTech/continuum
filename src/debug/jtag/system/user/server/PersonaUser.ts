@@ -69,7 +69,7 @@ import {
 import { Events } from '../../core/shared/Events';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
-import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import { DataList, type DataListParams, type DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { RateLimiter } from './modules/RateLimiter';
@@ -83,7 +83,7 @@ import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome
 import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
 import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
-import type { BaseQueueItem } from './modules/channels/BaseQueueItem';
+import type { FastPathDecision } from './modules/central-nervous-system/CNSTypes';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
 // NOTE: DecisionAdapterChain removed - Rust cognition engine handles fast-path decisions
 // See: workers/continuum-core/src/persona/cognition.rs
@@ -118,6 +118,9 @@ import { SystemPaths } from '../../core/config/SystemPaths';
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import { DataOpen } from '../../../commands/data/open/shared/DataOpenTypes';
+import type { CorpusMemory } from '../../../workers/continuum-core/bindings/CorpusMemory';
+import type { CorpusTimelineEvent } from '../../../workers/continuum-core/bindings/CorpusTimelineEvent';
 
 /**
  * PersonaUser - Our internal AI citizens
@@ -210,6 +213,14 @@ export class PersonaUser extends AIUser {
    */
   public get rustCognition(): RustCognitionBridge {
     if (!this._rustCognition) throw new Error('Rust cognition bridge not initialized');
+    return this._rustCognition;
+  }
+
+  /**
+   * Nullable accessor for Rust bridge (used by CNSFactory during construction).
+   * Unlike rustCognition getter, this returns null instead of throwing.
+   */
+  public get rustCognitionBridge(): RustCognitionBridge | null {
     return this._rustCognition;
   }
 
@@ -439,6 +450,10 @@ export class PersonaUser extends AIUser {
     );
     // Register with GlobalAwarenessSource so RAG can access consciousness
     registerConsciousness(this.id, this._consciousness);
+    // Wire Rust bridge into consciousness for timeline event corpus coherence
+    if (this._rustCognition) {
+      this._consciousness.setRustBridge(this._rustCognition);
+    }
     this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
 
     // Logger for cognition.log (used by task executor and other modules)
@@ -562,12 +577,32 @@ export class PersonaUser extends AIUser {
 
     // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
     // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
+    // Also wires the bridge to inbox for Rust-backed channel routing
     try {
       await this._rustCognition?.initialize();
-      this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected`);
+      if (this._rustCognition) {
+        this.inbox.setRustBridge(this._rustCognition);
+      }
+      this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected (inbox routing enabled)`);
     } catch (error) {
       this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
       // Don't throw - let persona initialize, but message handling will fail loudly
+    }
+
+    // STEP 1.5.2: Load memory corpus into Rust compute engine
+    // Bulk-loads all memories + timeline events from ORM (longterm.db) into Rust's
+    // in-memory corpus. This enables sub-millisecond 6-layer parallel recall.
+    // Data path: ORM (DataOpen/DataList) → map to Rust types → IPC → DashMap<Arc<MemoryCorpus>>
+    // Must happen AFTER bridge.initialize() and BEFORE any RAG/recall usage.
+    if (this._rustCognition) {
+      try {
+        const { memories, events } = await this.loadCorpusFromORM();
+        const corpusResult = await this._rustCognition.memoryLoadCorpus(memories, events);
+        this.log.info(`${this.displayName}: Rust corpus loaded — ${corpusResult.memory_count} memories (${corpusResult.embedded_memory_count} embedded), ${corpusResult.timeline_event_count} events (${corpusResult.embedded_event_count} embedded) in ${corpusResult.load_time_ms.toFixed(1)}ms`);
+      } catch (error) {
+        this.log.error(`${this.displayName}: Corpus load failed:`, error);
+        // Non-fatal — recall will return empty results until corpus is loaded
+      }
     }
 
     // STEP 1.6: Register with ResourceManager for holistic resource allocation
@@ -663,6 +698,116 @@ export class PersonaUser extends AIUser {
     // GENOME INTEGRATION: Load adapters from database into PersonaGenome
     // This bridges persisted genome (GenomeEntity) with runtime (PersonaGenome)
     await this.limbic!.loadGenomeFromDatabase();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // Corpus Loading — ORM → Rust compute engine
+  // ════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Load all memories + timeline events from the persona's longterm.db via ORM,
+   * map from camelCase ORM entities to snake_case Rust types.
+   *
+   * Opens a read-only ORM handle to longterm.db, queries both collections in
+   * parallel, maps entity fields, and returns typed corpus data ready for IPC.
+   *
+   * Data flow: longterm.db → DataOpen → DataList → field mapping → CorpusMemory[] / CorpusTimelineEvent[]
+   */
+  private async loadCorpusFromORM(): Promise<{ memories: CorpusMemory[], events: CorpusTimelineEvent[] }> {
+    const dbPath = SystemPaths.personas.longterm(this.entity.uniqueId);
+
+    const openResult = await DataOpen.execute({
+      adapter: 'sqlite',
+      config: { path: dbPath, mode: 'readwrite', wal: true, foreignKeys: true }
+    });
+
+    if (!openResult.success || !openResult.dbHandle) {
+      this.log.warn(`${this.displayName}: Could not open longterm.db for corpus: ${openResult.error}`);
+      return { memories: [], events: [] };
+    }
+
+    const dbHandle = openResult.dbHandle;
+
+    // Parallel ORM queries — both are read-only against the same DB handle
+    const [memResult, evtResult] = await Promise.all([
+      DataList.execute({
+        dbHandle,
+        collection: 'memories',
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 100000,
+      }),
+      DataList.execute({
+        dbHandle,
+        collection: 'timeline_events',
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 100000,
+      }),
+    ]);
+
+    // Map ORM entities (camelCase) → Rust types (snake_case)
+    const memories: CorpusMemory[] = (memResult.success && memResult.items)
+      ? (memResult.items as unknown as MemoryEntity[]).map(mem => this.mapMemoryToCorpus(mem))
+      : [];
+
+    const events: CorpusTimelineEvent[] = (evtResult.success && evtResult.items)
+      ? (evtResult.items as unknown as Record<string, unknown>[]).map(evt => this.mapTimelineEventToCorpus(evt))
+      : [];
+
+    return { memories, events };
+  }
+
+  /**
+   * Map a single MemoryEntity (camelCase ORM) to CorpusMemory (snake_case Rust).
+   * Handles field renaming, default values, and embedding extraction.
+   */
+  private mapMemoryToCorpus(mem: MemoryEntity): CorpusMemory {
+    return {
+      record: {
+        id: mem.id,
+        persona_id: mem.personaId ?? this.entity.uniqueId,
+        memory_type: mem.type,
+        content: mem.content,
+        context: mem.context ?? {},
+        timestamp: typeof mem.timestamp === 'string'
+          ? mem.timestamp
+          : new Date(mem.timestamp as unknown as number).toISOString(),
+        importance: mem.importance ?? 0.5,
+        access_count: mem.accessCount ?? 0,
+        tags: mem.tags ?? [],
+        related_to: mem.relatedTo ?? [],
+        source: mem.source ?? null,
+        last_accessed_at: mem.lastAccessedAt ?? null,
+        layer: null,           // Set by recall layers, not on input
+        relevance_score: null, // Set by semantic recall, not on input
+      },
+      embedding: mem.embedding ?? null,
+    };
+  }
+
+  /**
+   * Map a single TimelineEventEntity (camelCase ORM) to CorpusTimelineEvent (snake_case Rust).
+   * Uses Record<string, unknown> because DataList returns plain objects, not class instances.
+   */
+  private mapTimelineEventToCorpus(evt: Record<string, unknown>): CorpusTimelineEvent {
+    return {
+      event: {
+        id: evt.id as string,
+        persona_id: (evt.personaId as string) ?? this.entity.uniqueId,
+        timestamp: typeof evt.timestamp === 'string'
+          ? evt.timestamp
+          : new Date(evt.timestamp as number).toISOString(),
+        context_type: (evt.contextType as string) ?? 'room',
+        context_id: (evt.contextId as string) ?? '',
+        context_name: (evt.contextName as string) ?? '',
+        event_type: (evt.eventType as string) ?? 'observation',
+        actor_id: (evt.actorId as string) ?? '',
+        actor_name: (evt.actorName as string) ?? '',
+        content: (evt.content as string) ?? '',
+        importance: (evt.importance as number) ?? 0.5,
+        topics: (evt.topics as string[]) ?? [],
+      },
+      embedding: (evt.embedding as number[]) ?? null,
+    };
   }
 
   /**
@@ -1105,9 +1250,10 @@ export class PersonaUser extends AIUser {
   public async evaluateAndPossiblyRespondWithCognition(
     message: ProcessableMessage,
     senderIsHuman: boolean,
-    messageText: string
+    messageText: string,
+    preComputedDecision?: FastPathDecision
   ): Promise<void> {
-    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(message, senderIsHuman, messageText);
+    return await this.messageEvaluator.evaluateAndPossiblyRespondWithCognition(message, senderIsHuman, messageText, preComputedDecision);
   }
 
   /**
@@ -1760,18 +1906,8 @@ export class PersonaUser extends AIUser {
    * This is called by PersonaCentralNervousSystem.serviceChatDomain() via callback pattern.
    * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
    */
-  public async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
-    await this.autonomousLoop.handleChatMessageFromCNS(item);
-  }
-
-  /**
-   * CNS callback: Handle channel-routed queue item from CNS orchestrator
-   *
-   * This is called by PersonaCentralNervousSystem.serviceChannels() via callback pattern.
-   * Dispatches by item type to appropriate processing pipeline (voice, chat, task).
-   */
-  public async handleQueueItemFromCNS(item: BaseQueueItem): Promise<void> {
-    await this.autonomousLoop.handleQueueItemFromCNS(item);
+  public async handleChatMessageFromCNS(item: QueueItem, decision?: FastPathDecision): Promise<void> {
+    await this.autonomousLoop.handleChatMessageFromCNS(item, decision);
   }
 
   /**

@@ -3,8 +3,12 @@
 //! Measures TTS synthesis time for different adapters and text lengths.
 //! Outputs structured timing data for iteration and optimization.
 //!
-//! Run with: cargo test -p continuum-core --test tts_timing_benchmark -- --nocapture
+//! Run with: cargo test -p continuum-core --release --test tts_timing_benchmark -- --nocapture
 
+mod common;
+
+use common::{ipc_connect_with_timeout, ipc_request, IpcResult};
+use serde::Serialize;
 use std::time::{Duration, Instant};
 
 /// Benchmark configuration
@@ -15,6 +19,12 @@ const TEST_PHRASES: &[(&str, &str)] = &[
     ("very_long", "Hello and welcome to this comprehensive test of our text to speech system. We are measuring the time it takes to synthesize various lengths of text using different TTS adapters. This includes both local models like Piper and Kokoro, as well as potential cloud-based solutions. The goal is to optimize our voice pipeline to achieve sub-second latency for typical conversational responses. Real-time voice communication requires fast synthesis to maintain natural conversation flow."),
 ];
 
+#[derive(Serialize)]
+struct SynthesizeRequest {
+    command: &'static str,
+    text: String,
+}
+
 /// Timing result for a single synthesis
 #[derive(Debug, Clone)]
 struct TimingResult {
@@ -24,7 +34,7 @@ struct TimingResult {
     synthesis_ms: u128,
     audio_duration_ms: u64,
     sample_count: usize,
-    real_time_factor: f64,  // synthesis_time / audio_duration (< 1.0 means faster than real-time)
+    real_time_factor: f64,
 }
 
 impl TimingResult {
@@ -43,63 +53,37 @@ impl TimingResult {
 
 /// Run timing benchmark via IPC to running server
 fn benchmark_via_ipc(text: &str) -> Result<(Duration, u64, usize), String> {
-    use serde::{Deserialize, Serialize};
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    use base64::Engine;
-
-    const IPC_SOCKET: &str = "/tmp/continuum-core.sock";
-
-    #[derive(Serialize)]
-    struct SynthesizeRequest {
-        command: &'static str,
-        text: String,
-    }
-
-    #[derive(Deserialize)]
-    struct IpcResponse {
-        success: bool,
-        result: Option<serde_json::Value>,
-        error: Option<String>,
-    }
-
-    let mut stream = UnixStream::connect(IPC_SOCKET)
-        .map_err(|e| format!("Cannot connect to {}: {}", IPC_SOCKET, e))?;
-
-    stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+    let mut stream = ipc_connect_with_timeout(Duration::from_secs(120))
+        .ok_or_else(|| "Cannot connect to IPC server".to_string())?;
 
     let request = SynthesizeRequest {
         command: "voice/synthesize",
         text: text.to_string(),
     };
 
-    let json = serde_json::to_string(&request).map_err(|e| format!("Serialize error: {}", e))?;
-
-    // Time the synthesis
+    // Time the full round-trip
     let start = Instant::now();
-    writeln!(stream, "{}", json).map_err(|e| format!("Write error: {}", e))?;
-
-    let mut reader = BufReader::new(stream.try_clone().map_err(|e| format!("Clone error: {}", e))?);
-    let mut line = String::new();
-    reader.read_line(&mut line).map_err(|e| format!("Read error: {}", e))?;
+    let result = ipc_request(&mut stream, &request)?;
     let elapsed = start.elapsed();
 
-    let response: IpcResponse = serde_json::from_str(&line)
-        .map_err(|e| format!("Parse error: {} (response: {})", e, line))?;
+    // Extract metadata from binary response
+    let (header, pcm_bytes) = match result {
+        IpcResult::Binary { header, data } => (header, data),
+        IpcResult::Json(resp) => {
+            if !resp.success {
+                return Err(format!("TTS failed: {:?}", resp.error));
+            }
+            return Err("Expected binary response, got JSON-only".into());
+        }
+    };
 
-    if !response.success {
-        return Err(format!("TTS failed: {:?}", response.error));
+    if !header.success {
+        return Err(format!("TTS failed: {:?}", header.error));
     }
 
-    let result = response.result.ok_or("No result")?;
-    let duration_ms = result["duration_ms"].as_u64().unwrap_or(0);
-    let audio_base64 = result["audio"].as_str().unwrap_or("");
-
-    let audio_bytes = base64::engine::general_purpose::STANDARD
-        .decode(audio_base64)
-        .unwrap_or_default();
-    let sample_count = audio_bytes.len() / 2;  // i16 = 2 bytes
+    let meta = header.result.ok_or("No result")?;
+    let duration_ms = meta["duration_ms"].as_u64().unwrap_or(0);
+    let sample_count = pcm_bytes.len() / 2; // i16 = 2 bytes
 
     Ok((elapsed, duration_ms, sample_count))
 }
@@ -111,7 +95,7 @@ fn benchmark_tts_timing() {
     println!("{}\n", "=".repeat(80));
 
     // Check if server is running
-    if std::os::unix::net::UnixStream::connect("/tmp/continuum-core.sock").is_err() {
+    if !common::server_is_running() {
         println!("Server not running. Start with: npm start");
         println!("Skipping benchmark.");
         return;
@@ -165,7 +149,7 @@ fn benchmark_tts_timing() {
         };
 
         let result = TimingResult {
-            adapter: "piper".to_string(),  // Currently only piper is active
+            adapter: "piper".to_string(),
             phrase_name: phrase_name.to_string(),
             text_chars: text.len(),
             synthesis_ms: avg_ms,
@@ -242,15 +226,14 @@ fn benchmark_tts_scaling() {
     println!("TTS SCALING TEST (chars vs time)");
     println!("{}\n", "=".repeat(80));
 
-    // Check if server is running
-    if std::os::unix::net::UnixStream::connect("/tmp/continuum-core.sock").is_err() {
+    if !common::server_is_running() {
         println!("Server not running. Skipping.");
         return;
     }
 
     // Test with progressively longer texts
     let base_sentence = "Hello world. ";
-    let lengths = [1, 2, 4, 8, 16];  // Number of sentence repetitions
+    let lengths = [1, 2, 4, 8, 16];
 
     println!("{:<10} {:<8} {:<12} {:<12} {:<10}",
         "Reps", "Chars", "Synth(ms)", "Audio(ms)", "ms/char");

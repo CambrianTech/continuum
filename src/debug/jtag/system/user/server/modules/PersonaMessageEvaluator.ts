@@ -35,6 +35,7 @@ import { getChatCoordinator } from '../../../coordination/server/ChatCoordinatio
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
 import type { SenderType } from '../../../../shared/generated';
+import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 import { personaSleepManager } from '@commands/ai/sleep/server/AiSleepServerCommand';
 import {
   AI_DECISION_EVENTS,
@@ -189,7 +190,8 @@ export class PersonaMessageEvaluator {
   async evaluateAndPossiblyRespondWithCognition(
     messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
-    messageText: string
+    messageText: string,
+    preComputedDecision?: FastPathDecision
   ): Promise<void> {
     // Defensive: ensure messageText is always a string (prevents slice errors)
     const safeMessageText = messageText ?? '';
@@ -292,7 +294,7 @@ export class PersonaMessageEvaluator {
       plan.steps[0].completedAt = Date.now();
 
       // Execute step 2: "Generate thoughtful response" (existing logic)
-      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText);
+      await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText, preComputedDecision);
 
       // If we got here, response was generated (or decision was SILENT)
       plan.steps[1].completed = true;
@@ -374,7 +376,8 @@ export class PersonaMessageEvaluator {
   async evaluateAndPossiblyRespond(
     messageEntity: ProcessableMessage,
     senderIsHuman: boolean,
-    safeMessageText: string
+    safeMessageText: string,
+    preComputedDecision?: FastPathDecision
   ): Promise<void> {
     // STEP 2: Check response cap (prevent infinite loops)
     if (this.personaUser.rateLimiter.hasReachedResponseCap(messageEntity.roomId)) {
@@ -453,7 +456,7 @@ export class PersonaMessageEvaluator {
       );
     }
 
-    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned);
+    const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision);
 
     // FULL TRANSPARENCY LOGGING
     this.log(`\n${'='.repeat(80)}`);
@@ -1067,7 +1070,8 @@ export class PersonaMessageEvaluator {
   async evaluateShouldRespond(
     message: ProcessableMessage,
     senderIsHuman: boolean,
-    isMentioned: boolean
+    isMentioned: boolean,
+    preComputedDecision?: FastPathDecision
   ): Promise<{
     shouldRespond: boolean;
     confidence: number;
@@ -1088,41 +1092,53 @@ export class PersonaMessageEvaluator {
     const startTime = Date.now();
 
     try {
-      // RUST COGNITION: Fast-path decision via IPC (<1ms target)
-      // Handles mention detection, deduplication, state-based gating
-      const senderType: SenderType = senderIsHuman ? 'human' : 'persona';
-      const priority = calculateMessagePriority(
-        {
-          content: message.content?.text ?? '',
-          timestamp: this.personaUser.timestampToNumber(message.timestamp),
-          roomId: message.roomId
-        },
-        {
-          displayName: this.personaUser.displayName,
-          id: this.personaUser.id
-        }
-      );
+      // RUST COGNITION: Fast-path decision
+      // If pre-computed from serviceCycleFull, skip the separate IPC call entirely
+      let rustDecision: { should_respond: boolean; confidence: number; reason: string; decision_time_ms: number; fast_path_used: boolean };
 
-      const inboxRequest = toInboxMessageRequest(
-        {
-          id: message.id,
-          roomId: message.roomId,
-          senderId: message.senderId,
-          senderName: message.senderName,
-          content: message.content?.text ?? '',
-          timestamp: this.personaUser.timestampToNumber(message.timestamp)
-        },
-        senderType,
-        priority,
-        'chat'
-      );
+      if (preComputedDecision) {
+        // Decision already computed by Rust in serviceCycleFull (saves one IPC round-trip)
+        rustDecision = preComputedDecision;
+        this.log(`🦀 ${this.personaUser.displayName}: Using pre-computed decision (saved IPC call): ${rustDecision.should_respond ? 'RESPOND' : 'SILENT'} (${rustDecision.decision_time_ms.toFixed(2)}ms, fast_path=${rustDecision.fast_path_used})`);
+      } else {
+        // Fallback: make separate IPC call (for code paths that don't go through CNS)
+        const senderType: SenderType = senderIsHuman ? 'human' : 'persona';
+        const priority = calculateMessagePriority(
+          {
+            content: message.content?.text ?? '',
+            timestamp: this.personaUser.timestampToNumber(message.timestamp),
+            roomId: message.roomId
+          },
+          {
+            displayName: this.personaUser.displayName,
+            id: this.personaUser.id
+          }
+        );
 
-      const rustDecision = await this.personaUser.rustCognition.fastPathDecision(inboxRequest);
+        const inboxRequest = toInboxMessageRequest(
+          {
+            id: message.id,
+            roomId: message.roomId,
+            senderId: message.senderId,
+            senderName: message.senderName,
+            content: message.content?.text ?? '',
+            timestamp: this.personaUser.timestampToNumber(message.timestamp)
+          },
+          senderType,
+          priority,
+          'chat'
+        );
 
-      this.log(`🦀 ${this.personaUser.displayName}: Rust decision: ${rustDecision.should_respond ? 'RESPOND' : 'SILENT'} (${rustDecision.decision_time_ms.toFixed(2)}ms, fast_path=${rustDecision.fast_path_used})`);
+        const ipcStart = performance.now();
+        rustDecision = await this.personaUser.rustCognition.fastPathDecision(inboxRequest);
+        const ipcMs = performance.now() - ipcStart;
+
+        this.log(`🦀 ${this.personaUser.displayName}: Rust decision (separate IPC, ${ipcMs.toFixed(1)}ms): ${rustDecision.should_respond ? 'RESPOND' : 'SILENT'} (${rustDecision.decision_time_ms.toFixed(2)}ms, fast_path=${rustDecision.fast_path_used})`);
+      }
 
       // Build RAG context for decision logging
       // IMPORTANT: Exclude processed tool results to prevent infinite loops
+      const ragStart = performance.now();
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
@@ -1141,6 +1157,10 @@ export class PersonaMessageEvaluator {
           }
         }
       );
+      const ragMs = performance.now() - ragStart;
+      const totalMs = Date.now() - startTime;
+
+      this.log(`[TIMING] ${this.personaUser.displayName}: evaluateShouldRespond total=${totalMs}ms (rag=${ragMs.toFixed(1)}ms, preComputed=${!!preComputedDecision})`);
 
       return {
         shouldRespond: rustDecision.should_respond,
@@ -1154,7 +1174,6 @@ export class PersonaMessageEvaluator {
           timeWindowMinutes: 30  // Default context window
         }
       };
-
 
     } catch (error: any) {
       this.log(`❌ ${this.personaUser.displayName}: Should-respond evaluation failed:`, error);

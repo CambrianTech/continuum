@@ -104,9 +104,10 @@ impl Drop for TimingGuard {
 ///
 /// Usage:
 /// ```
+/// use continuum_core::time_section;
 /// time_section!("voice", "utterance_processing", {
-///     // Your code here
-///     process_utterance(event);
+///     // timed code here
+///     let _ = 1 + 1;
 /// });
 /// ```
 #[macro_export]
@@ -121,9 +122,12 @@ macro_rules! time_section {
 ///
 /// Usage:
 /// ```
-/// let result = time_async!("voice", "arbitration", async {
-///     select_responder(event, candidates).await
-/// });
+/// use continuum_core::time_async;
+/// async fn example() {
+///     let result = time_async!("voice", "arbitration", async {
+///         42
+///     });
+/// }
 /// ```
 #[macro_export]
 macro_rules! time_async {

@@ -9,18 +9,18 @@
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 use crate::voice::{UtteranceEvent, VoiceParticipant};
-use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality};
+use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality, ChannelRegistry, ChannelEnqueueRequest, ActivityDomain, PersonaState};
 use crate::rag::RagEngine;
 use crate::logging::TimingGuard;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use uuid::Uuid;
+use dashmap::DashMap;
 
 // ============================================================================
 // Response Field Names - Single Source of Truth
@@ -190,6 +190,100 @@ enum Request {
     #[serde(rename = "cognition/get-state")]
     CognitionGetState { persona_id: String },
 
+    // ========================================================================
+    // Channel Commands
+    // ========================================================================
+
+    /// Route an item to its domain channel queue
+    #[serde(rename = "channel/enqueue")]
+    ChannelEnqueue {
+        persona_id: String,
+        item: ChannelEnqueueRequest,
+    },
+
+    /// Pop the highest-priority item from a specific domain channel
+    #[serde(rename = "channel/dequeue")]
+    ChannelDequeue {
+        persona_id: String,
+        domain: Option<String>,  // "AUDIO", "CHAT", "BACKGROUND" or null for any
+    },
+
+    /// Get per-channel status snapshot
+    #[serde(rename = "channel/status")]
+    ChannelStatus {
+        persona_id: String,
+    },
+
+    /// Run one service cycle: consolidate + return next item to process
+    #[serde(rename = "channel/service-cycle")]
+    ChannelServiceCycle {
+        persona_id: String,
+    },
+
+    /// Service cycle + fast-path decision in ONE call.
+    /// Eliminates a separate IPC round-trip for fastPathDecision.
+    /// Returns: service_cycle result + optional cognition decision.
+    #[serde(rename = "channel/service-cycle-full")]
+    ChannelServiceCycleFull {
+        persona_id: String,
+    },
+
+    /// Clear all channel queues
+    #[serde(rename = "channel/clear")]
+    ChannelClear {
+        persona_id: String,
+    },
+
+    // ========================================================================
+    // Memory / Hippocampus Commands
+    // ========================================================================
+
+    /// Load a persona's memory corpus from the TS ORM.
+    /// Rust is a pure compute engine — data comes from the ORM via IPC.
+    #[serde(rename = "memory/load-corpus")]
+    MemoryLoadCorpus {
+        persona_id: String,
+        memories: Vec<crate::memory::CorpusMemory>,
+        events: Vec<crate::memory::CorpusTimelineEvent>,
+    },
+
+    /// 6-layer parallel multi-recall — the improved recall algorithm.
+    /// Operates on in-memory MemoryCorpus data. Zero SQL.
+    #[serde(rename = "memory/multi-layer-recall")]
+    MemoryMultiLayerRecall {
+        persona_id: String,
+        query_text: Option<String>,
+        room_id: String,
+        max_results: usize,
+        layers: Option<Vec<String>>,
+    },
+
+    /// Build consciousness context (temporal + cross-context + intentions).
+    /// Operates on in-memory MemoryCorpus data. Zero SQL.
+    #[serde(rename = "memory/consciousness-context")]
+    MemoryConsciousnessContext {
+        persona_id: String,
+        room_id: String,
+        current_message: Option<String>,
+        skip_semantic_search: bool,
+    },
+
+    /// Append a single memory to a persona's cached corpus.
+    /// Copy-on-write: O(n) clone, but appends are rare (~1/min/persona).
+    /// Keeps Rust cache coherent with the TS ORM without full reload.
+    #[serde(rename = "memory/append-memory")]
+    MemoryAppendMemory {
+        persona_id: String,
+        memory: crate::memory::CorpusMemory,
+    },
+
+    /// Append a single timeline event to a persona's cached corpus.
+    #[serde(rename = "memory/append-event")]
+    MemoryAppendEvent {
+        persona_id: String,
+        event: crate::memory::CorpusTimelineEvent,
+    },
+
     #[serde(rename = "health-check")]
     HealthCheck,
 
@@ -240,8 +334,13 @@ impl Response {
 
 struct ServerState {
     voice_service: Arc<crate::voice::voice_service::VoiceService>,
-    inboxes: Arc<Mutex<HashMap<Uuid, PersonaInbox>>>,
-    cognition_engines: Arc<Mutex<HashMap<Uuid, PersonaCognitionEngine>>>,
+    /// Per-persona inboxes — DashMap for per-key locking (no cross-persona contention).
+    inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
+    /// Per-persona cognition engines — DashMap: all hot-path ops are &self (read-only).
+    cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
+    /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
+    /// 14 personas across DashMap's shards = near-zero contention.
+    channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
     rag_engine: Arc<RagEngine>,
     /// Shared CallManager for direct audio injection (speak-in-call).
     /// Audio never leaves Rust — IPC only returns metadata.
@@ -251,18 +350,27 @@ struct ServerState {
     audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
     /// Tokio runtime handle for calling async CallManager methods from IPC threads.
     rt_handle: tokio::runtime::Handle,
+    /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
+    /// Data comes from the TS ORM via IPC. Zero SQL access.
+    memory_manager: Arc<crate::memory::PersonaMemoryManager>,
 }
 
 impl ServerState {
-    fn new(call_manager: Arc<crate::voice::call_server::CallManager>, rt_handle: tokio::runtime::Handle) -> Self {
+    fn new(
+        call_manager: Arc<crate::voice::call_server::CallManager>,
+        rt_handle: tokio::runtime::Handle,
+        memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+    ) -> Self {
         Self {
             voice_service: Arc::new(crate::voice::voice_service::VoiceService::new()),
-            inboxes: Arc::new(Mutex::new(HashMap::new())),
-            cognition_engines: Arc::new(Mutex::new(HashMap::new())),
+            inboxes: Arc::new(DashMap::new()),
+            cognition_engines: Arc::new(DashMap::new()),
+            channel_registries: Arc::new(DashMap::new()),
             rag_engine: Arc::new(RagEngine::new()),
             call_manager,
             audio_pool: Arc::new(crate::voice::audio_buffer::AudioBufferPool::new()),
             rt_handle,
+            memory_manager,
         }
     }
 
@@ -577,11 +685,7 @@ impl ServerState {
                 };
 
                 let inbox = PersonaInbox::new(persona_uuid);
-                let mut inboxes = match self.inboxes.lock() {
-                    Ok(i) => i,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
-                };
-                inboxes.insert(persona_uuid, inbox);
+                self.inboxes.insert(persona_uuid, inbox);
 
                 HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
             }
@@ -606,11 +710,7 @@ impl ServerState {
                     shutdown_rx,
                 );
 
-                let mut engines = match self.cognition_engines.lock() {
-                    Ok(e) => e,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
-                };
-                engines.insert(persona_uuid, engine);
+                self.cognition_engines.insert(persona_uuid, engine);
 
                 log_info!("ipc", "cognition", "Created cognition engine for {}", persona_id);
                 HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
@@ -639,12 +739,7 @@ impl ServerState {
                     _ => return HandleResult::Json(Response::error(format!("Invalid sender_type: {}", sender_type))),
                 };
 
-                let engines = match self.cognition_engines.lock() {
-                    Ok(e) => e,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
-                };
-
-                let engine = match engines.get(&persona_uuid) {
+                let engine = match self.cognition_engines.get(&persona_uuid) {
                     Some(e) => e,
                     None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
@@ -676,12 +771,7 @@ impl ServerState {
                     Err(e) => return HandleResult::Json(Response::error(e)),
                 };
 
-                let engines = match self.cognition_engines.lock() {
-                    Ok(e) => e,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
-                };
-
-                let engine = match engines.get(&persona_uuid) {
+                let engine = match self.cognition_engines.get(&persona_uuid) {
                     Some(e) => e,
                     None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
@@ -710,12 +800,7 @@ impl ServerState {
                     Err(e) => return HandleResult::Json(Response::error(e)),
                 };
 
-                let engines = match self.cognition_engines.lock() {
-                    Ok(e) => e,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
-                };
-
-                let engine = match engines.get(&persona_uuid) {
+                let engine = match self.cognition_engines.get(&persona_uuid) {
                     Some(e) => e,
                     None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
@@ -733,12 +818,7 @@ impl ServerState {
                     Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
                 };
 
-                let engines = match self.cognition_engines.lock() {
-                    Ok(e) => e,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
-                };
-
-                let engine = match engines.get(&persona_uuid) {
+                let engine = match self.cognition_engines.get(&persona_uuid) {
                     Some(e) => e,
                     None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
                 };
@@ -755,6 +835,337 @@ impl ServerState {
                     "compute_budget": state.compute_budget,
                     "service_cadence_ms": state.service_cadence_ms(),
                 })))
+            }
+
+            // ================================================================
+            // Channel Handlers
+            // ================================================================
+
+            Request::ChannelEnqueue { persona_id, item } => {
+                let _timer = TimingGuard::new("ipc", "channel_enqueue");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let queue_item = match item.to_queue_item() {
+                    Ok(qi) => qi,
+                    Err(e) => return HandleResult::Json(Response::error(e)),
+                };
+
+                let mut entry = self.channel_registries
+                    .entry(persona_uuid)
+                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
+                let (registry, _state) = entry.value_mut();
+
+                match registry.route(queue_item) {
+                    Ok(domain) => {
+                        let status = registry.status();
+                        HandleResult::Json(Response::success(serde_json::json!({
+                            "routed_to": domain,
+                            "status": status,
+                        })))
+                    }
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::ChannelDequeue { persona_id, domain } => {
+                let _timer = TimingGuard::new("ipc", "channel_dequeue");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let mut entry = match self.channel_registries.get_mut(&persona_uuid) {
+                    Some(r) => r,
+                    None => return HandleResult::Json(Response::error(format!("No channel registry for {persona_id}"))),
+                };
+                let (registry, _state) = entry.value_mut();
+
+                // Parse optional domain filter
+                let target_domain: Option<ActivityDomain> = match &domain {
+                    Some(d) => match serde_json::from_value::<ActivityDomain>(serde_json::json!(d)) {
+                        Ok(ad) => Some(ad),
+                        Err(e) => return HandleResult::Json(Response::error(format!("Invalid domain '{d}': {e}"))),
+                    },
+                    None => None,
+                };
+
+                let item = match target_domain {
+                    Some(d) => registry.get_mut(d).and_then(|ch| ch.pop()),
+                    None => {
+                        // Pop from highest-priority channel that has work
+                        use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
+                        let mut popped = None;
+                        for &d in DOMAIN_PRIORITY_ORDER {
+                            if let Some(ch) = registry.get_mut(d) {
+                                if ch.has_work() {
+                                    popped = ch.pop();
+                                    break;
+                                }
+                            }
+                        }
+                        popped
+                    }
+                };
+
+                match item {
+                    Some(qi) => HandleResult::Json(Response::success(serde_json::json!({
+                        "item": qi.to_json(),
+                        "has_more": registry.has_work(),
+                    }))),
+                    None => HandleResult::Json(Response::success(serde_json::json!({
+                        "item": null,
+                        "has_more": false,
+                    }))),
+                }
+            }
+
+            Request::ChannelStatus { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_status");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let entry = match self.channel_registries.get(&persona_uuid) {
+                    Some(r) => r,
+                    None => {
+                        // Return empty status if no registry exists yet
+                        return HandleResult::Json(Response::success(serde_json::json!({
+                            "channels": [],
+                            "total_size": 0,
+                            "has_urgent_work": false,
+                            "has_work": false,
+                        })));
+                    }
+                };
+                let (registry, _state) = entry.value();
+
+                let status = registry.status();
+                HandleResult::Json(Response::success(serde_json::to_value(&status).unwrap_or_default()))
+            }
+
+            Request::ChannelServiceCycle { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_service_cycle");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let mut entry = self.channel_registries
+                    .entry(persona_uuid)
+                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
+                let (registry, state) = entry.value_mut();
+
+                let result = registry.service_cycle(state);
+                HandleResult::Json(Response::success(serde_json::to_value(&result).unwrap_or_default()))
+            }
+
+            Request::ChannelServiceCycleFull { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_service_cycle_full");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                // Step 1: Service cycle — consolidate, schedule, return next item
+                let mut entry = self.channel_registries
+                    .entry(persona_uuid)
+                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
+                let (registry, state) = entry.value_mut();
+                let service_result = registry.service_cycle(state);
+                drop(entry); // Release channel_registries lock before acquiring cognition_engines
+
+                // Step 2: If item returned, run fast_path_decision in the SAME IPC call
+                let decision = if service_result.should_process {
+                    if let Some(ref item_json) = service_result.item {
+                        // Reconstruct InboxMessage from queue item JSON
+                        let id = item_json.get("id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                            .unwrap_or_default();
+                        let sender_id = item_json.get("senderId")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                            .unwrap_or_default();
+                        let room_id = item_json.get("roomId")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| Uuid::parse_str(s).ok())
+                            .unwrap_or_default();
+                        let sender_name = item_json.get("senderName")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown")
+                            .to_string();
+                        let sender_type_str = item_json.get("senderType")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("system");
+                        let content = item_json.get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let priority = item_json.get("priority")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.5) as f32;
+                        let timestamp = item_json.get("timestamp")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+
+                        let sender_type = match sender_type_str {
+                            "human" => SenderType::Human,
+                            "persona" => SenderType::Persona,
+                            "agent" => SenderType::Agent,
+                            _ => SenderType::System,
+                        };
+
+                        let inbox_msg = InboxMessage {
+                            id,
+                            room_id,
+                            sender_id,
+                            sender_name,
+                            sender_type,
+                            content,
+                            timestamp,
+                            priority,
+                            source_modality: None,
+                            voice_session_id: None,
+                        };
+
+                        // Run fast_path_decision on cognition engine
+                        if let Some(engine) = self.cognition_engines.get(&persona_uuid) {
+                            let d = engine.fast_path_decision(&inbox_msg);
+                            Some(serde_json::json!({
+                                "should_respond": d.should_respond,
+                                "confidence": d.confidence,
+                                "reason": d.reason,
+                                "decision_time_ms": d.decision_time_ms,
+                                "fast_path_used": d.fast_path_used,
+                            }))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Return combined result: service cycle + optional decision
+                let mut result_json = serde_json::to_value(&service_result).unwrap_or_default();
+                if let Some(decision_val) = decision {
+                    result_json["decision"] = decision_val;
+                }
+                HandleResult::Json(Response::success(result_json))
+            }
+
+            Request::ChannelClear { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_clear");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                if let Some(mut entry) = self.channel_registries.get_mut(&persona_uuid) {
+                    let (registry, _state) = entry.value_mut();
+                    registry.clear_all();
+                }
+
+                HandleResult::Json(Response::success(serde_json::json!({ "cleared": true })))
+            }
+
+            // ================================================================
+            // Memory / Hippocampus Handlers
+            // ================================================================
+
+            Request::MemoryLoadCorpus { persona_id, memories, events } => {
+                let _timer = TimingGuard::new("ipc", "memory_load_corpus");
+
+                let resp = self.memory_manager.load_corpus(&persona_id, memories, events);
+                log_info!(
+                    "ipc", "memory_load_corpus",
+                    "Loaded corpus for {}: {} memories ({} embedded), {} events ({} embedded), {:.1}ms",
+                    persona_id, resp.memory_count, resp.embedded_memory_count,
+                    resp.timeline_event_count, resp.embedded_event_count, resp.load_time_ms
+                );
+                HandleResult::Json(Response::success(serde_json::to_value(&resp).unwrap_or_default()))
+            }
+
+            Request::MemoryMultiLayerRecall { persona_id, query_text, room_id, max_results, layers } => {
+                let _timer = TimingGuard::new("ipc", "memory_multi_layer_recall");
+
+                let req = crate::memory::MultiLayerRecallRequest {
+                    query_text,
+                    room_id,
+                    max_results,
+                    layers,
+                };
+
+                HandleResult::Json(match self.memory_manager.multi_layer_recall(&persona_id, &req) {
+                    Ok(resp) => {
+                        log_info!(
+                            "ipc", "memory_multi_layer_recall",
+                            "Multi-layer recall for {}: {} memories in {:.1}ms ({} candidates from {} layers)",
+                            persona_id, resp.memories.len(), resp.recall_time_ms,
+                            resp.total_candidates, resp.layer_timings.len()
+                        );
+                        Response::success(serde_json::to_value(&resp).unwrap_or_default())
+                    }
+                    Err(e) => Response::error(format!("memory/multi-layer-recall failed: {e}")),
+                })
+            }
+
+            Request::MemoryConsciousnessContext { persona_id, room_id, current_message, skip_semantic_search } => {
+                let _timer = TimingGuard::new("ipc", "memory_consciousness_context");
+
+                let req = crate::memory::ConsciousnessContextRequest {
+                    room_id,
+                    current_message,
+                    skip_semantic_search,
+                };
+
+                HandleResult::Json(match self.memory_manager.consciousness_context(&persona_id, &req) {
+                    Ok(resp) => {
+                        log_info!(
+                            "ipc", "memory_consciousness_context",
+                            "Consciousness context for {}: {:.1}ms, {} cross-context events, {} intentions",
+                            persona_id, resp.build_time_ms, resp.cross_context_event_count, resp.active_intention_count
+                        );
+                        Response::success(serde_json::to_value(&resp).unwrap_or_default())
+                    }
+                    Err(e) => Response::error(format!("memory/consciousness-context failed: {e}")),
+                })
+            }
+
+            Request::MemoryAppendMemory { persona_id, memory } => {
+                let _timer = TimingGuard::new("ipc", "memory_append_memory");
+
+                HandleResult::Json(match self.memory_manager.append_memory(&persona_id, memory) {
+                    Ok(()) => {
+                        log_debug!("ipc", "memory_append_memory", "Appended memory to corpus for {}", persona_id);
+                        Response::success(serde_json::json!({ "appended": true }))
+                    }
+                    Err(e) => Response::error(format!("memory/append-memory failed: {e}")),
+                })
+            }
+
+            Request::MemoryAppendEvent { persona_id, event } => {
+                let _timer = TimingGuard::new("ipc", "memory_append_event");
+
+                HandleResult::Json(match self.memory_manager.append_event(&persona_id, event) {
+                    Ok(()) => {
+                        log_debug!("ipc", "memory_append_event", "Appended event to corpus for {}", persona_id);
+                        Response::success(serde_json::json!({ "appended": true }))
+                    }
+                    Err(e) => Response::error(format!("memory/append-event failed: {e}")),
+                })
             }
 
             Request::HealthCheck => {
@@ -1163,6 +1574,64 @@ mod tests {
     }
 
     // ========================================================================
+    // Channel Command Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_request_deserialization_channel_enqueue_chat() {
+        let json = r#"{
+            "command": "channel/enqueue",
+            "persona_id": "550e8400-e29b-41d4-a716-446655440000",
+            "item": {
+                "item_type": "chat",
+                "id": "660e8400-e29b-41d4-a716-446655440000",
+                "room_id": "770e8400-e29b-41d4-a716-446655440000",
+                "content": "Hello team",
+                "sender_id": "880e8400-e29b-41d4-a716-446655440000",
+                "sender_name": "Joel",
+                "sender_type": "human",
+                "mentions": true,
+                "timestamp": 1234567890,
+                "priority": 0.7
+            }
+        }"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse channel/enqueue");
+        match request {
+            Request::ChannelEnqueue { persona_id, item } => {
+                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
+                let queue_item = item.to_queue_item().expect("Should convert to queue item");
+                assert_eq!(queue_item.item_type(), "chat");
+                assert!(queue_item.is_urgent()); // mentions = true
+            }
+            _ => panic!("Expected ChannelEnqueue variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_channel_service_cycle() {
+        let json = r#"{"command":"channel/service-cycle","persona_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse channel/service-cycle");
+        match request {
+            Request::ChannelServiceCycle { persona_id } => {
+                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("Expected ChannelServiceCycle variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_channel_status() {
+        let json = r#"{"command":"channel/status","persona_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse channel/status");
+        match request {
+            Request::ChannelStatus { persona_id } => {
+                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("Expected ChannelStatus variant"),
+        }
+    }
+
+    // ========================================================================
     // Integration Test: Full IPC Round-Trip via Unix Socket
     // Requires: continuum-core-server running (cargo test --ignored)
     // ========================================================================
@@ -1272,6 +1741,7 @@ pub fn start_server(
     socket_path: &str,
     call_manager: Arc<crate::voice::call_server::CallManager>,
     rt_handle: tokio::runtime::Handle,
+    memory_manager: Arc<crate::memory::PersonaMemoryManager>,
 ) -> std::io::Result<()> {
     // Remove socket file if it exists
     if Path::new(socket_path).exists() {
@@ -1281,7 +1751,7 @@ pub fn start_server(
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
     let listener = UnixListener::bind(socket_path)?;
-    let state = Arc::new(ServerState::new(call_manager, rt_handle));
+    let state = Arc::new(ServerState::new(call_manager, rt_handle, memory_manager));
 
     log_info!("ipc", "server", "IPC server ready");
 

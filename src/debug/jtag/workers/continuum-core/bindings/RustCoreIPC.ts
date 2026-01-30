@@ -22,7 +22,19 @@ import type {
 	CognitionDecision,
 	PriorityScore,
 	PersonaState,
+	ActivityDomain,
+	ChannelRegistryStatus,
+	ChannelEnqueueRequest,
+	ServiceCycleResult,
 } from '../../../shared/generated';
+
+// Memory subsystem types (Hippocampus in Rust — corpus-based, no SQL)
+import type { CorpusMemory } from './CorpusMemory';
+import type { CorpusTimelineEvent } from './CorpusTimelineEvent';
+import type { LoadCorpusResponse } from './LoadCorpusResponse';
+import type { MemoryRecallResponse } from './MemoryRecallResponse';
+import type { MultiLayerRecallRequest } from './MultiLayerRecallRequest';
+import type { ConsciousnessContextResponse } from './ConsciousnessContextResponse';
 
 // ============================================================================
 // Types
@@ -459,6 +471,256 @@ export class RustCoreIPCClient extends EventEmitter {
 		}
 
 		return response.result as PersonaState & { service_cadence_ms: number };
+	}
+
+	// ========================================================================
+	// Channel System Methods
+	// ========================================================================
+
+	/**
+	 * Enqueue an item into the channel system.
+	 * Item is routed to the correct domain channel (AUDIO/CHAT/BACKGROUND).
+	 */
+	async channelEnqueue(
+		personaId: string,
+		item: ChannelEnqueueRequest
+	): Promise<{ routed_to: ActivityDomain; status: ChannelRegistryStatus }> {
+		const response = await this.request({
+			command: 'channel/enqueue',
+			persona_id: personaId,
+			item,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to enqueue channel item');
+		}
+
+		return response.result as { routed_to: ActivityDomain; status: ChannelRegistryStatus };
+	}
+
+	/**
+	 * Dequeue highest-priority item from a specific domain or any domain.
+	 */
+	async channelDequeue(
+		personaId: string,
+		domain?: ActivityDomain
+	): Promise<{ item: any | null; has_more: boolean }> {
+		const response = await this.request({
+			command: 'channel/dequeue',
+			persona_id: personaId,
+			domain: domain ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to dequeue channel item');
+		}
+
+		return response.result as { item: any | null; has_more: boolean };
+	}
+
+	/**
+	 * Get per-channel status snapshot.
+	 */
+	async channelStatus(personaId: string): Promise<ChannelRegistryStatus> {
+		const response = await this.request({
+			command: 'channel/status',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get channel status');
+		}
+
+		return response.result as ChannelRegistryStatus;
+	}
+
+	/**
+	 * Run one service cycle: consolidate all channels, return next item to process.
+	 * This is the main scheduling entry point — replaces TS-side channel iteration.
+	 */
+	async channelServiceCycle(personaId: string): Promise<{
+		should_process: boolean;
+		item: any | null;
+		channel: ActivityDomain | null;
+		wait_ms: number;
+		stats: ChannelRegistryStatus;
+	}> {
+		const response = await this.request({
+			command: 'channel/service-cycle',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to run service cycle');
+		}
+
+		// Convert bigint wait_ms to number (Rust u64 → ts-rs bigint → JS number)
+		const result = response.result;
+		return {
+			should_process: result.should_process,
+			item: result.item ?? null,
+			channel: result.channel ?? null,
+			wait_ms: Number(result.wait_ms),
+			stats: result.stats,
+		};
+	}
+
+	/**
+	 * Service cycle + fast-path decision in ONE IPC call.
+	 * Eliminates a separate round-trip for fastPathDecision.
+	 * Returns service_cycle result + optional cognition decision.
+	 */
+	async channelServiceCycleFull(personaId: string): Promise<{
+		should_process: boolean;
+		item: any | null;
+		channel: ActivityDomain | null;
+		wait_ms: number;
+		stats: ChannelRegistryStatus;
+		decision: CognitionDecision | null;
+	}> {
+		const response = await this.request({
+			command: 'channel/service-cycle-full',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to run full service cycle');
+		}
+
+		const result = response.result;
+		return {
+			should_process: result.should_process,
+			item: result.item ?? null,
+			channel: result.channel ?? null,
+			wait_ms: Number(result.wait_ms),
+			stats: result.stats,
+			decision: result.decision ?? null,
+		};
+	}
+
+	/**
+	 * Clear all channel queues for a persona.
+	 */
+	async channelClear(personaId: string): Promise<void> {
+		const response = await this.request({
+			command: 'channel/clear',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to clear channels');
+		}
+	}
+
+	// ========================================================================
+	// Memory Subsystem (Hippocampus in Rust — corpus-based, no SQL)
+	// ========================================================================
+
+	/**
+	 * Load a persona's full memory corpus into Rust's in-memory cache.
+	 * Called at persona startup — sends all memories + timeline events from TS ORM.
+	 * Subsequent recall operations run on this cached corpus.
+	 */
+	async memoryLoadCorpus(
+		personaId: string,
+		memories: CorpusMemory[],
+		events: CorpusTimelineEvent[]
+	): Promise<LoadCorpusResponse> {
+		const response = await this.request({
+			command: 'memory/load-corpus',
+			persona_id: personaId,
+			memories,
+			events,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to load memory corpus');
+		}
+
+		return response.result as LoadCorpusResponse;
+	}
+
+	/**
+	 * Append a single memory to the cached corpus (incremental update).
+	 * Called after Hippocampus stores a new memory to the DB.
+	 * Keeps Rust cache coherent with the ORM without full reload.
+	 */
+	async memoryAppendMemory(
+		personaId: string,
+		memory: CorpusMemory
+	): Promise<void> {
+		const response = await this.request({
+			command: 'memory/append-memory',
+			persona_id: personaId,
+			memory,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to append memory to corpus');
+		}
+	}
+
+	/**
+	 * Append a single timeline event to the cached corpus (incremental update).
+	 */
+	async memoryAppendEvent(
+		personaId: string,
+		event: CorpusTimelineEvent
+	): Promise<void> {
+		const response = await this.request({
+			command: 'memory/append-event',
+			persona_id: personaId,
+			event,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to append event to corpus');
+		}
+	}
+
+	/**
+	 * 6-layer parallel multi-recall (the big improvement)
+	 */
+	async memoryMultiLayerRecall(
+		personaId: string,
+		params: MultiLayerRecallRequest
+	): Promise<MemoryRecallResponse> {
+		const response = await this.request({
+			command: 'memory/multi-layer-recall',
+			persona_id: personaId,
+			...params,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to run multi-layer recall');
+		}
+
+		return response.result as MemoryRecallResponse;
+	}
+
+	/**
+	 * Build consciousness context for RAG injection
+	 * Replaces UnifiedConsciousness.getContext() in TS
+	 */
+	async memoryConsciousnessContext(
+		personaId: string,
+		roomId: string,
+		currentMessage?: string,
+		skipSemanticSearch?: boolean
+	): Promise<ConsciousnessContextResponse> {
+		const response = await this.request({
+			command: 'memory/consciousness-context',
+			persona_id: personaId,
+			room_id: roomId,
+			current_message: currentMessage ?? null,
+			skip_semantic_search: skipSemanticSearch ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to build consciousness context');
+		}
+
+		return response.result as ConsciousnessContextResponse;
 	}
 
 	/**

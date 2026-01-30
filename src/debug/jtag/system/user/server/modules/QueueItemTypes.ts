@@ -7,6 +7,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TaskDomain, TaskType, TaskStatus } from '../../../data/entities/TaskEntity';
+import type { ChannelEnqueueRequest } from '../../../../shared/generated';
 
 // Re-export TaskStatus for use in PersonaUser
 export type { TaskStatus };
@@ -148,102 +149,62 @@ export function isInboxTask(item: QueueItem): item is InboxTask {
   return item.type === 'task';
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// CHANNEL ITEM FACTORIES
-// Bridge from existing data interfaces → new behavioral class hierarchy
-// External code constructs InboxMessage/InboxTask; factories wrap them.
-// ═══════════════════════════════════════════════════════════════════
-
-import { BaseQueueItem as ChannelBaseQueueItem } from './channels/BaseQueueItem';
-import { VoiceQueueItem } from './channels/VoiceQueueItem';
-import { ChatQueueItem } from './channels/ChatQueueItem';
-import { TaskQueueItem } from './channels/TaskQueueItem';
-
-// Re-export for external use
-export { ChannelBaseQueueItem, VoiceQueueItem, ChatQueueItem, TaskQueueItem };
-
 /**
- * Convert InboxMessage → VoiceQueueItem (for voice modality messages)
+ * Convert a Rust service cycle JSON item back to TS QueueItem.
+ *
+ * Rust to_json() produces camelCase items with `type: "voice"|"chat"|"task"`.
+ * This maps them to TS discriminated union: `type: "message"|"task"`.
+ *
+ * Returns null if the JSON is invalid or has an unknown type.
  */
-export function toVoiceQueueItem(msg: InboxMessage): VoiceQueueItem {
-  return new VoiceQueueItem({
-    id: msg.id,
-    timestamp: msg.timestamp,
-    enqueuedAt: msg.enqueuedAt,
-    roomId: msg.roomId,
-    content: msg.content,
-    senderId: msg.senderId,
-    senderName: msg.senderName,
-    senderType: msg.senderType,
-    voiceSessionId: msg.voiceSessionId!,  // Voice messages must have voiceSessionId
-  });
-}
+export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | null {
+  const itemType = json.type as string;
 
-/**
- * Convert InboxMessage → ChatQueueItem (for text modality messages)
- */
-export function toChatQueueItem(msg: InboxMessage): ChatQueueItem {
-  return new ChatQueueItem({
-    id: msg.id,
-    timestamp: msg.timestamp,
-    enqueuedAt: msg.enqueuedAt,
-    roomId: msg.roomId,
-    content: msg.content,
-    senderId: msg.senderId,
-    senderName: msg.senderName,
-    senderType: msg.senderType,
-    mentions: msg.mentions ?? false,
-    priority: msg.priority,
-  });
-}
-
-/**
- * Convert InboxTask → TaskQueueItem
- */
-export function toTaskQueueItem(task: InboxTask): TaskQueueItem {
-  return new TaskQueueItem({
-    id: task.id,
-    timestamp: task.timestamp,
-    enqueuedAt: task.enqueuedAt,
-    taskId: task.taskId,
-    assigneeId: task.assigneeId,
-    createdBy: task.createdBy,
-    taskDomain: task.domain,
-    taskType: task.taskType,
-    contextId: task.contextId,
-    description: task.description,
-    priority: task.priority,
-    status: task.status,
-    dueDate: task.dueDate,
-    estimatedDuration: task.estimatedDuration,
-    dependsOn: task.dependsOn,
-    blockedBy: task.blockedBy,
-    metadata: task.metadata as Record<string, unknown> | undefined,
-  });
-}
-
-/**
- * Route any QueueItem to the appropriate channel item class.
- * This is the main entry point for converting legacy data interfaces
- * to behavioral class instances.
- */
-export function toChannelItem(item: QueueItem): ChannelBaseQueueItem {
-  if (isInboxMessage(item)) {
-    // Voice messages route to VoiceQueueItem
-    if (item.sourceModality === 'voice' && item.voiceSessionId) {
-      return toVoiceQueueItem(item);
-    }
-    // Text messages route to ChatQueueItem
-    return toChatQueueItem(item);
+  if (itemType === 'voice' || itemType === 'chat') {
+    // Map Rust voice/chat → TS InboxMessage
+    const msg: InboxMessage = {
+      id: json.id as UUID,
+      type: 'message',
+      roomId: json.roomId as UUID,
+      content: json.content as string,
+      senderId: json.senderId as UUID,
+      senderName: json.senderName as string,
+      senderType: json.senderType as InboxMessage['senderType'],
+      mentions: (json.mentions as boolean) ?? false,
+      timestamp: json.timestamp as number,
+      priority: json.priority as number,
+      domain: 'chat' as TaskDomain,
+      enqueuedAt: json.timestamp as number,
+      sourceModality: itemType === 'voice' ? 'voice' : 'text',
+      voiceSessionId: json.voiceSessionId as UUID | undefined,
+    };
+    return msg;
   }
 
-  if (isInboxTask(item)) {
-    return toTaskQueueItem(item);
+  if (itemType === 'task') {
+    const task: InboxTask = {
+      id: json.id as UUID,
+      type: 'task',
+      taskId: json.taskId as UUID,
+      assigneeId: json.assigneeId as UUID,
+      createdBy: json.createdBy as UUID,
+      domain: json.taskDomain as TaskDomain,
+      taskType: json.taskType as TaskType,
+      contextId: json.contextId as UUID,
+      description: json.description as string,
+      priority: json.priority as number,
+      status: json.status as TaskStatus,
+      timestamp: json.timestamp as number,
+      enqueuedAt: json.timestamp as number,
+      dueDate: json.dueDate != null ? Number(json.dueDate) : undefined,
+      estimatedDuration: json.estimatedDuration != null ? Number(json.estimatedDuration) : undefined,
+      dependsOn: (json.dependsOn as UUID[]) ?? [],
+      blockedBy: (json.blockedBy as UUID[]) ?? [],
+    };
+    return task;
   }
 
-  // Exhaustive check — should never reach here with proper discriminated union
-  const _exhaustive: never = item;
-  throw new Error(`Unknown queue item type: ${(item as QueueItem).type}`);
+  return null;
 }
 
 /**
@@ -308,4 +269,66 @@ export function taskEntityToInboxTask(task: {
     blockedBy: task.blockedBy,
     metadata: task.metadata
   };
+}
+
+/**
+ * Convert QueueItem to ChannelEnqueueRequest for Rust IPC.
+ * Maps TS queue items to the discriminated union expected by Rust's channel system.
+ */
+export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest {
+  if (isInboxMessage(item)) {
+    // Voice messages
+    if (item.sourceModality === 'voice' && item.voiceSessionId) {
+      return {
+        item_type: 'voice',
+        id: item.id,
+        room_id: item.roomId,
+        content: item.content,
+        sender_id: item.senderId,
+        sender_name: item.senderName,
+        sender_type: item.senderType,
+        voice_session_id: item.voiceSessionId,
+        timestamp: item.timestamp,
+        priority: item.priority,
+      };
+    }
+
+    // Chat messages
+    return {
+      item_type: 'chat',
+      id: item.id,
+      room_id: item.roomId,
+      content: item.content,
+      sender_id: item.senderId,
+      sender_name: item.senderName,
+      sender_type: item.senderType,
+      mentions: item.mentions ?? false,
+      timestamp: item.timestamp,
+      priority: item.priority,
+    };
+  }
+
+  if (isInboxTask(item)) {
+    return {
+      item_type: 'task',
+      id: item.id,
+      task_id: item.taskId,
+      assignee_id: item.assigneeId,
+      created_by: item.createdBy,
+      task_domain: item.domain,
+      task_type: item.taskType,
+      context_id: item.contextId,
+      description: item.description,
+      priority: item.priority,
+      status: item.status,
+      timestamp: item.timestamp,
+      due_date: item.dueDate != null ? BigInt(item.dueDate) : null,
+      estimated_duration: item.estimatedDuration != null ? BigInt(item.estimatedDuration) : null,
+      depends_on: item.dependsOn ?? [],
+      blocked_by: item.blockedBy ?? [],
+    };
+  }
+
+  const _exhaustive: never = item;
+  throw new Error(`Unknown queue item type: ${(item as QueueItem).type}`);
 }

@@ -916,13 +916,14 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, manager: Arc<Cal
                                 });
 
                                 // Start transcription forwarding task
+                                // Forward ALL transcriptions (including own) — captions confirm
+                                // the system is working. Audio echo is handled by mix-minus, not here.
                                 let msg_tx_transcription = msg_tx.clone();
                                 let ws_display_name = display_name.clone();
                                 tokio::spawn(async move {
                                     while let Ok(event) = transcription_rx.recv().await {
                                         info!("[STEP 7] 🌐 WebSocket sending transcription to {}: \"{}\"",
                                             ws_display_name, event.text.chars().take(TEXT_PREVIEW_LENGTH).collect::<String>());
-                                        // Send transcription to all participants
                                         let msg = CallMessage::Transcription {
                                             user_id: event.user_id,
                                             display_name: event.display_name,

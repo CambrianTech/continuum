@@ -2,23 +2,19 @@
  * PersonaCentralNervousSystem
  *
  * Orchestration layer that coordinates multi-domain attention for PersonaUser.
- * Uses item-centric OOP: items control their own urgency, consolidation, kick policy.
- * The CNS iterates over channels in scheduler-determined priority order.
  *
- * Service cycle:
- *   1. Poll tasks, generate self-tasks
+ * Service cycle (Rust-delegated):
+ *   1. Poll tasks, generate self-tasks (TS — DB access)
  *   2. Wait for work (signal-based)
- *   3. Consolidate all channels (items decide how)
- *   4. Get domain priority from scheduler
- *   5. Service channels: urgent first, then scheduler-approved
- *   6. Fall back to legacy flat-queue path for non-channel items
+ *   3. Rust service_cycle() → consolidate, state-gate, schedule, return next item
+ *   4. Dispatch item to handler
+ *
+ * ALL scheduling logic lives in Rust. TS executes what Rust decides.
  */
 
 import type { CNSConfig } from './CNSTypes';
-import type { CognitiveContext } from '../cognitive-schedulers/ICognitiveScheduler';
-import { ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
 import { SubsystemLogger } from '../being/logging/SubsystemLogger';
-import { getEffectivePriority } from '../PersonaInbox';
+import { fromRustServiceItem } from '../QueueItemTypes';
 
 export class PersonaCentralNervousSystem {
   private readonly config: CNSConfig;
@@ -28,178 +24,104 @@ export class PersonaCentralNervousSystem {
     this.config = config;
     this.logger = new SubsystemLogger('cns', config.personaId, config.uniqueId);
 
-    this.logger.info(`Initialized CNS with ${config.scheduler.name} scheduler`);
-    this.logger.info(`Enabled domains: ${config.enabledDomains.join(', ')}`);
-    this.logger.info(`Channels registered: ${config.channelRegistry.domains().join(', ')}`);
+    this.logger.info(`Initialized CNS with Rust-delegated scheduling`);
+    this.logger.info(`Rust bridge: connected`);
     this.logger.info(`Background threads: ${config.allowBackgroundThreads ? 'enabled' : 'disabled'}`);
   }
 
   /**
    * Single service cycle — the heart of the autonomous entity.
    *
-   * Combines legacy flat-queue path with new multi-channel path:
-   * - If channels have work → use channel-based service (new)
-   * - Otherwise fall back to legacy inbox peek/pop (backward compat)
+   * HOT PATH ONLY: wait → Rust schedule → execute → drain → repeat.
+   * DB polling and self-task generation run on separate timers (see PersonaAutonomousLoop).
+   *
+   * Drain loop: after processing one item, immediately check for more.
+   * Only returns to waitForWork when Rust says the queue is empty.
    */
   async serviceCycle(): Promise<void> {
-    // STEP 0a: Poll task database for pending tasks assigned to this persona
-    await this.config.pollTasks();
-
-    // STEP 0b: Generate self-tasks for autonomous work creation
-    await this.config.generateSelfTasks();
-
     // STEP 1: Wait for work (signal-based, delegates to inbox)
     const cadence = this.config.personaState.getCadence();
     const hasWork = await this.config.inbox.waitForWork(cadence);
 
     if (!hasWork) {
-      await this.config.personaState.rest(cadence);
-      return;
+      return; // No work — loop will call us again
     }
 
-    // STEP 2: Try multi-channel service first (new path)
-    const channelRegistry = this.config.channelRegistry;
-    if (channelRegistry.hasWork()) {
-      await this.serviceChannels();
-      return;
-    }
-
-    // STEP 3: Fall back to legacy flat-queue path
-    // This handles items not yet routed to channels (transition period)
-    await this.serviceLegacyQueue();
+    // STEP 2: Drain loop — process all queued items before returning to wait
+    await this.drainQueue();
   }
 
   /**
-   * Multi-channel service loop.
+   * Drain all queued items from Rust.
+   * Keeps calling Rust service_cycle() until no more work is available.
+   * This eliminates the overhead of re-entering waitForWork between items.
+   */
+  private async drainQueue(): Promise<void> {
+    let itemsProcessed = 0;
+    const MAX_DRAIN = 20; // Safety cap — don't monopolize the event loop forever
+
+    while (itemsProcessed < MAX_DRAIN) {
+      const processed = await this.serviceViaRust();
+      if (!processed) {
+        break; // Queue empty, return to wait
+      }
+      itemsProcessed++;
+    }
+
+    if (itemsProcessed > 1) {
+      this.logger.info(`Drained ${itemsProcessed} items in burst`);
+    }
+  }
+
+  /**
+   * Rust-delegated service cycle (MERGED: schedule + fast-path decision in ONE IPC call).
    *
-   * Items control their own destiny:
-   * - consolidate(): items decide if/how they merge
-   * - hasUrgentWork: items decide what's urgent
-   * - pop(): items decide sort order via compareTo()
+   * Rust's serviceCycleFull() does ALL scheduling + cognition in <1ms:
+   * - Consolidates all channels (items decide merge policy)
+   * - Updates persona state (inbox_load, mood)
+   * - Checks urgent channels first (AUDIO → CHAT → BACKGROUND)
+   * - State-gates non-urgent items (mood/energy threshold)
+   * - Runs fast-path decision on the dequeued item (dedup, mention detection, state gating)
+   * - Returns next item + decision in ONE IPC round-trip
+   *
+   * TS just executes what Rust decided.
+   * Returns true if an item was processed (drain loop continues).
    */
-  private async serviceChannels(): Promise<void> {
-    const registry = this.config.channelRegistry;
+  private async serviceViaRust(): Promise<boolean> {
+    const bridge = this.config.rustBridge;
+    const ipcStart = performance.now();
 
-    // STEP 1: Consolidate all channels (items decide how)
-    for (const channel of registry.all()) {
-      channel.consolidate();
-    }
+    const result = await bridge.serviceCycleFull();
 
-    // STEP 2: Build cognitive context for scheduler decisions
-    const context = this.buildCognitiveContext();
+    const ipcMs = performance.now() - ipcStart;
 
-    // STEP 3: Get domain priority from scheduler
-    const priorities = this.config.scheduler.getDomainPriority(context);
+    if (result.should_process && result.item) {
+      // Convert Rust JSON item → TS QueueItem
+      const parseStart = performance.now();
+      const queueItem = fromRustServiceItem(result.item as Record<string, unknown>);
+      const parseMs = performance.now() - parseStart;
 
-    // STEP 4: Service channels in priority order
-    for (const domain of priorities) {
-      const channel = registry.get(domain);
-      if (!channel || !channel.hasWork) continue;
-
-      // Urgent work bypasses scheduler (items said so — e.g., voice is always urgent)
-      const shouldService = channel.hasUrgentWork
-        || await this.config.scheduler.shouldServiceDomain(domain, context);
-
-      if (!shouldService) {
-        this.logger.debug(`Skipping ${channel.name} channel (scheduler declined, size=${channel.size})`);
-        continue;
+      if (!queueItem) {
+        this.logger.warn(`Rust returned unparseable item: ${JSON.stringify(result.item).slice(0, 200)}`);
+        return false;
       }
 
-      // Peek to check engagement threshold (mood/energy gating)
-      const candidate = channel.peek();
-      if (!candidate) continue;
+      const channelName = result.channel ?? 'unknown';
+      const decisionStr = result.decision
+        ? `respond=${result.decision.should_respond}`
+        : 'no-decision';
+      this.logger.info(`[rust:${channelName}] Processing ${queueItem.type} (priority=${queueItem.priority.toFixed(2)}, stats=${result.stats.total_size} total) [ipc=${ipcMs.toFixed(1)}ms, parse=${parseMs.toFixed(1)}ms, ${decisionStr}]`);
 
-      // Urgent items bypass mood/energy check
-      if (!candidate.isUrgent && !this.config.personaState.shouldEngage(candidate.effectivePriority)) {
-        this.logger.debug(`Skipping ${channel.name} item (priority=${candidate.effectivePriority.toFixed(2)}, below engagement threshold)`);
-        const restCadence = this.config.personaState.getCadence();
-        await this.config.personaState.rest(restCadence);
-        continue;
-      }
+      // Delegate to PersonaUser via callback — pass pre-computed decision
+      const handlerStart = performance.now();
+      await this.config.handleChatMessage(queueItem, result.decision ?? undefined);
+      const handlerMs = performance.now() - handlerStart;
 
-      // Pop and process
-      const item = channel.pop();
-      if (!item) continue;
-
-      const waitMs = item.enqueuedAt ? Date.now() - item.enqueuedAt : 0;
-      this.logger.info(`[${channel.name}] Processing ${item.itemType} (priority=${item.effectivePriority.toFixed(2)}, waitMs=${waitMs}, urgent=${item.isUrgent}, channelSize=${channel.size})`);
-
-      // Delegate to PersonaUser via callback
-      await this.config.handleQueueItem(item);
-    }
-  }
-
-  /**
-   * Legacy flat-queue service path (backward compatibility).
-   * Handles items that haven't been routed to channels yet.
-   * Will be removed once all items flow through channels.
-   */
-  private async serviceLegacyQueue(): Promise<void> {
-    const context = this.buildCognitiveContext();
-
-    const shouldServiceChat = await this.config.scheduler.shouldServiceDomain(
-      ActivityDomain.CHAT,
-      context
-    );
-
-    if (!shouldServiceChat) {
-      this.logger.debug('Scheduler decided not to service chat (legacy path)');
-      return;
+      this.logger.info(`[rust:${channelName}] Handler complete (${handlerMs.toFixed(1)}ms total, ipc=${ipcMs.toFixed(1)}ms)`);
+      return true;
     }
 
-    // Peek at highest priority message from legacy inbox
-    const candidates = await this.config.inbox.peek(1);
-    if (candidates.length === 0) return;
-
-    const message = candidates[0];
-    const effectivePriority = getEffectivePriority(message);
-
-    if (!this.config.personaState.shouldEngage(effectivePriority)) {
-      this.logger.debug(`Skipping message (legacy path, effective=${effectivePriority.toFixed(2)})`);
-      const cadence = this.config.personaState.getCadence();
-      await this.config.personaState.rest(cadence);
-      return;
-    }
-
-    await this.config.inbox.pop(0);
-
-    const waitMs = message.enqueuedAt ? Date.now() - message.enqueuedAt : 0;
-    this.logger.info(`[legacy] Processing message (effective=${effectivePriority.toFixed(2)}, waitMs=${waitMs})`);
-
-    await this.config.handleChatMessage(message);
-  }
-
-  /**
-   * Build cognitive context for scheduler decisions.
-   * Uses both legacy inbox stats and channel registry stats.
-   */
-  private buildCognitiveContext(): CognitiveContext {
-    const state = this.config.personaState.getState();
-    const registry = this.config.channelRegistry;
-
-    return {
-      energy: state.energy,
-      mood: state.mood,
-
-      // Activity levels from channels
-      activeGames: 0,
-      unreadMessages: (registry.get(ActivityDomain.CHAT)?.size ?? 0)
-        + (registry.get(ActivityDomain.AUDIO)?.size ?? 0)
-        + this.config.inbox.getSize(),  // Include legacy inbox
-      pendingReviews: 0,
-      backgroundTasksPending: registry.get(ActivityDomain.BACKGROUND)?.size ?? 0,
-
-      // Performance
-      avgResponseTime: 0,
-      queueBacklog: registry.totalSize() + this.config.inbox.getSize(),
-
-      // System
-      cpuPressure: 0,
-      memoryPressure: 0,
-
-      // Model capabilities
-      modelCapabilities: new Set(['text'])
-    };
+    return false;
   }
 
   /**
@@ -207,7 +129,6 @@ export class PersonaCentralNervousSystem {
    */
   shutdown(): void {
     this.logger.info('CNS subsystem shutting down...');
-    this.config.channelRegistry.clearAll();
     this.logger.close();
   }
 }

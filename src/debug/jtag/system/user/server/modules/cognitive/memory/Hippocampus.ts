@@ -47,6 +47,8 @@ import { DataOpen } from '../../../../../../commands/data/open/shared/DataOpenTy
 import { VectorSearch } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { DataList } from '../../../../../../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../../../commands/data/create/shared/DataCreateTypes';
+import type { CorpusMemory } from '../../../../../../workers/continuum-core/bindings/CorpusMemory';
+
 /**
  * Snapshot of persona state at tick time
  * Used for logging and consolidation decisions
@@ -484,6 +486,34 @@ export class Hippocampus extends PersonaContinuousSubprocess {
               if (matchingThought) {
                 consolidatedIds.push(matchingThought.id);
               }
+            }
+
+            // Append to Rust corpus — keeps in-memory cache coherent with longterm.db
+            // Without this, Rust recall is blind to memories created after startup.
+            const bridge = this.persona.rustCognitionBridge;
+            if (bridge) {
+              const corpusMemory: CorpusMemory = {
+                record: {
+                  id: memory.id,
+                  persona_id: memory.personaId,
+                  memory_type: memory.type,
+                  content: memory.content,
+                  context: memory.context ?? {},
+                  timestamp: typeof memory.timestamp === 'string'
+                    ? memory.timestamp
+                    : new Date(memory.timestamp as unknown as number).toISOString(),
+                  importance: memory.importance ?? 0.5,
+                  access_count: memory.accessCount ?? 0,
+                  tags: memory.tags ?? [],
+                  related_to: memory.relatedTo ?? [],
+                  source: memory.source ?? null,
+                  last_accessed_at: memory.lastAccessedAt ?? null,
+                  layer: null,
+                  relevance_score: null,
+                },
+                embedding: memory.embedding ?? null,
+              };
+              await bridge.memoryAppendMemory(corpusMemory);
             }
           } else {
             failedCount++;

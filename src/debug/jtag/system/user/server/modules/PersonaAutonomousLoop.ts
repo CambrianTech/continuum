@@ -19,11 +19,7 @@ import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
 import { taskEntityToInboxTask, inboxMessageToProcessable, type InboxTask, type QueueItem } from './QueueItemTypes';
-import type { BaseQueueItem } from './channels/BaseQueueItem';
-import { VoiceQueueItem } from './channels/VoiceQueueItem';
-import { ChatQueueItem } from './channels/ChatQueueItem';
-import { TaskQueueItem } from './channels/TaskQueueItem';
-import type { ProcessableMessage } from './QueueItemTypes';
+import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
@@ -31,6 +27,8 @@ import type { PersonaUser } from '../PersonaUser';
 export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
   private trainingCheckLoop: NodeJS.Timeout | null = null;
+  private taskPollLoop: NodeJS.Timeout | null = null;
+  private selfTaskLoop: NodeJS.Timeout | null = null;
   private log: (message: string) => void;
 
   constructor(private readonly personaUser: PersonaUser, logger?: (message: string) => void) {
@@ -38,16 +36,18 @@ export class PersonaAutonomousLoop {
   }
 
   /**
-   * PHASE 3: Start autonomous servicing loop
+   * Start autonomous servicing loop
    *
    * Creates:
    * 1. Continuous async service loop (signal-based waiting, not polling)
-   * 2. Training readiness check loop (every 60 seconds)
+   * 2. Task poll loop (every 10 seconds) — OFF the hot path
+   * 3. Self-task generation loop (every 30 seconds) — OFF the hot path
+   * 4. Training readiness check loop (every 60 seconds)
    *
    * Architecture:
+   * - Hot path is ONLY: wait for signal → Rust service_cycle → execute → drain → repeat
+   * - DB queries and self-task generation run on their own timers, never blocking the hot path
    * - Loop uses signal/mutex pattern (RTOS-style, performant, no CPU spinning)
-   * - CNS handles intelligence (priority, mood, coordination)
-   * - Inbox provides EventEmitter-based signaling
    */
   startAutonomousServicing(): void {
     this.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
@@ -58,8 +58,17 @@ export class PersonaAutonomousLoop {
       this.log(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
     });
 
-    // PHASE 7.5.1: Create training check loop (every 60 seconds)
-    // Checks less frequently than inbox servicing to avoid overhead
+    // Task polling on separate timer (OFF hot path — was previously called every service cycle)
+    this.taskPollLoop = setInterval(async () => {
+      await this.pollTasks();
+    }, 10000); // 10 seconds
+
+    // Self-task generation on separate timer (OFF hot path)
+    this.selfTaskLoop = setInterval(async () => {
+      await this.generateSelfTasksFromCNS();
+    }, 30000); // 30 seconds
+
+    // Training readiness checks (every 60 seconds)
     this.log(`🧬 ${this.personaUser.displayName}: Starting training readiness checks (every 60s)`);
     this.trainingCheckLoop = setInterval(async () => {
       await this.checkTrainingReadiness();
@@ -189,7 +198,9 @@ export class PersonaAutonomousLoop {
    * This is called by PersonaCentralNervousSystem.serviceChatDomain() via callback pattern.
    * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
    */
-  async handleChatMessageFromCNS(item: QueueItem): Promise<void> {
+  async handleChatMessageFromCNS(item: QueueItem, decision?: FastPathDecision): Promise<void> {
+    const handlerStart = performance.now();
+
     // If this is a task, update status to 'in_progress' in database (prevents re-polling)
     if (item.type === 'task') {
       await DataDaemon.update<TaskEntity>(
@@ -215,6 +226,8 @@ export class PersonaAutonomousLoop {
       }
     }
 
+    const setupMs = performance.now() - handlerStart;
+
     // Type-safe handling: Check if this is a message or task
     if (item.type === 'message') {
       // Convert InboxMessage → ProcessableMessage (typed, no `any`)
@@ -225,11 +238,17 @@ export class PersonaAutonomousLoop {
       console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: sourceModality=${processable.sourceModality}, voiceSessionId=${processable.voiceSessionId?.slice(0, 8) ?? 'none'}`);
 
       // Process message using cognition-enhanced evaluation logic
-      await this.personaUser.evaluateAndPossiblyRespondWithCognition(processable, senderIsHuman, messageText);
+      // Pass pre-computed decision from Rust serviceCycleFull (eliminates separate IPC call)
+      const evalStart = performance.now();
+      await this.personaUser.evaluateAndPossiblyRespondWithCognition(processable, senderIsHuman, messageText, decision);
+      const evalMs = performance.now() - evalStart;
 
       // Update bookmark AFTER processing complete - enables true pause/resume
       // Shutdown mid-processing will re-query this message on restart
       await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
+
+      const totalMs = performance.now() - handlerStart;
+      this.log(`[TIMING] ${this.personaUser.displayName}: handleChatMessage total=${totalMs.toFixed(1)}ms (setup=${setupMs.toFixed(1)}ms, eval=${evalMs.toFixed(1)}ms, hasDecision=${!!decision})`);
     } else if (item.type === 'task') {
       // PHASE 5: Task execution based on task type
       await this.executeTask(item);
@@ -240,130 +259,6 @@ export class PersonaAutonomousLoop {
 
     // Note: No cadence adjustment needed with signal-based waiting
     // Loop naturally adapts: fast when busy (instant signal), slow when idle (blocked on wait)
-  }
-
-  /**
-   * CNS callback: Handle a channel-routed queue item (new multi-channel path).
-   *
-   * Dispatches by itemType to the appropriate processing pipeline.
-   * Items are BaseQueueItem subclasses (VoiceQueueItem, ChatQueueItem, TaskQueueItem).
-   */
-  async handleQueueItemFromCNS(item: BaseQueueItem): Promise<void> {
-    // Activate LoRA adapter based on domain
-    const domainToAdapter: Record<string, string> = {
-      'chat': 'conversational',
-      'audio': 'conversational',  // Voice uses same conversational adapter
-      'code_review': 'typescript-expertise',
-      'background': 'self-improvement',
-    };
-    const adapterName = domainToAdapter[item.domain] || 'conversational';
-    await this.personaUser.memory.genome.activateSkill(adapterName);
-
-    // Dispatch by concrete item type
-    if (item instanceof VoiceQueueItem) {
-      await this.handleVoiceItem(item);
-    } else if (item instanceof ChatQueueItem) {
-      await this.handleChatItem(item);
-    } else if (item instanceof TaskQueueItem) {
-      await this.handleTaskItem(item);
-    } else {
-      this.log(`⚠️ ${this.personaUser.displayName}: Unknown queue item type: ${item.itemType}`);
-    }
-
-    // Update inbox load in state (affects mood calculation)
-    this.personaUser.personaState.updateInboxLoad(
-      this.personaUser.inbox.getSize()
-    );
-  }
-
-  /**
-   * Handle a voice queue item — convert to ProcessableMessage with voice modality.
-   */
-  private async handleVoiceItem(item: VoiceQueueItem): Promise<void> {
-    const processable: ProcessableMessage = {
-      id: item.id,
-      roomId: item.roomId,
-      senderId: item.senderId,
-      senderName: item.senderName,
-      senderType: item.senderType,
-      content: { text: item.content },
-      timestamp: item.timestamp,
-      sourceModality: 'voice',
-      voiceSessionId: item.voiceSessionId,
-    };
-
-    const senderIsHuman = item.senderType === 'human';
-    console.log(`🎙️ [${this.personaUser.displayName}] Channel: Processing VOICE item, voiceSessionId=${item.voiceSessionId.slice(0, 8)}`);
-
-    await this.personaUser.evaluateAndPossiblyRespondWithCognition(
-      processable, senderIsHuman, item.content
-    );
-
-    await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
-  }
-
-  /**
-   * Handle a chat queue item — convert to ProcessableMessage with text modality.
-   * If consolidated, logs how many messages were merged.
-   */
-  private async handleChatItem(item: ChatQueueItem): Promise<void> {
-    if (item.consolidatedCount > 1) {
-      this.log(`📦 ${this.personaUser.displayName}: Processing consolidated chat (${item.consolidatedCount} messages from room ${item.roomId.slice(0, 8)})`);
-    }
-
-    const processable: ProcessableMessage = {
-      id: item.id,
-      roomId: item.roomId,
-      senderId: item.senderId,
-      senderName: item.senderName,
-      senderType: item.senderType,
-      content: { text: item.content },
-      timestamp: item.timestamp,
-      sourceModality: 'text',
-    };
-
-    const senderIsHuman = item.senderType === 'human';
-
-    await this.personaUser.evaluateAndPossiblyRespondWithCognition(
-      processable, senderIsHuman, item.content
-    );
-
-    await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
-  }
-
-  /**
-   * Handle a task queue item — update status and delegate to task executor.
-   */
-  private async handleTaskItem(item: TaskQueueItem): Promise<void> {
-    // Mark as in_progress in database (prevents re-polling)
-    await DataDaemon.update<TaskEntity>(
-      COLLECTIONS.TASKS,
-      item.taskId,
-      { status: 'in_progress', startedAt: new Date() }
-    );
-
-    // Convert to InboxTask for backward compatibility with task executor
-    const inboxTask: InboxTask = {
-      id: item.id,
-      type: 'task',
-      taskId: item.taskId,
-      assigneeId: item.assigneeId,
-      createdBy: item.createdBy,
-      domain: item.taskDomain,
-      taskType: item.taskType,
-      contextId: item.contextId,
-      description: item.description,
-      priority: item.basePriority,
-      status: item.status,
-      timestamp: item.timestamp,
-      dueDate: item.dueDate,
-      estimatedDuration: item.estimatedDuration,
-      dependsOn: item.dependsOn,
-      blockedBy: item.blockedBy,
-      metadata: item.metadata as InboxTask['metadata'],
-    };
-
-    await this.executeTask(inboxTask);
   }
 
   /**
@@ -396,11 +291,19 @@ export class PersonaAutonomousLoop {
     this.servicingLoopActive = false;
     this.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
 
-    // Stop training check loop (interval-based)
+    // Stop all interval-based loops
+    if (this.taskPollLoop) {
+      clearInterval(this.taskPollLoop);
+      this.taskPollLoop = null;
+    }
+    if (this.selfTaskLoop) {
+      clearInterval(this.selfTaskLoop);
+      this.selfTaskLoop = null;
+    }
     if (this.trainingCheckLoop) {
       clearInterval(this.trainingCheckLoop);
       this.trainingCheckLoop = null;
-      this.log(`🧬 ${this.personaUser.displayName}: Stopped training readiness check loop`);
     }
+    this.log(`🧬 ${this.personaUser.displayName}: Stopped all background loops`);
   }
 }

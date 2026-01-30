@@ -19,6 +19,8 @@ import type { UUID } from '../../../../core/types/CrossPlatformUUID';
 import { PersonaTimeline, type RecordEventParams, type ConsciousnessLogger, type TemporalThread, type ContextualEvent } from './PersonaTimeline';
 import type { ContextType, TimelineEventType } from '../../../../data/entities/TimelineEventEntity';
 import { truncate } from '../../../../../shared/utils/StringUtils';
+import type { RustCognitionBridge } from '../RustCognitionBridge';
+import type { CorpusTimelineEvent } from '../../../../../workers/continuum-core/bindings/CorpusTimelineEvent';
 
 /**
  * Self-model - the persona's understanding of their own state
@@ -106,6 +108,9 @@ export class UnifiedConsciousness {
   private currentFocusContextId: UUID | null = null;
   private lastContextSwitchTime: Date | null = null;
 
+  // Rust cognition bridge for corpus cache coherence (set post-construction)
+  private _rustBridge: RustCognitionBridge | null = null;
+
   constructor(
     personaId: UUID,
     uniqueId: string,  // e.g., "together", "helper" - matches folder name
@@ -135,12 +140,45 @@ export class UnifiedConsciousness {
   }
 
   /**
+   * Set the Rust cognition bridge for corpus cache coherence.
+   * Called after PersonaUser creates both consciousness and bridge.
+   * When set, newly recorded timeline events are appended to Rust's in-memory corpus
+   * so recall stays coherent with longterm.db without requiring a full reload.
+   */
+  setRustBridge(bridge: RustCognitionBridge): void {
+    this._rustBridge = bridge;
+  }
+
+  /**
    * Record an event in the global timeline
    * Called whenever anything significant happens
    */
   async recordEvent(params: RecordEventParams): Promise<void> {
     try {
       const event = await this.timeline.recordEvent(params);
+
+      // Append to Rust corpus — keeps in-memory cache coherent with longterm.db
+      // Without this, Rust recall is blind to events created after startup.
+      if (this._rustBridge) {
+        const corpusEvent: CorpusTimelineEvent = {
+          event: {
+            id: event.id,
+            persona_id: event.personaId,
+            timestamp: event.timestamp,
+            context_type: event.contextType,
+            context_id: event.contextId,
+            context_name: event.contextName,
+            event_type: event.eventType,
+            actor_id: event.actorId,
+            actor_name: event.actorName,
+            content: event.content,
+            importance: event.importance,
+            topics: event.topics,
+          },
+          embedding: event.embedding ?? null,
+        };
+        await this._rustBridge.memoryAppendEvent(corpusEvent);
+      }
 
       // Update focus tracking if we're switching contexts
       if (params.actorId === this.personaId) {

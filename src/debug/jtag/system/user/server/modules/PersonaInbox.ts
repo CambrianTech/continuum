@@ -17,9 +17,9 @@
 import { EventEmitter } from 'events';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
-import { isInboxMessage, isInboxTask, toChannelItem } from './QueueItemTypes';
+import { isInboxMessage, isInboxTask, toChannelEnqueueRequest } from './QueueItemTypes';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
-import type { ChannelRegistry } from './channels/ChannelRegistry';
+import type { RustCognitionBridge } from './RustCognitionBridge';
 
 // Re-export types for backward compatibility and external use
 export type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
@@ -79,8 +79,8 @@ export class PersonaInbox {
   private readonly personaName: string;
   private readonly signal: EventEmitter;
 
-  // Multi-channel routing: items converted to BaseQueueItem subclasses and routed to channels
-  private channelRegistry: ChannelRegistry | null = null;
+  // Rust-backed channel routing: enqueue routes through Rust IPC
+  private rustBridge: RustCognitionBridge | null = null;
 
   // Load-aware deduplication (feedback-driven)
   private queueStatsProvider: (() => { queueSize: number; activeRequests: number; maxConcurrent: number; load: number }) | null = null;
@@ -104,20 +104,13 @@ export class PersonaInbox {
   }
 
   /**
-   * Inject channel registry for multi-channel routing.
-   * Items are converted to BaseQueueItem subclasses and routed to per-domain channels.
-   * Each channel's signal is wired to this inbox's signal emitter for unified wakeup.
+   * Set Rust cognition bridge for Rust-backed channel routing.
+   * When set, enqueue() routes items through Rust's multi-channel queue system
+   * instead of the TS ChannelRegistry.
    */
-  setChannelRegistry(registry: ChannelRegistry): void {
-    this.channelRegistry = registry;
-
-    // Wire each channel's signal to this inbox's signal emitter
-    // When items are added to channels, the service loop wakes up
-    for (const channel of registry.all()) {
-      channel.setSignal(this.signal);
-    }
-
-    this.log(`🔗 Channel registry connected (${registry.domains().length} channels, signals wired)`);
+  setRustBridge(bridge: RustCognitionBridge): void {
+    this.rustBridge = bridge;
+    this.log(`🦀 Rust bridge connected — enqueue routes through Rust channel system`);
   }
 
   /**
@@ -141,31 +134,40 @@ export class PersonaInbox {
       }
     }
 
-    // MULTI-CHANNEL PATH: Route to per-domain channel if registry available
-    if (this.channelRegistry) {
-      const channelItem = toChannelItem(item);
-      const channel = this.channelRegistry.route(channelItem);
-      if (channel) {
-        // Channel's enqueue stamps enqueuedAt, sorts, handles kicks, and emits signal
-        channel.enqueue(channelItem);
+    // RUST CHANNEL PATH: Route through Rust IPC (fire-and-forget — don't block event loop)
+    if (this.rustBridge) {
+      const enqueueRequest = toChannelEnqueueRequest(item);
+      const enqueueStart = performance.now();
 
-        // Log with type-specific details
-        if (isInboxMessage(item)) {
-          const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
-          this.log(`📬 Routed ${channelItem.itemType} → ${channel.name}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, channelSize=${channel.size})`);
-          if (item.sourceModality === 'voice') {
-            console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → ${channel.name}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+      // Fire-and-forget: send IPC request but don't await response
+      // The response will be processed async via the pendingRequests map (requestId matching).
+      // Rust processes requests sequentially per socket, so the item WILL be enqueued
+      // before the next serviceCycleFull() call on the same connection.
+      this.rustBridge.channelEnqueue(enqueueRequest)
+        .then(result => {
+          const enqueueMs = performance.now() - enqueueStart;
+          // Async logging — not on critical path
+          if (isInboxMessage(item)) {
+            const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
+            this.log(`🦀 Routed ${enqueueRequest.item_type} → Rust ${result.routed_to}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
+            if (item.sourceModality === 'voice') {
+              console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → Rust ${result.routed_to}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+            }
+          } else if (isInboxTask(item)) {
+            this.log(`🦀 Routed task → Rust ${result.routed_to}: ${item.taskType} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
           }
-        } else if (isInboxTask(item)) {
-          this.log(`📬 Routed task → ${channel.name}: ${item.taskType} (priority=${item.priority.toFixed(2)}, channelSize=${channel.size})`);
-        }
+        })
+        .catch(error => {
+          this.log(`❌ channelEnqueue FAILED: ${error}`);
+        });
 
-        return true; // Item routed to channel — not added to legacy queue
-      }
-      // No channel registered for this domain — fall through to legacy queue
+      // Signal TS service loop IMMEDIATELY — don't wait for IPC response
+      this.signal.emit('work-available');
+
+      return true; // Item sent to Rust channel (fire-and-forget)
     }
 
-    // LEGACY PATH: Flat priority queue (for items without a channel)
+    // LEGACY PATH: Flat priority queue (Rust bridge not yet initialized during startup)
 
     // Check if over capacity
     if (this.queue.length >= this.config.maxSize) {
@@ -340,11 +342,8 @@ export class PersonaInbox {
    * Otherwise blocks until signal received or timeout
    */
   async waitForWork(timeoutMs: number = 30000): Promise<boolean> {
-    // Immediate check - if work available in legacy queue OR channels, return instantly
+    // Immediate check - if work available in legacy queue, return instantly
     if (this.queue.length > 0) {
-      return true;
-    }
-    if (this.channelRegistry?.hasWork()) {
       return true;
     }
 

@@ -235,11 +235,11 @@ async fn test_orchestrator_performance_target() {
         println!("✅ PERFORMANCE TARGET MET: {}µs < 10µs", avg);
     }
 
-    // Relaxed assertion for CI/CD - warn if > 10µs but don't fail
-    // Fail only if completely unreasonable (> 100µs)
+    // Fail if > 100µs — target is <10µs on M1.
+    // Run tests with --release for meaningful results.
     assert!(
         avg < 100,
-        "Orchestrator EXTREMELY slow: {}µs (should be < 10µs, failing at > 100µs)",
+        "Orchestrator too slow: {}µs (should be < 10µs, failing at > 100µs)",
         avg
     );
 }

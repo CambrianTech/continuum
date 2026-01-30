@@ -276,12 +276,15 @@ impl PersonaState {
     }
 
     /// Adaptive service cadence based on mood (ms)
+    ///
+    /// This is the MAX wait time before timeout — actual response is near-instant
+    /// via signal-based wakeup. Aligned with TS PersonaState.getCadence().
     pub fn service_cadence_ms(&self) -> u64 {
         match self.mood {
-            Mood::Active => 3000,      // 3s - responsive
-            Mood::Idle => 10000,       // 10s - conserve
-            Mood::Tired => 7000,       // 7s - moderate
-            Mood::Overwhelmed => 5000, // 5s - catch up
+            Mood::Idle => 1000,        // 1s — quick to respond to first message
+            Mood::Active => 500,       // 500ms — stay responsive during conversations
+            Mood::Tired => 2000,       // 2s — moderate pace
+            Mood::Overwhelmed => 3000, // 3s — back pressure
         }
     }
 }

@@ -6,39 +6,45 @@
  */
 
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
-import type { ICognitiveScheduler, ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
 import type { PersonaInbox, QueueItem } from '../PersonaInbox';
 import type { PersonaStateManager } from '../PersonaState';
-import type { PersonaGenome } from '../PersonaGenome';
-import type { ChannelRegistry } from '../channels/ChannelRegistry';
-import type { BaseQueueItem } from '../channels/BaseQueueItem';
+import type { RustCognitionBridge } from '../RustCognitionBridge';
+
+/**
+ * Pre-computed fast-path decision from Rust's serviceCycleFull.
+ * Eliminates a separate fastPathDecision IPC round-trip.
+ */
+export interface FastPathDecision {
+  should_respond: boolean;
+  confidence: number;
+  reason: string;
+  decision_time_ms: number;
+  fast_path_used: boolean;
+}
 
 /**
  * Configuration for PersonaCentralNervousSystem
+ *
+ * All scheduling is delegated to Rust. TS handles execution.
  */
 export interface CNSConfig {
-  // Core modules (existing)
-  readonly scheduler: ICognitiveScheduler;
+  // Core modules
   readonly inbox: PersonaInbox;
   readonly personaState: PersonaStateManager;
-  readonly genome: PersonaGenome;
 
-  // Channel system (new: item-centric OOP)
-  readonly channelRegistry: ChannelRegistry;
+  // Rust cognition bridge (required — all scheduling delegates to Rust)
+  readonly rustBridge: RustCognitionBridge;
 
   // Persona reference (for delegating chat handling)
   readonly personaId: UUID;
   readonly personaName: string;
   readonly uniqueId: string;  // Format: {name}-{shortId} for log paths
 
-  // Callbacks for delegating to PersonaUser (avoids circular dependency)
-  readonly handleChatMessage: (item: QueueItem) => Promise<void>;
-  readonly handleQueueItem: (item: BaseQueueItem) => Promise<void>;
-  readonly pollTasks: () => Promise<void>;
-  readonly generateSelfTasks: () => Promise<void>;
+  // Callback for delegating to PersonaUser (avoids circular dependency)
+  // decision is the pre-computed fast-path decision from Rust's serviceCycleFull
+  readonly handleChatMessage: (item: QueueItem, decision?: FastPathDecision) => Promise<void>;
 
-  // Domain configuration
-  readonly enabledDomains: ReadonlyArray<ActivityDomain>;
+  // Configuration
   readonly allowBackgroundThreads: boolean;
   readonly maxBackgroundThreads?: number;
 }

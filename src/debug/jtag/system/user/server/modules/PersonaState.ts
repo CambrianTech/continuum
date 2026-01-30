@@ -163,13 +163,17 @@ export class PersonaStateManager {
   }
 
   /**
-   * Get cadence (how often to check inbox)
+   * Get cadence (max wait time for signal before timeout, in ms)
+   *
+   * This is NOT a polling interval — the service loop uses signal-based wakeup.
+   * Cadence is the MAXIMUM time to wait if no signal arrives.
+   * Actual response is near-instant when a signal fires.
    *
    * Adaptive timing based on mood:
-   * - Overwhelmed: 10s (back pressure)
-   * - Tired: 7s (moderate pace)
-   * - Active: 5s (normal pace)
-   * - Idle: 3s (eager, stay responsive)
+   * - Idle: 1s (first message gets fast response)
+   * - Active: 500ms (stay responsive during conversations)
+   * - Tired: 2s (moderate pace)
+   * - Overwhelmed: 3s (back pressure, but still responsive)
    *
    * Constrained by compute budget (slow down when limited)
    */
@@ -177,17 +181,17 @@ export class PersonaStateManager {
     let cadence: number;
 
     switch (this.state.mood) {
-      case 'overwhelmed':
-        cadence = 10000; // 10 seconds (back pressure)
-        break;
-      case 'tired':
-        cadence = 7000; // 7 seconds (moderate)
+      case 'idle':
+        cadence = 1000; // 1s — quick to respond to first message
         break;
       case 'active':
-        cadence = 5000; // 5 seconds (normal)
+        cadence = 500; // 500ms — stay responsive during active conversations
         break;
-      case 'idle':
-        cadence = 3000; // 3 seconds (eager)
+      case 'tired':
+        cadence = 2000; // 2s — moderate pace
+        break;
+      case 'overwhelmed':
+        cadence = 3000; // 3s — back pressure
         break;
     }
 
