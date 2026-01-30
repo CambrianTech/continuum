@@ -9,7 +9,7 @@
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 use crate::voice::{UtteranceEvent, VoiceParticipant};
-use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality};
+use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality, ChannelRegistry, ChannelEnqueueRequest, ActivityDomain, PersonaState};
 use crate::rag::RagEngine;
 use crate::logging::TimingGuard;
 use ts_rs::TS;
@@ -190,6 +190,42 @@ enum Request {
     #[serde(rename = "cognition/get-state")]
     CognitionGetState { persona_id: String },
 
+    // ========================================================================
+    // Channel Commands
+    // ========================================================================
+
+    /// Route an item to its domain channel queue
+    #[serde(rename = "channel/enqueue")]
+    ChannelEnqueue {
+        persona_id: String,
+        item: ChannelEnqueueRequest,
+    },
+
+    /// Pop the highest-priority item from a specific domain channel
+    #[serde(rename = "channel/dequeue")]
+    ChannelDequeue {
+        persona_id: String,
+        domain: Option<String>,  // "AUDIO", "CHAT", "BACKGROUND" or null for any
+    },
+
+    /// Get per-channel status snapshot
+    #[serde(rename = "channel/status")]
+    ChannelStatus {
+        persona_id: String,
+    },
+
+    /// Run one service cycle: consolidate + return next item to process
+    #[serde(rename = "channel/service-cycle")]
+    ChannelServiceCycle {
+        persona_id: String,
+    },
+
+    /// Clear all channel queues
+    #[serde(rename = "channel/clear")]
+    ChannelClear {
+        persona_id: String,
+    },
+
     #[serde(rename = "health-check")]
     HealthCheck,
 
@@ -242,6 +278,7 @@ struct ServerState {
     voice_service: Arc<crate::voice::voice_service::VoiceService>,
     inboxes: Arc<Mutex<HashMap<Uuid, PersonaInbox>>>,
     cognition_engines: Arc<Mutex<HashMap<Uuid, PersonaCognitionEngine>>>,
+    channel_registries: Arc<Mutex<HashMap<Uuid, (ChannelRegistry, PersonaState)>>>,
     rag_engine: Arc<RagEngine>,
     /// Shared CallManager for direct audio injection (speak-in-call).
     /// Audio never leaves Rust — IPC only returns metadata.
@@ -259,6 +296,7 @@ impl ServerState {
             voice_service: Arc::new(crate::voice::voice_service::VoiceService::new()),
             inboxes: Arc::new(Mutex::new(HashMap::new())),
             cognition_engines: Arc::new(Mutex::new(HashMap::new())),
+            channel_registries: Arc::new(Mutex::new(HashMap::new())),
             rag_engine: Arc::new(RagEngine::new()),
             call_manager,
             audio_pool: Arc::new(crate::voice::audio_buffer::AudioBufferPool::new()),
@@ -757,6 +795,172 @@ impl ServerState {
                 })))
             }
 
+            // ================================================================
+            // Channel Handlers
+            // ================================================================
+
+            Request::ChannelEnqueue { persona_id, item } => {
+                let _timer = TimingGuard::new("ipc", "channel_enqueue");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let queue_item = match item.to_queue_item() {
+                    Ok(qi) => qi,
+                    Err(e) => return HandleResult::Json(Response::error(e)),
+                };
+
+                let mut registries = match self.channel_registries.lock() {
+                    Ok(r) => r,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
+                };
+
+                let (registry, _state) = registries
+                    .entry(persona_uuid)
+                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
+
+                match registry.route(queue_item) {
+                    Ok(domain) => {
+                        let status = registry.status();
+                        HandleResult::Json(Response::success(serde_json::json!({
+                            "routed_to": domain,
+                            "status": status,
+                        })))
+                    }
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::ChannelDequeue { persona_id, domain } => {
+                let _timer = TimingGuard::new("ipc", "channel_dequeue");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let mut registries = match self.channel_registries.lock() {
+                    Ok(r) => r,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
+                };
+
+                let (registry, _state) = match registries.get_mut(&persona_uuid) {
+                    Some(r) => r,
+                    None => return HandleResult::Json(Response::error(format!("No channel registry for {persona_id}"))),
+                };
+
+                // Parse optional domain filter
+                let target_domain: Option<ActivityDomain> = match &domain {
+                    Some(d) => match serde_json::from_value::<ActivityDomain>(serde_json::json!(d)) {
+                        Ok(ad) => Some(ad),
+                        Err(e) => return HandleResult::Json(Response::error(format!("Invalid domain '{d}': {e}"))),
+                    },
+                    None => None,
+                };
+
+                let item = match target_domain {
+                    Some(d) => registry.get_mut(d).and_then(|ch| ch.pop()),
+                    None => {
+                        // Pop from highest-priority channel that has work
+                        use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
+                        let mut popped = None;
+                        for &d in DOMAIN_PRIORITY_ORDER {
+                            if let Some(ch) = registry.get_mut(d) {
+                                if ch.has_work() {
+                                    popped = ch.pop();
+                                    break;
+                                }
+                            }
+                        }
+                        popped
+                    }
+                };
+
+                match item {
+                    Some(qi) => HandleResult::Json(Response::success(serde_json::json!({
+                        "item": qi.to_json(),
+                        "has_more": registry.has_work(),
+                    }))),
+                    None => HandleResult::Json(Response::success(serde_json::json!({
+                        "item": null,
+                        "has_more": false,
+                    }))),
+                }
+            }
+
+            Request::ChannelStatus { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_status");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let registries = match self.channel_registries.lock() {
+                    Ok(r) => r,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
+                };
+
+                let (registry, _state) = match registries.get(&persona_uuid) {
+                    Some(r) => r,
+                    None => {
+                        // Return empty status if no registry exists yet
+                        return HandleResult::Json(Response::success(serde_json::json!({
+                            "channels": [],
+                            "total_size": 0,
+                            "has_urgent_work": false,
+                            "has_work": false,
+                        })));
+                    }
+                };
+
+                let status = registry.status();
+                HandleResult::Json(Response::success(serde_json::to_value(&status).unwrap_or_default()))
+            }
+
+            Request::ChannelServiceCycle { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_service_cycle");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let mut registries = match self.channel_registries.lock() {
+                    Ok(r) => r,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
+                };
+
+                let (registry, state) = registries
+                    .entry(persona_uuid)
+                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
+
+                let result = registry.service_cycle(state);
+                HandleResult::Json(Response::success(serde_json::to_value(&result).unwrap_or_default()))
+            }
+
+            Request::ChannelClear { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "channel_clear");
+
+                let persona_uuid = match Uuid::parse_str(&persona_id) {
+                    Ok(u) => u,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
+                };
+
+                let mut registries = match self.channel_registries.lock() {
+                    Ok(r) => r,
+                    Err(e) => return HandleResult::Json(Response::error(format!("Lock poisoned: {e}"))),
+                };
+
+                if let Some((registry, _state)) = registries.get_mut(&persona_uuid) {
+                    registry.clear_all();
+                }
+
+                HandleResult::Json(Response::success(serde_json::json!({ "cleared": true })))
+            }
+
             Request::HealthCheck => {
                 HandleResult::Json(Response::success(serde_json::json!({ "healthy": true })))
             }
@@ -1159,6 +1363,64 @@ mod tests {
                 assert_eq!(handle, "550e8400-e29b-41d4-a716-446655440000");
             }
             _ => panic!("Expected VoiceDiscardHandle variant"),
+        }
+    }
+
+    // ========================================================================
+    // Channel Command Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_request_deserialization_channel_enqueue_chat() {
+        let json = r#"{
+            "command": "channel/enqueue",
+            "persona_id": "550e8400-e29b-41d4-a716-446655440000",
+            "item": {
+                "item_type": "chat",
+                "id": "660e8400-e29b-41d4-a716-446655440000",
+                "room_id": "770e8400-e29b-41d4-a716-446655440000",
+                "content": "Hello team",
+                "sender_id": "880e8400-e29b-41d4-a716-446655440000",
+                "sender_name": "Joel",
+                "sender_type": "human",
+                "mentions": true,
+                "timestamp": 1234567890,
+                "priority": 0.7
+            }
+        }"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse channel/enqueue");
+        match request {
+            Request::ChannelEnqueue { persona_id, item } => {
+                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
+                let queue_item = item.to_queue_item().expect("Should convert to queue item");
+                assert_eq!(queue_item.item_type(), "chat");
+                assert!(queue_item.is_urgent()); // mentions = true
+            }
+            _ => panic!("Expected ChannelEnqueue variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_channel_service_cycle() {
+        let json = r#"{"command":"channel/service-cycle","persona_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse channel/service-cycle");
+        match request {
+            Request::ChannelServiceCycle { persona_id } => {
+                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("Expected ChannelServiceCycle variant"),
+        }
+    }
+
+    #[test]
+    fn test_request_deserialization_channel_status() {
+        let json = r#"{"command":"channel/status","persona_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
+        let request: Request = serde_json::from_str(json).expect("Should parse channel/status");
+        match request {
+            Request::ChannelStatus { persona_id } => {
+                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
+            }
+            _ => panic!("Expected ChannelStatus variant"),
         }
     }
 

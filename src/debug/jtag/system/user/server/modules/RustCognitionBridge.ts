@@ -22,6 +22,9 @@ import type {
   PriorityScore,
   PersonaState,
   SenderType,
+  ActivityDomain,
+  ChannelRegistryStatus,
+  ChannelEnqueueRequest,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -250,6 +253,109 @@ export class RustCognitionBridge {
       this.logger.error(`Message: ${JSON.stringify(message)}`);
       this.logger.error(`Error: ${error}`);
       this.logger.error(`Stats: ${JSON.stringify(this.stats)}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Channel System — Multi-domain queue management in Rust
+  // ========================================================================
+
+  /**
+   * Enqueue an item into Rust's channel system.
+   * Routes to correct domain (AUDIO/CHAT/BACKGROUND) based on item type.
+   * THROWS on failure
+   */
+  async channelEnqueue(item: ChannelEnqueueRequest): Promise<{ routed_to: ActivityDomain; status: ChannelRegistryStatus }> {
+    this.assertReady('channelEnqueue');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.channelEnqueue(this.personaId, item);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Channel enqueue: routed to ${result.routed_to}, total=${result.status.total_size} (${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`channelEnqueue FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Run one service cycle: consolidate + dequeue next item to process.
+   * This is the main scheduling entry point replacing TS-side channel iteration.
+   * THROWS on failure
+   */
+  async serviceCycle(): Promise<{
+    should_process: boolean;
+    item: any | null;
+    channel: ActivityDomain | null;
+    wait_ms: number;
+    stats: ChannelRegistryStatus;
+  }> {
+    this.assertReady('serviceCycle');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.channelServiceCycle(this.personaId);
+      const elapsed = performance.now() - start;
+
+      if (result.should_process) {
+        this.logger.info(`Service cycle: process ${result.channel} item (${elapsed.toFixed(2)}ms) total=${result.stats.total_size}`);
+      } else if (elapsed > 5) {
+        this.logger.warn(`Service cycle SLOW idle: ${elapsed.toFixed(2)}ms (target <1ms) wait=${result.wait_ms}ms`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`serviceCycle FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get per-channel status snapshot
+   * THROWS on failure
+   */
+  async channelStatus(): Promise<ChannelRegistryStatus> {
+    this.assertReady('channelStatus');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.channelStatus(this.personaId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Channel status: total=${result.total_size}, urgent=${result.has_urgent_work} (${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`channelStatus FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Clear all channel queues
+   * THROWS on failure
+   */
+  async channelClear(): Promise<void> {
+    this.assertReady('channelClear');
+    const start = performance.now();
+
+    try {
+      await this.client.channelClear(this.personaId);
+      const elapsed = performance.now() - start;
+      this.logger.info(`Channels cleared (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`channelClear FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
       throw error;
     }
   }

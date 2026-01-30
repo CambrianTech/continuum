@@ -18,3 +18,11 @@ export type { PersonaState } from './PersonaState';
 export type { CognitionDecision } from './CognitionDecision';
 export type { PriorityScore } from './PriorityScore';
 export type { PriorityFactors } from './PriorityFactors';
+
+// Channel system types
+export type { ActivityDomain } from './ActivityDomain';
+export type { ChannelStatus } from './ChannelStatus';
+export type { ChannelRegistryStatus } from './ChannelRegistryStatus';
+export type { ChannelEnqueueRequest } from './ChannelEnqueueRequest';
+export type { ServiceCycleResult } from './ServiceCycleResult';
+export type { ConsolidatedContext } from './ConsolidatedContext';

@@ -22,6 +22,10 @@ import type {
 	CognitionDecision,
 	PriorityScore,
 	PersonaState,
+	ActivityDomain,
+	ChannelRegistryStatus,
+	ChannelEnqueueRequest,
+	ServiceCycleResult,
 } from '../../../shared/generated';
 
 // ============================================================================
@@ -459,6 +463,112 @@ export class RustCoreIPCClient extends EventEmitter {
 		}
 
 		return response.result as PersonaState & { service_cadence_ms: number };
+	}
+
+	// ========================================================================
+	// Channel System Methods
+	// ========================================================================
+
+	/**
+	 * Enqueue an item into the channel system.
+	 * Item is routed to the correct domain channel (AUDIO/CHAT/BACKGROUND).
+	 */
+	async channelEnqueue(
+		personaId: string,
+		item: ChannelEnqueueRequest
+	): Promise<{ routed_to: ActivityDomain; status: ChannelRegistryStatus }> {
+		const response = await this.request({
+			command: 'channel/enqueue',
+			persona_id: personaId,
+			item,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to enqueue channel item');
+		}
+
+		return response.result as { routed_to: ActivityDomain; status: ChannelRegistryStatus };
+	}
+
+	/**
+	 * Dequeue highest-priority item from a specific domain or any domain.
+	 */
+	async channelDequeue(
+		personaId: string,
+		domain?: ActivityDomain
+	): Promise<{ item: any | null; has_more: boolean }> {
+		const response = await this.request({
+			command: 'channel/dequeue',
+			persona_id: personaId,
+			domain: domain ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to dequeue channel item');
+		}
+
+		return response.result as { item: any | null; has_more: boolean };
+	}
+
+	/**
+	 * Get per-channel status snapshot.
+	 */
+	async channelStatus(personaId: string): Promise<ChannelRegistryStatus> {
+		const response = await this.request({
+			command: 'channel/status',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get channel status');
+		}
+
+		return response.result as ChannelRegistryStatus;
+	}
+
+	/**
+	 * Run one service cycle: consolidate all channels, return next item to process.
+	 * This is the main scheduling entry point — replaces TS-side channel iteration.
+	 */
+	async channelServiceCycle(personaId: string): Promise<{
+		should_process: boolean;
+		item: any | null;
+		channel: ActivityDomain | null;
+		wait_ms: number;
+		stats: ChannelRegistryStatus;
+	}> {
+		const response = await this.request({
+			command: 'channel/service-cycle',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to run service cycle');
+		}
+
+		// Convert bigint wait_ms to number (Rust u64 → ts-rs bigint → JS number)
+		const result = response.result;
+		return {
+			should_process: result.should_process,
+			item: result.item ?? null,
+			channel: result.channel ?? null,
+			wait_ms: Number(result.wait_ms),
+			stats: result.stats,
+		};
+	}
+
+	/**
+	 * Clear all channel queues for a persona.
+	 */
+	async channelClear(personaId: string): Promise<void> {
+		const response = await this.request({
+			command: 'channel/clear',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to clear channels');
+		}
 	}
 
 	/**

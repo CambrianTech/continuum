@@ -17,9 +17,10 @@
 import { EventEmitter } from 'events';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
-import { isInboxMessage, isInboxTask, toChannelItem } from './QueueItemTypes';
+import { isInboxMessage, isInboxTask, toChannelItem, toChannelEnqueueRequest } from './QueueItemTypes';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import type { ChannelRegistry } from './channels/ChannelRegistry';
+import type { RustCognitionBridge } from './RustCognitionBridge';
 
 // Re-export types for backward compatibility and external use
 export type { QueueItem, InboxMessage, InboxTask } from './QueueItemTypes';
@@ -82,6 +83,9 @@ export class PersonaInbox {
   // Multi-channel routing: items converted to BaseQueueItem subclasses and routed to channels
   private channelRegistry: ChannelRegistry | null = null;
 
+  // Rust-backed channel routing (Phase 1): when set, enqueue routes through Rust IPC
+  private rustBridge: RustCognitionBridge | null = null;
+
   // Load-aware deduplication (feedback-driven)
   private queueStatsProvider: (() => { queueSize: number; activeRequests: number; maxConcurrent: number; load: number }) | null = null;
   private readonly DEDUP_WINDOW_MS = 3000; // Look back 3s for duplicates
@@ -121,6 +125,16 @@ export class PersonaInbox {
   }
 
   /**
+   * Set Rust cognition bridge for Rust-backed channel routing.
+   * When set, enqueue() routes items through Rust's multi-channel queue system
+   * instead of the TS ChannelRegistry.
+   */
+  setRustBridge(bridge: RustCognitionBridge): void {
+    this.rustBridge = bridge;
+    this.log(`🦀 Rust bridge connected — enqueue routes through Rust channel system`);
+  }
+
+  /**
    * Add item to inbox (non-blocking)
    * Accepts both messages and tasks
    * Traffic management: Drop lowest priority when full
@@ -141,7 +155,34 @@ export class PersonaInbox {
       }
     }
 
-    // MULTI-CHANNEL PATH: Route to per-domain channel if registry available
+    // RUST CHANNEL PATH: Route through Rust IPC if bridge available
+    if (this.rustBridge) {
+      const enqueueRequest = toChannelEnqueueRequest(item);
+      try {
+        const result = await this.rustBridge.channelEnqueue(enqueueRequest);
+
+        // Log with type-specific details
+        if (isInboxMessage(item)) {
+          const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
+          this.log(`🦀 Routed ${enqueueRequest.item_type} → Rust ${result.routed_to}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size})`);
+          if (item.sourceModality === 'voice') {
+            console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → Rust ${result.routed_to}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
+          }
+        } else if (isInboxTask(item)) {
+          this.log(`🦀 Routed task → Rust ${result.routed_to}: ${item.taskType} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size})`);
+        }
+
+        // Signal TS service loop that work is available
+        this.signal.emit('work-available');
+
+        return true; // Item routed to Rust channel
+      } catch (error) {
+        this.log(`⚠️ Rust channel enqueue failed, falling through: ${error}`);
+        // Fall through to TS channel or legacy path
+      }
+    }
+
+    // TS MULTI-CHANNEL PATH: Route to per-domain channel if registry available
     if (this.channelRegistry) {
       const channelItem = toChannelItem(item);
       const channel = this.channelRegistry.route(channelItem);

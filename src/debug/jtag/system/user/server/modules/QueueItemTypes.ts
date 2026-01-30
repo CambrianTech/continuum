@@ -7,6 +7,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TaskDomain, TaskType, TaskStatus } from '../../../data/entities/TaskEntity';
+import type { ChannelEnqueueRequest } from '../../../../shared/generated';
 
 // Re-export TaskStatus for use in PersonaUser
 export type { TaskStatus };
@@ -308,4 +309,66 @@ export function taskEntityToInboxTask(task: {
     blockedBy: task.blockedBy,
     metadata: task.metadata
   };
+}
+
+/**
+ * Convert QueueItem to ChannelEnqueueRequest for Rust IPC.
+ * Maps TS queue items to the discriminated union expected by Rust's channel system.
+ */
+export function toChannelEnqueueRequest(item: QueueItem): ChannelEnqueueRequest {
+  if (isInboxMessage(item)) {
+    // Voice messages
+    if (item.sourceModality === 'voice' && item.voiceSessionId) {
+      return {
+        item_type: 'voice',
+        id: item.id,
+        room_id: item.roomId,
+        content: item.content,
+        sender_id: item.senderId,
+        sender_name: item.senderName,
+        sender_type: item.senderType,
+        voice_session_id: item.voiceSessionId,
+        timestamp: item.timestamp,
+        priority: item.priority,
+      };
+    }
+
+    // Chat messages
+    return {
+      item_type: 'chat',
+      id: item.id,
+      room_id: item.roomId,
+      content: item.content,
+      sender_id: item.senderId,
+      sender_name: item.senderName,
+      sender_type: item.senderType,
+      mentions: item.mentions ?? false,
+      timestamp: item.timestamp,
+      priority: item.priority,
+    };
+  }
+
+  if (isInboxTask(item)) {
+    return {
+      item_type: 'task',
+      id: item.id,
+      task_id: item.taskId,
+      assignee_id: item.assigneeId,
+      created_by: item.createdBy,
+      task_domain: item.domain,
+      task_type: item.taskType,
+      context_id: item.contextId,
+      description: item.description,
+      priority: item.priority,
+      status: item.status,
+      timestamp: item.timestamp,
+      due_date: item.dueDate != null ? BigInt(item.dueDate) : null,
+      estimated_duration: item.estimatedDuration != null ? BigInt(item.estimatedDuration) : null,
+      depends_on: item.dependsOn ?? [],
+      blocked_by: item.blockedBy ?? [],
+    };
+  }
+
+  const _exhaustive: never = item;
+  throw new Error(`Unknown queue item type: ${(item as QueueItem).type}`);
 }
