@@ -2,16 +2,15 @@
  * PersonaCentralNervousSystem
  *
  * Orchestration layer that coordinates multi-domain attention for PersonaUser.
- * Uses item-centric OOP: items control their own urgency, consolidation, kick policy.
- * The CNS iterates over channels in scheduler-determined priority order.
  *
- * Service cycle:
- *   1. Poll tasks, generate self-tasks
+ * Service cycle (Rust-delegated, Phase 2):
+ *   1. Poll tasks, generate self-tasks (TS — DB access)
  *   2. Wait for work (signal-based)
- *   3. Consolidate all channels (items decide how)
- *   4. Get domain priority from scheduler
- *   5. Service channels: urgent first, then scheduler-approved
- *   6. Fall back to legacy flat-queue path for non-channel items
+ *   3. Rust service_cycle() → consolidate, state-gate, schedule, return next item
+ *   4. Dispatch item to handler
+ *
+ * Fallback (TS channels):
+ *   If Rust bridge unavailable, falls back to TS channel registry + legacy queue.
  */
 
 import type { CNSConfig } from './CNSTypes';
@@ -19,6 +18,7 @@ import type { CognitiveContext } from '../cognitive-schedulers/ICognitiveSchedul
 import { ActivityDomain } from '../cognitive-schedulers/ICognitiveScheduler';
 import { SubsystemLogger } from '../being/logging/SubsystemLogger';
 import { getEffectivePriority } from '../PersonaInbox';
+import { fromRustServiceItem } from '../QueueItemTypes';
 
 export class PersonaCentralNervousSystem {
   private readonly config: CNSConfig;
@@ -31,15 +31,16 @@ export class PersonaCentralNervousSystem {
     this.logger.info(`Initialized CNS with ${config.scheduler.name} scheduler`);
     this.logger.info(`Enabled domains: ${config.enabledDomains.join(', ')}`);
     this.logger.info(`Channels registered: ${config.channelRegistry.domains().join(', ')}`);
+    this.logger.info(`Rust bridge: ${config.rustBridge ? 'connected' : 'not available (TS fallback)'}`);
     this.logger.info(`Background threads: ${config.allowBackgroundThreads ? 'enabled' : 'disabled'}`);
   }
 
   /**
    * Single service cycle — the heart of the autonomous entity.
    *
-   * Combines legacy flat-queue path with new multi-channel path:
-   * - If channels have work → use channel-based service (new)
-   * - Otherwise fall back to legacy inbox peek/pop (backward compat)
+   * Phase 2: Delegates scheduling to Rust when bridge available.
+   * - Rust handles: consolidation, state gating, priority ordering, item selection
+   * - TS handles: task polling, self-task generation, item execution (LLM, DB, tools)
    */
   async serviceCycle(): Promise<void> {
     // STEP 0a: Poll task database for pending tasks assigned to this persona
@@ -57,20 +58,73 @@ export class PersonaCentralNervousSystem {
       return;
     }
 
-    // STEP 2: Try multi-channel service first (new path)
+    // STEP 2: Try Rust-delegated scheduling (Phase 2)
+    if (this.config.rustBridge) {
+      await this.serviceViaRust();
+      return;
+    }
+
+    // STEP 3: Fallback to TS channel service
     const channelRegistry = this.config.channelRegistry;
     if (channelRegistry.hasWork()) {
       await this.serviceChannels();
       return;
     }
 
-    // STEP 3: Fall back to legacy flat-queue path
-    // This handles items not yet routed to channels (transition period)
+    // STEP 4: Fall back to legacy flat-queue path
     await this.serviceLegacyQueue();
   }
 
   /**
-   * Multi-channel service loop.
+   * Rust-delegated service cycle (Phase 2).
+   *
+   * Rust's service_cycle() does ALL scheduling work in <1ms:
+   * - Consolidates all channels (items decide merge policy)
+   * - Updates persona state (inbox_load, mood)
+   * - Checks urgent channels first (AUDIO → CHAT → BACKGROUND)
+   * - State-gates non-urgent items (mood/energy threshold)
+   * - Returns next item to process or adaptive wait cadence
+   *
+   * TS just executes what Rust decided.
+   */
+  private async serviceViaRust(): Promise<void> {
+    const bridge = this.config.rustBridge!;
+
+    try {
+      const result = await bridge.serviceCycle();
+
+      if (result.should_process && result.item) {
+        // Convert Rust JSON item → TS QueueItem
+        const queueItem = fromRustServiceItem(result.item as Record<string, unknown>);
+        if (!queueItem) {
+          this.logger.warn(`Rust returned unparseable item: ${JSON.stringify(result.item).slice(0, 200)}`);
+          return;
+        }
+
+        const channelName = result.channel ?? 'unknown';
+        this.logger.info(`[rust:${channelName}] Processing ${queueItem.type} (priority=${queueItem.priority.toFixed(2)}, stats=${result.stats.total_size} total)`);
+
+        // Delegate to PersonaUser via callback (same as TS channel path)
+        await this.config.handleChatMessage(queueItem);
+      } else {
+        // No work — Rust says rest for wait_ms
+        // Note: wait_ms is advisory; the outer loop will call waitForWork() next cycle
+        // which provides signal-based wakeup if new work arrives before wait_ms
+        this.logger.debug(`Rust service cycle: no work (wait_ms=${result.wait_ms}, stats=${result.stats.total_size} total)`);
+      }
+    } catch (error) {
+      this.logger.warn(`Rust service cycle failed, falling back to TS channels: ${error}`);
+      // Fallback: try TS channels
+      if (this.config.channelRegistry.hasWork()) {
+        await this.serviceChannels();
+      } else {
+        await this.serviceLegacyQueue();
+      }
+    }
+  }
+
+  /**
+   * Multi-channel service loop (TS fallback).
    *
    * Items control their own destiny:
    * - consolidate(): items decide if/how they merge

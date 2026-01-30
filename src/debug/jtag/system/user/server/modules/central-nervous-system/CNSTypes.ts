@@ -12,6 +12,7 @@ import type { PersonaStateManager } from '../PersonaState';
 import type { PersonaGenome } from '../PersonaGenome';
 import type { ChannelRegistry } from '../channels/ChannelRegistry';
 import type { BaseQueueItem } from '../channels/BaseQueueItem';
+import type { RustCognitionBridge } from '../RustCognitionBridge';
 
 /**
  * Configuration for PersonaCentralNervousSystem
@@ -36,6 +37,9 @@ export interface CNSConfig {
   readonly handleQueueItem: (item: BaseQueueItem) => Promise<void>;
   readonly pollTasks: () => Promise<void>;
   readonly generateSelfTasks: () => Promise<void>;
+
+  // Rust cognition bridge (Phase 2): when available, scheduling delegates to Rust
+  readonly rustBridge?: RustCognitionBridge;
 
   // Domain configuration
   readonly enabledDomains: ReadonlyArray<ActivityDomain>;

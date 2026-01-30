@@ -26,6 +26,9 @@ import type { BaseQueueItem } from '../channels/BaseQueueItem';
 // Import QueueItem type for handleChatMessageFromCNS signature
 import type { QueueItem } from '../PersonaInbox';
 
+// Import RustCognitionBridge type for Phase 2 delegation
+import type { RustCognitionBridge } from '../RustCognitionBridge';
+
 // Type for PersonaUser (avoid circular dependency)
 // Matches PersonaUser's interface for CNS creation
 // Uses actual class types to ensure compile-time safety
@@ -46,6 +49,8 @@ interface PersonaUserLike {
   memory: {
     genome: PersonaGenome;  // Phase 2: genome moved inside memory module
   };
+  // Rust cognition bridge (Phase 2): scheduling delegates to Rust when available
+  rustCognitionBridge: RustCognitionBridge | null;
   handleChatMessageFromCNS: (item: QueueItem) => Promise<void>;
   handleQueueItemFromCNS: (item: BaseQueueItem) => Promise<void>;
   pollTasksFromCNS: () => Promise<void>;
@@ -205,6 +210,7 @@ export class CNSFactory {
       personaState: persona.prefrontal.personaState,
       genome: persona.memory.genome,
       channelRegistry,
+      rustBridge: persona.rustCognitionBridge ?? undefined,
       personaId: persona.entity.id,
       personaName,
       uniqueId: persona.entity.uniqueId,

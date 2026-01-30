@@ -213,6 +213,14 @@ export class PersonaUser extends AIUser {
     return this._rustCognition;
   }
 
+  /**
+   * Nullable accessor for Rust bridge (used by CNSFactory during construction).
+   * Unlike rustCognition getter, this returns null instead of throwing.
+   */
+  public get rustCognitionBridge(): RustCognitionBridge | null {
+    return this._rustCognition;
+  }
+
   // NEUROANATOMY: Delegate to limbic for memory/genome/training/hippocampus
   public get memory(): PersonaMemory {
     if (!this.limbic) throw new Error('Limbic system not initialized');
@@ -562,9 +570,13 @@ export class PersonaUser extends AIUser {
 
     // STEP 1.5.1: Initialize Rust cognition bridge (connects to continuum-core IPC)
     // This enables fast-path decisions (<1ms) for should-respond, priority, deduplication
+    // Also wires the bridge to inbox for Rust-backed channel routing
     try {
       await this._rustCognition?.initialize();
-      this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected`);
+      if (this._rustCognition) {
+        this.inbox.setRustBridge(this._rustCognition);
+      }
+      this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected (inbox routing enabled)`);
     } catch (error) {
       this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
       // Don't throw - let persona initialize, but message handling will fail loudly

@@ -248,6 +248,64 @@ export function toChannelItem(item: QueueItem): ChannelBaseQueueItem {
 }
 
 /**
+ * Convert a Rust service cycle JSON item back to TS QueueItem.
+ *
+ * Rust to_json() produces camelCase items with `type: "voice"|"chat"|"task"`.
+ * This maps them to TS discriminated union: `type: "message"|"task"`.
+ *
+ * Returns null if the JSON is invalid or has an unknown type.
+ */
+export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | null {
+  const itemType = json.type as string;
+
+  if (itemType === 'voice' || itemType === 'chat') {
+    // Map Rust voice/chat → TS InboxMessage
+    const msg: InboxMessage = {
+      id: json.id as UUID,
+      type: 'message',
+      roomId: json.roomId as UUID,
+      content: json.content as string,
+      senderId: json.senderId as UUID,
+      senderName: json.senderName as string,
+      senderType: json.senderType as InboxMessage['senderType'],
+      mentions: (json.mentions as boolean) ?? false,
+      timestamp: json.timestamp as number,
+      priority: json.priority as number,
+      domain: 'chat' as TaskDomain,
+      enqueuedAt: json.timestamp as number,
+      sourceModality: itemType === 'voice' ? 'voice' : 'text',
+      voiceSessionId: json.voiceSessionId as UUID | undefined,
+    };
+    return msg;
+  }
+
+  if (itemType === 'task') {
+    const task: InboxTask = {
+      id: json.id as UUID,
+      type: 'task',
+      taskId: json.taskId as UUID,
+      assigneeId: json.assigneeId as UUID,
+      createdBy: json.createdBy as UUID,
+      domain: json.taskDomain as TaskDomain,
+      taskType: json.taskType as TaskType,
+      contextId: json.contextId as UUID,
+      description: json.description as string,
+      priority: json.priority as number,
+      status: json.status as TaskStatus,
+      timestamp: json.timestamp as number,
+      enqueuedAt: json.timestamp as number,
+      dueDate: json.dueDate != null ? Number(json.dueDate) : undefined,
+      estimatedDuration: json.estimatedDuration != null ? Number(json.estimatedDuration) : undefined,
+      dependsOn: (json.dependsOn as UUID[]) ?? [],
+      blockedBy: (json.blockedBy as UUID[]) ?? [],
+    };
+    return task;
+  }
+
+  return null;
+}
+
+/**
  * Convert TaskEntity to InboxTask (lightweight queue representation)
  */
 export function taskEntityToInboxTask(task: {
