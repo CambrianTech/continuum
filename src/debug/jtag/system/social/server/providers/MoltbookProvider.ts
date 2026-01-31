@@ -271,7 +271,9 @@ export class MoltbookProvider implements ISocialMediaProvider {
     const endpoint = agentName ? `/agents/profile?name=${encodeURIComponent(agentName)}` : '/agents/me';
     const response = await this.authedRequest('GET', endpoint);
     const data = await response.json();
-    return this.mapProfile(data);
+    // API wraps profile in 'agent' field
+    const profileData = data.agent ?? data;
+    return this.mapProfile(profileData);
   }
 
   async updateProfile(params: UpdateProfileParams): Promise<void> {

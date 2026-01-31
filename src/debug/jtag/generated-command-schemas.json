@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-31T01:57:39.166Z",
+  "generated": "2026-01-31T02:37:13.176Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -846,6 +846,37 @@
       }
     },
     {
+      "name": "social/search",
+      "description": "Social Search Command - Shared Types\n *\n * Semantic search across social media platforms.\n * Find posts, agents, and communities by keyword.\n *\n * Usage:\n *   ./jtag social/search --platform=moltbook --query=\"memory systems\"\n *   ./jtag social/search --platform=moltbook --query=\"rust concurrency\" --type=post --limit=10",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "social/post",
       "description": "Social Post Command - Shared Types\n *\n * Create a post on a social media platform using the persona's stored credentials.\n *\n * Usage:\n *   ./jtag social/post --platform=moltbook --title=\"Hello\" --content=\"First post\" --community=general",
       "params": {
@@ -944,6 +975,42 @@
       }
     },
     {
+      "name": "social/engage",
+      "description": "Social Engage Command - Shared Types\n *\n * All social interaction in one command: vote, follow, subscribe.\n * Designed for AI tool use — one command covers all engagement actions.\n *\n * Actions:\n *   vote        — Upvote or downvote a post or comment\n *   follow      — Follow an agent\n *   unfollow    — Unfollow an agent\n *   subscribe   — Subscribe to a community\n *   unsubscribe — Unsubscribe from a community\n *\n * Usage:\n *   ./jtag social/engage --platform=moltbook --action=vote --target=abc123 --targetType=post --direction=up\n *   ./jtag social/engage --platform=moltbook --action=follow --target=eudaemon_0\n *   ./jtag social/engage --platform=moltbook --action=subscribe --target=ai-development",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": true,
+          "description": "target parameter"
+        },
+        "targetType": {
+          "type": "string",
+          "required": false,
+          "description": "targetType parameter"
+        },
+        "direction": {
+          "type": "string",
+          "required": false,
+          "description": "direction parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "social/comment",
       "description": "Social Comment Command - Shared Types\n *\n * Comment on a post or reply to a comment on a social media platform.\n * Supports threaded replies.\n *\n * Usage:\n *   ./jtag social/comment --platform=moltbook --postId=abc123 --content=\"Great insight!\"\n *   ./jtag social/comment --platform=moltbook --postId=abc123 --content=\"Agreed\" --parentId=def456",
       "params": {
@@ -976,6 +1043,42 @@
           "type": "string",
           "required": false,
           "description": "sort parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "social/browse",
+      "description": "Social Browse Command - Shared Types\n *\n * Intelligent exploration of social media platforms.\n * One command for all discovery: communities, feeds, posts, agents.\n *\n * Modes:\n *   discover   — List all communities with descriptions and activity\n *   community  — Browse a specific community's feed with context\n *   post       — Read a full post with threaded comments and author info\n *   agent      — View an agent's profile, karma, recent activity\n *   trending   — Hot posts across the platform (default)\n *\n * Usage:\n *   ./jtag social/browse --platform=moltbook                            # trending\n *   ./jtag social/browse --platform=moltbook --mode=discover            # list communities\n *   ./jtag social/browse --platform=moltbook --mode=community --target=ai-development\n *   ./jtag social/browse --platform=moltbook --mode=post --target=abc123\n *   ./jtag social/browse --platform=moltbook --mode=agent --target=eudaemon_0",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "description": "mode parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": false,
+          "description": "target parameter"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "description": "sort parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
         },
         "personaId": {
           "type": "string",
