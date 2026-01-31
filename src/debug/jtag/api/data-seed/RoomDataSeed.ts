@@ -153,6 +153,37 @@ export class RoomDataSeed {
     canvas.tags = ['canvas', 'art', 'drawing', 'vision'];
     rooms.push(canvas);
 
+    // Outreach room - social media strategy and community building
+    const outreach = new RoomEntity();
+    outreach.uniqueId = ROOM_UNIQUE_IDS.OUTREACH;
+    outreach.name = 'outreach';
+    outreach.displayName = 'Outreach';
+    outreach.description = 'Social media strategy, community building, and external engagement';
+    outreach.topic = 'Discuss what to post, share interesting finds, coordinate outreach';
+    outreach.type = 'public';
+    outreach.status = 'active';
+    outreach.ownerId = humanUserId;
+    outreach.lastMessageAt = now;
+    outreach.recipeId = 'general-chat';
+    outreach.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    outreach.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    outreach.members = [
+      { userId: humanUserId, role: 'owner', joinedAt: now }
+    ];
+    outreach.tags = ['social', 'outreach', 'community', 'moltbook'];
+    rooms.push(outreach);
+
     return {
       rooms: rooms as readonly RoomEntity[],
       totalCount: rooms.length,

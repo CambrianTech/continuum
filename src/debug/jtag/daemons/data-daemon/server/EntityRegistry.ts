@@ -80,6 +80,7 @@ import { PersonaRAGContextEntity } from '../../../system/data/entities/PersonaRA
 import { TimelineEventEntity } from '../../../system/data/entities/TimelineEventEntity';
 import { FeedbackEntity } from '../../../system/data/entities/FeedbackEntity';
 import { CallEntity } from '../../../system/data/entities/CallEntity';
+import { SocialCredentialEntity } from '../../../system/social/shared/SocialCredentialEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -133,6 +134,7 @@ export function initializeEntityRegistry(): void {
   new TimelineEventEntity();
   new FeedbackEntity();
   new CallEntity();
+  new SocialCredentialEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -178,6 +180,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(TimelineEventEntity.collection, TimelineEventEntity);
   registerEntity(FeedbackEntity.collection, FeedbackEntity);
   registerEntity(CallEntity.collection, CallEntity);
+  registerEntity(SocialCredentialEntity.collection, SocialCredentialEntity);
 
   log.info('All entities registered');
 }
