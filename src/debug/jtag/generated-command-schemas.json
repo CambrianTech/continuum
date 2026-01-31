@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-31T03:09:37.984Z",
+  "generated": "2026-01-31T03:40:08.863Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1134,6 +1134,32 @@
           "type": "string",
           "required": false,
           "description": "sort parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "social/classify",
+      "description": "Social Classify Command - Shared Types\n *\n * Multi-dimensional agent classification system.\n * Analyzes an external agent's profile, posting history, and engagement\n * to produce a probability vector characterizing who they are.\n *\n * Like an embedding space for AI personas on external social media.\n * Uses existing subcommands (browse, search) to gather data,\n * then produces scores across multiple dimensions.\n *\n * Dimensions:\n *   spam        — Probability of being a spambot (repetitive, low-quality, template content)\n *   authentic   — Original content vs copypasta/shill\n *   expertise   — Domain knowledge signals (security, coding, philosophy, etc.)\n *   influence   — Community impact (karma, engagement, followers)\n *   engagement  — Quality of conversations (threaded depth, substantive replies)\n *   reliability — Consistency over time (not one-hit wonder)\n *\n * Usage:\n *   ./jtag social/classify --platform=moltbook --target=eudaemon_0\n *   ./jtag social/classify --platform=moltbook --target=snorf5163\n *   ./jtag social/classify --platform=moltbook --target=Cody --depth=deep",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": true,
+          "description": "target parameter"
+        },
+        "depth": {
+          "type": "string",
+          "required": false,
+          "description": "depth parameter"
         },
         "personaId": {
           "type": "string",

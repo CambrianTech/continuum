@@ -180,6 +180,7 @@ export const COMMANDS = {
   SESSION_GET_ID: 'session/get-id',
   SESSION_GET_USER: 'session/get-user',
   SOCIAL_BROWSE: 'social/browse',
+  SOCIAL_CLASSIFY: 'social/classify',
   SOCIAL_COMMENT: 'social/comment',
   SOCIAL_ENGAGE: 'social/engage',
   SOCIAL_FEED: 'social/feed',
