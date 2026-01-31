@@ -81,6 +81,7 @@ import { TimelineEventEntity } from '../../../system/data/entities/TimelineEvent
 import { FeedbackEntity } from '../../../system/data/entities/FeedbackEntity';
 import { CallEntity } from '../../../system/data/entities/CallEntity';
 import { SocialCredentialEntity } from '../../../system/social/shared/SocialCredentialEntity';
+import { HandleEntity } from '../../../system/data/entities/HandleEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -135,6 +136,7 @@ export function initializeEntityRegistry(): void {
   new FeedbackEntity();
   new CallEntity();
   new SocialCredentialEntity();
+  new HandleEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -181,6 +183,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(FeedbackEntity.collection, FeedbackEntity);
   registerEntity(CallEntity.collection, CallEntity);
   registerEntity(SocialCredentialEntity.collection, SocialCredentialEntity);
+  registerEntity(HandleEntity.collection, HandleEntity);
 
   log.info('All entities registered');
 }
