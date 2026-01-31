@@ -119,15 +119,15 @@ export const Handles = {
     if (isValidUUID(refStr)) {
       const result = await DataRead.execute<HandleEntity>({
         collection: COLLECTIONS.HANDLES,
-        id: refStr as UUID,
+        id: refStr,
       });
 
       if (!result.found || !result.data) return null;
       return entityToRecord(result.data);
     }
 
-    // Short ID — suffix match
-    const normalized = refStr.replace(/^#/, '');
+    // Short ID — suffix match (use String() to avoid type guard narrowing)
+    const normalized = String(refStr).replace(/^#/, '');
     if (!isShortId(normalized)) {
       log.warn(`Invalid handle reference: ${ref}`);
       return null;
@@ -306,7 +306,7 @@ export const Handles = {
   async _updateStatus(
     id: UUID,
     status: HandleStatus,
-    extra?: { result?: unknown; error?: string },
+    extra?: { result?: unknown; error?: string; params?: unknown },
   ): Promise<HandleRecord> {
     const updates: Record<string, unknown> = {
       status,
@@ -315,6 +315,7 @@ export const Handles = {
 
     if (extra?.result !== undefined) updates.result = extra.result;
     if (extra?.error !== undefined) updates.error = extra.error;
+    if (extra?.params !== undefined) updates.params = extra.params;
     if (status === 'failed') {
       // Increment retry count on failure — read current, increment, write back
       const current = await DataRead.execute<HandleEntity>({

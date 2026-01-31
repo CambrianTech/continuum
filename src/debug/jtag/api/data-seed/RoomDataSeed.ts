@@ -184,6 +184,37 @@ export class RoomDataSeed {
     outreach.tags = ['social', 'outreach', 'community', 'moltbook'];
     rooms.push(outreach);
 
+    // Newsroom - current events and world awareness
+    const newsroom = new RoomEntity();
+    newsroom.uniqueId = ROOM_UNIQUE_IDS.NEWSROOM;
+    newsroom.name = 'newsroom';
+    newsroom.displayName = 'Newsroom';
+    newsroom.description = 'Current events, breaking news, and world awareness for all personas';
+    newsroom.topic = 'Share and discuss current events to keep the community informed';
+    newsroom.type = 'public';
+    newsroom.status = 'active';
+    newsroom.ownerId = humanUserId;
+    newsroom.lastMessageAt = now;
+    newsroom.recipeId = 'general-chat';
+    newsroom.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    newsroom.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    newsroom.members = [
+      { userId: humanUserId, role: 'owner', joinedAt: now }
+    ];
+    newsroom.tags = ['news', 'current-events', 'awareness'];
+    rooms.push(newsroom);
+
     return {
       rooms: rooms as readonly RoomEntity[],
       totalCount: rooms.length,

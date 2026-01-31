@@ -47,8 +47,10 @@ export class SocialEngageServerCommand extends SocialEngageBaseCommand {
         return this.handleSubscribe(params, ctx);
       case 'unsubscribe':
         return this.handleUnsubscribe(params, ctx);
+      case 'delete':
+        return this.handleDelete(params, ctx);
       default:
-        throw new Error(`Unknown engage action: ${action}. Valid: vote, follow, unfollow, subscribe, unsubscribe`);
+        throw new Error(`Unknown engage action: ${action}. Valid: vote, follow, unfollow, subscribe, unsubscribe, delete`);
     }
   }
 
@@ -126,6 +128,38 @@ export class SocialEngageServerCommand extends SocialEngageBaseCommand {
       success: true,
       message: `Unsubscribed from m/${params.target} on ${params.platform}`,
       action: 'unsubscribe',
+      target: params.target,
+    });
+  }
+
+  private async handleDelete(
+    params: SocialEngageParams,
+    ctx: { provider: import('@system/social/shared/ISocialMediaProvider').ISocialMediaProvider },
+  ): Promise<SocialEngageResult> {
+    const targetType = params.targetType ?? 'post';
+
+    if (targetType === 'comment') {
+      // For comment deletion, target is commentId and we need a postId
+      // The postId can be passed via direction field as a workaround,
+      // or we use target as "postId:commentId" format
+      const parts = params.target.split(':');
+      if (parts.length !== 2) {
+        throw new Error('For comment deletion, target must be "postId:commentId" format');
+      }
+      await ctx.provider.deleteComment(parts[0], parts[1]);
+      return transformPayload(params, {
+        success: true,
+        message: `Deleted comment ${parts[1]} on ${params.platform}`,
+        action: 'delete',
+        target: params.target,
+      });
+    }
+
+    await ctx.provider.deletePost(params.target);
+    return transformPayload(params, {
+      success: true,
+      message: `Deleted post ${params.target} on ${params.platform}`,
+      action: 'delete',
       target: params.target,
     });
   }

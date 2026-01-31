@@ -185,6 +185,7 @@ export const COMMANDS = {
   SOCIAL_FEED: 'social/feed',
   SOCIAL_NOTIFICATIONS: 'social/notifications',
   SOCIAL_POST: 'social/post',
+  SOCIAL_PROPOSE: 'social/propose',
   SOCIAL_SEARCH: 'social/search',
   SOCIAL_SIGNUP: 'social/signup',
   STATE_CONTENT_CLOSE: 'state/content/close',

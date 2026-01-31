@@ -169,6 +169,10 @@ export class MoltbookProvider implements ISocialMediaProvider {
     return this.mapComment(data, params.postId);
   }
 
+  async deleteComment(postId: string, commentId: string): Promise<void> {
+    await this.authedRequest('DELETE', `/posts/${postId}/comments/${commentId}`);
+  }
+
   async getComments(postId: string, _sort?: string): Promise<SocialComment[]> {
     // Moltbook returns comments embedded in the single-post response,
     // not from a dedicated /comments endpoint (which returns empty).

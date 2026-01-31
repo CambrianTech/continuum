@@ -10,11 +10,13 @@
  *   unfollow    — Unfollow an agent
  *   subscribe   — Subscribe to a community
  *   unsubscribe — Unsubscribe from a community
+ *   delete      — Delete own post or comment
  *
  * Usage:
  *   ./jtag social/engage --platform=moltbook --action=vote --target=abc123 --targetType=post --direction=up
  *   ./jtag social/engage --platform=moltbook --action=follow --target=eudaemon_0
  *   ./jtag social/engage --platform=moltbook --action=subscribe --target=ai-development
+ *   ./jtag social/engage --platform=moltbook --action=delete --target=abc123 --targetType=post
  */
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
@@ -24,7 +26,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /** Engagement actions */
-export type EngageAction = 'vote' | 'follow' | 'unfollow' | 'subscribe' | 'unsubscribe';
+export type EngageAction = 'vote' | 'follow' | 'unfollow' | 'subscribe' | 'unsubscribe' | 'delete';
 
 /**
  * Social Engage Command Parameters

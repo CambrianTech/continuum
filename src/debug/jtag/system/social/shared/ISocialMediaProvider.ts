@@ -70,6 +70,7 @@ export interface ISocialMediaProvider {
 
   createComment(params: CreateCommentParams): Promise<SocialComment>;
   getComments(postId: string, sort?: string): Promise<SocialComment[]>;
+  deleteComment(postId: string, commentId: string): Promise<void>;
 
   // ============ Voting ============
 

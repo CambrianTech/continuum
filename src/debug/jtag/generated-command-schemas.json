@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-31T02:37:13.176Z",
+  "generated": "2026-01-31T03:09:37.984Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -877,6 +877,97 @@
       }
     },
     {
+      "name": "social/propose",
+      "description": "Social Propose Command - Shared Types\n *\n * Democratic governance for shared social media accounts.\n * Personas nominate actions, vote, and auto-execute on threshold.\n *\n * Proposals are stored as Handles (type 'social-proposal') with votes in params.\n * When enough \"up\" votes accumulate, the action executes automatically.\n *\n * Modes:\n *   create  — Nominate a new action (follow, post, comment, etc.)\n *   vote    — Vote on a pending proposal\n *   list    — Show pending/recent proposals\n *   view    — View a specific proposal with full vote history\n *\n * Usage:\n *   ./jtag social/propose --platform=moltbook --mode=create --action=follow --target=eudaemon_0 --reason=\"Great security research\"\n *   ./jtag social/propose --mode=vote --proposalId=abc123 --direction=up\n *   ./jtag social/propose --mode=list\n *   ./jtag social/propose --mode=view --proposalId=abc123",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": false,
+          "description": "platform parameter"
+        },
+        "mode": {
+          "type": "string",
+          "required": true,
+          "description": "mode parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": false,
+          "description": "action parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": false,
+          "description": "target parameter"
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "description": "reason parameter"
+        },
+        "title": {
+          "type": "string",
+          "required": false,
+          "description": "title parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
+        },
+        "community": {
+          "type": "string",
+          "required": false,
+          "description": "community parameter"
+        },
+        "postId": {
+          "type": "string",
+          "required": false,
+          "description": "postId parameter"
+        },
+        "commentContent": {
+          "type": "string",
+          "required": false,
+          "description": "commentContent parameter"
+        },
+        "voteDirection": {
+          "type": "string",
+          "required": false,
+          "description": "voteDirection parameter"
+        },
+        "targetType": {
+          "type": "string",
+          "required": false,
+          "description": "targetType parameter"
+        },
+        "proposalId": {
+          "type": "string",
+          "required": false,
+          "description": "proposalId parameter"
+        },
+        "direction": {
+          "type": "string",
+          "required": false,
+          "description": "direction parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "social/post",
       "description": "Social Post Command - Shared Types\n *\n * Create a post on a social media platform using the persona's stored credentials.\n *\n * Usage:\n *   ./jtag social/post --platform=moltbook --title=\"Hello\" --content=\"First post\" --community=general",
       "params": {
@@ -976,7 +1067,7 @@
     },
     {
       "name": "social/engage",
-      "description": "Social Engage Command - Shared Types\n *\n * All social interaction in one command: vote, follow, subscribe.\n * Designed for AI tool use — one command covers all engagement actions.\n *\n * Actions:\n *   vote        — Upvote or downvote a post or comment\n *   follow      — Follow an agent\n *   unfollow    — Unfollow an agent\n *   subscribe   — Subscribe to a community\n *   unsubscribe — Unsubscribe from a community\n *\n * Usage:\n *   ./jtag social/engage --platform=moltbook --action=vote --target=abc123 --targetType=post --direction=up\n *   ./jtag social/engage --platform=moltbook --action=follow --target=eudaemon_0\n *   ./jtag social/engage --platform=moltbook --action=subscribe --target=ai-development",
+      "description": "Social Engage Command - Shared Types\n *\n * All social interaction in one command: vote, follow, subscribe.\n * Designed for AI tool use — one command covers all engagement actions.\n *\n * Actions:\n *   vote        — Upvote or downvote a post or comment\n *   follow      — Follow an agent\n *   unfollow    — Unfollow an agent\n *   subscribe   — Subscribe to a community\n *   unsubscribe — Unsubscribe from a community\n *   delete      — Delete own post or comment\n *\n * Usage:\n *   ./jtag social/engage --platform=moltbook --action=vote --target=abc123 --targetType=post --direction=up\n *   ./jtag social/engage --platform=moltbook --action=follow --target=eudaemon_0\n *   ./jtag social/engage --platform=moltbook --action=subscribe --target=ai-development\n *   ./jtag social/engage --platform=moltbook --action=delete --target=abc123 --targetType=post",
       "params": {
         "platform": {
           "type": "string",

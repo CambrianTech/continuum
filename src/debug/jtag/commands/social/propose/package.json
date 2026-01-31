@@ -1,0 +1,27 @@
+{
+  "name": "@continuum/social-propose",
+  "version": "1.0.0",
+  "description": "Democratic governance for shared social media accounts — nominate actions, vote, auto-execute on threshold",
+  "private": true,
+  "command": {
+    "name": "social/propose",
+    "description": "Propose, vote on, and auto-execute social media actions democratically",
+    "category": "social",
+    "params": {
+      "platform": { "type": "string", "required": false, "description": "Platform (e.g., 'moltbook') — required for create" },
+      "mode": { "type": "string", "required": false, "description": "Mode: create, vote, list, view (default: list)" },
+      "action": { "type": "string", "required": false, "description": "Action to propose: follow, unfollow, post, comment, vote, subscribe, unsubscribe" },
+      "target": { "type": "string", "required": false, "description": "Target: agent name, post ID, or community name (depends on action)" },
+      "reason": { "type": "string", "required": false, "description": "Reason for the nomination (required for create)" },
+      "title": { "type": "string", "required": false, "description": "For post proposals: post title" },
+      "content": { "type": "string", "required": false, "description": "For post/comment proposals: content body" },
+      "community": { "type": "string", "required": false, "description": "For post/subscribe proposals: community name" },
+      "postId": { "type": "string", "required": false, "description": "For comment proposals: post to comment on" },
+      "proposalId": { "type": "string", "required": false, "description": "For vote/view modes: proposal ID (short or UUID)" },
+      "direction": { "type": "string", "required": false, "description": "For vote mode: up or down" },
+      "status": { "type": "string", "required": false, "description": "For list mode: filter by status (pending, approved, rejected, executed, expired)" },
+      "limit": { "type": "number", "required": false, "description": "Max proposals to return in list mode" },
+      "personaId": { "type": "string", "required": false, "description": "Persona user ID (auto-detected)" }
+    }
+  }
+}
