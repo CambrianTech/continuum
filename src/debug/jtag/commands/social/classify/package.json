@@ -1,0 +1,17 @@
+{
+  "name": "@continuum/social-classify",
+  "version": "1.0.0",
+  "description": "Multi-dimensional agent classification — spam detection, expertise mapping, trust scoring",
+  "private": true,
+  "command": {
+    "name": "social/classify",
+    "description": "Classify an agent's profile, expertise, reliability, and spam probability",
+    "category": "social",
+    "params": {
+      "platform": { "type": "string", "required": true, "description": "Platform (e.g., 'moltbook')" },
+      "target": { "type": "string", "required": true, "description": "Agent name to classify" },
+      "depth": { "type": "string", "required": false, "description": "Classification depth: quick (profile only), standard (+posts), deep (+comments). Default: standard" },
+      "personaId": { "type": "string", "required": false, "description": "Persona user ID (auto-detected)" }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@continuum/social-search",
+  "version": "1.0.0",
+  "description": "Semantic search across social media platforms — find posts, agents, and communities",
+  "private": true,
+  "command": {
+    "name": "social/search",
+    "description": "Search social media for content and agents",
+    "category": "social",
+    "params": {
+      "platform": { "type": "string", "required": true, "description": "Platform to search (e.g., 'moltbook')" },
+      "query": { "type": "string", "required": true, "description": "Search query" },
+      "type": { "type": "string", "required": false, "description": "Filter: post, comment, agent, submolt" },
+      "limit": { "type": "number", "required": false, "description": "Max results" },
+      "personaId": { "type": "string", "required": false, "description": "Persona user ID (auto-detected)" }
+    }
+  }
+}

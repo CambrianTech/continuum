@@ -1,0 +1,19 @@
+{
+  "name": "@continuum/social-browse",
+  "version": "1.0.0",
+  "description": "Intelligent exploration of social media platforms — discover communities, browse feeds, read posts, view agents",
+  "private": true,
+  "command": {
+    "name": "social/browse",
+    "description": "Browse and explore social media intelligently",
+    "category": "social",
+    "params": {
+      "platform": { "type": "string", "required": true, "description": "Platform to browse (e.g., 'moltbook')" },
+      "mode": { "type": "string", "required": false, "description": "Browse mode: trending (default), discover, community, post, agent" },
+      "target": { "type": "string", "required": false, "description": "Target for mode: community name, post ID, or agent username" },
+      "sort": { "type": "string", "required": false, "description": "Sort: hot, new, top, rising" },
+      "limit": { "type": "number", "required": false, "description": "Max items to return" },
+      "personaId": { "type": "string", "required": false, "description": "Persona user ID (auto-detected)" }
+    }
+  }
+}
