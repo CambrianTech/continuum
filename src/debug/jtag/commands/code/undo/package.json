@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/code/undo",
+  "version": "1.0.0",
+  "description": "Undo a specific change or the last N changes. Applies reverse diffs from the change graph to restore previous file state.",
+  "main": "server/CodeUndoServerCommand.ts",
+  "types": "shared/CodeUndoTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/CodeUndoIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "code/undo"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

@@ -18,14 +18,9 @@ import { ToolRegistry } from '../../../tools/server/ToolRegistry';
 import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
-import { Commands } from '../../../core/shared/Commands';
-import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
-import { Logger, FileMode } from '../../../core/logging/Logger';
-import { SystemPaths } from '../../../core/config/SystemPaths';
+import { Logger } from '../../../core/logging/Logger';
 import { RoomResolver } from '../../../core/server/RoomResolver';
-import * as fs from 'fs';
-import * as path from 'path';
 
 import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
 /**
@@ -75,7 +70,6 @@ export interface PersonaUserForToolExecutor {
 }
 
 export class PersonaToolExecutor {
-  private static readonly COGNITION_LOG_PATH = path.join(process.cwd(), '.continuum/jtag/logs/system/cognition.log');
 
   /**
    * LOOP DETECTION: Track recent tool calls per persona to detect infinite loops
@@ -103,16 +97,6 @@ export class PersonaToolExecutor {
       category,
       this.persona.homeDirectory
     );
-  }
-
-  /**
-   * Log to dedicated cognition file (separate from main logs)
-   * @deprecated Use Logger instead for categorized logging
-   */
-  private static logToCognitionFile(message: string): void {
-    const timestamp = new Date().toISOString();
-    const logLine = `[${timestamp}] ${message}\n`;
-    fs.appendFileSync(PersonaToolExecutor.COGNITION_LOG_PATH, logLine, 'utf8');
   }
 
   /**
@@ -149,7 +133,6 @@ export class PersonaToolExecutor {
     // Block if threshold exceeded
     if (duplicateCount >= PersonaToolExecutor.LOOP_DETECTION_THRESHOLD) {
       this.log.warn(`🔁 LOOP DETECTED: ${toolCall.toolName} called ${duplicateCount + 1}x in ${PersonaToolExecutor.LOOP_DETECTION_WINDOW_MS / 1000}s - BLOCKING`);
-      PersonaToolExecutor.logToCognitionFile(`🔁 ${this.persona.displayName}: [LOOP BLOCKED] ${toolCall.toolName} (${duplicateCount + 1}x identical)`);
       return true;
     }
 
@@ -199,7 +182,6 @@ export class PersonaToolExecutor {
     }
 
     this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
-    PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL] Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
 
     // Filter out looping tool calls before execution
     const filteredToolCalls = toolCalls.filter(toolCall => {
@@ -225,21 +207,20 @@ export class PersonaToolExecutor {
       // This handles wall/*, chat/*, and any other room-scoped commands
       const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
 
-      // Inject callerId, personaId, and contextId so tools can identify the persona and context
-      // This is how ai/sleep knows which persona to put to sleep when no explicit personaId is provided
-      // And ai/should-respond-fast needs personaId + contextId to check room activity
+      // Inject userId (standard CommandParams field) and contextId
+      // userId is the persona's UUID — the canonical identity field on CommandParams
+      // personaId kept for backward compat with ai/sleep, ai/should-respond-fast
       const paramsWithCaller = {
         ...resolvedParams,
-        callerId: context.personaId,  // Always inject the calling persona's userId
-        personaId: context.personaId, // Also as personaId for tools that expect it
-        contextId: context.contextId  // Always inject the room/context ID
+        userId: context.personaId,    // Standard CommandParams.userId — THE identity field
+        personaId: context.personaId, // Backward compat (ai/sleep, ai/should-respond-fast)
+        contextId: context.contextId  // Room/context scope
       };
 
       // Log tool call with clean params formatting (not array-wrapped)
       const paramsJson = JSON.stringify(paramsWithCaller, null, 2);
       this.log.info(`┌─ CALL: ${toolCall.toolName}`);
       this.log.info(`│  params: ${paramsJson.replace(/\n/g, '\n│  ')}`);
-      PersonaToolExecutor.logToCognitionFile(`🔧 ${this.persona.displayName}: [TOOL CALL] ${toolCall.toolName} | params: ${JSON.stringify(paramsWithCaller)}`);
 
       // Use ToolRegistry for ALL commands - no special cases
       // NO try-catch - let exceptions bubble to PersonaResponseGenerator
@@ -290,7 +271,6 @@ export class PersonaToolExecutor {
         this.log.error(`└─ RESULT: ✗ ${duration}ms`);
         this.log.error(`   error: ${result.error || 'unknown error'}`);
       }
-      PersonaToolExecutor.logToCognitionFile(`${result.success ? '✅' : '❌'} ${this.persona.displayName}: [TOOL RESULT] ${toolCall.toolName} ${result.success ? 'success' : 'failed'} (${duration}ms, ${result.content?.length || 0} chars, media: ${result.media?.length || 0})`);
 
       // Phase 3B: Store tool result in working memory and get UUID
       // Fire-and-forget pattern: storage is non-critical, don't block on it

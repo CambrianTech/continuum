@@ -54,6 +54,7 @@ import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
+import type { RAGContext } from '../../../rag/shared/RAGTypes';
 
 import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
@@ -508,7 +509,8 @@ export class PersonaResponseGenerator {
    */
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
-    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
+    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
+    preBuiltRagContext?: RAGContext
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     // Voice modality is a typed field — no cast needed
@@ -516,32 +518,37 @@ export class PersonaResponseGenerator {
     const generateStartTime = Date.now();  // Track total response time for decision logging
     const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
-      // 🔧 SUB-PHASE 3.1: Build RAG context
-      // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
-      this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
-      const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
-      // Voice mode detection - pass voiceSessionId to RAG for faster response (skips semantic search)
-      const voiceSessionId = originalMessage.voiceSessionId;
-      const fullRAGContext = await ragBuilder.buildContext(
-        originalMessage.roomId,
-        this.personaId,
-        {
-          modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
-          maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
-          includeArtifacts: true,  // Enable vision support for multimodal-capable models
-          includeMemories: true,   // Enable Hippocampus LTM retrieval
-          // Voice mode: Pass session ID so RAG sources can optimize for speed
-          voiceSessionId,
-          // ✅ FIX: Include current message even if not yet persisted to database
-          currentMessage: {
-            role: 'user',
-            content: originalMessage.content.text,
-            name: originalMessage.senderName,
-            timestamp: this.timestampToNumber(originalMessage.timestamp)
+      // 🔧 SUB-PHASE 3.1: Build RAG context (or use pre-built from evaluator)
+      let fullRAGContext: RAGContext;
+
+      if (preBuiltRagContext) {
+        // OPTIMIZATION: Evaluator already built full RAG context — reuse it, skip redundant build
+        fullRAGContext = preBuiltRagContext;
+        this.log(`⚡ ${this.personaName}: [PHASE 3.1] Using pre-built RAG context (${fullRAGContext.conversationHistory.length} messages, saved ~100ms rebuild)`);
+      } else {
+        // Fallback: Build RAG context from scratch (for code paths that don't go through evaluator)
+        this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
+        const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+        const voiceSessionId = originalMessage.voiceSessionId;
+        fullRAGContext = await ragBuilder.buildContext(
+          originalMessage.roomId,
+          this.personaId,
+          {
+            modelId: this.modelConfig.model,
+            maxMemories: 5,
+            includeArtifacts: true,
+            includeMemories: true,
+            voiceSessionId,
+            currentMessage: {
+              role: 'user',
+              content: originalMessage.content.text,
+              name: originalMessage.senderName,
+              timestamp: this.timestampToNumber(originalMessage.timestamp)
+            }
           }
-        }
-      );
-      this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
+        );
+        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
+      }
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM
       this.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);

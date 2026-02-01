@@ -48,6 +48,7 @@ import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDec
 import { getModelConfigForProvider } from './config/PersonaModelConfigs';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
+import type { RAGContext as PipelineRAGContext } from '../../rag/shared/RAGTypes';
 import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
@@ -1340,7 +1341,8 @@ export class PersonaUser extends AIUser {
    */
   public async respondToMessage(
     originalMessage: ProcessableMessage,
-    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
+    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
+    preBuiltRagContext?: PipelineRAGContext
   ): Promise<void> {
     // Check dormancy state before responding
     const shouldRespond = this.responseGenerator.shouldRespondToMessage(
@@ -1353,7 +1355,7 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
+    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext);
 
     // Mark tool results as processed to prevent infinite loops
     if (result.success && result.storedToolResultIds.length > 0) {

@@ -619,6 +619,92 @@ const result = await this.executeCommand<DataListResult<UserEntity>>('data/list'
 
 ---
 
+## 🦀 RUST → TYPESCRIPT TYPE BOUNDARIES (ts-rs)
+
+**Single source of truth: Rust defines wire types, ts-rs generates TypeScript. NEVER hand-write duplicate types.**
+
+### How It Works
+
+1. **Rust struct** with `#[derive(TS)]` defines the canonical type
+2. **ts-rs macro** generates TypeScript `export type` at compile time
+3. **TypeScript** imports from `shared/generated/` — no manual duplication
+4. **Serde** handles JSON serialization on both sides
+
+### Pattern
+
+```rust
+// Rust (source of truth)
+use ts_rs::TS;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/code/WriteResult.ts")]
+pub struct WriteResult {
+    pub success: bool,
+    #[ts(optional)]
+    pub change_id: Option<String>,
+    pub file_path: String,
+    #[ts(type = "number")]      // u64 → number (not bigint)
+    pub bytes_written: u64,
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+```
+
+```typescript
+// TypeScript (generated — DO NOT EDIT)
+export type WriteResult = { success: boolean, change_id?: string, file_path: string, bytes_written: number, error?: string };
+
+// Consuming code imports from generated barrel
+import type { WriteResult, ReadResult, EditMode } from '@shared/generated/code';
+```
+
+### ts-rs Attribute Reference
+
+| Attribute | Purpose | Example |
+|-----------|---------|---------|
+| `#[ts(export)]` | Mark for TS generation | `#[derive(TS)] #[ts(export)]` |
+| `#[ts(export_to = "path")]` | Output file path (relative to `bindings/`) | `"../../../shared/generated/code/X.ts"` |
+| `#[ts(type = "string")]` | Override TS type for field | Uuid → string |
+| `#[ts(type = "number")]` | Override TS type for field | u64 → number |
+| `#[ts(optional)]` | Mark as optional in TS | Option<T> → `field?: T` |
+| `#[ts(type = "Array<string>")]` | Complex type mapping | Vec<Uuid> → Array<string> |
+
+### Regenerating Bindings
+
+```bash
+cargo test --package continuum-core --lib   # Generates all *.ts in shared/generated/
+```
+
+### Generated Output Structure
+
+```
+shared/generated/
+├── index.ts           # Barrel export (re-exports all modules)
+├── code/              # Code module (file ops, change graph, search, tree)
+│   ├── index.ts
+│   ├── ChangeNode.ts, EditMode.ts, WriteResult.ts, ReadResult.ts, ...
+├── persona/           # Persona cognition (state, inbox, channels)
+│   ├── index.ts
+│   ├── PersonaState.ts, InboxMessage.ts, CognitionDecision.ts, ...
+├── rag/               # RAG pipeline (context, messages, options)
+│   ├── index.ts
+│   ├── RagContext.ts, LlmMessage.ts, ...
+└── ipc/               # IPC protocol types
+    ├── index.ts
+    └── InboxMessageRequest.ts
+```
+
+### Rules (Non-Negotiable)
+
+1. **NEVER hand-write types that cross the Rust↔TS boundary** — add `#[derive(TS)]` to the Rust struct
+2. **NEVER use `object`, `any`, `unknown`, or `Record<string, unknown>`** for Rust wire types — import the generated type
+3. **IDs are `UUID`** (from `CrossPlatformUUID`) — never plain `string` for identity fields
+4. **Use `CommandParams.userId`** for caller identity — it's already on the base type, auto-injected by infrastructure
+5. **Barrel exports** — every generated module has an `index.ts`; import from the barrel, not individual files
+6. **Regenerate after Rust changes** — `cargo test` triggers ts-rs macro; commit both Rust and generated TS
+
+---
+
 ## 📁 PATH ALIASES (New! Use These Going Forward)
 
 **TypeScript path aliases are now configured** to eliminate relative import hell (`../../../../`).

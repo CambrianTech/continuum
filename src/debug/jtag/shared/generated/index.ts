@@ -13,3 +13,6 @@ export * from './ipc';
 
 // Voice call types (already generated)
 export type { CallMessage } from './CallMessage';
+
+// Code module types (file operations, change graph, search, tree)
+export * from './code';

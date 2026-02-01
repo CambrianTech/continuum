@@ -28,6 +28,7 @@ export { PersonaIdentitySource } from './PersonaIdentitySource';
 export { GlobalAwarenessSource, registerConsciousness, unregisterConsciousness, getConsciousness } from './GlobalAwarenessSource';
 export { VoiceConversationSource, registerVoiceOrchestrator, unregisterVoiceOrchestrator } from './VoiceConversationSource';
 export { SocialMediaRAGSource } from './SocialMediaRAGSource';
+export { CodeToolSource } from './CodeToolSource';
 
 // Re-export types for convenience
 export type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';

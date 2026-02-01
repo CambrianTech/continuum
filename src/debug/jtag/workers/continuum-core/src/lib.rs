@@ -20,6 +20,7 @@ pub mod ffi;
 pub mod utils;
 pub mod rag;
 pub mod memory;
+pub mod code;
 
 pub use audio_constants::*;
 

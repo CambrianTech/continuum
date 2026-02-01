@@ -12,6 +12,7 @@ use crate::voice::{UtteranceEvent, VoiceParticipant};
 use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality, ChannelRegistry, ChannelEnqueueRequest, ActivityDomain, PersonaState};
 use crate::rag::RagEngine;
 use crate::logging::TimingGuard;
+use crate::code::{self, FileEngine, PathSecurity};
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -284,6 +285,111 @@ enum Request {
         event: crate::memory::CorpusTimelineEvent,
     },
 
+    // ========================================================================
+    // Code Module Commands
+    // ========================================================================
+
+    /// Create a per-persona file engine (workspace).
+    #[serde(rename = "code/create-workspace")]
+    CodeCreateWorkspace {
+        persona_id: String,
+        workspace_root: String,
+        #[serde(default)]
+        read_roots: Vec<String>,
+    },
+
+    /// Read a file (or line range).
+    #[serde(rename = "code/read")]
+    CodeRead {
+        persona_id: String,
+        file_path: String,
+        start_line: Option<u32>,
+        end_line: Option<u32>,
+    },
+
+    /// Write/create a file.
+    #[serde(rename = "code/write")]
+    CodeWrite {
+        persona_id: String,
+        file_path: String,
+        content: String,
+        description: Option<String>,
+    },
+
+    /// Edit a file using an EditMode.
+    #[serde(rename = "code/edit")]
+    CodeEdit {
+        persona_id: String,
+        file_path: String,
+        edit_mode: code::EditMode,
+        description: Option<String>,
+    },
+
+    /// Delete a file.
+    #[serde(rename = "code/delete")]
+    CodeDelete {
+        persona_id: String,
+        file_path: String,
+        description: Option<String>,
+    },
+
+    /// Preview an edit as a unified diff (read-only).
+    #[serde(rename = "code/diff")]
+    CodeDiff {
+        persona_id: String,
+        file_path: String,
+        edit_mode: code::EditMode,
+    },
+
+    /// Undo a specific change or the last N changes.
+    #[serde(rename = "code/undo")]
+    CodeUndo {
+        persona_id: String,
+        change_id: Option<String>,
+        count: Option<usize>,
+    },
+
+    /// Get change history for a file or workspace.
+    #[serde(rename = "code/history")]
+    CodeHistory {
+        persona_id: String,
+        file_path: Option<String>,
+        limit: Option<usize>,
+    },
+
+    /// Search files with regex + optional glob filter.
+    #[serde(rename = "code/search")]
+    CodeSearch {
+        persona_id: String,
+        pattern: String,
+        file_glob: Option<String>,
+        max_results: Option<u32>,
+    },
+
+    /// Generate a directory tree.
+    #[serde(rename = "code/tree")]
+    CodeTree {
+        persona_id: String,
+        path: Option<String>,
+        max_depth: Option<u32>,
+        #[serde(default)]
+        include_hidden: bool,
+    },
+
+    /// Get git status for the workspace.
+    #[serde(rename = "code/git-status")]
+    CodeGitStatus {
+        persona_id: String,
+    },
+
+    /// Get git diff (staged or unstaged).
+    #[serde(rename = "code/git-diff")]
+    CodeGitDiff {
+        persona_id: String,
+        #[serde(default)]
+        staged: bool,
+    },
+
     #[serde(rename = "health-check")]
     HealthCheck,
 
@@ -353,6 +459,8 @@ struct ServerState {
     /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
     /// Data comes from the TS ORM via IPC. Zero SQL access.
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+    /// Per-persona file engines — workspace-scoped file operations with change tracking.
+    file_engines: Arc<DashMap<String, FileEngine>>,
 }
 
 impl ServerState {
@@ -371,6 +479,7 @@ impl ServerState {
             audio_pool: Arc::new(crate::voice::audio_buffer::AudioBufferPool::new()),
             rt_handle,
             memory_manager,
+            file_engines: Arc::new(DashMap::new()),
         }
     }
 
@@ -1166,6 +1275,279 @@ impl ServerState {
                     }
                     Err(e) => Response::error(format!("memory/append-event failed: {e}")),
                 })
+            }
+
+            // ================================================================
+            // Code Module Handlers
+            // ================================================================
+
+            Request::CodeCreateWorkspace { persona_id, workspace_root, read_roots } => {
+                let _timer = TimingGuard::new("ipc", "code_create_workspace");
+
+                let root = std::path::Path::new(&workspace_root);
+                let security = match PathSecurity::new(root) {
+                    Ok(mut s) => {
+                        for rr in &read_roots {
+                            if let Err(e) = s.add_read_root(std::path::Path::new(rr)) {
+                                return HandleResult::Json(Response::error(
+                                    format!("Invalid read root '{}': {}", rr, e)
+                                ));
+                            }
+                        }
+                        s
+                    }
+                    Err(e) => {
+                        return HandleResult::Json(Response::error(format!("Invalid workspace: {}", e)));
+                    }
+                };
+
+                let engine = FileEngine::new(&persona_id, security);
+                self.file_engines.insert(persona_id.clone(), engine);
+
+                log_info!("ipc", "code", "Created workspace for {} at {}", persona_id, workspace_root);
+                HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
+            }
+
+            Request::CodeRead { persona_id, file_path, start_line, end_line } => {
+                let _timer = TimingGuard::new("ipc", "code_read");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match engine.read(&file_path, start_line, end_line) {
+                    Ok(result) => HandleResult::Json(Response::success(
+                        serde_json::to_value(&result).unwrap_or_default()
+                    )),
+                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                }
+            }
+
+            Request::CodeWrite { persona_id, file_path, content, description } => {
+                let _timer = TimingGuard::new("ipc", "code_write");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match engine.write(&file_path, &content, description.as_deref()) {
+                    Ok(result) => {
+                        log_info!("ipc", "code", "Write {} ({} bytes) by {}",
+                            file_path, result.bytes_written, persona_id);
+                        HandleResult::Json(Response::success(
+                            serde_json::to_value(&result).unwrap_or_default()
+                        ))
+                    }
+                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                }
+            }
+
+            Request::CodeEdit { persona_id, file_path, edit_mode, description } => {
+                let _timer = TimingGuard::new("ipc", "code_edit");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match engine.edit(&file_path, &edit_mode, description.as_deref()) {
+                    Ok(result) => {
+                        log_info!("ipc", "code", "Edit {} by {}", file_path, persona_id);
+                        HandleResult::Json(Response::success(
+                            serde_json::to_value(&result).unwrap_or_default()
+                        ))
+                    }
+                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                }
+            }
+
+            Request::CodeDelete { persona_id, file_path, description } => {
+                let _timer = TimingGuard::new("ipc", "code_delete");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match engine.delete(&file_path, description.as_deref()) {
+                    Ok(result) => {
+                        log_info!("ipc", "code", "Delete {} by {}", file_path, persona_id);
+                        HandleResult::Json(Response::success(
+                            serde_json::to_value(&result).unwrap_or_default()
+                        ))
+                    }
+                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                }
+            }
+
+            Request::CodeDiff { persona_id, file_path, edit_mode } => {
+                let _timer = TimingGuard::new("ipc", "code_diff");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match engine.preview_diff(&file_path, &edit_mode) {
+                    Ok(diff) => HandleResult::Json(Response::success(
+                        serde_json::to_value(&diff).unwrap_or_default()
+                    )),
+                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                }
+            }
+
+            Request::CodeUndo { persona_id, change_id, count } => {
+                let _timer = TimingGuard::new("ipc", "code_undo");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                if let Some(id_str) = change_id {
+                    // Undo specific change
+                    let change_uuid = match Uuid::parse_str(&id_str) {
+                        Ok(u) => u,
+                        Err(e) => return HandleResult::Json(Response::error(
+                            format!("Invalid change_id: {}", e)
+                        )),
+                    };
+                    match engine.undo(&change_uuid) {
+                        Ok(result) => {
+                            log_info!("ipc", "code", "Undo {} by {}", id_str, persona_id);
+                            HandleResult::Json(Response::success(serde_json::json!({
+                                "success": true,
+                                "changes_undone": [serde_json::to_value(&result).unwrap_or_default()],
+                                "error": null
+                            })))
+                        }
+                        Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                    }
+                } else {
+                    // Undo last N
+                    let n = count.unwrap_or(1);
+                    match engine.undo_last(n) {
+                        Ok(result) => HandleResult::Json(Response::success(
+                            serde_json::to_value(&result).unwrap_or_default()
+                        )),
+                        Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
+                    }
+                }
+            }
+
+            Request::CodeHistory { persona_id, file_path, limit } => {
+                let _timer = TimingGuard::new("ipc", "code_history");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                let lim = limit.unwrap_or(50);
+                let result = if let Some(fp) = file_path {
+                    engine.file_history(&fp, lim)
+                } else {
+                    engine.workspace_history(lim)
+                };
+
+                HandleResult::Json(Response::success(
+                    serde_json::to_value(&result).unwrap_or_default()
+                ))
+            }
+
+            Request::CodeSearch { persona_id, pattern, file_glob, max_results } => {
+                let _timer = TimingGuard::new("ipc", "code_search");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                let max = max_results.unwrap_or(100);
+                let result = code::search::search_files(
+                    &engine.workspace_root(),
+                    &pattern,
+                    file_glob.as_deref(),
+                    max,
+                );
+
+                HandleResult::Json(Response::success(
+                    serde_json::to_value(&result).unwrap_or_default()
+                ))
+            }
+
+            Request::CodeTree { persona_id, path, max_depth, include_hidden } => {
+                let _timer = TimingGuard::new("ipc", "code_tree");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                let root = match &path {
+                    Some(p) => engine.workspace_root().join(p),
+                    None => engine.workspace_root(),
+                };
+                let depth = max_depth.unwrap_or(5);
+                let result = code::tree::generate_tree(&root, depth, include_hidden);
+
+                HandleResult::Json(Response::success(
+                    serde_json::to_value(&result).unwrap_or_default()
+                ))
+            }
+
+            Request::CodeGitStatus { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "code_git_status");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                let result = code::git_bridge::git_status(&engine.workspace_root());
+                HandleResult::Json(Response::success(
+                    serde_json::to_value(&result).unwrap_or_default()
+                ))
+            }
+
+            Request::CodeGitDiff { persona_id, staged } => {
+                let _timer = TimingGuard::new("ipc", "code_git_diff");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match code::git_bridge::git_diff(&engine.workspace_root(), staged) {
+                    Ok(diff) => HandleResult::Json(Response::success(serde_json::json!({
+                        "diff": diff
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
             }
 
             Request::HealthCheck => {

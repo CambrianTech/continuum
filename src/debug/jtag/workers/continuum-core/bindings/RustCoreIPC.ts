@@ -26,6 +26,18 @@ import type {
 	ChannelRegistryStatus,
 	ChannelEnqueueRequest,
 	ServiceCycleResult,
+	// Code module types
+	EditMode,
+	ReadResult,
+	WriteResult,
+	SearchMatch,
+	SearchResult,
+	TreeNode,
+	TreeResult,
+	UndoResult,
+	ChangeNode,
+	HistoryResult,
+	GitStatusInfo,
 } from '../../../shared/generated';
 
 // Memory subsystem types (Hippocampus in Rust — corpus-based, no SQL)
@@ -56,6 +68,11 @@ export interface UtteranceEvent {
 	confidence: number;
 	timestamp: number;
 }
+
+// ============================================================================
+// Code Module Types — imported from ts-rs generated (Rust is source of truth)
+// All code types imported at top level from shared/generated
+// ============================================================================
 
 interface Response {
 	success: boolean;
@@ -721,6 +738,284 @@ export class RustCoreIPCClient extends EventEmitter {
 		}
 
 		return response.result as ConsciousnessContextResponse;
+	}
+
+	// ========================================================================
+	// Code Module Methods (file operations, change tracking, code intelligence)
+	// ========================================================================
+
+	/**
+	 * Initialize a per-persona workspace with file engine and change graph.
+	 * Must be called before any other code/* operations for this persona.
+	 *
+	 * @param personaId - The persona's UUID
+	 * @param workspaceRoot - Absolute path to the persona's workspace directory
+	 * @param readRoots - Optional read-only root directories (e.g., main codebase for discovery)
+	 */
+	async codeCreateWorkspace(
+		personaId: string,
+		workspaceRoot: string,
+		readRoots?: string[]
+	): Promise<void> {
+		const response = await this.request({
+			command: 'code/create-workspace',
+			persona_id: personaId,
+			workspace_root: workspaceRoot,
+			read_roots: readRoots ?? [],
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create workspace');
+		}
+	}
+
+	/**
+	 * Read a file or line range from the persona's workspace.
+	 */
+	async codeRead(
+		personaId: string,
+		filePath: string,
+		startLine?: number,
+		endLine?: number
+	): Promise<ReadResult> {
+		const response = await this.request({
+			command: 'code/read',
+			persona_id: personaId,
+			file_path: filePath,
+			start_line: startLine ?? null,
+			end_line: endLine ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to read file');
+		}
+
+		return response.result as ReadResult;
+	}
+
+	/**
+	 * Write or create a file in the persona's workspace.
+	 * Creates a ChangeNode in the change graph for undo support.
+	 */
+	async codeWrite(
+		personaId: string,
+		filePath: string,
+		content: string,
+		description?: string
+	): Promise<WriteResult> {
+		const response = await this.request({
+			command: 'code/write',
+			persona_id: personaId,
+			file_path: filePath,
+			content,
+			description: description ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to write file');
+		}
+
+		return response.result as WriteResult;
+	}
+
+	/**
+	 * Edit a file using one of four edit modes:
+	 * - line_range: Replace content between line numbers
+	 * - search_replace: Find and replace text
+	 * - insert_at: Insert content at a specific line
+	 * - append: Add content to end of file
+	 */
+	async codeEdit(
+		personaId: string,
+		filePath: string,
+		editMode: EditMode,
+		description?: string
+	): Promise<WriteResult> {
+		const response = await this.request({
+			command: 'code/edit',
+			persona_id: personaId,
+			file_path: filePath,
+			edit_mode: editMode,
+			description: description ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to edit file');
+		}
+
+		return response.result as WriteResult;
+	}
+
+	/**
+	 * Delete a file from the persona's workspace.
+	 * Full content is preserved in the change graph for undo.
+	 */
+	async codeDelete(
+		personaId: string,
+		filePath: string,
+		description?: string
+	): Promise<WriteResult> {
+		const response = await this.request({
+			command: 'code/delete',
+			persona_id: personaId,
+			file_path: filePath,
+			description: description ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to delete file');
+		}
+
+		return response.result as WriteResult;
+	}
+
+	/**
+	 * Preview an edit as a unified diff without applying it.
+	 */
+	async codeDiff(
+		personaId: string,
+		filePath: string,
+		editMode: EditMode
+	): Promise<{ success: boolean; unified: string }> {
+		const response = await this.request({
+			command: 'code/diff',
+			persona_id: personaId,
+			file_path: filePath,
+			edit_mode: editMode,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compute diff');
+		}
+
+		return response.result as { success: boolean; unified: string };
+	}
+
+	/**
+	 * Undo a specific change or the last N changes.
+	 * Pass changeId to undo a specific operation, or count to undo last N.
+	 */
+	async codeUndo(
+		personaId: string,
+		changeId?: string,
+		count?: number
+	): Promise<UndoResult> {
+		const response = await this.request({
+			command: 'code/undo',
+			persona_id: personaId,
+			change_id: changeId ?? null,
+			count: count ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to undo');
+		}
+
+		return response.result as UndoResult;
+	}
+
+	/**
+	 * Get change history for a file or entire workspace.
+	 */
+	async codeHistory(
+		personaId: string,
+		filePath?: string,
+		limit?: number
+	): Promise<HistoryResult> {
+		const response = await this.request({
+			command: 'code/history',
+			persona_id: personaId,
+			file_path: filePath ?? null,
+			limit: limit ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get history');
+		}
+
+		return response.result as HistoryResult;
+	}
+
+	/**
+	 * Search for a regex pattern across workspace files.
+	 * Respects .gitignore, supports glob filtering.
+	 */
+	async codeSearch(
+		personaId: string,
+		pattern: string,
+		fileGlob?: string,
+		maxResults?: number
+	): Promise<SearchResult> {
+		const response = await this.request({
+			command: 'code/search',
+			persona_id: personaId,
+			pattern,
+			file_glob: fileGlob ?? null,
+			max_results: maxResults ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to search');
+		}
+
+		return response.result as SearchResult;
+	}
+
+	/**
+	 * Generate a directory tree for the workspace.
+	 */
+	async codeTree(
+		personaId: string,
+		path?: string,
+		maxDepth?: number,
+		includeHidden?: boolean
+	): Promise<TreeResult> {
+		const response = await this.request({
+			command: 'code/tree',
+			persona_id: personaId,
+			path: path ?? null,
+			max_depth: maxDepth ?? null,
+			include_hidden: includeHidden ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to generate tree');
+		}
+
+		return response.result as TreeResult;
+	}
+
+	/**
+	 * Get git status for the workspace.
+	 */
+	async codeGitStatus(personaId: string): Promise<GitStatusInfo> {
+		const response = await this.request({
+			command: 'code/git-status',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get git status');
+		}
+
+		return response.result as GitStatusInfo;
+	}
+
+	/**
+	 * Get git diff for the workspace.
+	 */
+	async codeGitDiff(personaId: string, staged?: boolean): Promise<{ success: boolean; diff: string }> {
+		const response = await this.request({
+			command: 'code/git-diff',
+			persona_id: personaId,
+			staged: staged ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get git diff');
+		}
+
+		return response.result as { success: boolean; diff: string };
 	}
 
 	/**

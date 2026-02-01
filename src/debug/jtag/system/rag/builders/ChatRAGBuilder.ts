@@ -43,7 +43,8 @@ import {
   WidgetContextSource,
   PersonaIdentitySource,
   GlobalAwarenessSource,
-  SocialMediaRAGSource
+  SocialMediaRAGSource,
+  CodeToolSource
 } from '../sources';
 
 /**
@@ -77,9 +78,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ConversationHistorySource(), // Priority 80: Chat messages (uses queryWithJoin!)
         new WidgetContextSource(),       // Priority 75: UI state from Positron
         new SemanticMemorySource(),      // Priority 60: Long-term memories
-        new SocialMediaRAGSource()       // Priority 55: Social media HUD (engagement duty)
+        new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
+        new CodeToolSource()             // Priority 50: Coding workflow guidance
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 6 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 7 sources');
     }
     return this.composer;
   }
@@ -95,6 +97,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     widgetContext: string | null;
     globalAwareness: string | null;
     socialAwareness: string | null;
+    codeToolGuidance: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
@@ -102,6 +105,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let widgetContext: string | null = null;
     let globalAwareness: string | null = null;
     let socialAwareness: string | null = null;
+    let codeToolGuidance: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -125,9 +129,13 @@ export class ChatRAGBuilder extends RAGBuilder {
         // Social media HUD — engagement awareness and duty
         socialAwareness = section.systemPromptSection;
       }
+      if (section.systemPromptSection && section.sourceName === 'code-tools') {
+        // Coding workflow guidance — code/* tool awareness
+        codeToolGuidance = section.systemPromptSection;
+      }
     }
 
-    return { identity, conversationHistory, memories, widgetContext, globalAwareness, socialAwareness };
+    return { identity, conversationHistory, memories, widgetContext, globalAwareness, socialAwareness, codeToolGuidance };
   }
 
   /**
@@ -159,6 +167,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let widgetContext: string | null;
     let globalAwareness: string | null;
     let socialAwareness: string | null;
+    let codeToolGuidance: string | null;
 
     if (this.useModularSources) {
       // NEW PATH: Use RAGComposer for modular, parallelized source loading
@@ -203,6 +212,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       widgetContext = extracted.widgetContext;
       globalAwareness = extracted.globalAwareness;
       socialAwareness = extracted.socialAwareness;
+      codeToolGuidance = extracted.codeToolGuidance;
 
       // Still load these via legacy methods (not yet extracted to sources)
       const [extractedArtifacts, extractedRecipeStrategy, extractedLearningConfig] = await Promise.all([
@@ -267,6 +277,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       widgetContext = loadedWidgetContext;
       globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
       socialAwareness = null;  // Legacy path doesn't use SocialMediaRAGSource
+      codeToolGuidance = null; // Legacy path doesn't use CodeToolSource
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -296,6 +307,13 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${socialAwareness}`;
       this.log('📱 ChatRAGBuilder: Injected social media HUD into system prompt');
+    }
+
+    // 2.4.7. Inject code tool workflow guidance (coding capabilities)
+    if (codeToolGuidance) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${codeToolGuidance}`;
+      this.log('💻 ChatRAGBuilder: Injected code tool guidance into system prompt');
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern

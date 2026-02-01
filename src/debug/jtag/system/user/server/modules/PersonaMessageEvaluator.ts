@@ -27,6 +27,7 @@ import type { Task } from './cognition/reasoning/types';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../../data/entities/CoordinationDecisionEntity';
+import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
 import type { AIDecisionContext } from '../../../ai/server/AIDecisionService';
 import { AIDecisionService } from '../../../ai/server/AIDecisionService';
 import { contentPreview, truncate } from '../../../../shared/utils/StringUtils';
@@ -54,6 +55,33 @@ import {
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
+
+/**
+ * Discriminated union for gating result.
+ * When shouldRespond=true: full RAG context is guaranteed (built once, reused by generator).
+ * When shouldRespond=false: no RAG context (skipped for performance).
+ */
+interface GatingResultBase {
+  confidence: number;
+  reason: string;
+  model: string;
+}
+
+export interface GatingRespondResult extends GatingResultBase {
+  shouldRespond: true;
+  filteredRagContext: PipelineRAGContext;
+  ragContextSummary: {
+    totalMessages: number;
+    filteredMessages: number;
+    timeWindowMinutes: number;
+  };
+}
+
+export interface GatingSilentResult extends GatingResultBase {
+  shouldRespond: false;
+}
+
+export type GatingResult = GatingRespondResult | GatingSilentResult;
 
 /**
  * PersonaMessageEvaluator - Message evaluation and response decision engine
@@ -462,11 +490,13 @@ export class PersonaMessageEvaluator {
     this.log(`\n${'='.repeat(80)}`);
     this.log(`🧠 ${this.personaUser.displayName}: GATING DECISION for message "${safeMessageText.slice(0, 60)}..."`);
     this.log(`${'='.repeat(80)}`);
-    this.log(`📊 Context: ${gatingResult.ragContextSummary?.filteredMessages ?? 0} messages in ${gatingResult.ragContextSummary?.timeWindowMinutes ?? 0}min window`);
-    this.log(`💬 Conversation history seen by AI:`);
-    gatingResult.conversationHistory?.slice(-5).forEach((msg, i) => {
-      this.log(`   ${i + 1}. [${msg.name}] ${truncate(msg.content, 80)}...`);
-    });
+    if (gatingResult.shouldRespond) {
+      this.log(`📊 Context: ${gatingResult.ragContextSummary.filteredMessages} messages in ${gatingResult.ragContextSummary.timeWindowMinutes}min window`);
+      this.log(`💬 Conversation history (last 5):`);
+      gatingResult.filteredRagContext.conversationHistory.slice(-5).forEach((msg, i) => {
+        this.log(`   ${i + 1}. [${msg.name ?? msg.role}] ${truncate(msg.content, 80)}...`);
+      });
+    }
     this.log(`\n🎯 Decision: ${gatingResult.shouldRespond ? 'RESPOND' : 'SILENT'}`);
     this.log(`   Confidence: ${(gatingResult.confidence * 100).toFixed(0)}%`);
     this.log(`   Reason: ${gatingResult.reason}`);
@@ -474,43 +504,13 @@ export class PersonaMessageEvaluator {
     this.log(`${'='.repeat(80)}\n`);
 
     if (!gatingResult.shouldRespond) {
-      // PHASE 5C: Log coordination decision to database (fire-and-forget)
-      if (gatingResult.filteredRagContext) {
-        const decisionStartTime = Date.now();
-        const ragContext = this.buildCoordinationRAGContext(gatingResult.filteredRagContext);
-
-        // Fire-and-forget: Don't await, don't slow down critical path
-        CoordinationDecisionLogger.logDecision({
-          actorId: this.personaUser.id,
-          actorName: this.personaUser.displayName,
-          actorType: 'ai-persona',
-          triggerEventId: messageEntity.id,
-          ragContext,
-          visualContext: undefined,
-          action: 'SILENT',
-          confidence: gatingResult.confidence,
-          reasoning: gatingResult.reason,
-          responseContent: undefined,
-          modelUsed: gatingResult.model,
-          modelProvider: this.personaUser.modelConfig.provider ?? 'candle',
-          tokensUsed: undefined,
-          responseTime: Date.now() - decisionStartTime,
-          sessionId: DataDaemon.jtagContext!.uuid,
-          contextId: messageEntity.roomId,
-          tags: [senderIsHuman ? 'human-sender' : 'ai-sender', 'gating-silent']
-        }).catch(error => {
-          this.log(`❌ ${this.personaUser.displayName}: Failed to log SILENT decision:`, error);
-        });
-      }
-
+      // SILENT: No RAG context available (skipped for performance)
       this.personaUser.logAIDecision('SILENT', gatingResult.reason, {
         message: safeMessageText,
         sender: messageEntity.senderName,
         roomId: messageEntity.roomId,
         confidence: gatingResult.confidence,
-        model: gatingResult.model,
-        ragContextSummary: gatingResult.ragContextSummary,
-        conversationHistory: gatingResult.conversationHistory
+        model: gatingResult.model
       });
 
       // Emit DECIDED_SILENT event
@@ -525,9 +525,9 @@ export class PersonaMessageEvaluator {
             messageId: messageEntity.id,
             isHumanMessage: senderIsHuman,
             timestamp: Date.now(),
-            confidence: gatingResult.confidence ?? 0.5,
+            confidence: gatingResult.confidence,
             reason: gatingResult.reason,
-            gatingModel: gatingResult.model ?? 'unknown'
+            gatingModel: gatingResult.model
           },
           {
             scope: EVENT_SCOPES.ROOM,
@@ -543,7 +543,9 @@ export class PersonaMessageEvaluator {
 
     // PHASE 5C: Prepare decision context for logging AFTER response generation
     // (We need the actual response content before we can log the complete decision)
-    const decisionContext = gatingResult.filteredRagContext ? {
+    // After SILENT early-return above, TypeScript narrows gatingResult to GatingRespondResult.
+    // filteredRagContext, ragContextSummary, confidence, reason, model are all guaranteed.
+    const decisionContext = {
       actorId: this.personaUser.id,
       actorName: this.personaUser.displayName,
       actorType: 'ai-persona' as const,
@@ -562,7 +564,7 @@ export class PersonaMessageEvaluator {
         isMentioned ? 'mentioned' : 'not-mentioned',
         'gating-respond'
       ]
-    } : undefined;
+    };
 
     this.personaUser.logAIDecision('RESPOND', gatingResult.reason, {
       message: safeMessageText,
@@ -573,7 +575,6 @@ export class PersonaMessageEvaluator {
       confidence: gatingResult.confidence,
       model: gatingResult.model,
       ragContextSummary: gatingResult.ragContextSummary,
-      conversationHistory: gatingResult.conversationHistory
     });
 
     // Emit DECIDED_RESPOND event
@@ -588,9 +589,9 @@ export class PersonaMessageEvaluator {
           messageId: messageEntity.id,
           isHumanMessage: senderIsHuman,
           timestamp: Date.now(),
-          confidence: gatingResult.confidence ?? 0.5,
+          confidence: gatingResult.confidence,
           reason: gatingResult.reason,
-          gatingModel: gatingResult.model ?? 'unknown'
+          gatingModel: gatingResult.model
         },
         {
           scope: EVENT_SCOPES.ROOM,
@@ -709,7 +710,7 @@ export class PersonaMessageEvaluator {
     // 🔧 PHASE: Generate and post response
     this.log(`🔧 TRACE-POINT-B: Before respondToMessage call (timestamp=${Date.now()})`);
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 3/3] Calling respondToMessage...`);
-    await this.personaUser.respondToMessage(messageEntity, decisionContext);
+    await this.personaUser.respondToMessage(messageEntity, decisionContext, gatingResult.filteredRagContext);
     this.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
 
@@ -744,30 +745,51 @@ export class PersonaMessageEvaluator {
    * Build CoordinationDecision RAGContext from ChatRAGBuilder output
    * Converts domain-specific RAG format to universal decision logging format
    */
-  private buildCoordinationRAGContext(filteredRagContext: any): RAGContext {
-    const systemPrompt = filteredRagContext.identity?.systemPrompt ??
-                         `You are ${this.personaUser.displayName}. ${this.personaUser.entity?.bio ?? ''}`;
-
+  private buildCoordinationRAGContext(filteredRagContext: PipelineRAGContext): RAGContext {
     return {
       identity: {
-        systemPrompt,
+        systemPrompt: filteredRagContext.identity.systemPrompt,
         bio: this.personaUser.entity?.bio ?? '',
         role: this.personaUser.displayName
       },
-      conversationHistory: (filteredRagContext.conversationHistory ?? []).map((msg: any) => ({
+      conversationHistory: filteredRagContext.conversationHistory.map(msg => ({
         role: msg.role,
         content: msg.content,
         timestamp: msg.timestamp ?? Date.now()
       })),
-      artifacts: filteredRagContext.artifacts ?? [],
-      privateMemories: filteredRagContext.privateMemories ?? [],
+      artifacts: (filteredRagContext.artifacts ?? []).map(a => ({
+        type: this.mapArtifactType(a.type),
+        name: a.url ?? a.type,
+        content: a.content ?? a.base64 ?? '',
+        mimeType: undefined,
+      })),
+      privateMemories: (filteredRagContext.privateMemories ?? []).map(m => ({
+        type: m.type,
+        content: m.content,
+        relevance: m.relevanceScore,
+      })),
       metadata: {
         timestamp: Date.now(),
-        tokenCount: filteredRagContext.metadata?.messageCount ??
-                    filteredRagContext.conversationHistory?.length ?? 0,
+        tokenCount: filteredRagContext.metadata.messageCount,
         contextWindow: 4096
       }
     };
+  }
+
+  /** Map pipeline artifact types to coordination logging's narrower type union. */
+  private mapArtifactType(pipelineType: RAGArtifact['type']): 'image' | 'file' | 'code' {
+    switch (pipelineType) {
+      case 'image':
+      case 'screenshot':
+      case 'video':
+      case 'audio':
+        return 'image';
+      case 'data':
+      case 'benchmark':
+        return 'code';
+      case 'file':
+        return 'file';
+    }
   }
 
   /**
@@ -1072,23 +1094,7 @@ export class PersonaMessageEvaluator {
     senderIsHuman: boolean,
     isMentioned: boolean,
     preComputedDecision?: FastPathDecision
-  ): Promise<{
-    shouldRespond: boolean;
-    confidence: number;
-    reason: string;
-    model?: string;
-    ragContextSummary?: {
-      totalMessages: number;
-      filteredMessages: number;
-      timeWindowMinutes?: number;
-    };
-    conversationHistory?: Array<{
-      name: string;
-      content: string;
-      timestamp?: number;
-    }>;
-    filteredRagContext?: any;
-  }> {
+  ): Promise<GatingResult> {
     const startTime = Date.now();
 
     try {
@@ -1136,19 +1142,35 @@ export class PersonaMessageEvaluator {
         this.log(`🦀 ${this.personaUser.displayName}: Rust decision (separate IPC, ${ipcMs.toFixed(1)}ms): ${rustDecision.should_respond ? 'RESPOND' : 'SILENT'} (${rustDecision.decision_time_ms.toFixed(2)}ms, fast_path=${rustDecision.fast_path_used})`);
       }
 
-      // Build RAG context for decision logging
-      // IMPORTANT: Exclude processed tool results to prevent infinite loops
+      // OPTIMIZATION: Only build RAG context if we're going to respond.
+      // Rust fast-path already decided should_respond — for SILENT decisions,
+      // skip the 40-240ms RAG build entirely.
+      if (!rustDecision.should_respond) {
+        const totalMs = Date.now() - startTime;
+        this.log(`[TIMING] ${this.personaUser.displayName}: evaluateShouldRespond total=${totalMs}ms (rag=SKIPPED/silent, preComputed=${!!preComputedDecision})`);
+
+        return {
+          shouldRespond: false as const,
+          confidence: rustDecision.confidence,
+          reason: rustDecision.reason,
+          model: rustDecision.fast_path_used ? 'RustFastPath' : 'RustCognition',
+        };
+      }
+
+      // RESPOND path: Build FULL RAG context (with memories + artifacts).
+      // This context will be passed through to PersonaResponseGenerator,
+      // eliminating the redundant second RAG build that previously happened there.
       const ragStart = performance.now();
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,
         {
-          modelId: this.personaUser.modelConfig.model,  // Use persona's model
-          maxMemories: 0,
-          includeArtifacts: false,
-          includeMemories: false,
-          excludeMessageIds: this.personaUser.taskTracker.getProcessedToolResults(),  // Filter out processed tool results
+          modelId: this.personaUser.modelConfig.model,
+          maxMemories: 5,           // Full context: include memories for LLM prompt
+          includeArtifacts: true,    // Full context: include vision artifacts
+          includeMemories: true,     // Full context: include Hippocampus LTM
+          excludeMessageIds: this.personaUser.taskTracker.getProcessedToolResults(),
           currentMessage: {
             role: 'user',
             content: message.content.text,
@@ -1160,10 +1182,10 @@ export class PersonaMessageEvaluator {
       const ragMs = performance.now() - ragStart;
       const totalMs = Date.now() - startTime;
 
-      this.log(`[TIMING] ${this.personaUser.displayName}: evaluateShouldRespond total=${totalMs}ms (rag=${ragMs.toFixed(1)}ms, preComputed=${!!preComputedDecision})`);
+      this.log(`[TIMING] ${this.personaUser.displayName}: evaluateShouldRespond total=${totalMs}ms (rag=${ragMs.toFixed(1)}ms/full, preComputed=${!!preComputedDecision})`);
 
       return {
-        shouldRespond: rustDecision.should_respond,
+        shouldRespond: true as const,
         confidence: rustDecision.confidence,
         reason: rustDecision.reason,
         model: rustDecision.fast_path_used ? 'RustFastPath' : 'RustCognition',
@@ -1171,7 +1193,7 @@ export class PersonaMessageEvaluator {
         ragContextSummary: {
           totalMessages: ragContext.conversationHistory.length,
           filteredMessages: ragContext.conversationHistory.length,
-          timeWindowMinutes: 30  // Default context window
+          timeWindowMinutes: 30
         }
       };
 
@@ -1206,10 +1228,11 @@ export class PersonaMessageEvaluator {
         }
       );
 
+      // Error in evaluation = SILENT. No fallback guessing.
       return {
-        shouldRespond: isMentioned,
-        confidence: isMentioned ? (0.92 + Math.random() * 0.06) : 0.5, // 0.92-0.98 realistic range
-        reason: 'Error in evaluation',
+        shouldRespond: false as const,
+        confidence: 0,
+        reason: `Error in evaluation: ${error instanceof Error ? error.message : String(error)}`,
         model: 'error'
       };
     }
