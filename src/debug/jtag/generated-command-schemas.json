@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-01T21:12:59.323Z",
+  "generated": "2026-02-01T23:20:49.437Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3744,83 +3744,6 @@
       }
     },
     {
-      "name": "development/code/read",
-      "description": "code/read command types",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "path": {
-          "type": "string",
-          "required": true,
-          "description": "path parameter"
-        },
-        "startLine": {
-          "type": "number",
-          "required": false,
-          "description": "startLine parameter"
-        },
-        "endLine": {
-          "type": "number",
-          "required": false,
-          "description": "endLine parameter"
-        },
-        "includeMetadata": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeMetadata parameter"
-        },
-        "forceRefresh": {
-          "type": "boolean",
-          "required": false,
-          "description": "forceRefresh parameter"
-        }
-      }
-    },
-    {
-      "name": "development/code/pattern-search",
-      "description": "code/find command types - Find files by name pattern",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "pattern": {
-          "type": "string",
-          "required": true,
-          "description": "pattern parameter"
-        },
-        "baseDir": {
-          "type": "string",
-          "required": false,
-          "description": "baseDir parameter"
-        },
-        "caseInsensitive": {
-          "type": "boolean",
-          "required": false,
-          "description": "caseInsensitive parameter"
-        },
-        "maxResults": {
-          "type": "number",
-          "required": false,
-          "description": "maxResults parameter"
-        },
-        "includeHidden": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeHidden parameter"
-        },
-        "excludeDirs": {
-          "type": "array",
-          "required": false,
-          "description": "excludeDirs parameter"
-        }
-      }
-    },
-    {
       "name": "development/build",
       "description": "Development Build Command - Shared Types\n *\n * Zero-friction TypeScript build check. Returns success or structured errors.",
       "params": {
@@ -5172,6 +5095,239 @@
           "type": "array",
           "required": false,
           "description": "tags parameter"
+        }
+      }
+    },
+    {
+      "name": "code/write",
+      "description": "Code Write Command - Shared Types\n *\n * Write or create a file in the persona's workspace. Creates a ChangeNode in the change graph for undo support. File extension must be in the allowlist.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        }
+      }
+    },
+    {
+      "name": "code/undo",
+      "description": "Code Undo Command - Shared Types\n *\n * Undo a specific change or the last N changes. Applies reverse diffs from the change graph to restore previous file state.",
+      "params": {
+        "changeId": {
+          "type": "string",
+          "required": false,
+          "description": "changeId parameter"
+        },
+        "count": {
+          "type": "number",
+          "required": false,
+          "description": "count parameter"
+        }
+      }
+    },
+    {
+      "name": "code/tree",
+      "description": "Code Tree Command - Shared Types\n *\n * Generate a directory tree for the workspace or a subdirectory. Shows file/directory structure with sizes. Skips common ignored directories (node_modules, .git, etc).",
+      "params": {
+        "path": {
+          "type": "string",
+          "required": false,
+          "description": "path parameter"
+        },
+        "maxDepth": {
+          "type": "number",
+          "required": false,
+          "description": "maxDepth parameter"
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeHidden parameter"
+        }
+      }
+    },
+    {
+      "name": "code/search",
+      "description": "Code Search Command - Shared Types\n *\n * Search for a regex pattern across workspace files. Respects .gitignore, supports glob-based file filtering. Returns matching lines with context.",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "fileGlob": {
+          "type": "string",
+          "required": false,
+          "description": "fileGlob parameter"
+        },
+        "maxResults": {
+          "type": "number",
+          "required": false,
+          "description": "maxResults parameter"
+        }
+      }
+    },
+    {
+      "name": "code/read",
+      "description": "Code Read Command - Shared Types\n *\n * Read a file or line range from the persona's workspace. Returns content with line numbers and metadata. Supports partial reads via start/end line parameters.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        }
+      }
+    },
+    {
+      "name": "code/history",
+      "description": "Code History Command - Shared Types\n *\n * Get change history for a specific file or the entire workspace. Returns change graph nodes with diffs, timestamps, and descriptions.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": false,
+          "description": "filePath parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "code/edit",
+      "description": "Code Edit Command - Shared Types\n *\n * Edit a file using search-replace, line-range replacement, insert-at, or append. Creates a ChangeNode for undo. Safer than full file write for targeted modifications.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "editType": {
+          "type": "string",
+          "required": true,
+          "description": "editType parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "replace": {
+          "type": "string",
+          "required": false,
+          "description": "replace parameter"
+        },
+        "replaceAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "replaceAll parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "newContent": {
+          "type": "string",
+          "required": false,
+          "description": "newContent parameter"
+        },
+        "line": {
+          "type": "number",
+          "required": false,
+          "description": "line parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        }
+      }
+    },
+    {
+      "name": "code/diff",
+      "description": "Code Diff Command - Shared Types\n *\n * Preview an edit as a unified diff without applying it. Useful for reviewing changes before committing them. Uses the same edit modes as code/edit.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "editType": {
+          "type": "string",
+          "required": true,
+          "description": "editType parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "replace": {
+          "type": "string",
+          "required": false,
+          "description": "replace parameter"
+        },
+        "replaceAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "replaceAll parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "newContent": {
+          "type": "string",
+          "required": false,
+          "description": "newContent parameter"
+        },
+        "line": {
+          "type": "number",
+          "required": false,
+          "description": "line parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
         }
       }
     },

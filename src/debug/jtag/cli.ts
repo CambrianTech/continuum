@@ -15,7 +15,6 @@ import { COMMANDS } from './shared/generated-command-constants';
 import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
 import { FILE_COMMANDS } from './commands/file/shared/FileCommandConstants';
 import { USER_COMMANDS } from './commands/shared/SystemCommandConstants';
-import { CODE_COMMANDS } from './commands/development/code/shared/CodeCommandConstants';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -226,8 +225,8 @@ async function main() {
       // Map of commands to their primary parameter name
       const singleParamCommands: Record<string, string> = {
         'help': 'commandName',
-        [CODE_COMMANDS.READ]: 'path',
-        [CODE_COMMANDS.FIND]: 'pattern',
+        'code/read': 'path',
+        'code/search': 'pattern',
         [FILE_COMMANDS.LOAD]: 'path',
         [FILE_COMMANDS.SAVE]: 'path',
         [DATA_COMMANDS.READ]: 'id',

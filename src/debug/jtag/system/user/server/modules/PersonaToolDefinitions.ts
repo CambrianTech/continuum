@@ -463,7 +463,7 @@ You have ${tools.length} tools available. Here they ALL are, organized by catego
   // Show essential tools with full details
   const essentialTools = tools.filter(t =>
     ['screenshot', 'help', 'collaboration/chat/send', 'collaboration/wall/write',
-     'development/code/read', 'development/code/pattern-search'].includes(t.name)
+     'code/read', 'code/search'].includes(t.name)
   );
 
   output += `=== FREQUENTLY USED TOOLS (with parameters) ===\n`;
