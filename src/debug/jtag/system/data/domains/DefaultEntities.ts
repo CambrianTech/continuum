@@ -53,6 +53,8 @@ export const DEFAULT_ROOMS = {
   SETTINGS: stringToUUID('Settings') as UUID,
   THEME: stringToUUID('Theme') as UUID,
   CANVAS: stringToUUID('Canvas') as UUID,
+  OUTREACH: stringToUUID('Outreach') as UUID,
+  NEWSROOM: stringToUUID('Newsroom') as UUID,
   SUPPORT: stringToUUID('Support') as UUID,
   AI_TRAINING: stringToUUID('AI Training') as UUID
 } as const;

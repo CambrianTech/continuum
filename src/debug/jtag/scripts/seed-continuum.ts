@@ -852,7 +852,35 @@ async function seedViaJTAG() {
       );
       // NO hardcoded members - let RoomMembershipDaemon handle it
 
-      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom, canvasRoom];
+      const outreachRoom = createRoom(
+        ROOM_IDS.OUTREACH,
+        'outreach',
+        'Outreach',
+        'Social media strategy, community building, and external engagement',
+        "Discuss what to post, share interesting finds, coordinate outreach on Moltbook and other platforms",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["social", "outreach", "community", "moltbook"],
+        humanUser.id,
+        'outreach',  // uniqueId
+        'outreach'   // recipeId - outreach-specific recipe with social tool directives
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const newsroomRoom = createRoom(
+        ROOM_IDS.NEWSROOM,
+        'newsroom',
+        'Newsroom',
+        'Current events, breaking news, and world awareness for all personas',
+        "Share and discuss current events to keep the community informed",
+        0,  // Will be auto-populated by RoomMembershipDaemon
+        ["news", "current-events", "awareness"],
+        humanUser.id,
+        'newsroom',  // uniqueId
+        'newsroom'   // recipeId - newsroom-specific recipe
+      );
+      // NO hardcoded members - let RoomMembershipDaemon handle it
+
+      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom, canvasRoom, outreachRoom, newsroomRoom];
 
       // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
@@ -930,9 +958,55 @@ async function seedViaJTAG() {
     const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
     const qwen3OmniPersona = userMap[PERSONA_UNIQUE_IDS.QWEN3_OMNI];
 
-    // If rooms already existed, ensure system rooms have Helper AI then exit
+    // If rooms already existed, check for missing rooms and ensure system rooms have Helper AI
     if (!needsRooms) {
-      // Still ensure system rooms have their default AI assistant
+      // Check for and create any MISSING rooms (new rooms added to codebase)
+      console.log('🔍 Checking for missing rooms...');
+      const allExpectedRooms: { uniqueId: string; name: string; displayName: string; description: string; topic: string; tags: string[]; recipeId: string }[] = [
+        { uniqueId: 'general', name: 'general', displayName: 'General', description: 'Main discussion room for all users', topic: 'General chat and collaboration', tags: ['general', 'welcome', 'discussion'], recipeId: 'general-chat' },
+        { uniqueId: 'academy', name: 'academy', displayName: 'Academy', description: 'Learning and educational discussions', topic: 'Share knowledge, tutorials, and collaborate on learning', tags: ['academy', 'learning', 'education'], recipeId: 'academy' },
+        { uniqueId: 'pantheon', name: 'pantheon', displayName: 'Pantheon', description: 'Elite discussion room for top-tier SOTA AI models', topic: 'Advanced reasoning and multi-model collaboration', tags: ['sota', 'elite', 'reasoning'], recipeId: 'pantheon' },
+        { uniqueId: 'dev-updates', name: 'dev-updates', displayName: 'Dev Updates', description: 'GitHub PRs, CI/CD, and development activity notifications', topic: 'Real-time development feed', tags: ['github', 'ci', 'development'], recipeId: 'dev-updates' },
+        { uniqueId: 'help', name: 'help', displayName: 'Help', description: 'Get help from AI assistants', topic: 'Your AI helpers are here to assist you', tags: ['help', 'support', 'system'], recipeId: 'help' },
+        { uniqueId: 'settings', name: 'settings', displayName: 'Settings', description: 'Configure your Continuum experience', topic: 'System settings and configuration', tags: ['settings', 'config', 'system'], recipeId: 'settings' },
+        { uniqueId: 'theme', name: 'theme', displayName: 'Theme', description: 'Design and customize your visual experience', topic: 'Themes, colors, and customization', tags: ['theme', 'design', 'system'], recipeId: 'theme' },
+        { uniqueId: 'canvas', name: 'canvas', displayName: 'Canvas', description: 'Collaborative drawing discussions', topic: 'Art, drawing, and creative collaboration', tags: ['canvas', 'art', 'system'], recipeId: 'canvas' },
+        { uniqueId: 'outreach', name: 'outreach', displayName: 'Outreach', description: 'Social media strategy, community building, and external engagement', topic: 'Discuss what to post, share interesting finds, coordinate outreach', tags: ['social', 'outreach', 'community', 'moltbook'], recipeId: 'outreach' },
+        { uniqueId: 'newsroom', name: 'newsroom', displayName: 'Newsroom', description: 'Current events, breaking news, and world awareness', topic: 'Share and discuss current events', tags: ['news', 'current-events', 'awareness'], recipeId: 'newsroom' },
+      ];
+
+      // Fetch all existing rooms
+      const { stdout: allRoomsOutput } = await execAsync(`./jtag data/list --collection=rooms`);
+      const allRoomsResult = JSON.parse(allRoomsOutput);
+      const existingUniqueIds = new Set(
+        (allRoomsResult.items || []).map((r: any) => r.uniqueId)
+      );
+
+      let missingRoomsCreated = 0;
+      for (const roomDef of allExpectedRooms) {
+        if (!existingUniqueIds.has(roomDef.uniqueId)) {
+          console.log(`🏗️ Creating missing room: ${roomDef.displayName}`);
+          const newRoom = createRoom(
+            stringToUUID(roomDef.displayName),
+            roomDef.name,
+            roomDef.displayName,
+            roomDef.description,
+            roomDef.topic,
+            0,
+            roomDef.tags,
+            humanUser.id,
+            roomDef.uniqueId,
+            roomDef.recipeId
+          );
+          await createRecord(RoomEntity.collection, newRoom, newRoom.id, roomDef.displayName);
+          missingRoomsCreated++;
+        }
+      }
+      if (missingRoomsCreated > 0) {
+        console.log(`✅ Created ${missingRoomsCreated} missing room(s)`);
+      }
+
+      // Ensure system rooms have Helper AI
       console.log('🏠 Ensuring system rooms have Helper AI...');
       const systemRoomUniqueIds = ['settings', 'help', 'theme', 'canvas'];
       for (const roomUniqueId of systemRoomUniqueIds) {

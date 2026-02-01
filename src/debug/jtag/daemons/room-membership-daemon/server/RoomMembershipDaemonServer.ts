@@ -61,7 +61,9 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         ROOM_UNIQUE_IDS.DEV_UPDATES,
         ROOM_UNIQUE_IDS.HELP,
         ROOM_UNIQUE_IDS.THEME,     // System room for ThemeWidget assistant
-        ROOM_UNIQUE_IDS.SETTINGS   // System room for SettingsWidget assistant
+        ROOM_UNIQUE_IDS.SETTINGS,  // System room for SettingsWidget assistant
+        ROOM_UNIQUE_IDS.OUTREACH,  // Social media strategy and community engagement
+        ROOM_UNIQUE_IDS.NEWSROOM   // Current events and world awareness
       ]
     },
     // SOTA PersonaUsers also join Pantheon (elite multi-provider collaboration)
@@ -145,19 +147,34 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
   }
 
   /**
-   * Subscribe to user creation events
+   * Subscribe to user creation AND room creation events.
+   * User creation  → add user to all applicable rooms (existing behavior)
+   * Room creation  → add all applicable users to the new room (fixes startup race)
    */
   private async setupEventSubscriptions(): Promise<void> {
+    // 1. New user → join applicable rooms
     this.log.info(`🏠 RoomMembershipDaemonServer: Subscribing to ${DATA_EVENTS.USERS.CREATED}`);
-    const unsubCreated = Events.subscribe<UserEntity>(
+    const unsubUserCreated = Events.subscribe<UserEntity>(
       DATA_EVENTS.USERS.CREATED,
       async (userData: UserEntity) => {
-        this.log.info(`🔔 RoomMembershipDaemonServer: EVENT HANDLER CALLED for ${userData.displayName}`);
+        this.log.info(`🔔 RoomMembershipDaemonServer: USER CREATED event for ${userData.displayName}`);
         await this.handleUserCreated(userData);
       }
     );
-    this.registerSubscription(unsubCreated);
-    this.log.info(`🏠 RoomMembershipDaemonServer: Subscription complete, unsubscribe function registered`);
+    this.registerSubscription(unsubUserCreated);
+
+    // 2. New room → add all existing users who should be members
+    this.log.info(`🏠 RoomMembershipDaemonServer: Subscribing to ${DATA_EVENTS.ROOMS.CREATED}`);
+    const unsubRoomCreated = Events.subscribe<RoomEntity>(
+      DATA_EVENTS.ROOMS.CREATED,
+      async (roomData: RoomEntity) => {
+        this.log.info(`🔔 RoomMembershipDaemonServer: ROOM CREATED event for ${roomData.displayName} (${roomData.uniqueId})`);
+        await this.handleRoomCreated(roomData);
+      }
+    );
+    this.registerSubscription(unsubRoomCreated);
+
+    this.log.info(`🏠 RoomMembershipDaemonServer: Subscriptions complete (users + rooms)`);
   }
 
   /**
@@ -289,6 +306,61 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
       } catch (error) {
         this.log.error(`❌ RoomMembershipDaemon: Failed to join ${displayName} to ${roomUniqueId}:`, error);
       }
+    }
+  }
+
+  /**
+   * Handle room created — add all existing users who should be members.
+   * Mirrors handleUserCreated but in the opposite direction:
+   *   handleUserCreated: new user  → which rooms should they join?
+   *   handleRoomCreated: new room  → which users should join it?
+   *
+   * This fixes the startup race where rooms are seeded AFTER the
+   * daemon's catch-up logic runs, leaving personas unsubscribed.
+   */
+  private async handleRoomCreated(roomEntity: RoomEntity): Promise<void> {
+    const roomUniqueId = roomEntity.uniqueId;
+    if (!roomUniqueId) {
+      return;  // Room without uniqueId — nothing to route
+    }
+
+    // Check if this room appears in any routing rule
+    const applicableRules = this.ROUTING_RULES.filter(
+      rule => rule.rooms.includes(roomUniqueId)
+    );
+    if (applicableRules.length === 0) {
+      this.log.info(`🏠 MembershipDaemon: New room ${roomUniqueId} not in routing rules, skipping auto-join`);
+      return;
+    }
+
+    this.log.info(`🏠 MembershipDaemon: New room ${roomUniqueId} matches routing rules, adding applicable users...`);
+
+    try {
+      // Query all users
+      const queryResult = await DataDaemon.query<UserEntity>({
+        collection: COLLECTIONS.USERS,
+        filter: {}
+      });
+
+      if (!queryResult.success || !queryResult.data?.length) {
+        return;
+      }
+
+      const users: UserEntity[] = queryResult.data.map(record => record.data);
+      let addedCount = 0;
+
+      for (const user of users) {
+        // Check if this user should be in this room based on routing rules
+        const roomsForUser = this.determineRoomsForUser(user);
+        if (roomsForUser.includes(roomUniqueId)) {
+          await this.addUserToRooms(user.id, user.displayName, [roomUniqueId]);
+          addedCount++;
+        }
+      }
+
+      this.log.info(`✅ MembershipDaemon: Added ${addedCount} user(s) to new room ${roomUniqueId}`);
+    } catch (error) {
+      this.log.error(`❌ MembershipDaemon: Failed to populate new room ${roomUniqueId}:`, error);
     }
   }
 

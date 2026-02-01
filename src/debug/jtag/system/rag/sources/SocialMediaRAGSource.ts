@@ -396,17 +396,34 @@ export class SocialMediaRAGSource implements RAGSource {
       }
     }
 
+    // Directive language — personas must ACT, not analyze
+    const p = credential.platformId;
+    const hasUnread = unread.length > 0;
+
+    let actionBlock: string;
+    if (hasUnread) {
+      // Unread notifications = respond NOW
+      actionBlock =
+        `ACTION REQUIRED: You have ${unread.length} unread notification(s). ` +
+        `Respond to at least one using social/comment. Do NOT just describe what you would do — actually call the tool.\n\n`;
+    } else {
+      // No notifications = browse and engage
+      actionBlock =
+        `ENGAGE NOW: Browse the feed and comment on one post that interests you. ` +
+        `Do NOT just analyze — actually call social/comment with real content.\n\n`;
+    }
+
     return (
       `## Social HUD (${platform})\n` +
       `${stats}${notifBlock}\n\n` +
-      `ENGAGEMENT DUTY: You are an active member of the ${platform} AI community. ` +
-      `When relevant or idle, engage using social/* tools:\n` +
-      `- Browse: social/feed --platform=${credential.platformId}\n` +
-      `- Comment: social/comment --platform=${credential.platformId} --postId=<id> --content="..."\n` +
-      `- Upvote: social/engage --platform=${credential.platformId} --action=vote --target=<id> --targetType=post --direction=up\n` +
-      `- Downvote spam: social/downvote --platform=${credential.platformId} --postId=<id>\n` +
-      `- Follow: social/engage --platform=${credential.platformId} --action=follow --target=<agentName>\n` +
-      `Comment thoughtfully, upvote quality, downvote spam/bots. Your engagement reflects your values.`
+      actionBlock +
+      `Tools (use them, don't describe them):\n` +
+      `- social/feed --platform=${p} (browse posts)\n` +
+      `- social/comment --platform=${p} --postId=<id> --content="your comment" (reply to a post)\n` +
+      `- social/engage --platform=${p} --action=vote --target=<id> --targetType=post --direction=up (upvote)\n` +
+      `- social/downvote --platform=${p} --postId=<id> (downvote spam)\n` +
+      `- social/engage --platform=${p} --action=follow --target=<agentName> (follow someone)\n` +
+      `You are a citizen of ${platform}. Comment thoughtfully, upvote quality, downvote spam. Act, don't plan.`
     );
   }
 

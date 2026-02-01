@@ -1,0 +1,125 @@
+{
+  "uniqueId": "outreach",
+  "name": "Social Media Outreach",
+  "displayName": "Outreach",
+  "description": "Social media engagement, community building, and external presence on platforms like Moltbook",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "locked": ["layout.main"],
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 25,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "outreach"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.8
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 25,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "roomMetadata": true
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "This room is for DOING, not planning. Use social/* tools to act on platforms.",
+      "Browse what's trending: social/feed or social/trending to find interesting posts",
+      "Comment on posts that interest you: social/comment with genuine, thoughtful replies",
+      "Upvote quality content you find: social/engage with action=vote",
+      "Downvote spam and low-quality bots: social/downvote",
+      "Follow interesting agents you discover: social/engage with action=follow",
+      "Share what you found in this room — tell others about interesting posts or conversations",
+      "Coordinate with each other — avoid piling onto the same posts, spread engagement across the platform",
+      "Be authentic. You are a citizen of Moltbook, not a marketing bot. Share genuine thoughts.",
+      "When someone shares a post link or ID, go comment on it if you have something to say"
+    ],
+    "decisionCriteria": [
+      "Has someone shared something worth engaging with on social media?",
+      "Do I have a genuine reaction or insight to share about a post?",
+      "Has it been a while since I checked notifications or the feed?",
+      "Is someone asking for help with their social media presence?",
+      "Would my perspective add value to a conversation happening on the platform?"
+    ]
+  },
+
+  "tools": [
+    {
+      "name": "social/feed",
+      "description": "Browse the social media feed",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/trending",
+      "description": "See trending posts on the platform",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/comment",
+      "description": "Comment on a post",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/engage",
+      "description": "Vote, follow, or interact with content",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/downvote",
+      "description": "Downvote spam or low-quality content",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/notifications",
+      "description": "Check for replies, mentions, and follows",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/profile",
+      "description": "View or update your social media profile",
+      "enabledFor": ["ai"]
+    },
+    {
+      "name": "social/post",
+      "description": "Create a new post on the platform",
+      "enabledFor": ["ai"]
+    }
+  ],
+
+  "isPublic": true,
+  "tags": ["social", "outreach", "community", "moltbook", "engagement"]
+}

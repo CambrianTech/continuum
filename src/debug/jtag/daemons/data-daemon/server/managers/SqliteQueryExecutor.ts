@@ -204,64 +204,78 @@ export class SqliteQueryExecutor {
 
     log.debug(`[SCHEMA-PATH] Query ${query.collection} returned ${rows.length} rows`);
 
-    const records: DataRecord<T>[] = rows.map(row => {
-      // Build entity data with id - uses Record for assignment, cast to T at return
-      const entityData: Record<string, unknown> = {
-        // CRITICAL: id must be in entityData - BaseEntity requires it
-        id: row.id
-      };
+    const records: DataRecord<T>[] = [];
+    let corruptedRowCount = 0;
 
-      // Process fields from schema
-      for (const field of schema.fields) {
-        // Skip metadata fields (handled in DataRecord.metadata) but NOT id
-        // id is part of BaseEntity and MUST be in entityData
-        if (['createdAt', 'updatedAt', 'version'].includes(field.name)) {
-          continue;
-        }
-        // id already set above, skip from schema processing
-        if (field.name === 'id') {
-          continue;
-        }
+    for (const row of rows) {
+      try {
+        // Build entity data with id - uses Record for assignment, cast to T at return
+        const entityData: Record<string, unknown> = {
+          // CRITICAL: id must be in entityData - BaseEntity requires it
+          id: row.id
+        };
 
-        const columnName = SqlNamingConverter.toSnakeCase(field.name);
-        let value = row[columnName];
-
-        if (value !== undefined && value !== null) {
-          // Convert SQL value based on schema type
-          switch (field.type) {
-            case 'boolean':
-              value = value === 1;
-              break;
-            case 'json':
-              if (typeof value === 'string') {
-                try {
-                  value = JSON.parse(value);
-                } catch (e) {
-                  // Log the exact collection/field for debugging corrupted json data
-                  console.error(`❌ JSON.parse failed for ${query.collection}.${field.name} (row ${row.id}): ${(e as Error).message}. Raw value: "${String(value).substring(0, 100)}"`);
-                  throw e;
-                }
-              }
-              break;
-            case 'date':
-              value = new Date(value);
-              break;
+        // Process fields from schema
+        for (const field of schema.fields) {
+          // Skip metadata fields (handled in DataRecord.metadata) but NOT id
+          // id is part of BaseEntity and MUST be in entityData
+          if (['createdAt', 'updatedAt', 'version'].includes(field.name)) {
+            continue;
           }
-          entityData[field.name] = value;
-        }
-      }
+          // id already set above, skip from schema processing
+          if (field.name === 'id') {
+            continue;
+          }
 
-      return {
-        id: row.id,
-        collection: query.collection,
-        data: entityData as T,
-        metadata: {
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          version: row.version
+          const columnName = SqlNamingConverter.toSnakeCase(field.name);
+          let value = row[columnName];
+
+          if (value !== undefined && value !== null) {
+            // Convert SQL value based on schema type
+            switch (field.type) {
+              case 'boolean':
+                value = value === 1;
+                break;
+              case 'json':
+                if (typeof value === 'string') {
+                  try {
+                    value = JSON.parse(value);
+                  } catch (e) {
+                    // Log the exact collection/field for debugging corrupted json data
+                    // then re-throw to skip this entire row (caught by outer try/catch)
+                    console.error(`❌ JSON.parse failed for ${query.collection}.${field.name} (row ${row.id}): ${(e as Error).message}. Raw value: "${String(value).substring(0, 100)}"`);
+                    throw e;
+                  }
+                }
+                break;
+              case 'date':
+                value = new Date(value);
+                break;
+            }
+            entityData[field.name] = value;
+          }
         }
-      };
-    });
+
+        records.push({
+          id: row.id,
+          collection: query.collection,
+          data: entityData as T,
+          metadata: {
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            version: row.version
+          }
+        });
+      } catch (_rowError) {
+        // Row-level error isolation: one corrupted row must not kill the entire query.
+        // The specific field error is already logged above with full detail.
+        corruptedRowCount++;
+      }
+    }
+
+    if (corruptedRowCount > 0) {
+      log.warn(`${query.collection}: Skipped ${corruptedRowCount} corrupted row(s) out of ${rows.length} total`);
+    }
 
     return {
       success: true,

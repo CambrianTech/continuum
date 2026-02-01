@@ -164,7 +164,7 @@ export class RoomDataSeed {
     outreach.status = 'active';
     outreach.ownerId = humanUserId;
     outreach.lastMessageAt = now;
-    outreach.recipeId = 'general-chat';
+    outreach.recipeId = 'outreach';
     outreach.privacy = {
       isPublic: true,
       requiresInvite: false,
@@ -195,7 +195,7 @@ export class RoomDataSeed {
     newsroom.status = 'active';
     newsroom.ownerId = humanUserId;
     newsroom.lastMessageAt = now;
-    newsroom.recipeId = 'general-chat';
+    newsroom.recipeId = 'newsroom';
     newsroom.privacy = {
       isPublic: true,
       requiresInvite: false,
