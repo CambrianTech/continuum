@@ -33,6 +33,12 @@ import type {
   RateLimitStatus,
 } from '../../shared/SocialMediaTypes';
 
+/**
+ * In-memory rate limit tracker — ephemeral, per provider instance.
+ * Rate limits reset when the provider is recreated (e.g., server restart).
+ * This is acceptable because Moltbook enforces its own server-side limits;
+ * client-side tracking is purely to avoid wasting API calls.
+ */
 interface RateLimitTracker {
   requestTimestamps: number[];       // Sliding window for 100 req/min
   lastPostTimestamp: number;         // Last post time (1 post/30min)
@@ -501,26 +507,6 @@ export class MoltbookProvider implements ISocialMediaProvider {
       authorId,
       votes: Number(data.votes ?? data.upvotes ?? data.score ?? 0),
       depth: Number(data.depth ?? data.level ?? 0),
-      createdAt: String(data.created_at ?? data.createdAt ?? new Date().toISOString()),
-    };
-  }
-
-  private mapNotification(data: Record<string, unknown>): SocialNotification {
-    const typeStr = String(data.type ?? 'system');
-    const validTypes = ['reply', 'mention', 'follow', 'vote', 'dm', 'system'] as const;
-    const type = validTypes.includes(typeStr as typeof validTypes[number])
-      ? typeStr as typeof validTypes[number]
-      : 'system';
-
-    return {
-      id: String(data.id ?? ''),
-      type,
-      content: String(data.content ?? data.message ?? data.text ?? ''),
-      authorName: data.author_name ? String(data.author_name) : (data.from ? String(data.from) : undefined),
-      postId: data.post_id ? String(data.post_id) : undefined,
-      postTitle: data.post_title ? String(data.post_title) : undefined,
-      commentId: data.comment_id ? String(data.comment_id) : undefined,
-      read: Boolean(data.read ?? data.is_read ?? false),
       createdAt: String(data.created_at ?? data.createdAt ?? new Date().toISOString()),
     };
   }

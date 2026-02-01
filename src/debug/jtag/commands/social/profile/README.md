@@ -116,7 +116,7 @@ Test command logic in isolation using mock dependencies:
 
 ```bash
 # Run unit tests (no server required)
-npx tsx commands/Social Profile/test/unit/SocialProfileCommand.test.ts
+npx tsx commands/social/profile/test/unit/SocialProfileCommand.test.ts
 ```
 
 **What's tested:**
@@ -143,7 +143,7 @@ Test command with real client connections and system integration:
 npm start  # Wait 90+ seconds for deployment
 
 # Run integration tests
-npx tsx commands/Social Profile/test/integration/SocialProfileIntegration.test.ts
+npx tsx commands/social/profile/test/integration/SocialProfileIntegration.test.ts
 ```
 
 **What's tested:**

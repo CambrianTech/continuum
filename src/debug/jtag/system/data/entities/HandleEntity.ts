@@ -11,6 +11,7 @@
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { isValidUUID } from '../../core/types/CrossPlatformUUID';
 import type { HandleStatus } from '../../core/types/Handle';
 import { DEFAULT_HANDLE_TTL_MS } from '../../core/types/Handle';
 import { TextField, EnumField, DateField, JsonField, NumberField } from '../decorators/FieldDecorators';
@@ -64,8 +65,8 @@ export class HandleEntity extends BaseEntity {
     if (!this.type?.trim()) {
       return { success: false, error: 'Handle type is required' };
     }
-    if (!this.requestedBy) {
-      return { success: false, error: 'Handle requestedBy is required' };
+    if (!this.requestedBy || !isValidUUID(this.requestedBy)) {
+      return { success: false, error: 'Handle requestedBy must be a valid UUID' };
     }
     const validStatuses: HandleStatus[] = ['pending', 'processing', 'complete', 'failed', 'expired', 'cancelled'];
     if (!validStatuses.includes(this.status)) {

@@ -137,9 +137,11 @@ export const Handles = {
 
     // Query all handles and filter by suffix
     // The $regex operator matches UUIDs ending with the short ID
+    // Order by createdAt desc so the most recent match wins on collision
     const result = await DataList.execute<HandleEntity>({
       collection: COLLECTIONS.HANDLES,
       filter: { id: { $regex: `${shortId}$` } },
+      orderBy: [{ field: 'createdAt', direction: 'desc' }],
       limit: 2, // Get 2 to detect ambiguity
     });
 
@@ -267,37 +269,44 @@ export const Handles = {
 
   /**
    * Expire all handles past their TTL. Call periodically (e.g., every 60s).
-   * Returns the number of handles expired.
+   * Processes in batches of 200 until all stale handles are expired.
+   * Returns the total number of handles expired.
    */
   async expireStale(): Promise<number> {
     const now = new Date().toISOString();
+    let totalExpired = 0;
+    const BATCH_SIZE = 200;
 
-    // Find active handles with expiresAt in the past
-    const result = await DataList.execute<HandleEntity>({
-      collection: COLLECTIONS.HANDLES,
-      filter: {
-        status: { $in: ['pending', 'processing'] },
-        expiresAt: { $lte: now },
-      },
-      limit: 200,
-    });
+    // Loop in batches until no more stale handles remain
+    while (true) {
+      const result = await DataList.execute<HandleEntity>({
+        collection: COLLECTIONS.HANDLES,
+        filter: {
+          status: { $in: ['pending', 'processing'] },
+          expiresAt: { $lte: now },
+        },
+        limit: BATCH_SIZE,
+      });
 
-    if (!result.success || !result.items?.length) return 0;
+      if (!result.success || !result.items?.length) break;
 
-    let expired = 0;
-    for (const entity of result.items) {
-      try {
-        await this._updateStatus((entity as HandleEntity).id, 'expired');
-        expired++;
-      } catch (err) {
-        log.warn(`Failed to expire handle ${(entity as HandleEntity).id}: ${err}`);
+      for (const entity of result.items) {
+        try {
+          await this._updateStatus((entity as HandleEntity).id, 'expired');
+          totalExpired++;
+        } catch (err) {
+          log.warn(`Failed to expire handle ${(entity as HandleEntity).id}: ${err}`);
+        }
       }
+
+      // If we got fewer than BATCH_SIZE, we've processed all of them
+      if (result.items.length < BATCH_SIZE) break;
     }
 
-    if (expired > 0) {
-      log.info(`Expired ${expired} stale handles`);
+    if (totalExpired > 0) {
+      log.info(`Expired ${totalExpired} stale handles`);
     }
-    return expired;
+    return totalExpired;
   },
 
   /**
@@ -317,7 +326,8 @@ export const Handles = {
     if (extra?.error !== undefined) updates.error = extra.error;
     if (extra?.params !== undefined) updates.params = extra.params;
     if (status === 'failed') {
-      // Increment retry count on failure — read current, increment, write back
+      // Increment retry count on failure — read current, increment, write back.
+      // Safe: Node.js is single-threaded, so no concurrent failures for the same handle.
       const current = await DataRead.execute<HandleEntity>({
         collection: COLLECTIONS.HANDLES,
         id,

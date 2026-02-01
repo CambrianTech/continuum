@@ -16,7 +16,7 @@
  *
  *   // Later (even after restart):
  *   const result = await Handles.resolve('#a1b2c3');
- *   const result = await Handles.resolve('550e8400-e29b-41d4-a716-44665544a1b2c3');
+ *   const result = await Handles.resolve('550e8400-e29b-41d4-a716-446655440000');
  */
 
 import type { UUID } from './CrossPlatformUUID';
@@ -39,7 +39,7 @@ export type HandleStatus =
 
 /**
  * HandleRef — accepts short or long form for resolution.
- * Examples: "#a1b2c3", "a1b2c3", "550e8400-e29b-41d4-a716-44665544a1b2c3"
+ * Examples: "#a1b2c3", "a1b2c3", "550e8400-e29b-41d4-a716-446655440000"
  */
 export type HandleRef = UUID | ShortId | string;
 
