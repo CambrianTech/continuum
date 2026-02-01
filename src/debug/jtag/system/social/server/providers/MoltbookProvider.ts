@@ -297,7 +297,9 @@ export class MoltbookProvider implements ISocialMediaProvider {
       description: params.description,
     });
     const data = await response.json();
-    return this.mapCommunity(data);
+    // Moltbook wraps created community in a 'submolt' field
+    const communityData = data.submolt ?? data;
+    return this.mapCommunity(communityData as Record<string, unknown>);
   }
 
   async subscribeToCommunity(name: string): Promise<void> {

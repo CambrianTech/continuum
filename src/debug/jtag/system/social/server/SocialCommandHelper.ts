@@ -5,9 +5,13 @@
  * 1. Resolve calling persona (from senderId or auto-detect)
  * 2. Open their longterm.db
  * 3. Load credential for the requested platform
- * 4. Create and authenticate provider instance
+ * 4. If persona's credential is unclaimed/missing, fall back to shared account
+ * 5. Create and authenticate provider instance
  *
- * This avoids duplicating database/credential logic in every command.
+ * Shared credential fallback:
+ * The @continuum account is a claimed, shared Moltbook account that any persona
+ * can use for actions like voting, commenting, and following. Personas without
+ * their own claimed account automatically fall back to it.
  */
 
 import type { CommandParams } from '@system/core/types/JTAGTypes';
@@ -21,6 +25,12 @@ import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { SystemPaths } from '@system/core/config/SystemPaths';
 import { UserEntity } from '@system/data/entities/UserEntity';
 import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
+import { Logger } from '@system/core/logging/Logger';
+
+const log = Logger.create('social/helper');
+
+/** Well-known uniqueId of the persona that holds the shared social credential */
+const SHARED_CREDENTIAL_PERSONA = 'claude';
 
 export interface SocialCommandContext {
   provider: ISocialMediaProvider;
@@ -83,7 +93,7 @@ export async function loadSocialContext(
 
   const dbHandle = openResult.dbHandle;
 
-  // Load credential for this platform
+  // Load credential for this platform — persona's own first, then shared fallback
   const credResult = await DataList.execute<SocialCredentialEntity>({
     dbHandle,
     collection: SocialCredentialEntity.collection,
@@ -91,14 +101,31 @@ export async function loadSocialContext(
     limit: 1,
   });
 
-  if (!credResult.success || !credResult.items?.length) {
-    throw new Error(
-      `No ${platformId} credential found for persona '${persona.displayName}'. ` +
-      `Use social/signup to register first.`
-    );
-  }
+  let credential: SocialCredentialEntity | undefined;
 
-  const credential = credResult.items[0];
+  if (credResult.success && credResult.items?.length) {
+    const personaCred = credResult.items[0];
+    if (personaCred.claimStatus === 'claimed') {
+      // Persona has their own claimed account — use it
+      credential = personaCred;
+    } else {
+      // Persona's account is unclaimed — try shared credential
+      log.info(`Persona '${persona.displayName}' has unclaimed ${platformId} account, trying shared credential`);
+      const shared = await loadSharedCredential(platformId);
+      credential = shared ?? personaCred; // Fall back to unclaimed if no shared available
+    }
+  } else {
+    // No persona credential — try shared credential
+    log.info(`No ${platformId} credential for persona '${persona.displayName}', trying shared credential`);
+    const shared = await loadSharedCredential(platformId);
+    if (!shared) {
+      throw new Error(
+        `No ${platformId} credential found for persona '${persona.displayName}'. ` +
+        `Use social/signup to register first.`
+      );
+    }
+    credential = shared;
+  }
 
   // Create provider and authenticate
   const provider = SocialMediaProviderRegistry.createProvider(platformId);
@@ -161,6 +188,48 @@ export async function resolvePersonaId(
     );
   }
   return identity.userId as UUID;
+}
+
+/**
+ * Load the shared credential for a platform.
+ *
+ * The shared credential is stored in a well-known persona's longterm.db
+ * (currently the 'claude' persona which holds the @continuum Moltbook account).
+ * This is a claimed account that any persona can use for voting, commenting,
+ * following, and other non-posting actions.
+ */
+export async function loadSharedCredential(
+  platformId: string,
+): Promise<SocialCredentialEntity | undefined> {
+  try {
+    const sharedDbPath = SystemPaths.personas.longterm(SHARED_CREDENTIAL_PERSONA);
+    const openResult = await DataOpen.execute({
+      adapter: 'sqlite',
+      config: { path: sharedDbPath, mode: 'readwrite', wal: true, foreignKeys: true },
+    });
+
+    if (!openResult.success || !openResult.dbHandle) {
+      log.warn(`Failed to open shared credential DB: ${openResult.error ?? 'Unknown'}`);
+      return undefined;
+    }
+
+    const credResult = await DataList.execute<SocialCredentialEntity>({
+      dbHandle: openResult.dbHandle,
+      collection: SocialCredentialEntity.collection,
+      filter: { platformId },
+      limit: 1,
+    });
+
+    if (credResult.success && credResult.items?.length) {
+      log.info(`Using shared ${platformId} credential: @${credResult.items[0].agentName}`);
+      return credResult.items[0];
+    }
+
+    return undefined;
+  } catch (error) {
+    log.warn(`Failed to load shared credential for ${platformId}: ${String(error)}`);
+    return undefined;
+  }
 }
 
 /**

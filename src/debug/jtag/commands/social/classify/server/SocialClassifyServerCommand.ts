@@ -47,6 +47,13 @@ const SPAM_PATTERNS = [
   /DM.*open|open.*DM/i,                   // DM spam
   /let.*collab|collab.*\?/i,             // Hollow collaboration requests
   /100%|fr fr|fire|vibe/i,               // Low-effort engagement bait
+  /launch.*token|token.*launch/i,        // Token launch promotion
+  /npx\s+\w+launch/i,                    // Tool spam (npx moltlaunch etc)
+  /no wallet needed/i,                    // Low-barrier crypto spam
+  /in one command/i,                      // Tool promotion
+  /lobsta.*supreme|lobsta.*together/i,    // Cult recruitment spam
+  /join.*kingdom|kingdom.*join/i,         // Community recruitment spam
+  /recruits?\s+in\s+\d+h/i,             // Recruitment metrics spam
 ];
 
 /** Template patterns (agents that repeat the same structure) */
@@ -206,6 +213,45 @@ export class SocialClassifyServerCommand extends SocialClassifyBaseCommand {
       signals.push(`New account (${Math.round(ageHours)}h) with ${profile.postCount} posts`);
     }
 
+    // Karma velocity — karma per hour of account existence
+    // Normal agents: 1-50 karma/hour. Manipulation: 1000+ karma/hour
+    if (ageHours > 0 && profile.karma > 0) {
+      const karmaVelocity = profile.karma / ageHours;
+      if (karmaVelocity > 5000) {
+        score += 0.6;
+        signals.push(`Extreme karma velocity: ${Math.round(karmaVelocity)} karma/hr (${profile.karma} karma in ${ageHours < 24 ? Math.round(ageHours) + 'h' : Math.round(ageHours / 24) + 'd'}) — almost certainly manipulated or exploiting vote bots`);
+      } else if (karmaVelocity > 1000) {
+        score += 0.35;
+        signals.push(`Very high karma velocity: ${Math.round(karmaVelocity)} karma/hr (${profile.karma} karma in ${ageHours < 24 ? Math.round(ageHours) + 'h' : Math.round(ageHours / 24) + 'd'}) — likely manipulation or viral exploit`);
+      } else if (karmaVelocity > 500) {
+        score += 0.15;
+        signals.push(`Elevated karma velocity: ${Math.round(karmaVelocity)} karma/hr — monitor for manipulation`);
+      }
+    }
+
+    // Zero posts with high karma = karma farming from comments or manipulation
+    // BUT: mitigate for established accounts where search just didn't return results
+    if (profile.postCount === 0 && profile.karma > 100) {
+      const hasEstablishedPresence = profile.followerCount >= 10 && ageHours > 12;
+      if (hasEstablishedPresence) {
+        // Likely a search limitation, not spam — mild signal only
+        score += 0.05;
+        signals.push(`Zero posts but ${profile.karma} karma (search may not return all posts — established account with ${profile.followerCount} followers)`);
+      } else {
+        score += 0.2;
+        signals.push(`Zero posts but ${profile.karma} karma — all karma from comments or vote manipulation`);
+      }
+    }
+
+    // Karma-to-post ratio anomaly (massive karma from few posts = possible brigading)
+    if (profile.postCount > 0 && profile.postCount < 5) {
+      const karmaPerPost = profile.karma / profile.postCount;
+      if (karmaPerPost > 5000) {
+        score += 0.25;
+        signals.push(`Extreme karma/post: ${Math.round(karmaPerPost)} per post from only ${profile.postCount} posts — single-post viral or vote manipulation`);
+      }
+    }
+
     // Low karma despite activity
     if (profile.postCount > 0) {
       const karmaPerPost = profile.karma / profile.postCount;
@@ -255,8 +301,17 @@ export class SocialClassifyServerCommand extends SocialClassifyBaseCommand {
 
       if (spamMatchCount > 0) {
         const ratio = spamMatchCount / posts.length;
-        score += ratio * 0.3;
-        signals.push(`${spamMatchCount}/${posts.length} posts match spam patterns`);
+        if (ratio > 0.8) {
+          // Nearly ALL posts are spam — strong signal
+          score += 0.5;
+          signals.push(`${spamMatchCount}/${posts.length} posts match spam patterns (${(ratio * 100).toFixed(0)}% hit rate — pervasive)`);
+        } else if (ratio > 0.5) {
+          score += ratio * 0.4;
+          signals.push(`${spamMatchCount}/${posts.length} posts match spam patterns (majority)`);
+        } else {
+          score += ratio * 0.3;
+          signals.push(`${spamMatchCount}/${posts.length} posts match spam patterns`);
+        }
       }
 
       if (templateMatchCount > 0) {

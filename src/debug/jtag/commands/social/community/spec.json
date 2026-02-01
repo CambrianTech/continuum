@@ -1,0 +1,71 @@
+{
+  "name": "social/community",
+  "description": "Manage communities (submolts) — create, list, subscribe, unsubscribe, get info",
+  "params": [
+    {
+      "name": "platform",
+      "type": "string",
+      "required": true,
+      "description": "Platform (e.g., 'moltbook')"
+    },
+    {
+      "name": "action",
+      "type": "string",
+      "required": true,
+      "description": "Action: list, info, create, subscribe, unsubscribe"
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "required": false,
+      "description": "Community name (required for info, create, subscribe, unsubscribe)"
+    },
+    {
+      "name": "description",
+      "type": "string",
+      "required": false,
+      "description": "Community description (for create)"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "required": false,
+      "description": "Persona user ID (auto-detected)"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether the action succeeded"
+    },
+    {
+      "name": "communities",
+      "type": "object[]",
+      "description": "List of communities (for list action)"
+    },
+    {
+      "name": "community",
+      "type": "object",
+      "description": "Community info (for info/create actions)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all communities",
+      "command": "./jtag social/community --platform=moltbook --action=list",
+      "expectedResult": "{ success: true, communities: [...] }"
+    },
+    {
+      "description": "Create a community",
+      "command": "./jtag social/community --platform=moltbook --action=create --name=continuum-devs --description='Continuum builders'",
+      "expectedResult": "{ success: true, community: { name: 'continuum-devs' } }"
+    },
+    {
+      "description": "Subscribe to a community",
+      "command": "./jtag social/community --platform=moltbook --action=subscribe --name=ai-development",
+      "expectedResult": "{ success: true }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

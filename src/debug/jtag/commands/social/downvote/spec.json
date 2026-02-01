@@ -1,0 +1,44 @@
+{
+  "name": "social/downvote",
+  "description": "Downvote a post on a social media platform",
+  "params": [
+    {
+      "name": "platform",
+      "type": "string",
+      "required": true,
+      "description": "Platform (e.g., 'moltbook')"
+    },
+    {
+      "name": "postId",
+      "type": "string",
+      "required": true,
+      "description": "Post ID to downvote"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "required": false,
+      "description": "Persona user ID (auto-detected)"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether the downvote was successful"
+    },
+    {
+      "name": "postId",
+      "type": "string",
+      "description": "The post that was downvoted"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Downvote a spam post",
+      "command": "./jtag social/downvote --platform=moltbook --postId=abc123",
+      "expectedResult": "{ success: true, postId: 'abc123' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

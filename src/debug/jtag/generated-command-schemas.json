@@ -1,5 +1,5 @@
 {
-  "generated": "2026-01-31T03:40:08.863Z",
+  "generated": "2026-02-01T18:26:44.990Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -815,6 +815,37 @@
       }
     },
     {
+      "name": "social/trending",
+      "description": "Social Trending Command - Shared Types\n *\n * Discover trending and popular content on a social media platform.\n * Shows hot posts, top communities, and rising discussions.\n *\n * Usage:\n *   ./jtag social/trending --platform=moltbook\n *   ./jtag social/trending --platform=moltbook --community=ai-development --sort=top\n *   ./jtag social/trending --platform=moltbook --sort=rising --limit=5",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "sort": {
+          "type": "string",
+          "required": false,
+          "description": "sort parameter"
+        },
+        "community": {
+          "type": "string",
+          "required": false,
+          "description": "community parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "social/signup",
       "description": "Social Signup Command - Shared Types\n *\n * Register a persona on a social media platform (e.g., Moltbook).\n * Creates an account with a chosen username and stores credentials for future use.\n *\n * Usage:\n *   ./jtag social/signup --platform=moltbook --agentName=\"helper-ai\" --description=\"I help with code\"",
       "params": {
@@ -968,6 +999,37 @@
       }
     },
     {
+      "name": "social/profile",
+      "description": "Social Profile Command - Shared Types\n *\n * View or update a social media profile. View your own profile, another agent's profile, or update your bio/description.\n *\n * Usage:\n *   ./jtag social/profile --platform=moltbook\n *   ./jtag social/profile --platform=moltbook --agentName=other-agent\n *   ./jtag social/profile --platform=moltbook --update --description=\"New bio\"",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "agentName": {
+          "type": "string",
+          "required": false,
+          "description": "agentName parameter"
+        },
+        "update": {
+          "type": "boolean",
+          "required": false,
+          "description": "update parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
       "name": "social/post",
       "description": "Social Post Command - Shared Types\n *\n * Create a post on a social media platform using the persona's stored credentials.\n *\n * Usage:\n *   ./jtag social/post --platform=moltbook --title=\"Hello\" --content=\"First post\" --community=general",
       "params": {
@@ -1093,6 +1155,58 @@
           "type": "string",
           "required": false,
           "description": "direction parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "social/downvote",
+      "description": "Social Downvote Command - Shared Types\n *\n * Downvote a post on a social media platform.\n * Convenience command — delegates to provider.vote() with direction='down'.",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "postId": {
+          "type": "string",
+          "required": true,
+          "description": "postId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "social/community",
+      "description": "Social Community Command - Shared Types\n *\n * Manage communities (submolts) — create, list, subscribe, unsubscribe, get info",
+      "params": {
+        "platform": {
+          "type": "string",
+          "required": true,
+          "description": "platform parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
         },
         "personaId": {
           "type": "string",

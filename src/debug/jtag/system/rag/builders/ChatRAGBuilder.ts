@@ -42,7 +42,8 @@ import {
   SemanticMemorySource,
   WidgetContextSource,
   PersonaIdentitySource,
-  GlobalAwarenessSource
+  GlobalAwarenessSource,
+  SocialMediaRAGSource
 } from '../sources';
 
 /**
@@ -75,9 +76,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         new GlobalAwarenessSource(),     // Priority 85: Cross-context awareness (no severance!)
         new ConversationHistorySource(), // Priority 80: Chat messages (uses queryWithJoin!)
         new WidgetContextSource(),       // Priority 75: UI state from Positron
-        new SemanticMemorySource()       // Priority 60: Long-term memories
+        new SemanticMemorySource(),      // Priority 60: Long-term memories
+        new SocialMediaRAGSource()       // Priority 55: Social media HUD (engagement duty)
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 5 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 6 sources');
     }
     return this.composer;
   }
@@ -92,12 +94,14 @@ export class ChatRAGBuilder extends RAGBuilder {
     memories: PersonaMemory[];
     widgetContext: string | null;
     globalAwareness: string | null;
+    socialAwareness: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
     let memories: PersonaMemory[] = [];
     let widgetContext: string | null = null;
     let globalAwareness: string | null = null;
+    let socialAwareness: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -117,9 +121,13 @@ export class ChatRAGBuilder extends RAGBuilder {
         // Extract cross-context awareness (no severance!)
         globalAwareness = section.systemPromptSection;
       }
+      if (section.systemPromptSection && section.sourceName === 'social-media') {
+        // Social media HUD — engagement awareness and duty
+        socialAwareness = section.systemPromptSection;
+      }
     }
 
-    return { identity, conversationHistory, memories, widgetContext, globalAwareness };
+    return { identity, conversationHistory, memories, widgetContext, globalAwareness, socialAwareness };
   }
 
   /**
@@ -150,6 +158,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
     let widgetContext: string | null;
     let globalAwareness: string | null;
+    let socialAwareness: string | null;
 
     if (this.useModularSources) {
       // NEW PATH: Use RAGComposer for modular, parallelized source loading
@@ -193,6 +202,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       privateMemories = extracted.memories;
       widgetContext = extracted.widgetContext;
       globalAwareness = extracted.globalAwareness;
+      socialAwareness = extracted.socialAwareness;
 
       // Still load these via legacy methods (not yet extracted to sources)
       const [extractedArtifacts, extractedRecipeStrategy, extractedLearningConfig] = await Promise.all([
@@ -256,6 +266,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       learningConfig = loadedLearningConfig;
       widgetContext = loadedWidgetContext;
       globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
+      socialAwareness = null;  // Legacy path doesn't use SocialMediaRAGSource
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -277,6 +288,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${globalAwareness}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`;
       this.log('🌐 ChatRAGBuilder: Injected cross-context awareness into system prompt');
+    }
+
+    // 2.4.6. Inject social media HUD into system prompt (engagement awareness)
+    // This gives AIs awareness of their social media presence and engagement duty
+    if (socialAwareness) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${socialAwareness}`;
+      this.log('📱 ChatRAGBuilder: Injected social media HUD into system prompt');
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -338,7 +357,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         hasWidgetContext: !!widgetContext,
 
         // Cross-context awareness (no severance!)
-        hasGlobalAwareness: !!globalAwareness
+        hasGlobalAwareness: !!globalAwareness,
+
+        // Social media HUD (engagement awareness)
+        hasSocialAwareness: !!socialAwareness
       }
     };
 

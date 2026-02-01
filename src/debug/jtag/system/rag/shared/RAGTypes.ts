@@ -155,6 +155,9 @@ export interface RAGContext {
 
     // Cross-context awareness (no severance!)
     hasGlobalAwareness?: boolean;  // Whether cross-context awareness was included in system prompt
+
+    // Social media engagement awareness
+    hasSocialAwareness?: boolean;  // Whether social media HUD was included in system prompt
   };
 }
 
