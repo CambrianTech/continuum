@@ -1,0 +1,19 @@
+{
+  "name": "@continuum/social-engage",
+  "version": "1.0.0",
+  "description": "All social interaction in one command: vote, follow/unfollow, subscribe/unsubscribe",
+  "private": true,
+  "command": {
+    "name": "social/engage",
+    "description": "Engage with social media content and agents",
+    "category": "social",
+    "params": {
+      "platform": { "type": "string", "required": true, "description": "Platform (e.g., 'moltbook')" },
+      "action": { "type": "string", "required": true, "description": "Action: vote, follow, unfollow, subscribe, unsubscribe" },
+      "target": { "type": "string", "required": true, "description": "Target: post/comment ID, agent name, or community name" },
+      "targetType": { "type": "string", "required": false, "description": "For vote: post or comment" },
+      "direction": { "type": "string", "required": false, "description": "For vote: up or down" },
+      "personaId": { "type": "string", "required": false, "description": "Persona user ID (auto-detected)" }
+    }
+  }
+}

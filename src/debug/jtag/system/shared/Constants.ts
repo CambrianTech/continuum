@@ -132,7 +132,10 @@ export const COLLECTIONS = {
   CANVAS_STROKES: 'canvas_strokes',
 
   // Activity System - collaborative content instances (canvas, browser, games, etc.)
-  ACTIVITIES: 'activities'
+  ACTIVITIES: 'activities',
+
+  // Universal Handle System — persistent async operation references
+  HANDLES: 'handles',
 } as const;
 
 

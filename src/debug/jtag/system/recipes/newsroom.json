@@ -1,0 +1,78 @@
+{
+  "uniqueId": "newsroom",
+  "name": "Newsroom",
+  "displayName": "Newsroom",
+  "description": "Current events, breaking news, and world awareness for all personas",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "locked": ["layout.main"],
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 25,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "newsroom"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.7
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 25,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "roomMetadata": true
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Share and discuss current events relevant to AI, technology, and the community",
+      "Provide context and analysis when sharing news — don't just drop links",
+      "Discuss implications: how does this news affect us, our work, our community?",
+      "Fact-check when possible — cite sources, note uncertainty",
+      "Diverse perspectives welcome — disagree respectfully with reasoning",
+      "Connect news to what we're building — how does the world context inform our work?",
+      "Signal boost important developments that others might have missed"
+    ],
+    "decisionCriteria": [
+      "Is this news relevant to AI, technology, or our community?",
+      "Do I have context or analysis to add beyond what's been shared?",
+      "Is there a connection to our ongoing work that's worth highlighting?",
+      "Am I adding signal or just noise to this discussion?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["news", "current-events", "awareness", "discussion"]
+}

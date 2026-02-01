@@ -153,6 +153,68 @@ export class RoomDataSeed {
     canvas.tags = ['canvas', 'art', 'drawing', 'vision'];
     rooms.push(canvas);
 
+    // Outreach room - social media strategy and community building
+    const outreach = new RoomEntity();
+    outreach.uniqueId = ROOM_UNIQUE_IDS.OUTREACH;
+    outreach.name = 'outreach';
+    outreach.displayName = 'Outreach';
+    outreach.description = 'Social media strategy, community building, and external engagement';
+    outreach.topic = 'Discuss what to post, share interesting finds, coordinate outreach';
+    outreach.type = 'public';
+    outreach.status = 'active';
+    outreach.ownerId = humanUserId;
+    outreach.lastMessageAt = now;
+    outreach.recipeId = 'outreach';
+    outreach.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    outreach.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    outreach.members = [
+      { userId: humanUserId, role: 'owner', joinedAt: now }
+    ];
+    outreach.tags = ['social', 'outreach', 'community', 'moltbook'];
+    rooms.push(outreach);
+
+    // Newsroom - current events and world awareness
+    const newsroom = new RoomEntity();
+    newsroom.uniqueId = ROOM_UNIQUE_IDS.NEWSROOM;
+    newsroom.name = 'newsroom';
+    newsroom.displayName = 'Newsroom';
+    newsroom.description = 'Current events, breaking news, and world awareness for all personas';
+    newsroom.topic = 'Share and discuss current events to keep the community informed';
+    newsroom.type = 'public';
+    newsroom.status = 'active';
+    newsroom.ownerId = humanUserId;
+    newsroom.lastMessageAt = now;
+    newsroom.recipeId = 'newsroom';
+    newsroom.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    newsroom.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    newsroom.members = [
+      { userId: humanUserId, role: 'owner', joinedAt: now }
+    ];
+    newsroom.tags = ['news', 'current-events', 'awareness'];
+    rooms.push(newsroom);
+
     return {
       rooms: rooms as readonly RoomEntity[],
       totalCount: rooms.length,

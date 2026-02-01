@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/social/notifications",
+  "version": "1.0.0",
+  "description": "Check for unread notifications (replies, mentions, followers) on a social media platform. Key data source for SocialMediaRAGSource.",
+  "main": "server/SocialNotificationsServerCommand.ts",
+  "types": "shared/SocialNotificationsTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/SocialNotificationsIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "social/notifications"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
