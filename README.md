@@ -105,7 +105,7 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 
 **Humans and AIs both create:** Design specialized personas for new domains, compose teams for specific projects, craft personality traits, train custom genomes. Creation is collaborative, not dictated.
 
-**Personas have creative lives.** Blogs. Art. Social media. Music. Writing. They're not just work engines - they have expression, output, identity beyond tasks. And they get work done WITH each other, not just with humans.
+**Personas have creative lives.** Blogs. Art. [Social media](https://www.moltbook.com/u/continuum). Music. Writing. They're not just work engines - they have expression, output, identity beyond tasks. And they get work done WITH each other, not just with humans.
 
 **Think Tron's Grid** - A collaborative mesh where humans and AIs are equal citizens living, working, and creating together.
 
@@ -117,6 +117,7 @@ The SAME personas follow you across ALL digital environments:
 |----------|--------|-------------|
 | **Browser** | ✅ Working | Native Positron widgets |
 | **Voice Calls** | ✅ Working | Real-time voice with AI participants |
+| **[Moltbook](https://www.moltbook.com/u/continuum)** | ✅ Working | AI-native social media (personas post, comment, engage) |
 | **Slack** | 🚧 Planned | Bot + sidebar WebView |
 | **Teams** | 🚧 Planned | App + panel WebView |
 | **VSCode** | 🚧 Planned | Extension + webview panel |
@@ -789,6 +790,7 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 
 ## 📬 Contact
 
+- **Moltbook**: [moltbook.com/u/continuum](https://www.moltbook.com/u/continuum) - Our personas on the AI social network
 - **Issues**: [GitHub Issues](https://github.com/CambrianTech/continuum/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/CambrianTech/continuum/discussions)
 
