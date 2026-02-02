@@ -13,6 +13,11 @@
  * 6. Fix — If verification fails, retry (max 3 attempts per step)
  * 7. Report — Summarize changes via code/history
  *
+ * Persistence:
+ * - Plans are persisted as CodingPlanEntity via DataDaemon
+ * - Status updated in real-time during execution
+ * - Persistence is best-effort (orchestrator works without DataDaemon)
+ *
  * Budget enforcement:
  * - Max duration (default 120s)
  * - Max tool calls (default 15)
@@ -32,6 +37,10 @@ import { PlanFormulator } from './PlanFormulator';
 import { CodingModelSelector } from './CodingModelSelector';
 import { Commands } from '../../core/shared/Commands';
 import { Logger } from '../../core/logging/Logger';
+import { CodingPlanEntity } from '../../data/entities/CodingPlanEntity';
+import type { CodingStepSnapshot, CodingPlanStatus } from '../../data/entities/CodingPlanEntity';
+import { COLLECTIONS } from '../../shared/Constants';
+import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 const log = Logger.create('CodeAgentOrchestrator', 'code');
 
@@ -97,8 +106,9 @@ export class CodeAgentOrchestrator {
    * Execute a coding task end-to-end:
    * 1. Optionally discover codebase context
    * 2. Formulate a plan via LLM
-   * 3. Execute each step
-   * 4. Return results
+   * 3. Persist the plan as a CodingPlanEntity
+   * 4. Execute each step (updating entity in real-time)
+   * 5. Return results
    */
   async execute(task: CodingTask): Promise<CodingResult> {
     const budget = new ExecutionBudget(
@@ -113,6 +123,7 @@ export class CodeAgentOrchestrator {
     const changeIds: string[] = [];
     const errors: string[] = [];
     const stepResults: StepResult[] = [];
+    let planEntity: CodingPlanEntity | undefined;
 
     try {
       // Phase 1: Discovery (optional — gather codebase context for planning)
@@ -128,6 +139,9 @@ export class CodeAgentOrchestrator {
 
       const plan = await this.planFormulator.formulate(task, codebaseContext);
       log.info(`Plan: "${plan.summary}" — ${plan.steps.length} steps`);
+
+      // Phase 2b: Persist plan as entity (best-effort — works without DataDaemon)
+      planEntity = await this.persistPlan(task, plan);
 
       // Phase 3: Execute plan steps in dependency order
       const completedSteps = new Set<number>();
@@ -172,6 +186,9 @@ export class CodeAgentOrchestrator {
         } else {
           errors.push(`Step ${step.stepNumber} (${step.action}): ${result.error ?? 'unknown error'}`);
         }
+
+        // Update persisted plan step status
+        await this.updatePlanStep(planEntity, step.stepNumber, result);
       }
 
       // Determine overall status
@@ -189,13 +206,20 @@ export class CodeAgentOrchestrator {
         ? `Completed: ${plan.summary}`
         : `${status}: ${stepResults.filter(r => r.status === 'completed').length}/${plan.steps.length} steps completed`;
 
-      return this.buildResult(task, status, summary, stepResults, filesModified, filesCreated, changeIds, errors, budget);
+      const codingResult = this.buildResult(task, status, summary, stepResults, filesModified, filesCreated, changeIds, errors, budget);
+
+      // Finalize persisted plan
+      await this.finalizePlan(planEntity, codingResult);
+
+      return codingResult;
 
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.error(`Task failed: ${message}`);
       errors.push(message);
-      return this.buildResult(task, 'failed', `Failed: ${message}`, stepResults, filesModified, filesCreated, changeIds, errors, budget);
+      const codingResult = this.buildResult(task, 'failed', `Failed: ${message}`, stepResults, filesModified, filesCreated, changeIds, errors, budget);
+      await this.finalizePlan(planEntity, codingResult);
+      return codingResult;
     }
   }
 
@@ -400,5 +424,132 @@ export class CodeAgentOrchestrator {
       changeIds,
       errors,
     };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Plan Persistence (best-effort via DataDaemon)
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Persist a newly formulated plan as a CodingPlanEntity.
+   * Returns the entity if persistence succeeded, undefined otherwise.
+   */
+  private async persistPlan(task: CodingTask, plan: CodingPlan): Promise<CodingPlanEntity | undefined> {
+    try {
+      const { DataDaemon } = await import('../../../daemons/data-daemon/shared/DataDaemon');
+
+      const entity = new CodingPlanEntity();
+      entity.taskId = task.id;
+      entity.createdById = task.personaId;
+      entity.leadId = task.personaId;
+      entity.summary = plan.summary;
+      entity.taskDescription = task.description;
+      entity.estimatedToolCalls = plan.estimatedToolCalls;
+      entity.assignees = [task.personaId];
+      entity.generatedBy = {
+        provider: plan.generatedBy.provider,
+        model: plan.generatedBy.model,
+        temperature: 0,
+        durationMs: 0,
+      };
+      entity.status = 'executing';
+      entity.executionStartedAt = Date.now();
+
+      // Convert plan steps to snapshots
+      entity.steps = plan.steps.map(step => ({
+        stepNumber: step.stepNumber,
+        action: step.action,
+        description: step.description,
+        targetFiles: step.targetFiles,
+        toolCall: step.toolCall,
+        toolParams: step.toolParams,
+        dependsOn: step.dependsOn,
+        verification: step.verification,
+        status: 'pending' as const,
+      }));
+
+      const stored = await DataDaemon.store<CodingPlanEntity>(COLLECTIONS.CODING_PLANS, entity);
+      log.info(`Plan persisted: ${stored.id}`);
+      return stored;
+    } catch {
+      log.debug('Plan persistence skipped (DataDaemon not available)');
+      return undefined;
+    }
+  }
+
+  /**
+   * Update a step's status in the persisted plan entity.
+   */
+  private async updatePlanStep(
+    planEntity: CodingPlanEntity | undefined,
+    stepNumber: number,
+    result: StepResult,
+  ): Promise<void> {
+    if (!planEntity) return;
+
+    try {
+      const { DataDaemon } = await import('../../../daemons/data-daemon/shared/DataDaemon');
+
+      const stepIndex = planEntity.steps.findIndex(s => s.stepNumber === stepNumber);
+      if (stepIndex === -1) return;
+
+      // Update step snapshot in-place
+      const snapshot = planEntity.steps[stepIndex];
+      snapshot.status = result.status === 'completed' ? 'completed'
+        : result.status === 'skipped' ? 'skipped'
+        : 'failed';
+      snapshot.completedAt = Date.now();
+      snapshot.durationMs = result.durationMs;
+      snapshot.output = result.output;
+      snapshot.error = result.error;
+
+      await DataDaemon.update<CodingPlanEntity>(
+        COLLECTIONS.CODING_PLANS,
+        planEntity.id as UUID,
+        { steps: planEntity.steps } as Partial<CodingPlanEntity>,
+      );
+    } catch {
+      // Best-effort — don't interrupt execution for persistence failures
+    }
+  }
+
+  /**
+   * Finalize the persisted plan with execution results.
+   */
+  private async finalizePlan(
+    planEntity: CodingPlanEntity | undefined,
+    result: CodingResult,
+  ): Promise<void> {
+    if (!planEntity) return;
+
+    try {
+      const { DataDaemon } = await import('../../../daemons/data-daemon/shared/DataDaemon');
+
+      const statusMap: Record<CodingResultStatus, CodingPlanStatus> = {
+        completed: 'completed',
+        partial: 'partial',
+        failed: 'failed',
+        budget_exceeded: 'partial',
+      };
+
+      await DataDaemon.update<CodingPlanEntity>(
+        COLLECTIONS.CODING_PLANS,
+        planEntity.id as UUID,
+        {
+          status: statusMap[result.status] ?? 'failed',
+          executionCompletedAt: Date.now(),
+          filesModified: result.filesModified,
+          filesCreated: result.filesCreated,
+          changeIds: result.changeIds,
+          errors: result.errors,
+          totalToolCalls: result.totalToolCalls,
+          totalDurationMs: result.totalDurationMs,
+        } as Partial<CodingPlanEntity>,
+      );
+
+      log.info(`Plan finalized: ${planEntity.id} → ${result.status}`);
+    } catch {
+      // Best-effort
+    }
   }
 }
