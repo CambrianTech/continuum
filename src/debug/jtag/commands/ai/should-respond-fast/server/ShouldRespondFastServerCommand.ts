@@ -38,6 +38,12 @@ export class ShouldRespondFastServerCommand extends ShouldRespondFastCommand {
         });
       }
 
+      if (!params.messageText) {
+        return this.buildResult(params, false, 0, {
+          reasoning: 'Missing required parameter: messageText'
+        });
+      }
+
       // Default contextId to a placeholder if not provided (allows tool to work)
       const contextId = params.contextId ?? 'default-context';
 
