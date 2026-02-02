@@ -213,11 +213,24 @@ export class GeminiLiveAdapter implements IAudioNativeAdapter {
 
   /**
    * Cancel the current response
+   *
+   * Gemini Live API does not have an explicit response.cancel event.
+   * Interruption is handled server-side via VAD (when new audio input arrives,
+   * the server interrupts the current response). We clear local state and
+   * send an empty realtimeInput to signal the client wants to interrupt.
    */
   cancelResponse(): void {
-    // Send interrupt/cancel message if supported
-    // Gemini may use a different mechanism
-    console.log('🔊 Gemini Live: Cancel not yet implemented');
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Send empty realtimeInput to signal interruption intent
+    // The server's VAD will handle the actual interruption
+    this.ws.send(JSON.stringify({
+      clientContent: {
+        turnComplete: true,
+      },
+    }));
   }
 
   /**

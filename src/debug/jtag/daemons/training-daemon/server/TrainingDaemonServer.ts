@@ -305,7 +305,8 @@ export class TrainingDaemonServer extends TrainingDaemon {
   }
 
   /**
-   * Check if we've reached auto fine-tune threshold
+   * Check if we've reached auto fine-tune threshold.
+   * Emits 'training:dataset-ready' event when threshold is crossed.
    */
   private async checkAutoFineTuneThreshold(): Promise<void> {
     try {
@@ -315,15 +316,23 @@ export class TrainingDaemonServer extends TrainingDaemon {
         limit: 1  // Just need count
       });
 
-      if (queryResult.success && queryResult.metadata?.totalCount) {
-        const count = queryResult.metadata.totalCount;
+      if (!queryResult.success || !queryResult.metadata?.totalCount) return;
 
-        if (count >= this.config.autoFineTuneThreshold && count % this.config.autoFineTuneThreshold === 0) {
-          this.log.info(`🚀 TrainingDaemon: Auto fine-tune threshold reached (${count} examples)`);
-          this.log.info('🚀 TrainingDaemon: TODO: Trigger fine-tuning (Phase 2 implementation)');
-          // Future: Trigger genome/batch-micro-tune command
-        }
-      }
+      const count = queryResult.metadata.totalCount;
+
+      // Only trigger at exact threshold multiples (50, 100, 150, ...)
+      if (count < this.config.autoFineTuneThreshold) return;
+      if (count % this.config.autoFineTuneThreshold !== 0) return;
+
+      this.log.info(`🚀 TrainingDaemon: Auto fine-tune threshold reached (${count} examples)`);
+
+      // Emit event for TrainingOrchestrator or other listeners to pick up
+      await Events.emit('training:dataset-ready', {
+        exampleCount: count,
+        source: 'auto-threshold',
+        trigger: 'training-daemon',
+        timestamp: Date.now(),
+      });
     } catch (error) {
       this.log.error('❌ TrainingDaemon: Failed to check auto fine-tune threshold:', error);
     }

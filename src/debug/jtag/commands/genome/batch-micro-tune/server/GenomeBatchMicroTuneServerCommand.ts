@@ -1,8 +1,9 @@
 /**
- * GenomeBatchMicroTuneServerCommand - Lightweight in-recipe LoRA updates
+ * GenomeBatchMicroTuneServerCommand - Trigger LoRA micro-tuning from accumulated examples
  *
- * Performs fast micro-tuning using accumulated training examples.
- * Updates soft weights in RAM for immediate effect, not persisted yet.
+ * Accesses the PersonaUser's TrainingDataAccumulator, checks if enough examples
+ * have accumulated for the requested domain, and triggers training via
+ * PersonaTrainingManager. Supports forceUpdate to bypass threshold check.
  */
 
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -13,6 +14,8 @@ import type {
   GenomeBatchMicroTuneParams,
   GenomeBatchMicroTuneResult
 } from '../shared/GenomeBatchMicroTuneTypes';
+import { UserDaemonServer } from '@daemons/user-daemon/server/UserDaemonServer';
+import { PersonaUser } from '@system/user/server/PersonaUser';
 
 export class GenomeBatchMicroTuneServerCommand extends CommandBase<
   GenomeBatchMicroTuneParams,
@@ -24,78 +27,91 @@ export class GenomeBatchMicroTuneServerCommand extends CommandBase<
 
   async execute(params: JTAGPayload): Promise<GenomeBatchMicroTuneResult> {
     const tuneParams = params as GenomeBatchMicroTuneParams;
+    const domain = tuneParams.domain;
+    const forceUpdate = tuneParams.forceUpdate ?? false;
 
-    console.log('🧬 GENOME MICRO-TUNE: Starting lightweight training');
-    console.log(`   Domain: ${tuneParams.domain}`);
-    console.log(`   Role: ${tuneParams.roleId ?? 'all'}`);
+    console.log(`🧬 GENOME MICRO-TUNE: domain=${domain}, force=${forceUpdate}`);
 
     try {
-      // TODO: Access PersonaUser's TrainingDataAccumulator
-      // Check if batch threshold reached (unless forceUpdate)
-      // Get training examples and filter by quality
-      // Perform fast micro-tuning (soft weight update in RAM)
-      // This is placeholder implementation
-
-      const startTime = Date.now();
-
-      // Placeholder: Check if ready for training
-      const batchThreshold = 10;
-      const bufferSize = 5; // Placeholder
-      const qualityThreshold = tuneParams.qualityThreshold ?? 0.7;
-
-      if (!tuneParams.forceUpdate && bufferSize < batchThreshold) {
-        console.log(`⏳ Buffer not ready (${bufferSize}/${batchThreshold}), skipping micro-tune`);
+      // 1. Get UserDaemon singleton
+      const userDaemon = UserDaemonServer.getInstance();
+      if (!userDaemon) {
         return transformPayload(params, {
-          success: true,
-          training: {
-            domain: tuneParams.domain,
-            loraAdapter: tuneParams.loraAdapter ?? `${tuneParams.domain}-base`,
-            examplesUsed: 0,
-            examplesFiltered: 0,
-            updateType: 'none'
-          }
+          success: false,
+          error: 'UserDaemon not initialized',
         });
       }
 
-      // Placeholder: Get examples and filter by quality
-      const totalExamples = bufferSize;
-      const filteredExamples = Math.floor(totalExamples * 0.8); // 80% pass quality threshold
-      const examplesUsed = Math.min(filteredExamples, tuneParams.maxExamples ?? 50);
+      // 2. Get PersonaUser instance
+      const personaId = tuneParams.personaId ?? tuneParams.userId;
+      if (!personaId) {
+        return transformPayload(params, {
+          success: false,
+          error: 'No personaId or userId provided',
+        });
+      }
 
-      // Placeholder: Perform micro-tuning
-      // In real implementation:
-      // - Load current LoRA adapter soft weights
-      // - Run lightweight fine-tuning step (gradient descent on batch)
-      // - Update soft weights in RAM (don't save to disk yet)
-      console.log(`🔧 Micro-tuning with ${examplesUsed} examples...`);
+      const baseUser = userDaemon.getPersonaUser(personaId);
+      if (!baseUser || !(baseUser instanceof PersonaUser)) {
+        return transformPayload(params, {
+          success: false,
+          error: `PersonaUser not found: ${personaId}`,
+        });
+      }
 
-      // Simulate training time (real would be 100-500ms)
+      const personaUser = baseUser as PersonaUser;
+      const accumulator = personaUser.trainingAccumulator;
+
+      // 3. Check buffer readiness
+      const bufferSize = accumulator.getBufferSize(domain);
+      const batchThreshold = accumulator.getBatchThreshold(domain);
+
+      if (!forceUpdate && !accumulator.shouldMicroTune(domain)) {
+        console.log(`⏳ GENOME MICRO-TUNE: Buffer not ready (${bufferSize}/${batchThreshold})`);
+        return transformPayload(params, {
+          success: true,
+          training: {
+            domain,
+            loraAdapter: tuneParams.loraAdapter ?? `${domain}-base`,
+            examplesUsed: 0,
+            examplesFiltered: 0,
+            updateType: 'none',
+          },
+        });
+      }
+
+      // 4. Trigger training via PersonaTrainingManager
+      //    forceDomain bypasses the threshold check for the specified domain
+      const startTime = Date.now();
+      await personaUser.trainingManager.checkTrainingReadiness(forceUpdate ? domain : undefined);
       const trainingTime = Date.now() - startTime;
 
-      console.log(`✅ GENOME MICRO-TUNE: Completed in ${trainingTime}ms`);
+      // 5. Get post-training stats (buffer should be consumed now)
+      const postBufferSize = accumulator.getBufferSize(domain);
+      const examplesUsed = bufferSize - postBufferSize;
+
+      console.log(`✅ GENOME MICRO-TUNE: ${examplesUsed} examples consumed in ${trainingTime}ms`);
 
       return transformPayload(params, {
         success: true,
         training: {
-          domain: tuneParams.domain,
-          loraAdapter: tuneParams.loraAdapter ?? `${tuneParams.domain}-base`,
+          domain,
+          loraAdapter: tuneParams.loraAdapter ?? `${domain}-base`,
           examplesUsed,
-          examplesFiltered: totalExamples - filteredExamples,
-          updateType: 'soft',
-          improvementEstimate: 0.05, // 5% improvement placeholder
+          examplesFiltered: 0,
+          updateType: examplesUsed > 0 ? 'soft' : 'none',
           metrics: {
             trainingTime,
-            averageQuality: 0.82,
-            diversityScore: 0.75
-          }
-        }
+            averageQuality: 0, // Quality scoring is Phase 12
+            diversityScore: 0,
+          },
+        },
       });
-
     } catch (error) {
       console.error('❌ GENOME MICRO-TUNE: Error:', error);
       return transformPayload(params, {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
