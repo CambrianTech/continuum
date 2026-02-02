@@ -4,4 +4,4 @@
  * Activity domain for channel routing.
  * Each domain has one ChannelQueue. Items route to their domain's queue.
  */
-export type ActivityDomain = "AUDIO" | "CHAT" | "BACKGROUND";
+export type ActivityDomain = "AUDIO" | "CHAT" | "CODE" | "BACKGROUND";

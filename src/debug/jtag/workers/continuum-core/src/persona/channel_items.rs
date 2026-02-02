@@ -339,6 +339,71 @@ impl TaskQueueItem {
 }
 
 //=============================================================================
+// CODE QUEUE ITEM
+//=============================================================================
+
+/// Code: workspace-scoped coding tasks. Not urgent, never kicked, slow aging.
+/// Consolidates multiple requests for the same workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeQueueItem {
+    pub id: Uuid,
+    pub room_id: Uuid,
+    pub persona_id: Uuid,
+    pub task_description: String,
+    pub workspace_handle: String,
+    pub priority: f32,
+    pub is_review: bool,
+    pub timestamp: u64,
+    pub enqueued_at: u64,
+}
+
+impl QueueItemBehavior for CodeQueueItem {
+    fn item_type(&self) -> &'static str { "code" }
+    fn domain(&self) -> ActivityDomain { ActivityDomain::Code }
+    fn id(&self) -> Uuid { self.id }
+    fn timestamp(&self) -> u64 { self.timestamp }
+    fn base_priority(&self) -> f32 { self.priority }
+
+    // Slow aging — coding tasks are long-lived, 60s to reach max boost
+    fn aging_boost_ms(&self) -> f32 { 60_000.0 }
+
+    // Not urgent — coding is not real-time
+    fn is_urgent(&self) -> bool { false }
+
+    // Never kicked — don't drop active coding work
+    fn can_be_kicked(&self) -> bool { false }
+    fn kick_resistance(&self, _now_ms: u64, _enqueued_at_ms: u64) -> f32 { f32::INFINITY }
+
+    // Consolidate multiple requests for the same workspace
+    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
+        if other.item_type() != "code" {
+            return false;
+        }
+        if let Some(other_code) = other.as_any().downcast_ref::<CodeQueueItem>() {
+            other_code.workspace_handle == self.workspace_handle
+        } else {
+            false
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any { self }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "code",
+            "id": self.id.to_string(),
+            "roomId": self.room_id.to_string(),
+            "personaId": self.persona_id.to_string(),
+            "taskDescription": self.task_description,
+            "workspaceHandle": self.workspace_handle,
+            "priority": self.priority,
+            "isReview": self.is_review,
+            "timestamp": self.timestamp,
+        })
+    }
+}
+
+//=============================================================================
 // IPC REQUEST TYPES — For receiving items from TypeScript
 //=============================================================================
 
@@ -392,6 +457,18 @@ pub enum ChannelEnqueueRequest {
         depends_on: Vec<String>,
         blocked_by: Vec<String>,
     },
+    #[serde(rename = "code")]
+    Code {
+        id: String,
+        room_id: String,
+        persona_id: String,
+        task_description: String,
+        workspace_handle: String,
+        priority: f32,
+        is_review: bool,
+        #[ts(type = "number")]
+        timestamp: u64,
+    },
 }
 
 impl ChannelEnqueueRequest {
@@ -433,6 +510,22 @@ impl ChannelEnqueueRequest {
                     enqueued_at: now,
                     priority: *priority,
                     consolidated_context: Vec::new(),
+                }))
+            }
+            ChannelEnqueueRequest::Code {
+                id, room_id, persona_id, task_description,
+                workspace_handle, priority, is_review, timestamp,
+            } => {
+                Ok(Box::new(CodeQueueItem {
+                    id: parse_uuid(id, "id")?,
+                    room_id: parse_uuid(room_id, "room_id")?,
+                    persona_id: parse_uuid(persona_id, "persona_id")?,
+                    task_description: task_description.clone(),
+                    workspace_handle: workspace_handle.clone(),
+                    priority: *priority,
+                    is_review: *is_review,
+                    timestamp: *timestamp,
+                    enqueued_at: now,
                 }))
             }
             ChannelEnqueueRequest::Task {

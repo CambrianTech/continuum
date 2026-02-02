@@ -12,7 +12,7 @@ use crate::voice::{UtteranceEvent, VoiceParticipant};
 use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality, ChannelRegistry, ChannelEnqueueRequest, ActivityDomain, PersonaState};
 use crate::rag::RagEngine;
 use crate::logging::TimingGuard;
-use crate::code::{self, FileEngine, PathSecurity};
+use crate::code::{self, FileEngine, PathSecurity, ShellSession};
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -421,6 +421,81 @@ enum Request {
         branch: String,
     },
 
+    // ── Shell Session Commands ──────────────────────────────────────
+
+    /// Create a shell session for a workspace.
+    #[serde(rename = "code/shell-create")]
+    CodeShellCreate {
+        persona_id: String,
+        /// Workspace root directory (must match file engine workspace).
+        workspace_root: String,
+    },
+
+    /// Execute a command in a shell session.
+    /// Returns immediately with execution_id (handle).
+    /// If `wait` is true, blocks until completion and returns full result.
+    #[serde(rename = "code/shell-execute")]
+    CodeShellExecute {
+        persona_id: String,
+        /// The shell command to execute (named `cmd` to avoid serde tag conflict with `command`).
+        cmd: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        /// If true, block until completion and return full result.
+        #[serde(default)]
+        wait: bool,
+    },
+
+    /// Poll an execution for new output since last poll.
+    #[serde(rename = "code/shell-poll")]
+    CodeShellPoll {
+        persona_id: String,
+        execution_id: String,
+    },
+
+    /// Kill a running execution.
+    #[serde(rename = "code/shell-kill")]
+    CodeShellKill {
+        persona_id: String,
+        execution_id: String,
+    },
+
+    /// Change the shell session's working directory.
+    #[serde(rename = "code/shell-cd")]
+    CodeShellCd {
+        persona_id: String,
+        path: String,
+    },
+
+    /// Get shell session status/info.
+    #[serde(rename = "code/shell-status")]
+    CodeShellStatus {
+        persona_id: String,
+    },
+
+    /// Watch an execution for new output. Blocks until output is available
+    /// (no timeout, no polling). Returns classified lines via sentinel rules.
+    #[serde(rename = "code/shell-watch")]
+    CodeShellWatch {
+        persona_id: String,
+        execution_id: String,
+    },
+
+    /// Configure sentinel filter rules on an execution.
+    /// Rules classify output lines and control which are emitted or suppressed.
+    #[serde(rename = "code/shell-sentinel")]
+    CodeShellSentinel {
+        persona_id: String,
+        execution_id: String,
+        rules: Vec<crate::code::shell_types::SentinelRule>,
+    },
+
+    /// Destroy a shell session (kills all running executions).
+    #[serde(rename = "code/shell-destroy")]
+    CodeShellDestroy {
+        persona_id: String,
+    },
+
     #[serde(rename = "health-check")]
     HealthCheck,
 
@@ -492,6 +567,8 @@ struct ServerState {
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     /// Per-persona file engines — workspace-scoped file operations with change tracking.
     file_engines: Arc<DashMap<String, FileEngine>>,
+    /// Per-persona shell sessions — persistent bash per workspace with handle+poll.
+    shell_sessions: Arc<DashMap<String, ShellSession>>,
 }
 
 impl ServerState {
@@ -511,6 +588,7 @@ impl ServerState {
             rt_handle,
             memory_manager,
             file_engines: Arc::new(DashMap::new()),
+            shell_sessions: Arc::new(DashMap::new()),
         }
     }
 
@@ -1652,6 +1730,200 @@ impl ServerState {
                     }))),
                     Err(e) => HandleResult::Json(Response::error(e)),
                 }
+            }
+
+            // ── Shell Session Handlers ──────────────────────────────────
+
+            Request::CodeShellCreate { persona_id, workspace_root } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_create");
+
+                let root = std::path::Path::new(&workspace_root);
+                match ShellSession::new(&persona_id, &persona_id, root) {
+                    Ok(session) => {
+                        let info = session.info();
+                        self.shell_sessions.insert(persona_id.clone(), session);
+                        log_info!("ipc", "shell", "Created shell session for {} at {}", persona_id, workspace_root);
+                        HandleResult::Json(Response::success(
+                            serde_json::to_value(&info).unwrap_or_default()
+                        ))
+                    }
+                    Err(e) => HandleResult::Json(Response::error(
+                        format!("Failed to create shell session: {}", e)
+                    )),
+                }
+            }
+
+            Request::CodeShellExecute { persona_id, cmd, timeout_ms, wait } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_execute");
+
+                let mut session = match self.shell_sessions.get_mut(&persona_id) {
+                    Some(s) => s,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No shell session for persona {}", persona_id)
+                    )),
+                };
+
+                if wait {
+                    // Blocking mode: wait for completion, return full result
+                    match session.execute_and_wait(&cmd, timeout_ms, &self.rt_handle) {
+                        Ok(result) => HandleResult::Json(Response::success(
+                            serde_json::to_value(&result).unwrap_or_default()
+                        )),
+                        Err(e) => HandleResult::Json(Response::error(e)),
+                    }
+                } else {
+                    // Handle mode: return immediately with execution_id
+                    match session.execute(&cmd, timeout_ms, &self.rt_handle) {
+                        Ok(execution_id) => {
+                            let response = code::shell_types::ShellExecuteResponse {
+                                execution_id,
+                                status: code::shell_types::ShellExecutionStatus::Running,
+                                stdout: None,
+                                stderr: None,
+                                exit_code: None,
+                            };
+                            HandleResult::Json(Response::success(
+                                serde_json::to_value(&response).unwrap_or_default()
+                            ))
+                        }
+                        Err(e) => HandleResult::Json(Response::error(e)),
+                    }
+                }
+            }
+
+            Request::CodeShellPoll { persona_id, execution_id } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_poll");
+
+                let session = match self.shell_sessions.get(&persona_id) {
+                    Some(s) => s,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No shell session for persona {}", persona_id)
+                    )),
+                };
+
+                match session.poll(&execution_id) {
+                    Ok(result) => HandleResult::Json(Response::success(
+                        serde_json::to_value(&result).unwrap_or_default()
+                    )),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeShellKill { persona_id, execution_id } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_kill");
+
+                let session = match self.shell_sessions.get(&persona_id) {
+                    Some(s) => s,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No shell session for persona {}", persona_id)
+                    )),
+                };
+
+                match session.kill(&execution_id) {
+                    Ok(()) => HandleResult::Json(Response::success(serde_json::json!({
+                        "killed": true
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeShellCd { persona_id, path } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_cd");
+
+                let mut session = match self.shell_sessions.get_mut(&persona_id) {
+                    Some(s) => s,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No shell session for persona {}", persona_id)
+                    )),
+                };
+
+                match session.cd(&path) {
+                    Ok(new_cwd) => HandleResult::Json(Response::success(serde_json::json!({
+                        "cwd": new_cwd
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeShellStatus { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_status");
+
+                let session = match self.shell_sessions.get(&persona_id) {
+                    Some(s) => s,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No shell session for persona {}", persona_id)
+                    )),
+                };
+
+                let info = session.info();
+                HandleResult::Json(Response::success(
+                    serde_json::to_value(&info).unwrap_or_default()
+                ))
+            }
+
+            Request::CodeShellWatch { persona_id, execution_id } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_watch");
+
+                // Extract watch handles THEN release the DashMap lock before blocking.
+                let handles = {
+                    let session = match self.shell_sessions.get(&persona_id) {
+                        Some(s) => s,
+                        None => return HandleResult::Json(Response::error(
+                            format!("No shell session for persona {}", persona_id)
+                        )),
+                    };
+                    session.get_watch_handles(&execution_id)
+                    // DashMap Ref dropped here
+                };
+
+                match handles {
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                    Ok((exec_state, notify)) => {
+                        // Block this IPC thread until output is available.
+                        // Safe: IPC runs on std threads, not inside the tokio runtime.
+                        match self.rt_handle.block_on(
+                            code::shell_session::watch_execution(&execution_id, exec_state, notify)
+                        ) {
+                            Ok(response) => HandleResult::Json(Response::success(
+                                serde_json::to_value(&response).unwrap_or_default()
+                            )),
+                            Err(e) => HandleResult::Json(Response::error(e)),
+                        }
+                    }
+                }
+            }
+
+            Request::CodeShellSentinel { persona_id, execution_id, rules } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_sentinel");
+
+                let session = match self.shell_sessions.get(&persona_id) {
+                    Some(s) => s,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No shell session for persona {}", persona_id)
+                    )),
+                };
+
+                match session.set_sentinel(&execution_id, &rules) {
+                    Ok(count) => HandleResult::Json(Response::success(serde_json::json!({
+                        "applied": true,
+                        "ruleCount": count
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeShellDestroy { persona_id } => {
+                let _timer = TimingGuard::new("ipc", "code_shell_destroy");
+
+                if let Some(mut session) = self.shell_sessions.get_mut(&persona_id) {
+                    session.destroy();
+                }
+                self.shell_sessions.remove(&persona_id);
+
+                log_info!("ipc", "shell", "Destroyed shell session for {}", persona_id);
+                HandleResult::Json(Response::success(serde_json::json!({
+                    "destroyed": true
+                })))
             }
 
             Request::HealthCheck => {

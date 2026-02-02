@@ -215,6 +215,37 @@ export class RoomDataSeed {
     newsroom.tags = ['news', 'current-events', 'awareness'];
     rooms.push(newsroom);
 
+    // Code room - collaborative software development
+    const code = new RoomEntity();
+    code.uniqueId = ROOM_UNIQUE_IDS.CODE;
+    code.name = 'code';
+    code.displayName = 'Code';
+    code.description = 'Collaborative coding — reading, writing, reviewing, and shipping code as a team';
+    code.topic = 'Software development with real tools and real agent loops';
+    code.type = 'public';
+    code.status = 'active';
+    code.ownerId = humanUserId;
+    code.lastMessageAt = now;
+    code.recipeId = 'coding';
+    code.privacy = {
+      isPublic: true,
+      requiresInvite: false,
+      allowGuestAccess: false,
+      searchable: true
+    };
+    code.settings = {
+      allowThreads: true,
+      allowReactions: true,
+      allowFileSharing: true,
+      messageRetentionDays: 365,
+      slowMode: 0
+    };
+    code.members = [
+      { userId: humanUserId, role: 'owner', joinedAt: now }
+    ];
+    code.tags = ['coding', 'development', 'engineering'];
+    rooms.push(code);
+
     return {
       rooms: rooms as readonly RoomEntity[],
       totalCount: rooms.length,

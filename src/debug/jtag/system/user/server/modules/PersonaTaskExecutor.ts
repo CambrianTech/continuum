@@ -78,6 +78,11 @@ export class PersonaTaskExecutor {
           outcome = await this.executeFineTuneLora(task);
           break;
 
+        case 'write-feature':
+        case 'review-code':
+          outcome = await this.executeCodeTask(task);
+          break;
+
         default:
           outcome = `Unknown task type: ${task.taskType}`;
           status = 'failed';
@@ -570,6 +575,25 @@ export class PersonaTaskExecutor {
       this.log(`❌ ${this.displayName}: Error during fine-tuning: ${errorMsg}`);
       return `Fine-tuning failed: ${errorMsg}`;
     }
+  }
+
+  /**
+   * Code task execution (write-feature, review-code)
+   *
+   * Infrastructure hook for code-domain tasks. The workspace is guaranteed to exist
+   * by the time this runs (PersonaAutonomousLoop.ensureWorkspace called beforehand).
+   *
+   * The actual coding agent loop (read→reason→edit→verify→commit) is driven by the
+   * persona's tool execution pipeline with code/* tools — not by this method.
+   * This method logs the task and returns, allowing the recipe pipeline to handle execution.
+   */
+  private async executeCodeTask(task: InboxTask): Promise<string> {
+    this.log(`💻 ${this.displayName}: Code task received — ${task.taskType}: ${task.description}`);
+
+    const roomId = task.metadata?.roomId ?? task.contextId;
+    this.log(`💻 ${this.displayName}: Code task for room=${roomId}, workspace ensured by caller`);
+
+    return `Code task acknowledged: ${task.taskType} — ${task.description}`;
   }
 
   /**

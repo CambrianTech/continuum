@@ -38,6 +38,12 @@ import type {
 	ChangeNode,
 	HistoryResult,
 	GitStatusInfo,
+	// Shell session types
+	ShellExecuteResponse,
+	ShellPollResponse,
+	ShellSessionInfo,
+	ShellWatchResponse,
+	SentinelRule,
 } from '../../../shared/generated';
 
 // Memory subsystem types (Hippocampus in Rust — corpus-based, no SQL)
@@ -1085,6 +1091,170 @@ export class RustCoreIPCClient extends EventEmitter {
 		}
 
 		return response.result as { output: string };
+	}
+
+	// ── Shell Session Methods ──────────────────────────────────────
+
+	/**
+	 * Create a shell session for a workspace.
+	 */
+	async shellCreate(personaId: string, workspaceRoot: string): Promise<ShellSessionInfo> {
+		const response = await this.request({
+			command: 'code/shell-create',
+			persona_id: personaId,
+			workspace_root: workspaceRoot,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create shell session');
+		}
+
+		return response.result as ShellSessionInfo;
+	}
+
+	/**
+	 * Execute a command in a shell session.
+	 *
+	 * Two modes:
+	 * - `wait: false` (default) — returns immediately with execution handle. Poll for output.
+	 * - `wait: true` — blocks until completion, returns full stdout/stderr.
+	 */
+	async shellExecute(
+		personaId: string,
+		cmd: string,
+		options?: { timeoutMs?: number; wait?: boolean },
+	): Promise<ShellExecuteResponse> {
+		const response = await this.request({
+			command: 'code/shell-execute',
+			persona_id: personaId,
+			cmd,
+			timeout_ms: options?.timeoutMs ?? null,
+			wait: options?.wait ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to execute command');
+		}
+
+		return response.result as ShellExecuteResponse;
+	}
+
+	/**
+	 * Poll an execution for new output since last poll.
+	 * Call repeatedly until `finished` is true.
+	 */
+	async shellPoll(personaId: string, executionId: string): Promise<ShellPollResponse> {
+		const response = await this.request({
+			command: 'code/shell-poll',
+			persona_id: personaId,
+			execution_id: executionId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to poll execution');
+		}
+
+		return response.result as ShellPollResponse;
+	}
+
+	/**
+	 * Kill a running execution.
+	 */
+	async shellKill(personaId: string, executionId: string): Promise<void> {
+		const response = await this.request({
+			command: 'code/shell-kill',
+			persona_id: personaId,
+			execution_id: executionId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to kill execution');
+		}
+	}
+
+	/**
+	 * Change shell session working directory.
+	 */
+	async shellCd(personaId: string, path: string): Promise<{ cwd: string }> {
+		const response = await this.request({
+			command: 'code/shell-cd',
+			persona_id: personaId,
+			path,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to change directory');
+		}
+
+		return response.result as { cwd: string };
+	}
+
+	/**
+	 * Get shell session status/info.
+	 */
+	async shellStatus(personaId: string): Promise<ShellSessionInfo> {
+		const response = await this.request({
+			command: 'code/shell-status',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get shell status');
+		}
+
+		return response.result as ShellSessionInfo;
+	}
+
+	/**
+	 * Destroy a shell session (kills all running executions).
+	 */
+	async shellDestroy(personaId: string): Promise<void> {
+		const response = await this.request({
+			command: 'code/shell-destroy',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to destroy shell session');
+		}
+	}
+
+	/**
+	 * Watch a shell execution for new output.
+	 * Blocks until output is available — no timeout, no polling.
+	 * Returns classified output lines filtered through sentinel rules.
+	 */
+	async shellWatch(personaId: string, executionId: string): Promise<ShellWatchResponse> {
+		const response = await this.request({
+			command: 'code/shell-watch',
+			persona_id: personaId,
+			execution_id: executionId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to watch execution');
+		}
+
+		return response.result as ShellWatchResponse;
+	}
+
+	/**
+	 * Configure sentinel filter rules on a shell execution.
+	 * Rules classify output lines and control which are emitted or suppressed during watch.
+	 */
+	async shellSentinel(personaId: string, executionId: string, rules: SentinelRule[]): Promise<{ applied: boolean; ruleCount: number }> {
+		const response = await this.request({
+			command: 'code/shell-sentinel',
+			persona_id: personaId,
+			execution_id: executionId,
+			rules,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to set sentinel rules');
+		}
+
+		return response.result as { applied: boolean; ruleCount: number };
 	}
 
 	/**

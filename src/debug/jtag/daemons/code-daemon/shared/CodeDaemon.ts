@@ -14,6 +14,11 @@ import type {
   WorkspaceUndoResult,
   WorkspaceHistoryResult,
   WorkspaceGitStatusInfo,
+  WorkspaceShellExecuteResponse,
+  WorkspaceShellPollResponse,
+  WorkspaceShellSessionInfo,
+  WorkspaceShellWatchResponse,
+  WorkspaceSentinelRule,
 } from './CodeDaemonTypes';
 
 /**
@@ -139,5 +144,91 @@ export class CodeDaemon {
    */
   static async workspaceGitPush(personaId: string, remote?: string, branch?: string): Promise<{ output: string }> {
     throw new Error('CodeDaemon.workspaceGitPush() must be implemented by server');
+  }
+
+  // ========================================================================
+  // Shell Session Operations (Handle + Poll pattern)
+  // ========================================================================
+
+  /**
+   * Create a shell session for a workspace.
+   * The session persists cwd and env across command executions.
+   */
+  static async shellCreate(personaId: string, workspaceRoot: string): Promise<WorkspaceShellSessionInfo> {
+    throw new Error('CodeDaemon.shellCreate() must be implemented by server');
+  }
+
+  /**
+   * Execute a command in a shell session.
+   *
+   * Two modes:
+   * - Handle mode (default): returns immediately with execution_id. Poll for output.
+   * - Wait mode (wait=true): blocks until completion, returns full stdout/stderr.
+   */
+  static async shellExecute(
+    personaId: string,
+    cmd: string,
+    options?: { timeoutMs?: number; wait?: boolean },
+  ): Promise<WorkspaceShellExecuteResponse> {
+    throw new Error('CodeDaemon.shellExecute() must be implemented by server');
+  }
+
+  /**
+   * Poll an execution for new output since last poll.
+   * Returns new stdout/stderr lines and status. Call until `finished` is true.
+   */
+  static async shellPoll(personaId: string, executionId: string): Promise<WorkspaceShellPollResponse> {
+    throw new Error('CodeDaemon.shellPoll() must be implemented by server');
+  }
+
+  /**
+   * Kill a running execution.
+   */
+  static async shellKill(personaId: string, executionId: string): Promise<void> {
+    throw new Error('CodeDaemon.shellKill() must be implemented by server');
+  }
+
+  /**
+   * Change shell session working directory (validated against workspace boundary).
+   */
+  static async shellCd(personaId: string, path: string): Promise<{ cwd: string }> {
+    throw new Error('CodeDaemon.shellCd() must be implemented by server');
+  }
+
+  /**
+   * Get shell session status/info.
+   */
+  static async shellStatus(personaId: string): Promise<WorkspaceShellSessionInfo> {
+    throw new Error('CodeDaemon.shellStatus() must be implemented by server');
+  }
+
+  /**
+   * Destroy shell session (kills all running executions).
+   */
+  static async shellDestroy(personaId: string): Promise<void> {
+    throw new Error('CodeDaemon.shellDestroy() must be implemented by server');
+  }
+
+  // ========================================================================
+  // Shell Watch + Sentinel (Event-driven output streaming)
+  // ========================================================================
+
+  /**
+   * Watch a shell execution for new output.
+   * Blocks until output is available — no timeout, no polling.
+   * Returns classified output lines filtered through sentinel rules.
+   * Call in a loop until `finished` is true.
+   */
+  static async shellWatch(personaId: string, executionId: string): Promise<WorkspaceShellWatchResponse> {
+    throw new Error('CodeDaemon.shellWatch() must be implemented by server');
+  }
+
+  /**
+   * Configure sentinel filter rules on a shell execution.
+   * Rules classify output lines and control which are emitted or suppressed during watch.
+   * Patterns are compiled to regex on the Rust side for performance.
+   */
+  static async shellSentinel(personaId: string, executionId: string, rules: WorkspaceSentinelRule[]): Promise<{ applied: boolean; ruleCount: number }> {
+    throw new Error('CodeDaemon.shellSentinel() must be implemented by server');
   }
 }

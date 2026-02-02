@@ -275,10 +275,16 @@ export class PersonaAutonomousLoop {
   /**
    * PHASE 5: Execute a task based on its type
    *
-   * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work, etc.
+   * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work,
+   * and code tasks (write-feature, review-code).
    * Delegates to PersonaTaskExecutor module for actual execution.
    */
   private async executeTask(task: InboxTask): Promise<void> {
+    // For code-domain tasks, ensure workspace exists before dispatching
+    if (task.domain === 'code') {
+      await this.personaUser.ensureWorkspace();
+    }
+
     // Delegate to task executor module
     await this.personaUser.taskExecutor.executeTask(task);
   }

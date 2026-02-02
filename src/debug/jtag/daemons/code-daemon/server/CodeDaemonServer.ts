@@ -97,5 +97,49 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
     return await rustClient.codeGitPush(personaId, remote, branch);
   };
 
-  log.info('Initialized successfully (workspace operations via Rust IPC)');
+  // ========================================================================
+  // Shell Session Operations (Handle + Poll pattern)
+  // ========================================================================
+
+  CodeDaemon.shellCreate = async (personaId: string, workspaceRoot: string) => {
+    return await rustClient.shellCreate(personaId, workspaceRoot);
+  };
+
+  CodeDaemon.shellExecute = async (personaId: string, cmd: string, options?: { timeoutMs?: number; wait?: boolean }) => {
+    return await rustClient.shellExecute(personaId, cmd, options);
+  };
+
+  CodeDaemon.shellPoll = async (personaId: string, executionId: string) => {
+    return await rustClient.shellPoll(personaId, executionId);
+  };
+
+  CodeDaemon.shellKill = async (personaId: string, executionId: string) => {
+    await rustClient.shellKill(personaId, executionId);
+  };
+
+  CodeDaemon.shellCd = async (personaId: string, path: string) => {
+    return await rustClient.shellCd(personaId, path);
+  };
+
+  CodeDaemon.shellStatus = async (personaId: string) => {
+    return await rustClient.shellStatus(personaId);
+  };
+
+  CodeDaemon.shellDestroy = async (personaId: string) => {
+    await rustClient.shellDestroy(personaId);
+  };
+
+  // ========================================================================
+  // Shell Watch + Sentinel (Event-driven output streaming)
+  // ========================================================================
+
+  CodeDaemon.shellWatch = async (personaId: string, executionId: string) => {
+    return await rustClient.shellWatch(personaId, executionId);
+  };
+
+  CodeDaemon.shellSentinel = async (personaId: string, executionId: string, rules) => {
+    return await rustClient.shellSentinel(personaId, executionId, rules);
+  };
+
+  log.info('Initialized successfully (workspace + shell + watch/sentinel operations via Rust IPC)');
 }

@@ -40,6 +40,11 @@ impl ChannelRegistry {
             name: "CHAT".into(),
         }));
         registry.register(ChannelQueue::new(ChannelQueueConfig {
+            domain: ActivityDomain::Code,
+            max_size: 100,
+            name: "CODE".into(),
+        }));
+        registry.register(ChannelQueue::new(ChannelQueueConfig {
             domain: ActivityDomain::Background,
             max_size: 200,
             name: "BACKGROUND".into(),
@@ -229,6 +234,7 @@ fn domain_name(domain: ActivityDomain) -> &'static str {
     match domain {
         ActivityDomain::Audio => "AUDIO",
         ActivityDomain::Chat => "CHAT",
+        ActivityDomain::Code => "CODE",
         ActivityDomain::Background => "BACKGROUND",
     }
 }
@@ -287,6 +293,7 @@ mod tests {
         let registry = ChannelRegistry::new();
         assert!(registry.get(ActivityDomain::Audio).is_some());
         assert!(registry.get(ActivityDomain::Chat).is_some());
+        assert!(registry.get(ActivityDomain::Code).is_some());
         assert!(registry.get(ActivityDomain::Background).is_some());
     }
 
@@ -343,7 +350,7 @@ mod tests {
         assert_eq!(status.total_size, 2);
         assert!(status.has_urgent_work);
         assert!(status.has_work);
-        assert_eq!(status.channels.len(), 3); // All domains reported
+        assert_eq!(status.channels.len(), 4); // All domains reported
     }
 
     #[test]

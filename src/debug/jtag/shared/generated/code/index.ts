@@ -26,3 +26,17 @@ export type { TreeResult } from './TreeResult';
 
 // Git
 export type { GitStatusInfo } from './GitStatusInfo';
+
+// Shell Session
+export type { ShellExecutionStatus } from './ShellExecutionStatus';
+export type { ShellExecuteResponse } from './ShellExecuteResponse';
+export type { ShellPollResponse } from './ShellPollResponse';
+export type { ShellSessionInfo } from './ShellSessionInfo';
+export type { ShellHistoryEntry } from './ShellHistoryEntry';
+
+// Shell Watch + Sentinel
+export type { OutputClassification } from './OutputClassification';
+export type { SentinelAction } from './SentinelAction';
+export type { SentinelRule } from './SentinelRule';
+export type { ClassifiedLine } from './ClassifiedLine';
+export type { ShellWatchResponse } from './ShellWatchResponse';

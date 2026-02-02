@@ -118,6 +118,7 @@ import { RustCognitionBridge, type PersonaUserForRustCognition } from './modules
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
+import { Workspace } from '../../code/server/Workspace';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { DataOpen } from '../../../commands/data/open/shared/DataOpenTypes';
 import type { CorpusMemory } from '../../../workers/continuum-core/bindings/CorpusMemory';
@@ -198,6 +199,9 @@ export class PersonaUser extends AIUser {
 
   // MEMORY LEAK FIX: Track event subscriptions for cleanup
   private _eventUnsubscribes: (() => void)[] = [];
+
+  // Workspace handle — lazy-created on first code task, retained for session lifetime
+  private _workspace: Workspace | null = null;
 
   /**
    * Get unified consciousness for cross-context awareness
@@ -304,6 +308,32 @@ export class PersonaUser extends AIUser {
   public get planFormulator(): SimplePlanFormulator {
     if (!this.prefrontal) throw new Error('Prefrontal cortex not initialized');
     return this.prefrontal.planFormulator;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // Workspace — per-persona code workspace (lazy-created, session-scoped)
+  // ════════════════════════════════════════════════════════════════════════════
+
+  /** Get the current workspace handle (null if not yet created) */
+  public get workspace(): Workspace | null {
+    return this._workspace;
+  }
+
+  /**
+   * Ensure a workspace exists for this persona.
+   * Creates a sandbox workspace on first call, retains for session lifetime.
+   * Called automatically when persona receives a code-domain task.
+   */
+  public async ensureWorkspace(): Promise<Workspace> {
+    if (this._workspace) return this._workspace;
+
+    this.log.info(`🔧 ${this.displayName}: Creating workspace (sandbox mode)`);
+    this._workspace = await Workspace.create({
+      personaId: this.id,
+      mode: 'sandbox',
+    });
+    this.log.info(`🔧 ${this.displayName}: Workspace created — handle=${this._workspace.handle}, dir=${this._workspace.dir}`);
+    return this._workspace;
   }
 
   // BEING ARCHITECTURE: Delegate to body for toolExecutor
@@ -1961,6 +1991,17 @@ export class PersonaUser extends AIUser {
 
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();
+
+    // Clean up workspace (shell session + worktree)
+    if (this._workspace) {
+      try {
+        await this._workspace.destroy();
+        this.log.info(`🔧 ${this.displayName}: Workspace destroyed`);
+      } catch (e) {
+        this.log.warn(`⚠️ ${this.displayName}: Workspace cleanup failed: ${e}`);
+      }
+      this._workspace = null;
+    }
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();

@@ -16,3 +16,17 @@ export type { UndoResult as WorkspaceUndoResult } from '../../../shared/generate
 export type { ChangeNode as WorkspaceChangeNode } from '../../../shared/generated/code/ChangeNode';
 export type { HistoryResult as WorkspaceHistoryResult } from '../../../shared/generated/code/HistoryResult';
 export type { GitStatusInfo as WorkspaceGitStatusInfo } from '../../../shared/generated/code/GitStatusInfo';
+
+// Shell session types
+export type { ShellExecutionStatus as WorkspaceShellExecutionStatus } from '../../../shared/generated/code/ShellExecutionStatus';
+export type { ShellExecuteResponse as WorkspaceShellExecuteResponse } from '../../../shared/generated/code/ShellExecuteResponse';
+export type { ShellPollResponse as WorkspaceShellPollResponse } from '../../../shared/generated/code/ShellPollResponse';
+export type { ShellSessionInfo as WorkspaceShellSessionInfo } from '../../../shared/generated/code/ShellSessionInfo';
+export type { ShellHistoryEntry as WorkspaceShellHistoryEntry } from '../../../shared/generated/code/ShellHistoryEntry';
+
+// Shell watch + sentinel types
+export type { OutputClassification as WorkspaceOutputClassification } from '../../../shared/generated/code/OutputClassification';
+export type { SentinelAction as WorkspaceSentinelAction } from '../../../shared/generated/code/SentinelAction';
+export type { SentinelRule as WorkspaceSentinelRule } from '../../../shared/generated/code/SentinelRule';
+export type { ClassifiedLine as WorkspaceClassifiedLine } from '../../../shared/generated/code/ClassifiedLine';
+export type { ShellWatchResponse as WorkspaceShellWatchResponse } from '../../../shared/generated/code/ShellWatchResponse';

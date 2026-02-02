@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-02T11:46:40.136Z",
+  "generated": "2026-02-02T17:26:41.508Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5288,58 +5288,29 @@
       }
     },
     {
-      "name": "code/task",
-      "description": "Code Task Command - Shared Types\n *\n * Execute a coding task end-to-end via the coding agent pipeline. Formulates a plan using LLM reasoning, enforces security tiers, and executes steps via code/* commands. Supports dry-run mode, governance approval for high-risk plans, and multi-agent delegation.",
+      "name": "code/shell/watch",
+      "description": "Code Shell Watch Command - Shared Types\n *\n * Watch a shell execution for new output. Blocks until output is available — no timeout, no polling.\n * Returns classified output lines filtered through sentinel rules. Call in a loop until finished is true.",
       "params": {
-        "description": {
+        "executionId": {
           "type": "string",
           "required": true,
-          "description": "description parameter"
-        },
-        "taskType": {
+          "description": "executionId parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/sentinel",
+      "description": "Code Shell Sentinel Command - Shared Types\n *\n * Configure sentinel filter rules on a shell execution. Rules classify output lines\n * and control which lines are emitted or suppressed during watch.\n * Patterns are compiled to regex on the Rust side for performance.",
+      "params": {
+        "executionId": {
           "type": "string",
-          "required": false,
-          "description": "taskType parameter"
+          "required": true,
+          "description": "executionId parameter"
         },
-        "relevantFiles": {
+        "rules": {
           "type": "array",
-          "required": false,
-          "description": "relevantFiles parameter"
-        },
-        "dryRun": {
-          "type": "boolean",
-          "required": false,
-          "description": "dryRun parameter"
-        },
-        "securityTier": {
-          "type": "string",
-          "required": false,
-          "description": "securityTier parameter"
-        },
-        "delegationEnabled": {
-          "type": "boolean",
-          "required": false,
-          "description": "delegationEnabled parameter"
-        },
-        "maxDurationMs": {
-          "type": "number",
-          "required": false,
-          "description": "maxDurationMs parameter"
-        },
-        "maxToolCalls": {
-          "type": "number",
-          "required": false,
-          "description": "maxToolCalls parameter"
-        },
-        "workspaceMode": {
-          "type": "string",
-          "required": false,
-          "description": "workspaceMode parameter"
-        },
-        "sparsePaths": {
-          "type": "array",
-          "required": false,
-          "description": "sparsePaths parameter"
+          "required": true,
+          "description": "rules parameter"
         }
       }
     },
@@ -5561,48 +5532,6 @@
           "type": "string",
           "required": false,
           "description": "content parameter"
-        }
-      }
-    },
-    {
-      "name": "challenge/run",
-      "description": "Challenge Run Command - Shared Types\n *\n * Run a coding challenge against the AI coding pipeline. Sets up a fresh workspace, executes the challenge via code/task, evaluates with AI judge, and records the attempt.",
-      "params": {
-        "challengeId": {
-          "type": "string",
-          "required": false,
-          "description": "challengeId parameter"
-        },
-        "challengeNumber": {
-          "type": "number",
-          "required": false,
-          "description": "challengeNumber parameter"
-        },
-        "personaId": {
-          "type": "string",
-          "required": false,
-          "description": "personaId parameter"
-        },
-        "skipJudge": {
-          "type": "boolean",
-          "required": false,
-          "description": "skipJudge parameter"
-        }
-      }
-    },
-    {
-      "name": "challenge/list",
-      "description": "Challenge List Command - Shared Types\n *\n * List available coding challenges with their difficulty, status, and best scores. Shows progressive challenge sequence for AI training.",
-      "params": {
-        "difficulty": {
-          "type": "string",
-          "required": false,
-          "description": "difficulty parameter"
-        },
-        "personaId": {
-          "type": "string",
-          "required": false,
-          "description": "personaId parameter"
         }
       }
     },
