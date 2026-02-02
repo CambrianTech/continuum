@@ -64,6 +64,7 @@ export const COMMANDS = {
   CODE_HISTORY: 'code/history',
   CODE_READ: 'code/read',
   CODE_SEARCH: 'code/search',
+  CODE_TASK: 'code/task',
   CODE_TREE: 'code/tree',
   CODE_UNDO: 'code/undo',
   CODE_WRITE: 'code/write',

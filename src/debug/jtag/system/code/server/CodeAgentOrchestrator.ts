@@ -7,11 +7,12 @@
  * Execution lifecycle:
  * 1. Discover — code/tree + code/search to understand codebase
  * 2. Read — code/read to gather context
- * 3. Plan — PlanFormulator decomposes task (already done before orchestrator runs)
- * 4. Execute — Run each step via code/* commands
- * 5. Verify — After each write/edit, read back to confirm
- * 6. Fix — If verification fails, retry (max 3 attempts per step)
- * 7. Report — Summarize changes via code/history
+ * 3. Plan — PlanFormulator decomposes task via LLM
+ * 4. Governance — Check if plan requires team approval (high-risk/system-tier)
+ * 5. Execute — Run each step via code/* commands
+ * 6. Verify — After each write/edit, read back to confirm
+ * 7. Fix — If verification fails, retry (max 3 attempts per step)
+ * 8. Report — Summarize changes via code/history
  *
  * Persistence:
  * - Plans are persisted as CodingPlanEntity via DataDaemon
@@ -33,11 +34,15 @@ import type {
   StepResult,
   StepStatus,
   ExecutionOptions,
+  RiskLevel,
+  SecurityTierLevel,
 } from '../shared/CodingTypes';
 import { PlanFormulator } from './PlanFormulator';
 import { CodingModelSelector } from './CodingModelSelector';
 import { ToolAllowlistEnforcer, ToolDeniedError } from './ToolAllowlistEnforcer';
 import { getTier } from './SecurityTier';
+import { PlanGovernance } from './PlanGovernance';
+import { CodeTaskDelegator } from './CodeTaskDelegator';
 import { Commands } from '../../core/shared/Commands';
 import { Logger } from '../../core/logging/Logger';
 import { CodingPlanEntity } from '../../data/entities/CodingPlanEntity';
@@ -99,24 +104,29 @@ class ExecutionBudget {
 export class CodeAgentOrchestrator {
   private readonly modelSelector: CodingModelSelector;
   private readonly planFormulator: PlanFormulator;
+  private readonly governance: PlanGovernance;
+  private readonly delegator: CodeTaskDelegator;
 
   constructor(modelSelector?: CodingModelSelector) {
     this.modelSelector = modelSelector ?? new CodingModelSelector();
     this.planFormulator = new PlanFormulator(this.modelSelector);
+    this.governance = new PlanGovernance();
+    this.delegator = new CodeTaskDelegator();
   }
 
   /**
    * Execute a coding task end-to-end:
    * 1. Optionally discover codebase context
    * 2. Formulate a plan via LLM
-   * 3. Persist the plan as a CodingPlanEntity
-   * 4. Execute each step (updating entity in real-time)
-   * 5. Return results
+   * 3. Check governance (high-risk plans require team approval)
+   * 4. Persist the plan as a CodingPlanEntity
+   * 5. Execute each step (updating entity in real-time)
+   * 6. Return results
    *
    * Options:
    * - dryRun: Execute read-only commands normally, but mock write/edit commands
    * - securityTier: Override the plan's required tier
-   * - delegationEnabled: Enable multi-agent delegation (future)
+   * - delegationEnabled: Enable multi-agent delegation for parallel execution
    */
   async execute(task: CodingTask, options?: ExecutionOptions): Promise<CodingResult> {
     const dryRun = options?.dryRun ?? false;
@@ -155,6 +165,26 @@ export class CodeAgentOrchestrator {
 
       // Phase 2c: Persist plan as entity (best-effort — works without DataDaemon)
       planEntity = await this.persistPlan(task, plan);
+
+      // Phase 2d: Governance — check if plan requires approval
+      if (planEntity && this.governance.shouldRequireApproval(planEntity)) {
+        log.info(`Plan requires governance approval (risk: ${plan.riskLevel}, tier: ${tierLevel})`);
+        const proposalId = await this.governance.proposePlan(planEntity);
+
+        if (proposalId) {
+          // Update plan status to 'proposed' and return early
+          await this.updatePlanStatus(planEntity, 'proposed');
+          return this.buildResult(
+            task, 'pending_approval',
+            `Plan submitted for governance approval: ${plan.summary}`,
+            [], filesModified, filesCreated, changeIds, errors, budget,
+            { proposalId: proposalId as string, planMetadata: { riskLevel: plan.riskLevel, requiredTier: plan.requiredTier, planSummary: plan.summary } },
+          );
+        }
+
+        // Governance proposal failed — log and continue (auto-approve)
+        log.warn('Governance proposal creation failed, auto-approving plan');
+      }
 
       // Phase 3: Execute plan steps in dependency order
       const completedSteps = new Set<number>();
@@ -219,7 +249,10 @@ export class CodeAgentOrchestrator {
         ? `Completed: ${plan.summary}`
         : `${status}: ${stepResults.filter(r => r.status === 'completed').length}/${plan.steps.length} steps completed`;
 
-      const codingResult = this.buildResult(task, status, summary, stepResults, filesModified, filesCreated, changeIds, errors, budget);
+      const codingResult = this.buildResult(
+        task, status, summary, stepResults, filesModified, filesCreated, changeIds, errors, budget,
+        { planMetadata: { riskLevel: plan.riskLevel, requiredTier: plan.requiredTier, planSummary: plan.summary } },
+      );
 
       // Finalize persisted plan
       await this.finalizePlan(planEntity, codingResult);
@@ -459,6 +492,7 @@ export class CodeAgentOrchestrator {
     changeIds: string[],
     errors: string[],
     budget: ExecutionBudget,
+    extra?: { proposalId?: string; planMetadata?: CodingResult['planMetadata'] },
   ): CodingResult {
     return {
       taskId: task.id,
@@ -471,6 +505,8 @@ export class CodeAgentOrchestrator {
       totalDurationMs: budget.elapsedMs,
       changeIds,
       errors,
+      proposalId: extra?.proposalId,
+      planMetadata: extra?.planMetadata,
     };
   }
 
@@ -565,6 +601,25 @@ export class CodeAgentOrchestrator {
   }
 
   /**
+   * Update the plan's top-level status.
+   */
+  private async updatePlanStatus(
+    planEntity: CodingPlanEntity,
+    status: CodingPlanStatus,
+  ): Promise<void> {
+    try {
+      const { DataDaemon } = await import('../../../daemons/data-daemon/shared/DataDaemon');
+      await DataDaemon.update<CodingPlanEntity>(
+        COLLECTIONS.CODING_PLANS,
+        planEntity.id as UUID,
+        { status } as Partial<CodingPlanEntity>,
+      );
+    } catch {
+      // Best-effort
+    }
+  }
+
+  /**
    * Finalize the persisted plan with execution results.
    */
   private async finalizePlan(
@@ -576,11 +631,12 @@ export class CodeAgentOrchestrator {
     try {
       const { DataDaemon } = await import('../../../daemons/data-daemon/shared/DataDaemon');
 
-      const statusMap: Record<CodingResultStatus, CodingPlanStatus> = {
+      const statusMap: Record<string, CodingPlanStatus> = {
         completed: 'completed',
         partial: 'partial',
         failed: 'failed',
         budget_exceeded: 'partial',
+        pending_approval: 'proposed',
       };
 
       await DataDaemon.update<CodingPlanEntity>(

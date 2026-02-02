@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-02T03:02:21.661Z",
+  "generated": "2026-02-02T04:27:03.817Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5263,6 +5263,52 @@
           "type": "boolean",
           "required": false,
           "description": "includeHidden parameter"
+        }
+      }
+    },
+    {
+      "name": "code/task",
+      "description": "Code Task Command - Shared Types\n *\n * Execute a coding task end-to-end via the coding agent pipeline. Formulates a plan using LLM reasoning, enforces security tiers, and executes steps via code/* commands. Supports dry-run mode, governance approval for high-risk plans, and multi-agent delegation.",
+      "params": {
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "taskType": {
+          "type": "string",
+          "required": false,
+          "description": "taskType parameter"
+        },
+        "relevantFiles": {
+          "type": "array",
+          "required": false,
+          "description": "relevantFiles parameter"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "required": false,
+          "description": "dryRun parameter"
+        },
+        "securityTier": {
+          "type": "string",
+          "required": false,
+          "description": "securityTier parameter"
+        },
+        "delegationEnabled": {
+          "type": "boolean",
+          "required": false,
+          "description": "delegationEnabled parameter"
+        },
+        "maxDurationMs": {
+          "type": "number",
+          "required": false,
+          "description": "maxDurationMs parameter"
+        },
+        "maxToolCalls": {
+          "type": "number",
+          "required": false,
+          "description": "maxToolCalls parameter"
         }
       }
     },

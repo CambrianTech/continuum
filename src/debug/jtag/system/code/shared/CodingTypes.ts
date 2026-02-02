@@ -211,7 +211,7 @@ export interface StepResult {
 // Coding Result (Final Output)
 // ============================================================================
 
-export type CodingResultStatus = 'completed' | 'partial' | 'failed' | 'budget_exceeded';
+export type CodingResultStatus = 'completed' | 'partial' | 'failed' | 'budget_exceeded' | 'pending_approval';
 
 /**
  * Final result of executing a coding task.
@@ -246,6 +246,16 @@ export interface CodingResult {
 
   /** Errors encountered */
   readonly errors: string[];
+
+  /** Governance proposal ID (set when status is 'pending_approval') */
+  readonly proposalId?: string;
+
+  /** Plan metadata (risk level, tier, plan summary) */
+  readonly planMetadata?: {
+    readonly riskLevel: RiskLevel;
+    readonly requiredTier: SecurityTierLevel;
+    readonly planSummary: string;
+  };
 }
 
 // ============================================================================
