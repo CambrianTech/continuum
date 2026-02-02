@@ -447,8 +447,7 @@ export class PersonaInbox {
  * - Recent message: +0.2 (fresher = more relevant)
  * - Active conversation: +0.1 (persona recently active in room)
  * - Relevant expertise: +0.1 (matches persona's domain)
- * - Hot conversation (temp ≥ 0.7): +0.15 (PHASE 3BIS)
- * - Cold conversation (temp ≤ 0.3): -0.1 (PHASE 3BIS)
+ * - Hot conversation (temp ≥ 0.7): +0.1 (activity signal, not a gate)
  *
  * Base: 0.2 (all messages have baseline relevance)
  */
@@ -492,18 +491,17 @@ export function calculateMessagePriority(
     }
   }
 
-  // PHASE 3BIS: Temperature-based priority adjustment (activity ambient state)
-  // Hot conversations = more responsive, Cold conversations = less urgent
+  // Temperature is informational context — the AI's own cognition decides
+  // whether to respond, not a formula. Hot rooms get a small boost but
+  // cold rooms are NOT penalized. The AI might have something important
+  // to say regardless of room temperature.
   const temperature = getChatCoordinator().getTemperature(message.roomId);
 
   if (temperature >= 0.7) {
-    // Hot conversation - be more responsive
-    priority += 0.15;
-  } else if (temperature <= 0.3) {
-    // Cold conversation - less urgent (but still respond to mentions)
-    priority -= 0.1;
+    // Hot conversation - slight boost for responsiveness
+    priority += 0.1;
   }
-  // Neutral temperature (0.3-0.7) - no adjustment
+  // Cold/neutral: no penalty — let the AI's cognition decide
 
   return Math.min(1.0, priority); // Cap at 1.0
 }

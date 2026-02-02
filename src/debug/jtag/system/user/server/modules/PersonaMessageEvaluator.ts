@@ -714,7 +714,7 @@ export class PersonaMessageEvaluator {
     this.log(`🔧 TRACE-POINT-C: After respondToMessage returned (timestamp=${Date.now()})`);
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 3/3] Response posted successfully`);
 
-    // PHASE 3BIS: Notify coordinator that message was serviced (lowers temperature)
+    // Signal conversation activity (warms room — active conversation stays alive)
     getChatCoordinator().onMessageServiced(messageEntity.roomId, this.personaUser.id);
 
     // Track response for rate limiting
