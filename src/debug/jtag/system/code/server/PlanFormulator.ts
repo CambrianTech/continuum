@@ -14,11 +14,12 @@
  * The LLM returns a JSON CodingPlan that the CodeAgentOrchestrator executes.
  */
 
-import type { CodingTask, CodingPlan, CodingStep, CodingAction } from '../shared/CodingTypes';
+import type { CodingTask, CodingPlan, CodingStep, CodingAction, RiskLevel, SecurityTierLevel } from '../shared/CodingTypes';
 import { CodingModelSelector } from './CodingModelSelector';
 import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, ChatMessage } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { Logger } from '../../core/logging/Logger';
+import { riskToTier } from './SecurityTier';
 
 const log = Logger.create('PlanFormulator', 'code');
 
@@ -159,6 +160,8 @@ ${toolDocs}
 Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "summary": "Brief description of the approach",
+  "riskLevel": "low|medium|high|critical",
+  "riskReason": "Why this risk level was assigned",
   "steps": [
     {
       "stepNumber": 1,
@@ -172,6 +175,12 @@ Respond with ONLY a JSON object (no markdown, no explanation):
     }
   ]
 }
+
+## Risk Assessment Guidelines
+- **low**: Read-only tasks, documentation, test-only changes, single-file edits
+- **medium**: Multi-file edits, adding new functions, standard refactoring
+- **high**: API/interface changes, security-sensitive code, cross-module refactoring
+- **critical**: System configuration, build scripts, deployment, anything requiring shell execution
 
 ## Rules
 1. Steps are numbered starting from 1
@@ -231,11 +240,19 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       throw new Error(`PlanFormulator: Invalid JSON in LLM response: ${(e as Error).message}`);
     }
 
-    const parsed = raw as { summary?: string; steps?: unknown[] };
+    const parsed = raw as { summary?: string; steps?: unknown[]; riskLevel?: string; riskReason?: string };
 
     if (!parsed.summary || typeof parsed.summary !== 'string') {
       throw new Error('PlanFormulator: Plan missing "summary" field');
     }
+
+    // Extract and validate risk assessment
+    const VALID_RISK_LEVELS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'critical']);
+    const riskLevel: RiskLevel = VALID_RISK_LEVELS.has(parsed.riskLevel ?? '')
+      ? (parsed.riskLevel as RiskLevel)
+      : 'medium'; // Default to medium if LLM omits or gives invalid value
+    const riskReason = typeof parsed.riskReason === 'string' ? parsed.riskReason : 'No risk reason provided';
+    const requiredTier: SecurityTierLevel = riskToTier(riskLevel);
 
     if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
       throw new Error('PlanFormulator: Plan has no steps');
@@ -290,6 +307,9 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       estimatedToolCalls: steps.length,
       generatedBy: { provider, model },
       generatedAt: Date.now(),
+      riskLevel,
+      riskReason,
+      requiredTier,
     };
   }
 }

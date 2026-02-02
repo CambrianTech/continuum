@@ -32,9 +32,12 @@ import type {
   CodingResultStatus,
   StepResult,
   StepStatus,
+  ExecutionOptions,
 } from '../shared/CodingTypes';
 import { PlanFormulator } from './PlanFormulator';
 import { CodingModelSelector } from './CodingModelSelector';
+import { ToolAllowlistEnforcer, ToolDeniedError } from './ToolAllowlistEnforcer';
+import { getTier } from './SecurityTier';
 import { Commands } from '../../core/shared/Commands';
 import { Logger } from '../../core/logging/Logger';
 import { CodingPlanEntity } from '../../data/entities/CodingPlanEntity';
@@ -109,14 +112,20 @@ export class CodeAgentOrchestrator {
    * 3. Persist the plan as a CodingPlanEntity
    * 4. Execute each step (updating entity in real-time)
    * 5. Return results
+   *
+   * Options:
+   * - dryRun: Execute read-only commands normally, but mock write/edit commands
+   * - securityTier: Override the plan's required tier
+   * - delegationEnabled: Enable multi-agent delegation (future)
    */
-  async execute(task: CodingTask): Promise<CodingResult> {
+  async execute(task: CodingTask, options?: ExecutionOptions): Promise<CodingResult> {
+    const dryRun = options?.dryRun ?? false;
     const budget = new ExecutionBudget(
       task.maxDurationMs ?? DEFAULT_MAX_DURATION_MS,
       task.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS,
     );
 
-    log.info(`Starting task: ${task.description.slice(0, 80)}... (budget: ${budget.remainingToolCalls} calls)`);
+    log.info(`Starting task${dryRun ? ' [DRY RUN]' : ''}: ${task.description.slice(0, 80)}... (budget: ${budget.remainingToolCalls} calls)`);
 
     const filesModified: string[] = [];
     const filesCreated: string[] = [];
@@ -138,9 +147,13 @@ export class CodeAgentOrchestrator {
       }
 
       const plan = await this.planFormulator.formulate(task, codebaseContext);
-      log.info(`Plan: "${plan.summary}" — ${plan.steps.length} steps`);
+      log.info(`Plan: "${plan.summary}" — ${plan.steps.length} steps (risk: ${plan.riskLevel}, tier: ${plan.requiredTier})`);
 
-      // Phase 2b: Persist plan as entity (best-effort — works without DataDaemon)
+      // Phase 2b: Create security enforcer from plan's required tier (or override)
+      const tierLevel = options?.securityTier ?? plan.requiredTier;
+      const enforcer = new ToolAllowlistEnforcer(getTier(tierLevel));
+
+      // Phase 2c: Persist plan as entity (best-effort — works without DataDaemon)
       planEntity = await this.persistPlan(task, plan);
 
       // Phase 3: Execute plan steps in dependency order
@@ -174,8 +187,8 @@ export class CodeAgentOrchestrator {
           continue;
         }
 
-        // Execute step with retry
-        const result = await this.executeStepWithRetry(step, task, budget);
+        // Execute step with retry (enforcer gates each tool call)
+        const result = await this.executeStepWithRetry(step, task, budget, enforcer, dryRun);
         stepResults.push(result);
 
         if (result.status === 'completed') {
@@ -278,6 +291,8 @@ export class CodeAgentOrchestrator {
     step: CodingStep,
     task: CodingTask,
     budget: ExecutionBudget,
+    enforcer: ToolAllowlistEnforcer,
+    dryRun: boolean = false,
   ): Promise<StepResult> {
     let lastError: string | undefined;
 
@@ -292,7 +307,7 @@ export class CodeAgentOrchestrator {
         };
       }
 
-      const result = await this.executeStep(step, task, budget);
+      const result = await this.executeStep(step, task, budget, enforcer, dryRun);
 
       if (result.status === 'completed') {
         return result;
@@ -315,22 +330,47 @@ export class CodeAgentOrchestrator {
 
   /**
    * Execute a single step via Commands.execute().
+   * In dryRun mode, read-only commands execute normally but write commands return mock results.
    */
   private async executeStep(
     step: CodingStep,
     task: CodingTask,
     budget: ExecutionBudget,
+    enforcer: ToolAllowlistEnforcer,
+    dryRun: boolean = false,
   ): Promise<StepResult> {
     const startTime = performance.now();
 
     try {
-      log.debug(`Step ${step.stepNumber}: ${step.action} — ${step.description}`);
+      log.debug(`Step ${step.stepNumber}${dryRun ? ' [DRY]' : ''}: ${step.action} — ${step.description}`);
 
       // Inject personaId (userId) into params for workspace scoping
       const params = {
         ...step.toolParams,
         userId: task.personaId,
       };
+
+      // Gate tool call through security tier enforcer
+      enforcer.enforce(step.toolCall, params);
+
+      // DryRun: mock write/edit commands, execute read-only normally
+      if (dryRun && this.isWriteAction(step.action)) {
+        budget.recordToolCall();
+        const durationMs = performance.now() - startTime;
+        return {
+          stepNumber: step.stepNumber,
+          status: 'completed',
+          output: {
+            success: true,
+            dryRun: true,
+            wouldModify: step.targetFiles,
+            action: step.action,
+            description: step.description,
+          },
+          durationMs,
+          toolCall: step.toolCall,
+        };
+      }
 
       const result = await Commands.execute<any, any>(step.toolCall, params);
       budget.recordToolCall();
@@ -399,6 +439,14 @@ export class CodeAgentOrchestrator {
   }
 
   /**
+   * Whether a coding action modifies files (write, edit, undo).
+   * DryRun mode mocks these actions instead of executing them.
+   */
+  private isWriteAction(action: string): boolean {
+    return action === 'write' || action === 'edit' || action === 'undo';
+  }
+
+  /**
    * Build the final CodingResult.
    */
   private buildResult(
@@ -452,6 +500,9 @@ export class CodeAgentOrchestrator {
         temperature: 0,
         durationMs: 0,
       };
+      entity.riskLevel = plan.riskLevel;
+      entity.riskReason = plan.riskReason;
+      entity.securityTier = plan.requiredTier;
       entity.status = 'executing';
       entity.executionStartedAt = Date.now();
 

@@ -277,6 +277,19 @@ describe('PlanFormulator', () => {
       await expect(formulator.formulate(makeTask())).rejects.toThrow('invalid step');
     });
 
+    it('throws on self-dependency reference', async () => {
+      mockGenerateText.mockResolvedValue({
+        text: JSON.stringify({
+          summary: 'Self dep',
+          steps: [
+            { stepNumber: 1, action: 'read', toolCall: 'code/read', dependsOn: [1] },
+          ],
+        }),
+      });
+
+      await expect(formulator.formulate(makeTask())).rejects.toThrow('invalid step');
+    });
+
     it('extracts JSON from markdown code blocks', async () => {
       const planJson = JSON.stringify({
         summary: 'Wrapped in markdown',
@@ -296,6 +309,89 @@ describe('PlanFormulator', () => {
       const plan = await formulator.formulate(makeTask());
       expect(plan.summary).toBe('Wrapped in markdown');
       expect(plan.steps).toHaveLength(1);
+    });
+  });
+
+  describe('risk assessment', () => {
+    it('parses riskLevel from LLM response', async () => {
+      mockGenerateText.mockResolvedValue({
+        text: JSON.stringify({
+          summary: 'Low risk read-only task',
+          riskLevel: 'low',
+          riskReason: 'Read-only operation, no file modifications',
+          steps: [{
+            stepNumber: 1,
+            action: 'read',
+            toolCall: 'code/read',
+            toolParams: { filePath: 'test.ts' },
+            dependsOn: [],
+          }],
+        }),
+      });
+
+      const plan = await formulator.formulate(makeTask());
+      expect(plan.riskLevel).toBe('low');
+      expect(plan.riskReason).toBe('Read-only operation, no file modifications');
+      expect(plan.requiredTier).toBe('write'); // low → write tier
+    });
+
+    it('defaults riskLevel to medium when omitted', async () => {
+      mockValidPlan(); // doesn't include riskLevel
+
+      const plan = await formulator.formulate(makeTask());
+      expect(plan.riskLevel).toBe('medium');
+      expect(plan.requiredTier).toBe('write');
+    });
+
+    it('defaults riskLevel to medium for invalid values', async () => {
+      mockGenerateText.mockResolvedValue({
+        text: JSON.stringify({
+          summary: 'Bad risk',
+          riskLevel: 'extreme',
+          steps: [{
+            stepNumber: 1,
+            action: 'read',
+            toolCall: 'code/read',
+            toolParams: {},
+            dependsOn: [],
+          }],
+        }),
+      });
+
+      const plan = await formulator.formulate(makeTask());
+      expect(plan.riskLevel).toBe('medium');
+    });
+
+    it('critical risk maps to system tier', async () => {
+      mockGenerateText.mockResolvedValue({
+        text: JSON.stringify({
+          summary: 'Critical system change',
+          riskLevel: 'critical',
+          riskReason: 'Modifies build configuration',
+          steps: [{
+            stepNumber: 1,
+            action: 'edit',
+            toolCall: 'code/edit',
+            toolParams: { filePath: 'build.config.ts' },
+            dependsOn: [],
+          }],
+        }),
+      });
+
+      const plan = await formulator.formulate(makeTask());
+      expect(plan.riskLevel).toBe('critical');
+      expect(plan.requiredTier).toBe('system');
+    });
+
+    it('includes risk assessment guidelines in prompt', async () => {
+      mockValidPlan();
+
+      await formulator.formulate(makeTask());
+
+      const request = mockGenerateText.mock.calls[0][0];
+      const systemMsg = request.messages.find((m: any) => m.role === 'system');
+      expect(systemMsg.content).toContain('riskLevel');
+      expect(systemMsg.content).toContain('Risk Assessment Guidelines');
     });
   });
 });

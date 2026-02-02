@@ -300,4 +300,77 @@ describe('CodeAgentOrchestrator', () => {
       expect(readStep?.error).toContain('Connection lost');
     });
   });
+
+  describe('dryRun mode', () => {
+    it('executes read steps normally in dryRun', async () => {
+      mockSimplePlan();
+      mockExecute
+        .mockResolvedValueOnce({ success: true, root: {} })          // code/tree (discovery)
+        .mockResolvedValueOnce({ success: true, content: 'old' })    // step 1: code/read
+        .mockResolvedValue({ success: true, content: 'data' });      // remaining reads
+
+      const result = await orchestrator.execute(makeTask(), { dryRun: true });
+
+      // Step 1 (read) should execute normally
+      const readStep = result.stepResults.find(r => r.stepNumber === 1);
+      expect(readStep?.status).toBe('completed');
+    });
+
+    it('mocks write/edit steps in dryRun', async () => {
+      mockSimplePlan();
+      mockExecute
+        .mockResolvedValueOnce({ success: true, root: {} })          // code/tree (discovery)
+        .mockResolvedValueOnce({ success: true, content: 'old' })    // step 1: code/read
+        .mockResolvedValue({ success: true, content: 'data' });      // step 3: verify read
+
+      const result = await orchestrator.execute(makeTask(), { dryRun: true });
+
+      // Step 2 (edit) should be mocked — completed but with dryRun flag
+      const editStep = result.stepResults.find(r => r.stepNumber === 2);
+      expect(editStep?.status).toBe('completed');
+
+      const output = editStep?.output as Record<string, unknown>;
+      expect(output?.dryRun).toBe(true);
+      expect(output?.wouldModify).toEqual(['utils.ts']);
+    });
+
+    it('dryRun does not call Commands.execute for write steps', async () => {
+      mockSimplePlan();
+
+      const callLog: string[] = [];
+      mockExecute.mockImplementation(async (cmd: string) => {
+        callLog.push(cmd);
+        if (cmd === 'code/tree') return { success: true, root: {} };
+        return { success: true, content: 'data' };
+      });
+
+      await orchestrator.execute(makeTask(), { dryRun: true });
+
+      // code/edit should NOT appear in call log
+      expect(callLog).not.toContain('code/edit');
+      // code/read and code/tree should appear
+      expect(callLog).toContain('code/tree');
+      expect(callLog).toContain('code/read');
+    });
+
+    it('dryRun completes all steps successfully', async () => {
+      mockSimplePlan();
+      mockExecute.mockResolvedValue({ success: true, content: 'data', root: {} });
+
+      const result = await orchestrator.execute(makeTask(), { dryRun: true });
+
+      expect(result.status).toBe('completed');
+      expect(result.stepResults.every(r => r.status === 'completed')).toBe(true);
+    });
+
+    it('dryRun does not produce changeIds', async () => {
+      mockSimplePlan();
+      mockExecute.mockResolvedValue({ success: true, content: 'data', root: {} });
+
+      const result = await orchestrator.execute(makeTask(), { dryRun: true });
+
+      // No real writes happened, so no changeIds
+      expect(result.changeIds).toHaveLength(0);
+    });
+  });
 });

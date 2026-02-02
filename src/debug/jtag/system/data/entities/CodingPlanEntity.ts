@@ -25,7 +25,7 @@ import {
 } from '../decorators/FieldDecorators';
 import { BaseEntity } from './BaseEntity';
 import { COLLECTIONS } from '../../shared/Constants';
-import type { CodingAction } from '../../code/shared/CodingTypes';
+import type { CodingAction, RiskLevel, SecurityTierLevel } from '../../code/shared/CodingTypes';
 
 // ────────────────────────────────────────────────────────────
 // Plan status lifecycle
@@ -149,6 +149,20 @@ export class CodingPlanEntity extends BaseEntity {
   @JsonField()
   generatedBy!: PlanGenerationInfo;
 
+  // ── Risk & security ──────────────────────────────────────
+
+  /** Risk level assessed by PlanFormulator */
+  @EnumField()
+  riskLevel!: RiskLevel;
+
+  /** Why this risk level was assigned */
+  @TextField({ nullable: true })
+  riskReason?: string;
+
+  /** Security tier governing which tools this plan can use */
+  @EnumField()
+  securityTier!: SecurityTierLevel;
+
   // ── Status & lifecycle ────────────────────────────────────
 
   @EnumField({ index: true })
@@ -212,6 +226,8 @@ export class CodingPlanEntity extends BaseEntity {
     this.estimatedToolCalls = 0;
     this.assignees = [];
     this.generatedBy = { provider: '', model: '', temperature: 0, durationMs: 0 };
+    this.riskLevel = 'low';
+    this.securityTier = 'write';
     this.status = 'draft';
     this.filesModified = [];
     this.filesCreated = [];

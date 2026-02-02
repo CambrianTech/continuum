@@ -139,6 +139,9 @@ export const COLLECTIONS = {
 
   // Coding Agent System (Phase 4: Multi-Agent Coordination)
   CODING_PLANS: 'coding_plans',
+
+  // Self-Modifying Skills (Phase 4B: AI-Created Commands)
+  SKILLS: 'skills',
 } as const;
 
 

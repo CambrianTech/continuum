@@ -302,6 +302,38 @@ describe('CodingPlanEntity', () => {
     });
   });
 
+  describe('risk and security', () => {
+    it('defaults riskLevel to low', () => {
+      const plan = new CodingPlanEntity();
+      expect(plan.riskLevel).toBe('low');
+    });
+
+    it('defaults securityTier to write', () => {
+      const plan = new CodingPlanEntity();
+      expect(plan.securityTier).toBe('write');
+    });
+
+    it('stores risk assessment data', () => {
+      const plan = makePlan();
+      plan.riskLevel = 'high';
+      plan.riskReason = 'Modifies API interfaces';
+      plan.securityTier = 'write';
+
+      expect(plan.riskLevel).toBe('high');
+      expect(plan.riskReason).toBe('Modifies API interfaces');
+      expect(plan.securityTier).toBe('write');
+    });
+
+    it('critical risk with system tier', () => {
+      const plan = makePlan();
+      plan.riskLevel = 'critical';
+      plan.securityTier = 'system';
+
+      expect(plan.riskLevel).toBe('critical');
+      expect(plan.securityTier).toBe('system');
+    });
+  });
+
   describe('governance', () => {
     it('tracks proposal reference', () => {
       const plan = makePlan({ status: 'proposed' });

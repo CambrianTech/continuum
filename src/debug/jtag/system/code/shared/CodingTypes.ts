@@ -12,6 +12,22 @@
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 // ============================================================================
+// Security & Risk
+// ============================================================================
+
+/**
+ * Risk level assessed by PlanFormulator for a coding plan.
+ * Determines security tier and whether governance approval is needed.
+ */
+export type RiskLevel = 'low' | 'medium' | 'high' | 'critical';
+
+/**
+ * Security tier that governs which tools a plan can use.
+ * Assigned based on risk level; higher tiers require more oversight.
+ */
+export type SecurityTierLevel = 'discovery' | 'read' | 'write' | 'system';
+
+// ============================================================================
 // Model Selection
 // ============================================================================
 
@@ -151,6 +167,15 @@ export interface CodingPlan {
 
   /** When the plan was generated */
   readonly generatedAt: number;
+
+  /** Risk level assessed by PlanFormulator */
+  readonly riskLevel: RiskLevel;
+
+  /** Why this risk level was assigned */
+  readonly riskReason: string;
+
+  /** Minimum security tier required for execution */
+  readonly requiredTier: SecurityTierLevel;
 }
 
 // ============================================================================
@@ -221,4 +246,75 @@ export interface CodingResult {
 
   /** Errors encountered */
   readonly errors: string[];
+}
+
+// ============================================================================
+// Execution Options (Phase 4C: Multi-Agent Coordination)
+// ============================================================================
+
+/**
+ * Options controlling how a coding plan is executed.
+ * Passed to CodeAgentOrchestrator.execute().
+ */
+export interface ExecutionOptions {
+  /** Execute but don't write — report what would happen */
+  readonly dryRun?: boolean;
+
+  /** Override the security tier (defaults to plan's requiredTier) */
+  readonly securityTier?: SecurityTierLevel;
+
+  /** Enable multi-agent delegation for this execution */
+  readonly delegationEnabled?: boolean;
+}
+
+// ============================================================================
+// Agent Capability (Phase 4C: Multi-Agent Delegation)
+// ============================================================================
+
+/**
+ * Describes an AI persona's capabilities for coding task delegation.
+ * Used by CodeTaskDelegator to match tasks to agents.
+ */
+export interface AgentCapability {
+  /** Persona ID */
+  readonly personaId: UUID;
+
+  /** Persona display name */
+  readonly name: string;
+
+  /** Coding specialties (e.g., 'typescript', 'testing', 'code-review') */
+  readonly specialties: string[];
+
+  /** Current workload fraction (0.0 = idle, 1.0 = fully loaded) */
+  readonly currentLoad: number;
+
+  /** Security tier this agent is authorized for */
+  readonly securityTier: SecurityTierLevel;
+}
+
+// ============================================================================
+// Delegation Result (Phase 4C: Multi-Agent Coordination)
+// ============================================================================
+
+/**
+ * Result of delegating a plan to multiple agents.
+ */
+export interface DelegationResult {
+  /** Parent plan ID */
+  readonly parentPlanId: UUID;
+
+  /** Sub-plan IDs created for each agent cluster */
+  readonly subPlanIds: UUID[];
+
+  /** Files assigned to each sub-plan */
+  readonly assignments: ReadonlyArray<{
+    readonly subPlanId: UUID;
+    readonly agentId: UUID;
+    readonly agentName: string;
+    readonly files: string[];
+    readonly stepNumbers: number[];
+  }>;
+
+  /** Files with conflicts (claimed by multiple clusters) */
+  readonly conflicts: string[];
 }
