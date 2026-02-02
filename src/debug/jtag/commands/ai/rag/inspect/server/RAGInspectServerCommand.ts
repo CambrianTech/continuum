@@ -101,9 +101,8 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
       if (params.triggerMessageId) {
         try {
           // Load the trigger message
-          const msgResult = await DataDaemon.read<ChatMessageEntity>(ChatMessageEntity.collection, params.triggerMessageId);
-          if (msgResult.success && msgResult.data) {
-            const msg = msgResult.data.data;
+          const msg = await DataDaemon.read<ChatMessageEntity>(ChatMessageEntity.collection, params.triggerMessageId);
+          if (msg) {
 
             // Get actual decision from ThoughtStream
             const coordinator = getThoughtStreamCoordinator();

@@ -391,13 +391,11 @@ export abstract class BaseUser {
     displayName: string
   ): Promise<void> {
     // Read current room
-    const roomResult = await DataDaemon.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
-    if (!roomResult.success || !roomResult.data) {
+    const room = await DataDaemon.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+    if (!room) {
       console.warn(`⚠️ ${this.name}.create: Room ${roomId} not found`);
       return;
     }
-
-    const room = roomResult.data.data;
 
     // Check if already a member
     if (room.members.some((m: { userId: UUID }) => m.userId === userId)) {

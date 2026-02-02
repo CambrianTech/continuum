@@ -31,15 +31,12 @@ export class PersonaIdentitySource implements RAGSource {
     const startTime = performance.now();
 
     try {
-      const result = await DataDaemon.read<UserEntity>(UserEntity.collection, context.personaId);
+      const user = await DataDaemon.read<UserEntity>(UserEntity.collection, context.personaId);
 
-      if (!result.success || !result.data) {
+      if (!user) {
         log.warn(`Could not load persona ${context.personaId}, using defaults`);
         return this.defaultSection(startTime);
       }
-
-      const userRecord = result.data;
-      const user = userRecord.data;
 
       const identity: PersonaIdentity = {
         name: user.displayName,

@@ -32,11 +32,10 @@ export class SkillValidateServerCommand extends CommandBase<SkillValidateParams,
     }
 
     // Load skill entity
-    const readResult = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
-    if (!readResult.success || !readResult.data) {
+    const skill = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
-    const skill = readResult.data.data as SkillEntity;
 
     if (skill.status !== 'generated') {
       throw new ValidationError('skillId',

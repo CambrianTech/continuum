@@ -11,6 +11,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 
 /**
  * Domain types that can provide RAG context
@@ -122,6 +123,9 @@ export interface RAGContext {
 
   // Conversation governance rules (from recipe)
   recipeStrategy?: RecipeStrategy;
+
+  // Recipe-highlighted tools (context for LLM, NOT a filter)
+  recipeTools?: RecipeToolDeclaration[];
 
   // Conversation history (public context)
   conversationHistory: LLMMessage[];

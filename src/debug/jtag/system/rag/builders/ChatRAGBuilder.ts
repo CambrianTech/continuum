@@ -21,6 +21,7 @@ import type {
   PersonaMemory,
   RecipeStrategy
 } from '../shared/RAGTypes';
+import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
@@ -163,6 +164,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let artifacts: RAGArtifact[];
     let privateMemories: PersonaMemory[];
     let recipeStrategy: RecipeStrategy | undefined;
+    let recipeTools: RecipeToolDeclaration[] | undefined;
     let learningConfig: { learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined;
     let widgetContext: string | null;
     let globalAwareness: string | null;
@@ -215,13 +217,14 @@ export class ChatRAGBuilder extends RAGBuilder {
       codeToolGuidance = extracted.codeToolGuidance;
 
       // Still load these via legacy methods (not yet extracted to sources)
-      const [extractedArtifacts, extractedRecipeStrategy, extractedLearningConfig] = await Promise.all([
+      const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
         includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
-        this.loadRecipeStrategy(contextId),
+        this.loadRecipeContext(contextId),
         this.loadLearningConfig(contextId, personaId)
       ]);
       artifacts = extractedArtifacts;
-      recipeStrategy = extractedRecipeStrategy;
+      recipeStrategy = extractedRecipeContext?.strategy;
+      recipeTools = extractedRecipeContext?.tools;
       learningConfig = extractedLearningConfig;
 
       this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms`);
@@ -235,7 +238,7 @@ export class ChatRAGBuilder extends RAGBuilder {
         loadedConversationHistory,
         loadedArtifacts,
         loadedPrivateMemories,
-        loadedRecipeStrategy,
+        loadedRecipeContext,
         loadedLearningConfig,
         loadedWidgetContext
       ] = await Promise.all([
@@ -258,8 +261,8 @@ export class ChatRAGBuilder extends RAGBuilder {
           options?.currentMessage?.content  // ← Semantic query: use current message for relevant memory recall
         ) : Promise.resolve([]),
 
-        // 5. Load room's recipe strategy (conversation governance rules)
-        this.loadRecipeStrategy(contextId),
+        // 5. Load room's recipe context (strategy + tool highlights)
+        this.loadRecipeContext(contextId),
 
         // 6. Load learning configuration (Phase 2: Per-participant learning mode)
         this.loadLearningConfig(contextId, personaId),
@@ -272,7 +275,8 @@ export class ChatRAGBuilder extends RAGBuilder {
       conversationHistory = loadedConversationHistory;
       artifacts = loadedArtifacts;
       privateMemories = loadedPrivateMemories;
-      recipeStrategy = loadedRecipeStrategy;
+      recipeStrategy = loadedRecipeContext?.strategy;
+      recipeTools = loadedRecipeContext?.tools;
       learningConfig = loadedLearningConfig;
       widgetContext = loadedWidgetContext;
       globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
@@ -353,6 +357,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       personaId,
       identity: finalIdentity,
       recipeStrategy,
+      recipeTools,
       conversationHistory: finalConversationHistory,
       artifacts: processedArtifacts,
       privateMemories,
@@ -460,19 +465,15 @@ export class ChatRAGBuilder extends RAGBuilder {
    */
   private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options?: RAGBuildOptions): Promise<PersonaIdentity> {
     try {
-      const result = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
+      const user = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
 
-      if (!result.success || !result.data) {
+      if (!user) {
         this.log(`⚠️ ChatRAGBuilder: Could not load persona ${personaId}, using defaults`);
         return {
           name: 'AI Assistant',
           systemPrompt: 'You are a helpful AI assistant participating in a group chat.'
         };
       }
-
-      // DataDaemon.read returns DataRecord<T>, access .data for entity
-      const userRecord = result.data;
-      const user = userRecord.data;
 
       return {
         name: user.displayName,
@@ -992,13 +993,13 @@ LIMITS:
    */
   private async loadRoomName(roomId: UUID): Promise<string | null> {
     try {
-      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
-      if (!roomResult.success || !roomResult.data) {
+      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (!room) {
         this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for name lookup`);
         return null;
       }
 
-      return roomResult.data.data.name;
+      return room.name;
     } catch (error) {
       this.log(`❌ ChatRAGBuilder: Error loading room name:`, error);
       return null;
@@ -1011,27 +1012,26 @@ LIMITS:
   private async loadRoomMembers(roomId: UUID): Promise<string[]> {
     try {
       // 1. Load room entity
-      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
-      if (!roomResult.success || !roomResult.data) {
+      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (!room) {
         this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}`);
         return [];
       }
 
-      const room = roomResult.data.data;
       if (!room.members || room.members.length === 0) {
         return [];
       }
 
       // 2. Load user entities for each member to get display names (PARALLELIZED)
-      const memberResults = await Promise.all(
+      const members = await Promise.all(
         room.members.map(member =>
           DataDaemon.read<UserEntity>(UserEntity.collection, member.userId)
         )
       );
 
-      const memberNames = memberResults
-        .filter(result => result.success && result.data)
-        .map(result => result.data!.data.displayName);
+      const memberNames = members
+        .filter((user): user is UserEntity => user !== null)
+        .map(user => user.displayName);
 
       return memberNames;
     } catch (error) {
@@ -1041,19 +1041,18 @@ LIMITS:
   }
 
   /**
-   * Load recipe strategy from room's recipeId
+   * Load recipe context (strategy + tools) from room's recipeId
    */
-  private async loadRecipeStrategy(roomId: UUID): Promise<RecipeStrategy | undefined> {
+  private async loadRecipeContext(roomId: UUID): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[] } | undefined> {
     try {
       // 1. Load room to get recipeId
-      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
 
-      if (!roomResult.success || !roomResult.data) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe strategy`);
+      if (!room) {
+        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe context`);
         return undefined;
       }
 
-      const room = roomResult.data.data;
       const recipeId = room.recipeId;
 
       if (!recipeId) {
@@ -1065,15 +1064,18 @@ LIMITS:
       const recipeLoader = RecipeLoader.getInstance();
       const recipe = await recipeLoader.loadRecipe(recipeId);
 
-      if (!recipe || !recipe.strategy) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load recipe ${recipeId}, no strategy`);
+      if (!recipe) {
+        this.log(`⚠️ ChatRAGBuilder: Could not load recipe ${recipeId}`);
         return undefined;
       }
 
-      this.log(`✅ ChatRAGBuilder: Loaded recipe strategy "${recipe.displayName}" (${recipeId})`);
-      return recipe.strategy;
+      this.log(`✅ ChatRAGBuilder: Loaded recipe context "${recipe.displayName}" (${recipeId}) — strategy=${!!recipe.strategy}, tools=${recipe.tools?.length ?? 0}`);
+      return {
+        strategy: recipe.strategy,
+        tools: recipe.tools,
+      };
     } catch (error) {
-      this.log(`❌ ChatRAGBuilder: Error loading recipe strategy:`, error);
+      this.log(`❌ ChatRAGBuilder: Error loading recipe context:`, error);
       return undefined;
     }
   }
@@ -1088,13 +1090,11 @@ LIMITS:
   ): Promise<{ learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined> {
     try {
       // 1. Load room entity
-      const roomResult = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
-      if (!roomResult.success || !roomResult.data) {
+      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (!room) {
         this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for learning config`);
         return undefined;
       }
-
-      const room = roomResult.data.data;
 
       // 2. Find this persona's membership
       const member = room.members.find(m => m.userId === personaId);

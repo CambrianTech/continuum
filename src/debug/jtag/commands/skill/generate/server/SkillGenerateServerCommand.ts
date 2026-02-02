@@ -33,11 +33,10 @@ export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams,
     }
 
     // Load skill entity
-    const readResult = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
-    if (!readResult.success || !readResult.data) {
+    const skill = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
-    const skill = readResult.data.data as SkillEntity;
 
     // Verify lifecycle state: personal skills can skip approval, team skills need 'approved'
     const canGenerate =

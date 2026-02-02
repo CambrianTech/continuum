@@ -288,13 +288,11 @@ export class UserDaemonServer extends UserDaemon {
   private async createPersonaClient(userEntity: UserEntity): Promise<void> {
     try {
       // Load UserStateEntity (must exist - created by user/create command)
-      const userStateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
+      const userState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
 
-      if (!userStateResult.success || !userStateResult.data) {
+      if (!userState) {
         throw new Error(`UserStateEntity not found for persona ${userEntity.displayName} (${userEntity.id}) - user must be created via user/create command`);
       }
-
-      const userState: UserStateEntity = userStateResult.data.data;
 
       // Initialize SQLite storage backend
       const dbPath = `.continuum/personas/${userEntity.id}/state.sqlite`;
@@ -334,9 +332,9 @@ export class UserDaemonServer extends UserDaemon {
   protected async ensureUserHasState(userId: UUID): Promise<boolean> {
     try {
       // Check if UserState exists
-      const result = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const existingState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
 
-      if (result.success && result.data) {
+      if (existingState) {
         return true; // UserState exists
       }
 
@@ -355,13 +353,11 @@ export class UserDaemonServer extends UserDaemon {
   private async createUserState(userId: UUID): Promise<boolean> {
     try {
       // Load user entity to get type
-      const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
-      if (!userResult.success || !userResult.data) {
+      const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      if (!user) {
         this.log.error(`❌ UserDaemon: User ${userId} not found`);
         return false;
       }
-
-      const user: UserEntity = userResult.data.data;
 
       // Create UserState with type-specific defaults
       const userState = new UserStateEntity();

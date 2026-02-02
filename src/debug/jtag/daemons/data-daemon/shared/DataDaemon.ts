@@ -1042,15 +1042,21 @@ export class DataDaemon {
   /**
    * Read single record by ID with automatic context injection - CLEAN INTERFACE
    *
+   * Returns the entity directly (unwrapped), or null if not found.
+   * Consistent with store() and update() which also return T directly.
+   *
    * @example
-   * const user = await DataDaemon.read<UserData>('users', userId);
+   * const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+   * if (user) { console.log(user.displayName); }
    */
-  static async read<T extends BaseEntity>(collection: string, id: UUID): Promise<StorageResult<DataRecord<T>>> {
+  static async read<T extends BaseEntity>(collection: string, id: UUID): Promise<T | null> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    return await DataDaemon.sharedInstance.read<T>(collection, id, DataDaemon.context);
+    const result = await DataDaemon.sharedInstance.read<T>(collection, id, DataDaemon.context);
+    if (!result.success || !result.data) return null;
+    return result.data.data;
   }
 
   /**

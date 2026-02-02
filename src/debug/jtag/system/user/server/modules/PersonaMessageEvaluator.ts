@@ -932,15 +932,14 @@ export class PersonaMessageEvaluator {
 
     try {
       // Query the sender's UserEntity to check their type using DataDaemon directly
-      const result = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, senderId);
+      const sender = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, senderId);
 
-      if (!result.success || !result.data) {
+      if (!sender) {
         this.log(`⚠️  PersonaUser ${this.personaUser.displayName}: Could not read sender ${senderId}, BLOCKING response`);
         return false; // Fail CLOSED - don't respond if database fails (prevents loops)
       }
 
-      const senderType = result.data.data.type;
-      return senderType === 'human';
+      return sender.type === 'human';
 
     } catch (error: any) {
       this.log(`❌ PersonaUser ${this.personaUser.displayName}: Error checking sender type, BLOCKING response:`, error);

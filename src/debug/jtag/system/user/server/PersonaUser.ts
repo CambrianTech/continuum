@@ -200,8 +200,9 @@ export class PersonaUser extends AIUser {
   // MEMORY LEAK FIX: Track event subscriptions for cleanup
   private _eventUnsubscribes: (() => void)[] = [];
 
-  // Workspace handle — lazy-created on first code task, retained for session lifetime
-  private _workspace: Workspace | null = null;
+  // Workspace handles — lazy-created per context key, retained for session lifetime
+  // Keyed by context (e.g., room uniqueId) so personas can have per-room workspaces
+  private _workspaces: Map<string, Workspace> = new Map();
 
   /**
    * Get unified consciousness for cross-context awareness
@@ -314,26 +315,42 @@ export class PersonaUser extends AIUser {
   // Workspace — per-persona code workspace (lazy-created, session-scoped)
   // ════════════════════════════════════════════════════════════════════════════
 
-  /** Get the current workspace handle (null if not yet created) */
-  public get workspace(): Workspace | null {
-    return this._workspace;
+  /** Get a workspace by context key (null if not yet created for that context) */
+  public getWorkspace(contextKey: string = 'default'): Workspace | null {
+    return this._workspaces.get(contextKey) ?? null;
   }
 
   /**
-   * Ensure a workspace exists for this persona.
-   * Creates a sandbox workspace on first call, retains for session lifetime.
+   * Ensure a workspace exists for this persona in the given context.
+   * Creates on first call per context key, retains for session lifetime.
    * Called automatically when persona receives a code-domain task.
+   *
+   * @param options.contextKey  Room uniqueId or other scope key (default: 'default')
+   * @param options.mode        'sandbox' for isolated, 'worktree' for real git branches
+   * @param options.taskSlug    Used for branch naming in worktree mode
+   * @param options.sparsePaths Sparse checkout paths for worktree mode
    */
-  public async ensureWorkspace(): Promise<Workspace> {
-    if (this._workspace) return this._workspace;
+  public async ensureWorkspace(options?: {
+    contextKey?: string;
+    mode?: 'sandbox' | 'worktree';
+    taskSlug?: string;
+    sparsePaths?: string[];
+  }): Promise<Workspace> {
+    const key = options?.contextKey ?? 'default';
+    const existing = this._workspaces.get(key);
+    if (existing) return existing;
 
-    this.log.info(`🔧 ${this.displayName}: Creating workspace (sandbox mode)`);
-    this._workspace = await Workspace.create({
+    const mode = options?.mode ?? 'sandbox';
+    this.log.info(`${this.displayName}: Creating workspace (${mode} mode, context=${key})`);
+    const ws = await Workspace.create({
       personaId: this.id,
-      mode: 'sandbox',
+      mode,
+      taskSlug: options?.taskSlug ?? key,
+      sparsePaths: options?.sparsePaths,
     });
-    this.log.info(`🔧 ${this.displayName}: Workspace created — handle=${this._workspace.handle}, dir=${this._workspace.dir}`);
-    return this._workspace;
+    this._workspaces.set(key, ws);
+    this.log.info(`${this.displayName}: Workspace created — handle=${ws.handle}, dir=${ws.dir}, mode=${mode}`);
+    return ws;
   }
 
   // BEING ARCHITECTURE: Delegate to body for toolExecutor
@@ -1992,16 +2009,16 @@ export class PersonaUser extends AIUser {
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();
 
-    // Clean up workspace (shell session + worktree)
-    if (this._workspace) {
+    // Clean up all workspaces (shell sessions + worktrees)
+    for (const [key, ws] of this._workspaces) {
       try {
-        await this._workspace.destroy();
-        this.log.info(`🔧 ${this.displayName}: Workspace destroyed`);
+        await ws.destroy();
+        this.log.info(`${this.displayName}: Workspace destroyed (context=${key})`);
       } catch (e) {
-        this.log.warn(`⚠️ ${this.displayName}: Workspace cleanup failed: ${e}`);
+        this.log.warn(`${this.displayName}: Workspace cleanup failed (context=${key}): ${e}`);
       }
-      this._workspace = null;
     }
+    this._workspaces.clear();
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();

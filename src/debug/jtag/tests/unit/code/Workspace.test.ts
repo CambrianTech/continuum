@@ -616,6 +616,63 @@ describe('Workspace', () => {
     });
   });
 
+  describe('multi-workspace isolation', () => {
+    it('two workspaces from different create calls have independent handles', async () => {
+      vi.mocked(WorkspaceStrategy.create)
+        .mockResolvedValueOnce({
+          handle: 'worktree-persona-room-a',
+          workspaceDir: '/tmp/workspace/room-a',
+          mode: 'worktree',
+          branch: 'ai/helper/room-a',
+        })
+        .mockResolvedValueOnce({
+          handle: 'worktree-persona-room-b',
+          workspaceDir: '/tmp/workspace/room-b',
+          mode: 'worktree',
+          branch: 'ai/helper/room-b',
+        });
+
+      const wsA = await Workspace.create({ personaId: PERSONA_ID, mode: 'worktree', taskSlug: 'room-a' });
+      const wsB = await Workspace.create({ personaId: PERSONA_ID, mode: 'worktree', taskSlug: 'room-b' });
+
+      expect(wsA.handle).toBe('worktree-persona-room-a');
+      expect(wsB.handle).toBe('worktree-persona-room-b');
+      expect(wsA.handle).not.toBe(wsB.handle);
+      expect(wsA.dir).not.toBe(wsB.dir);
+      expect(wsA.branch).not.toBe(wsB.branch);
+    });
+
+    it('operations on workspace A do not affect workspace B', async () => {
+      const wsA = Workspace.fromExisting('handle-a', '/tmp/ws-a', 'worktree', 'branch-a');
+      const wsB = Workspace.fromExisting('handle-b', '/tmp/ws-b', 'worktree', 'branch-b');
+
+      vi.mocked(CodeDaemon.workspaceRead).mockResolvedValue({} as any);
+      vi.mocked(CodeDaemon.workspaceWrite).mockResolvedValue({} as any);
+
+      await wsA.read('file.ts');
+      await wsB.write('other.ts', 'content');
+
+      expect(vi.mocked(CodeDaemon.workspaceRead).mock.calls[0][0]).toBe('handle-a');
+      expect(vi.mocked(CodeDaemon.workspaceWrite).mock.calls[0][0]).toBe('handle-b');
+    });
+
+    it('destroying one workspace does not affect another', async () => {
+      vi.mocked(WorkspaceStrategy.cleanup).mockResolvedValue();
+
+      const wsA = Workspace.fromExisting('handle-a', '/tmp/ws-a', 'worktree', 'branch-a');
+      const wsB = Workspace.fromExisting('handle-b', '/tmp/ws-b', 'worktree', 'branch-b');
+
+      await wsA.destroy();
+
+      // wsB should still be usable
+      vi.mocked(CodeDaemon.workspaceRead).mockResolvedValue({} as any);
+      await wsB.read('file.ts');
+
+      expect(WorkspaceStrategy.cleanup).toHaveBeenCalledWith('handle-a', undefined);
+      expect(CodeDaemon.workspaceRead).toHaveBeenCalledWith('handle-b', 'file.ts', undefined, undefined);
+    });
+  });
+
   describe('handle consistency', () => {
     it('every operation uses the same handle — no handle drift', async () => {
       const ws = Workspace.fromExisting(HANDLE, WORKSPACE_DIR, 'worktree', BRANCH);

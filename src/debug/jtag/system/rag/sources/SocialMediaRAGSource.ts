@@ -233,18 +233,18 @@ export class SocialMediaRAGSource implements RAGSource {
     }
 
     // Look up persona's uniqueId via DataDaemon
-    const userResult = await SocialMediaRAGSource.withTimeout(
+    const user = await SocialMediaRAGSource.withTimeout(
       DataDaemon.read<UserEntity>(UserEntity.collection, personaId),
       SocialMediaRAGSource.API_TIMEOUT_MS,
       'DataDaemon.read'
     );
-    if (!userResult.success || !userResult.data) {
+    if (!user) {
       log.debug(`No user found for persona ${personaId.slice(0, 8)} — caching null`);
       SocialMediaRAGSource._credentialCache.set(personaId, null);
       return undefined;
     }
 
-    const personaUniqueId = userResult.data.data.uniqueId;
+    const personaUniqueId = user.uniqueId;
     log.debug(`Resolving credentials for ${personaUniqueId} (${personaId.slice(0, 8)})`);
 
     // Try each registered platform

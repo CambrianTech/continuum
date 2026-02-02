@@ -10,8 +10,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataDeleteParams, DataDeleteResult } from '../shared/DataDeleteTypes';
 import { createDataDeleteResultFromParams } from '../shared/DataDeleteTypes';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-// import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-// import { Events } from '../../../../system/core/server/shared/Events';
+import type { BaseEntity } from '@system/data/entities/BaseEntity';
 
 export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataDeleteResult> {
 
@@ -24,7 +23,7 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
     console.debug(`🗑️ DATA DELETE: Deleting ${collection}/${params.id} entity`);
 
     // First read the entity before deletion for the event
-    let entityBeforeDelete;
+    let entityBeforeDelete: BaseEntity | null;
     try {
       entityBeforeDelete = await DataDaemon.read(collection, params.id);
     } catch (error: any) {

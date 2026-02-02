@@ -101,17 +101,15 @@ export class CodebaseRAGBuilder extends RAGBuilder {
    */
   private async loadPersonaIdentity(personaId: UUID): Promise<PersonaIdentity> {
     try {
-      const result = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
+      const user = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
 
-      if (!result.success || !result.data) {
+      if (!user) {
         console.warn(`⚠️ CodebaseRAGBuilder: Could not load persona ${personaId}, using defaults`);
         return {
           name: 'Code Expert',
           systemPrompt: 'You are an expert at analyzing and explaining code architecture. Provide clear, accurate answers with file references.'
         };
       }
-
-      const user = result.data.data;
 
       return {
         name: user.displayName,

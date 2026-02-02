@@ -86,7 +86,7 @@ export class PersonaMemory {
       // Check if record exists
       const existing = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
 
-      if (existing.success && existing.data) {
+      if (existing) {
         // Update existing record (DataDaemon handles updatedAt)
         await DataDaemon.update(PERSONA_RAG_CONTEXTS_COLLECTION, recordId, record as any);
       } else {
@@ -108,16 +108,14 @@ export class PersonaMemory {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      const result = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
+      const entity = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
 
-      if (!result.success || !result.data) {
+      if (!entity) {
         return null;
       }
 
-      // Parse the stored JSON context from the data.data.contextJson field
-      // DataRecord structure: { id, collection, data: { ...entityFields }, ... }
-      const entityData = result.data.data as any;
-      const storedContext = entityData?.contextJson;
+      // Parse the stored JSON context from the entity's contextJson field
+      const storedContext = (entity as Record<string, unknown>).contextJson as string | undefined;
 
       if (typeof storedContext === 'string') {
         return JSON.parse(storedContext) as PersonaRAGContext;

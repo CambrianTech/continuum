@@ -29,11 +29,10 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     }
 
     // Load skill entity
-    const readResult = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
-    if (!readResult.success || !readResult.data) {
+    const skill = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
-    const skill = readResult.data.data as SkillEntity;
 
     if (skill.status !== 'validated') {
       throw new ValidationError('skillId',
@@ -47,9 +46,8 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     // For team-scoped skills, verify governance approval
     if (skill.scope === 'team' && skill.proposalId) {
       try {
-        const proposalResult = await DataDaemon.read(COLLECTIONS.DECISION_PROPOSALS, skill.proposalId);
-        if (proposalResult.success && proposalResult.data) {
-          const proposal = proposalResult.data.data as Record<string, unknown>;
+        const proposal = await DataDaemon.read(COLLECTIONS.DECISION_PROPOSALS, skill.proposalId);
+        if (proposal) {
           if (proposal.status !== 'approved' && proposal.status !== 'concluded') {
             throw new ValidationError('skillId',
               `Team skill '${skill.name}' has not been approved yet (proposal status: ${proposal.status}).`);

@@ -27,15 +27,14 @@ export class SessionStateHelper {
    */
   static async getUserState(userId: UUID): Promise<UserStateEntity | null> {
     try {
-      const stateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const userStateData = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
 
-      if (!stateResult.success || !stateResult.data) {
+      if (!userStateData) {
         this.log.warn(`UserState not found for userId: ${userId}`);
         return null;
       }
 
       // Hydrate UserStateEntity to get instance methods
-      const userStateData = stateResult.data.data;
       const userState = Object.assign(new UserStateEntity(), userStateData);
 
       return userState;

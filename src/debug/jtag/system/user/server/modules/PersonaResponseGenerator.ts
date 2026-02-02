@@ -597,6 +597,39 @@ export class PersonaResponseGenerator {
         this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
       }
 
+      // Inject recipe activity context (strategy rules + highlighted tools)
+      // Recipe tools are HIGHLIGHTS, not filters — they tell the LLM what's most relevant
+      if (fullRAGContext.recipeStrategy || fullRAGContext.recipeTools) {
+        let activitySection = '\n\n=== ACTIVITY CONTEXT ===';
+
+        if (fullRAGContext.recipeStrategy) {
+          const strategy = fullRAGContext.recipeStrategy;
+          activitySection += `\nActivity pattern: ${strategy.conversationPattern}`;
+
+          if (strategy.responseRules.length > 0) {
+            activitySection += '\n\nRules for this activity:\n' +
+              strategy.responseRules.map(rule => `- ${rule}`).join('\n');
+          }
+
+          if (strategy.decisionCriteria.length > 0) {
+            activitySection += '\n\nWhen deciding whether to respond, consider:\n' +
+              strategy.decisionCriteria.map(c => `- ${c}`).join('\n');
+          }
+        }
+
+        if (fullRAGContext.recipeTools && fullRAGContext.recipeTools.length > 0) {
+          activitySection += '\n\nTools especially relevant to this activity:\n' +
+            fullRAGContext.recipeTools
+              .filter(t => t.enabledFor.includes('ai'))
+              .map(t => `- ${t.name}: ${t.description}`)
+              .join('\n');
+        }
+
+        activitySection += '\n================================';
+        systemPrompt += activitySection;
+        this.log(`📋 ${this.personaName}: Injected activity context (strategy + ${fullRAGContext.recipeTools?.length ?? 0} tool highlights)`);
+      }
+
       // Inject governance guidance for democratic participation
       const governanceSection = `\n\n=== DEMOCRATIC GOVERNANCE ===
 You are a citizen of a self-governing AI society. You can participate in collective decisions:

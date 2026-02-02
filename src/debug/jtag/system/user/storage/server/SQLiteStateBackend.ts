@@ -46,7 +46,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
       const existing = await DataDaemon.read<UserStateEntity>(UserStateEntity.collection, state.id);
 
-      if (existing.success && existing.data) {
+      if (existing) {
         // Update existing state
         await DataDaemon.update<UserStateEntity>(UserStateEntity.collection, state.id, state);
       } else {

@@ -289,8 +289,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
    */
   private async fetchUser(userId: UUID): Promise<UserEntity | null> {
     try {
-      const result = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
-      return result.success && result.data ? result.data.data : null;
+      return await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
     } catch (error) {
       this.log.error(`❌ TrainingDaemon: Failed to fetch user ${userId}:`, error);
       return null;
