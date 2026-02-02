@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-02T00:56:45.003Z",
+  "generated": "2026-02-02T03:02:21.661Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1315,6 +1315,116 @@
           "type": "string",
           "required": false,
           "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/validate",
+      "description": "Skill Validate Command - Shared Types\n *\n * Validate a generated skill by running TypeScript compilation and tests in an ExecutionSandbox. Updates SkillEntity with validation results.",
+      "params": {
+        "skillId": {
+          "type": "string",
+          "required": true,
+          "description": "skillId parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/propose",
+      "description": "Skill Propose Command - Shared Types\n *\n * Propose a new skill (command) specification. Creates a SkillEntity with status 'proposed'. For team-scoped skills, creates a DecisionProposal for governance approval.",
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "name parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "skillParams": {
+          "type": "array",
+          "required": true,
+          "description": "skillParams parameter"
+        },
+        "skillResults": {
+          "type": "array",
+          "required": true,
+          "description": "skillResults parameter"
+        },
+        "implementation": {
+          "type": "string",
+          "required": true,
+          "description": "implementation parameter"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "scope parameter"
+        },
+        "examples": {
+          "type": "array",
+          "required": false,
+          "description": "examples parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/list",
+      "description": "Skill List Command - Shared Types\n *\n * List skills with optional filters by status, scope, and creator. Returns SkillEntity records from the database.",
+      "params": {
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "scope parameter"
+        },
+        "createdById": {
+          "type": "string",
+          "required": false,
+          "description": "createdById parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/generate",
+      "description": "Skill Generate Command - Shared Types\n *\n * Generate code files for a proposed skill using the CommandGenerator. Retrieves the SkillEntity and produces source files.",
+      "params": {
+        "skillId": {
+          "type": "string",
+          "required": true,
+          "description": "skillId parameter"
+        },
+        "outputDir": {
+          "type": "string",
+          "required": false,
+          "description": "outputDir parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/activate",
+      "description": "Skill Activate Command - Shared Types\n *\n * Activate a validated skill by registering it as a live command. The skill becomes available for use by the creator (personal) or all personas (team).",
+      "params": {
+        "skillId": {
+          "type": "string",
+          "required": true,
+          "description": "skillId parameter"
         }
       }
     },
