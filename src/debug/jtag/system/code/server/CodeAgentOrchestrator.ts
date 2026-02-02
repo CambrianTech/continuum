@@ -49,6 +49,9 @@ import { CodingPlanEntity } from '../../data/entities/CodingPlanEntity';
 import type { CodingStepSnapshot, CodingPlanStatus } from '../../data/entities/CodingPlanEntity';
 import { COLLECTIONS } from '../../shared/Constants';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const log = Logger.create('CodeAgentOrchestrator', 'code');
 
@@ -101,6 +104,9 @@ class ExecutionBudget {
   }
 }
 
+/** Track which personas have workspaces initialized this process lifetime */
+const initializedWorkspaces = new Set<string>();
+
 export class CodeAgentOrchestrator {
   private readonly modelSelector: CodingModelSelector;
   private readonly planFormulator: PlanFormulator;
@@ -112,6 +118,30 @@ export class CodeAgentOrchestrator {
     this.planFormulator = new PlanFormulator(this.modelSelector);
     this.governance = new PlanGovernance();
     this.delegator = new CodeTaskDelegator();
+  }
+
+  /**
+   * Ensure a workspace exists in the Rust backend for this persona.
+   * Creates the workspace directory and registers it with PathSecurity.
+   * The persona gets a writable workspace under .continuum/personas/{id}/workspace/
+   * and read-only access to the main codebase for discovery.
+   */
+  private async ensureWorkspace(personaId: string): Promise<void> {
+    if (initializedWorkspaces.has(personaId)) return;
+
+    const jtagRoot = process.cwd();
+    const workspaceDir = path.join(jtagRoot, '.continuum', 'personas', personaId, 'workspace');
+
+    // Create workspace directory if it doesn't exist
+    if (!fs.existsSync(workspaceDir)) {
+      fs.mkdirSync(workspaceDir, { recursive: true });
+      log.info(`Created workspace directory: ${workspaceDir}`);
+    }
+
+    // Register with Rust backend — writable workspace + read-only codebase access
+    await CodeDaemon.createWorkspace(personaId, workspaceDir, [jtagRoot]);
+    initializedWorkspaces.add(personaId);
+    log.info(`Workspace initialized for persona ${personaId}`);
   }
 
   /**
@@ -145,6 +175,9 @@ export class CodeAgentOrchestrator {
     let planEntity: CodingPlanEntity | undefined;
 
     try {
+      // Phase 0: Ensure workspace exists in Rust backend
+      await this.ensureWorkspace(task.personaId as string);
+
       // Phase 1: Discovery (optional — gather codebase context for planning)
       let codebaseContext: string | undefined;
       if (!budget.exceeded) {

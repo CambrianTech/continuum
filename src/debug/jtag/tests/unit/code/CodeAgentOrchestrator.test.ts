@@ -43,6 +43,19 @@ vi.mock('../../../system/core/logging/Logger', () => ({
   },
 }));
 
+// Mock CodeDaemon.createWorkspace (workspace bootstrap)
+vi.mock('../../../daemons/code-daemon/shared/CodeDaemon', () => ({
+  CodeDaemon: {
+    createWorkspace: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+// Mock fs for workspace directory creation
+vi.mock('fs', () => ({
+  existsSync: vi.fn().mockReturnValue(true),
+  mkdirSync: vi.fn(),
+}));
+
 function makeTask(overrides?: Partial<CodingTask>): CodingTask {
   return {
     id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' as UUID,
