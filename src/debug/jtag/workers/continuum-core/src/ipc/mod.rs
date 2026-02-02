@@ -390,6 +390,37 @@ enum Request {
         staged: bool,
     },
 
+    /// Get git log (last N commits).
+    #[serde(rename = "code/git-log")]
+    CodeGitLog {
+        persona_id: String,
+        count: Option<u32>,
+    },
+
+    /// Stage files for commit.
+    #[serde(rename = "code/git-add")]
+    CodeGitAdd {
+        persona_id: String,
+        paths: Vec<String>,
+    },
+
+    /// Create a git commit.
+    #[serde(rename = "code/git-commit")]
+    CodeGitCommit {
+        persona_id: String,
+        message: String,
+    },
+
+    /// Push to remote.
+    #[serde(rename = "code/git-push")]
+    CodeGitPush {
+        persona_id: String,
+        #[serde(default)]
+        remote: String,
+        #[serde(default)]
+        branch: String,
+    },
+
     #[serde(rename = "health-check")]
     HealthCheck,
 
@@ -1545,6 +1576,79 @@ impl ServerState {
                 match code::git_bridge::git_diff(&engine.workspace_root(), staged) {
                     Ok(diff) => HandleResult::Json(Response::success(serde_json::json!({
                         "diff": diff
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeGitLog { persona_id, count } => {
+                let _timer = TimingGuard::new("ipc", "code_git_log");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match code::git_bridge::git_log(&engine.workspace_root(), count.unwrap_or(10)) {
+                    Ok(log) => HandleResult::Json(Response::success(serde_json::json!({
+                        "log": log
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeGitAdd { persona_id, paths } => {
+                let _timer = TimingGuard::new("ipc", "code_git_add");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+                match code::git_bridge::git_add(&engine.workspace_root(), &path_refs) {
+                    Ok(_) => HandleResult::Json(Response::success(serde_json::json!({
+                        "staged": paths
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeGitCommit { persona_id, message } => {
+                let _timer = TimingGuard::new("ipc", "code_git_commit");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match code::git_bridge::git_commit(&engine.workspace_root(), &message) {
+                    Ok(hash) => HandleResult::Json(Response::success(serde_json::json!({
+                        "hash": hash
+                    }))),
+                    Err(e) => HandleResult::Json(Response::error(e)),
+                }
+            }
+
+            Request::CodeGitPush { persona_id, remote, branch } => {
+                let _timer = TimingGuard::new("ipc", "code_git_push");
+
+                let engine = match self.file_engines.get(&persona_id) {
+                    Some(e) => e,
+                    None => return HandleResult::Json(Response::error(
+                        format!("No workspace for persona {}", persona_id)
+                    )),
+                };
+
+                match code::git_bridge::git_push(&engine.workspace_root(), &remote, &branch) {
+                    Ok(output) => HandleResult::Json(Response::success(serde_json::json!({
+                        "output": output
                     }))),
                     Err(e) => HandleResult::Json(Response::error(e)),
                 }

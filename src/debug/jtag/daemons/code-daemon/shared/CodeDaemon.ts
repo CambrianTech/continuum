@@ -112,4 +112,32 @@ export class CodeDaemon {
   static async workspaceGitDiff(personaId: string, staged?: boolean): Promise<{ success: boolean; diff: string }> {
     throw new Error('CodeDaemon.workspaceGitDiff() must be implemented by server');
   }
+
+  /**
+   * Get git log for the workspace (last N commits).
+   */
+  static async workspaceGitLog(personaId: string, count?: number): Promise<{ success: boolean; log: string }> {
+    throw new Error('CodeDaemon.workspaceGitLog() must be implemented by server');
+  }
+
+  /**
+   * Stage files for commit in the workspace.
+   */
+  static async workspaceGitAdd(personaId: string, paths: string[]): Promise<{ staged: string[] }> {
+    throw new Error('CodeDaemon.workspaceGitAdd() must be implemented by server');
+  }
+
+  /**
+   * Create a git commit in the workspace.
+   */
+  static async workspaceGitCommit(personaId: string, message: string): Promise<{ hash: string }> {
+    throw new Error('CodeDaemon.workspaceGitCommit() must be implemented by server');
+  }
+
+  /**
+   * Push the workspace branch to remote.
+   */
+  static async workspaceGitPush(personaId: string, remote?: string, branch?: string): Promise<{ output: string }> {
+    throw new Error('CodeDaemon.workspaceGitPush() must be implemented by server');
+  }
 }

@@ -89,6 +89,24 @@ export interface CodingTask {
   /** Maximum number of tool calls allowed (default: 15) */
   readonly maxToolCalls?: number;
 
+  /**
+   * Workspace handle — identifies which Rust workspace to use for code/* operations.
+   * Defaults to personaId (general persona workspace).
+   * Challenges and other isolated contexts register their own handle via
+   * CodeDaemon.createWorkspace(handle, dir) and pass it here.
+   */
+  readonly workspaceHandle?: string;
+
+  /**
+   * Workspace mode for this task:
+   * - 'sandbox': Isolated directory under .continuum/personas/{id}/workspace/ (default)
+   * - 'worktree': Git worktree on real repo with sparse checkout
+   */
+  readonly workspaceMode?: 'sandbox' | 'worktree';
+
+  /** Paths to sparse-checkout when using worktree mode (e.g., ["src/system/code/", "docs/"]) */
+  readonly sparsePaths?: string[];
+
   /** When the task was created */
   readonly createdAt: number;
 }
@@ -109,7 +127,8 @@ export type CodingAction =
   | 'edit'       // code/edit — partial edit
   | 'diff'       // code/diff — preview changes
   | 'undo'       // code/undo — revert changes
-  | 'verify'     // Meta: check results (build, test, read-back)
+  | 'verify'     // code/verify — build/test verification
+  | 'commit'     // code/git — stage and commit changes
   | 'report';    // Meta: summarize what was done
 
 /**
@@ -275,6 +294,12 @@ export interface ExecutionOptions {
 
   /** Enable multi-agent delegation for this execution */
   readonly delegationEnabled?: boolean;
+
+  /** Run TypeScript verification after write/edit steps (default: true) */
+  readonly autoVerify?: boolean;
+
+  /** Max verify→re-plan iterations when verification fails (default: 2) */
+  readonly maxVerifyIterations?: number;
 }
 
 // ============================================================================

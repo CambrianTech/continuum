@@ -81,5 +81,21 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
     return await rustClient.codeGitDiff(personaId, staged);
   };
 
+  CodeDaemon.workspaceGitLog = async (personaId: string, count?: number) => {
+    return await rustClient.codeGitLog(personaId, count);
+  };
+
+  CodeDaemon.workspaceGitAdd = async (personaId: string, paths: string[]) => {
+    return await rustClient.codeGitAdd(personaId, paths);
+  };
+
+  CodeDaemon.workspaceGitCommit = async (personaId: string, message: string) => {
+    return await rustClient.codeGitCommit(personaId, message);
+  };
+
+  CodeDaemon.workspaceGitPush = async (personaId: string, remote?: string, branch?: string) => {
+    return await rustClient.codeGitPush(personaId, remote, branch);
+  };
+
   log.info('Initialized successfully (workspace operations via Rust IPC)');
 }

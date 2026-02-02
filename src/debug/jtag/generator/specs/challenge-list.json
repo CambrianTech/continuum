@@ -1,0 +1,44 @@
+{
+  "name": "challenge/list",
+  "description": "List available coding challenges with their difficulty, status, and best scores. Shows progressive challenge sequence for AI training.",
+  "params": [
+    {
+      "name": "difficulty",
+      "type": "string",
+      "optional": true,
+      "description": "Filter by difficulty: beginner, intermediate, advanced, expert"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Show scores for a specific persona"
+    }
+  ],
+  "results": [
+    {
+      "name": "challenges",
+      "type": "object[]",
+      "description": "Array of challenge summaries with name, difficulty, sequence, attempts, best score"
+    },
+    {
+      "name": "totalChallenges",
+      "type": "number",
+      "description": "Total number of challenges"
+    },
+    {
+      "name": "completedByPersona",
+      "type": "number",
+      "description": "Number of challenges passed by the specified persona"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all challenges",
+      "command": "./jtag challenge/list",
+      "expectedResult": "{ totalChallenges: 5, challenges: [{ name: \"Add a function...\", difficulty: \"beginner\", ... }] }"
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

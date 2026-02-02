@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/challenge/list",
+  "version": "1.0.0",
+  "description": "List available coding challenges with their difficulty, status, and best scores. Shows progressive challenge sequence for AI training.",
+  "main": "server/ChallengeListServerCommand.ts",
+  "types": "shared/ChallengeListTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/ChallengeListIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "challenge/list"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

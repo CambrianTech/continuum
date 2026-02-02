@@ -30,6 +30,10 @@ export interface CodeTaskParams extends CommandParams {
   maxDurationMs?: number;
   // Maximum number of tool calls allowed (default: 15)
   maxToolCalls?: number;
+  // Workspace mode: 'sandbox' (isolated directory, default) or 'worktree' (git worktree on real repo)
+  workspaceMode?: string;
+  // Paths to sparse-checkout when using worktree mode (e.g., ["src/system/code/", "docs/"])
+  sparsePaths?: string[];
 }
 
 /**
@@ -55,6 +59,10 @@ export const createCodeTaskParams = (
     maxDurationMs?: number;
     // Maximum number of tool calls allowed (default: 15)
     maxToolCalls?: number;
+    // Workspace mode: 'sandbox' (isolated directory, default) or 'worktree' (git worktree on real repo)
+    workspaceMode?: string;
+    // Paths to sparse-checkout when using worktree mode
+    sparsePaths?: string[];
   }
 ): CodeTaskParams => createPayload(context, sessionId, {
   taskType: data.taskType ?? '',
@@ -64,6 +72,8 @@ export const createCodeTaskParams = (
   delegationEnabled: data.delegationEnabled ?? false,
   maxDurationMs: data.maxDurationMs ?? 0,
   maxToolCalls: data.maxToolCalls ?? 0,
+  workspaceMode: data.workspaceMode ?? '',
+  sparsePaths: data.sparsePaths ?? [],
   ...data
 });
 

@@ -50,10 +50,11 @@ vi.mock('../../../daemons/code-daemon/shared/CodeDaemon', () => ({
   },
 }));
 
-// Mock fs for workspace directory creation
+// Mock fs for workspace directory creation + CLAUDE.md reading
 vi.mock('fs', () => ({
   existsSync: vi.fn().mockReturnValue(true),
   mkdirSync: vi.fn(),
+  readFileSync: vi.fn().mockReturnValue('# Project Conventions\nCompression principle applies.'),
 }));
 
 function makeTask(overrides?: Partial<CodingTask>): CodingTask {
@@ -123,28 +124,31 @@ describe('CodeAgentOrchestrator', () => {
     it('executes all plan steps and returns completed', async () => {
       mockSimplePlan();
 
-      // Discovery (code/tree) + 3 plan steps
-      mockExecute
-        .mockResolvedValueOnce({ success: true, root: {} })          // code/tree (discovery)
-        .mockResolvedValueOnce({ success: true, content: 'old' })    // step 1: code/read
-        .mockResolvedValueOnce({ success: true, changeId: 'c1' })    // step 2: code/edit
-        .mockResolvedValueOnce({ success: true, content: 'new' });   // step 3: code/read (verify)
+      // Use mockImplementation to handle discovery + architecture doc reads + plan steps
+      mockExecute.mockImplementation(async (cmd: string) => {
+        if (cmd === 'code/tree') return { success: true, root: {} };
+        if (cmd === 'code/read') return { success: true, content: 'file content' };
+        if (cmd === 'code/edit') return { success: true, changeId: 'c1' };
+        return { success: true };
+      });
 
       const result = await orchestrator.execute(makeTask());
 
       expect(result.status).toBe('completed');
       expect(result.stepResults).toHaveLength(3);
       expect(result.stepResults.every(r => r.status === 'completed')).toBe(true);
-      expect(result.totalToolCalls).toBeGreaterThanOrEqual(4); // 1 discovery + 3 steps
+      expect(result.totalToolCalls).toBeGreaterThanOrEqual(4); // 1 discovery + arch reads + 3 steps
     });
 
     it('tracks modified files from edit steps', async () => {
       mockSimplePlan();
-      mockExecute
-        .mockResolvedValueOnce({ success: true, root: {} })
-        .mockResolvedValueOnce({ success: true, content: 'old' })
-        .mockResolvedValueOnce({ success: true, changeId: 'change-123' })
-        .mockResolvedValueOnce({ success: true, content: 'new' });
+
+      mockExecute.mockImplementation(async (cmd: string) => {
+        if (cmd === 'code/tree') return { success: true, root: {} };
+        if (cmd === 'code/read') return { success: true, content: 'file content' };
+        if (cmd === 'code/edit') return { success: true, changeId: 'change-123' };
+        return { success: true };
+      });
 
       const result = await orchestrator.execute(makeTask());
 
@@ -384,6 +388,105 @@ describe('CodeAgentOrchestrator', () => {
 
       // No real writes happened, so no changeIds
       expect(result.changeIds).toHaveLength(0);
+    });
+  });
+
+  describe('verify→re-plan iteration loop', () => {
+    it('skips verification when autoVerify is false', async () => {
+      mockSimplePlan();
+      mockExecute.mockImplementation(async (cmd: string) => {
+        if (cmd === 'code/tree') return { success: true, root: {} };
+        if (cmd === 'code/read') return { success: true, content: 'file content' };
+        if (cmd === 'code/edit') return { success: true, changeId: 'c1' };
+        return { success: true };
+      });
+
+      const result = await orchestrator.execute(makeTask(), { autoVerify: false });
+
+      expect(result.status).toBe('completed');
+      // code/verify should NOT have been called
+      const calls = mockExecute.mock.calls.map((c: unknown[]) => c[0]);
+      expect(calls).not.toContain('code/verify');
+    });
+
+    it('skips verification in dryRun mode', async () => {
+      mockSimplePlan();
+      mockExecute.mockResolvedValue({ success: true, content: 'data', root: {} });
+
+      const result = await orchestrator.execute(makeTask(), { dryRun: true });
+
+      // code/verify should NOT have been called
+      const calls = mockExecute.mock.calls.map((c: unknown[]) => c[0]);
+      expect(calls).not.toContain('code/verify');
+    });
+
+    it('runs verification after write steps and passes', async () => {
+      mockSimplePlan();
+      mockExecute.mockImplementation(async (cmd: string) => {
+        if (cmd === 'code/tree') return { success: true, root: {} };
+        if (cmd === 'code/read') return { success: true, content: 'file content' };
+        if (cmd === 'code/edit') return { success: true, changeId: 'c1' };
+        if (cmd === 'code/verify') return { success: true, typeCheck: { passed: true, errorCount: 0, errors: [] } };
+        return { success: true };
+      });
+
+      const result = await orchestrator.execute(makeTask());
+
+      expect(result.status).toBe('completed');
+      expect(result.errors).toHaveLength(0);
+      const calls = mockExecute.mock.calls.map((c: unknown[]) => c[0]);
+      expect(calls).toContain('code/verify');
+    });
+
+    it('records errors when verification fails and iterations exhausted', async () => {
+      mockSimplePlan();
+
+      // First call for planning, then always fail verification
+      let verifyCallCount = 0;
+      mockExecute.mockImplementation(async (cmd: string) => {
+        if (cmd === 'code/tree') return { success: true, root: {} };
+        if (cmd === 'code/read') return { success: true, content: 'file content' };
+        if (cmd === 'code/edit') return { success: true, changeId: 'c1' };
+        if (cmd === 'code/verify') {
+          verifyCallCount++;
+          return {
+            success: false,
+            typeCheck: {
+              passed: false,
+              errorCount: 1,
+              errors: [{ file: 'utils.ts', line: 5, column: 1, code: 'TS2345', message: 'Type error' }],
+            },
+          };
+        }
+        return { success: true };
+      });
+
+      // Allow re-plan — the LLM mock needs to return a fix plan too
+      mockGenerateText
+        .mockResolvedValueOnce({
+          text: JSON.stringify({
+            summary: 'Original plan',
+            steps: [
+              { stepNumber: 1, action: 'read', targetFiles: ['utils.ts'], toolCall: 'code/read', toolParams: { filePath: 'utils.ts' }, dependsOn: [], verification: 'ok' },
+              { stepNumber: 2, action: 'edit', targetFiles: ['utils.ts'], toolCall: 'code/edit', toolParams: { filePath: 'utils.ts', editType: 'append', content: 'x' }, dependsOn: [1], verification: 'ok' },
+            ],
+          }),
+        })
+        .mockResolvedValueOnce({
+          text: JSON.stringify({
+            summary: 'Fix type error',
+            steps: [
+              { stepNumber: 1, action: 'edit', targetFiles: ['utils.ts'], toolCall: 'code/edit', toolParams: { filePath: 'utils.ts', editType: 'search_replace', search: 'x', replace: 'y' }, dependsOn: [], verification: 'ok' },
+            ],
+          }),
+        });
+
+      const result = await orchestrator.execute(makeTask({ maxToolCalls: 30 }), { maxVerifyIterations: 2 });
+
+      // Should have verification errors recorded
+      expect(result.errors.some((e: string) => e.includes('TS2345'))).toBe(true);
+      // Should have called verify at least twice (initial + after fix)
+      expect(verifyCallCount).toBeGreaterThanOrEqual(2);
     });
   });
 });

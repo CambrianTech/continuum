@@ -50,6 +50,8 @@ import type { CodingStepSnapshot, CodingPlanStatus } from '../../data/entities/C
 import { COLLECTIONS } from '../../shared/Constants';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
+import { WorkspaceStrategy } from './WorkspaceStrategy';
+import type { WorkspaceResult } from './WorkspaceStrategy';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -104,9 +106,6 @@ class ExecutionBudget {
   }
 }
 
-/** Track which personas have workspaces initialized this process lifetime */
-const initializedWorkspaces = new Set<string>();
-
 export class CodeAgentOrchestrator {
   private readonly modelSelector: CodingModelSelector;
   private readonly planFormulator: PlanFormulator;
@@ -121,27 +120,20 @@ export class CodeAgentOrchestrator {
   }
 
   /**
-   * Ensure a workspace exists in the Rust backend for this persona.
-   * Creates the workspace directory and registers it with PathSecurity.
-   * The persona gets a writable workspace under .continuum/personas/{id}/workspace/
-   * and read-only access to the main codebase for discovery.
+   * Ensure a workspace exists for this task.
+   * Delegates to WorkspaceStrategy which handles sandbox (default) and worktree modes.
+   * Returns the workspace result with handle and directory path.
    */
-  private async ensureWorkspace(personaId: string): Promise<void> {
-    if (initializedWorkspaces.has(personaId)) return;
+  private async ensureWorkspace(task: CodingTask): Promise<WorkspaceResult> {
+    const mode = task.workspaceMode ?? 'sandbox';
+    const slug = task.description?.slice(0, 30).replace(/\W+/g, '-').toLowerCase() ?? 'work';
 
-    const jtagRoot = process.cwd();
-    const workspaceDir = path.join(jtagRoot, '.continuum', 'personas', personaId, 'workspace');
-
-    // Create workspace directory if it doesn't exist
-    if (!fs.existsSync(workspaceDir)) {
-      fs.mkdirSync(workspaceDir, { recursive: true });
-      log.info(`Created workspace directory: ${workspaceDir}`);
-    }
-
-    // Register with Rust backend — writable workspace + read-only codebase access
-    await CodeDaemon.createWorkspace(personaId, workspaceDir, [jtagRoot]);
-    initializedWorkspaces.add(personaId);
-    log.info(`Workspace initialized for persona ${personaId}`);
+    return WorkspaceStrategy.create({
+      personaId: task.personaId as string,
+      mode,
+      taskSlug: slug,
+      sparsePaths: task.sparsePaths,
+    });
   }
 
   /**
@@ -176,7 +168,13 @@ export class CodeAgentOrchestrator {
 
     try {
       // Phase 0: Ensure workspace exists in Rust backend
-      await this.ensureWorkspace(task.personaId as string);
+      // Skip if task has a pre-configured workspace handle (e.g., challenges)
+      if (!task.workspaceHandle) {
+        const workspace = await this.ensureWorkspace(task);
+        // Use the workspace handle for all subsequent code/* operations
+        // Override the task reference with the resolved handle
+        task = { ...task, workspaceHandle: workspace.handle } as CodingTask;
+      }
 
       // Phase 1: Discovery (optional — gather codebase context for planning)
       let codebaseContext: string | undefined;
@@ -267,6 +265,77 @@ export class CodeAgentOrchestrator {
         await this.updatePlanStep(planEntity, step.stepNumber, result);
       }
 
+      // Phase 4: Verify→Re-plan iteration loop
+      // After write/edit steps, verify compilation. If it fails, re-plan with error
+      // context and execute a fix plan. Repeat until verification passes or budget/iterations exhausted.
+      const autoVerify = options?.autoVerify ?? true;
+      const maxVerifyIterations = options?.maxVerifyIterations ?? 2;
+      const hasWriteSteps = stepResults.some(
+        r => r.status === 'completed' && (r.toolCall === 'code/write' || r.toolCall === 'code/edit')
+      );
+
+      if (hasWriteSteps && !budget.exceeded && !dryRun && autoVerify) {
+        for (let iteration = 0; iteration < maxVerifyIterations; iteration++) {
+          if (budget.exceeded) break;
+
+          // Verify
+          const verifyErrors = await this.runVerification(task, budget);
+
+          if (verifyErrors.length === 0) {
+            log.info(`Verification passed${iteration > 0 ? ` (after ${iteration} fix iteration(s))` : ''}`);
+            break;
+          }
+
+          log.warn(`Verification failed (iteration ${iteration + 1}/${maxVerifyIterations}): ${verifyErrors.length} error(s)`);
+
+          // Last iteration — just record errors, don't re-plan
+          if (iteration >= maxVerifyIterations - 1 || budget.exceeded) {
+            errors.push(...verifyErrors);
+            break;
+          }
+
+          // Re-plan with error context
+          try {
+            const errorContext = verifyErrors.join('\n');
+            const fixTask: CodingTask = {
+              ...task,
+              description: `Fix compilation errors from previous changes:\n${errorContext}\n\nOriginal task: ${task.description}`,
+              taskType: 'quick-fix',
+            };
+
+            const fixPlan = await this.planFormulator.formulate(fixTask, codebaseContext);
+            log.info(`Fix plan: ${fixPlan.steps.length} steps — "${fixPlan.summary}"`);
+
+            // Execute fix plan steps
+            for (const step of fixPlan.steps) {
+              if (budget.exceeded) break;
+
+              const depsOk = step.dependsOn.every(dep =>
+                stepResults.some(r => r.stepNumber === dep && r.status === 'completed')
+                || completedSteps.has(dep)
+              );
+              // For fix plans, skip dependency checks for step 1 (always execute first step)
+              if (!depsOk && step.stepNumber > 1) continue;
+
+              const result = await this.executeStepWithRetry(step, task, budget, enforcer, false);
+              stepResults.push(result);
+
+              if (result.status === 'completed') {
+                completedSteps.add(step.stepNumber + 1000 * (iteration + 1)); // Offset to avoid collisions
+                this.trackChanges(step, result, filesModified, filesCreated, changeIds);
+              } else {
+                errors.push(`Fix step ${step.stepNumber}: ${result.error ?? 'unknown'}`);
+              }
+            }
+          } catch (fixError) {
+            const msg = fixError instanceof Error ? fixError.message : String(fixError);
+            log.warn(`Re-plan failed (iteration ${iteration + 1}): ${msg}`);
+            errors.push(`Re-plan failed: ${msg}`);
+            break;
+          }
+        }
+      }
+
       // Determine overall status
       const allCompleted = stepResults.every(r => r.status === 'completed');
       const anyCompleted = stepResults.some(r => r.status === 'completed');
@@ -310,7 +379,7 @@ export class CodeAgentOrchestrator {
     try {
       // Get workspace tree
       const treeResult = await Commands.execute<any, any>('code/tree', {
-        userId: task.personaId,
+        userId: task.workspaceHandle ?? task.personaId,
         path: '',
         maxDepth: 3,
       });
@@ -322,32 +391,117 @@ export class CodeAgentOrchestrator {
 
       let context = `## Workspace Tree\n${JSON.stringify(treeResult.root, null, 2).slice(0, 2000)}`;
 
-      // If relevant files are specified, read their contents
-      if (task.relevantFiles && task.relevantFiles.length > 0 && !budget.exceeded) {
-        for (const file of task.relevantFiles.slice(0, 3)) { // Max 3 files for context
-          if (budget.exceeded) break;
+      // Read relevant files for context — the LLM needs exact contents for precise edits
+      const filesToRead = task.relevantFiles && task.relevantFiles.length > 0
+        ? task.relevantFiles
+        : this.extractFilesFromTree(treeResult.root);
 
-          const readResult = await Commands.execute<any, any>('code/read', {
-            userId: task.personaId,
-            filePath: file,
-          });
-          budget.recordToolCall();
+      for (const file of filesToRead.slice(0, 8)) { // Max 8 files for context
+        if (budget.exceeded) break;
 
-          if (readResult?.success && readResult.content) {
-            // Truncate large files
-            const content = readResult.content.length > 3000
-              ? readResult.content.slice(0, 3000) + '\n... (truncated)'
-              : readResult.content;
-            context += `\n\n## ${file}\n\`\`\`\n${content}\n\`\`\``;
-          }
+        const readResult = await Commands.execute<any, any>('code/read', {
+          userId: task.workspaceHandle ?? task.personaId,
+          filePath: file,
+        });
+        budget.recordToolCall();
+
+        if (readResult?.success && readResult.content) {
+          // Truncate large files
+          const content = readResult.content.length > 3000
+            ? readResult.content.slice(0, 3000) + '\n... (truncated)'
+            : readResult.content;
+          context += `\n\n## ${file}\n\`\`\`\n${content}\n\`\`\``;
         }
       }
+
+      // Load architecture documentation for convention-aware planning
+      context += await this.loadArchitectureContext(task, budget);
 
       return context;
     } catch (error) {
       log.warn(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
+  }
+
+  /**
+   * Load architecture documentation so the LLM plans follow project conventions.
+   *
+   * Reads CLAUDE.md from disk (it lives at the repo root, above the workspace read root)
+   * and key architecture docs from the jtag docs/ directory via code/read.
+   */
+  private async loadArchitectureContext(task: CodingTask, budget: ExecutionBudget): Promise<string> {
+    let archContext = '';
+
+    // CLAUDE.md lives at the repo root — read directly from disk since it's above read roots
+    const jtagRoot = process.cwd();
+    const repoRoot = path.resolve(jtagRoot, '..', '..', '..');
+    const claudeMdPath = path.join(repoRoot, 'CLAUDE.md');
+
+    try {
+      if (fs.existsSync(claudeMdPath)) {
+        let content = fs.readFileSync(claudeMdPath, 'utf-8');
+        // Truncate to essential sections — full CLAUDE.md is ~20k chars
+        if (content.length > 6000) {
+          content = content.slice(0, 6000) + '\n... (truncated — see full CLAUDE.md for details)';
+        }
+        archContext += `\n\n## Project Conventions (CLAUDE.md)\n\`\`\`\n${content}\n\`\`\``;
+      }
+    } catch {
+      // Non-critical — continue without CLAUDE.md
+    }
+
+    // Read architecture docs from within the read root (jtag/docs/)
+    const archDocs = [
+      'docs/ARCHITECTURE-RULES.md',
+      'docs/UNIVERSAL-PRIMITIVES.md',
+    ];
+
+    for (const doc of archDocs) {
+      if (budget.exceeded) break;
+      try {
+        const readResult = await Commands.execute<any, any>('code/read', {
+          userId: task.workspaceHandle ?? task.personaId,
+          filePath: doc,
+        });
+        budget.recordToolCall();
+
+        if (readResult?.success && readResult.content) {
+          const content = readResult.content.length > 3000
+            ? readResult.content.slice(0, 3000) + '\n... (truncated)'
+            : readResult.content;
+          archContext += `\n\n## Architecture: ${doc}\n\`\`\`\n${content}\n\`\`\``;
+        }
+      } catch {
+        // Non-critical — continue without this doc
+      }
+    }
+
+    return archContext;
+  }
+
+  /**
+   * Extract file paths from a tree result for auto-discovery.
+   * For small workspaces (≤8 files), reads all files to give the LLM full context.
+   */
+  private extractFilesFromTree(root: Record<string, unknown>): string[] {
+    const files: string[] = [];
+    const walk = (node: Record<string, unknown>, prefix: string) => {
+      const children = node.children as Record<string, unknown>[] | undefined;
+      if (!children) return;
+      for (const child of children) {
+        const name = child.name as string;
+        const type = child.type as string;
+        const path = prefix ? `${prefix}/${name}` : name;
+        if (type === 'file') {
+          files.push(path);
+        } else if (type === 'directory') {
+          walk(child, path);
+        }
+      }
+    };
+    walk(root, '');
+    return files;
   }
 
   /**
@@ -410,10 +564,10 @@ export class CodeAgentOrchestrator {
     try {
       log.debug(`Step ${step.stepNumber}${dryRun ? ' [DRY]' : ''}: ${step.action} — ${step.description}`);
 
-      // Inject personaId (userId) into params for workspace scoping
+      // Inject workspace handle (userId) into params for workspace scoping
       const params = {
         ...step.toolParams,
-        userId: task.personaId,
+        userId: task.workspaceHandle ?? task.personaId,
       };
 
       // Gate tool call through security tier enforcer
@@ -510,6 +664,36 @@ export class CodeAgentOrchestrator {
    */
   private isWriteAction(action: string): boolean {
     return action === 'write' || action === 'edit' || action === 'undo';
+  }
+
+  /**
+   * Run TypeScript verification and return error strings.
+   * Empty array means verification passed.
+   */
+  private async runVerification(task: CodingTask, budget: ExecutionBudget): Promise<string[]> {
+    try {
+      const verifyResult = await Commands.execute<any, any>('code/verify', {
+        userId: task.workspaceHandle ?? task.personaId,
+        typeCheck: true,
+      });
+      budget.recordToolCall();
+
+      if (verifyResult?.success) {
+        return [];
+      }
+
+      if (verifyResult?.typeCheck?.errors?.length > 0) {
+        return verifyResult.typeCheck.errors.map(
+          (e: { file: string; line: number; code: string; message: string }) =>
+            `${e.file}:${e.line} ${e.code}: ${e.message}`
+        );
+      }
+
+      return ['TypeScript compilation failed (no detailed errors)'];
+    } catch (error) {
+      log.warn(`Verification error: ${error instanceof Error ? error.message : String(error)}`);
+      return [`Verification error: ${error instanceof Error ? error.message : String(error)}`];
+    }
   }
 
   /**

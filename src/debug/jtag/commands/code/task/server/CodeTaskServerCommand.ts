@@ -47,6 +47,19 @@ export class CodeTaskServerCommand extends CommandBase<CodeTaskParams, CodeTaskR
     const taskType: CodingTaskType = this.resolveTaskType(params.taskType);
     const securityTierOverride = this.resolveSecurityTier(params.securityTier);
 
+    // Validate workspace mode
+    const validModes = new Set(['sandbox', 'worktree']);
+    const workspaceMode = params.workspaceMode && validModes.has(params.workspaceMode)
+      ? params.workspaceMode as 'sandbox' | 'worktree'
+      : undefined;
+
+    if (workspaceMode === 'worktree' && (!params.sparsePaths || params.sparsePaths.length === 0)) {
+      throw new ValidationError(
+        'sparsePaths',
+        `Worktree mode requires sparsePaths — specify which directories to checkout (e.g., ["src/system/code/", "docs/"])`
+      );
+    }
+
     // Build CodingTask
     const task: CodingTask = {
       id: uuidv4() as UUID,
@@ -57,6 +70,8 @@ export class CodeTaskServerCommand extends CommandBase<CodeTaskParams, CodeTaskR
       relevantFiles: params.relevantFiles,
       maxDurationMs: params.maxDurationMs || undefined,
       maxToolCalls: params.maxToolCalls || undefined,
+      workspaceMode,
+      sparsePaths: params.sparsePaths,
       createdAt: Date.now(),
     };
 

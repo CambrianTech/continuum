@@ -84,6 +84,7 @@ import { SocialCredentialEntity } from '../../../system/social/shared/SocialCred
 import { HandleEntity } from '../../../system/data/entities/HandleEntity';
 import { CodingPlanEntity } from '../../../system/data/entities/CodingPlanEntity';
 import { SkillEntity } from '../../../system/data/entities/SkillEntity';
+import { CodingChallengeEntity } from '../../../system/data/entities/CodingChallengeEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -141,6 +142,7 @@ export function initializeEntityRegistry(): void {
   new HandleEntity();
   new CodingPlanEntity();
   new SkillEntity();
+  new CodingChallengeEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -190,6 +192,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(HandleEntity.collection, HandleEntity);
   registerEntity(CodingPlanEntity.collection, CodingPlanEntity);
   registerEntity(SkillEntity.collection, SkillEntity);
+  registerEntity(CodingChallengeEntity.collection, CodingChallengeEntity);
 
   log.info('All entities registered');
 }

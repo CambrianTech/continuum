@@ -100,6 +100,39 @@ pub fn git_log(workspace_root: &Path, count: u32) -> Result<String, String> {
     )
 }
 
+/// Stage files for commit.
+///
+/// Pass specific file paths, or `&["--all"]` / `&["."]` to stage everything.
+pub fn git_add(workspace_root: &Path, paths: &[&str]) -> Result<String, String> {
+    let mut args = vec!["add"];
+    args.extend_from_slice(paths);
+    run_git(workspace_root, &args)
+}
+
+/// Create a commit with the given message.
+///
+/// Returns the full commit hash on success.
+pub fn git_commit(workspace_root: &Path, message: &str) -> Result<String, String> {
+    // Commit (skip hooks — AI-authored commits are verified separately)
+    run_git(workspace_root, &["commit", "--no-verify", "-m", message])?;
+
+    // Return the commit hash
+    run_git(workspace_root, &["rev-parse", "HEAD"])
+        .map(|s| s.trim().to_string())
+}
+
+/// Push the current branch to a remote.
+///
+/// Defaults to `origin` if remote is empty.
+pub fn git_push(workspace_root: &Path, remote: &str, branch: &str) -> Result<String, String> {
+    let remote = if remote.is_empty() { "origin" } else { remote };
+    let mut args = vec!["push", remote];
+    if !branch.is_empty() {
+        args.push(branch);
+    }
+    run_git(workspace_root, &args)
+}
+
 /// Run a git command in the workspace directory.
 fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
@@ -200,5 +233,54 @@ mod tests {
         // Should still return a result (possibly with error)
         // git status in non-repo returns error
         assert!(!status.success || status.branch.is_none());
+    }
+
+    #[test]
+    fn test_git_add_and_commit() {
+        let dir = setup_git_repo();
+
+        // Create a new file
+        fs::write(dir.path().join("feature.txt"), "new feature\n").unwrap();
+
+        // Stage it
+        git_add(dir.path(), &["feature.txt"]).expect("git add should work");
+
+        // Status should show it as added
+        let status = git_status(dir.path());
+        assert!(status.added.contains(&"feature.txt".to_string()));
+
+        // Commit it
+        let hash = git_commit(dir.path(), "Add feature").expect("git commit should work");
+        assert!(!hash.is_empty());
+        assert!(hash.len() >= 7); // At least a short hash
+
+        // Status should be clean now
+        let status_after = git_status(dir.path());
+        assert!(status_after.modified.is_empty());
+        assert!(status_after.added.is_empty());
+        assert!(status_after.untracked.is_empty());
+    }
+
+    #[test]
+    fn test_git_commit_empty_fails() {
+        let dir = setup_git_repo();
+        // Nothing staged — commit should fail
+        let result = git_commit(dir.path(), "Empty commit");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_git_add_all() {
+        let dir = setup_git_repo();
+
+        fs::write(dir.path().join("a.txt"), "aaa\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "bbb\n").unwrap();
+
+        git_add(dir.path(), &["."]).expect("git add . should work");
+
+        let status = git_status(dir.path());
+        // Both files should be staged (added)
+        assert!(status.added.contains(&"a.txt".to_string()));
+        assert!(status.added.contains(&"b.txt".to_string()));
     }
 }

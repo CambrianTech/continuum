@@ -212,25 +212,37 @@ impl PathSecurity {
             return Ok(canonical);
         }
 
-        // For new files: canonicalize the parent, then append filename
-        if let Some(parent) = joined.parent() {
-            if parent.exists() {
-                let canonical_parent = parent.canonicalize().map_err(|_| {
-                    PathSecurityError::InvalidPath {
-                        path: relative_path.to_string(),
+        // For new files: walk up the parent chain to find the nearest existing
+        // ancestor, canonicalize it, and verify it's within the workspace.
+        // This handles creating files in not-yet-existing subdirectories
+        // (e.g., "shared/format-utils.ts" when "shared/" doesn't exist yet).
+        {
+            let mut ancestor = joined.clone();
+            // Walk up until we find an existing directory
+            while let Some(parent) = ancestor.parent() {
+                if parent.exists() {
+                    let canonical_ancestor = parent.canonicalize().map_err(|_| {
+                        PathSecurityError::InvalidPath {
+                            path: relative_path.to_string(),
+                        }
+                    })?;
+
+                    if !canonical_ancestor.starts_with(&self.workspace_root) {
+                        return Err(PathSecurityError::TraversalBlocked {
+                            path: relative_path.to_string(),
+                            workspace: self.workspace_root.display().to_string(),
+                        });
                     }
-                })?;
 
-                if !canonical_parent.starts_with(&self.workspace_root) {
-                    return Err(PathSecurityError::TraversalBlocked {
-                        path: relative_path.to_string(),
-                        workspace: self.workspace_root.display().to_string(),
-                    });
+                    // Reconstruct: canonical ancestor + remaining relative components
+                    let remaining = joined.strip_prefix(parent).map_err(|_| {
+                        PathSecurityError::InvalidPath {
+                            path: relative_path.to_string(),
+                        }
+                    })?;
+                    return Ok(canonical_ancestor.join(remaining));
                 }
-
-                if let Some(filename) = joined.file_name() {
-                    return Ok(canonical_parent.join(filename));
-                }
+                ancestor = parent.to_path_buf();
             }
         }
 
@@ -261,16 +273,28 @@ impl PathSecurity {
     /// Normalize a path by collapsing `.` and `..` components without I/O.
     ///
     /// This is a pre-check before any filesystem operations.
+    /// Returns the normalized path. If `..` underflows (tries to go above root),
+    /// the result will start with `..` to signal a traversal attempt.
     fn normalize_path(&self, path: &str) -> String {
         let mut components = Vec::new();
+        let mut depth: i32 = 0; // Track depth relative to root
 
         for part in path.split('/') {
             match part {
                 "" | "." => continue,
                 ".." => {
-                    components.pop();
+                    if depth > 0 {
+                        components.pop();
+                        depth -= 1;
+                    } else {
+                        // Underflow: trying to go above workspace root
+                        components.push("..");
+                    }
                 }
-                other => components.push(other),
+                other => {
+                    components.push(other);
+                    depth += 1;
+                }
             }
         }
 
@@ -382,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cannot_write_to_read_root() {
+    fn test_write_creates_in_workspace_not_read_root() {
         let dir = tempfile::tempdir().unwrap();
         let read_dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -396,11 +420,14 @@ mod tests {
         let read_result = security.validate_read("libs/external.ts");
         assert!(read_result.is_ok());
 
-        // Cannot write to a path that only exists under read root.
-        // "libs/" doesn't exist in the workspace, so the parent
-        // directory check fails and write validation rejects it.
+        // Writing "libs/external.ts" creates it in the WORKSPACE (writable),
+        // not in the read root. This is valid — the file will be at
+        // workspace/libs/external.ts. The read root is untouched.
         let write_result = security.validate_write("libs/external.ts");
-        assert!(write_result.is_err(), "Should not be able to write to path only in read root");
+        assert!(write_result.is_ok(), "Should be able to write new file in workspace subdirectory");
+        let resolved = write_result.unwrap();
+        let canonical_dir = dir.path().canonicalize().unwrap();
+        assert!(resolved.starts_with(&canonical_dir), "Write should resolve within workspace, not read root");
     }
 
     #[test]

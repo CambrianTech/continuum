@@ -50,13 +50,13 @@ const CODE_TOOL_SCHEMAS: readonly { name: string; description: string; params: s
   },
   {
     name: 'code/edit',
-    description: 'Edit a file using search-replace, line-range, insert-at, or append. Records a ChangeNode.',
-    params: 'filePath: string, editMode: { type: "search_replace", search: string, replace: string, replaceAll?: boolean } | { type: "line_range", startLine: number, endLine: number, newContent: string } | { type: "insert_at", line: number, content: string } | { type: "append", content: string }, description?: string',
+    description: 'Edit a file. Flat params — choose ONE editType. search_replace: { editType: "search_replace", search, replace, replaceAll? }. line_range: { editType: "line_range", startLine, endLine, newContent }. insert_at: { editType: "insert_at", line, content }. append: { editType: "append", content }.',
+    params: 'filePath: string, editType: "search_replace"|"line_range"|"insert_at"|"append", search?: string, replace?: string, replaceAll?: boolean, startLine?: number, endLine?: number, newContent?: string, line?: number, content?: string, description?: string',
   },
   {
     name: 'code/diff',
-    description: 'Preview an edit as unified diff without applying it.',
-    params: 'filePath: string, editMode: (same as code/edit)',
+    description: 'Preview an edit as unified diff without applying it. Same params as code/edit.',
+    params: 'filePath: string, editType: "search_replace"|"line_range"|"insert_at"|"append", (same params as code/edit)',
   },
   {
     name: 'code/undo',
@@ -68,11 +68,21 @@ const CODE_TOOL_SCHEMAS: readonly { name: string; description: string; params: s
     description: 'View change history for a file or workspace.',
     params: 'filePath?: string, limit?: number',
   },
+  {
+    name: 'code/verify',
+    description: 'Run TypeScript compilation check and optionally run tests. Use after editing files to verify changes compile correctly.',
+    params: 'typeCheck?: boolean, testFiles?: string[]',
+  },
+  {
+    name: 'code/git',
+    description: 'Workspace-scoped git operations. Use after verifying changes to stage and commit them. Operations: status, diff, log, add, commit.',
+    params: 'operation: "status"|"diff"|"log"|"add"|"commit", paths?: string[], message?: string, staged?: boolean, count?: number',
+  },
 ] as const;
 
 /** Valid actions the LLM can use in plan steps */
 const VALID_ACTIONS: ReadonlySet<string> = new Set<CodingAction>([
-  'discover', 'search', 'read', 'write', 'edit', 'diff', 'undo', 'verify', 'report',
+  'discover', 'search', 'read', 'write', 'edit', 'diff', 'undo', 'verify', 'commit', 'report',
 ]);
 
 /** Map from action to the expected code/* command */
@@ -84,7 +94,8 @@ const ACTION_TO_COMMAND: Record<CodingAction, string> = {
   edit: 'code/edit',
   diff: 'code/diff',
   undo: 'code/undo',
-  verify: 'code/read',   // Verify by reading back
+  verify: 'code/verify',
+  commit: 'code/git',
   report: 'code/history',
 };
 
@@ -152,7 +163,7 @@ ${toolDocs}
 - Maximum ${maxToolCalls} tool calls total
 - Maximum ${maxDurationSec} seconds execution time
 - Always read files before editing them
-- Always verify changes after editing (read back or diff)
+- Always verify changes after editing — use code/verify for compilation checks, or code/read to verify content
 - Prefer code/edit over code/write for existing files
 - Use code/tree and code/search for discovery before making changes
 
@@ -165,7 +176,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
   "steps": [
     {
       "stepNumber": 1,
-      "action": "discover|search|read|write|edit|diff|undo|verify|report",
+      "action": "discover|search|read|write|edit|diff|undo|verify|commit|report",
       "description": "What this step does",
       "targetFiles": ["path/to/file.ts"],
       "toolCall": "code/tree",
@@ -176,21 +187,52 @@ Respond with ONLY a JSON object (no markdown, no explanation):
   ]
 }
 
+## Tool Param Examples
+- code/edit append: { "filePath": "main.ts", "editType": "append", "content": "\\nexport function foo() {}" }
+- code/edit search_replace: { "filePath": "main.ts", "editType": "search_replace", "search": "old text", "replace": "new text" }
+- code/edit line_range: { "filePath": "main.ts", "editType": "line_range", "startLine": 5, "endLine": 10, "newContent": "replacement lines" }
+- code/write: { "filePath": "new-file.ts", "content": "export const x = 1;" }
+- code/read: { "filePath": "main.ts" }
+- code/verify: { "typeCheck": true }
+- code/verify with tests: { "typeCheck": true, "testFiles": ["tests/utils.test.ts"] }
+- code/git status: { "operation": "status" }
+- code/git add: { "operation": "add", "paths": ["."] }
+- code/git commit: { "operation": "commit", "message": "Add feature X" }
+
+## CRITICAL: search_replace Rules
+- The "search" string must be the EXACT, COMPLETE text from the file — never truncated, never abbreviated
+- NEVER use "..." or ellipsis in search strings. The search is a literal text match
+- For replacing large blocks of code (functions, classes), prefer code/write to rewrite the ENTIRE file
+  with the desired content, rather than trying to search_replace multi-line blocks
+- For small, precise changes (renaming, adding an import line), search_replace works well
+- When removing code and adding an import, use code/write to output the complete new file content
+
 ## Risk Assessment Guidelines
 - **low**: Read-only tasks, documentation, test-only changes, single-file edits
 - **medium**: Multi-file edits, adding new functions, standard refactoring
 - **high**: API/interface changes, security-sensitive code, cross-module refactoring
 - **critical**: System configuration, build scripts, deployment, anything requiring shell execution
 
+## Architecture Awareness
+If architecture documentation is provided in the codebase context, follow its conventions strictly:
+- Use the project's established patterns (Commands.execute, Events, path aliases, etc.)
+- Respect module structure (shared/browser/server separation)
+- Follow the compression principle (one logical decision, one place — no duplication)
+- Use strict typing — never use \`any\` or \`unknown\`, import correct types
+- Follow naming conventions visible in existing code
+- When creating new files, match the structure of similar existing files
+
 ## Rules
 1. Steps are numbered starting from 1
 2. dependsOn lists step numbers that must complete first (DAG)
 3. Independent steps CAN have the same dependsOn (parallel execution)
 4. Every write/edit MUST have a preceding read of the same file
-5. action must be one of: discover, search, read, write, edit, diff, undo, verify, report
+5. action must be one of: discover, search, read, write, edit, diff, undo, verify, commit, report
 6. toolCall must match a code/* command from the tools list
 7. toolParams must match the command's parameter schema
-8. Keep plans minimal — don't add unnecessary steps`;
+8. Keep plans minimal — don't add unnecessary steps
+9. For multi-file refactoring: use code/write to rewrite entire files rather than search_replace on large blocks
+10. NEVER truncate or abbreviate text in search_replace "search" strings — they must be EXACT literal matches`;
 
     const messages: ChatMessage[] = [
       { role: 'system', content: systemPrompt },

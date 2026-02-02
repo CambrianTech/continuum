@@ -1019,6 +1019,75 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
+	 * Get git log for the workspace.
+	 */
+	async codeGitLog(personaId: string, count?: number): Promise<{ success: boolean; log: string }> {
+		const response = await this.request({
+			command: 'code/git-log',
+			persona_id: personaId,
+			count: count ?? 10,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get git log');
+		}
+
+		return response.result as { success: boolean; log: string };
+	}
+
+	/**
+	 * Stage files for commit.
+	 */
+	async codeGitAdd(personaId: string, paths: string[]): Promise<{ staged: string[] }> {
+		const response = await this.request({
+			command: 'code/git-add',
+			persona_id: personaId,
+			paths,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to stage files');
+		}
+
+		return response.result as { staged: string[] };
+	}
+
+	/**
+	 * Create a git commit.
+	 */
+	async codeGitCommit(personaId: string, message: string): Promise<{ hash: string }> {
+		const response = await this.request({
+			command: 'code/git-commit',
+			persona_id: personaId,
+			message,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create commit');
+		}
+
+		return response.result as { hash: string };
+	}
+
+	/**
+	 * Push to remote.
+	 */
+	async codeGitPush(personaId: string, remote?: string, branch?: string): Promise<{ output: string }> {
+		const response = await this.request({
+			command: 'code/git-push',
+			persona_id: personaId,
+			remote: remote ?? '',
+			branch: branch ?? '',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to push');
+		}
+
+		return response.result as { output: string };
+	}
+
+	/**
 	 * Disconnect from server
 	 */
 	disconnect(): void {

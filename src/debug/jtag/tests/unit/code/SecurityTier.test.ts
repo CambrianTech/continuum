@@ -88,6 +88,11 @@ describe('SecurityTier', () => {
       expect(tier.allowedCommands).toContain('code/undo');
     });
 
+    it('write tier includes code/verify for build verification', () => {
+      const tier = getTier('write');
+      expect(tier.allowedCommands).toContain('code/verify');
+    });
+
     it('write tier denies shell and system commands', () => {
       const tier = getTier('write');
       expect(tier.deniedCommands).toContain('development/exec');

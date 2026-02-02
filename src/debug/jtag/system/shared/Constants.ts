@@ -142,6 +142,9 @@ export const COLLECTIONS = {
 
   // Self-Modifying Skills (Phase 4B: AI-Created Commands)
   SKILLS: 'skills',
+
+  // Coding Challenges & Learning (Phase 4D: Progressive Training)
+  CODING_CHALLENGES: 'coding_challenges',
 } as const;
 
 

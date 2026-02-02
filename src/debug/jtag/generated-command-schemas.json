@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-02T04:27:03.817Z",
+  "generated": "2026-02-02T11:46:40.136Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5230,6 +5230,27 @@
       }
     },
     {
+      "name": "code/verify",
+      "description": "Code Verify Command - Shared Types\n *\n * Run TypeScript compilation checks and optionally execute tests against a persona workspace.\n * Returns structured errors with file, line, column, and message for each issue found.",
+      "params": {
+        "typeCheck": {
+          "type": "boolean",
+          "required": false,
+          "description": "typeCheck parameter"
+        },
+        "testFiles": {
+          "type": "array",
+          "required": false,
+          "description": "testFiles parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        }
+      }
+    },
+    {
       "name": "code/undo",
       "description": "Code Undo Command - Shared Types\n *\n * Undo a specific change or the last N changes. Applies reverse diffs from the change graph to restore previous file state.",
       "params": {
@@ -5309,6 +5330,16 @@
           "type": "number",
           "required": false,
           "description": "maxToolCalls parameter"
+        },
+        "workspaceMode": {
+          "type": "string",
+          "required": false,
+          "description": "workspaceMode parameter"
+        },
+        "sparsePaths": {
+          "type": "array",
+          "required": false,
+          "description": "sparsePaths parameter"
         }
       }
     },
@@ -5367,6 +5398,52 @@
           "type": "number",
           "required": false,
           "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "code/git",
+      "description": "Code Git Command - Shared Types\n *\n * Workspace-scoped git operations for the coding agent pipeline.\n * Operations: status, diff, log, add, commit, push.\n * All operations are routed through the Rust IPC backend for per-persona workspace isolation.",
+      "params": {
+        "userId": {
+          "type": "string",
+          "required": true,
+          "description": "userId parameter"
+        },
+        "operation": {
+          "type": "string",
+          "required": true,
+          "description": "operation parameter"
+        },
+        "paths": {
+          "type": "array",
+          "required": false,
+          "description": "paths parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "remote": {
+          "type": "string",
+          "required": false,
+          "description": "remote parameter"
+        },
+        "branch": {
+          "type": "string",
+          "required": false,
+          "description": "branch parameter"
+        },
+        "staged": {
+          "type": "boolean",
+          "required": false,
+          "description": "staged parameter"
+        },
+        "count": {
+          "type": "number",
+          "required": false,
+          "description": "count parameter"
         }
       }
     },
@@ -5484,6 +5561,48 @@
           "type": "string",
           "required": false,
           "description": "content parameter"
+        }
+      }
+    },
+    {
+      "name": "challenge/run",
+      "description": "Challenge Run Command - Shared Types\n *\n * Run a coding challenge against the AI coding pipeline. Sets up a fresh workspace, executes the challenge via code/task, evaluates with AI judge, and records the attempt.",
+      "params": {
+        "challengeId": {
+          "type": "string",
+          "required": false,
+          "description": "challengeId parameter"
+        },
+        "challengeNumber": {
+          "type": "number",
+          "required": false,
+          "description": "challengeNumber parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "skipJudge": {
+          "type": "boolean",
+          "required": false,
+          "description": "skipJudge parameter"
+        }
+      }
+    },
+    {
+      "name": "challenge/list",
+      "description": "Challenge List Command - Shared Types\n *\n * List available coding challenges with their difficulty, status, and best scores. Shows progressive challenge sequence for AI training.",
+      "params": {
+        "difficulty": {
+          "type": "string",
+          "required": false,
+          "description": "difficulty parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
         }
       }
     },

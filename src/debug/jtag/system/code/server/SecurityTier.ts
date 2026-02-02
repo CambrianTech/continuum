@@ -65,6 +65,7 @@ const READ_TIER: SecurityTier = {
   allowedCommands: [
     ...DISCOVERY_TIER.allowedCommands,
     'code/diff',
+    'code/git',
     'data/list',
     'data/read',
   ],
@@ -92,6 +93,7 @@ const WRITE_TIER: SecurityTier = {
     'code/edit',
     'code/undo',
     'code/diff',
+    'code/verify',
   ],
   deniedCommands: [
     'code/delete',
