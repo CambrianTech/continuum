@@ -67,6 +67,8 @@ export interface PersonaUserForToolExecutor {
   readonly entity: {
     readonly uniqueId: string;
   };
+  /** Auto-bootstrap workspace when code/* tools are invoked. Called once per context. */
+  readonly ensureCodeWorkspace?: () => Promise<void>;
 }
 
 export class PersonaToolExecutor {
@@ -84,6 +86,7 @@ export class PersonaToolExecutor {
   private toolRegistry: ToolRegistry;
   private formatAdapters: ToolFormatAdapter[];
   private log: ReturnType<typeof Logger.create>;
+  private workspaceBootstrapped = false;
 
   constructor(personaUser: PersonaUserForToolExecutor) {
     this.persona = personaUser;
@@ -195,6 +198,20 @@ export class PersonaToolExecutor {
     if (filteredToolCalls.length === 0) {
       this.log.warn('All tool calls blocked by loop detection');
       return { formattedResults: '[All tool calls blocked - infinite loop detected]', storedResultIds: [] };
+    }
+
+    // Auto-bootstrap workspace if any code/* tools are being called
+    if (!this.workspaceBootstrapped && this.persona.ensureCodeWorkspace) {
+      const hasCodeTools = filteredToolCalls.some(tc => tc.toolName.startsWith('code/'));
+      if (hasCodeTools) {
+        try {
+          this.log.info('🔧 Auto-bootstrapping workspace for code/* tool execution');
+          await this.persona.ensureCodeWorkspace();
+          this.workspaceBootstrapped = true;
+        } catch (err: any) {
+          this.log.error(`Failed to bootstrap workspace: ${err.message}`);
+        }
+      }
     }
 
     // PARALLELIZED: Execute all tools concurrently instead of sequentially

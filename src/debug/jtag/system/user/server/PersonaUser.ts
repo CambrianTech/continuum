@@ -476,7 +476,10 @@ export class PersonaUser extends AIUser {
       getSessionId: () => this.sessionId,
       homeDirectory: this.homeDirectory,
       logger: this.logger,
-      memory: this.memory  // For accessing trained LoRA adapters during inference
+      memory: this.memory,  // For accessing trained LoRA adapters during inference
+      ensureCodeWorkspace: async () => {
+        await this.ensureWorkspace({ contextKey: 'default', mode: 'sandbox' });
+      },
     });
 
     // RUST COGNITION: Fast-path decision engine via IPC
