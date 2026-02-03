@@ -647,39 +647,34 @@ async function main(): Promise<void> {
         console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
         console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
 
-        // Check if browser is connected via ping, then refresh AND open
-        console.log('🔄 Checking browser connection...');
+        // --- Browser Detection (server already running) ---
+        // Ping to check if a browser tab is already connected.
+        // If yes → refresh it. If no → open a new tab.
+        console.log('🔍 Detecting browser connection...');
         try {
           const browserUrl = `http://localhost:${httpPort}/`;
 
-          // Check ping to see if browser is connected
-          const pingResult = await new Promise<{ browserConnected: boolean; browserUrl?: string }>((resolve) => {
+          const pingResult = await new Promise<{ browserConnected: boolean }>((resolve) => {
             exec('./jtag ping', { timeout: 5000 }, (error, stdout) => {
               if (error) {
                 resolve({ browserConnected: false });
-              } else {
-                try {
-                  const result = JSON.parse(stdout);
-                  // Browser is connected if ping returns browser info
-                  const connected = result.browser && result.browser.type === 'browser';
-                  resolve({
-                    browserConnected: connected,
-                    browserUrl: result.browser?.url
-                  });
-                } catch {
-                  resolve({ browserConnected: false });
-                }
+                return;
+              }
+              try {
+                const result = JSON.parse(stdout);
+                const connected = !!(result.success && result.browser && result.browser.type === 'browser');
+                resolve({ browserConnected: connected });
+              } catch {
+                resolve({ browserConnected: false });
               }
             });
           });
 
           if (pingResult.browserConnected) {
-            // Browser is connected - just refresh it
-            console.log('🔄 Browser connected, refreshing...');
+            console.log('✅ Browser connected — refreshing existing tab');
             exec('./jtag interface/navigate', { timeout: 5000 }, () => {});
           } else {
-            // No browser connected - open new tab
-            console.log('🌐 Opening browser...');
+            console.log('🌐 No browser detected — opening new tab');
             spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
           }
         } catch {

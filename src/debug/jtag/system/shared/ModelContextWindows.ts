@@ -29,7 +29,13 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'o1': 200000,
   'o1-mini': 128000,
 
-  // Anthropic Models (Claude)
+  // Anthropic Models (Claude) — versioned IDs used at runtime
+  'claude-sonnet-4-5-20250929': 200000,  // MODEL_IDS.ANTHROPIC.SONNET_4_5
+  'claude-opus-4-20250514': 200000,      // MODEL_IDS.ANTHROPIC.OPUS_4
+  'claude-3-5-haiku-20241022': 200000,   // MODEL_IDS.ANTHROPIC.HAIKU_3_5
+  'claude-sonnet-4': 200000,             // Alias used in UserDataSeed
+  'claude-sonnet-4-5': 200000,           // Date-stripped alias
+  // Legacy naming (kept for backward compatibility)
   'claude-3-opus': 200000,
   'claude-3-sonnet': 200000,
   'claude-3-haiku': 200000,
@@ -37,7 +43,11 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'claude-3-5-haiku': 200000,
   'claude-opus-4': 200000,
 
-  // Meta Models (Llama) via Ollama
+  // Meta Models (Llama) — cloud API naming (dashes)
+  'llama-3.1-8b-instant': 131072,                           // Groq LPU
+  'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo': 131072,  // Together.ai
+  'accounts/fireworks/models/llama-v3p1-8b-instruct': 131072,  // Fireworks.ai
+  // Meta Models (Llama) — Ollama naming (dots + colons)
   'llama3.2': 128000,
   'llama3.2:3b': 128000,
   'llama3.2:1b': 128000,
@@ -52,11 +62,13 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'qwen2.5:32b': 128000,
   'qwen2.5:72b': 128000,
   'qwq': 128000,  // Qwen reasoning model
+  'qwen3-omni-flash-realtime': 128000,  // Alibaba Qwen 3 Omni
 
   // Google Models
   'gemini-pro': 32768,
   'gemini-1.5-pro': 1000000,
   'gemini-1.5-flash': 1000000,
+  'gemini-2.0-flash': 1048576,  // Gemini 2.0 Flash
 
   // Mistral Models
   'mistral': 32768,
@@ -76,6 +88,7 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
 
   // X.AI Models
   'grok-3': 131072,
+  'grok-4': 131072,
 };
 
 /**
@@ -104,11 +117,22 @@ export const MODEL_INFERENCE_SPEEDS: Readonly<Record<string, number>> = {
   'gpt-4-turbo': 1000,
   'gpt-4o': 1000,
   'gpt-4o-mini': 1000,
+  'claude-sonnet-4-5-20250929': 1000,
+  'claude-opus-4-20250514': 1000,
+  'claude-3-5-haiku-20241022': 1000,
   'claude-3-opus': 1000,
   'claude-3-sonnet': 1000,
   'claude-3-haiku': 1000,
   'claude-3-5-sonnet': 1000,
   'claude-opus-4': 1000,
+  'llama-3.1-8b-instant': 1000,                            // Groq LPU
+  'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo': 1000,   // Together.ai
+  'accounts/fireworks/models/llama-v3p1-8b-instruct': 1000, // Fireworks.ai
+  'deepseek-chat': 1000,                                   // DeepSeek cloud
+  'grok-3': 1000,                                          // xAI cloud
+  'grok-4': 1000,                                          // xAI cloud
+  'gemini-2.0-flash': 1000,                                // Google cloud
+  'qwen3-omni-flash-realtime': 1000,                       // Alibaba cloud
   'gemini-pro': 1000,
   'gemini-1.5-pro': 1000,
 
@@ -165,6 +189,12 @@ export function getInferenceSpeed(model: string): number {
   const baseModel = model.split(':')[0];
   if (MODEL_INFERENCE_SPEEDS[baseModel]) {
     return MODEL_INFERENCE_SPEEDS[baseModel];
+  }
+
+  // Strip date suffix (e.g., 'claude-sonnet-4-5-20250929' → 'claude-sonnet-4-5')
+  const dateStripped = model.replace(/-\d{8}$/, '');
+  if (dateStripped !== model && MODEL_INFERENCE_SPEEDS[dateStripped]) {
+    return MODEL_INFERENCE_SPEEDS[dateStripped];
   }
 
   // Try prefix matching
@@ -226,6 +256,12 @@ export function getContextWindow(model: string): number {
   const baseModel = model.split(':')[0];
   if (MODEL_CONTEXT_WINDOWS[baseModel]) {
     return MODEL_CONTEXT_WINDOWS[baseModel];
+  }
+
+  // Strip date suffix (e.g., 'claude-sonnet-4-5-20250929' → 'claude-sonnet-4-5')
+  const dateStripped = model.replace(/-\d{8}$/, '');
+  if (dateStripped !== model && MODEL_CONTEXT_WINDOWS[dateStripped]) {
+    return MODEL_CONTEXT_WINDOWS[dateStripped];
   }
 
   // Try prefix matching for versioned models

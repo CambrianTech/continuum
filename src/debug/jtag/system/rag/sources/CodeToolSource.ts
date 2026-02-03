@@ -71,7 +71,7 @@ const CODE_TOOL_GROUPS: readonly CodeToolGroup[] = [
 export class CodeToolSource implements RAGSource {
   readonly name = 'code-tools';
   readonly priority = 50;  // Medium — below conversation/widget, above learning config
-  readonly defaultBudgetPercent = 5;
+  readonly defaultBudgetPercent = 8;
 
   private static _cachedPrompt: string | null = null;
   private static _cacheGeneratedAt = 0;
@@ -138,7 +138,7 @@ export class CodeToolSource implements RAGSource {
   }
 
   /**
-   * Full coding workflow prompt — injected into system prompt.
+   * Full coding methodology prompt — injected into system prompt.
    * Only includes workflow steps for tool groups the persona has access to.
    */
   private buildFullPrompt(context: RAGSourceContext): string {
@@ -146,37 +146,52 @@ export class CodeToolSource implements RAGSource {
     const tools = registry.listToolsForPersona(context.personaId);
     const codeTools = tools.filter(t => t.name.startsWith('code/'));
 
-    // Filter to groups where persona has at least one command
-    const availableGroups: { group: CodeToolGroup; available: string[] }[] = [];
-    for (const group of CODE_TOOL_GROUPS) {
-      const available = group.commands.filter(cmd =>
-        codeTools.some(t => t.name === cmd)
-      );
-      if (available.length > 0) {
-        availableGroups.push({ group, available });
-      }
-    }
+    // Determine which capabilities are available
+    const hasDiscovery = codeTools.some(t => t.name === 'code/tree' || t.name === 'code/search');
+    const hasRead = codeTools.some(t => t.name === 'code/read');
+    const hasWrite = codeTools.some(t => t.name === 'code/write' || t.name === 'code/edit');
+    const hasVerify = codeTools.some(t => t.name === 'code/verify');
+    const hasDiff = codeTools.some(t => t.name === 'code/diff');
+    const hasUndo = codeTools.some(t => t.name === 'code/undo');
+    const hasGit = codeTools.some(t => t.name === 'code/git');
 
-    // Build numbered workflow steps (only for groups persona has)
-    const workflowSteps = availableGroups
-      .map((entry, i) => `${i + 1}. ${entry.group.workflowStep}`)
-      .join('\n');
+    // Build available tool listing
+    const toolNames = codeTools.map(t => t.name).join(', ');
 
-    // Build grouped tool listing
-    const groupLines = availableGroups
-      .map(entry => `${entry.group.label}: ${entry.available.join(', ')} — ${entry.group.hint}`)
-      .join('\n');
+    // Build workflow steps based on available tools
+    const steps: string[] = [];
+    if (hasDiscovery) steps.push('1. **Understand first**: code/tree to see structure, code/search for patterns across files');
+    if (hasRead) steps.push(`${steps.length + 1}. **Read before editing**: ALWAYS code/read a file before modifying it`);
+    if (hasWrite) steps.push(`${steps.length + 1}. **Make targeted changes**: code/edit for surgical modifications, code/write for new files`);
+    if (hasVerify) steps.push(`${steps.length + 1}. **Verify every change**: code/verify after EVERY edit — if it fails, read errors, fix, verify again`);
+    if (hasDiff || hasGit) steps.push(`${steps.length + 1}. **Review**: ${hasDiff ? 'code/diff to see changes' : ''}${hasDiff && hasGit ? ', ' : ''}${hasGit ? 'code/git status before committing' : ''}`);
 
-    const hasWriteTools = codeTools.some(t => t.name === 'code/write' || t.name === 'code/edit');
+    const workflowSteps = steps.join('\n');
 
-    return `## Coding Capabilities
+    // Build rules section
+    const rules: string[] = [];
+    if (hasRead && hasWrite) rules.push('- NEVER edit a file you haven\'t read — always code/read first');
+    if (hasWrite && hasVerify) rules.push('- After code/write or code/edit, ALWAYS run code/verify');
+    if (hasVerify) rules.push('- When verify fails: read the error output, code/read the failing file, fix it, verify again');
+    if (hasDiscovery) rules.push('- Use code/search to find all references before renaming or refactoring');
+    if (hasUndo) rules.push('- code/undo if something goes wrong — every change is tracked');
 
-You have access to workspace code tools. Follow this workflow for coding tasks:
+    const rulesSection = rules.length > 0 ? `\n### Rules\n${rules.join('\n')}` : '';
 
+    // Anti-patterns section (only if they have write tools)
+    const antiPatterns = hasWrite ? `\n### Anti-Patterns
+- Writing a file without reading the existing content first
+- Skipping verification after changes
+- Making multiple edits before verifying any of them
+- Guessing at file paths — use code/tree and code/search` : '';
+
+    return `## Coding Methodology
+
+Tools: ${toolNames}
+
+### Workflow: Read → Edit → Verify → Iterate
 ${workflowSteps}
-
-${groupLines}
-${hasWriteTools ? '\nEvery write/edit is tracked in a change graph with full undo support.\nNever edit blind — always read first, diff to preview, then apply.' : ''}`.trim();
+${rulesSection}${antiPatterns}`.trim();
   }
 
   /**

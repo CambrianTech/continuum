@@ -685,61 +685,90 @@ export class SystemOrchestrator extends EventEmitter {
       return true;
     }
 
-    // Check if browser is already connected using ping
-    let browserConnected = false;
-    try {
-      const { stdout } = await execAsync('./jtag ping');
-      const pingResponse = JSON.parse(stdout);
-
-      if (pingResponse.success && pingResponse.browser) {
-        browserConnected = true;
-        console.log('🔄 Browser already connected - triggering reload to pick up new code');
-
-        // Trigger reload in browser
-        try {
-          await execAsync('./jtag interface/navigate');
-          console.log('✅ Browser reloaded');
-        } catch (navError) {
-          console.warn('⚠️ Could not navigate browser, trying page reload');
-          // Fallback: try to execute a reload in the browser
-          try {
-            await execAsync('./jtag development/exec --code="location.reload()"');
-          } catch (reloadError) {
-            console.warn('⚠️ Browser reload failed - will open browser');
-            browserConnected = false; // Force open since reload failed
-          }
-        }
-      }
-    } catch (error) {
-      // Ping failed or no browser - proceed with launch
-      console.debug('🔍 No browser connected - will launch new tab');
-    }
-
-    // Only open browser if not already connected
-    // Opening localhost:9000 creates a NEW tab, doesn't focus existing
-    if (!browserConnected) {
-      console.log('🌐 Opening browser...');
-      const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-
-      try {
-        spawn('open', [browserUrl], {
-          detached: true,
-          stdio: 'ignore'
-        }).unref();
-        console.log(`✅ Browser launched: ${browserUrl}`);
-      } catch (error) {
-        console.warn(`⚠️ Failed to auto-open browser: ${error}`);
-        console.debug(`👉 Manually open: ${browserUrl}`);
-      }
-    } else {
-      console.log('✅ Browser already connected - skipped opening new tab');
-    }
+    await this.detectAndManageBrowser(options);
 
     await milestoneEmitter.completeMilestone(
       SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED,
       this.currentEntryPoint
     );
     return true;
+  }
+
+  /**
+   * Single source of truth for browser detection and management.
+   *
+   * Flow:
+   * 1. Ping server to check if a browser is already connected
+   * 2. If connected → refresh it (interface/navigate, fallback to location.reload())
+   * 3. If not connected → open a new tab
+   *
+   * Called from:
+   * - executeBrowserLaunch() during fresh startup milestone chain
+   * - ensureBrowserOpened() when all milestones already complete
+   */
+  /**
+   * Ping the server and check if a browser is connected.
+   * Returns true if browser is detected, false otherwise.
+   */
+  private async pingForBrowser(): Promise<boolean> {
+    try {
+      const { stdout } = await execAsync('./jtag ping', { timeout: 5000 });
+      const pingResponse = JSON.parse(stdout);
+      return !!(pingResponse.success && pingResponse.browser);
+    } catch {
+      return false;
+    }
+  }
+
+  private async detectAndManageBrowser(options: OrchestrationOptions): Promise<void> {
+    // Step 1: Check if browser is already connected.
+    // After a server restart, existing browser tabs need a few seconds to
+    // reconnect their WebSocket. Retry ping up to 3 times with delays
+    // before concluding no browser is present.
+    let browserConnected = await this.pingForBrowser();
+
+    if (!browserConnected) {
+      // Wait and retry — the browser tab may be reconnecting after restart
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        console.log(`🔍 No browser on attempt ${attempt} — waiting 3s for reconnect...`);
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        browserConnected = await this.pingForBrowser();
+        if (browserConnected) break;
+      }
+    }
+
+    // Step 2a: Browser found — refresh it
+    if (browserConnected) {
+      console.log('🔄 Browser connected — refreshing to pick up new code');
+      try {
+        await execAsync('./jtag interface/navigate', { timeout: 5000 });
+        console.log('✅ Browser refreshed');
+      } catch {
+        console.warn('⚠️ interface/navigate failed, trying location.reload()');
+        try {
+          await execAsync('./jtag development/exec --code="location.reload()"', { timeout: 5000 });
+          console.log('✅ Browser reloaded via exec');
+        } catch {
+          console.warn('⚠️ Browser reload also failed');
+        }
+      }
+      console.log('✅ Browser already connected — no new tab needed');
+      return;
+    }
+
+    // Step 2b: No browser detected after retries — open new tab
+    console.log('🌐 No browser detected — opening new tab');
+    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
+
+    try {
+      spawn('open', [browserUrl], {
+        detached: true,
+        stdio: 'ignore'
+      }).unref();
+      console.log(`✅ Browser launched: ${browserUrl}`);
+    } catch (error) {
+      console.warn(`⚠️ Failed to auto-open browser: ${error}`);
+    }
   }
 
   private async executeBrowserProcess(): Promise<boolean> {
@@ -838,8 +867,8 @@ export class SystemOrchestrator extends EventEmitter {
   }
 
   /**
-   * Ensure browser is opened for entry points that require browser interaction
-   * This is called even when browser milestones are already completed
+   * Ensure browser is opened for entry points that require browser interaction.
+   * Delegates to detectAndManageBrowser() — single source of truth for browser detection.
    */
   private async ensureBrowserOpened(options: OrchestrationOptions): Promise<void> {
     if (options.skipBrowser) {
@@ -847,32 +876,7 @@ export class SystemOrchestrator extends EventEmitter {
       return;
     }
 
-    // Check if browser is already connected before opening a new tab
-    try {
-      const systemReady = await this.signaler.checkSystemReady(1000);
-      if (systemReady?.browserReady) {
-        console.debug('⏭️ Browser already connected - skipping launch');
-        return;
-      }
-    } catch (error) {
-      // Signal check failed - proceed with launch
-      console.debug('🔍 Could not verify browser status - will launch new tab');
-    }
-
-    console.debug('🌐 Ensuring browser is opened...');
-
-    const browserUrl = options.browserUrl || await this.getDefaultBrowserUrl();
-
-    try {
-      spawn('open', [browserUrl], { 
-        detached: true, 
-        stdio: 'ignore' 
-      }).unref();
-      console.debug(`✅ Browser opened: ${browserUrl}`);
-    } catch (error) {
-      console.warn(`⚠️ Failed to auto-open browser: ${error}`);
-      console.debug(`👉 Manually open: ${browserUrl}`);
-    }
+    await this.detectAndManageBrowser(options);
   }
 
   /**
