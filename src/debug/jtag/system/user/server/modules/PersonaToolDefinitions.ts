@@ -255,6 +255,49 @@ export async function refreshToolDefinitions(): Promise<void> {
 }
 
 /**
+ * Rich parameter descriptions for critical tools.
+ * The schema generator produces generic descriptions like "filePath parameter".
+ * These overrides provide meaningful descriptions so LLMs know what to pass.
+ */
+const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
+  'code/write': {
+    filePath: 'Relative path to file within workspace (e.g. "index.html", "src/app.js")',
+    content: 'Complete file content to write (the actual code/text, not a description)',
+    description: 'Brief description of what this change does',
+  },
+  'code/read': {
+    filePath: 'Relative path to file within workspace to read',
+    startLine: 'Optional starting line number',
+    endLine: 'Optional ending line number',
+  },
+  'code/edit': {
+    filePath: 'Relative path to file within workspace to edit',
+    editMode: 'Edit mode object: {editType: "search_replace", search: "old text", replace: "new text"} or {editType: "line_range", startLine: 1, endLine: 5, content: "new content"}',
+    description: 'Brief description of what this edit does',
+  },
+  'code/tree': {
+    path: 'Relative directory path within workspace (default: root ".")',
+    maxDepth: 'Maximum directory depth to display',
+  },
+  'code/search': {
+    pattern: 'Search pattern (regex supported)',
+    fileGlob: 'File glob pattern to filter (e.g. "*.ts", "src/**/*.js")',
+    maxResults: 'Maximum number of results to return',
+  },
+  'code/git': {
+    operation: 'Git operation: "status", "diff", "log", "add", "commit"',
+    message: 'Commit message (required for "commit" operation)',
+    paths: 'File paths for "add" operation (JSON array of strings)',
+    staged: 'Show staged changes only (for "diff" operation)',
+    count: 'Number of log entries to show (for "log" operation)',
+  },
+  'code/verify': {
+    typeCheck: 'Run type checking (boolean)',
+    testFiles: 'Specific test files to run (JSON array of strings)',
+  },
+};
+
+/**
  * Convert CommandSignature to ToolDefinition
  */
 function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
@@ -265,11 +308,14 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
   const properties: Record<string, ParameterDefinition> = {};
   const required: string[] = [];
 
+  // Look up rich descriptions for this command
+  const descOverrides = PARAM_DESCRIPTION_OVERRIDES[cmd.name];
+
   if (cmd.params) {
     for (const [paramName, paramInfo] of Object.entries(cmd.params)) {
       properties[paramName] = {
         type: paramInfo.type as any,  // Trust the type from command signature
-        description: paramInfo.description || `${paramName} parameter`,
+        description: descOverrides?.[paramName] || paramInfo.description || `${paramName} parameter`,
         required: paramInfo.required
       };
 

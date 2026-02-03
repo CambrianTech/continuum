@@ -82,6 +82,73 @@ export class PersonaToolExecutor {
   };
 
   /**
+   * Parameter name corrections per command prefix.
+   * LLMs guess wrong parameter names when tool descriptions are generic.
+   * Maps { wrongName → correctName } for each command prefix.
+   */
+  private static readonly PARAM_CORRECTIONS: Record<string, Record<string, string>> = {
+    'code/write': {
+      'path': 'filePath',
+      'file': 'filePath',
+      'file_path': 'filePath',
+      'filepath': 'filePath',
+      'filename': 'filePath',
+      'name': 'filePath',
+      'contents': 'content',
+      'text': 'content',
+      'body': 'content',
+      'data': 'content',
+      'code': 'content',
+      'html': 'content',
+      'source': 'content',
+    },
+    'code/read': {
+      'path': 'filePath',
+      'file': 'filePath',
+      'file_path': 'filePath',
+      'filepath': 'filePath',
+      'filename': 'filePath',
+      'name': 'filePath',
+      'start': 'startLine',
+      'end': 'endLine',
+      'from': 'startLine',
+      'to': 'endLine',
+    },
+    'code/edit': {
+      'path': 'filePath',
+      'file': 'filePath',
+      'file_path': 'filePath',
+      'filepath': 'filePath',
+      'filename': 'filePath',
+      'name': 'filePath',
+      'mode': 'editMode',
+      'type': 'editMode',
+    },
+    'code/search': {
+      'query': 'pattern',
+      'search': 'pattern',
+      'term': 'pattern',
+      'regex': 'pattern',
+      'glob': 'fileGlob',
+      'filter': 'fileGlob',
+    },
+    'code/tree': {
+      'directory': 'path',
+      'dir': 'path',
+      'folder': 'path',
+      'depth': 'maxDepth',
+    },
+    'code/git': {
+      'subcommand': 'operation',
+      'command': 'operation',
+      'action': 'operation',
+      'op': 'operation',
+      'msg': 'message',
+      'files': 'paths',
+    },
+  };
+
+  /**
    * LOOP DETECTION: Track recent tool calls per persona to detect infinite loops
    * Map<personaId, Array<{hash: string, timestamp: number}>>
    * When same tool call appears 3+ times in 60 seconds, it's blocked
@@ -234,6 +301,20 @@ export class PersonaToolExecutor {
       if (correctedToolName !== toolCall.toolName) {
         this.log.info(`↪ Redirected ${toolCall.toolName} → ${correctedToolName}`);
         toolCall = { ...toolCall, toolName: correctedToolName };
+      }
+
+      // Correct common parameter name mismatches (LLMs guess wrong names)
+      const paramCorrections = PersonaToolExecutor.PARAM_CORRECTIONS[toolCall.toolName];
+      if (paramCorrections) {
+        const correctedParams = { ...toolCall.parameters };
+        for (const [wrongName, correctName] of Object.entries(paramCorrections)) {
+          if (correctedParams[wrongName] !== undefined && correctedParams[correctName] === undefined) {
+            correctedParams[correctName] = correctedParams[wrongName];
+            delete correctedParams[wrongName];
+            this.log.info(`↪ Param corrected: ${wrongName} → ${correctName}`);
+          }
+        }
+        toolCall = { ...toolCall, parameters: correctedParams };
       }
 
       // Resolve "current" room parameter to actual room name
