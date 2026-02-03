@@ -496,6 +496,18 @@ enum Request {
         persona_id: String,
     },
 
+    // ========================================================================
+    // Model Discovery Commands
+    // ========================================================================
+
+    /// Discover model metadata from provider APIs.
+    /// ALL HTTP I/O runs here in Rust (off Node.js main thread).
+    /// Returns discovered models for TypeScript to populate ModelRegistry.
+    #[serde(rename = "models/discover")]
+    ModelsDiscover {
+        providers: Vec<crate::models::ProviderConfig>,
+    },
+
     #[serde(rename = "health-check")]
     HealthCheck,
 
@@ -1923,6 +1935,26 @@ impl ServerState {
                 log_info!("ipc", "shell", "Destroyed shell session for {}", persona_id);
                 HandleResult::Json(Response::success(serde_json::json!({
                     "destroyed": true
+                })))
+            }
+
+            Request::ModelsDiscover { providers } => {
+                let _timer = TimingGuard::new("ipc", "models_discover");
+                let provider_count = providers.len();
+
+                // Run async discovery on the tokio runtime (all HTTP I/O off main thread)
+                let models = self.rt_handle.block_on(async {
+                    crate::models::discover_all(providers).await
+                });
+
+                let model_count = models.len();
+                log_info!("ipc", "models",
+                    "Discovered {} models from {} providers", model_count, provider_count);
+
+                HandleResult::Json(Response::success(serde_json::json!({
+                    "models": models,
+                    "count": model_count,
+                    "providers": provider_count
                 })))
             }
 

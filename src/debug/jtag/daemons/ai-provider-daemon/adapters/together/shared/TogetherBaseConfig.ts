@@ -71,17 +71,25 @@ export class TogetherBaseConfig {
         throw new Error(`Together API error: ${response.status} - ${errorText}`);
       }
 
-      const data = await response.json() as { data: Array<{ id: string; type: string; created: number }> };
+      const data = await response.json() as {
+        data: Array<{
+          id: string;
+          type: string;
+          created: number;
+          context_length?: number;
+          max_tokens?: number;
+        }>
+      };
 
-      // Map to ModelInfo format
+      // Map to ModelInfo format — use API-reported context_length when available
       this.modelsCache = data.data.map(model => ({
         id: model.id,
         name: model.id,
         provider: 'together',
-        capabilities: ['text-generation', 'chat'],
-        contextWindow: 128000, // Default - could be model-specific
-        maxOutputTokens: 4096,
-        costPer1kTokens: { input: 0.0002, output: 0.0002 }, // Default - needs pricing API
+        capabilities: ['text-generation', 'chat'] as import('../../../shared/AIProviderTypesV2').ModelCapability[],
+        contextWindow: model.context_length || 128000,
+        maxOutputTokens: model.max_tokens || 4096,
+        costPer1kTokens: { input: 0.0002, output: 0.0002 },
         supportsStreaming: true,
         supportsFunctions: false
       }));

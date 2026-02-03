@@ -67,6 +67,11 @@ export interface OpenAIModelData {
   object?: string;
   created?: number;
   owned_by?: string;
+  // Extended metadata (varies by provider — Groq, Together, etc. may include these)
+  context_length?: number;
+  context_window?: number;
+  max_input_tokens?: number;
+  max_tokens?: number;
 }
 
 export interface OpenAIImageData {
@@ -658,7 +663,12 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       name: modelData.id,
       provider: this.providerId,
       capabilities: ['text-generation'],  // Default, override in subclass
-      contextWindow: 4096,  // Default, override in subclass
+      // Use provider-reported context window when available
+      contextWindow: modelData.context_length
+        || modelData.context_window
+        || modelData.max_input_tokens
+        || 4096,
+      maxOutputTokens: modelData.max_tokens,
       supportsStreaming: true,
       supportsFunctions: false,
     };

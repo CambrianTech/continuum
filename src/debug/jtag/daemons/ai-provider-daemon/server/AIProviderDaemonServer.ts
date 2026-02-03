@@ -15,13 +15,12 @@
 import { AIProviderDaemon } from '../shared/AIProviderDaemon';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
-import type { AIProviderAdapter } from '../shared/AIProviderTypesV2';
 import { ProcessPool } from '../../../system/genome/server/ProcessPool';
 import { initializeSecrets, getSecret } from '../../../system/secrets/SecretManager';
 import { Logger } from '../../../system/core/logging/Logger';
 import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
-import * as path from 'path';
+import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class AIProviderDaemonServer extends AIProviderDaemon {
   private processPool?: ProcessPool;
@@ -219,8 +218,109 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     const healthTicker = SystemHealthTicker.getInstance();
     await healthTicker.start();
 
+    // Discover model metadata from provider APIs — OFF the main thread.
+    // ALL HTTP I/O runs in the Rust process (continuum-core) via IPC.
+    // Node.js main thread only does Map.set() registration with results.
+    this.discoverModelsViaRust();
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ AIProviderDaemonServer: DEFERRED init complete (${deferredMs}ms) - health monitoring active`);
+  }
+
+  /**
+   * Discover model metadata via Rust IPC (continuum-core process).
+   *
+   * ALL HTTP I/O runs in the Rust process — completely off the Node.js main thread.
+   * Node.js only sends provider configs and receives discovered models via IPC.
+   */
+  private discoverModelsViaRust(): void {
+    // Build provider configs from registered adapters
+    const providers: Array<{
+      provider_id: string;
+      api_key: string;
+      base_url: string;
+      static_models?: Array<{
+        id: string;
+        context_window: number;
+        max_output_tokens?: number;
+        capabilities?: string[];
+        cost_per_1k_tokens?: { input: number; output: number };
+      }>;
+    }> = [];
+
+    for (const [providerId, registration] of this.adapters) {
+      const adapter = registration.adapter;
+
+      // OpenAI-compatible adapters have config with apiKey and baseUrl
+      const config = (adapter as any).config;
+      if (config?.apiKey && config?.baseUrl) {
+        const staticModels = config.models?.map((m: any) => ({
+          id: m.id,
+          context_window: m.contextWindow,
+          max_output_tokens: m.maxOutputTokens,
+          capabilities: m.capabilities,
+          cost_per_1k_tokens: m.costPer1kTokens,
+        }));
+
+        providers.push({
+          provider_id: providerId,
+          api_key: config.apiKey,
+          base_url: config.baseUrl,
+          static_models: staticModels || undefined,
+        });
+        continue;
+      }
+
+      // Anthropic adapter has apiKey directly (not OpenAI-compatible)
+      const apiKey = (adapter as any).apiKey;
+      if (apiKey && providerId === 'anthropic') {
+        providers.push({
+          provider_id: providerId,
+          api_key: apiKey,
+          base_url: 'https://api.anthropic.com',
+          static_models: [
+            { id: 'claude-sonnet-4-5-20250929', context_window: 200000, max_output_tokens: 8192 },
+            { id: 'claude-opus-4-20250514', context_window: 200000, max_output_tokens: 4096 },
+            { id: 'claude-3-5-haiku-20241022', context_window: 200000, max_output_tokens: 4096 },
+          ],
+        });
+      }
+
+      // Google adapter has apiKey in googleConfig
+      const googleConfig = (adapter as any).googleConfig;
+      if (googleConfig?.apiKey && providerId === 'google') {
+        providers.push({
+          provider_id: providerId,
+          api_key: googleConfig.apiKey,
+          base_url: 'https://generativelanguage.googleapis.com',
+        });
+      }
+    }
+
+    if (providers.length === 0) {
+      this.log.info('No provider configs for model discovery');
+      return;
+    }
+
+    this.log.info(`Sending ${providers.length} provider configs to Rust for model discovery...`);
+
+    // Fire-and-forget IPC call to Rust — all HTTP runs in the Rust process
+    const client = new RustCoreIPCClient('/tmp/continuum-core.sock');
+    client.connect()
+      .then(() => client.modelsDiscover(providers))
+      .then(async (result) => {
+        const { ModelRegistry } = await import('../../../system/shared/ModelRegistry');
+        const registry = ModelRegistry.sharedInstance();
+        for (const model of result.models) {
+          registry.register(model);
+        }
+        this.log.info(`ModelRegistry: ${result.count} models discovered from ${result.providers} providers (Rust IPC)`);
+        client.disconnect();
+      })
+      .catch((err) => {
+        this.log.warn(`Model discovery via Rust failed: ${err.message}`);
+        client.disconnect();
+      });
   }
 
   /**

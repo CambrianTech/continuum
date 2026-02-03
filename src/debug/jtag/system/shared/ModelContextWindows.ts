@@ -8,7 +8,14 @@
  * - ChatRAGBuilder (message count budgeting)
  * - RAGBudgetServerCommand (token budget calculation)
  * - PersonaUser (model capability checks)
+ *
+ * Dynamic discovery:
+ * ModelRegistry (populated async from provider APIs in initializeDeferred)
+ * is checked FIRST. Static maps below are the fallback when the registry
+ * hasn't discovered a model yet or the provider API is unavailable.
  */
+
+import { ModelRegistry } from './ModelRegistry';
 
 /**
  * Model context windows in tokens
@@ -180,6 +187,14 @@ export const DEFAULT_TARGET_LATENCY_SECONDS = 30;
  * Get inference speed for a model in tokens per second
  */
 export function getInferenceSpeed(model: string): number {
+  // Check ModelRegistry first (live-discovered data from provider APIs)
+  const registry = ModelRegistry.sharedInstance();
+  const discovered = registry.get(model);
+  if (discovered) {
+    // Cloud APIs are always ~1000 TPS (network-bound)
+    return 1000;
+  }
+
   // Direct match
   if (MODEL_INFERENCE_SPEEDS[model]) {
     return MODEL_INFERENCE_SPEEDS[model];
@@ -247,7 +262,11 @@ export function isSlowLocalModel(model: string): boolean {
  * @returns Context window size in tokens, or DEFAULT_CONTEXT_WINDOW if model not found
  */
 export function getContextWindow(model: string): number {
-  // Direct match
+  // Check ModelRegistry first (live-discovered data from provider APIs)
+  const discovered = ModelRegistry.sharedInstance().contextWindow(model);
+  if (discovered !== undefined) return discovered;
+
+  // Direct match in static map
   if (MODEL_CONTEXT_WINDOWS[model]) {
     return MODEL_CONTEXT_WINDOWS[model];
   }

@@ -1257,6 +1257,63 @@ export class RustCoreIPCClient extends EventEmitter {
 		return response.result as { applied: boolean; ruleCount: number };
 	}
 
+	// ========================================================================
+	// Model Discovery Methods
+	// ========================================================================
+
+	/**
+	 * Discover model metadata from provider APIs.
+	 * ALL HTTP I/O runs in Rust (off Node.js main thread).
+	 * Returns discovered models for ModelRegistry population.
+	 */
+	async modelsDiscover(providers: Array<{
+		provider_id: string;
+		api_key: string;
+		base_url: string;
+		static_models?: Array<{
+			id: string;
+			context_window: number;
+			max_output_tokens?: number;
+			capabilities?: string[];
+			cost_per_1k_tokens?: { input: number; output: number };
+		}>;
+	}>): Promise<{
+		models: Array<{
+			modelId: string;
+			contextWindow: number;
+			maxOutputTokens?: number;
+			provider: string;
+			capabilities?: string[];
+			costPer1kTokens?: { input: number; output: number };
+			discoveredAt: number;
+		}>;
+		count: number;
+		providers: number;
+	}> {
+		const response = await this.request({
+			command: 'models/discover',
+			providers,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to discover models');
+		}
+
+		return response.result as {
+			models: Array<{
+				modelId: string;
+				contextWindow: number;
+				maxOutputTokens?: number;
+				provider: string;
+				capabilities?: string[];
+				costPer1kTokens?: { input: number; output: number };
+				discoveredAt: number;
+			}>;
+			count: number;
+			providers: number;
+		};
+	}
+
 	/**
 	 * Disconnect from server
 	 */
