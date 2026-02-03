@@ -256,7 +256,9 @@ export class TimingCollector {
     // Default log path - can be overridden via env var
     this.logPath = process.env.JTAG_TIMING_LOG ||
       '/tmp/jtag-timing.jsonl';
-    this.logEnabled = process.env.JTAG_TIMING_ENABLED !== 'false';
+    // Opt-IN: timing file is OFF by default (set JTAG_TIMING_ENABLED=true to enable)
+    // Previous logic (opt-out) caused 952MB timing files because it defaulted to on
+    this.logEnabled = process.env.JTAG_TIMING_ENABLED === 'true';
 
     // Set up async write stream (replaces appendFileSync which blocked event loop)
     if (this.logEnabled && isNode) {

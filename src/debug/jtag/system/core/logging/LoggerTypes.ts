@@ -34,7 +34,7 @@ export interface LogQueueEntry {
  * Parse log level from environment
  */
 export function parseLogLevel(envLevel?: string): LogLevel {
-  const level = envLevel?.toUpperCase() || 'INFO';
+  const level = envLevel?.toUpperCase() || 'WARN';
   const levelMap: Record<string, LogLevel> = {
     'DEBUG': LogLevel.DEBUG,
     'INFO': LogLevel.INFO,
@@ -42,7 +42,7 @@ export function parseLogLevel(envLevel?: string): LogLevel {
     'ERROR': LogLevel.ERROR,
     'SILENT': LogLevel.SILENT
   };
-  return levelMap[level] || LogLevel.INFO;
+  return levelMap[level] || LogLevel.WARN;
 }
 
 /**

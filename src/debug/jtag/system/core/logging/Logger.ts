@@ -110,6 +110,23 @@ class LoggerClass implements ParentLogger {
     // Sync global level to the per-component registry
     LogLevelRegistry.instance.globalLevel = this.config.level;
 
+    // Default overrides for known-noisy components
+    // These act like "default mute buttons" — can be unmuted at runtime
+    // Errors always get through; only debug/info spam is suppressed
+    LogLevelRegistry.instance.configure({
+      // Daemon initialization spam (25+ info calls each during startup)
+      'RoomMembershipDaemonServer': LogLevel.WARN,
+      'ArchiveDaemonServer': LogLevel.WARN,
+      'SessionDaemonServer': LogLevel.WARN,
+      'CommsTestDaemonServer': LogLevel.WARN,
+      // PersonaUser autonomous loop (46+ logging calls in hot paths)
+      'PersonaUser': LogLevel.WARN,
+      'PersonaResponseGenerator': LogLevel.WARN,
+      'ChatCoordinationStream': LogLevel.WARN,
+      // RAG pipeline (timed internally — timing data is more useful than log spam)
+      'RAGComposer': LogLevel.WARN,
+    });
+
     this.fileStreams = new Map();
     this.logQueues = new Map();
     this.logTimers = new Map();

@@ -25,7 +25,7 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ============================================================================
 // Main Entry Point
@@ -82,7 +82,6 @@ fn main() -> std::io::Result<()> {
         const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
         const MAX_BATCH_BEFORE_FLUSH: usize = 200;
 
-        let mut last_flush = Instant::now();
         let mut pending_writes: usize = 0;
 
         // Rate limiter: 100 messages/sec per category (prevents spam flooding)
@@ -139,15 +138,11 @@ fn main() -> std::io::Result<()> {
             }
         };
 
+        // Simple loop: block up to FLUSH_INTERVAL, process batch, flush.
+        // CRITICAL: Always use FLUSH_INTERVAL as timeout to avoid busy-spin.
+        // (Previous version used Duration::ZERO which caused 100% CPU)
         loop {
-            let elapsed = last_flush.elapsed();
-            let timeout = if elapsed >= FLUSH_INTERVAL {
-                Duration::ZERO
-            } else {
-                FLUSH_INTERVAL - elapsed
-            };
-
-            match log_rx.recv_timeout(timeout) {
+            match log_rx.recv_timeout(FLUSH_INTERVAL) {
                 Ok(payload) => {
                     process_payload(&payload, &mut limiter, &mut pending_writes);
 
@@ -161,19 +156,16 @@ fn main() -> std::io::Result<()> {
                         }
                     }
 
-                    // Flush if batch limit reached or interval elapsed
-                    if pending_writes >= MAX_BATCH_BEFORE_FLUSH
-                        || last_flush.elapsed() >= FLUSH_INTERVAL
-                    {
+                    // Flush if batch limit reached
+                    if pending_writes >= MAX_BATCH_BEFORE_FLUSH {
                         file_manager::flush_all(&writer_file_cache);
-                        last_flush = Instant::now();
                         pending_writes = 0;
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Periodic flush — fires every FLUSH_INTERVAL when idle
                     if pending_writes > 0 {
                         file_manager::flush_all(&writer_file_cache);
-                        last_flush = Instant::now();
                         pending_writes = 0;
                     }
                 }
