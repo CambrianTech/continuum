@@ -104,8 +104,8 @@ export class RustCoreIPCClient extends EventEmitter {
 	private nextRequestId = 1;
 	private connected = false;
 
-	/** Rate-limit slow IPC warnings: command -> last warning timestamp */
-	private slowWarningTimestamps: Map<string, number> = new Map();
+	/** Rate-limit slow IPC warnings globally: command -> last warning timestamp */
+	private static slowWarningTimestamps: Map<string, number> = new Map();
 	private static readonly SLOW_IPC_THRESHOLD_MS = 500;
 	private static readonly SLOW_WARNING_COOLDOWN_MS = 10_000;
 
@@ -224,9 +224,9 @@ export class RustCoreIPCClient extends EventEmitter {
 				const duration = performance.now() - start;
 				if (duration > RustCoreIPCClient.SLOW_IPC_THRESHOLD_MS) {
 					const now = Date.now();
-					const lastWarned = this.slowWarningTimestamps.get(command.command) ?? 0;
+					const lastWarned = RustCoreIPCClient.slowWarningTimestamps.get(command.command) ?? 0;
 					if (now - lastWarned > RustCoreIPCClient.SLOW_WARNING_COOLDOWN_MS) {
-						this.slowWarningTimestamps.set(command.command, now);
+						RustCoreIPCClient.slowWarningTimestamps.set(command.command, now);
 						console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(0)}ms`);
 					}
 				}

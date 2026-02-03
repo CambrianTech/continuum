@@ -695,18 +695,7 @@ export class SessionDaemonServer extends SessionDaemon {
       const identity = enhancedContext?.identity;
       const assistant = enhancedContext?.assistant;
 
-      // DEBUG: BYPASS LOGGER - Use console.error to guarantee visibility
-      console.error(`🔍🔍🔍 SESSION CREATE DEBUG`);
-      console.error(`  clientType: ${clientType} (type: ${typeof clientType})`);
-      console.error(`  hasEnhancedContext: ${!!enhancedContext}`);
-      console.error(`  enhancedContext keys: ${enhancedContext ? Object.keys(enhancedContext).join(', ') : 'none'}`);
-      console.error(`  hasIdentity: ${!!identity}`);
-      console.error(`  identity: ${JSON.stringify(identity)}`);
-      console.error(`  params.userId: ${params.userId}`);
-      console.error(`  deviceId: ${identity?.deviceId?.slice(0, 12)}`);
-
-      // DEBUG: Log what we received
-      this.log.info(`🔍 Session create: clientType=${clientType}, hasEnhancedContext=${!!enhancedContext}, hasIdentity=${!!identity}, userId=${params.userId}, deviceId=${identity?.deviceId?.slice(0, 12)}`);
+      this.log.info(`🔍 Session create: clientType=${clientType}, hasIdentity=${!!identity}, userId=${params.userId}`);
 
       // Log assistant for attribution (NOT for identity resolution!)
       if (assistant) {

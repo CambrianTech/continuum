@@ -85,9 +85,7 @@ export class PersonaWorkerThread extends EventEmitter {
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
     const workerPath = path.join(currentDir, 'persona-worker.js');
 
-    console.log(`🧵 Starting worker for persona ${this.personaId}`);
-    console.log(`   Worker script: ${workerPath}`);
-    console.log(`   Provider type: ${this.config.providerType}`);
+    console.log(`🧵 Starting worker for persona ${this.personaId.slice(0, 8)} (${this.config.providerType})`);
 
     this.worker = new Worker(workerPath, {
       workerData: {

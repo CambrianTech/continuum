@@ -226,7 +226,7 @@ export class DatabaseHandleRegistry {
         if (!dbPath) {
           throw new Error('SQLite config requires either "path" or "filename" property');
         }
-        console.log(`📦 DatabaseHandleRegistry: Opening SQLite at: ${dbPath}`);
+        // SQLite path logged via SqliteStorageAdapter.initialize()
         storageAdapter = new SqliteStorageAdapter();
         await storageAdapter.initialize({
           type: 'sqlite',
@@ -257,7 +257,6 @@ export class DatabaseHandleRegistry {
       emitEvents: options?.emitEvents ?? true  // Default to emitting events
     });
 
-    console.log(`🔌 DatabaseHandleRegistry: Opened ${adapter} handle ${handle} (emitEvents=${options?.emitEvents ?? true})`);
 
     return handle;
   }
@@ -281,7 +280,6 @@ export class DatabaseHandleRegistry {
       throw new Error(`Cannot register alias '${alias}': handle '${handle}' does not exist`);
     }
     this.handleAliases.set(alias, handle);
-    console.log(`🔌 DatabaseHandleRegistry: Registered alias '${alias}' → ${handle}`);
   }
 
   /**
