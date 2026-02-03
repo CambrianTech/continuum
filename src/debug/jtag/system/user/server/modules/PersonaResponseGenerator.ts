@@ -943,8 +943,48 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
       // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
       // This enables tool_use blocks instead of XML parsing for more reliable tool execution
+      // CRITICAL: Prioritize relevant tools. Sending 200+ tools overwhelms models, causing them
+      // to loop on meta-tools (search_tools) instead of calling the actual tools they need.
       if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
-        request.tools = convertToNativeToolSpecs(toolDefinitions);
+        const MAX_NATIVE_TOOLS = 64;
+
+        // Exclude meta-tools from native specs — models with native tool calling
+        // don't need discovery tools. search_tools/list_tools cause infinite loops
+        // (Claude searches for code/write 10x instead of just calling it).
+        const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
+        let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
+
+        if (prioritizedTools.length > MAX_NATIVE_TOOLS) {
+          // Build priority set: recipe-highlighted tools + essential categories
+          const recipeToolNames = new Set(
+            (fullRAGContext.recipeTools || [])
+              .filter(t => t.enabledFor.includes('ai'))
+              .map(t => t.name)
+          );
+
+          // Essential tools that should always be available
+          const essentialPrefixes = ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
+
+          // Partition: priority tools first, then the rest
+          const priority: AdapterToolDefinition[] = [];
+          const rest: AdapterToolDefinition[] = [];
+
+          for (const tool of prioritizedTools) {
+            if (recipeToolNames.has(tool.name) ||
+                essentialPrefixes.some(p => tool.name.startsWith(p))) {
+              priority.push(tool);
+            } else {
+              rest.push(tool);
+            }
+          }
+
+          // Fill remaining slots from rest (preserving original order)
+          const remaining = MAX_NATIVE_TOOLS - priority.length;
+          prioritizedTools = [...priority, ...rest.slice(0, Math.max(0, remaining))];
+          this.log(`🔧 ${this.personaName}: Tool prioritization: ${priority.length} priority + ${Math.max(0, remaining)} general = ${prioritizedTools.length} (from ${toolDefinitions.length} total)`);
+        }
+
+        request.tools = convertToNativeToolSpecs(prioritizedTools);
         this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
       }
       // Check for mentions by both uniqueId (@helper) and displayName (@Helper AI)

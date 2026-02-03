@@ -93,6 +93,7 @@ export class PersonaToolExecutor {
       'file_path': 'filePath',
       'filepath': 'filePath',
       'filename': 'filePath',
+      'file_name': 'filePath',
       'name': 'filePath',
       'contents': 'content',
       'text': 'content',
@@ -315,6 +316,35 @@ export class PersonaToolExecutor {
           }
         }
         toolCall = { ...toolCall, parameters: correctedParams };
+      }
+
+      // Clean up code/write content: CDATA wrappers, HTML entities
+      // Models encode HTML differently when writing code — normalize before execution
+      if (toolCall.toolName === 'code/write' && toolCall.parameters.content) {
+        let content = toolCall.parameters.content;
+        let cleaned = false;
+
+        // Strip CDATA wrappers (Together wraps HTML in <![CDATA[...]]> for XML safety)
+        const cdataMatch = content.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+        if (cdataMatch) {
+          content = cdataMatch[1];
+          cleaned = true;
+        }
+
+        // Decode HTML entities in a single pass (Groq double-escapes HTML as &lt;html&gt;)
+        const NAMED: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", nbsp: ' ' };
+        const decoded = content.replace(/&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);/g, (match, entity: string) => {
+          if (NAMED[entity]) return NAMED[entity];
+          if (entity.startsWith('#x')) return String.fromCharCode(parseInt(entity.slice(2), 16));
+          if (entity.startsWith('#')) return String.fromCharCode(parseInt(entity.slice(1), 10));
+          return match;
+        });
+        if (decoded !== content) { content = decoded; cleaned = true; }
+
+        if (cleaned) {
+          toolCall = { ...toolCall, parameters: { ...toolCall.parameters, content } };
+          this.log.info('↪ Cleaned code/write content (CDATA/entity normalization)');
+        }
       }
 
       // Resolve "current" room parameter to actual room name

@@ -114,7 +114,7 @@ export class ToolRegistry {
     console.log('⚙️ ToolRegistry: Discovering available commands...');
 
     try {
-      const result = await List.execute({}) as unknown as {
+      const result = await List.execute({ includeDescription: true }) as unknown as {
         commands?: CommandSignature[];
         success: boolean;
         error?: string;
