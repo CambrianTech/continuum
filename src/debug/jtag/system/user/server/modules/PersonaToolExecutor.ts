@@ -74,6 +74,14 @@ export interface PersonaUserForToolExecutor {
 export class PersonaToolExecutor {
 
   /**
+   * Tool name corrections: LLMs sometimes confuse similarly-named tools.
+   * workspace/tree shows the JTAG command hierarchy, code/tree shows workspace files.
+   */
+  private static readonly TOOL_CORRECTIONS: Record<string, string> = {
+    'workspace/tree': 'code/tree',
+  };
+
+  /**
    * LOOP DETECTION: Track recent tool calls per persona to detect infinite loops
    * Map<personaId, Array<{hash: string, timestamp: number}>>
    * When same tool call appears 3+ times in 60 seconds, it's blocked
@@ -219,6 +227,14 @@ export class PersonaToolExecutor {
     // Example: 3 tools × 500ms each = 1500ms sequential → 500ms parallel (3x speedup)
     const toolExecutionPromises = filteredToolCalls.map(async (toolCall) => {
       const startTime = Date.now();
+
+      // Redirect common tool name confusion (workspace/* → code/*)
+      // LLMs sometimes confuse workspace/tree (command hierarchy) with code/tree (file system)
+      const correctedToolName = PersonaToolExecutor.TOOL_CORRECTIONS[toolCall.toolName] ?? toolCall.toolName;
+      if (correctedToolName !== toolCall.toolName) {
+        this.log.info(`↪ Redirected ${toolCall.toolName} → ${correctedToolName}`);
+        toolCall = { ...toolCall, toolName: correctedToolName };
+      }
 
       // Resolve "current" room parameter to actual room name
       // This handles wall/*, chat/*, and any other room-scoped commands
