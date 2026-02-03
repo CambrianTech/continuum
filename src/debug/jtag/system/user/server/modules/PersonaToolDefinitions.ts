@@ -12,6 +12,7 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { Commands } from '../../../core/shared/Commands';
 import type { CommandSignature, ListResult } from '../../../../commands/list/shared/ListTypes';
 import { ToolRegistry } from '../../../tools/server/ToolRegistry';
+import { ToolNameCodec } from './ToolFormatAdapter';
 
 import { List } from '../../../../commands/list/shared/ListTypes';
 /**
@@ -247,8 +248,13 @@ export async function refreshToolDefinitions(): Promise<void> {
       log(`ToolRegistry not ready (will retry): ${registryError}`);
     }
 
+    // Register all tool names with the codec for bidirectional encoding/decoding.
+    // This populates the reverse map so that any model-produced variant of a tool name
+    // (e.g. code_write, $FUNCTIONS.code_write, code-write) resolves to the original.
+    ToolNameCodec.instance.registerAll(toolCache);
+
     lastRefreshTime = Date.now();
-    log(`Refreshed ${toolCache.length} tools from Commands system`);
+    log(`Refreshed ${toolCache.length} tools from Commands system (codec registered)`);
   } catch (error) {
     log(`❌ Error refreshing tools: ${error}`);
   }

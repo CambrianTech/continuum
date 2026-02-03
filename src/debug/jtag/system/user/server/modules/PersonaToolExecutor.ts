@@ -156,7 +156,7 @@ export class PersonaToolExecutor {
    */
   private static readonly recentToolCalls: Map<string, Array<{ hash: string; timestamp: number }>> = new Map();
   private static readonly LOOP_DETECTION_WINDOW_MS = 60000; // 60 seconds
-  private static readonly LOOP_DETECTION_THRESHOLD = 3; // Block after 3 identical calls
+  private static readonly LOOP_DETECTION_THRESHOLD = 2; // Block after 2 identical calls
 
   private persona: PersonaUserForToolExecutor;
   private toolRegistry: ToolRegistry;

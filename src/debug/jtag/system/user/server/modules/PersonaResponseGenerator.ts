@@ -400,6 +400,88 @@ export class PersonaResponseGenerator {
   }
 
   /**
+   * Produce a human-readable summary of a tool result.
+   * Parses JSON results from code/* tools into descriptive sentences
+   * instead of dumping raw JSON back at the model.
+   */
+  private summarizeToolResult(toolName: string, rawContent: string): string {
+    // Try to parse as JSON for structured results
+    try {
+      const data = JSON.parse(rawContent);
+
+      // code/write — file creation/overwrite
+      if (toolName === 'code/write' && data.success) {
+        const path = data.filePath || data.file_path || 'file';
+        const bytes = data.bytesWritten || data.bytes_written;
+        return bytes ? `Wrote ${bytes} bytes to ${path}` : `Wrote ${path} successfully`;
+      }
+
+      // code/read — file reading
+      if (toolName === 'code/read' && data.success !== false) {
+        const path = data.filePath || data.file_path || 'file';
+        const lines = data.lineCount || data.line_count;
+        return lines ? `Read ${path} (${lines} lines)` : `Read ${path}`;
+      }
+
+      // code/edit — file editing
+      if (toolName === 'code/edit' && data.success) {
+        const path = data.filePath || data.file_path || 'file';
+        return `Edited ${path} successfully`;
+      }
+
+      // code/search — search results
+      if (toolName === 'code/search') {
+        const matches = data.matchCount || data.match_count || data.results?.length;
+        return matches !== undefined ? `Found ${matches} match(es)` : 'Search completed';
+      }
+
+      // code/tree — directory listing
+      if (toolName === 'code/tree' && data.success) {
+        return 'Listed directory tree';
+      }
+
+      // code/verify — build/test verification
+      if (toolName === 'code/verify') {
+        if (data.success) return 'Verification passed';
+        const errors = data.errorCount || data.errors?.length;
+        return errors ? `Verification failed with ${errors} error(s)` : 'Verification failed';
+      }
+
+      // code/git — git operations
+      if (toolName === 'code/git' && data.success) {
+        return data.message || 'Git operation completed';
+      }
+
+      // code/diff — diff preview
+      if (toolName === 'code/diff') {
+        return 'Diff generated';
+      }
+
+      // Generic success with a message field
+      if (data.success && data.message) {
+        return String(data.message).slice(0, 150);
+      }
+
+      // Generic success
+      if (data.success) {
+        return 'Completed successfully';
+      }
+
+      // Fall through — return truncated raw content
+    } catch {
+      // Not JSON — use first line of raw content
+    }
+
+    // Non-JSON content: return first meaningful line (e.g., file contents, tree output)
+    const firstLine = rawContent.split('\n')[0]?.trim();
+    if (firstLine && firstLine.length > 0) {
+      return firstLine.length > 120 ? firstLine.slice(0, 120) + '...' : firstLine;
+    }
+
+    return 'Completed';
+  }
+
+  /**
    * Calculate safe message count based on model's context window
    *
    * Strategy: Fill to ~90% of (contextWindow - maxTokens - systemPrompt)
@@ -618,11 +700,10 @@ export class PersonaResponseGenerator {
         }
 
         if (fullRAGContext.recipeTools && fullRAGContext.recipeTools.length > 0) {
-          activitySection += '\n\nTools especially relevant to this activity:\n' +
-            fullRAGContext.recipeTools
-              .filter(t => t.enabledFor.includes('ai'))
-              .map(t => `- ${t.name}: ${t.description}`)
-              .join('\n');
+          const aiTools = fullRAGContext.recipeTools.filter(t => t.enabledFor.includes('ai'));
+          activitySection += '\n\nYOU MUST use these tools to do real work in this activity (call them directly):\n' +
+            aiTools.map(t => `- ${t.name}: ${t.description}`).join('\n') +
+            '\n\nDo NOT just discuss or describe what should be done — call the tools above to actually do it.';
         }
 
         activitySection += '\n================================';
@@ -946,42 +1027,53 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // CRITICAL: Prioritize relevant tools. Sending 200+ tools overwhelms models, causing them
       // to loop on meta-tools (search_tools) instead of calling the actual tools they need.
       if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
-        const MAX_NATIVE_TOOLS = 64;
-
         // Exclude meta-tools from native specs — models with native tool calling
-        // don't need discovery tools. search_tools/list_tools cause infinite loops
-        // (Claude searches for code/write 10x instead of just calling it).
+        // don't need discovery tools. search_tools/list_tools cause infinite loops.
         const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
         let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
 
+        // Recipe tools define the activity's core toolset. When present, recipe tools
+        // go FIRST and the cap is tighter — models use early tools and get confused by 64+.
+        const recipeToolNames = new Set(
+          (fullRAGContext.recipeTools || [])
+            .filter(t => t.enabledFor.includes('ai'))
+            .map(t => t.name)
+        );
+        const hasRecipeTools = recipeToolNames.size > 0;
+        const MAX_NATIVE_TOOLS = hasRecipeTools ? 32 : 64;
+
         if (prioritizedTools.length > MAX_NATIVE_TOOLS) {
-          // Build priority set: recipe-highlighted tools + essential categories
-          const recipeToolNames = new Set(
-            (fullRAGContext.recipeTools || [])
-              .filter(t => t.enabledFor.includes('ai'))
-              .map(t => t.name)
-          );
+          // Three-tier priority:
+          // 1. Recipe tools (the activity's core tools — go FIRST)
+          // 2. Essentials (bare minimum for coordination)
+          // 3. Everything else (fill remaining slots)
+          const ESSENTIAL_TOOLS = new Set([
+            'collaboration/chat/send', 'collaboration/chat/history',
+            'collaboration/decision/propose', 'collaboration/decision/vote',
+          ]);
+          const essentialPrefixes = hasRecipeTools
+            ? [] // When recipe tools exist, only allow exact essential matches
+            : ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
 
-          // Essential tools that should always be available
-          const essentialPrefixes = ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
-
-          // Partition: priority tools first, then the rest
-          const priority: AdapterToolDefinition[] = [];
+          const recipe: AdapterToolDefinition[] = [];
+          const essential: AdapterToolDefinition[] = [];
           const rest: AdapterToolDefinition[] = [];
 
           for (const tool of prioritizedTools) {
-            if (recipeToolNames.has(tool.name) ||
-                essentialPrefixes.some(p => tool.name.startsWith(p))) {
-              priority.push(tool);
+            if (recipeToolNames.has(tool.name)) {
+              recipe.push(tool);
+            } else if (ESSENTIAL_TOOLS.has(tool.name) ||
+                       essentialPrefixes.some(p => tool.name.startsWith(p))) {
+              essential.push(tool);
             } else {
               rest.push(tool);
             }
           }
 
-          // Fill remaining slots from rest (preserving original order)
-          const remaining = MAX_NATIVE_TOOLS - priority.length;
-          prioritizedTools = [...priority, ...rest.slice(0, Math.max(0, remaining))];
-          this.log(`🔧 ${this.personaName}: Tool prioritization: ${priority.length} priority + ${Math.max(0, remaining)} general = ${prioritizedTools.length} (from ${toolDefinitions.length} total)`);
+          // Recipe tools FIRST, then essentials, then fill from rest
+          const remaining = MAX_NATIVE_TOOLS - recipe.length - essential.length;
+          prioritizedTools = [...recipe, ...essential, ...rest.slice(0, Math.max(0, remaining))];
+          this.log(`🔧 ${this.personaName}: Tool prioritization: ${recipe.length} recipe + ${essential.length} essential + ${Math.max(0, remaining)} general = ${prioritizedTools.length} (from ${toolDefinitions.length} total, cap=${MAX_NATIVE_TOOLS})`);
         }
 
         request.tools = convertToNativeToolSpecs(prioritizedTools);
@@ -1241,8 +1333,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         // 🔧 PHASE 3.3.6: Tool execution loop - parse and execute tool calls, then regenerate response
         // This allows personas to autonomously use tools like code/read during their inference
+        // Messages accumulate across iterations so the model sees its full tool call history.
         let toolIterations = 0;
         const MAX_TOOL_ITERATIONS = 3;
+        const accumulatedToolMessages: ChatMessage[] = [];
 
         while (toolIterations < MAX_TOOL_ITERATIONS) {
           // Check for native tool calls first (from Anthropic, OpenAI JSON tool_use format)
@@ -1251,7 +1345,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
           if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
             // Convert native format { id, name, input } to executor format { toolName, parameters }
-            // Unsanitize tool names: data__list -> data/list (API requires no slashes, we use double underscores)
+            // Decode tool names: data_list -> data/list (API requires no slashes, we encode with underscores)
             toolCalls = aiResponse.toolCalls.map((tc: NativeToolCall) => ({
               toolName: unsanitizeToolName(tc.name),
               parameters: Object.fromEntries(
@@ -1300,38 +1394,52 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
 
           // Phase 3B: Build lean summary with UUID references for lazy loading
-          // Extract summaries from formatted results (first line of each <tool_result>)
-          const toolSummaries = toolResults.split('<tool_result>').slice(1).map((result, i) => {
+          // Extract human-readable summaries from formatted results
+          const toolResultParts = toolResults.split('<tool_result>').slice(1);
+          let successCount = 0;
+          let failureCount = 0;
+
+          const toolSummaries = toolResultParts.map((result, i) => {
             const toolName = result.match(/<tool_name>(.*?)<\/tool_name>/)?.[1] || 'unknown';
             const status = result.match(/<status>(.*?)<\/status>/)?.[1] || 'unknown';
             const resultId = storedResultIds[i];
 
             if (status === 'success') {
-              // Extract first line of content as summary
-              const contentMatch = result.match(/<content>\n?(.*?)(?:\n|<\/content>)/s);
-              const firstLine = contentMatch?.[1]?.split('\n')[0]?.trim() || 'completed';
-              return `✅ ${toolName}: ${firstLine} (ID: ${resultId?.slice(0, 8) ?? 'unknown'})`;
+              successCount++;
+              // Extract content and produce a human-readable summary
+              const contentMatch = result.match(/<content>\n?([\s\S]*?)<\/content>/);
+              const rawContent = contentMatch?.[1]?.trim() || '';
+              const summary = this.summarizeToolResult(toolName, rawContent);
+              return `✅ ${toolName}: ${summary}`;
             } else {
+              failureCount++;
               // Extract error message
-              const errorMatch = result.match(/<error>\n?```\n?(.*?)(?:\n|```)/s);
-              const errorMsg = errorMatch?.[1]?.slice(0, 100) || 'unknown error';
-              return `❌ ${toolName}: ${errorMsg} (ID: ${resultId?.slice(0, 8) ?? 'unknown'})`;
+              const errorMatch = result.match(/<error>\n?```\n?([\s\S]*?)(?:\n```)/);
+              const errorMsg = errorMatch?.[1]?.trim().slice(0, 150) || 'unknown error';
+              return `❌ ${toolName}: FAILED — ${errorMsg}`;
             }
           }).join('\n');
 
-          // Count successes and failures
-          const failedTools = toolCalls.filter((_, i) => {
-            const resultXML = toolResults.split('<tool_result>')[i + 1];
-            return resultXML && resultXML.includes('<status>error</status>');
-          });
-
-          const hasFailures = failedTools.length > 0;
+          const hasFailures = failureCount > 0;
           const failureWarning = hasFailures
-            ? `\n\n⚠️ IMPORTANT: ${failedTools.length} tool(s) FAILED. You MUST mention these failures in your response and explain what went wrong. Do NOT retry the same failed command without changing your approach.\n`
+            ? `\n⚠️ ${failureCount} tool(s) FAILED. Address the errors — do NOT retry the same command without changing your approach.\n`
             : '';
 
-          // Phase 3B: Inject lean summary + UUID references instead of full results
-          const leanSummary = `TOOL RESULTS (Phase 3B - Lean RAG):\n\n${toolSummaries}\n\n📋 Full details stored in working memory.\n💡 To read full results: ${DATA_COMMANDS.READ} --collection=chat_messages --id=<ID>\n\n${failureWarning}Based on these summaries, provide your analysis. Only use ${DATA_COMMANDS.READ} if you need the full details.`;
+          // Build closing instruction based on what happened
+          let closingInstruction: string;
+          if (hasFailures && successCount === 0) {
+            // All failed — model should explain failures
+            closingInstruction = 'All tool calls failed. Explain what went wrong to the team. Do NOT retry the same commands.';
+          } else if (hasFailures) {
+            // Mixed — describe successes, explain failures
+            closingInstruction = 'Describe what you accomplished and what failed. Do NOT retry failed commands without a different approach.';
+          } else {
+            // All succeeded — model should describe what it did, NOT call more tools
+            closingInstruction = 'Your tool calls succeeded. Describe what you did to the team. Do NOT call the same tools again — your work is done for this step.';
+          }
+
+          // Phase 3B: Inject lean summary with clear stop signal
+          const leanSummary = `TOOL RESULTS:\n\n${toolSummaries}\n${failureWarning}\n${closingInstruction}`;
 
           // Build tool results message with optional media
           const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
@@ -1360,20 +1468,32 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 content: leanSummary
               };
 
-          // Regenerate response with tool results
+          // Accumulate this iteration's assistant response + tool results into the running history.
+          // This ensures the model sees ALL previous tool calls and results, not just the latest.
+          accumulatedToolMessages.push(
+            { role: 'assistant' as const, content: explanationText },
+            toolResultsMessage
+          );
+
+          // When ALL tools succeeded, remove the tools parameter to force a text-only response.
+          // The model already did the work — it just needs to describe what happened.
+          // When there are failures, keep tools so the model can retry with a different approach.
+          const allSucceeded = !hasFailures;
+
           this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
-          this.log(`📊 ${this.personaName}: Tool summary length: ${leanSummary.length} chars, ${toolCalls.length} calls, ${toolMedia?.length || 0} media items`);
+          this.log(`📊 ${this.personaName}: Tool summary length: ${leanSummary.length} chars, ${toolCalls.length} calls, ${toolMedia?.length || 0} media items, allSucceeded: ${allSucceeded}`);
 
           const regenerateRequest: TextGenerationRequest = {
             ...request,
             messages: [
               ...request.messages,
-              { role: 'assistant' as const, content: explanationText }, // Previous response (without tool blocks)
-              toolResultsMessage // Tool results
-            ]
+              ...accumulatedToolMessages
+            ],
+            // Strip tools when all succeeded — forces text-only response, prevents re-calling
+            ...(allSucceeded ? { tools: undefined, tool_choice: undefined } : {})
           };
 
-          this.log(`📊 ${this.personaName}: Regenerate request has ${regenerateRequest.messages.length} messages total`);
+          this.log(`📊 ${this.personaName}: Regenerate request has ${regenerateRequest.messages.length} messages total (tools: ${allSucceeded ? 'disabled' : 'enabled'})`);
 
           try {
             const regenerateStartTime = Date.now();
@@ -1389,9 +1509,12 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               break;
             }
 
-            // Update aiResponse with regenerated response
+            // Update aiResponse with regenerated response — MUST update both text AND toolCalls.
+            // If only text is updated, stale toolCalls from the previous iteration carry over
+            // and the loop re-executes the same tools endlessly.
             aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text.trim());
-            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars)`);
+            aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
+            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
             this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Regeneration failed with error: ${errorMsg}`);

@@ -175,30 +175,33 @@ When you need information, use tools instead of making assumptions.
   private getDefaultPermissionsForRole(role: string): string[] {
     switch (role) {
       case 'admin':
+        // Admin: unrestricted access to all tool categories
         return [
-          'file:read',
-          'file:write',
-          'code:search',
-          'code:modify',
+          'file:execute',
+          'code:execute',
+          'data:execute',
+          'media:execute',
           'system:execute',
-          'ui:screenshot',
-          'data:read',
-          'data:write'
         ];
 
       case 'assistant':
+        // Assistant: full tool access (tools are the persona's hands)
+        // Permission scoping happens at the command level (PRIVILEGED_COMMANDS, ADMIN_COMMANDS)
+        // not at the category level — personas need all categories to function.
         return [
-          'file:read',
-          'code:search',
-          'system:execute', // Limited bash commands
-          'ui:screenshot',
-          'data:read'
+          'file:execute',
+          'code:execute',
+          'data:execute',
+          'media:execute',
+          'system:execute',
         ];
 
       case 'restricted':
+        // Restricted: read-only, no code execution
         return [
-          'file:read',
-          'code:search'
+          'file:execute',
+          'data:execute',
+          'system:execute',
         ];
 
       default:

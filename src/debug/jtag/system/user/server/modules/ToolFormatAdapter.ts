@@ -432,21 +432,104 @@ export function getPrimaryAdapter(): ToolFormatAdapter {
 import type { NativeToolSpec } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 
 /**
- * Sanitize tool name for Anthropic API
+ * Sanitize tool name for Anthropic/OpenAI API
  * API requires: ^[a-zA-Z0-9_-]{1,128}$
- * Our tools have slashes like 'data/list', 'collaboration/chat/send'
+ * Our tools have slashes: code/write → code_write
  */
 export function sanitizeToolName(name: string): string {
-  // Replace slashes with double underscores (reversible)
-  return name.replace(/\//g, '__');
+  return ToolNameCodec.instance.encode(name);
 }
 
 /**
- * Restore original tool name from sanitized version
+ * Restore original tool name from sanitized version (legacy — prefer ToolNameCodec)
  */
 export function unsanitizeToolName(sanitizedName: string): string {
-  // Restore slashes from double underscores
-  return sanitizedName.replace(/__/g, '/');
+  return ToolNameCodec.instance.decode(sanitizedName);
+}
+
+/**
+ * Bidirectional encoder/decoder for tool names sent over APIs.
+ *
+ * API constraint: Anthropic/OpenAI require tool names matching [a-zA-Z0-9_-]{1,64}.
+ * Our tools use slashes: code/write, collaboration/chat/send.
+ *
+ * Encode: code/write → code_write (slashes → underscore)
+ * Decode: ANY model-produced variant → original name (via reverse lookup)
+ *
+ * Models mangle names in unpredictable ways:
+ *   code__write, $FUNCTIONS.code_write, code_write, code-write, etc.
+ * The codec handles all of these by registering normalized variants at startup.
+ */
+export class ToolNameCodec {
+  private static _instance: ToolNameCodec | null = null;
+  private readonly originals: Set<string> = new Set();
+  private readonly reverseMap: Map<string, string> = new Map();
+
+  static get instance(): ToolNameCodec {
+    if (!ToolNameCodec._instance) {
+      ToolNameCodec._instance = new ToolNameCodec();
+    }
+    return ToolNameCodec._instance;
+  }
+
+  /** Register a tool name and all plausible encoded/mangled variants for reverse lookup */
+  register(toolName: string): void {
+    this.originals.add(toolName);
+    this.reverseMap.set(toolName, toolName);
+
+    // Canonical encoded form: slashes → single underscore (standard snake_case)
+    const encoded = toolName.replace(/\//g, '_');
+    this.reverseMap.set(encoded, toolName);
+
+    // Legacy double-underscore encoding (backwards compat with old sessions)
+    const doubleEncoded = toolName.replace(/\//g, '__');
+    this.reverseMap.set(doubleEncoded, toolName);
+
+    // Hyphen variant: code/write → code-write
+    this.reverseMap.set(toolName.replace(/\//g, '-'), toolName);
+
+    // Dot variant: code/write → code.write
+    this.reverseMap.set(toolName.replace(/\//g, '.'), toolName);
+  }
+
+  /** Register all tool names from a tool definitions array */
+  registerAll(tools: Array<{ name: string }>): void {
+    for (const tool of tools) {
+      this.register(tool.name);
+    }
+  }
+
+  /** Encode a tool name for API transmission: slashes → underscores */
+  encode(toolName: string): string {
+    return toolName.replace(/\//g, '_');
+  }
+
+  /** Decode any model-produced tool name variant back to the original */
+  decode(raw: string): string {
+    // 1. Exact match (fastest path)
+    const exact = this.reverseMap.get(raw);
+    if (exact) return exact;
+
+    // 2. Strip known prefixes models add ($FUNCTIONS., functions., $tools.)
+    let cleaned = raw.replace(/^\$?(?:functions|tools)\./i, '');
+    const prefixMatch = this.reverseMap.get(cleaned);
+    if (prefixMatch) return prefixMatch;
+
+    // 3. Normalize separators to underscore and try lookup
+    const normalized = cleaned.replace(/[-.__]/g, '_').toLowerCase();
+    const normMatch = this.reverseMap.get(normalized);
+    if (normMatch) return normMatch;
+
+    // 4. Try reconstructing with slashes: replace __ first, then remaining _
+    const doubleUnderscored = cleaned.replace(/__/g, '/');
+    if (this.originals.has(doubleUnderscored)) return doubleUnderscored;
+
+    const singleUnderscored = cleaned.replace(/_/g, '/');
+    if (this.originals.has(singleUnderscored)) return singleUnderscored;
+
+    // 5. Last resort: best-effort reconstruction via double underscore
+    return doubleUnderscored;
+  }
 }
 
 /**
@@ -456,6 +539,11 @@ export function unsanitizeToolName(sanitizedName: string): string {
  * This enables native tool_use instead of XML parsing, which is more reliable.
  */
 export function convertToNativeToolSpecs(tools: ToolDefinition[]): NativeToolSpec[] {
+  // Register all tools with the codec before encoding — ensures the reverse map
+  // has entries for every tool name we send to the API so decode() can resolve
+  // any model-produced variant (e.g. $FUNCTIONS.code_write) back to code/write.
+  ToolNameCodec.instance.registerAll(tools);
+
   return tools.map(tool => {
     // Convert our ToolDefinition to Anthropic's input_schema format
     const properties: Record<string, { type: string; description?: string; enum?: string[] }> = {};
@@ -474,7 +562,7 @@ export function convertToNativeToolSpecs(tools: ToolDefinition[]): NativeToolSpe
     }
 
     return {
-      // Sanitize name for API (data/list -> data__list)
+      // Sanitize name for API (data/list -> data_list)
       name: sanitizeToolName(tool.name),
       description: tool.description,
       input_schema: {
