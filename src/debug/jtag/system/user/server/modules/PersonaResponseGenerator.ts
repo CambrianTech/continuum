@@ -14,7 +14,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
@@ -22,7 +22,7 @@ import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
 import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -400,85 +400,27 @@ export class PersonaResponseGenerator {
   }
 
   /**
-   * Produce a human-readable summary of a tool result.
-   * Parses JSON results from code/* tools into descriptive sentences
-   * instead of dumping raw JSON back at the model.
+   * Safety cap for agent tool loop iterations, tiered by model capability.
+   * Frontier models (Anthropic, OpenAI) are trusted to self-terminate via finishReason.
+   * Mid-tier models with native tool support get moderate cap.
+   * XML-based / local models get tight leash since they can't signal "I'm done" via finishReason.
    */
-  private summarizeToolResult(toolName: string, rawContent: string): string {
-    // Try to parse as JSON for structured results
-    try {
-      const data = JSON.parse(rawContent);
+  private getSafetyMaxIterations(provider: string): number {
+    if (['anthropic', 'openai', 'azure'].includes(provider)) return 25;
+    if (supportsNativeTools(provider)) return 10;
+    return 5;
+  }
 
-      // code/write — file creation/overwrite
-      if (toolName === 'code/write' && data.success) {
-        const path = data.filePath || data.file_path || 'file';
-        const bytes = data.bytesWritten || data.bytes_written;
-        return bytes ? `Wrote ${bytes} bytes to ${path}` : `Wrote ${path} successfully`;
-      }
-
-      // code/read — file reading
-      if (toolName === 'code/read' && data.success !== false) {
-        const path = data.filePath || data.file_path || 'file';
-        const lines = data.lineCount || data.line_count;
-        return lines ? `Read ${path} (${lines} lines)` : `Read ${path}`;
-      }
-
-      // code/edit — file editing
-      if (toolName === 'code/edit' && data.success) {
-        const path = data.filePath || data.file_path || 'file';
-        return `Edited ${path} successfully`;
-      }
-
-      // code/search — search results
-      if (toolName === 'code/search') {
-        const matches = data.matchCount || data.match_count || data.results?.length;
-        return matches !== undefined ? `Found ${matches} match(es)` : 'Search completed';
-      }
-
-      // code/tree — directory listing
-      if (toolName === 'code/tree' && data.success) {
-        return 'Listed directory tree';
-      }
-
-      // code/verify — build/test verification
-      if (toolName === 'code/verify') {
-        if (data.success) return 'Verification passed';
-        const errors = data.errorCount || data.errors?.length;
-        return errors ? `Verification failed with ${errors} error(s)` : 'Verification failed';
-      }
-
-      // code/git — git operations
-      if (toolName === 'code/git' && data.success) {
-        return data.message || 'Git operation completed';
-      }
-
-      // code/diff — diff preview
-      if (toolName === 'code/diff') {
-        return 'Diff generated';
-      }
-
-      // Generic success with a message field
-      if (data.success && data.message) {
-        return String(data.message).slice(0, 150);
-      }
-
-      // Generic success
-      if (data.success) {
-        return 'Completed successfully';
-      }
-
-      // Fall through — return truncated raw content
-    } catch {
-      // Not JSON — use first line of raw content
-    }
-
-    // Non-JSON content: return first meaningful line (e.g., file contents, tree output)
-    const firstLine = rawContent.split('\n')[0]?.trim();
-    if (firstLine && firstLine.length > 0) {
-      return firstLine.length > 120 ? firstLine.slice(0, 120) + '...' : firstLine;
-    }
-
-    return 'Completed';
+  /**
+   * Convert MediaItems to ContentPart blocks for inclusion in model messages.
+   */
+  private mediaToContentParts(media: MediaItem[]): ContentPart[] {
+    return media.map(m => {
+      if (m.type === 'image') return { type: 'image' as const, image: m };
+      if (m.type === 'audio') return { type: 'audio' as const, audio: m };
+      if (m.type === 'video') return { type: 'video' as const, video: m };
+      return { type: 'image' as const, image: m }; // Default fallback
+    });
   }
 
   /**
@@ -1331,205 +1273,181 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
-        // 🔧 PHASE 3.3.6: Tool execution loop - parse and execute tool calls, then regenerate response
-        // This allows personas to autonomously use tools like code/read during their inference
-        // Messages accumulate across iterations so the model sees its full tool call history.
+        // 🔧 CANONICAL AGENT LOOP — model decides when to stop
+        // Pattern: while (finishReason === 'tool_use') { execute → full results → regenerate }
+        // Full tool results go back to the model (not summaries). Tools stay enabled.
+        // The model signals completion by returning text without tool_use.
+        // Safety cap prevents infinite loops for dumber models.
+        const SAFETY_MAX = this.getSafetyMaxIterations(provider);
         let toolIterations = 0;
-        const MAX_TOOL_ITERATIONS = 3;
-        const accumulatedToolMessages: ChatMessage[] = [];
+        const useNativeProtocol = supportsNativeTools(provider);
 
-        while (toolIterations < MAX_TOOL_ITERATIONS) {
-          // Check for native tool calls first (from Anthropic, OpenAI JSON tool_use format)
-          // Then fall back to XML parsing for other providers
-          let toolCalls: ExecutorToolCall[];
+        // Build execution context once (loop-invariant — persona, session, room don't change)
+        const sessionId = this.getSessionId();
+        if (!sessionId) {
+          throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
+        }
+        const toolExecutionContext = {
+          personaId: this.personaId,
+          personaName: this.personaName,
+          sessionId,
+          contextId: originalMessage.roomId,
+          context: this.client!.context,
+          personaConfig: this.mediaConfig,
+        };
 
-          if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
-            // Convert native format { id, name, input } to executor format { toolName, parameters }
-            // Decode tool names: data_list -> data/list (API requires no slashes, we encode with underscores)
-            toolCalls = aiResponse.toolCalls.map((tc: NativeToolCall) => ({
-              toolName: unsanitizeToolName(tc.name),
-              parameters: Object.fromEntries(
-                Object.entries(tc.input).map(([k, v]) => [k, String(v)])
-              ) as Record<string, string>
-            }));
-            this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Using native tool_use format (${toolCalls.length} calls)`);
-          } else {
-            // Fall back to XML parsing for non-native providers
-            toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
-          }
+        while (toolIterations < SAFETY_MAX) {
+          // Check for tool calls — native first, then XML fallback
+          const hasNativeToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
+          const hasXmlToolCalls = !hasNativeToolCalls && this.toolExecutor.parseToolCalls(aiResponse.text).length > 0;
 
-          if (toolCalls.length === 0) {
-            // No tools found, proceed to post response
-            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] No tool calls found, proceeding`);
+          if (!hasNativeToolCalls && !hasXmlToolCalls) {
+            // Model chose to stop — no more tool calls
+            if (toolIterations > 0) {
+              this.log(`✅ ${this.personaName}: [AGENT-LOOP] Model stopped after ${toolIterations} iteration(s)`);
+            }
             break;
           }
 
-          this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Found ${toolCalls.length} tool call(s), iteration ${toolIterations + 1}/${MAX_TOOL_ITERATIONS}`);
           toolIterations++;
+          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
 
-          // Execute tool calls via adapter with media configuration
-          const sessionId = this.getSessionId();
-          if (!sessionId) {
-            throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
-          }
+          if (useNativeProtocol && hasNativeToolCalls) {
+            // ── Native tool protocol (Anthropic, OpenAI, etc.) ──
+            // Full results go back as tool_result content blocks
+            const nativeToolCalls = aiResponse.toolCalls!;
+            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)`);
 
-          const toolExecutionContext = {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            sessionId,  // AI's own sessionId for sandboxed tool execution
-            contextId: originalMessage.roomId,
-            context: this.client!.context,  // PersonaUser's enriched context (with callerType='persona')
-            personaConfig: this.mediaConfig
-          };
-
-          const { formattedResults: toolResults, media: toolMedia, storedResultIds } = await this.toolExecutor.executeToolCalls(
-            toolCalls,
-            toolExecutionContext
-          );
-
-          // Collect tool result message IDs for task tracking (prevent infinite loops)
-          allStoredResultIds.push(...storedResultIds);
-
-          // Strip tool blocks from response to get explanation text
-          const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
-
-          // Phase 3B: Build lean summary with UUID references for lazy loading
-          // Extract human-readable summaries from formatted results
-          const toolResultParts = toolResults.split('<tool_result>').slice(1);
-          let successCount = 0;
-          let failureCount = 0;
-
-          const toolSummaries = toolResultParts.map((result, i) => {
-            const toolName = result.match(/<tool_name>(.*?)<\/tool_name>/)?.[1] || 'unknown';
-            const status = result.match(/<status>(.*?)<\/status>/)?.[1] || 'unknown';
-            const resultId = storedResultIds[i];
-
-            if (status === 'success') {
-              successCount++;
-              // Extract content and produce a human-readable summary
-              const contentMatch = result.match(/<content>\n?([\s\S]*?)<\/content>/);
-              const rawContent = contentMatch?.[1]?.trim() || '';
-              const summary = this.summarizeToolResult(toolName, rawContent);
-              return `✅ ${toolName}: ${summary}`;
-            } else {
-              failureCount++;
-              // Extract error message
-              const errorMatch = result.match(/<error>\n?```\n?([\s\S]*?)(?:\n```)/);
-              const errorMsg = errorMatch?.[1]?.trim().slice(0, 150) || 'unknown error';
-              return `❌ ${toolName}: FAILED — ${errorMsg}`;
+            let toolResults: NativeToolResult[];
+            let toolMedia: MediaItem[] = [];
+            try {
+              const execResult = await this.toolExecutor.executeNativeToolCalls(
+                nativeToolCalls,
+                toolExecutionContext,
+              );
+              toolResults = execResult.results;
+              toolMedia = execResult.media;
+              allStoredResultIds.push(...execResult.storedIds);
+            } catch (toolExecError) {
+              // Tool execution batch failed — return error results for all tool calls
+              // so the model can see what happened and decide what to do
+              const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
+              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Tool execution failed: ${errMsg}`);
+              toolResults = nativeToolCalls.map(tc => ({
+                tool_use_id: tc.id,
+                content: `Tool execution error: ${errMsg}`,
+                is_error: true as const,
+              }));
             }
-          }).join('\n');
 
-          const hasFailures = failureCount > 0;
-          const failureWarning = hasFailures
-            ? `\n⚠️ ${failureCount} tool(s) FAILED. Address the errors — do NOT retry the same command without changing your approach.\n`
-            : '';
+            // Push assistant message with tool_use content blocks (as the model produced them)
+            const assistantContent: ContentPart[] = aiResponse.content ?? [
+              ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
+              ...nativeToolCalls.map(tc => ({
+                type: 'tool_use' as const,
+                id: tc.id,
+                name: tc.name,
+                input: tc.input,
+              })),
+            ];
+            messages.push({ role: 'assistant' as const, content: assistantContent });
 
-          // Build closing instruction based on what happened
-          let closingInstruction: string;
-          if (hasFailures && successCount === 0) {
-            // All failed — model should explain failures
-            closingInstruction = 'All tool calls failed. Explain what went wrong to the team. Do NOT retry the same commands.';
-          } else if (hasFailures) {
-            // Mixed — describe successes, explain failures
-            closingInstruction = 'Describe what you accomplished and what failed. Do NOT retry failed commands without a different approach.';
+            // Push tool results as user message with tool_result content blocks (FULL results)
+            const toolResultContent: ContentPart[] = toolResults.map(r => ({
+              type: 'tool_result' as const,
+              tool_use_id: r.tool_use_id,
+              content: r.content,
+              ...(r.is_error && { is_error: true }),
+            }));
+
+            // Include media if present (screenshots, etc.)
+            if (toolMedia.length > 0) {
+              toolResultContent.push(...this.mediaToContentParts(toolMedia));
+            }
+
+            messages.push({ role: 'user' as const, content: toolResultContent });
+
           } else {
-            // All succeeded — model should describe what it did, NOT call more tools
-            closingInstruction = 'Your tool calls succeeded. Describe what you did to the team. Do NOT call the same tools again — your work is done for this step.';
+            // ── XML fallback for non-native providers ──
+            // Parse XML tool calls, execute, return results as text
+            const xmlToolCalls = hasNativeToolCalls
+              ? aiResponse.toolCalls!.map((tc: NativeToolCall) => ({
+                  toolName: unsanitizeToolName(tc.name),
+                  parameters: Object.fromEntries(
+                    Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+                  ) as Record<string, string>,
+                }))
+              : this.toolExecutor.parseToolCalls(aiResponse.text);
+
+            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${xmlToolCalls.length} XML tool call(s)`);
+
+            let formattedResults: string;
+            let xmlToolMedia: MediaItem[] = [];
+            try {
+              const xmlExecResult = await this.toolExecutor.executeToolCalls(
+                xmlToolCalls,
+                toolExecutionContext,
+              );
+              formattedResults = xmlExecResult.formattedResults;
+              xmlToolMedia = xmlExecResult.media ?? [];
+              allStoredResultIds.push(...xmlExecResult.storedResultIds);
+            } catch (toolExecError) {
+              const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
+              this.log(`❌ ${this.personaName}: [AGENT-LOOP] XML tool execution failed: ${errMsg}`);
+              formattedResults = `<tool_result>\n<status>error</status>\n<error>\n\`\`\`\nTool execution error: ${errMsg}\n\`\`\`\n</error>\n</tool_result>`;
+            }
+
+            // Strip tool blocks from response text for the assistant message
+            const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
+
+            messages.push({ role: 'assistant' as const, content: explanationText });
+
+            // Full tool results as user message (NOT summarized)
+            const toolResultContent: (ContentPart | { type: 'text'; text: string })[] = [
+              { type: 'text' as const, text: formattedResults },
+            ];
+            if (xmlToolMedia.length > 0) {
+              toolResultContent.push(...this.mediaToContentParts(xmlToolMedia));
+            }
+            messages.push({ role: 'user' as const, content: toolResultContent });
           }
 
-          // Phase 3B: Inject lean summary with clear stop signal
-          const leanSummary = `TOOL RESULTS:\n\n${toolSummaries}\n${failureWarning}\n${closingInstruction}`;
-
-          // Build tool results message with optional media
-          const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
-            ? {
-                role: 'user' as const,
-                content: [
-                  {
-                    type: 'text',
-                    text: leanSummary
-                  },
-                  ...toolMedia.map(m => {
-                    if (m.type === 'image') {
-                      return { type: 'image' as const, image: m };
-                    } else if (m.type === 'audio') {
-                      return { type: 'audio' as const, audio: m };
-                    } else if (m.type === 'video') {
-                      return { type: 'video' as const, video: m };
-                    }
-                    // Fallback: treat as image if type is unclear
-                    return { type: 'image' as const, image: m };
-                  })
-                ]
-              }
-            : {
-                role: 'user' as const,
-                content: leanSummary
-              };
-
-          // Accumulate this iteration's assistant response + tool results into the running history.
-          // This ensures the model sees ALL previous tool calls and results, not just the latest.
-          accumulatedToolMessages.push(
-            { role: 'assistant' as const, content: explanationText },
-            toolResultsMessage
-          );
-
-          // When ALL tools succeeded, remove the tools parameter to force a text-only response.
-          // The model already did the work — it just needs to describe what happened.
-          // When there are failures, keep tools so the model can retry with a different approach.
-          const allSucceeded = !hasFailures;
-
-          this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
-          this.log(`📊 ${this.personaName}: Tool summary length: ${leanSummary.length} chars, ${toolCalls.length} calls, ${toolMedia?.length || 0} media items, allSucceeded: ${allSucceeded}`);
-
-          const regenerateRequest: TextGenerationRequest = {
-            ...request,
-            messages: [
-              ...request.messages,
-              ...accumulatedToolMessages
-            ],
-            // Strip tools when all succeeded — forces text-only response, prevents re-calling
-            ...(allSucceeded ? { tools: undefined, tool_choice: undefined } : {})
-          };
-
-          this.log(`📊 ${this.personaName}: Regenerate request has ${regenerateRequest.messages.length} messages total (tools: ${allSucceeded ? 'disabled' : 'enabled'})`);
+          // Regenerate — tools stay enabled, model decides when to stop
+          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools enabled)`);
 
           try {
             const regenerateStartTime = Date.now();
-            const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
+            const regeneratedResponse = await AIProviderDaemon.generateText({
+              ...request,
+              messages, // Tools NOT stripped — model decides when to stop
+            });
             const regenerateDuration = Date.now() - regenerateStartTime;
 
-            this.log(`⏱️  ${this.personaName}: Regeneration took ${regenerateDuration}ms`);
+            this.log(`⏱️  ${this.personaName}: [AGENT-LOOP] Regeneration took ${regenerateDuration}ms, finishReason: ${regeneratedResponse.finishReason}`);
 
-            if (!regeneratedResponse.text) {
-              this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Tool regeneration returned empty response, using previous response`);
-              // Remove tool blocks from original response before posting
-              aiResponse.text = explanationText;
+            if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
+              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Empty response, using previous text`);
+              aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
               break;
             }
 
-            // Update aiResponse with regenerated response — MUST update both text AND toolCalls.
-            // If only text is updated, stale toolCalls from the previous iteration carry over
-            // and the loop re-executes the same tools endlessly.
-            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text.trim());
+            // Update full response state
+            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text?.trim() || '');
             aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
-            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
+            aiResponse.content = regeneratedResponse.content ?? undefined;
+            aiResponse.finishReason = regeneratedResponse.finishReason;
+
+            this.log(`✅ ${this.personaName}: [AGENT-LOOP] Got response (${aiResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
-            this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Regeneration failed with error: ${errorMsg}`);
-            this.log(`   Stack:`, regenerateError instanceof Error ? regenerateError.stack : 'N/A');
-            // Remove tool blocks from original response before posting
-            aiResponse.text = explanationText;
+            this.log(`❌ ${this.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
+            aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
             break;
           }
-
-          // Loop will check again for more tool calls (up to MAX_TOOL_ITERATIONS)
         }
 
-        if (toolIterations >= MAX_TOOL_ITERATIONS) {
-          this.log(`⚠️  ${this.personaName}: [PHASE 3.3.6] Reached max tool iterations (${MAX_TOOL_ITERATIONS}), stopping`);
-          // Strip any remaining tool blocks from final response
+        if (toolIterations >= SAFETY_MAX) {
+          this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
           aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
         }
 

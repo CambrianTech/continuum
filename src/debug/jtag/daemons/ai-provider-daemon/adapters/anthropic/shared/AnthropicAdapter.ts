@@ -20,6 +20,7 @@ import type {
   HealthStatus,
   ToolCall,
   NativeToolSpec,
+  ContentPart,
 } from '../../../shared/AIProviderTypesV2';
 import { AIProviderError } from '../../../shared/AIProviderTypesV2';
 import { getSecret } from '../../../../../system/secrets/SecretManager';
@@ -96,15 +97,44 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
       this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] generateText() called with: ${request.messages.length} messages, ${request.messages.filter(m => typeof m.content !== 'string').length} multimodal, ${hasNativeTools ? `${request.tools!.length} native tools` : 'no native tools'}`);
 
       // Convert messages to Anthropic format using MediaContentFormatter
+      // Handles text, multimodal, tool_use, and tool_result content blocks
       const messages = request.messages.map((msg, index) => {
-        const isMultimodal = typeof msg.content !== 'string';
-        this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${msg.role}, ${isMultimodal ? 'MULTIMODAL' : 'text-only'}`);
+        const role = msg.role === 'assistant' ? 'assistant' as const : 'user' as const;
 
+        if (typeof msg.content === 'string') {
+          this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${role}, text-only`);
+          return { role, content: msg.content };
+        }
+
+        // Check for tool_use or tool_result content blocks
+        const parts = msg.content as ContentPart[];
+        const hasToolBlocks = parts.some(p => p.type === 'tool_use' || p.type === 'tool_result');
+
+        if (hasToolBlocks) {
+          // Convert our ContentPart tool blocks to Anthropic's native format
+          const anthropicContent = parts.map(part => {
+            if (part.type === 'tool_use') {
+              return { type: 'tool_use' as const, id: part.id, name: part.name, input: part.input };
+            }
+            if (part.type === 'tool_result') {
+              return { type: 'tool_result' as const, tool_use_id: part.tool_use_id, content: part.content, ...(part.is_error && { is_error: true }) };
+            }
+            if (part.type === 'text') {
+              return { type: 'text' as const, text: part.text };
+            }
+            // Other types (image, audio, video) — pass through MediaContentFormatter
+            return null;
+          }).filter(Boolean);
+
+          this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${role}, ${anthropicContent.length} blocks (tool protocol)`);
+          return { role, content: anthropicContent };
+        }
+
+        // Standard multimodal content
+        this.log(request, 'debug', `📸 [ANTHROPIC-ADAPTER] Message ${index}: ${role}, MULTIMODAL`);
         return {
-          role: msg.role === 'assistant' ? 'assistant' : 'user',
-          content: typeof msg.content === 'string'
-            ? msg.content
-            : MediaContentFormatter.formatForAnthropic(msg.content),
+          role,
+          content: MediaContentFormatter.formatForAnthropic(parts),
         };
       });
 
@@ -148,15 +178,23 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
       const responseTime = Date.now() - startTime;
 
       // Parse response - handle both text and tool_use content blocks
+      // Build both flat text AND structured content blocks for the canonical agent loop
       let text = '';
       const toolCalls: ToolCall[] = [];
+      const contentBlocks: ContentPart[] = [];
 
       for (const block of response.content || []) {
         if (block.type === 'text') {
           text += block.text;
+          contentBlocks.push({ type: 'text', text: block.text });
         } else if (block.type === 'tool_use') {
-          // Native tool call from Claude
           toolCalls.push({
+            id: block.id,
+            name: block.name,
+            input: block.input || {},
+          });
+          contentBlocks.push({
+            type: 'tool_use',
             id: block.id,
             name: block.name,
             input: block.input || {},
@@ -169,6 +207,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
 
       return {
         text,
+        content: contentBlocks,
         finishReason: this.mapFinishReason(response.stop_reason),
         model: response.model || model,
         provider: this.providerId,

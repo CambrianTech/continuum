@@ -54,7 +54,9 @@ export type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; image: ImageInput }
   | { type: 'audio'; audio: AudioInput }
-  | { type: 'video'; video: VideoInput };
+  | { type: 'video'; video: VideoInput }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
 
 export interface ImageInput {
   url?: string;
@@ -291,6 +293,14 @@ export interface RoutingInfo {
 export interface TextGenerationResponse {
   text: string;
   finishReason: 'stop' | 'length' | 'error' | 'tool_use';
+
+  /**
+   * Full content blocks from the model response.
+   * Contains text blocks, tool_use blocks, etc. in the order the model produced them.
+   * When finishReason is 'tool_use', this will contain both text and tool_use blocks.
+   * Adapters MUST populate this for the canonical agent loop to work.
+   */
+  content?: ContentPart[];
 
   model: string;
   provider: string;

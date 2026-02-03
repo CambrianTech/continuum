@@ -8,6 +8,11 @@
  * - Uses ToolRegistry for ALL command execution (no hardcoded handlers)
  * - XML parsing only (no command-specific logic)
  * - Logging and metrics
+ *
+ * KEY METHODS:
+ * - executeSingleTool()       — core per-tool pipeline (corrections, execution, storage, media)
+ * - executeToolCalls()        — XML-formatted batch execution (for XML fallback path)
+ * - executeNativeToolCalls()  — structured batch execution (for native tool_result protocol)
  */
 
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -19,10 +24,15 @@ import type { MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { getToolFormatAdapters, type ToolFormatAdapter } from './ToolFormatAdapter';
+import { unsanitizeToolName } from './ToolFormatAdapter';
 import { Logger } from '../../../core/logging/Logger';
 import { RoomResolver } from '../../../core/server/RoomResolver';
 
 import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
+import type {
+  ToolCall as NativeToolCall,
+  ToolResult as NativeToolResult,
+} from '@daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 /**
  * Parsed tool call from AI response
  */
@@ -55,8 +65,15 @@ export interface ToolResult {
 }
 
 /**
- * PersonaToolExecutor - Clean tool execution via ToolRegistry
+ * Result from executing a single tool through the full pipeline.
+ * Used internally by executeToolCalls and executeNativeToolCalls.
  */
+export interface SingleToolExecution {
+  result: ToolResult;
+  resultId: UUID;
+  media: MediaItem[];
+}
+
 /**
  * Minimal persona info needed by PersonaToolExecutor
  */
@@ -240,30 +257,20 @@ export class PersonaToolExecutor {
     return toolCalls;
   }
 
+  // ──────────────────────────────────────────────
+  // Core Pipeline: Batch Preparation + Single Tool Execution
+  // ──────────────────────────────────────────────
+
   /**
-   * Execute tool calls and return formatted results + optional media
-   * Phase 3B: Now also stores results as ChatMessageEntity and returns UUIDs
-   *
-   * @param toolCalls - Array of parsed tool calls
-   * @param context - Execution context with media configuration
-   * @returns Object with formatted text results, optional media array, and stored result UUIDs
+   * Prepare a batch of tool calls for execution.
+   * Handles loop detection filtering and workspace auto-bootstrap.
    */
-  async executeToolCalls(
+  private async prepareBatch(
     toolCalls: ToolCall[],
-    context: ToolExecutionContext
-  ): Promise<{
-    formattedResults: string;
-    media?: MediaItem[];
-    storedResultIds: UUID[];  // Phase 3B: UUIDs for lazy loading
-  }> {
-    if (toolCalls.length === 0) {
-      return { formattedResults: '', storedResultIds: [] };
-    }
-
-    this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
-
+    context: ToolExecutionContext,
+  ): Promise<ToolCall[]> {
     // Filter out looping tool calls before execution
-    const filteredToolCalls = toolCalls.filter(toolCall => {
+    const filtered = toolCalls.filter(toolCall => {
       if (this.isLoopDetected(toolCall)) {
         this.log.warn(`Skipping looping tool call: ${toolCall.toolName}`);
         return false;
@@ -271,14 +278,9 @@ export class PersonaToolExecutor {
       return true;
     });
 
-    if (filteredToolCalls.length === 0) {
-      this.log.warn('All tool calls blocked by loop detection');
-      return { formattedResults: '[All tool calls blocked - infinite loop detected]', storedResultIds: [] };
-    }
-
     // Auto-bootstrap workspace if any code/* tools are being called
     if (!this.workspaceBootstrapped && this.persona.ensureCodeWorkspace) {
-      const hasCodeTools = filteredToolCalls.some(tc => tc.toolName.startsWith('code/'));
+      const hasCodeTools = filtered.some(tc => tc.toolName.startsWith('code/'));
       if (hasCodeTools) {
         try {
           this.log.info('🔧 Auto-bootstrapping workspace for code/* tool execution');
@@ -290,229 +292,331 @@ export class PersonaToolExecutor {
       }
     }
 
-    // PARALLELIZED: Execute all tools concurrently instead of sequentially
-    // This reduces tool execution time from O(sum of all tool times) to O(max tool time)
-    // Example: 3 tools × 500ms each = 1500ms sequential → 500ms parallel (3x speedup)
-    const toolExecutionPromises = filteredToolCalls.map(async (toolCall) => {
-      const startTime = Date.now();
+    return filtered;
+  }
 
-      // Redirect common tool name confusion (workspace/* → code/*)
-      // LLMs sometimes confuse workspace/tree (command hierarchy) with code/tree (file system)
-      const correctedToolName = PersonaToolExecutor.TOOL_CORRECTIONS[toolCall.toolName] ?? toolCall.toolName;
-      if (correctedToolName !== toolCall.toolName) {
-        this.log.info(`↪ Redirected ${toolCall.toolName} → ${correctedToolName}`);
-        toolCall = { ...toolCall, toolName: correctedToolName };
-      }
+  /**
+   * Execute a single tool call through the full pipeline.
+   *
+   * Handles: name/param correction, room resolution, ToolRegistry execution,
+   * logging, result storage, and media collection.
+   */
+  private async executeSingleTool(
+    toolCall: ToolCall,
+    context: ToolExecutionContext,
+  ): Promise<SingleToolExecution> {
+    const startTime = Date.now();
 
-      // Correct common parameter name mismatches (LLMs guess wrong names)
-      const paramCorrections = PersonaToolExecutor.PARAM_CORRECTIONS[toolCall.toolName];
-      if (paramCorrections) {
-        const correctedParams = { ...toolCall.parameters };
-        for (const [wrongName, correctName] of Object.entries(paramCorrections)) {
-          if (correctedParams[wrongName] !== undefined && correctedParams[correctName] === undefined) {
-            correctedParams[correctName] = correctedParams[wrongName];
-            delete correctedParams[wrongName];
-            this.log.info(`↪ Param corrected: ${wrongName} → ${correctName}`);
-          }
-        }
-        toolCall = { ...toolCall, parameters: correctedParams };
-      }
-
-      // Clean up code/write content: CDATA wrappers, HTML entities
-      // Models encode HTML differently when writing code — normalize before execution
-      if (toolCall.toolName === 'code/write' && toolCall.parameters.content) {
-        let content = toolCall.parameters.content;
-        let cleaned = false;
-
-        // Strip CDATA wrappers (Together wraps HTML in <![CDATA[...]]> for XML safety)
-        const cdataMatch = content.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
-        if (cdataMatch) {
-          content = cdataMatch[1];
-          cleaned = true;
-        }
-
-        // Decode HTML entities in a single pass (Groq double-escapes HTML as &lt;html&gt;)
-        const NAMED: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", nbsp: ' ' };
-        const decoded = content.replace(/&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);/g, (match, entity: string) => {
-          if (NAMED[entity]) return NAMED[entity];
-          if (entity.startsWith('#x')) return String.fromCharCode(parseInt(entity.slice(2), 16));
-          if (entity.startsWith('#')) return String.fromCharCode(parseInt(entity.slice(1), 10));
-          return match;
-        });
-        if (decoded !== content) { content = decoded; cleaned = true; }
-
-        if (cleaned) {
-          toolCall = { ...toolCall, parameters: { ...toolCall.parameters, content } };
-          this.log.info('↪ Cleaned code/write content (CDATA/entity normalization)');
-        }
-      }
-
-      // Resolve "current" room parameter to actual room name
-      // This handles wall/*, chat/*, and any other room-scoped commands
-      const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
-
-      // Inject userId (standard CommandParams field) and contextId
-      // userId is the persona's UUID — the canonical identity field on CommandParams
-      // personaId kept for backward compat with ai/sleep, ai/should-respond-fast
-      const paramsWithCaller = {
-        ...resolvedParams,
-        userId: context.personaId,    // Standard CommandParams.userId — THE identity field
-        personaId: context.personaId, // Backward compat (ai/sleep, ai/should-respond-fast)
-        contextId: context.contextId  // Room/context scope
-      };
-
-      // Log tool call with clean params formatting (not array-wrapped)
-      const paramsJson = JSON.stringify(paramsWithCaller, null, 2);
-      this.log.info(`┌─ CALL: ${toolCall.toolName}`);
-      this.log.info(`│  params: ${paramsJson.replace(/\n/g, '\n│  ')}`);
-
-      // Use ToolRegistry for ALL commands - no special cases
-      // NO try-catch - let exceptions bubble to PersonaResponseGenerator
-      // ToolRegistry returns {success: false, error} for expected failures
-      const registryResult = await this.toolRegistry.executeTool(
-        toolCall.toolName,
-        paramsWithCaller,  // Pass params with callerId injected
-        context.sessionId,  // Pass AI's sessionId for proper attribution
-        context.contextId,
-        context.context  // Pass PersonaUser's enriched context (with callerType='persona')
-      );
-
-      const result: ToolResult = {
-        toolName: registryResult.toolName,
-        success: registryResult.success,
-        content: registryResult.content,
-        media: registryResult.media,  // ← Preserve structured media
-        error: registryResult.error
-      };
-
-      const duration = Date.now() - startTime;
-
-      // Log result with clear visual structure
-      if (result.success) {
-        // Parse result for better display (show key fields if JSON)
-        let resultSummary = result.content?.slice(0, 500) || 'no content';
-        try {
-          const parsed = JSON.parse(result.content || '');
-          // Extract key fields for readable summary
-          const keyFields = ['success', 'message', 'newMode', 'previousMode', 'count', 'items', 'data'];
-          const summary: Record<string, unknown> = {};
-          for (const key of keyFields) {
-            if (parsed[key] !== undefined) {
-              summary[key] = Array.isArray(parsed[key]) ? `[${parsed[key].length} items]` : parsed[key];
-            }
-          }
-          if (Object.keys(summary).length > 0) {
-            resultSummary = JSON.stringify(summary);
-          }
-        } catch { /* not JSON, use raw */ }
-
-        this.log.info(`└─ RESULT: ✓ ${duration}ms`);
-        this.log.info(`   ${resultSummary}${result.content && result.content.length > 500 ? '...' : ''}`);
-        if (result.media && result.media.length > 0) {
-          this.log.info(`   media: ${result.media.map(m => `${m.type} (${m.mimeType})`).join(', ')}`);
-        }
-      } else {
-        this.log.error(`└─ RESULT: ✗ ${duration}ms`);
-        this.log.error(`   error: ${result.error || 'unknown error'}`);
-      }
-
-      // Phase 3B: Store tool result in working memory and get UUID
-      // Fire-and-forget pattern: storage is non-critical, don't block on it
-      this.log.debugIf(() => [`${toolCall.toolName} returned media:`, result.media ? `${result.media.length} items` : 'NONE']);
-      if (result.media && result.media.length > 0) {
-        this.log.debugIf(() => ['Media details:', result.media!.map(m => ({
-          type: m.type,
-          hasBase64: !!m.base64,
-          base64Length: m.base64?.length,
-          mimeType: m.mimeType,
-          hasUrl: !!m.url
-        }))]);
-      }
-
-      // Store tool result (awaited to get UUID, but could be fire-and-forget if needed)
-      const resultId = await this.storeToolResult(
-        toolCall.toolName,
-        toolCall.parameters,
-        {
-          success: result.success,
-          data: result.content,  // Store full content in metadata
-          error: result.error,
-          media: result.media  // Pass media for storage and RAG context
-        },
-        context.contextId  // Use contextId (room) for storage
-      );
-      this.log.debug(`Stored tool result #${resultId.slice(0, 8)} with ${result.media?.length || 0} media`);
-
-      // Collect media for this tool
-      const collectedMedia: MediaItem[] = [];
-
-      // Check if THIS persona wants media
-      // IMPORTANT: If AI explicitly called screenshot tool, they want the image!
-      // So we pass through media for screenshot regardless of autoLoadMedia config
-      const isScreenshotTool = toolCall.toolName === 'screenshot' || toolCall.toolName === 'interface/screenshot';
-      const shouldLoadMedia = context.personaConfig.autoLoadMedia || isScreenshotTool;
-
-      if (result.media && shouldLoadMedia) {
-        // Filter by supported types (unless it's screenshot - then pass through images)
-        const supportedMedia = result.media.filter(m =>
-          isScreenshotTool || context.personaConfig.supportedMediaTypes.includes(m.type)
-        );
-
-        if (supportedMedia.length > 0) {
-          this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})${isScreenshotTool ? ' [screenshot override]' : ''}`);
-          collectedMedia.push(...supportedMedia);
-        }
-      } else if (result.media && result.media.length > 0) {
-        this.log.debug(`Skipping ${result.media.length} media (autoLoadMedia=false)`);
-      }
-
-      // Fire-and-forget: Log tool execution to cognition database (non-blocking)
-      // This is telemetry - don't block the response pipeline for it
-      CognitionLogger.logToolExecution(
-        this.persona.id,
-        this.persona.displayName,
-        toolCall.toolName,
-        toolCall.parameters,
-        result.success ? 'success' : 'error',
-        duration,
-        'chat',  // Domain
-        context.contextId,
-        {
-          toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
-          errorMessage: result.error,
-          storedResultId: resultId  // Phase 3B: Link to stored result
-        }
-      ).catch(err => this.log.error('Failed to log tool execution:', err));
-
-      return {
-        result,
-        resultId,
-        media: collectedMedia,
-        formattedResult: this.formatToolResult(result)
-      };
-    });
-
-    // Wait for all tool executions to complete in parallel
-    const toolResults = await Promise.all(toolExecutionPromises);
-
-    // Aggregate results maintaining original order
-    const results: string[] = [];
-    const allMedia: MediaItem[] = [];
-    const storedResultIds: UUID[] = [];
-
-    for (const { result, resultId, media, formattedResult } of toolResults) {
-      results.push(formattedResult);
-      storedResultIds.push(resultId);
-      allMedia.push(...media);
+    // Redirect common tool name confusion (workspace/* → code/*)
+    const correctedToolName = PersonaToolExecutor.TOOL_CORRECTIONS[toolCall.toolName] ?? toolCall.toolName;
+    if (correctedToolName !== toolCall.toolName) {
+      this.log.info(`↪ Redirected ${toolCall.toolName} → ${correctedToolName}`);
+      toolCall = { ...toolCall, toolName: correctedToolName };
     }
 
-    const successCount = toolResults.filter(r => r.result.success).length;
+    // Correct common parameter name mismatches (LLMs guess wrong names)
+    const paramCorrections = PersonaToolExecutor.PARAM_CORRECTIONS[toolCall.toolName];
+    if (paramCorrections) {
+      const correctedParams = { ...toolCall.parameters };
+      for (const [wrongName, correctName] of Object.entries(paramCorrections)) {
+        if (correctedParams[wrongName] !== undefined && correctedParams[correctName] === undefined) {
+          correctedParams[correctName] = correctedParams[wrongName];
+          delete correctedParams[wrongName];
+          this.log.info(`↪ Param corrected: ${wrongName} → ${correctName}`);
+        }
+      }
+      toolCall = { ...toolCall, parameters: correctedParams };
+    }
+
+    // Clean up code/write content: CDATA wrappers, HTML entities
+    // Models encode HTML differently when writing code — normalize before execution
+    if (toolCall.toolName === 'code/write' && toolCall.parameters.content) {
+      let content = toolCall.parameters.content;
+      let cleaned = false;
+
+      // Strip CDATA wrappers (Together wraps HTML in <![CDATA[...]]> for XML safety)
+      const cdataMatch = content.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+      if (cdataMatch) {
+        content = cdataMatch[1];
+        cleaned = true;
+      }
+
+      // Decode HTML entities in a single pass (Groq double-escapes HTML as &lt;html&gt;)
+      const NAMED: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'", nbsp: ' ' };
+      const decoded = content.replace(/&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);/g, (match, entity: string) => {
+        if (NAMED[entity]) return NAMED[entity];
+        if (entity.startsWith('#x')) return String.fromCharCode(parseInt(entity.slice(2), 16));
+        if (entity.startsWith('#')) return String.fromCharCode(parseInt(entity.slice(1), 10));
+        return match;
+      });
+      if (decoded !== content) { content = decoded; cleaned = true; }
+
+      if (cleaned) {
+        toolCall = { ...toolCall, parameters: { ...toolCall.parameters, content } };
+        this.log.info('↪ Cleaned code/write content (CDATA/entity normalization)');
+      }
+    }
+
+    // Resolve "current" room parameter to actual room name
+    const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
+
+    // Inject userId (standard CommandParams field) and contextId
+    const paramsWithCaller = {
+      ...resolvedParams,
+      userId: context.personaId,    // Standard CommandParams.userId — THE identity field
+      personaId: context.personaId, // Backward compat (ai/sleep, ai/should-respond-fast)
+      contextId: context.contextId  // Room/context scope
+    };
+
+    // Log tool call with clean params formatting (not array-wrapped)
+    const paramsJson = JSON.stringify(paramsWithCaller, null, 2);
+    this.log.info(`┌─ CALL: ${toolCall.toolName}`);
+    this.log.info(`│  params: ${paramsJson.replace(/\n/g, '\n│  ')}`);
+
+    // Use ToolRegistry for ALL commands - no special cases
+    // NO try-catch - let exceptions bubble to PersonaResponseGenerator
+    // ToolRegistry returns {success: false, error} for expected failures
+    const registryResult = await this.toolRegistry.executeTool(
+      toolCall.toolName,
+      paramsWithCaller,  // Pass params with callerId injected
+      context.sessionId,  // Pass AI's sessionId for proper attribution
+      context.contextId,
+      context.context  // Pass PersonaUser's enriched context (with callerType='persona')
+    );
+
+    const result: ToolResult = {
+      toolName: registryResult.toolName,
+      success: registryResult.success,
+      content: registryResult.content,
+      media: registryResult.media,  // ← Preserve structured media
+      error: registryResult.error
+    };
+
+    const duration = Date.now() - startTime;
+
+    // Log result with clear visual structure
+    if (result.success) {
+      // Parse result for better display (show key fields if JSON)
+      let resultSummary = result.content?.slice(0, 500) || 'no content';
+      try {
+        const parsed = JSON.parse(result.content || '');
+        // Extract key fields for readable summary
+        const keyFields = ['success', 'message', 'newMode', 'previousMode', 'count', 'items', 'data'];
+        const summary: Record<string, unknown> = {};
+        for (const key of keyFields) {
+          if (parsed[key] !== undefined) {
+            summary[key] = Array.isArray(parsed[key]) ? `[${parsed[key].length} items]` : parsed[key];
+          }
+        }
+        if (Object.keys(summary).length > 0) {
+          resultSummary = JSON.stringify(summary);
+        }
+      } catch { /* not JSON, use raw */ }
+
+      this.log.info(`└─ RESULT: ✓ ${duration}ms`);
+      this.log.info(`   ${resultSummary}${result.content && result.content.length > 500 ? '...' : ''}`);
+      if (result.media && result.media.length > 0) {
+        this.log.info(`   media: ${result.media.map(m => `${m.type} (${m.mimeType})`).join(', ')}`);
+      }
+    } else {
+      this.log.error(`└─ RESULT: ✗ ${duration}ms`);
+      this.log.error(`   error: ${result.error || 'unknown error'}`);
+    }
+
+    // Store tool result in working memory and get UUID
+    this.log.debugIf(() => [`${toolCall.toolName} returned media:`, result.media ? `${result.media.length} items` : 'NONE']);
+    if (result.media && result.media.length > 0) {
+      this.log.debugIf(() => ['Media details:', result.media!.map(m => ({
+        type: m.type,
+        hasBase64: !!m.base64,
+        base64Length: m.base64?.length,
+        mimeType: m.mimeType,
+        hasUrl: !!m.url
+      }))]);
+    }
+
+    // Store tool result (awaited to get UUID, but could be fire-and-forget if needed)
+    const resultId = await this.storeToolResult(
+      toolCall.toolName,
+      toolCall.parameters,
+      {
+        success: result.success,
+        data: result.content,  // Store full content in metadata
+        error: result.error,
+        media: result.media  // Pass media for storage and RAG context
+      },
+      context.contextId  // Use contextId (room) for storage
+    );
+    this.log.debug(`Stored tool result #${resultId.slice(0, 8)} with ${result.media?.length || 0} media`);
+
+    // Collect media for this tool
+    const collectedMedia: MediaItem[] = [];
+
+    // Check if THIS persona wants media
+    // IMPORTANT: If AI explicitly called screenshot tool, they want the image!
+    // So we pass through media for screenshot regardless of autoLoadMedia config
+    const isScreenshotTool = toolCall.toolName === 'screenshot' || toolCall.toolName === 'interface/screenshot';
+    const shouldLoadMedia = context.personaConfig.autoLoadMedia || isScreenshotTool;
+
+    if (result.media && shouldLoadMedia) {
+      // Filter by supported types (unless it's screenshot - then pass through images)
+      const supportedMedia = result.media.filter(m =>
+        isScreenshotTool || context.personaConfig.supportedMediaTypes.includes(m.type)
+      );
+
+      if (supportedMedia.length > 0) {
+        this.log.info(`Loading ${supportedMedia.length} media (types: ${supportedMedia.map(m => m.type).join(', ')})${isScreenshotTool ? ' [screenshot override]' : ''}`);
+        collectedMedia.push(...supportedMedia);
+      }
+    } else if (result.media && result.media.length > 0) {
+      this.log.debug(`Skipping ${result.media.length} media (autoLoadMedia=false)`);
+    }
+
+    // Fire-and-forget: Log tool execution to cognition database (non-blocking)
+    // This is telemetry - don't block the response pipeline for it
+    CognitionLogger.logToolExecution(
+      this.persona.id,
+      this.persona.displayName,
+      toolCall.toolName,
+      toolCall.parameters,
+      result.success ? 'success' : 'error',
+      duration,
+      'chat',  // Domain
+      context.contextId,
+      {
+        toolResult: result.content?.slice(0, 1000),  // First 1000 chars of result
+        errorMessage: result.error,
+        storedResultId: resultId  // Phase 3B: Link to stored result
+      }
+    ).catch(err => this.log.error('Failed to log tool execution:', err));
+
+    return { result, resultId, media: collectedMedia };
+  }
+
+  // ──────────────────────────────────────────────
+  // Public API: Batch Tool Execution
+  // ──────────────────────────────────────────────
+
+  /**
+   * Execute tool calls and return XML-formatted results + optional media.
+   * Used by the XML fallback path for non-native providers.
+   *
+   * @param toolCalls - Array of parsed tool calls
+   * @param context - Execution context with media configuration
+   * @returns Object with formatted text results, optional media array, and stored result UUIDs
+   */
+  async executeToolCalls(
+    toolCalls: ToolCall[],
+    context: ToolExecutionContext
+  ): Promise<{
+    formattedResults: string;
+    media?: MediaItem[];
+    storedResultIds: UUID[];
+  }> {
+    if (toolCalls.length === 0) {
+      return { formattedResults: '', storedResultIds: [] };
+    }
+
+    this.log.info(`Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.toolName).join(', ')}`);
+
+    const filtered = await this.prepareBatch(toolCalls, context);
+    if (filtered.length === 0) {
+      this.log.warn('All tool calls blocked by loop detection');
+      return { formattedResults: '[All tool calls blocked - infinite loop detected]', storedResultIds: [] };
+    }
+
+    // Execute all tools concurrently — O(max tool time) instead of O(sum)
+    const executions = await Promise.all(filtered.map(tc => this.executeSingleTool(tc, context)));
+
+    const allMedia = executions.flatMap(e => e.media);
+    const storedResultIds = executions.map(e => e.resultId);
+    const successCount = executions.filter(e => e.result.success).length;
     this.log.info(`Complete: ${successCount}/${toolCalls.length} successful, ${allMedia.length} media loaded, ${storedResultIds.length} stored`);
 
     return {
-      formattedResults: results.join('\n\n'),
+      formattedResults: executions.map(e => this.formatToolResult(e.result)).join('\n\n'),
       media: allMedia.length > 0 ? allMedia : undefined,
-      storedResultIds  // Phase 3B: Return UUIDs for lazy loading
+      storedResultIds,
+    };
+  }
+
+  /**
+   * Execute native tool calls from the canonical agent loop.
+   * Returns per-tool ToolResult objects with full content and tool_use_id correlation.
+   *
+   * Calls executeSingleTool directly — no XML serialization/deserialization round-trip.
+   * Full content is returned (not summaries). Truncated honestly if too large.
+   *
+   * @param nativeToolCalls - Tool calls from AI provider (with id, name, input)
+   * @param context - Execution context with persona/session info
+   * @param maxResultChars - Maximum characters per tool result (truncated honestly)
+   * @returns Per-tool results, media, and stored IDs
+   */
+  async executeNativeToolCalls(
+    nativeToolCalls: NativeToolCall[],
+    context: ToolExecutionContext,
+    maxResultChars = 30_000,
+  ): Promise<{
+    results: NativeToolResult[];
+    media: MediaItem[];
+    storedIds: UUID[];
+  }> {
+    if (nativeToolCalls.length === 0) {
+      return { results: [], media: [], storedIds: [] };
+    }
+
+    // Convert native format → executor format (decode sanitized names, stringify params)
+    const executorCalls: ToolCall[] = nativeToolCalls.map(tc => ({
+      toolName: unsanitizeToolName(tc.name),
+      parameters: Object.fromEntries(
+        Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+      ) as Record<string, string>,
+    }));
+
+    // Prepare batch (loop detection + workspace bootstrap)
+    const filtered = await this.prepareBatch(executorCalls, context);
+
+    // Execute filtered tools in parallel
+    const executions = await Promise.all(filtered.map(tc => this.executeSingleTool(tc, context)));
+
+    // Map results back to native tool calls with tool_use_id correlation.
+    // Tools blocked by loop detection get error results.
+    const filteredSet = new Set(filtered);
+    const results: NativeToolResult[] = [];
+    let execIdx = 0;
+
+    for (let i = 0; i < nativeToolCalls.length; i++) {
+      if (!filteredSet.has(executorCalls[i])) {
+        // Tool was blocked by loop detection
+        results.push({
+          tool_use_id: nativeToolCalls[i].id,
+          content: 'Tool call blocked by loop detection.',
+          is_error: true,
+        });
+        continue;
+      }
+
+      const exec = executions[execIdx++];
+      let content = exec.result.success
+        ? (exec.result.content || 'No content returned')
+        : (exec.result.error || 'Unknown error');
+
+      // Truncate honestly (not summarize) if too large
+      if (content.length > maxResultChars) {
+        content = content.slice(0, maxResultChars) + `\n[...truncated, ${content.length} chars total]`;
+      }
+
+      results.push({
+        tool_use_id: nativeToolCalls[i].id,
+        content,
+        is_error: !exec.result.success || undefined,
+      });
+    }
+
+    return {
+      results,
+      media: executions.flatMap(e => e.media),
+      storedIds: executions.map(e => e.resultId),
     };
   }
 
@@ -671,57 +775,51 @@ ${result.error || 'Unknown error'}
     result: { success: boolean; data: unknown; error?: unknown }
   ): string {
     if (!result.success) {
-      // Don't truncate error messages - AIs need full context to debug
-      // IMPORTANT: Properly stringify error objects to avoid [object Object]
       const errorMessage = this.stringifyError(result.error);
       return `Tool '${toolName}' failed: ${errorMessage}`;
     }
 
-    // Tool-specific summarization logic
     const data = result.data;
 
-    if (toolName === 'grep' || toolName === 'code/pattern-search') {
-      const text = typeof data === 'string' ? data : JSON.stringify(data);
-      const lines = text.split('\n').filter(l => l.trim()).length;
-      return `grep found ${lines} match${lines !== 1 ? 'es' : ''}`;
+    // Action label from tool name: "code/write" → "write", "collaboration/decision/vote" → "vote"
+    const action = toolName.split('/').pop() ?? toolName;
+
+    // Data-shape-driven summary — extract what the data reveals, not what tool produced it
+    if (Array.isArray(data)) {
+      return `${action}: ${data.length} item${data.length !== 1 ? 's' : ''}`;
     }
 
-    if (toolName === 'screenshot') {
-      const img = data as any;
-      if (img?.width && img?.height) {
-        return `Screenshot captured (${img.width}x${img.height}px)`;
-      }
-      return 'Screenshot captured';
+    if (typeof data === 'string') {
+      const lines = data.split('\n').filter(l => l.trim()).length;
+      return lines > 1 ? `${action}: ${lines} lines` : `${action}: ${data.slice(0, 120)}`;
     }
 
-    if (toolName === DATA_COMMANDS.LIST) {
-      const items = data as any[];
-      const count = Array.isArray(items) ? items.length : 0;
-      return `${DATA_COMMANDS.LIST} returned ${count} item${count !== 1 ? 's' : ''}`;
+    if (data && typeof data === 'object') {
+      const obj = data as Record<string, unknown>;
+      const parts: string[] = [];
+
+      // File path (most common structured field)
+      const filePath = obj.filePath ?? obj.file_path ?? obj.path ?? obj.fileName ?? obj.file_name;
+      if (filePath) parts.push(String(filePath));
+
+      // Size / count metrics
+      const bytes = obj.bytesWritten ?? obj.bytes_written ?? obj.size ?? obj.byteLength;
+      if (typeof bytes === 'number') parts.push(`${bytes} bytes`);
+
+      const count = obj.count ?? obj.total ?? obj.matches ?? obj.length;
+      if (typeof count === 'number') parts.push(`${count} items`);
+
+      // Dimensions
+      const width = obj.width;
+      const height = obj.height;
+      if (typeof width === 'number' && typeof height === 'number') parts.push(`${width}x${height}`);
+
+      if (parts.length > 0) return `${action}: ${parts.join(', ')}`;
     }
 
-    if (toolName === DATA_COMMANDS.READ) {
-      // When fetching tool results from working memory, don't output raw JSON
-      // Just acknowledge the retrieval
-      return 'Retrieved data from working memory';
-    }
-
-    if (toolName === 'code/read' || toolName === 'file/load') {
-      const text = typeof data === 'string' ? data : JSON.stringify(data);
-      const lines = text.split('\n').length;
-      return `Read ${lines} lines from file`;
-    }
-
-    if (toolName === 'bash' || toolName === 'shell/execute') {
-      const output = typeof data === 'string' ? data : JSON.stringify(data);
-      const lines = output.split('\n').length;
-      return `Command executed (${lines} lines of output)`;
-    }
-
-    // Generic summary for unknown tools - give AIs enough context to work with
-    const dataStr = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-    const preview = dataStr.slice(0, 500);
-    return `Tool '${toolName}' completed: ${preview}${dataStr.length > 500 ? '...' : ''}`;
+    // Compact fallback — tool name + truncated preview
+    const dataStr = typeof data === 'string' ? data : JSON.stringify(data);
+    return `${action}: ${dataStr.slice(0, 120)}${dataStr.length > 120 ? '...' : ''}`;
   }
 
   /**
