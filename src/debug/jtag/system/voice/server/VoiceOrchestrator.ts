@@ -330,10 +330,7 @@ export class VoiceOrchestrator {
     const THINKING_BUFFER_MS = 3000; // 3 seconds for AI to start responding (reduced from 10s)
     this.lastSpeechEndTime.set(sessionId, Date.now() + THINKING_BUFFER_MS);
 
-    console.log(`🎙️ VoiceOrchestrator: Arbiter selected ${selectedResponder.displayName} to respond (blocking for 3s while thinking)`);
-
     // Send directed event ONLY to the selected responder
-    console.log(`🎙️🔊 VOICE-DEBUG: Emitting voice:transcription:directed to ${selectedResponder.displayName} (targetPersonaId=${selectedResponder.userId?.slice(0, 8)})`);
     Events.emit('voice:transcription:directed', {
       sessionId: event.sessionId,
       speakerId: event.speakerId,
@@ -354,7 +351,7 @@ export class VoiceOrchestrator {
 
   private trackVoiceResponder(sessionId: UUID, personaId: UUID): void {
     this.voiceResponders.set(sessionId, personaId);
-    console.log(`🎙️ VoiceOrchestrator: Tracking ${personaId.slice(0, 8)} as voice responder for session ${sessionId.slice(0, 8)}`);
+    // Voice responder tracked for session
   }
 
   /**
@@ -383,16 +380,12 @@ export class VoiceOrchestrator {
     response: string,
     originalMessage: InboxMessage
   ): Promise<void> {
-    console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse CALLED - personaId=${personaId?.slice(0, 8)}, response="${response.slice(0, 50)}..."`);
     // Only handle voice messages
     if (originalMessage.sourceModality !== 'voice' || !originalMessage.voiceSessionId) {
-      console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse - NOT a voice message, returning early`);
       return;
     }
 
     const sessionId = originalMessage.voiceSessionId;
-
-    console.log(`🎙️🔊 VOICE-DEBUG: onPersonaResponse - Routing to TTS for session ${sessionId.slice(0, 8)}`);
 
     // Clean up pending response
     this.pendingResponses.delete(originalMessage.id);
@@ -439,10 +432,7 @@ export class VoiceOrchestrator {
       response: string;
       originalMessage: InboxMessage;
     }) => {
-      console.log(`🎙️🔊 VOICE-DEBUG: VoiceOrchestrator RECEIVED persona:response:generated from ${event.personaId?.slice(0, 8)}`);
-      console.log(`🎙️🔊 VOICE-DEBUG: isVoiceMessage=${this.isVoiceMessage(event.originalMessage)}, sourceModality=${event.originalMessage?.sourceModality}, voiceSessionId=${event.originalMessage?.voiceSessionId?.slice(0, 8) || 'undefined'}`);
       if (this.isVoiceMessage(event.originalMessage)) {
-        console.log(`🎙️🔊 VOICE-DEBUG: Routing to TTS - calling onPersonaResponse`);
         await this.onPersonaResponse(event.personaId, event.response, event.originalMessage);
       }
     });

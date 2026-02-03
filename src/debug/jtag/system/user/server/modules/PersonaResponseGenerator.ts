@@ -1677,10 +1677,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
 
       // VOICE ROUTING: If original message was from voice, route response to TTS
-      // sourceModality is a typed field on ProcessableMessage — never undefined
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: Checking voice routing - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: EMITTING persona:response:generated for TTS (response: "${aiResponse.text.slice(0, 50)}...")`);
         this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
 
         // Emit voice response event for VoiceOrchestrator
@@ -1698,8 +1695,6 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             }
           }
         );
-      } else {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: sourceModality=${originalMessage.sourceModality}, skipping TTS routing`);
       }
 
       return {

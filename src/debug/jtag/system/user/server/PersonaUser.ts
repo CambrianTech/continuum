@@ -701,16 +701,13 @@ export class PersonaUser extends AIUser {
         timestamp: number;
         targetPersonaId: UUID;
       }) => {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Received voice:transcription:directed event, targetPersonaId=${transcriptionData.targetPersonaId?.slice(0, 8)}, myId=${this.id?.slice(0, 8)}`);
         // Only process if directed at THIS persona
         if (transcriptionData.targetPersonaId === this.id) {
-          console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: MATCH! Processing directed voice transcription: "${transcriptionData.transcript.slice(0, 50)}..."`);
           this.log.info(`🎙️ ${this.displayName}: Received DIRECTED voice transcription`);
           await this.handleVoiceTranscription(transcriptionData);
         }
       }, undefined, this.id);
       this._eventUnsubscribes.push(unsubVoiceTranscription);
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Subscribed to voice:transcription:directed events (personaId=${this.id?.slice(0, 8)})`);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
 
       // Subscribe to TTS audio events and inject into CallServer
@@ -1204,21 +1201,16 @@ export class PersonaUser extends AIUser {
     language: string;
     timestamp?: string | number;
   }): Promise<void> {
-    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: handleVoiceTranscription CALLED with transcript: "${transcriptionData.transcript.slice(0, 50)}..."`);
-
     // STEP 1: Ignore our own transcriptions
     if (transcriptionData.speakerId === this.id) {
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Ignoring own transcription`);
       return;
     }
 
     this.log.debug(`🎤 ${this.displayName}: Received transcription from ${transcriptionData.speakerName}: "${transcriptionData.transcript.slice(0, 50)}..."`);
 
     // STEP 2: Deduplication - prevent evaluating same transcription multiple times
-    // Use transcript + timestamp as unique key
     const transcriptionKey = `${transcriptionData.speakerId}-${transcriptionData.timestamp || Date.now()}`;
     if (this.rateLimiter.hasEvaluatedMessage(transcriptionKey)) {
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Deduplication - already processed this transcription`);
       return;
     }
     this.rateLimiter.markMessageEvaluated(transcriptionKey);
@@ -1269,7 +1261,6 @@ export class PersonaUser extends AIUser {
     await this.inbox.enqueue(inboxMessage);
     this.personaState.updateInboxLoad(this.inbox.getSize());
 
-    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Enqueued voice message to inbox (priority=${boostedPriority.toFixed(2)}, voiceSessionId=${transcriptionData.sessionId?.slice(0, 8)}, inboxSize=${this.inbox.getSize()})`);
     this.log.info(`🎙️ ${this.displayName}: Enqueued voice transcription (priority=${boostedPriority.toFixed(2)}, confidence=${transcriptionData.confidence}, inbox size=${this.inbox.getSize()})`);
 
     // UNIFIED CONSCIOUSNESS: Record voice event in global timeline

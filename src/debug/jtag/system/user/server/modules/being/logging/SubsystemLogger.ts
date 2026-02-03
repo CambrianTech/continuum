@@ -95,21 +95,31 @@ export class SubsystemLogger {
     }
   }
 
-  // Delegate all logging methods to ComponentLogger
+  // Delegate logging methods to ComponentLogger, gated by LoggingConfig.
+  // When persona logging is OFF, no log files are created or written.
+  // Errors still surface in server.log via console capture.
+
+  private get _enabled(): boolean {
+    return LoggingConfig.isEnabled(this.uniqueId, this.subsystem);
+  }
 
   debug(message: string, ...args: unknown[]): void {
+    if (!this._enabled) return;
     this.logger.debug(message, ...args);
   }
 
   info(message: string, ...args: unknown[]): void {
+    if (!this._enabled) return;
     this.logger.info(message, ...args);
   }
 
   warn(message: string, ...args: unknown[]): void {
+    if (!this._enabled) return;
     this.logger.warn(message, ...args);
   }
 
   error(message: string, ...args: unknown[]): void {
+    if (!this._enabled) return;
     this.logger.error(message, ...args);
   }
 
@@ -117,6 +127,7 @@ export class SubsystemLogger {
    * Conditional debug logging (only executes if debug level enabled)
    */
   debugIf(messageFn: () => [string, ...any[]]): void {
+    if (!this._enabled) return;
     this.logger.debugIf(messageFn);
   }
 

@@ -150,9 +150,6 @@ export class PersonaInbox {
           if (isInboxMessage(item)) {
             const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
             this.log(`🦀 Routed ${enqueueRequest.item_type} → Rust ${result.routed_to}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
-            if (item.sourceModality === 'voice') {
-              console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → Rust ${result.routed_to}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-            }
           } else if (isInboxTask(item)) {
             this.log(`🦀 Routed task → Rust ${result.routed_to}: ${item.taskType} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
           }
@@ -193,10 +190,6 @@ export class PersonaInbox {
       // Defensive: handle undefined senderId
       const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
       this.log(`📬 Enqueued message: ${senderIdPreview} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
-      // VOICE DEBUG: Log voice metadata at enqueue time
-      if (item.sourceModality === 'voice') {
-        console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Enqueued VOICE message: sourceModality=${item.sourceModality}, voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-      }
     } else if (isInboxTask(item)) {
       this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     }
@@ -254,13 +247,6 @@ export class PersonaInbox {
     this.queue.sort((a, b) => getEffectivePriority(b) - getEffectivePriority(a));
 
     const items = this.queue.slice(0, limit);
-    // VOICE DEBUG: Log voice metadata when peeking
-    for (const item of items) {
-      if (isInboxMessage(item) && item.sourceModality === 'voice') {
-        const eff = getEffectivePriority(item);
-        console.log(`🎙️🔊 VOICE-DEBUG [Inbox.peek] VOICE message in queue: sourceModality=${item.sourceModality}, basePriority=${item.priority.toFixed(2)}, effectivePriority=${eff.toFixed(2)}, voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-      }
-    }
     return items;
   }
 

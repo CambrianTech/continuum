@@ -236,8 +236,6 @@ export class PersonaAutonomousLoop {
       const senderIsHuman = item.senderType === 'human';
       const messageText = item.content ?? '';
 
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: sourceModality=${processable.sourceModality}, voiceSessionId=${processable.voiceSessionId?.slice(0, 8) ?? 'none'}`);
-
       // Process message using cognition-enhanced evaluation logic
       // Pass pre-computed decision from Rust serviceCycleFull (eliminates separate IPC call)
       const evalStart = performance.now();
