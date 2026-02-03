@@ -52,10 +52,12 @@ import { LogLevel, FileMode, createLoggerConfig, parseFileMode } from './LoggerT
 import type { LoggerConfig, LogCategory } from './LoggerTypes';
 import { inferCategory } from './CategoryInference';
 import { ComponentLogger, type ParentLogger } from './ComponentLogger';
+import { LogLevelRegistry } from './LogLevelRegistry';
 
 // Re-export types for consumers
 export { LogLevel, FileMode } from './LoggerTypes';
 export type { ComponentLogger } from './ComponentLogger';
+export { LogLevelRegistry } from './LogLevelRegistry';
 
 // ============================================================================
 // Rust Worker Toggle
@@ -104,6 +106,9 @@ class LoggerClass implements ParentLogger {
   private constructor() {
     this.config = createLoggerConfig();
     this.defaultFileMode = parseFileMode(process.env.LOG_FILE_MODE);
+
+    // Sync global level to the per-component registry
+    LogLevelRegistry.instance.globalLevel = this.config.level;
 
     this.fileStreams = new Map();
     this.logQueues = new Map();
@@ -345,10 +350,11 @@ class LoggerClass implements ParentLogger {
   }
 
   /**
-   * Set log level programmatically
+   * Set global log level programmatically
    */
   setLevel(level: LogLevel): void {
     this.config.level = level;
+    LogLevelRegistry.instance.globalLevel = level;
   }
 
   /**

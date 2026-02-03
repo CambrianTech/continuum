@@ -16,6 +16,7 @@ import { performance } from 'perf_hooks';
 import type { LoggerConfig, LogCategory } from './LoggerTypes';
 import { LogLevel } from './LoggerTypes';
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
+import { LogLevelRegistry } from './LogLevelRegistry';
 
 /** Interface for the parent logger (to avoid circular imports) */
 export interface ParentLogger {
@@ -45,7 +46,12 @@ export class ComponentLogger {
   ) {}
 
   private shouldLog(level: LogLevel): boolean {
-    return level >= this.config.level;
+    // Check per-component override first (runtime mute/unmute)
+    // Extract category from logFilePath for category-level overrides
+    const category = this.logFilePath
+      ? this.logFilePath.replace(/\.log$/, '').split('/').slice(-2).join('/')
+      : undefined;
+    return LogLevelRegistry.instance.shouldLog(this.component, level, category);
   }
 
   private formatMessage(level: string, emoji: string, message: string, ...args: any[]): void {

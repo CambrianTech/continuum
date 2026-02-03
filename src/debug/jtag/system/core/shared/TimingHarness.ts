@@ -31,7 +31,7 @@
  * ```
  */
 
-import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, type WriteStream } from 'fs';
 import { dirname } from 'path';
 
 // ============================================================================
@@ -243,6 +243,14 @@ export class TimingCollector {
   private maxRecords = 10000;
   private logPath: string;
   private logEnabled: boolean;
+  private _writeStream: WriteStream | null = null;
+  private _writeBuffer: string[] = [];
+  private _flushTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly FLUSH_INTERVAL_MS = 500;
+  private static readonly MAX_BUFFER_SIZE = 100;
+
+  // Per-category enable/disable (fine-grained control)
+  private _categoryEnabled: Map<string, boolean> = new Map();
 
   private constructor() {
     // Default log path - can be overridden via env var
@@ -250,16 +258,24 @@ export class TimingCollector {
       '/tmp/jtag-timing.jsonl';
     this.logEnabled = process.env.JTAG_TIMING_ENABLED !== 'false';
 
-    // Ensure log directory exists
+    // Set up async write stream (replaces appendFileSync which blocked event loop)
     if (this.logEnabled && isNode) {
       try {
         const dir = dirname(this.logPath);
         if (!existsSync(dir)) {
           mkdirSync(dir, { recursive: true });
         }
+        this._writeStream = createWriteStream(this.logPath, { flags: 'a' });
+        this._writeStream.on('error', () => {
+          // Silently disable on write errors
+          this._writeStream = null;
+        });
       } catch {
-        // Ignore directory creation errors
+        // Ignore initialization errors
       }
+
+      // Periodic flush (instead of sync write per record)
+      this._flushTimer = setInterval(() => this.flushBuffer(), TimingCollector.FLUSH_INTERVAL_MS);
     }
   }
 
@@ -280,26 +296,45 @@ export class TimingCollector {
   }
 
   /**
+   * Enable or disable timing for a specific category.
+   * When disabled, records for that category are silently dropped.
+   */
+  setCategoryEnabled(category: string, enabled: boolean): void {
+    this._categoryEnabled.set(category, enabled);
+  }
+
+  /**
+   * Check if a category is enabled (default: true if not explicitly set)
+   */
+  isCategoryEnabled(category: string): boolean {
+    return this._categoryEnabled.get(category) ?? true;
+  }
+
+  /**
    * Record a timing entry
    */
   record(timing: TimingRecord): void {
+    // Check per-category filter
+    if (!this.isCategoryEnabled(timing.category)) {
+      return;
+    }
+
     // Add to in-memory buffer
     this.records.push(timing);
     if (this.records.length > this.maxRecords) {
       this.records.shift();
     }
 
-    // Log to file
-    if (this.logEnabled && isNode) {
-      try {
-        appendFileSync(this.logPath, JSON.stringify(timing) + '\n');
-      } catch {
-        // Ignore file write errors
+    // Buffer for async file write (never blocks event loop)
+    if (this.logEnabled && this._writeStream) {
+      this._writeBuffer.push(JSON.stringify(timing));
+      if (this._writeBuffer.length >= TimingCollector.MAX_BUFFER_SIZE) {
+        this.flushBuffer();
       }
     }
 
-    // Console debug log for slow operations (>100ms)
-    if (timing.totalMs > 100) {
+    // Console debug log for slow operations (>500ms — raised from 100ms to reduce spam)
+    if (timing.totalMs > 500) {
       const phases = Object.entries(timing.phases)
         .map(([k, v]) => `${k}=${(v / 1000).toFixed(1)}ms`)
         .join(', ');
@@ -307,6 +342,19 @@ export class TimingCollector {
         `\u23F1\uFE0F TIMING [${timing.category}] ${timing.operation}: ${timing.totalMs.toFixed(1)}ms (${phases})`
       );
     }
+  }
+
+  /**
+   * Flush buffered timing records to disk (async, non-blocking)
+   */
+  private flushBuffer(): void {
+    if (this._writeBuffer.length === 0 || !this._writeStream) {
+      return;
+    }
+
+    const batch = this._writeBuffer.join('\n') + '\n';
+    this._writeBuffer.length = 0;
+    this._writeStream.write(batch);
   }
 
   /**
@@ -402,6 +450,21 @@ export class TimingCollector {
    */
   clear(): void {
     this.records = [];
+  }
+
+  /**
+   * Shutdown: flush remaining buffer and close stream
+   */
+  shutdown(): void {
+    this.flushBuffer();
+    if (this._flushTimer) {
+      clearInterval(this._flushTimer);
+      this._flushTimer = null;
+    }
+    if (this._writeStream) {
+      this._writeStream.end();
+      this._writeStream = null;
+    }
   }
 }
 
