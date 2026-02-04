@@ -1,7 +1,7 @@
 /**
  * migrate-sandbox-to-git.ts - One-time migration of persona sandbox workspaces to git repos
  *
- * Scans .continuum/personas/*/workspace/ for non-empty directories without .git,
+ * Scans .continuum/personas/{id}/workspace/ for non-empty directories without .git,
  * initializes git repos, and creates initial commits preserving existing work.
  *
  * Safe to re-run: skips workspaces that already have .git initialized.

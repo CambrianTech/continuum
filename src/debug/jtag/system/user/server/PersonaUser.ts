@@ -482,11 +482,25 @@ export class PersonaUser extends AIUser {
       logger: this.logger,
       memory: this.memory,  // For accessing trained LoRA adapters during inference
       ensureCodeWorkspace: async () => {
-        // Reuse any existing workspace (project or sandbox) before creating a new sandbox.
-        // This allows project workspaces created via explicit commands to be preserved.
+        // Reuse any existing workspace (project or sandbox) before creating a new one.
+        // This allows workspaces created via explicit commands to be preserved.
         const existing = this._workspaces.get('default') ?? this._workspaces.values().next().value;
-        if (existing) return;
-        await this.ensureWorkspace({ contextKey: 'default', mode: 'sandbox' });
+        if (existing) {
+          // Ensure shell session exists even for pre-existing workspaces.
+          // code/shell/* commands call CodeDaemon directly (bypass Workspace object),
+          // so the Rust-side shell session must be eagerly created.
+          await existing.ensureShell();
+          return;
+        }
+        // Default to project mode: all personas get git worktree branches on the shared repo.
+        // This enables collaboration — AIs can see each other's branches, review, merge.
+        // WorkspaceStrategy auto-detects the git root from process.cwd().
+        const ws = await this.ensureWorkspace({
+          contextKey: 'default',
+          mode: 'project',
+          repoPath: process.cwd(),
+        });
+        await ws.ensureShell();
       },
     });
 

@@ -1,0 +1,45 @@
+{
+  "name": "code/shell/status",
+  "description": "Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
+  "params": [],
+  "results": [
+    {
+      "name": "sessionId",
+      "type": "string",
+      "description": "Shell session identifier"
+    },
+    {
+      "name": "personaId",
+      "type": "string",
+      "description": "Persona that owns this shell session"
+    },
+    {
+      "name": "cwd",
+      "type": "string",
+      "description": "Current working directory of the shell session"
+    },
+    {
+      "name": "workspaceRoot",
+      "type": "string",
+      "description": "Root directory of the workspace"
+    },
+    {
+      "name": "activeExecutions",
+      "type": "number",
+      "description": "Number of currently running executions"
+    },
+    {
+      "name": "totalExecutions",
+      "type": "number",
+      "description": "Total number of executions (running + completed)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check shell session status",
+      "command": "./jtag code/shell/status",
+      "expectedResult": "{ sessionId: \"sess-abc\", cwd: \"/workspace/game\", activeExecutions: 1, totalExecutions: 5 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

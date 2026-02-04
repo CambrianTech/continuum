@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-04T00:11:30.156Z",
+  "generated": "2026-02-04T04:21:22.012Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -5299,6 +5299,17 @@
       }
     },
     {
+      "name": "code/shell/status",
+      "description": "Code Shell Status Command - Shared Types\n *\n * Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
       "name": "code/shell/sentinel",
       "description": "Code Shell Sentinel Command - Shared Types\n *\n * Configure sentinel filter rules on a shell execution. Rules classify output lines\n * and control which lines are emitted or suppressed during watch.\n * Patterns are compiled to regex on the Rust side for performance.",
       "params": {
@@ -5311,6 +5322,38 @@
           "type": "array",
           "required": true,
           "description": "rules parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/kill",
+      "description": "Code Shell Kill Command - Shared Types\n *\n * Kill a running shell execution. Use the executionId returned by code/shell/execute to identify the target.",
+      "params": {
+        "executionId": {
+          "type": "string",
+          "required": true,
+          "description": "executionId parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/execute",
+      "description": "Code Shell Execute Command - Shared Types\n *\n * Execute a shell command in the persona's workspace. Async mode (default) returns execution handle immediately — use code/shell/watch to stream output. Sync mode (wait=true) blocks until completion and returns full stdout/stderr.",
+      "params": {
+        "cmd": {
+          "type": "string",
+          "required": true,
+          "description": "cmd parameter"
+        },
+        "wait": {
+          "type": "boolean",
+          "required": false,
+          "description": "wait parameter"
+        },
+        "timeoutMs": {
+          "type": "number",
+          "required": false,
+          "description": "timeoutMs parameter"
         }
       }
     },

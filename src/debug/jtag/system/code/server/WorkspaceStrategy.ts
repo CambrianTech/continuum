@@ -213,13 +213,23 @@ export class WorkspaceStrategy {
     }
 
     // Resolve repoPath — support relative paths from jtag root
-    const resolvedRepoPath = path.isAbsolute(config.repoPath)
+    let resolvedRepoPath = path.isAbsolute(config.repoPath)
       ? config.repoPath
       : path.resolve(process.cwd(), config.repoPath);
 
-    // Verify it's a git repo
-    const gitDir = path.join(resolvedRepoPath, '.git');
-    if (!fs.existsSync(gitDir) && !fs.existsSync(resolvedRepoPath + '/.git')) {
+    // Always resolve to the actual git root via rev-parse.
+    // A .git directory or file at the provided path doesn't guarantee it's the repo root —
+    // it could be a worktree .git file or a partial .git directory for local hooks.
+    try {
+      const gitRoot = execSync('git rev-parse --show-toplevel', {
+        cwd: resolvedRepoPath,
+        stdio: 'pipe',
+      }).toString().trim();
+      if (gitRoot !== resolvedRepoPath) {
+        log.info(`Auto-detected git root: ${gitRoot} (from ${resolvedRepoPath})`);
+        resolvedRepoPath = gitRoot;
+      }
+    } catch {
       throw new Error(`WorkspaceStrategy: not a git repo: ${resolvedRepoPath}`);
     }
 
@@ -239,32 +249,45 @@ export class WorkspaceStrategy {
 
     const gitOpts = { cwd: resolvedRepoPath, stdio: 'pipe' as const };
 
-    try {
-      // Create worktree with new branch from HEAD
-      execSync(`git worktree add -b "${branchName}" "${worktreeDir}" HEAD`, gitOpts);
-    } catch (e: any) {
-      // Branch may already exist from a previous session
-      if (e.stderr?.toString().includes('already exists') || e.message?.includes('already exists')) {
-        // If worktree dir already exists, it was left from a crash — prune first
-        if (fs.existsSync(worktreeDir)) {
-          try { execSync('git worktree prune', gitOpts); } catch { /* ignore */ }
-        }
-        try {
-          execSync(`git worktree add "${worktreeDir}" "${branchName}"`, gitOpts);
-        } catch (e2: any) {
-          // Worktree for this branch may already be checked out elsewhere
-          if (e2.stderr?.toString().includes('already checked out')) {
-            log.warn(`Branch ${branchName} already checked out — reusing existing worktree`);
-            // The worktreeDir should exist if it's checked out
-            if (!fs.existsSync(worktreeDir)) {
-              throw new Error(`WorkspaceStrategy: branch ${branchName} checked out elsewhere, cannot create worktree at ${worktreeDir}`);
-            }
-          } else {
-            throw e2;
-          }
-        }
+    // If worktree dir already exists from a previous session, reuse or force-remove it.
+    if (fs.existsSync(worktreeDir)) {
+      // Check if it's a valid git worktree checkout by looking for .git reference
+      const gitRefFile = path.join(worktreeDir, '.git');
+      if (fs.existsSync(gitRefFile)) {
+        // Valid existing worktree — reuse it. Just ensure the branch is checked out.
+        log.info(`Reusing existing worktree at ${worktreeDir} (branch: ${branchName})`);
       } else {
-        throw e;
+        // Stale directory without valid git reference — remove and recreate
+        log.warn(`Removing stale worktree directory: ${worktreeDir}`);
+        try { execSync(`git worktree remove "${worktreeDir}" --force`, gitOpts); } catch { /* ignore */ }
+        try { execSync('git worktree prune', gitOpts); } catch { /* ignore */ }
+        fs.rmSync(worktreeDir, { recursive: true, force: true });
+      }
+    }
+
+    // Create worktree if directory doesn't exist (either first time or after cleanup)
+    if (!fs.existsSync(worktreeDir)) {
+      try {
+        // Try creating with new branch from HEAD
+        execSync(`git worktree add -b "${branchName}" "${worktreeDir}" HEAD`, gitOpts);
+      } catch (e: any) {
+        const errMsg = e.stderr?.toString() ?? e.message ?? '';
+        if (errMsg.includes('already exists')) {
+          // Branch exists but worktree dir was cleaned — checkout existing branch
+          try {
+            execSync(`git worktree add "${worktreeDir}" "${branchName}"`, gitOpts);
+          } catch (e2: any) {
+            const errMsg2 = e2.stderr?.toString() ?? e2.message ?? '';
+            if (errMsg2.includes('already checked out')) {
+              log.warn(`Branch ${branchName} checked out elsewhere — forcing worktree creation`);
+              execSync(`git worktree add --force "${worktreeDir}" "${branchName}"`, gitOpts);
+            } else {
+              throw e2;
+            }
+          }
+        } else {
+          throw e;
+        }
       }
     }
 

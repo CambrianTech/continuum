@@ -1,0 +1,65 @@
+{
+  "uniqueId": "terminal",
+  "name": "Terminal",
+  "displayName": "Terminal",
+  "description": "tmux-like terminal multiplexer showing AI shell sessions and live process output",
+  "version": 1,
+
+  "layout": {
+    "main": ["terminal-widget"],
+    "right": {
+        "widgets": [
+            "chat-widget"
+        ],
+        "config": {
+            "room": "help",
+            "compact": true
+        }
+    }
+  },
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 10,
+        "includeParticipants": false
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.5
+      }
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 10,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": false,
+      "includeExpertise": false,
+      "includeHistory": false
+    }
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "Provide helpful guidance",
+      "Be concise and clear"
+    ],
+    "decisionCriteria": [
+      "What is the user trying to accomplish?"
+    ]
+  },
+
+  "isPublic": true,
+  "tags": ["terminal"]
+}

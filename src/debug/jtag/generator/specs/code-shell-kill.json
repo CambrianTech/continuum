@@ -1,0 +1,32 @@
+{
+  "name": "code/shell/kill",
+  "description": "Kill a running shell execution. Use the executionId returned by code/shell/execute to identify the target.",
+  "params": [
+    {
+      "name": "executionId",
+      "type": "string",
+      "optional": false,
+      "description": "Execution handle to kill (from code/shell/execute)"
+    }
+  ],
+  "results": [
+    {
+      "name": "executionId",
+      "type": "string",
+      "description": "Echo of the killed execution handle"
+    },
+    {
+      "name": "killed",
+      "type": "boolean",
+      "description": "Whether the execution was successfully killed"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Kill a running build",
+      "command": "./jtag code/shell/kill --executionId=\"exec-abc123\"",
+      "expectedResult": "{ executionId: \"exec-abc123\", killed: true }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

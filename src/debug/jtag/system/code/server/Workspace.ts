@@ -187,8 +187,12 @@ export class Workspace {
   /**
    * Ensure the Rust-side shell session exists for this workspace.
    * Called automatically by shell methods — idempotent after first call.
+   *
+   * Public so that workspace bootstrap can eagerly create the session.
+   * The code/shell/* commands call CodeDaemon directly (bypassing Workspace),
+   * so the session must exist before any shell command is invoked.
    */
-  private async ensureShell(): Promise<void> {
+  async ensureShell(): Promise<void> {
     if (this._shellCreated) return;
     await CodeDaemon.shellCreate(this.handle, this.dir);
     this._shellCreated = true;

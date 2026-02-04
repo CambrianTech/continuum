@@ -16,6 +16,29 @@ models/
 # Persona cognitive logs (mind, body, soul, cns)
 .continuum/personas/*/logs/
 
+# Persona workspaces (sandbox mode runtime data)
+.continuum/personas/*/workspace/
+
+# Session runtime data
+.continuum/sessions/
+
+# Reports (generated at runtime)
+.continuum/reports/
+
+# Blobs (uploaded files, media)
+.continuum/blobs/
+
+# Shared runtime state
+.continuum/shared/
+
+# Runtime config
+.continuum/logging.json
+.continuum/test-jobs.json
+.continuum/.DS_Store
+
+# Media uploads
+.continuum/media/
+
 # Temporary files
 /tmp/
 *.pyc

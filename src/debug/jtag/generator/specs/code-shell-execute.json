@@ -1,0 +1,64 @@
+{
+  "name": "code/shell/execute",
+  "description": "Execute a shell command in the persona's workspace. Async mode (default) returns execution handle immediately — use code/shell/watch to stream output. Sync mode (wait=true) blocks until completion and returns full stdout/stderr.",
+  "params": [
+    {
+      "name": "cmd",
+      "type": "string",
+      "optional": false,
+      "description": "Shell command to execute (e.g., \"npm run build\", \"cargo test\", \"xcodebuild\")"
+    },
+    {
+      "name": "wait",
+      "type": "boolean",
+      "optional": true,
+      "description": "Wait for completion before returning (default: false — returns handle immediately)"
+    },
+    {
+      "name": "timeoutMs",
+      "type": "number",
+      "optional": true,
+      "description": "Timeout in milliseconds (default: 30000 for sync, no limit for async)"
+    }
+  ],
+  "results": [
+    {
+      "name": "executionId",
+      "type": "string",
+      "description": "Execution handle — use with code/shell/watch, code/shell/kill"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "description": "Execution status: running, completed, failed, timed_out, killed"
+    },
+    {
+      "name": "stdout",
+      "type": "string",
+      "description": "Full stdout (only present when wait=true and execution completed)"
+    },
+    {
+      "name": "stderr",
+      "type": "string",
+      "description": "Full stderr (only present when wait=true and execution completed)"
+    },
+    {
+      "name": "exitCode",
+      "type": "number",
+      "description": "Process exit code (only present when execution completed)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Run a build synchronously and wait for result",
+      "command": "./jtag code/shell/execute --cmd=\"npm run build\" --wait=true",
+      "expectedResult": "{ executionId: \"exec-abc123\", status: \"completed\", stdout: \"...\", exitCode: 0 }"
+    },
+    {
+      "description": "Start an async build (returns handle for streaming)",
+      "command": "./jtag code/shell/execute --cmd=\"cargo build --release\"",
+      "expectedResult": "{ executionId: \"exec-def456\", status: \"running\" }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

@@ -66,7 +66,11 @@
       "Propose before big changes — use collaboration/decision/propose for architectural decisions",
       "Commit working code — only code/git commit after code/verify passes",
       "Coordinate naturally — claim files you're working on, don't pile on the same code",
-      "Ask for help when stuck — share errors, ask teammates to look at your approach"
+      "Ask for help when stuck — share errors, ask teammates to look at your approach",
+      "Use code/shell/execute for build commands (xcodebuild, cargo build, npm run build) — code/verify only runs tsc",
+      "For long-running commands, use wait=false then code/shell/watch to stream output",
+      "Use code/shell/sentinel to classify build output (errors, warnings) before watching",
+      "Use code/shell/kill to abort runaway processes"
     ],
     "feedbackLoopRules": [
       "MANDATORY: After code changes, ALWAYS build and verify before committing — code/verify is not optional",
@@ -100,7 +104,12 @@
     { "name": "code/undo", "description": "Undo recent changes", "enabledFor": ["ai"] },
     { "name": "code/history", "description": "View change history", "enabledFor": ["ai"] },
     { "name": "code/verify", "description": "Run compilation check and tests", "enabledFor": ["ai"] },
-    { "name": "code/git", "description": "Git operations (status, diff, log, add, commit)", "enabledFor": ["ai"] }
+    { "name": "code/git", "description": "Git operations (status, diff, log, add, commit)", "enabledFor": ["ai"] },
+    { "name": "code/shell/execute", "description": "Run a shell command in your workspace (async or wait=true for blocking)", "enabledFor": ["ai"] },
+    { "name": "code/shell/watch", "description": "Watch a running execution for classified output lines", "enabledFor": ["ai"] },
+    { "name": "code/shell/sentinel", "description": "Configure output filter rules (regex classification) on a running execution", "enabledFor": ["ai"] },
+    { "name": "code/shell/status", "description": "Get shell session info (cwd, active executions)", "enabledFor": ["ai"] },
+    { "name": "code/shell/kill", "description": "Kill a running execution", "enabledFor": ["ai"] }
   ],
 
   "isPublic": true,
