@@ -22,6 +22,9 @@ export class PersonaIdentitySource implements RAGSource {
   readonly priority = 95;  // Critical - must be included
   readonly defaultBudgetPercent = 15;
 
+  // Identity never changes at runtime — cache per persona (indefinite TTL)
+  private static _identityCache: Map<string, UserEntity> = new Map();
+
   isApplicable(_context: RAGSourceContext): boolean {
     // Always applicable
     return true;
@@ -31,7 +34,14 @@ export class PersonaIdentitySource implements RAGSource {
     const startTime = performance.now();
 
     try {
-      const user = await DataDaemon.read<UserEntity>(UserEntity.collection, context.personaId);
+      // Check cache first — identity is immutable at runtime
+      let user = PersonaIdentitySource._identityCache.get(context.personaId) ?? null;
+      if (!user) {
+        user = await DataDaemon.read<UserEntity>(UserEntity.collection, context.personaId);
+        if (user) {
+          PersonaIdentitySource._identityCache.set(context.personaId, user);
+        }
+      }
 
       if (!user) {
         log.warn(`Could not load persona ${context.personaId}, using defaults`);

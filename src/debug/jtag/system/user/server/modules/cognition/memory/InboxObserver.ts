@@ -36,13 +36,6 @@ export class InboxObserver {
    * Get inbox depth (how many items are queued)
    */
   async getDepth(): Promise<number> {
-    try {
-      // Get current queue size
-      const items = await this.inbox.peek(1000); // Peek all
-      return items.length;
-    } catch (error) {
-      this.log(`❌ Error getting inbox depth: ${error}`);
-      return 0;
-    }
+    return this.inbox.getSize();
   }
 }

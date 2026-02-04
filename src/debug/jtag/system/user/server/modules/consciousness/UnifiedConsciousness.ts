@@ -177,7 +177,9 @@ export class UnifiedConsciousness {
           },
           embedding: event.embedding ?? null,
         };
-        await this._rustBridge.memoryAppendEvent(corpusEvent);
+        this._rustBridge.memoryAppendEvent(corpusEvent).catch(err =>
+          this.log.warn(`⚠️ Rust corpus event append failed: ${err}`)
+        );
       }
 
       // Update focus tracking if we're switching contexts

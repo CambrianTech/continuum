@@ -57,8 +57,21 @@ export class GlobalAwarenessSource implements RAGSource {
   readonly priority = 85;  // After identity (95), before conversation (80)
   readonly defaultBudgetPercent = 10;
 
+  // Negative cache: when Rust returns "No memory corpus", skip IPC for 60s.
+  // Without this, each failing persona makes a 1-3s IPC call every RAG build
+  // that returns nothing but an error — pure waste.
+  private static _corpusUnavailable: Map<string, number> = new Map();
+  private static readonly NEGATIVE_CACHE_TTL_MS = 60_000;
+
   isApplicable(context: RAGSourceContext): boolean {
-    return initializedPersonas.has(context.personaId);
+    if (!initializedPersonas.has(context.personaId)) return false;
+
+    // Skip if we recently learned this persona's corpus is unavailable
+    const failedAt = GlobalAwarenessSource._corpusUnavailable.get(context.personaId);
+    if (failedAt && (Date.now() - failedAt) < GlobalAwarenessSource.NEGATIVE_CACHE_TTL_MS) {
+      return false;
+    }
+    return true;
   }
 
   async load(context: RAGSourceContext, _allocatedBudget: number): Promise<RAGSection> {
@@ -126,7 +139,13 @@ export class GlobalAwarenessSource implements RAGSource {
       };
 
     } catch (error: any) {
-      log.error(`Failed to load global awareness: ${error.message}`);
+      // Negative-cache "No memory corpus" errors — skip IPC for 60s
+      if (error.message?.includes('No memory corpus')) {
+        GlobalAwarenessSource._corpusUnavailable.set(context.personaId, Date.now());
+        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 60s`);
+      } else {
+        log.error(`Failed to load global awareness: ${error.message}`);
+      }
       return this.errorSection(startTime, error.message);
     }
   }

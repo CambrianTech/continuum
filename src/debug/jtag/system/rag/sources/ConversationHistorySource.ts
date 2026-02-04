@@ -20,10 +20,35 @@ const log = Logger.create('ConversationHistorySource', 'rag');
 // Estimate ~4 tokens per word, ~5 words per line average
 const TOKENS_PER_MESSAGE_ESTIMATE = 50;
 
+type MessageWithSender = ChatMessageEntity & { sender?: { displayName: string; userType: string } };
+
+/** Short-lived cache for room messages — 16 personas querying same room simultaneously */
+interface MessageCacheEntry {
+  messages: MessageWithSender[];
+  fetchedAt: number;
+  limit: number;
+}
+
+/** In-flight request entry for single-flight coalescing */
+interface InflightEntry {
+  promise: Promise<MessageWithSender[]>;
+  limit: number;
+}
+
 export class ConversationHistorySource implements RAGSource {
   readonly name = 'conversation-history';
   readonly priority = 80;  // High - conversation is core context
   readonly defaultBudgetPercent = 40;  // Gets largest share of budget
+
+  // Room message cache: 2s TTL serves results from recent queries
+  private static _roomCache: Map<string, MessageCacheEntry> = new Map();
+  private static readonly CACHE_TTL_MS = 2000;
+
+  // Single-flight coalescing: when multiple personas query the same room
+  // simultaneously, only ONE DB query fires. Others await the same promise.
+  // This eliminates the thundering herd problem where the 2s TTL cache
+  // can't help because the first query hasn't completed yet.
+  private static _inflight: Map<string, InflightEntry> = new Map();
 
   isApplicable(_context: RAGSourceContext): boolean {
     // Always applicable - every RAG build needs conversation context
@@ -44,42 +69,43 @@ export class ConversationHistorySource implements RAGSource {
     log.debug(`Message limit: ${maxMessages} (budget=${budgetBasedLimit}, latencyLimit=${optionsLimit ?? 'none'})`);
 
     try {
-      type MessageWithSender = ChatMessageEntity & { sender?: { displayName: string; userType: string } };
       let messages: MessageWithSender[] = [];
 
-      // Try queryWithJoin first (4.5x faster), fall back to regular query
-      try {
-        const result = await DataDaemon.queryWithJoin<MessageWithSender>({
-          collection: ChatMessageEntity.collection,
-          filter: { roomId: context.roomId },
-          joins: [{
-            collection: 'users',
-            alias: 'sender',
-            localField: 'senderId',
-            foreignField: 'id',
-            type: 'left',
-            select: ['displayName', 'userType']
-          }],
-          sort: [{ field: 'timestamp', direction: 'desc' }],
-          limit: maxMessages
-        });
+      // Check completed cache first (2s TTL)
+      const cacheKey = context.roomId;
+      const cached = ConversationHistorySource._roomCache.get(cacheKey);
+      const now = Date.now();
 
-        if (result.success && result.data && result.data.length > 0) {
-          messages = result.data.map((record: { data: MessageWithSender }) => record.data);
-        }
-      } catch (joinError: any) {
-        // queryWithJoin not supported - fall back to regular query
-        log.debug(`queryWithJoin not available (${joinError.message}), using regular query`);
-
-        const result = await DataDaemon.query<ChatMessageEntity>({
-          collection: ChatMessageEntity.collection,
-          filter: { roomId: context.roomId },
-          sort: [{ field: 'timestamp', direction: 'desc' }],
-          limit: maxMessages
-        });
-
-        if (result.success && result.data && result.data.length > 0) {
-          messages = result.data.map((record: { data: ChatMessageEntity }) => record.data as MessageWithSender);
+      if (cached && (now - cached.fetchedAt) < ConversationHistorySource.CACHE_TTL_MS && cached.limit >= maxMessages) {
+        messages = cached.messages.slice(0, maxMessages);
+        log.debug(`Cache hit for room ${context.roomId?.slice(0, 8)} (${messages.length} messages)`);
+      } else {
+        // Cache miss — use single-flight coalescing to prevent thundering herd.
+        // When 16 personas query the same room simultaneously, only the first
+        // triggers a DB query. The other 15 await the same promise.
+        const inflight = ConversationHistorySource._inflight.get(cacheKey);
+        if (inflight && inflight.limit >= maxMessages) {
+          // Another request is already in-flight for this room — piggyback
+          log.debug(`Coalescing request for room ${context.roomId?.slice(0, 8)}`);
+          messages = (await inflight.promise).slice(0, maxMessages);
+        } else {
+          // First request for this room — start DB query and register as in-flight
+          const fetchPromise = this.fetchMessages(context.roomId, maxMessages);
+          ConversationHistorySource._inflight.set(cacheKey, {
+            promise: fetchPromise,
+            limit: maxMessages
+          });
+          try {
+            messages = await fetchPromise;
+            // Populate TTL cache for subsequent requests
+            ConversationHistorySource._roomCache.set(cacheKey, {
+              messages,
+              fetchedAt: Date.now(),
+              limit: maxMessages
+            });
+          } finally {
+            ConversationHistorySource._inflight.delete(cacheKey);
+          }
         }
       }
 
@@ -156,6 +182,46 @@ export class ConversationHistorySource implements RAGSource {
       log.error(`Failed to load conversation history: ${error.message}`);
       return this.emptySection(startTime, error.message);
     }
+  }
+
+  /** Fetch messages from DB (extracted for caching) */
+  private async fetchMessages(roomId: string, maxMessages: number): Promise<MessageWithSender[]> {
+    // Try queryWithJoin first (4.5x faster), fall back to regular query
+    try {
+      const result = await DataDaemon.queryWithJoin<MessageWithSender>({
+        collection: ChatMessageEntity.collection,
+        filter: { roomId },
+        joins: [{
+          collection: 'users',
+          alias: 'sender',
+          localField: 'senderId',
+          foreignField: 'id',
+          type: 'left',
+          select: ['displayName', 'userType']
+        }],
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit: maxMessages
+      });
+
+      if (result.success && result.data && result.data.length > 0) {
+        return result.data.map((record: { data: MessageWithSender }) => record.data);
+      }
+    } catch (joinError: any) {
+      // queryWithJoin not supported - fall back to regular query
+      log.debug(`queryWithJoin not available (${joinError.message}), using regular query`);
+
+      const result = await DataDaemon.query<ChatMessageEntity>({
+        collection: ChatMessageEntity.collection,
+        filter: { roomId },
+        sort: [{ field: 'timestamp', direction: 'desc' }],
+        limit: maxMessages
+      });
+
+      if (result.success && result.data && result.data.length > 0) {
+        return result.data.map((record: { data: ChatMessageEntity }) => record.data as MessageWithSender);
+      }
+    }
+    return [];
   }
 
   private emptySection(startTime: number, error?: string): RAGSection {

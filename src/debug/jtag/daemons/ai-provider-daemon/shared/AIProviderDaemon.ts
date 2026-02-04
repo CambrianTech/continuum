@@ -261,9 +261,9 @@ export class AIProviderDaemon extends DaemonBase {
         },
       };
 
-      // Log successful generation to database for cost tracking
+      // Log successful generation to database for cost tracking (fire-and-forget — non-blocking)
       // This is the SINGLE source of truth - only daemon logs, not individual adapters
-      await this.logGeneration(finalResponse, request);
+      this.logGeneration(finalResponse, request).catch(() => {});
       timer.mark('log_generation');
 
       // Log routing info for observability (routing is guaranteed to exist since we just built it)
@@ -277,14 +277,14 @@ export class AIProviderDaemon extends DaemonBase {
       this.log.error(`❌ AIProviderDaemon: Text generation failed with ${adapter.providerId}`);
       timer.setError(error instanceof Error ? error.message : String(error));
 
-      // Log failed generation to database
-      await this.logFailedGeneration(
+      // Log failed generation to database (fire-and-forget — non-blocking)
+      this.logFailedGeneration(
         request.requestId || `req-${Date.now()}`,
         request.model || 'unknown',
         error,
         request,
         adapter.providerId
-      );
+      ).catch(() => {});
 
       timer.finish();
       // TODO: Implement failover to alternative providers
