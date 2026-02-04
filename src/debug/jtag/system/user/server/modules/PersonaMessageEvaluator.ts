@@ -224,6 +224,8 @@ export class PersonaMessageEvaluator {
     // Defensive: ensure messageText is always a string (prevents slice errors)
     const safeMessageText = messageText ?? '';
     const taskStartTime = Date.now();
+    // Evaluator pipeline timing — tracks every phase before generation
+    const evalTiming: Record<string, number> = {};
 
     // EARLY GATE: Directed message filter — when someone @mentions a specific persona, others stay silent.
     // Must run BEFORE expensive cognition work (plan formulation, working memory, state snapshots).
@@ -245,6 +247,7 @@ export class PersonaMessageEvaluator {
     });
 
     // STEP 1: Create Task from message
+    let t0 = Date.now();
     const task: Task = {
       id: `task-${messageEntity.id}` as UUID,
       domain: 'chat',
@@ -265,15 +268,19 @@ export class PersonaMessageEvaluator {
       triggeredBy: messageEntity.senderId,
       createdAt: Date.now()
     };
+    evalTiming['task_create'] = Date.now() - t0;
 
     this.log(`🧠 ${this.personaUser.displayName}: COGNITION - Created task for message from ${messageEntity.senderName}`);
 
     // STEP 2: Generate Plan
+    t0 = Date.now();
     const plan = await this.personaUser.planFormulator.formulatePlan(task);
-    this.log(`📋 ${this.personaUser.displayName}: COGNITION - Plan: ${plan.goal}`);
+    evalTiming['plan_formulate'] = Date.now() - t0;
+    this.log(`📋 ${this.personaUser.displayName}: COGNITION - Plan: ${plan.goal} (${evalTiming['plan_formulate']}ms)`);
     this.log(`   Steps: ${plan.steps.map((s: any) => s.action).join(' → ')}`);
 
     // LOG: Plan formulation
+    t0 = Date.now();
     await CognitionLogger.logPlanFormulation(
       this.personaUser.id,
       this.personaUser.displayName,
@@ -283,16 +290,20 @@ export class PersonaMessageEvaluator {
       messageEntity.roomId,
       'template-based'  // SimplePlanFormulator uses templates
     );
+    evalTiming['plan_log'] = Date.now() - t0;
 
     // STEP 3: Update SelfState - set focus
+    t0 = Date.now();
     await this.personaUser.selfState.updateFocus({
       activity: 'chat-response',
       objective: plan.goal,
       intensity: task.priority
     });
     await this.personaUser.selfState.updateLoad(0.2); // Chat response adds cognitive load
+    evalTiming['state_update'] = Date.now() - t0;
 
     // LOG: State snapshot after focus/load update
+    t0 = Date.now();
     const selfState = await this.personaUser.selfState.get();
     const workingMemoryEntries = await this.personaUser.workingMemory.recall({
       domain: 'chat',
@@ -317,8 +328,10 @@ export class PersonaMessageEvaluator {
         triggerEvent: 'message-received'
       }
     );
+    evalTiming['state_snapshot'] = Date.now() - t0;
 
     // STEP 4: Store initial observation in WorkingMemory
+    t0 = Date.now();
     await this.personaUser.workingMemory.store({
       domain: 'chat',
       contextId: messageEntity.roomId,
@@ -327,6 +340,7 @@ export class PersonaMessageEvaluator {
       importance: task.priority,
       shareable: false
     });
+    evalTiming['wm_store_observation'] = Date.now() - t0;
 
     // STEP 5: Execute plan steps (existing chat logic inside)
     try {
@@ -335,7 +349,9 @@ export class PersonaMessageEvaluator {
       plan.steps[0].completedAt = Date.now();
 
       // Execute step 2: "Generate thoughtful response" (existing logic)
+      t0 = Date.now();
       await this.evaluateAndPossiblyRespond(messageEntity, senderIsHuman, safeMessageText, preComputedDecision);
+      evalTiming['evaluate_and_respond'] = Date.now() - t0;
 
       // If we got here, response was generated (or decision was SILENT)
       plan.steps[1].completed = true;
@@ -348,6 +364,7 @@ export class PersonaMessageEvaluator {
       }
 
       // STEP 6: Store outcome in WorkingMemory
+      t0 = Date.now();
       await this.personaUser.workingMemory.store({
         domain: 'chat',
         contextId: messageEntity.roomId,
@@ -356,10 +373,12 @@ export class PersonaMessageEvaluator {
         importance: 0.5,
         shareable: false
       });
+      evalTiming['wm_store_reflection'] = Date.now() - t0;
 
       this.log(`✅ ${this.personaUser.displayName}: COGNITION - Plan completed successfully`);
 
       // LOG: Plan completion
+      t0 = Date.now();
       await CognitionLogger.logPlanCompletion(
         plan.id,
         'completed',
@@ -372,6 +391,7 @@ export class PersonaMessageEvaluator {
           result: s.result
         }))
       );
+      evalTiming['plan_completion_log'] = Date.now() - t0;
     } catch (error: any) {
       this.log(`❌ ${this.personaUser.displayName}: COGNITION - Plan execution failed:`, error);
 
@@ -401,11 +421,16 @@ export class PersonaMessageEvaluator {
       );
     } finally {
       // STEP 7: Clear focus and reduce cognitive load
+      t0 = Date.now();
       await this.personaUser.selfState.clearFocus();
       await this.personaUser.selfState.updateLoad(-0.2); // Remove the load we added
+      evalTiming['state_cleanup'] = Date.now() - t0;
 
       const duration = Date.now() - taskStartTime;
-      this.log(`🧠 ${this.personaUser.displayName}: COGNITION - Task complete (${duration}ms)`);
+      const phases = Object.entries(evalTiming)
+        .map(([k, v]) => `${k}=${v}ms`)
+        .join(' | ');
+      this.log(`📊 ${this.personaUser.displayName}: [EVAL-PIPELINE] Total=${duration}ms | ${phases}`);
     }
   }
 
@@ -509,7 +534,9 @@ export class PersonaMessageEvaluator {
       );
     }
 
+    const gatingStart = Date.now();
     const gatingResult = await this.evaluateShouldRespond(messageEntity, senderIsHuman, isMentioned, preComputedDecision);
+    this.log(`⏱️ ${this.personaUser.displayName}: [INNER] evaluateShouldRespond=${Date.now() - gatingStart}ms`);
 
     // FULL TRANSPARENCY LOGGING
     this.log(`\n${'='.repeat(80)}`);
@@ -628,11 +655,9 @@ export class PersonaMessageEvaluator {
     // === AUTONOMOUS DECISION: AI decides via RAG-based recipes ===
     // No centralized coordinator - each AI uses recipes to decide if they should contribute
     this.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
-    this.log(`🔧 TRACE-POINT-A: About to check for new messages (timestamp=${Date.now()})`);
 
     // 🔧 POST-INFERENCE VALIDATION: Check if chat context changed during inference
-    // During the 3-5 seconds of inference, other AIs may have already posted responses
-    // Give this AI a chance to see those new responses and reject its own if redundant
+    const postInferenceStart = Date.now();
     const newMessagesQuery = await DataDaemon.query<ChatMessageEntity>({
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: {
@@ -704,10 +729,13 @@ export class PersonaMessageEvaluator {
       this.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${contentPreview(m.data.content, 50)}`).join(', ')}`);
     }
 
+    this.log(`⏱️ ${this.personaUser.displayName}: [INNER] post-inference validation=${Date.now() - postInferenceStart}ms`);
+
     // 🔧 PHASE: Update RAG context
+    const ragUpdateStart = Date.now();
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 1/3] Updating RAG context...`);
     await this.personaUser.memory.updateRAGContext(messageEntity.roomId, messageEntity);
-    this.log(`✅ ${this.personaUser.displayName}: [PHASE 1/3] RAG context updated`);
+    this.log(`✅ ${this.personaUser.displayName}: [PHASE 1/3] RAG context updated (${Date.now() - ragUpdateStart}ms)`);
 
     // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 2/3] Emitting GENERATING event...`);

@@ -542,13 +542,18 @@ export class PersonaResponseGenerator {
     const generateStartTime = Date.now();  // Track total response time for decision logging
     const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
+      // Pipeline timing tracker — filled as each phase completes
+      const pipelineTiming: Record<string, number> = {};
+
       // 🔧 SUB-PHASE 3.1: Build RAG context (or use pre-built from evaluator)
+      const phase31Start = Date.now();
       let fullRAGContext: RAGContext;
 
       if (preBuiltRagContext) {
         // OPTIMIZATION: Evaluator already built full RAG context — reuse it, skip redundant build
         fullRAGContext = preBuiltRagContext;
-        this.log(`⚡ ${this.personaName}: [PHASE 3.1] Using pre-built RAG context (${fullRAGContext.conversationHistory.length} messages, saved ~100ms rebuild)`);
+        pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
+        this.log(`⚡ ${this.personaName}: [PHASE 3.1] Using pre-built RAG context (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
       } else {
         // Fallback: Build RAG context from scratch (for code paths that don't go through evaluator)
         this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
@@ -571,10 +576,12 @@ export class PersonaResponseGenerator {
             }
           }
         );
-        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
+        pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
+        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
       }
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM
+      const phase32Start = Date.now();
       this.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);
       // ✅ Support multimodal content (images, audio, video) for vision-capable models
       // Adapters will transform based on model capability (raw images vs text descriptions)
@@ -1030,12 +1037,16 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         request.tools = convertToNativeToolSpecs(prioritizedTools);
         this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
       }
+      pipelineTiming['3.2_format'] = Date.now() - phase32Start;
+      this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
+
       // Check for mentions by both uniqueId (@helper) and displayName (@Helper AI)
       const messageText = originalMessage.content.text.toLowerCase();
       const isMentioned =
         messageText.includes(`@${this.entity.uniqueId.toLowerCase()}`) ||
         messageText.includes(`@${this.personaName.toLowerCase()}`);
 
+      const phase33aStart = Date.now();
       const slotGranted = await InferenceCoordinator.requestSlot(
         this.personaId,
         originalMessage.id,
@@ -1043,10 +1054,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         { isMentioned }
       );
 
+      pipelineTiming['3.3a_slot'] = Date.now() - phase33aStart;
+
       if (!slotGranted) {
-        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied - skipping response`);
+        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied (${pipelineTiming['3.3a_slot']}ms) - skipping response`);
         return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Treat as redundant (another AI will respond)
       }
+      this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot granted (${pipelineTiming['3.3a_slot']}ms)`);
 
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
@@ -1061,6 +1075,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       try {
         // Wait for AIProviderDaemon to initialize (max 30 seconds)
         // This handles race condition where PersonaUser tries to respond before daemon is ready
+        const phase33bStart = Date.now();
         const MAX_WAIT_MS = 30000;
         const POLL_INTERVAL_MS = 100;
         let waitedMs = 0;
@@ -1068,14 +1083,20 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
           waitedMs += POLL_INTERVAL_MS;
         }
+        pipelineTiming['3.3b_daemon_init'] = Date.now() - phase33bStart;
+        if (pipelineTiming['3.3b_daemon_init'] > 50) {
+          this.log(`⏳ ${this.personaName}: [PHASE 3.3b] AIProviderDaemon init wait: ${pipelineTiming['3.3b_daemon_init']}ms`);
+        }
         if (!AIProviderDaemon.isInitialized()) {
           throw new Error(`AIProviderDaemon not initialized after ${MAX_WAIT_MS}ms`);
         }
 
+        const inferenceStart = Date.now();
         aiResponse = await Promise.race([
           AIProviderDaemon.generateText(request),
           timeoutPromise
         ]);
+        pipelineTiming['3.3_inference'] = Date.now() - inferenceStart;
 
         // 🎰 Release slot on success
         InferenceCoordinator.releaseSlot(this.personaId, provider);
@@ -1287,6 +1308,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         // Full tool results go back to the model (not summaries). Tools stay enabled.
         // The model signals completion by returning text without tool_use.
         // Safety cap prevents infinite loops for dumber models.
+        const agentLoopStart = Date.now();
         const SAFETY_MAX = this.getSafetyMaxIterations(provider);
         let toolIterations = 0;
         const useNativeProtocol = supportsNativeTools(provider);
@@ -1459,6 +1481,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
           aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
         }
+        pipelineTiming['3.4_agent_loop'] = Date.now() - agentLoopStart;
+        if (toolIterations > 0) {
+          this.log(`⏱️ ${this.personaName}: [AGENT-LOOP] Total: ${pipelineTiming['3.4_agent_loop']}ms (${toolIterations} iterations)`);
+        }
 
         // PHASE 5C: Log coordination decision to database WITH complete response content
         // This captures the complete decision pipeline: context → decision → actual response
@@ -1600,8 +1626,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             backend: 'server',
             data: responseMessage
           });
-      const postDuration = Date.now() - postStartTime;
-      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
+      pipelineTiming['3.5_post'] = Date.now() - postStartTime;
+      const postDuration = pipelineTiming['3.5_post'];
+      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${pipelineTiming['3.5_post']}ms, ID: ${result.data?.id})`);
 
       if (!result.success) {
         throw new Error(`Failed to create message: ${result.error}`);
@@ -1705,6 +1732,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           }
         );
       }
+
+      // 📊 PIPELINE SUMMARY — single line with all phase timings
+      const totalPipeline = Date.now() - generateStartTime;
+      const phases = Object.entries(pipelineTiming)
+        .map(([k, v]) => `${k}=${v}ms`)
+        .join(' | ');
+      this.log(`📊 ${this.personaName}: [PIPELINE] Total=${totalPipeline}ms | ${phases}`);
 
       return {
         success: true,
