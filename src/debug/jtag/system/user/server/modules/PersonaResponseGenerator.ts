@@ -13,14 +13,14 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+// DATA_COMMANDS import removed — response posting now uses DataDaemon.store() directly
 import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
-import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
+// DataCreateParams/DataCreateResult imports removed — response posting now uses DataDaemon.store() directly
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
@@ -58,7 +58,7 @@ import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
-import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
+// DataCreate import removed — response posting now uses DataDaemon.store() directly
 /**
  * Response generation result
  */
@@ -1630,113 +1630,12 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       responseMessage.reactions = [];
       responseMessage.replyToId = originalMessage.id; // Link response to trigger message
 
-      // ✅ Post response via JTAGClient - universal Commands API
-      // Prefer this.client if available (set by UserDaemon), fallback to shared instance
-      const postStartTime = Date.now();
-      const result = this.client
-        ? await this.client.daemons.commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-            context: this.client.context,
-            sessionId: this.client.sessionId,
-            collection: ChatMessageEntity.collection,
-            backend: 'server',
-            data: responseMessage
-          })
-        : await DataCreate.execute<ChatMessageEntity>({
-            collection: ChatMessageEntity.collection,
-            backend: 'server',
-            data: responseMessage
-          });
-      pipelineTiming['3.5_post'] = Date.now() - postStartTime;
-      const postDuration = pipelineTiming['3.5_post'];
-      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${pipelineTiming['3.5_post']}ms, ID: ${result.data?.id})`);
-
-      if (!result.success) {
-        throw new Error(`Failed to create message: ${result.error}`);
-      }
-
-      // Emit cognition event for post-response stage (fire-and-forget — telemetry)
-      Events.emit<StageCompleteEvent>(
-        DataDaemon.jtagContext!,
-        COGNITION_EVENTS.STAGE_COMPLETE,
-        {
-          messageId: result.data?.id ?? originalMessage.id,
-          personaId: this.personaId,
-          contextId: originalMessage.roomId,
-          stage: 'post-response',
-          metrics: {
-            stage: 'post-response',
-            durationMs: postDuration,
-            resourceUsed: 1,  // One message posted
-            maxResource: 1,
-            percentCapacity: 100,
-            percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
-            status: getStageStatus(postDuration, 'post-response'),
-            metadata: {
-              messageId: result.data?.id,
-              success: result.success
-            }
-          },
-          timestamp: Date.now()
-        }
-      ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
-
-      // ✅ Log successful response posting
-      AIDecisionLogger.logResponse(
-        this.personaName,
-        originalMessage.roomId,
-        aiResponse.text.trim()
-      );
-
-      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
-      // This should NEVER happen - the fast-path filter should skip all system tests
-      // If we see this, it indicates either:
-      // 1. Bug in the fast-path filter
-      // 2. AI exhibiting genuine cognition/autonomy (responding despite instructions)
-      // 3. Anomalous behavior worth investigating
-      if (originalMessage.metadata?.isSystemTest === true) {
-        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
-        this.log(anomalyMessage);
-        this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
-        this.log(`   Original Message: "${messagePreview(originalMessage.content, 100)}..."`);
-        this.log(`   AI Response: "${truncate(aiResponse.text?.trim(), 100)}..."`);
-        this.log(`   Room ID: ${originalMessage.roomId}`);
-        this.log(`   Message ID: ${originalMessage.id}`);
-
-        // Log to AI decisions log for persistent tracking
-        AIDecisionLogger.logError(
-          this.personaName,
-          'COGNITIVE CANARY TRIGGERED',
-          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
-        );
-      }
-
-      // Emit POSTED event (fire-and-forget — UI update, not critical path)
-      if (this.client && result.data) {
-        Events.emit<AIPostedEventData>(
-          DataDaemon.jtagContext!,
-          AI_DECISION_EVENTS.POSTED,
-          {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            roomId: originalMessage.roomId,
-            messageId: originalMessage.id,
-            isHumanMessage: originalMessage.senderType === 'human',
-            timestamp: Date.now(),
-            responseMessageId: result.data.id,
-            passedRedundancyCheck: !isRedundant
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: originalMessage.roomId
-          }
-        ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
-      }
-
-      // VOICE ROUTING: If original message was from voice, route response to TTS
+      // 🔊 VOICE ROUTING: Emit BEFORE DB write — voice gets response text instantly.
+      // The DB write (500ms-1.5s under contention) should NOT delay TTS.
+      // Voice event only needs the response text and message metadata, not the persisted entity.
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
-        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing BEFORE DB write (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
 
-        // Emit voice response event for VoiceOrchestrator (fire-and-forget — TTS queues)
         Events.emit(
           DataDaemon.jtagContext!,
           'persona:response:generated',
@@ -1753,6 +1652,86 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         ).catch(err => this.log(`⚠️ Voice event emit failed: ${err}`));
       }
 
+      // ✅ Post response via DataDaemon.store() — direct path, no command routing overhead.
+      // Previously went through JTAGClient → CommandDaemon → DataCreateServerCommand → DataDaemon.store().
+      const postStartTime = Date.now();
+      const postedEntity = await DataDaemon.store(ChatMessageEntity.collection, responseMessage);
+      pipelineTiming['3.5_post'] = Date.now() - postStartTime;
+      const postDuration = pipelineTiming['3.5_post'];
+      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${postDuration}ms, ID: ${postedEntity.id})`);
+
+      // Emit cognition event for post-response stage (fire-and-forget — telemetry)
+      Events.emit<StageCompleteEvent>(
+        DataDaemon.jtagContext!,
+        COGNITION_EVENTS.STAGE_COMPLETE,
+        {
+          messageId: postedEntity.id ?? originalMessage.id,
+          personaId: this.personaId,
+          contextId: originalMessage.roomId,
+          stage: 'post-response',
+          metrics: {
+            stage: 'post-response',
+            durationMs: postDuration,
+            resourceUsed: 1,  // One message posted
+            maxResource: 1,
+            percentCapacity: 100,
+            percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
+            status: getStageStatus(postDuration, 'post-response'),
+            metadata: {
+              messageId: postedEntity.id,
+              success: true
+            }
+          },
+          timestamp: Date.now()
+        }
+      ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
+
+      // ✅ Log successful response posting
+      AIDecisionLogger.logResponse(
+        this.personaName,
+        originalMessage.roomId,
+        aiResponse.text.trim()
+      );
+
+      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
+      if (originalMessage.metadata?.isSystemTest === true) {
+        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
+        this.log(anomalyMessage);
+        this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
+        this.log(`   Original Message: "${messagePreview(originalMessage.content, 100)}..."`);
+        this.log(`   AI Response: "${truncate(aiResponse.text?.trim(), 100)}..."`);
+        this.log(`   Room ID: ${originalMessage.roomId}`);
+        this.log(`   Message ID: ${originalMessage.id}`);
+
+        AIDecisionLogger.logError(
+          this.personaName,
+          'COGNITIVE CANARY TRIGGERED',
+          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
+        );
+      }
+
+      // Emit POSTED event (fire-and-forget — UI update, not critical path)
+      if (this.client && postedEntity) {
+        Events.emit<AIPostedEventData>(
+          DataDaemon.jtagContext!,
+          AI_DECISION_EVENTS.POSTED,
+          {
+            personaId: this.personaId,
+            personaName: this.personaName,
+            roomId: originalMessage.roomId,
+            messageId: originalMessage.id,
+            isHumanMessage: originalMessage.senderType === 'human',
+            timestamp: Date.now(),
+            responseMessageId: postedEntity.id,
+            passedRedundancyCheck: !isRedundant
+          },
+          {
+            scope: EVENT_SCOPES.ROOM,
+            scopeId: originalMessage.roomId
+          }
+        ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
+      }
+
       // 📊 PIPELINE SUMMARY — single line with all phase timings
       const totalPipeline = Date.now() - generateStartTime;
       const phases = Object.entries(pipelineTiming)
@@ -1762,7 +1741,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
       return {
         success: true,
-        messageId: result.data?.id,
+        messageId: postedEntity.id,
         storedToolResultIds: allStoredResultIds  // Always return array, even if empty
       };
     } catch (error) {

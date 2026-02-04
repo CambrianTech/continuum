@@ -95,8 +95,51 @@ export type GatingResult = GatingRespondResult | GatingSilentResult;
 export class PersonaMessageEvaluator {
   private readonly signalDetector: SignalDetector;
 
+  // In-memory recent message cache — eliminates SQLite queries for post-inference validation.
+  // Populated by event subscription on first use. Bounded to last 50 messages per room.
+  private static _recentMessages: Map<string, ChatMessageEntity[]> = new Map();
+  private static _cacheInitialized = false;
+  private static readonly MAX_CACHED_PER_ROOM = 50;
+
+  private static initMessageCache(): void {
+    if (PersonaMessageEvaluator._cacheInitialized) return;
+    PersonaMessageEvaluator._cacheInitialized = true;
+
+    Events.subscribe(`data:${COLLECTIONS.CHAT_MESSAGES}:created`, (entity: any) => {
+      const msg = entity as ChatMessageEntity;
+      if (!msg.roomId) return;
+      const roomId = msg.roomId;
+      let messages = PersonaMessageEvaluator._recentMessages.get(roomId);
+      if (!messages) {
+        messages = [];
+        PersonaMessageEvaluator._recentMessages.set(roomId, messages);
+      }
+      messages.push(msg);
+      if (messages.length > PersonaMessageEvaluator.MAX_CACHED_PER_ROOM) {
+        messages.shift();
+      }
+    });
+  }
+
+  /**
+   * Get recent messages for a room from in-memory cache, filtered by timestamp.
+   * Returns flat ChatMessageEntity objects (not DataRecord-wrapped).
+   */
+  private static getRecentMessagesSince(roomId: UUID, since: Date): ChatMessageEntity[] {
+    PersonaMessageEvaluator.initMessageCache();
+    const messages = PersonaMessageEvaluator._recentMessages.get(roomId);
+    if (!messages) return [];
+    const sinceTime = since.getTime();
+    return messages.filter(m => {
+      const ts = m.timestamp instanceof Date ? m.timestamp.getTime() : new Date(m.timestamp).getTime();
+      return ts > sinceTime;
+    });
+  }
+
   constructor(private readonly personaUser: PersonaUser) {
     this.signalDetector = getSignalDetector();
+    // Ensure cache is initialized on first evaluator creation
+    PersonaMessageEvaluator.initMessageCache();
   }
 
   /**
@@ -657,36 +700,30 @@ export class PersonaMessageEvaluator {
     this.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
 
     // 🔧 POST-INFERENCE VALIDATION: Check if chat context changed during inference
+    // Uses in-memory cache instead of SQLite query — O(1) instead of contended DB read
     const postInferenceStart = Date.now();
-    const newMessagesQuery = await DataDaemon.query<ChatMessageEntity>({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: {
-        roomId: messageEntity.roomId,
-        timestamp: { $gt: messageEntity.timestamp }  // Messages newer than the trigger
-      },
-      limit: 10
-    });
+    const newMessages = PersonaMessageEvaluator.getRecentMessagesSince(
+      messageEntity.roomId,
+      new Date(messageEntity.timestamp)
+    );
 
-    const newMessages = newMessagesQuery.data || [];
     if (newMessages.length > 0) {
       this.log(`🔄 ${this.personaUser.displayName}: Context changed during inference (${newMessages.length} new messages)`);
 
       // Check if other AIs already posted adequate responses
       // CRITICAL: Exclude the original trigger message AND the sending persona
-      // Bug fix: Original message was slipping through due to timestamp precision,
-      // causing 100% self-similarity match and blocking all AI responses
       const otherAIResponses = newMessages.filter(m =>
         m.id !== messageEntity.id &&  // Exclude the original trigger message
-        m.data.senderType !== 'human' &&
-        m.data.senderId !== this.personaUser.id &&
-        m.data.senderId !== messageEntity.senderId  // Exclude original sender's other messages
+        m.senderType !== 'human' &&
+        m.senderId !== this.personaUser.id &&
+        m.senderId !== messageEntity.senderId  // Exclude original sender's other messages
       );
 
       if (otherAIResponses.length > 0) {
         // Check if any response is adequate (substantial and related)
         const adequacyResult = this.checkResponseAdequacy(
           messageEntity,
-          otherAIResponses.map(r => r.data)
+          otherAIResponses  // Already flat ChatMessageEntity objects from cache
         );
 
         if (adequacyResult.isAdequate) {
@@ -726,7 +763,7 @@ export class PersonaMessageEvaluator {
         }
       }
 
-      this.log(`   New messages: ${newMessages.map(m => `[${m.data.senderName}] ${contentPreview(m.data.content, 50)}`).join(', ')}`);
+      this.log(`   New messages: ${newMessages.map(m => `[${m.senderName}] ${contentPreview(m.content, 50)}`).join(', ')}`);
     }
 
     this.log(`⏱️ ${this.personaUser.displayName}: [INNER] post-inference validation=${Date.now() - postInferenceStart}ms`);
