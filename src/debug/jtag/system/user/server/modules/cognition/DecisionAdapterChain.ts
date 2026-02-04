@@ -84,9 +84,9 @@ export class DecisionAdapterChain {
         this.log(`   ✅ ${adapter.name} handled decision: ${decision.shouldRespond ? 'RESPOND' : 'SILENT'} (confidence: ${decision.confidence.toFixed(2)})`);
         this.log(`   💭 Reason: ${decision.reason}`);
 
-        // Log adapter decision to cognition database
+        // Log adapter decision (fire-and-forget — no longer blocks pipeline)
         const adapterDecision: AdapterDecision = decision.shouldRespond ? 'RESPOND' : 'SILENT';
-        await CognitionLogger.logAdapterDecision(
+        CognitionLogger.logAdapterDecision(
           context.personaId,
           context.personaDisplayName,
           adapter.name,
@@ -103,8 +103,8 @@ export class DecisionAdapterChain {
       } else {
         this.log(`   ⏭️  ${adapter.name} returned null - trying next adapter`);
 
-        // Log PASS decision (adapter chose not to handle)
-        await CognitionLogger.logAdapterDecision(
+        // Log PASS decision (fire-and-forget — no longer blocks pipeline)
+        CognitionLogger.logAdapterDecision(
           context.personaId,
           context.personaDisplayName,
           adapter.name,

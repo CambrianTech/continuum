@@ -943,26 +943,15 @@ export class DataDaemon {
    */
   static async store<T extends BaseEntity>(
     collection: string,
-    data: T
+    data: T,
+    suppressEvents: boolean = false
   ): Promise<T> {
     if (!DataDaemon.sharedInstance || !DataDaemon.context || !DataDaemon.jtagContext) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
-    const entity = await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context);
-
-    // ✨ Dual event emission - trigger BOTH local AND remote subscribers
-    const eventName = BaseEntity.getEventName(collection, 'created');
-
-    // 1. Emit to WebSocket clients (browser, remote CLI clients)
-    if (DataDaemon.jtagContext) {
-      // Events.emit() now triggers both remote AND local subscribers automatically
-      // (includes checkWildcardSubscriptions() internally - see Events.ts:145)
-      await Events.emit(DataDaemon.jtagContext, eventName, entity);
-    }
-
-    // console.log(`✅ DataDaemon.store: Event ${eventName} broadcast to both local and remote subscribers`);
-
-    return entity;
+    // Instance create() handles event emission internally (line 251-253)
+    // No duplicate emission here — was previously emitting twice per write
+    return await DataDaemon.sharedInstance.create<T>(collection, data, DataDaemon.context, suppressEvents);
   }
 
   /**
@@ -1074,14 +1063,9 @@ export class DataDaemon {
     if (!DataDaemon.sharedInstance || !DataDaemon.context || !DataDaemon.jtagContext) {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
-
-    const entity = await DataDaemon.sharedInstance.update<T>(collection, id, data, DataDaemon.context, incrementVersion);
-
-    // ✨ Universal event emission - works anywhere!
-    const eventName = BaseEntity.getEventName(collection, 'updated');
-    await Events.emit(DataDaemon.jtagContext, eventName, entity);
-
-    return entity;
+    // Instance update() handles event emission internally (line 399-402)
+    // No duplicate emission here — was previously emitting twice per write
+    return await DataDaemon.sharedInstance.update<T>(collection, id, data, DataDaemon.context, incrementVersion);
   }
 
   /**

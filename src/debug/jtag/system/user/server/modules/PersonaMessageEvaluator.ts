@@ -279,9 +279,9 @@ export class PersonaMessageEvaluator {
     this.log(`📋 ${this.personaUser.displayName}: COGNITION - Plan: ${plan.goal} (${evalTiming['plan_formulate']}ms)`);
     this.log(`   Steps: ${plan.steps.map((s: any) => s.action).join(' → ')}`);
 
-    // LOG: Plan formulation
+    // LOG: Plan formulation (fire-and-forget — no longer blocks pipeline)
     t0 = Date.now();
-    await CognitionLogger.logPlanFormulation(
+    CognitionLogger.logPlanFormulation(
       this.personaUser.id,
       this.personaUser.displayName,
       task,
@@ -312,7 +312,7 @@ export class PersonaMessageEvaluator {
     });
     const capacity = await this.personaUser.workingMemory.getCapacity('chat');
 
-    await CognitionLogger.logStateSnapshot(
+    CognitionLogger.logStateSnapshot(
       this.personaUser.id,
       this.personaUser.displayName,
       selfState,
@@ -377,9 +377,9 @@ export class PersonaMessageEvaluator {
 
       this.log(`✅ ${this.personaUser.displayName}: COGNITION - Plan completed successfully`);
 
-      // LOG: Plan completion
+      // LOG: Plan completion (fire-and-forget — no longer blocks pipeline)
       t0 = Date.now();
-      await CognitionLogger.logPlanCompletion(
+      CognitionLogger.logPlanCompletion(
         plan.id,
         'completed',
         plan.steps.map((s: any) => ({
@@ -405,8 +405,8 @@ export class PersonaMessageEvaluator {
         shareable: false
       });
 
-      // LOG: Plan failure
-      await CognitionLogger.logPlanCompletion(
+      // LOG: Plan failure (fire-and-forget — no longer blocks pipeline)
+      CognitionLogger.logPlanCompletion(
         plan.id,
         'failed',
         plan.steps.map((s: any) => ({
