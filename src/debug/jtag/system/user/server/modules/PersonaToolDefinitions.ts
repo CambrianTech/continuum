@@ -301,6 +301,24 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
     typeCheck: 'Run type checking (boolean)',
     testFiles: 'Specific test files to run (JSON array of strings)',
   },
+  'code/shell/execute': {
+    cmd: 'Shell command to execute (e.g. "npm run build", "cargo test", "ls -la src/")',
+    wait: 'Wait for completion: true = blocking (returns stdout/stderr), false = async (returns executionId). Default: false',
+    timeoutMs: 'Timeout in milliseconds for blocking mode (default: 30000). Ignored in async mode',
+  },
+  'code/shell/watch': {
+    executionId: 'Execution ID returned by code/shell/execute (async mode) to stream output from',
+  },
+  'code/shell/status': {
+    _noParams: 'No parameters needed — returns session info for your workspace',
+  },
+  'code/shell/sentinel': {
+    executionId: 'Execution ID to configure filter rules on',
+    rules: 'JSON array of sentinel rules: [{"pattern": "error.*", "classification": "Error"}, {"pattern": "warning", "classification": "Warning"}]',
+  },
+  'code/shell/kill': {
+    executionId: 'Execution ID of the running process to kill',
+  },
 };
 
 /**
@@ -331,9 +349,20 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
     }
   }
 
+  // Clean JSDoc artifacts from description (schema generator captures raw comment blocks)
+  // "Foo Types\n *\n * Real description" → "Real description"
+  const rawDesc = cmd.description || `Execute ${cmd.name} command`;
+  const cleanedDesc = rawDesc
+    .replace(/^[^*]*\*\s*/gm, '')  // Strip leading " * " from JSDoc lines
+    .replace(/\n\s*\n/g, '\n')     // Collapse multiple newlines
+    .trim();
+  // Use the last meaningful sentence if first line is just a title (e.g. "Foo Types")
+  const descLines = cleanedDesc.split('\n').filter(l => l.trim().length > 0);
+  const description = descLines.length > 1 ? descLines.slice(1).join(' ').trim() || descLines[0] : descLines[0] || rawDesc;
+
   return {
     name: cmd.name,
-    description: cmd.description || `Execute ${cmd.name} command`,
+    description,
     category,
     permissions: [category + ':execute'],
     parameters: {
