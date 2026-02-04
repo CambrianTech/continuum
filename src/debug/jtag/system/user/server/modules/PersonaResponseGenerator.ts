@@ -50,13 +50,14 @@ import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsan
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
-import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+// AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
+// import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 
-import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+// import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
 /**
  * Response generation result
@@ -231,55 +232,74 @@ export class PersonaResponseGenerator {
    * @param roomId - The room ID for context
    * @returns true if should BLOCK (>0.85 similarity), false otherwise
    */
-  private async checkSemanticLoop(responseText: string, roomId: UUID): Promise<{ shouldBlock: boolean; similarity: number; reason: string }> {
-    try {
-      // Short responses are unlikely to be loops - skip expensive embedding check
-      if (responseText.length < 50) {
-        return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
-      }
+  /**
+   * Inline Jaccard n-gram similarity — O(n) text comparison, no DB or embedding calls.
+   * Returns 0-1 score (1 = identical).
+   */
+  private jaccardSimilarity(text1: string, text2: string): number {
+    if (!text1 || !text2) return 0;
+    if (text1 === text2) return 1.0;
 
-      const result = await AiDetectSemanticLoop.execute({
-        messageText: responseText,
-        personaId: this.personaId,
-        roomId: roomId,
-        lookbackCount: 10,  // Check last 10 messages
-        similarityThreshold: 0.75,  // Start detecting at 0.75
-        timeWindowMinutes: 30  // Last 30 minutes
-      });
+    const tokenize = (text: string): Set<string> => {
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+      const ngrams = new Set<string>();
+      for (const word of words) ngrams.add(word);
+      for (let i = 0; i < words.length - 1; i++) ngrams.add(`${words[i]} ${words[i + 1]}`);
+      return ngrams;
+    };
 
-      if (!result.success) {
-        this.log(`⚠️ Semantic loop check failed: ${result.error || 'Unknown error'}, allowing response`);
-        return { shouldBlock: false, similarity: 0, reason: 'Check failed, allowing' };
-      }
-
-      const maxSimilarity = result.maxSimilarity ?? 0;
-      const recommendation = result.recommendation || 'ALLOW';
-
-      // Log the check result
-      if (recommendation === 'BLOCK') {
-        this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
-        if (result.matches && result.matches.length > 0) {
-          this.log(`   Most similar to: "${result.matches[0].excerpt}"`);
-        }
-        return { shouldBlock: true, similarity: maxSimilarity, reason: result.explanation || 'Very high semantic similarity' };
-      } else if (recommendation === 'WARN') {
-        this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
-        if (result.matches && result.matches.length > 0) {
-          this.log(`   Similar to: "${result.matches[0].excerpt}"`);
-        }
-        // WARN but don't block - preserve autonomy
-        return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
-      }
-
-      // ALLOW - no action needed
-      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
-
-    } catch (error) {
-      // On error, allow the response (fail open to preserve autonomy)
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.log(`⚠️ Semantic loop check error: ${errorMsg}, allowing response`);
-      return { shouldBlock: false, similarity: 0, reason: `Error: ${errorMsg}` };
+    const set1 = tokenize(text1);
+    const set2 = tokenize(text2);
+    let intersection = 0;
+    for (const gram of set1) {
+      if (set2.has(gram)) intersection++;
     }
+    const union = set1.size + set2.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+  }
+
+  /**
+   * Check semantic loop using in-memory RAG context (0ms, no DB/embedding calls).
+   * Previous implementation called AiDetectSemanticLoop.execute() which did embedding IPC + DB query (~20s).
+   * Now uses inline Jaccard n-gram similarity against already-loaded conversation history.
+   */
+  private checkSemanticLoop(
+    responseText: string,
+    conversationHistory: Array<{ role: string; content: string; name?: string }>
+  ): { shouldBlock: boolean; similarity: number; reason: string } {
+    // Short responses are unlikely to be loops
+    if (responseText.length < 50) {
+      return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
+    }
+
+    // Compare against last 10 messages in the already-loaded RAG context
+    const recentMessages = conversationHistory.slice(-10);
+    let maxSimilarity = 0;
+    let mostSimilarExcerpt = '';
+
+    for (const msg of recentMessages) {
+      if (!msg.content || msg.content.length < 20) continue;
+      const similarity = this.jaccardSimilarity(responseText, msg.content);
+      if (similarity > maxSimilarity) {
+        maxSimilarity = similarity;
+        mostSimilarExcerpt = msg.content.slice(0, 100);
+      }
+    }
+
+    // Thresholds (same as AiDetectSemanticLoopServerCommand)
+    const WARN_THRESHOLD = 0.80;
+    const BLOCK_THRESHOLD = 0.95;
+
+    if (maxSimilarity >= BLOCK_THRESHOLD) {
+      this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
+      this.log(`   Most similar to: "${mostSimilarExcerpt}"`);
+      return { shouldBlock: true, similarity: maxSimilarity, reason: `${Math.round(maxSimilarity * 100)}% similar to recent message` };
+    } else if (maxSimilarity >= WARN_THRESHOLD) {
+      this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
+      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
+    }
+
+    return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -1269,11 +1289,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
-        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION
-        // Check if this response is semantically too similar to recent messages in the room
-        // This catches cases where multiple AIs post the same explanation (Teacher AI + Local Assistant issue)
-        // AUTONOMY-PRESERVING: Only blocks at >0.85 similarity, warns at 0.75-0.85
-        const semanticCheck = await this.checkSemanticLoop(aiResponse.text, originalMessage.roomId);
+        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION (inline, ~0ms)
+        // Uses Jaccard n-gram similarity against already-loaded RAG context.
+        // Previous: AiDetectSemanticLoop.execute() — embedding IPC + DB query (~20 seconds)
+        // Now: inline text comparison against in-memory conversation history (~0ms)
+        const semanticCheck = this.checkSemanticLoop(aiResponse.text, fullRAGContext.conversationHistory);
         if (semanticCheck.shouldBlock) {
           this.log(`🚫 ${this.personaName}: [PHASE 3.3.5d] SEMANTIC LOOP BLOCKED (${semanticCheck.similarity.toFixed(2)} similarity)`);
 

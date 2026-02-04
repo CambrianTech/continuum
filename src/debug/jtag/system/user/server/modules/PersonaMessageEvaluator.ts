@@ -731,11 +731,12 @@ export class PersonaMessageEvaluator {
 
     this.log(`⏱️ ${this.personaUser.displayName}: [INNER] post-inference validation=${Date.now() - postInferenceStart}ms`);
 
-    // 🔧 PHASE: Update RAG context
-    const ragUpdateStart = Date.now();
-    this.log(`🔧 ${this.personaUser.displayName}: [PHASE 1/3] Updating RAG context...`);
-    await this.personaUser.memory.updateRAGContext(messageEntity.roomId, messageEntity);
-    this.log(`✅ ${this.personaUser.displayName}: [PHASE 1/3] RAG context updated (${Date.now() - ragUpdateStart}ms)`);
+    // 🔧 PHASE: Update RAG context (fire-and-forget — bookkeeping, not needed before generation)
+    // The pre-built RAG context from evaluateShouldRespond already has current messages.
+    // This just appends the trigger message to the stored context entity for next cycle.
+    this.personaUser.memory.updateRAGContext(messageEntity.roomId, messageEntity)
+      .catch(err => this.log(`⚠️ RAG context update failed: ${err}`));
+    this.log(`🔧 ${this.personaUser.displayName}: [PHASE 1/3] RAG context update dispatched (fire-and-forget)`);
 
     // 🔧 PHASE: Emit GENERATING event (fire-and-forget — UI indicator)
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
