@@ -46,7 +46,7 @@ import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './Person
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
-import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, getToolCapability, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
@@ -597,8 +597,17 @@ export class PersonaResponseGenerator {
 
       // Inject available tools for autonomous tool discovery (Phase 3A)
       // Use adapter-based formatting for harmony with parser
-      // CRITICAL: Use async version to ensure tool cache is initialized before injection
-      const availableTools = await this.toolRegistry.listToolsForPersonaAsync(this.personaId);
+      // CRITICAL: Only inject tools for models that can actually emit tool calls.
+      // Models without tool capability (groq, together, etc.) narrate instead of calling tools,
+      // wasting tokens and clogging chat with useless "let me use tool X" text.
+      const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
+      const availableTools = toolCap !== 'none'
+        ? await this.toolRegistry.listToolsForPersonaAsync(this.personaId)
+        : [];
+
+      if (toolCap === 'none') {
+        this.log(`🚫 ${this.personaName}: Tool injection skipped (provider=${this.modelConfig.provider}, toolCapability=none)`);
+      }
 
       // Convert PersonaToolDefinitions to adapter format (used for both XML injection and native tools)
       // Hoisted to outer scope so it's available for native tool_use injection later

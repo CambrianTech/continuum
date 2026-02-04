@@ -225,6 +225,19 @@ export class PersonaMessageEvaluator {
     const safeMessageText = messageText ?? '';
     const taskStartTime = Date.now();
 
+    // EARLY GATE: Directed message filter — when someone @mentions a specific persona, others stay silent.
+    // Must run BEFORE expensive cognition work (plan formulation, working memory, state snapshots).
+    const isMentionedEarly = this.isPersonaMentioned(safeMessageText);
+    if (!isMentionedEarly && this.messageHasDirectedMention(safeMessageText)) {
+      this.log(`🎯 ${this.personaUser.displayName}: Message directed at another persona via @mention, staying silent (early gate)`);
+      this.personaUser.logAIDecision('SILENT', 'Message directed at another persona via @mention', {
+        message: safeMessageText.slice(0, 100),
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId
+      });
+      return;
+    }
+
     // SIGNAL DETECTION: Analyze message content for training signals
     // Fire-and-forget - AI classifier determines if content is feedback
     this.detectAndBufferTrainingSignal(messageEntity).catch(err => {
@@ -459,6 +472,18 @@ export class PersonaMessageEvaluator {
       }
 
       this.log(`😴 ${this.personaUser.displayName}: In ${sleepMode} mode but responding (isHuman=${senderIsHuman}, isMention=${isMentioned})`);
+    }
+
+    // STEP 6: Directed message filter — when someone @mentions a specific persona, others stay silent.
+    // This prevents dog-piling where 5+ AIs all respond to "@deepseek fix the bug".
+    if (!isMentioned && this.messageHasDirectedMention(safeMessageText)) {
+      this.log(`🎯 ${this.personaUser.displayName}: Message directed at another persona via @mention, staying silent`);
+      this.personaUser.logAIDecision('SILENT', 'Message directed at another persona via @mention', {
+        message: safeMessageText.slice(0, 100),
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId
+      });
+      return;
     }
 
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
@@ -822,6 +847,15 @@ export class PersonaMessageEvaluator {
     return false;
   }
 
+  /**
+   * Detect if a message contains @mentions directed at someone (any persona).
+   * Used to prevent dog-piling: if someone @mentions a specific AI, others stay silent.
+   */
+  private messageHasDirectedMention(text: string): boolean {
+    // Match @word patterns — the standard mention format in this system.
+    // Excludes email-like patterns (word@word) by requiring @ at start or after whitespace.
+    return /(?:^|\s)@[a-zA-Z][\w\s-]*/.test(text);
+  }
 
   /**
    * Get domain keywords for this persona

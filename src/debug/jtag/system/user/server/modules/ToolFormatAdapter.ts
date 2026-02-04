@@ -582,3 +582,31 @@ export function supportsNativeTools(provider: string): boolean {
   const nativeToolProviders = ['anthropic', 'openai', 'azure'];
   return nativeToolProviders.includes(provider.toLowerCase());
 }
+
+/**
+ * Tool capability tier for a given provider/model combination.
+ * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure)
+ * - 'xml': XML tool calls parsed by ToolCallParser (DeepSeek — proven to work)
+ * - 'none': Model narrates instead of calling tools — don't inject tools
+ */
+export type ToolCapability = 'native' | 'xml' | 'none';
+
+/**
+ * Determine a model's tool-calling capability.
+ * Provider-based auto-detection with per-persona override via modelConfig.toolCapability.
+ */
+export function getToolCapability(
+  provider: string,
+  modelConfig?: { toolCapability?: ToolCapability }
+): ToolCapability {
+  if (modelConfig?.toolCapability) return modelConfig.toolCapability;
+
+  if (supportsNativeTools(provider)) return 'native';
+
+  // Proven XML-capable providers (model emits well-formed tool call blocks)
+  const xmlCapable = ['deepseek'];
+  if (xmlCapable.includes(provider.toLowerCase())) return 'xml';
+
+  // Everything else: groq, together, xai, fireworks, candle, sentinel, ollama
+  return 'none';
+}
