@@ -61,6 +61,58 @@ export class ChatRAGBuilder extends RAGBuilder {
   private composer: RAGComposer | null = null;
   private useModularSources = true;  // Feature flag for gradual migration
 
+  // Per-operation timing for legacy phase diagnostics
+  private _lastArtifactMs?: number;
+  private _lastRecipeMs?: number;
+  private _lastLearningMs?: number;
+
+  // ── Static caches ────────────────────────────────────────────────
+  // Room entity cache — shared across all persona RAG builds.
+  // Rooms don't change during normal operation. 60s TTL is safety net only.
+  private static _roomCache: Map<string, { entity: RoomEntity; cachedAt: number }> = new Map();
+  private static readonly ROOM_CACHE_TTL_MS = 60_000;
+
+  // Single-flight coalescing for room reads — prevents duplicate DB calls
+  // when loadRecipeContext + loadLearningConfig hit getCachedRoom simultaneously.
+  private static _roomInflight: Map<string, Promise<RoomEntity | null>> = new Map();
+
+  // User display name cache — persona identities are stable within a session.
+  private static _userNameCache: Map<string, string> = new Map();
+
+  // Message cache for artifact extraction — avoids re-querying what ConversationHistorySource loaded.
+  private static _artifactMessageCache: Map<string, { messages: ChatMessageEntity[]; cachedAt: number }> = new Map();
+  private static readonly ARTIFACT_CACHE_TTL_MS = 3000;
+
+  /**
+   * Get a room entity from cache or DB with single-flight coalescing.
+   * Multiple concurrent callers for the same roomId share one DB read.
+   */
+  private static async getCachedRoom(roomId: UUID): Promise<RoomEntity | null> {
+    const cached = ChatRAGBuilder._roomCache.get(roomId);
+    if (cached && Date.now() - cached.cachedAt < ChatRAGBuilder.ROOM_CACHE_TTL_MS) {
+      return cached.entity;
+    }
+
+    // Single-flight: if another call is already reading this room, piggyback on it
+    const inflight = ChatRAGBuilder._roomInflight.get(roomId);
+    if (inflight) return inflight;
+
+    const promise = (async () => {
+      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      if (room) {
+        ChatRAGBuilder._roomCache.set(roomId, { entity: room, cachedAt: Date.now() });
+      }
+      return room;
+    })();
+
+    ChatRAGBuilder._roomInflight.set(roomId, promise);
+    try {
+      return await promise;
+    } finally {
+      ChatRAGBuilder._roomInflight.delete(roomId);
+    }
+  }
+
   constructor(logger?: (message: string, ...args: any[]) => void) {
     super();
     // Default to console.log if no logger provided (for tests)
@@ -179,6 +231,8 @@ export class ChatRAGBuilder extends RAGBuilder {
     let socialAwareness: string | null;
     let codeToolGuidance: string | null;
     let projectContext: string | null;
+    let composeMs: number | undefined;
+    let legacyMs: number | undefined;
 
     if (this.useModularSources) {
       // NEW PATH: Use RAGComposer for modular, parallelized source loading
@@ -210,7 +264,9 @@ export class ChatRAGBuilder extends RAGBuilder {
       };
 
       // Load core sources via composer (parallel)
+      const composeStart = performance.now();
       const composition = await composer.compose(sourceContext);
+      composeMs = performance.now() - composeStart;
       const extracted = this.extractFromComposition(composition);
 
       // Use composed data, with fallbacks for missing pieces
@@ -227,17 +283,24 @@ export class ChatRAGBuilder extends RAGBuilder {
       projectContext = extracted.projectContext;
 
       // Still load these via legacy methods (not yet extracted to sources)
+      const legacyStart = performance.now();
+      const artifactStart = performance.now();
+      const extractedArtifactsPromise = includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]);
+      const recipePromise = this.loadRecipeContext(contextId);
+      const learningPromise = this.loadLearningConfig(contextId, personaId);
+
       const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
-        includeArtifacts ? this.extractArtifacts(contextId, maxMessages) : Promise.resolve([]),
-        this.loadRecipeContext(contextId),
-        this.loadLearningConfig(contextId, personaId)
+        extractedArtifactsPromise.then(r => { this._lastArtifactMs = performance.now() - artifactStart; return r; }),
+        recipePromise.then(r => { this._lastRecipeMs = performance.now() - artifactStart; return r; }),
+        learningPromise.then(r => { this._lastLearningMs = performance.now() - artifactStart; return r; })
       ]);
+      legacyMs = performance.now() - legacyStart;
       artifacts = extractedArtifacts;
       recipeStrategy = extractedRecipeContext?.strategy;
       recipeTools = extractedRecipeContext?.tools;
       learningConfig = extractedLearningConfig;
 
-      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms`);
+      this.log(`🔧 ChatRAGBuilder: Composed from ${composition.sections.length} sources in ${composition.totalLoadTimeMs.toFixed(1)}ms (compose=${composeMs.toFixed(1)}ms, legacy=${legacyMs.toFixed(1)}ms [artifacts=${this._lastArtifactMs?.toFixed(1)}ms, recipe=${this._lastRecipeMs?.toFixed(1)}ms, learning=${this._lastLearningMs?.toFixed(1)}ms])`);
 
     } else {
       // LEGACY PATH: Direct parallel loading (fallback)
@@ -297,7 +360,9 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
     // If target model can't see images, generate text descriptions
+    const preprocessStart = performance.now();
     const processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
+    const preprocessMs = performance.now() - preprocessStart;
 
     // 2.4. Inject widget context into system prompt if available
     // This enables AI to be aware of what the user is currently viewing
@@ -408,8 +473,15 @@ export class ChatRAGBuilder extends RAGBuilder {
       }
     };
 
-    // Emit cognition event for rag-build stage (FIRE-AND-FORGET: don't block on event emission)
+    // Log per-phase timing breakdown for performance analysis
     const durationMs = Date.now() - startTime;
+    if (this.useModularSources) {
+      this.log(`[TIMING] ChatRAGBuilder.buildContext: total=${durationMs}ms (compose=${composeMs!.toFixed(1)}ms, legacy=${legacyMs!.toFixed(1)}ms, preprocess=${preprocessMs.toFixed(1)}ms, msgs=${conversationHistory.length}, mems=${privateMemories.length}, arts=${processedArtifacts.length})`);
+    } else {
+      this.log(`[TIMING] ChatRAGBuilder.buildContext: total=${durationMs}ms (legacy path, preprocess=${preprocessMs.toFixed(1)}ms)`);
+    }
+
+    // Emit cognition event for rag-build stage (FIRE-AND-FORGET: don't block on event emission)
     const totalTokens = finalConversationHistory.reduce((sum, msg) => sum + (msg.content?.length ?? 0), 0);
     const maxTokens = 128000;  // Typical context window
 
@@ -527,9 +599,11 @@ export class ChatRAGBuilder extends RAGBuilder {
       ? 'You respond naturally to conversations.'
       : 'You participate when mentioned or when the conversation is relevant.';
 
-    // Load room name and members to provide context
-    const roomName = await this.loadRoomName(roomId);
-    const membersList = await this.loadRoomMembers(roomId);
+    // Load room name and members in parallel (both use getCachedRoom — 1 DB read max)
+    const [roomName, membersList] = await Promise.all([
+      this.loadRoomName(roomId),
+      this.loadRoomMembers(roomId)
+    ]);
 
     // Separate self from others for clarity
     const otherMembers = membersList.filter(m => m !== name);
@@ -696,21 +770,33 @@ LIMITS:
    */
   private async extractArtifacts(roomId: UUID, maxMessages: number): Promise<RAGArtifact[]> {
     try {
-      // Load messages with attachments
-      const result = await DataDaemon.query<ChatMessageEntity>({
-        collection: ChatMessageEntity.collection,
-        filter: { roomId },
-        sort: [{ field: 'timestamp', direction: 'desc' }],
-        limit: maxMessages
-      });
+      // Priority 1: ConversationHistorySource cache — already loaded during compose phase
+      let messages: ChatMessageEntity[] | null = ConversationHistorySource.getCachedRawMessages(roomId) as ChatMessageEntity[] | null;
 
-      if (!result.success || !result.data) {
-        return [];
+      // Priority 2: ChatRAGBuilder's own message cache (populated by previous calls)
+      if (!messages) {
+        const cached = ChatRAGBuilder._artifactMessageCache.get(roomId);
+        if (cached && Date.now() - cached.cachedAt < ChatRAGBuilder.ARTIFACT_CACHE_TTL_MS) {
+          messages = cached.messages;
+        }
       }
 
-      // DataDaemon.query returns DataRecord<T>[], access .data for entities
-      const messageRecords = result.data;
-      const messages = messageRecords.map(record => record.data);
+      // Priority 3: DB query (cold start only — should be rare after caches warm)
+      if (!messages) {
+        const result = await DataDaemon.query<ChatMessageEntity>({
+          collection: ChatMessageEntity.collection,
+          filter: { roomId },
+          sort: [{ field: 'timestamp', direction: 'desc' }],
+          limit: maxMessages
+        });
+
+        if (!result.success || !result.data) {
+          return [];
+        }
+
+        messages = result.data.map(record => record.data);
+        ChatRAGBuilder._artifactMessageCache.set(roomId, { messages, cachedAt: Date.now() });
+      }
 
       const artifacts: RAGArtifact[] = [];
 
@@ -1014,7 +1100,7 @@ LIMITS:
    */
   private async loadRoomName(roomId: UUID): Promise<string | null> {
     try {
-      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      const room = await ChatRAGBuilder.getCachedRoom(roomId);
       if (!room) {
         this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for name lookup`);
         return null;
@@ -1032,29 +1118,28 @@ LIMITS:
    */
   private async loadRoomMembers(roomId: UUID): Promise<string[]> {
     try {
-      // 1. Load room entity
-      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
-      if (!room) {
-        this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}`);
+      // 1. Load room entity (from cache — shared with loadRoomName, loadRecipeContext, etc.)
+      const room = await ChatRAGBuilder.getCachedRoom(roomId);
+      if (!room || !room.members || room.members.length === 0) {
         return [];
       }
 
-      if (!room.members || room.members.length === 0) {
-        return [];
-      }
+      // 2. Load user display names with per-user cache (users don't change at runtime)
+      const memberNames = await Promise.all(
+        room.members.map(async (member): Promise<string | null> => {
+          const cached = ChatRAGBuilder._userNameCache.get(member.userId);
+          if (cached) return cached;
 
-      // 2. Load user entities for each member to get display names (PARALLELIZED)
-      const members = await Promise.all(
-        room.members.map(member =>
-          DataDaemon.read<UserEntity>(UserEntity.collection, member.userId)
-        )
+          const user = await DataDaemon.read<UserEntity>(UserEntity.collection, member.userId);
+          if (user) {
+            ChatRAGBuilder._userNameCache.set(member.userId, user.displayName);
+            return user.displayName;
+          }
+          return null;
+        })
       );
 
-      const memberNames = members
-        .filter((user): user is UserEntity => user !== null)
-        .map(user => user.displayName);
-
-      return memberNames;
+      return memberNames.filter((name): name is string => name !== null);
     } catch (error) {
       this.log(`❌ ChatRAGBuilder: Error loading room members:`, error);
       return [];
@@ -1066,8 +1151,8 @@ LIMITS:
    */
   private async loadRecipeContext(roomId: UUID): Promise<{ strategy?: RecipeStrategy; tools?: RecipeToolDeclaration[] } | undefined> {
     try {
-      // 1. Load room to get recipeId
-      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      // 1. Load room to get recipeId (from cache — shared with loadRoomName, loadRoomMembers, etc.)
+      const room = await ChatRAGBuilder.getCachedRoom(roomId);
 
       if (!room) {
         this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId}, no recipe context`);
@@ -1110,8 +1195,8 @@ LIMITS:
     personaId: UUID
   ): Promise<{ learningMode?: 'fine-tuning' | 'inference-only'; genomeId?: UUID; participantRole?: string } | undefined> {
     try {
-      // 1. Load room entity
-      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      // 1. Load room entity (from cache — shared with loadRoomName, loadRoomMembers, etc.)
+      const room = await ChatRAGBuilder.getCachedRoom(roomId);
       if (!room) {
         this.log(`⚠️ ChatRAGBuilder: Could not load room ${roomId} for learning config`);
         return undefined;

@@ -13,6 +13,7 @@ import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSourc
 import type { LLMMessage } from '../shared/RAGTypes';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
+import { Events } from '../../core/shared/Events';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('ConversationHistorySource', 'rag');
@@ -22,7 +23,7 @@ const TOKENS_PER_MESSAGE_ESTIMATE = 50;
 
 type MessageWithSender = ChatMessageEntity & { sender?: { displayName: string; userType: string } };
 
-/** Short-lived cache for room messages — 16 personas querying same room simultaneously */
+/** Cache entry for room messages — maintained by event subscription */
 interface MessageCacheEntry {
   messages: MessageWithSender[];
   fetchedAt: number;
@@ -40,15 +41,50 @@ export class ConversationHistorySource implements RAGSource {
   readonly priority = 80;  // High - conversation is core context
   readonly defaultBudgetPercent = 40;  // Gets largest share of budget
 
-  // Room message cache: 2s TTL serves results from recent queries
+  // Room message cache: event-driven freshness. 30s TTL is a safety net only.
+  // Primary freshness comes from event subscription updating cache entries.
   private static _roomCache: Map<string, MessageCacheEntry> = new Map();
-  private static readonly CACHE_TTL_MS = 2000;
+  private static readonly CACHE_TTL_MS = 30_000;
 
   // Single-flight coalescing: when multiple personas query the same room
   // simultaneously, only ONE DB query fires. Others await the same promise.
-  // This eliminates the thundering herd problem where the 2s TTL cache
-  // can't help because the first query hasn't completed yet.
   private static _inflight: Map<string, InflightEntry> = new Map();
+
+  // Event subscription for real-time cache maintenance.
+  // New messages update the cache immediately — no staleness, no DB re-query.
+  private static _eventSubscribed = false;
+
+  private static initEventSubscription(): void {
+    if (ConversationHistorySource._eventSubscribed) return;
+    ConversationHistorySource._eventSubscribed = true;
+
+    Events.subscribe(`data:${ChatMessageEntity.collection}:created`, (entity: any) => {
+      const msg = entity as ChatMessageEntity;
+      if (!msg.roomId) return;
+
+      const cached = ConversationHistorySource._roomCache.get(msg.roomId);
+      if (cached) {
+        // Prepend new message (cache is newest-first order, reversed later for LLM)
+        cached.messages.unshift(msg as MessageWithSender);
+        if (cached.messages.length > cached.limit + 10) {
+          cached.messages.length = cached.limit; // Trim excess
+        }
+        cached.fetchedAt = Date.now(); // Reset TTL — cache is now fresh
+      }
+    });
+  }
+
+  /**
+   * Access cached raw messages for a room (used by extractArtifacts to avoid duplicate DB query).
+   * Returns null if cache is expired or empty — caller should fall back to DB.
+   */
+  static getCachedRawMessages(roomId: string): MessageWithSender[] | null {
+    const cached = ConversationHistorySource._roomCache.get(roomId);
+    if (cached && (Date.now() - cached.fetchedAt) < ConversationHistorySource.CACHE_TTL_MS) {
+      return cached.messages;
+    }
+    return null;
+  }
 
   isApplicable(_context: RAGSourceContext): boolean {
     // Always applicable - every RAG build needs conversation context
@@ -57,6 +93,7 @@ export class ConversationHistorySource implements RAGSource {
 
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
     const startTime = performance.now();
+    ConversationHistorySource.initEventSubscription();
 
     // Calculate max messages based on budget
     const budgetBasedLimit = Math.max(5, Math.floor(allocatedBudget / TOKENS_PER_MESSAGE_ESTIMATE));

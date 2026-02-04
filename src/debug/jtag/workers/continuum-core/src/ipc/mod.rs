@@ -2031,14 +2031,50 @@ fn send_binary_frame(stream: &mut UnixStream, response: &Response, binary_data: 
     stream.flush()
 }
 
-fn handle_client(mut stream: UnixStream, state: Arc<ServerState>) -> std::io::Result<()> {
+/// Handle a single IPC client connection with concurrent request processing.
+///
+/// Architecture:
+/// - Reader thread (this function): reads newline-delimited JSON requests from the socket
+/// - Writer thread: serializes responses back to the socket in arrival order
+/// - Rayon pool: processes each request concurrently on worker threads
+///
+/// The TS client multiplexes via requestId — responses can arrive in any order.
+/// This eliminates the sequential bottleneck where 6 concurrent requests from
+/// RAGComposer (global-awareness, semantic-memory, etc.) were serialized per-connection.
+fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result<()> {
     let peer_addr = stream.peer_addr()?;
     log_debug!("ipc", "server", "Client connected: {:?}", peer_addr);
 
-    // Requests still arrive as newline-delimited JSON (small control messages).
-    // Responses use length-prefixed binary framing (supports large audio payloads).
     let reader = BufReader::new(stream.try_clone()?);
 
+    // Response channel — rayon tasks send completed results, writer thread serializes to socket.
+    // Unbounded: request rate is limited by socket read speed, not processing speed.
+    let (tx, rx) = std::sync::mpsc::channel::<(Option<u64>, HandleResult)>();
+
+    // Writer thread — owns the write half of the socket, serializes response frames.
+    // Multiple rayon tasks complete concurrently; this thread ensures atomic frame writes.
+    let mut writer_stream = stream.try_clone()?;
+    let writer_handle = std::thread::spawn(move || {
+        for (request_id, result) in rx {
+            let write_result = match result {
+                HandleResult::Json(response) => {
+                    let response = response.with_request_id(request_id);
+                    send_json_frame(&mut writer_stream, &response)
+                }
+                HandleResult::Binary { json_header, binary_data } => {
+                    let json_header = json_header.with_request_id(request_id);
+                    send_binary_frame(&mut writer_stream, &json_header, &binary_data)
+                }
+            };
+            if let Err(e) = write_result {
+                log_error!("ipc", "server", "Write error: {}", e);
+                break;
+            }
+        }
+    });
+
+    // Reader loop — parse requests and dispatch to rayon for concurrent processing.
+    // No longer blocks waiting for handle_request() to complete before reading next request.
     for line in reader.lines() {
         let line = line?;
         if line.is_empty() {
@@ -2049,40 +2085,34 @@ fn handle_client(mut stream: UnixStream, state: Arc<ServerState>) -> std::io::Re
         let json_value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                let response = Response::error(format!("Invalid JSON: {e}"));
-                send_json_frame(&mut stream, &response)?;
+                let _ = tx.send((None, HandleResult::Json(Response::error(format!("Invalid JSON: {e}")))));
                 continue;
             }
         };
 
-        // Extract requestId if present
         let request_id = json_value.get("requestId").and_then(|v| v.as_u64());
 
-        // Parse request
         let request: Request = match serde_json::from_value(json_value) {
             Ok(r) => r,
             Err(e) => {
-                let response = Response::error(format!("Invalid request: {e}")).with_request_id(request_id);
-                send_json_frame(&mut stream, &response)?;
+                let _ = tx.send((request_id, HandleResult::Json(Response::error(format!("Invalid request: {e}")))));
                 continue;
             }
         };
 
-        // Handle request
-        let result = state.handle_request(request);
-
-        // Send response using appropriate framing
-        match result {
-            HandleResult::Json(response) => {
-                let response = response.with_request_id(request_id);
-                send_json_frame(&mut stream, &response)?;
-            }
-            HandleResult::Binary { json_header, binary_data } => {
-                let json_header = json_header.with_request_id(request_id);
-                send_binary_frame(&mut stream, &json_header, &binary_data)?;
-            }
-        }
+        // Dispatch to rayon thread pool — each request runs concurrently.
+        // handle_request(&self) is safe for concurrent calls (DashMap per-key locking).
+        let state = state.clone();
+        let tx = tx.clone();
+        rayon::spawn(move || {
+            let result = state.handle_request(request);
+            let _ = tx.send((request_id, result));
+        });
     }
+
+    // Drop sender to signal writer thread to exit, then wait for it
+    drop(tx);
+    let _ = writer_handle.join();
 
     log_debug!("ipc", "server", "Client disconnected: {:?}", peer_addr);
     Ok(())

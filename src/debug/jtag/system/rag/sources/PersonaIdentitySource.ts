@@ -25,6 +25,40 @@ export class PersonaIdentitySource implements RAGSource {
   // Identity never changes at runtime — cache per persona (indefinite TTL)
   private static _identityCache: Map<string, UserEntity> = new Map();
 
+  // Batch pre-warm: load ALL persona users in one query on first cache miss.
+  // Eliminates N individual reads under SQLite contention.
+  private static _preWarmPromise: Promise<void> | null = null;
+  private static _preWarmed = false;
+
+  private static async preWarmAll(): Promise<void> {
+    if (PersonaIdentitySource._preWarmed) return;
+    if (PersonaIdentitySource._preWarmPromise) return PersonaIdentitySource._preWarmPromise;
+
+    PersonaIdentitySource._preWarmPromise = (async () => {
+      try {
+        const result = await DataDaemon.query<UserEntity>({
+          collection: UserEntity.collection,
+          filter: { type: 'persona' },
+          limit: 100
+        });
+        if (result.success && result.data) {
+          for (const record of result.data) {
+            const user = record.data;
+            PersonaIdentitySource._identityCache.set(user.id, user);
+          }
+          log.info(`Pre-warmed identity cache with ${result.data.length} personas`);
+        }
+        PersonaIdentitySource._preWarmed = true;
+      } catch (error: any) {
+        log.warn(`Failed to pre-warm identity cache: ${error.message}`);
+      } finally {
+        PersonaIdentitySource._preWarmPromise = null;
+      }
+    })();
+
+    return PersonaIdentitySource._preWarmPromise;
+  }
+
   isApplicable(_context: RAGSourceContext): boolean {
     // Always applicable
     return true;
@@ -37,6 +71,12 @@ export class PersonaIdentitySource implements RAGSource {
       // Check cache first — identity is immutable at runtime
       let user = PersonaIdentitySource._identityCache.get(context.personaId) ?? null;
       if (!user) {
+        // Cache miss: batch-load ALL personas in one query (1 roundtrip vs N)
+        await PersonaIdentitySource.preWarmAll();
+        user = PersonaIdentitySource._identityCache.get(context.personaId) ?? null;
+      }
+      if (!user) {
+        // Still not found after batch load — try individual read (edge case: new persona)
         user = await DataDaemon.read<UserEntity>(UserEntity.collection, context.personaId);
         if (user) {
           PersonaIdentitySource._identityCache.set(context.personaId, user);
