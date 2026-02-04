@@ -162,6 +162,9 @@ export interface RAGContext {
 
     // Social media engagement awareness
     hasSocialAwareness?: boolean;  // Whether social media HUD was included in system prompt
+
+    // Project workspace context (git, team, build)
+    hasProjectContext?: boolean;  // Whether project workspace context was included in system prompt
   };
 }
 

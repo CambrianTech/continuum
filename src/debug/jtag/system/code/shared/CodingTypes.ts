@@ -114,9 +114,13 @@ export interface CodingTask {
   /**
    * Workspace mode for this task:
    * - 'sandbox': Isolated directory under .continuum/personas/{id}/workspace/ (default)
-   * - 'worktree': Git worktree on real repo with sparse checkout
+   * - 'worktree': Git worktree on continuum repo with sparse checkout
+   * - 'project': Git worktree on any external git repo with persona identity
    */
-  readonly workspaceMode?: 'sandbox' | 'worktree';
+  readonly workspaceMode?: 'sandbox' | 'worktree' | 'project';
+
+  /** Absolute path to git repo on disk (project mode) */
+  readonly repoPath?: string;
 
   /** Paths to sparse-checkout when using worktree mode */
   readonly sparsePaths?: string[];

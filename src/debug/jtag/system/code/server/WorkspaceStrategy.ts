@@ -1,10 +1,10 @@
 /**
  * WorkspaceStrategy - Unified workspace creation for coding tasks
  *
- * Abstracts the three workspace patterns into a single interface:
+ * Abstracts workspace creation into a single interface:
  * - sandbox: Isolated directory for persona work (default)
- * - worktree: Git worktree on real repo with sparse checkout
- * - challenge: Pre-seeded isolated workspace (handled by CodingChallengeRunner)
+ * - worktree: Git worktree on continuum repo with sparse checkout
+ * - project: Git worktree on ANY external repo with full checkout + persona identity
  *
  * Each strategy creates a directory, registers it with the Rust backend
  * via CodeDaemon.createWorkspace(), and returns a handle + path.
@@ -13,6 +13,8 @@
 import { Commands } from '../../core/shared/Commands';
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
 import { Logger } from '../../core/logging/Logger';
+import { stringToUUID } from '../../core/types/CrossPlatformUUID';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -22,7 +24,7 @@ const log = Logger.create('WorkspaceStrategy', 'code');
 // Types
 // ────────────────────────────────────────────────────────────
 
-export type WorkspaceMode = 'sandbox' | 'worktree';
+export type WorkspaceMode = 'sandbox' | 'worktree' | 'project';
 
 export interface WorkspaceConfig {
   /** Persona ID creating the workspace */
@@ -31,11 +33,20 @@ export interface WorkspaceConfig {
   /** Which workspace strategy to use */
   readonly mode: WorkspaceMode;
 
-  /** Short slug for branch naming (worktree mode): ai/{persona}/{slug} */
+  /** Short slug for branch naming (worktree/project mode): ai/{persona}/{slug} */
   readonly taskSlug?: string;
 
   /** Paths to sparse-checkout (worktree mode) */
   readonly sparsePaths?: string[];
+
+  /** Absolute path to any git repo on disk (project mode) */
+  readonly repoPath?: string;
+
+  /** Persona display name for git identity (project mode) */
+  readonly personaName?: string;
+
+  /** Persona unique ID for git email identity (project mode) */
+  readonly personaUniqueId?: string;
 }
 
 export interface WorkspaceResult {
@@ -45,11 +56,14 @@ export interface WorkspaceResult {
   /** Absolute path to the workspace directory */
   readonly workspaceDir: string;
 
-  /** Git branch name (worktree mode only) */
+  /** Git branch name (worktree/project mode) */
   readonly branch?: string;
 
   /** Which mode was used */
   readonly mode: WorkspaceMode;
+
+  /** Original repo path (project mode) — the repo the worktree was created from */
+  readonly repoPath?: string;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -71,6 +85,9 @@ export class WorkspaceStrategy {
    * @returns Handle, directory path, and optional branch name
    */
   static async create(config: WorkspaceConfig): Promise<WorkspaceResult> {
+    if (config.mode === 'project') {
+      return this.createProject(config);
+    }
     if (config.mode === 'worktree') {
       return this.createWorktree(config);
     }
@@ -172,10 +189,114 @@ export class WorkspaceStrategy {
   }
 
   /**
-   * Clean up a worktree workspace.
-   * Calls workspace/git/workspace/clean and removes the handle from tracking.
+   * Create a project workspace — git worktree on ANY external repo.
+   *
+   * Creates a branch per persona (ai/{personaName}/{slug}), sets local
+   * git identity, and registers the worktree with the Rust CodeDaemon.
+   * Supports working on any git-initialized directory on disk.
+   */
+  private static async createProject(config: WorkspaceConfig): Promise<WorkspaceResult> {
+    if (!config.repoPath) {
+      throw new Error('WorkspaceStrategy: project mode requires repoPath');
+    }
+
+    const slug = config.taskSlug ?? 'work';
+    // Deterministic UUID handle from personaId + slug — strict UUID policy
+    const handle = stringToUUID(`project:${config.personaId}:${slug}`);
+
+    if (initializedWorkspaces.has(handle)) {
+      // Already initialized — resolve from tracked data
+      const meta = projectWorkspacePaths.get(handle);
+      if (meta) {
+        return { handle, workspaceDir: meta.worktreeDir, branch: meta.branch, mode: 'project', repoPath: config.repoPath };
+      }
+    }
+
+    // Resolve repoPath — support relative paths from jtag root
+    const resolvedRepoPath = path.isAbsolute(config.repoPath)
+      ? config.repoPath
+      : path.resolve(process.cwd(), config.repoPath);
+
+    // Verify it's a git repo
+    const gitDir = path.join(resolvedRepoPath, '.git');
+    if (!fs.existsSync(gitDir) && !fs.existsSync(resolvedRepoPath + '/.git')) {
+      throw new Error(`WorkspaceStrategy: not a git repo: ${resolvedRepoPath}`);
+    }
+
+    // Branch name: ai/{personaName}/{slug}
+    const safeName = (config.personaName ?? config.personaId.slice(0, 8))
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '-')
+      .replace(/-+/g, '-');
+    const branchName = `ai/${safeName}/${slug}`;
+
+    // Worktree directory: inside the repo's .git to keep it clean
+    const worktreeDir = path.join(resolvedRepoPath, '.git', 'continuum-worktrees', config.personaId, slug);
+
+    log.info(`Creating project workspace: repo=${resolvedRepoPath} branch=${branchName}`);
+
+    fs.mkdirSync(path.dirname(worktreeDir), { recursive: true });
+
+    const gitOpts = { cwd: resolvedRepoPath, stdio: 'pipe' as const };
+
+    try {
+      // Create worktree with new branch from HEAD
+      execSync(`git worktree add -b "${branchName}" "${worktreeDir}" HEAD`, gitOpts);
+    } catch (e: any) {
+      // Branch may already exist from a previous session
+      if (e.stderr?.toString().includes('already exists') || e.message?.includes('already exists')) {
+        // If worktree dir already exists, it was left from a crash — prune first
+        if (fs.existsSync(worktreeDir)) {
+          try { execSync('git worktree prune', gitOpts); } catch { /* ignore */ }
+        }
+        try {
+          execSync(`git worktree add "${worktreeDir}" "${branchName}"`, gitOpts);
+        } catch (e2: any) {
+          // Worktree for this branch may already be checked out elsewhere
+          if (e2.stderr?.toString().includes('already checked out')) {
+            log.warn(`Branch ${branchName} already checked out — reusing existing worktree`);
+            // The worktreeDir should exist if it's checked out
+            if (!fs.existsSync(worktreeDir)) {
+              throw new Error(`WorkspaceStrategy: branch ${branchName} checked out elsewhere, cannot create worktree at ${worktreeDir}`);
+            }
+          } else {
+            throw e2;
+          }
+        }
+      } else {
+        throw e;
+      }
+    }
+
+    // Set local git identity in the worktree (not global)
+    const userName = config.personaName ?? 'AI Persona';
+    const userEmail = `${config.personaUniqueId ?? config.personaId}@continuum.local`;
+    const wtOpts = { cwd: worktreeDir, stdio: 'pipe' as const };
+    execSync(`git config user.name "${userName}"`, wtOpts);
+    execSync(`git config user.email "${userEmail}"`, wtOpts);
+
+    // Register with Rust CodeDaemon — worktree IS the repo checkout, no extra read roots
+    await CodeDaemon.createWorkspace(handle, worktreeDir, []);
+    initializedWorkspaces.add(handle);
+    projectWorkspacePaths.set(handle, { worktreeDir, branch: branchName, repoPath: resolvedRepoPath, personaId: config.personaId });
+    personaToProjectHandle.set(config.personaId, handle);
+
+    log.info(`Project workspace ready: ${worktreeDir} (handle: ${handle.slice(0, 8)}..., branch: ${branchName}, identity: ${userName} <${userEmail}>)`);
+
+    return { handle, workspaceDir: worktreeDir, branch: branchName, mode: 'project', repoPath: resolvedRepoPath };
+  }
+
+  /**
+   * Clean up a workspace.
+   * - worktree-* handles: calls workspace/git/workspace/clean
+   * - project-* handles: removes git worktree + optionally deletes branch
+   * - other handles: skipped
    */
   static async cleanup(handle: string, options?: { force?: boolean; deleteBranch?: boolean }): Promise<void> {
+    if (handle.startsWith('project-')) {
+      return this.cleanupProject(handle, options);
+    }
+
     if (!handle.startsWith('worktree-')) {
       log.debug(`Skipping cleanup for non-worktree handle: ${handle}`);
       return;
@@ -192,4 +313,91 @@ export class WorkspaceStrategy {
       log.warn(`Worktree cleanup failed for ${handle}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
+  /**
+   * Clean up a project workspace — remove git worktree and optionally delete branch.
+   */
+  private static async cleanupProject(handle: string, options?: { force?: boolean; deleteBranch?: boolean }): Promise<void> {
+    const meta = projectWorkspacePaths.get(handle);
+    if (!meta) {
+      log.warn(`No metadata for project handle ${handle}, removing from tracking`);
+      initializedWorkspaces.delete(handle);
+      return;
+    }
+
+    try {
+      const gitOpts = { cwd: meta.repoPath, stdio: 'pipe' as const };
+
+      // Remove the git worktree
+      const forceFlag = options?.force ? ' --force' : '';
+      execSync(`git worktree remove "${meta.worktreeDir}"${forceFlag}`, gitOpts);
+
+      // Optionally delete the branch
+      if (options?.deleteBranch && meta.branch) {
+        try {
+          execSync(`git branch -D "${meta.branch}"`, gitOpts);
+          log.info(`Deleted branch ${meta.branch}`);
+        } catch {
+          log.warn(`Could not delete branch ${meta.branch} — may have upstream refs`);
+        }
+      }
+
+      if (meta.personaId) {
+        personaToProjectHandle.delete(meta.personaId);
+      }
+      initializedWorkspaces.delete(handle);
+      projectWorkspacePaths.delete(handle);
+      log.info(`Project workspace cleaned up: ${handle}`);
+    } catch (error) {
+      log.warn(`Project cleanup failed for ${handle}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Get all active project workspace handles for a specific repo.
+   * Used by RAG to discover team activity (who's working on what branch).
+   */
+  static getProjectHandlesForRepo(repoPath: string): Array<{ handle: string; branch: string; worktreeDir: string }> {
+    const results: Array<{ handle: string; branch: string; worktreeDir: string }> = [];
+    for (const [handle, meta] of projectWorkspacePaths) {
+      if (meta.repoPath === repoPath) {
+        results.push({ handle, branch: meta.branch, worktreeDir: meta.worktreeDir });
+      }
+    }
+    return results;
+  }
+
+  /**
+   * Get project workspace info for a specific persona.
+   * Returns the first project workspace found (personas typically have one active project).
+   * Used by ProjectContextSource (RAG) to inject project state.
+   */
+  static getProjectForPersona(personaId: string): ProjectWorkspaceMeta | undefined {
+    const handle = personaToProjectHandle.get(personaId);
+    if (handle) return projectWorkspacePaths.get(handle);
+    return undefined;
+  }
+
+  /**
+   * Get ALL project workspaces across all personas.
+   * Used by ProjectContextSource to show team activity.
+   */
+  static get allProjectWorkspaces(): ReadonlyMap<string, ProjectWorkspaceMeta> {
+    return projectWorkspacePaths;
+  }
 }
+
+// ────────────────────────────────────────────────────────────
+// Project workspace path tracking (needed for cleanup + team discovery)
+// ────────────────────────────────────────────────────────────
+
+interface ProjectWorkspaceMeta {
+  readonly worktreeDir: string;
+  readonly branch: string;
+  readonly repoPath: string;
+  readonly personaId: string;
+}
+
+const projectWorkspacePaths = new Map<string, ProjectWorkspaceMeta>();
+/** Reverse index: personaId → handle (for RAG lookup) */
+const personaToProjectHandle = new Map<string, string>();

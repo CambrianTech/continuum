@@ -34,6 +34,7 @@ import type {
 } from '../../../daemons/code-daemon/shared/CodeDaemonTypes';
 import { WorkspaceStrategy } from './WorkspaceStrategy';
 import type { WorkspaceMode, WorkspaceConfig } from './WorkspaceStrategy';
+import { ProjectDetector, type ProjectType } from './ProjectDetector';
 import { CodeVerify, type CodeVerifyResult } from '../../../commands/code/verify/shared/CodeVerifyTypes';
 
 export class Workspace {
@@ -43,10 +44,12 @@ export class Workspace {
     readonly handle: string,
     /** Absolute path to the workspace directory on disk */
     readonly dir: string,
-    /** Whether this is a sandbox or git worktree workspace */
+    /** Workspace mode: sandbox, worktree (continuum), or project (any git repo) */
     readonly mode: WorkspaceMode,
-    /** Git branch name (worktree mode only) */
+    /** Git branch name (worktree/project mode) */
     readonly branch?: string,
+    /** Original repo path — the parent repo this worktree was created from (project mode) */
+    readonly repoPath?: string,
   ) {}
 
   /**
@@ -55,15 +58,20 @@ export class Workspace {
    */
   static async create(config: WorkspaceConfig): Promise<Workspace> {
     const result = await WorkspaceStrategy.create(config);
-    return new Workspace(result.handle, result.workspaceDir, result.mode, result.branch);
+    return new Workspace(result.handle, result.workspaceDir, result.mode, result.branch, result.repoPath);
   }
 
   /**
    * Create a Workspace from an already-initialized handle.
    * Useful when resuming a workspace that was previously created.
    */
-  static fromExisting(handle: string, dir: string, mode: WorkspaceMode, branch?: string): Workspace {
-    return new Workspace(handle, dir, mode, branch);
+  static fromExisting(handle: string, dir: string, mode: WorkspaceMode, branch?: string, repoPath?: string): Workspace {
+    return new Workspace(handle, dir, mode, branch, repoPath);
+  }
+
+  /** Whether this workspace is backed by a git repo (worktree or project mode) */
+  get isGitBacked(): boolean {
+    return this.mode === 'worktree' || this.mode === 'project';
   }
 
   // ════════════════════════════════════════════════════════════
@@ -293,6 +301,87 @@ export class Workspace {
     } while (!response.finished);
 
     return response;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // Project Detection
+  // ════════════════════════════════════════════════════════════
+
+  private _projectType?: ProjectType;
+
+  /** Detect project type from workspace contents (cached after first call) */
+  async detectProjectType(): Promise<ProjectType> {
+    if (!this._projectType) {
+      this._projectType = await ProjectDetector.detect(this.dir);
+    }
+    return this._projectType;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // Git Team Operations (project/worktree mode)
+  // ════════════════════════════════════════════════════════════
+
+  /**
+   * Merge another branch into this workspace's current branch.
+   * Used for team coordination — a smarter AI can merge branches
+   * for less capable ones, or AIs can merge main into their feature branch.
+   */
+  async gitMerge(sourceBranch: string): Promise<WorkspaceShellExecuteResponse> {
+    await this.ensureShell();
+    return CodeDaemon.shellExecute(this.handle, `git merge "${sourceBranch}"`, {
+      timeoutMs: 60000,
+      wait: true,
+    });
+  }
+
+  /**
+   * Check if there are merge conflicts in the workspace.
+   * Returns the list of conflicting files, if any.
+   */
+  async gitConflicts(): Promise<{ hasConflicts: boolean; files: string[] }> {
+    await this.ensureShell();
+    const result = await CodeDaemon.shellExecute(this.handle, 'git diff --name-only --diff-filter=U', {
+      timeoutMs: 10000,
+      wait: true,
+    });
+    const files = (result.stdout ?? '').split('\n').filter(f => f.trim().length > 0);
+    return { hasConflicts: files.length > 0, files };
+  }
+
+  /**
+   * Abort a merge in progress.
+   */
+  async gitMergeAbort(): Promise<WorkspaceShellExecuteResponse> {
+    await this.ensureShell();
+    return CodeDaemon.shellExecute(this.handle, 'git merge --abort', {
+      timeoutMs: 10000,
+      wait: true,
+    });
+  }
+
+  /**
+   * Fetch updates from remote (if configured).
+   */
+  async gitFetch(remote?: string): Promise<WorkspaceShellExecuteResponse> {
+    await this.ensureShell();
+    return CodeDaemon.shellExecute(this.handle, `git fetch ${remote ?? '--all'}`, {
+      timeoutMs: 60000,
+      wait: true,
+    });
+  }
+
+  /**
+   * List branches matching a pattern — useful for discovering team branches.
+   * Default pattern: "ai/*" to find all AI persona branches.
+   */
+  async gitBranches(pattern?: string): Promise<string[]> {
+    await this.ensureShell();
+    const result = await CodeDaemon.shellExecute(
+      this.handle,
+      `git branch --list "${pattern ?? 'ai/*'}" --format="%(refname:short)"`,
+      { timeoutMs: 10000, wait: true },
+    );
+    return (result.stdout ?? '').split('\n').filter(b => b.trim().length > 0);
   }
 
   // ════════════════════════════════════════════════════════════

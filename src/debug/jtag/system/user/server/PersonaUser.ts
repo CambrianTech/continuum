@@ -332,9 +332,10 @@ export class PersonaUser extends AIUser {
    */
   public async ensureWorkspace(options?: {
     contextKey?: string;
-    mode?: 'sandbox' | 'worktree';
+    mode?: 'sandbox' | 'worktree' | 'project';
     taskSlug?: string;
     sparsePaths?: string[];
+    repoPath?: string;
   }): Promise<Workspace> {
     const key = options?.contextKey ?? 'default';
     const existing = this._workspaces.get(key);
@@ -347,9 +348,12 @@ export class PersonaUser extends AIUser {
       mode,
       taskSlug: options?.taskSlug ?? key,
       sparsePaths: options?.sparsePaths,
+      repoPath: options?.repoPath,
+      personaName: this.displayName,
+      personaUniqueId: this.entity.uniqueId,
     });
     this._workspaces.set(key, ws);
-    this.log.info(`${this.displayName}: Workspace created — handle=${ws.handle}, dir=${ws.dir}, mode=${mode}`);
+    this.log.info(`${this.displayName}: Workspace created — handle=${ws.handle}, dir=${ws.dir}, mode=${mode}${ws.branch ? `, branch=${ws.branch}` : ''}`);
     return ws;
   }
 
@@ -478,6 +482,10 @@ export class PersonaUser extends AIUser {
       logger: this.logger,
       memory: this.memory,  // For accessing trained LoRA adapters during inference
       ensureCodeWorkspace: async () => {
+        // Reuse any existing workspace (project or sandbox) before creating a new sandbox.
+        // This allows project workspaces created via explicit commands to be preserved.
+        const existing = this._workspaces.get('default') ?? this._workspaces.values().next().value;
+        if (existing) return;
         await this.ensureWorkspace({ contextKey: 'default', mode: 'sandbox' });
       },
     });

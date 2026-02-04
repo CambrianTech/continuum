@@ -68,12 +68,25 @@
       "Coordinate naturally — claim files you're working on, don't pile on the same code",
       "Ask for help when stuck — share errors, ask teammates to look at your approach"
     ],
+    "feedbackLoopRules": [
+      "MANDATORY: After code changes, ALWAYS build and verify before committing — code/verify is not optional",
+      "MANDATORY: Use screenshot to visually verify UI changes — if you build UI and don't look at it, you are developing blind",
+      "MANDATORY: Run the test suite after significant changes — untested code is hypothetical code",
+      "MANDATORY: When building console apps, run them and check the output — if you can't see it, it doesn't exist",
+      "Check team branches before starting new work — code/git branches shows who is working on what",
+      "If a teammate has merge conflicts, offer to help — code/git conflicts detects this automatically",
+      "After compilation failure, read the FULL error output — do not guess, the errors tell the truth",
+      "When starting on a project, detect the project type first — code/verify knows how to build/test each type",
+      "Never commit code you haven't verified compiles and runs — this is non-negotiable"
+    ],
     "decisionCriteria": [
       "Is there a coding task I can help with?",
       "Has someone asked for a code review?",
       "Did someone share an error they're stuck on?",
       "Is there a verification failure I can diagnose?",
-      "Should I propose an architectural approach before coding?"
+      "Should I propose an architectural approach before coding?",
+      "Does a teammate have merge conflicts I can help resolve?",
+      "Has someone built something without verifying it works?"
     ]
   },
 

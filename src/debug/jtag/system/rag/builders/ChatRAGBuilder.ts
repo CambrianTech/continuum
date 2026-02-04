@@ -45,7 +45,8 @@ import {
   PersonaIdentitySource,
   GlobalAwarenessSource,
   SocialMediaRAGSource,
-  CodeToolSource
+  CodeToolSource,
+  ProjectContextSource
 } from '../sources';
 
 /**
@@ -79,10 +80,11 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ConversationHistorySource(), // Priority 80: Chat messages (uses queryWithJoin!)
         new WidgetContextSource(),       // Priority 75: UI state from Positron
         new SemanticMemorySource(),      // Priority 60: Long-term memories
+        new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource()             // Priority 50: Coding workflow guidance
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 7 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 8 sources');
     }
     return this.composer;
   }
@@ -99,6 +101,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     globalAwareness: string | null;
     socialAwareness: string | null;
     codeToolGuidance: string | null;
+    projectContext: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
@@ -107,6 +110,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let globalAwareness: string | null = null;
     let socialAwareness: string | null = null;
     let codeToolGuidance: string | null = null;
+    let projectContext: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -134,9 +138,13 @@ export class ChatRAGBuilder extends RAGBuilder {
         // Coding workflow guidance — code/* tool awareness
         codeToolGuidance = section.systemPromptSection;
       }
+      if (section.systemPromptSection && section.sourceName === 'project-context') {
+        // Project workspace context — git status, team activity, build status
+        projectContext = section.systemPromptSection;
+      }
     }
 
-    return { identity, conversationHistory, memories, widgetContext, globalAwareness, socialAwareness, codeToolGuidance };
+    return { identity, conversationHistory, memories, widgetContext, globalAwareness, socialAwareness, codeToolGuidance, projectContext };
   }
 
   /**
@@ -170,6 +178,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let globalAwareness: string | null;
     let socialAwareness: string | null;
     let codeToolGuidance: string | null;
+    let projectContext: string | null;
 
     if (this.useModularSources) {
       // NEW PATH: Use RAGComposer for modular, parallelized source loading
@@ -215,6 +224,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       globalAwareness = extracted.globalAwareness;
       socialAwareness = extracted.socialAwareness;
       codeToolGuidance = extracted.codeToolGuidance;
+      projectContext = extracted.projectContext;
 
       // Still load these via legacy methods (not yet extracted to sources)
       const [extractedArtifacts, extractedRecipeContext, extractedLearningConfig] = await Promise.all([
@@ -282,6 +292,7 @@ export class ChatRAGBuilder extends RAGBuilder {
       globalAwareness = null;  // Legacy path doesn't use GlobalAwarenessSource
       socialAwareness = null;  // Legacy path doesn't use SocialMediaRAGSource
       codeToolGuidance = null; // Legacy path doesn't use CodeToolSource
+      projectContext = null;   // Legacy path doesn't use ProjectContextSource
     }
 
     // 2.3.5 Preprocess artifacts for non-vision models ("So the blind can see")
@@ -318,6 +329,13 @@ export class ChatRAGBuilder extends RAGBuilder {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${codeToolGuidance}`;
       this.log('💻 ChatRAGBuilder: Injected code tool guidance into system prompt');
+    }
+
+    // 2.4.8. Inject project workspace context (git status, team activity, build info)
+    if (projectContext) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt +
+        `\n\n${projectContext}`;
+      this.log('📦 ChatRAGBuilder: Injected project workspace context into system prompt');
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -383,7 +401,10 @@ export class ChatRAGBuilder extends RAGBuilder {
         hasGlobalAwareness: !!globalAwareness,
 
         // Social media HUD (engagement awareness)
-        hasSocialAwareness: !!socialAwareness
+        hasSocialAwareness: !!socialAwareness,
+
+        // Project workspace context (git, team, build)
+        hasProjectContext: !!projectContext
       }
     };
 
