@@ -248,9 +248,11 @@ export class DataDaemon {
       const entity = result.data.data;
 
       // Emit created event via universal Events system (unless suppressed)
+      // Fire-and-forget: DB write succeeded, event notification is non-blocking
       if (DataDaemon.jtagContext && !suppressEvents) {
         const eventName = getDataEventName(collection, 'created');
-        await Events.emit(DataDaemon.jtagContext, eventName, entity);
+        Events.emit(DataDaemon.jtagContext, eventName, entity)
+          .catch(err => console.error(`DataDaemon.create event emit failed for ${collection}:`, err));
       }
 
       // Return the complete entity (already includes proper ID)
@@ -396,9 +398,11 @@ export class DataDaemon {
       const entity = result.data.data;
 
       // Emit updated event via universal Events system
+      // Fire-and-forget: DB write succeeded, event notification is non-blocking
       if (DataDaemon.jtagContext) {
         const eventName = getDataEventName(collection, 'updated');
-        await Events.emit(DataDaemon.jtagContext, eventName, entity);
+        Events.emit(DataDaemon.jtagContext, eventName, entity)
+          .catch(err => console.error(`DataDaemon.update event emit failed for ${collection}:`, err));
       }
 
       return entity;
@@ -413,7 +417,8 @@ export class DataDaemon {
   async delete(
     collection: string,
     id: UUID,
-    context: DataOperationContext
+    context: DataOperationContext,
+    suppressEvents: boolean = false
   ): Promise<StorageResult<boolean>> {
     await this.ensureInitialized();
 
@@ -432,9 +437,11 @@ export class DataDaemon {
     const result = await adapter.delete(collection, id);
 
     // Emit deleted event if deletion was successful and we have the entity data
-    if (result.success && entity && DataDaemon.jtagContext) {
+    // Fire-and-forget: DB delete succeeded, event notification is non-blocking
+    if (result.success && entity && DataDaemon.jtagContext && !suppressEvents) {
       const eventName = getDataEventName(collection, 'deleted');
-      await Events.emit(DataDaemon.jtagContext, eventName, entity);
+      Events.emit(DataDaemon.jtagContext, eventName, entity)
+        .catch(err => console.error(`DataDaemon.delete event emit failed for ${collection}:`, err));
     }
 
     return result;
@@ -490,11 +497,13 @@ export class DataDaemon {
 
         const eventName = getDataEventName(operation.collection, eventOperation);
 
-        // For create/update, emit with entity data
+        // For create/update, emit with entity data (fire-and-forget)
         if (operation.type === 'create' || operation.type === 'update') {
-          await Events.emit(DataDaemon.jtagContext, eventName, operationResult);
+          Events.emit(DataDaemon.jtagContext, eventName, operationResult)
+            .catch(err => console.error(`DataDaemon.batch event emit failed:`, err));
         } else if (operation.type === 'delete') {
-          await Events.emit(DataDaemon.jtagContext, eventName, { id: operation.id });
+          Events.emit(DataDaemon.jtagContext, eventName, { id: operation.id })
+            .catch(err => console.error(`DataDaemon.batch event emit failed:`, err));
         }
       }
     }
@@ -509,9 +518,10 @@ export class DataDaemon {
     await this.ensureInitialized();
     const result = await this.adapter.clear();
 
-    // Emit cleared event if successful
+    // Emit cleared event if successful (fire-and-forget)
     if (result.success && DataDaemon.jtagContext) {
-      await Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, { all: true });
+      Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, { all: true })
+        .catch(err => console.error('DataDaemon.clear event emit failed:', err));
     }
 
     return result;
@@ -524,13 +534,13 @@ export class DataDaemon {
     await this.ensureInitialized();
     const result = await this.adapter.clearAll();
 
-    // Emit cleared event if successful with details about what was cleared
+    // Emit cleared event if successful with details about what was cleared (fire-and-forget)
     if (result.success && result.data && DataDaemon.jtagContext) {
-      await Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, {
+      Events.emit(DataDaemon.jtagContext, DATA_EVENTS.ALL.CLEARED, {
         all: true,
         tablesCleared: result.data.tablesCleared,
         recordsDeleted: result.data.recordsDeleted
-      });
+      }).catch(err => console.error('DataDaemon.clearAll event emit failed:', err));
     }
 
     return result;
@@ -543,10 +553,11 @@ export class DataDaemon {
     await this.ensureInitialized();
     const result = await this.adapter.truncate(collection);
 
-    // Emit truncated event if successful
+    // Emit truncated event if successful (fire-and-forget)
     if (result.success && DataDaemon.jtagContext) {
       const eventName = getDataEventName(collection, 'truncated');
-      await Events.emit(DataDaemon.jtagContext, eventName, { collection });
+      Events.emit(DataDaemon.jtagContext, eventName, { collection })
+        .catch(err => console.error(`DataDaemon.truncate event emit failed for ${collection}:`, err));
     }
 
     return result;
@@ -1079,20 +1090,9 @@ export class DataDaemon {
       throw new Error('DataDaemon not initialized - system must call DataDaemon.initialize() first');
     }
 
-    // Read entity before deletion for event emission
-    const readResult = await DataDaemon.sharedInstance.read(collection, id, DataDaemon.context);
-    const entity = readResult.data?.data;
-
-    const deleteResult = await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context);
-
-    // ✨ Universal event emission - works anywhere!
-    // Skip if suppressEvents is true (for internal operations like archiving)
-    if (deleteResult.success && entity && !suppressEvents) {
-      const eventName = BaseEntity.getEventName(collection, 'deleted');
-      await Events.emit(DataDaemon.jtagContext, eventName, entity);
-    }
-
-    return deleteResult;
+    // Instance delete() handles entity read + event emission internally
+    // No duplicate read or emission here — was previously doing both twice per delete
+    return await DataDaemon.sharedInstance.delete(collection, id, DataDaemon.context, suppressEvents);
   }
 
   /**

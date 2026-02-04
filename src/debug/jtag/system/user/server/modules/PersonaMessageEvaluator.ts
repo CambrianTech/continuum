@@ -512,9 +512,9 @@ export class PersonaMessageEvaluator {
     }
 
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
-    // Emit EVALUATING event for real-time feedback
+    // Emit EVALUATING event for real-time feedback (fire-and-forget — UI indicator)
     if (this.personaUser.client) {
-      await Events.emit<AIEvaluatingEventData>(
+      Events.emit<AIEvaluatingEventData>(
         DataDaemon.jtagContext!,
         AI_DECISION_EVENTS.EVALUATING,
         {
@@ -531,7 +531,7 @@ export class PersonaMessageEvaluator {
           scope: EVENT_SCOPES.ROOM,
           scopeId: messageEntity.roomId,
         }
-      );
+      ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
     }
 
     const gatingStart = Date.now();
@@ -565,9 +565,9 @@ export class PersonaMessageEvaluator {
         model: gatingResult.model
       });
 
-      // Emit DECIDED_SILENT event
+      // Emit DECIDED_SILENT event (fire-and-forget — UI indicator)
       if (this.personaUser.client) {
-        await Events.emit<AIDecidedSilentEventData>(
+        Events.emit<AIDecidedSilentEventData>(
         DataDaemon.jtagContext!,
         AI_DECISION_EVENTS.DECIDED_SILENT,
           {
@@ -585,7 +585,7 @@ export class PersonaMessageEvaluator {
             scope: EVENT_SCOPES.ROOM,
             scopeId: messageEntity.roomId,
           }
-        );
+        ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
       }
 
       return;
@@ -629,9 +629,9 @@ export class PersonaMessageEvaluator {
       ragContextSummary: gatingResult.ragContextSummary,
     });
 
-    // Emit DECIDED_RESPOND event
+    // Emit DECIDED_RESPOND event (fire-and-forget — UI indicator)
     if (this.personaUser.client) {
-      await Events.emit<AIDecidedRespondEventData>(
+      Events.emit<AIDecidedRespondEventData>(
         DataDaemon.jtagContext!,
         AI_DECISION_EVENTS.DECIDED_RESPOND,
         {
@@ -649,7 +649,7 @@ export class PersonaMessageEvaluator {
           scope: EVENT_SCOPES.ROOM,
           scopeId: messageEntity.roomId,
         }
-      );
+      ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
     }
 
     // === AUTONOMOUS DECISION: AI decides via RAG-based recipes ===
@@ -693,9 +693,9 @@ export class PersonaMessageEvaluator {
           this.log(`⏭️ ${this.personaUser.displayName}: Post-inference skip - adequate AI response exists`);
           this.log(`   Skipped because: ${adequacyResult.reason}`);
 
-          // Emit DECIDED_SILENT event
+          // Emit DECIDED_SILENT event (fire-and-forget — UI indicator)
           if (this.personaUser.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -713,7 +713,7 @@ export class PersonaMessageEvaluator {
                 scope: EVENT_SCOPES.ROOM,
                 scopeId: messageEntity.roomId
               }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${adequacyResult.reason}`, {
@@ -737,10 +737,10 @@ export class PersonaMessageEvaluator {
     await this.personaUser.memory.updateRAGContext(messageEntity.roomId, messageEntity);
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 1/3] RAG context updated (${Date.now() - ragUpdateStart}ms)`);
 
-    // 🔧 PHASE: Emit GENERATING event (using auto-context via sharedInstance)
+    // 🔧 PHASE: Emit GENERATING event (fire-and-forget — UI indicator)
     this.log(`🔧 ${this.personaUser.displayName}: [PHASE 2/3] Emitting GENERATING event...`);
     if (this.personaUser.client) {
-      await Events.emit<AIGeneratingEventData>(
+      Events.emit<AIGeneratingEventData>(
         DataDaemon.jtagContext!,
         AI_DECISION_EVENTS.GENERATING,
         {
@@ -756,7 +756,7 @@ export class PersonaMessageEvaluator {
           scope: EVENT_SCOPES.ROOM,
           scopeId: messageEntity.roomId
         }
-      );
+      ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
     }
     this.log(`✅ ${this.personaUser.displayName}: [PHASE 2/3] GENERATING event emitted`);
 
@@ -1263,8 +1263,8 @@ export class PersonaMessageEvaluator {
 
       const durationMs = Date.now() - startTime;
 
-      // Emit cognition event for error case
-      await Events.emit<StageCompleteEvent>(
+      // Emit cognition event for error case (fire-and-forget — telemetry)
+      Events.emit<StageCompleteEvent>(
         DataDaemon.jtagContext!,
         COGNITION_EVENTS.STAGE_COMPLETE,
         {
@@ -1287,7 +1287,7 @@ export class PersonaMessageEvaluator {
           },
           timestamp: Date.now()
         }
-      );
+      ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
 
       // Error in evaluation = SILENT. No fallback guessing.
       return {

@@ -1174,9 +1174,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators
+          // Emit event to clear UI indicators (fire-and-forget)
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1191,7 +1191,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 gatingModel: 'garbage-detector'
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           // Return failure so caller knows this wasn't successful
@@ -1210,9 +1210,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators
+          // Emit event to clear UI indicators (fire-and-forget)
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1230,7 +1230,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 scope: EVENT_SCOPES.ROOM,
                 scopeId: originalMessage.roomId
               }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           // Return early - treat as redundant (don't post this looping response)
@@ -1249,7 +1249,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           // Treat truncated tool calls the same as loops - they will just repeat forever
           InferenceCoordinator.releaseSlot(this.personaId, provider);
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1264,7 +1264,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 gatingModel: 'truncated-tool-detector'
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
@@ -1280,9 +1280,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators
+          // Emit event to clear UI indicators (fire-and-forget)
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1297,7 +1297,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 gatingModel: 'semantic-loop-detector'
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
@@ -1569,9 +1569,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       if (isRedundant) {
         this.log(`⚠️ ${this.personaName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
 
-        // Emit DECIDED_SILENT event to clear AI status indicator
+        // Emit DECIDED_SILENT event to clear AI status indicator (fire-and-forget)
         if (this.client) {
-          await Events.emit<AIDecidedSilentEventData>(
+          Events.emit<AIDecidedSilentEventData>(
             DataDaemon.jtagContext!,
             AI_DECISION_EVENTS.DECIDED_SILENT,
             {
@@ -1589,7 +1589,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               scope: EVENT_SCOPES.ROOM,
               scopeId: originalMessage.roomId
             }
-          );
+          ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
         }
 
         return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Discard response
@@ -1634,8 +1634,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         throw new Error(`Failed to create message: ${result.error}`);
       }
 
-      // Emit cognition event for post-response stage
-      await Events.emit<StageCompleteEvent>(
+      // Emit cognition event for post-response stage (fire-and-forget — telemetry)
+      Events.emit<StageCompleteEvent>(
         DataDaemon.jtagContext!,
         COGNITION_EVENTS.STAGE_COMPLETE,
         {
@@ -1658,7 +1658,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           },
           timestamp: Date.now()
         }
-      );
+      ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
 
       // ✅ Log successful response posting
       AIDecisionLogger.logResponse(
@@ -1690,9 +1690,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         );
       }
 
-      // Emit POSTED event
+      // Emit POSTED event (fire-and-forget — UI update, not critical path)
       if (this.client && result.data) {
-        await Events.emit<AIPostedEventData>(
+        Events.emit<AIPostedEventData>(
           DataDaemon.jtagContext!,
           AI_DECISION_EVENTS.POSTED,
           {
@@ -1709,15 +1709,15 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scope: EVENT_SCOPES.ROOM,
             scopeId: originalMessage.roomId
           }
-        );
+        ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
       }
 
       // VOICE ROUTING: If original message was from voice, route response to TTS
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
         this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
 
-        // Emit voice response event for VoiceOrchestrator
-        await Events.emit(
+        // Emit voice response event for VoiceOrchestrator (fire-and-forget — TTS queues)
+        Events.emit(
           DataDaemon.jtagContext!,
           'persona:response:generated',
           {
@@ -1730,7 +1730,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               voiceSessionId: originalMessage.voiceSessionId,
             }
           }
-        );
+        ).catch(err => this.log(`⚠️ Voice event emit failed: ${err}`));
       }
 
       // 📊 PIPELINE SUMMARY — single line with all phase timings
@@ -1753,9 +1753,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         error instanceof Error ? error.message : String(error)
       );
 
-      // Emit ERROR event
+      // Emit ERROR event (fire-and-forget — UI indicator)
       if (this.client) {
-        await Events.emit<AIErrorEventData>(
+        Events.emit<AIErrorEventData>(
           DataDaemon.jtagContext!,
           AI_DECISION_EVENTS.ERROR,
           {
@@ -1772,7 +1772,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scope: EVENT_SCOPES.ROOM,
             scopeId: originalMessage.roomId
           }
-        );
+        ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
       }
 
       return {
