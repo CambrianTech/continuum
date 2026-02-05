@@ -1,23 +1,23 @@
 /**
  * ProjectContextSource - Injects project workspace context into persona RAG
  *
- * When a persona has an active project workspace (git worktree on any repo),
- * this source surfaces:
+ * Provides two modes of project awareness:
+ *
+ * 1. Personal workspace — when a persona has their own git worktree (via code/* tools),
+ *    this shows THEIR branch, THEIR changes, and team activity on the same repo.
+ *
+ * 2. Shared repository fallback — when no personal workspace exists yet, this shows
+ *    the main repository context (branch, status, recent commits, file tree). This
+ *    ensures personas ALWAYS have codebase awareness, even before invoking code/* tools.
+ *
+ * Context includes:
  * - Project type and build/test commands
  * - File tree (top 2 levels)
  * - Git branch + status (modified files, ahead/behind)
  * - Recent commits on this branch
  * - Team activity (other ai/* branches on this repo, their status)
- * - Build status (last build result if tracked)
- *
- * This gives personas situational awareness of:
- * - What they're working on (their files, their branch)
- * - What the team is working on (other branches, recent commits)
- * - Who might need help (merge conflicts, build failures)
  *
  * Priority 70 - Between semantic-memory (60) and conversation-history (80).
- * Project context is important for coding activities but shouldn't displace
- * conversation history or identity.
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
@@ -33,57 +33,80 @@ export class ProjectContextSource implements RAGSource {
   readonly priority = 70;
   readonly defaultBudgetPercent = 12;
 
+  /** Cached main repo git check (stable for process lifetime) */
+  private static _isMainRepoGit: boolean | null = null;
+
   isApplicable(context: RAGSourceContext): boolean {
-    // Only include if persona has an active project workspace
-    return !!WorkspaceStrategy.getProjectForPersona(context.personaId);
+    // If persona has their own project workspace, always applicable
+    if (WorkspaceStrategy.getProjectForPersona(context.personaId)) {
+      return true;
+    }
+    // Fall back: provide main repo context so personas always see the codebase
+    return ProjectContextSource.isMainRepoGit();
   }
 
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
     const startTime = performance.now();
 
     const wsMeta = WorkspaceStrategy.getProjectForPersona(context.personaId);
-    if (!wsMeta) {
-      return this.emptySection(startTime);
-    }
+
+    // Resolve workspace directory — personal worktree or main repo
+    const workDir = wsMeta?.worktreeDir ?? process.cwd();
+    const repoPath = wsMeta?.repoPath ?? process.cwd();
+    const isPersonalWorkspace = !!wsMeta;
 
     try {
-      const gitOpts = { cwd: wsMeta.worktreeDir, stdio: 'pipe' as const, timeout: 5000 };
+      // Resolve branch — from workspace metadata or live git query
+      let branch = wsMeta?.branch ?? '';
+      if (!branch) {
+        try {
+          branch = execSync('git branch --show-current', {
+            cwd: workDir, stdio: 'pipe', timeout: 3000,
+          }).toString().trim();
+        } catch {
+          branch = 'unknown';
+        }
+      }
 
-      // Run git queries concurrently via Promise.all on sync operations
-      // These are fast (~5-10ms each) since they're local git operations
+      // Run git queries concurrently (all fast, local git operations)
       const [projectType, gitStatus, gitLog, teamBranches, fileTree] = await Promise.all([
-        ProjectDetector.detect(wsMeta.worktreeDir),
-        this.getGitStatus(wsMeta.worktreeDir),
-        this.getGitLog(wsMeta.worktreeDir, 5),
-        this.getTeamBranches(wsMeta.repoPath),
-        this.getFileTree(wsMeta.worktreeDir, 2),
+        ProjectDetector.detect(workDir),
+        this.getGitStatus(workDir),
+        this.getGitLog(workDir, 5),
+        this.getTeamBranches(repoPath),
+        this.getFileTree(workDir, 2),
       ]);
 
-      // Check for team members who might need help (merge conflicts)
-      const teamStatus = await this.getTeamStatus(wsMeta.repoPath, wsMeta.branch);
+      // Team status only makes sense when persona has their own workspace
+      // (can't detect merge conflicts in someone else's worktree from main repo)
+      const teamStatus = isPersonalWorkspace
+        ? await this.getTeamStatus(repoPath, branch)
+        : [];
 
       const formatted = this.formatProjectContext({
         projectType,
-        branch: wsMeta.branch,
+        branch,
         gitStatus,
         gitLog,
         teamBranches,
         teamStatus,
         fileTree,
-        repoPath: wsMeta.repoPath,
+        repoPath,
+        isPersonalWorkspace,
       });
 
       // Respect budget
       const tokenCount = this.estimateTokens(formatted);
       const budgetTokens = Math.floor(allocatedBudget);
       const finalPrompt = tokenCount > budgetTokens
-        ? this.formatMinimal(wsMeta.branch, projectType, gitStatus)
+        ? this.formatMinimal(branch, projectType, gitStatus, isPersonalWorkspace)
         : formatted;
 
       const finalTokens = this.estimateTokens(finalPrompt);
       const loadTimeMs = performance.now() - startTime;
 
-      log.debug(`Loaded project context (${finalTokens} tokens, ${loadTimeMs.toFixed(1)}ms) for ${context.personaId.slice(0, 8)}`);
+      const mode = isPersonalWorkspace ? 'personal workspace' : 'shared repo';
+      log.debug(`Loaded project context [${mode}] (${finalTokens} tokens, ${loadTimeMs.toFixed(1)}ms) for ${context.personaId.slice(0, 8)}`);
 
       return {
         sourceName: this.name,
@@ -91,16 +114,37 @@ export class ProjectContextSource implements RAGSource {
         loadTimeMs,
         systemPromptSection: finalPrompt,
         metadata: {
-          branch: wsMeta.branch,
-          repoPath: wsMeta.repoPath,
+          branch,
+          repoPath,
           projectType: projectType.type,
           teamBranchCount: teamBranches.length,
+          isPersonalWorkspace,
         },
       };
     } catch (error: any) {
       log.error(`Failed to load project context: ${error.message}`);
       return this.emptySection(startTime, error.message);
     }
+  }
+
+  /**
+   * Check if process.cwd() is inside a git repository.
+   * Cached for process lifetime (repo doesn't move at runtime).
+   */
+  private static isMainRepoGit(): boolean {
+    if (ProjectContextSource._isMainRepoGit === null) {
+      try {
+        execSync('git rev-parse --is-inside-work-tree', {
+          cwd: process.cwd(),
+          stdio: 'pipe',
+          timeout: 3000,
+        });
+        ProjectContextSource._isMainRepoGit = true;
+      } catch {
+        ProjectContextSource._isMainRepoGit = false;
+      }
+    }
+    return ProjectContextSource._isMainRepoGit;
   }
 
   // ────────────────────────────────────────────────────────────
@@ -199,6 +243,7 @@ export class ProjectContextSource implements RAGSource {
     teamStatus: TeamMemberStatus[];
     fileTree: string;
     repoPath: string;
+    isPersonalWorkspace: boolean;
   }): string {
     const sections: string[] = [];
 
@@ -207,11 +252,28 @@ export class ProjectContextSource implements RAGSource {
     if (data.projectType.buildCommand) commands.push(`Build: ${data.projectType.buildCommand}`);
     if (data.projectType.testCommand) commands.push(`Test: ${data.projectType.testCommand}`);
     if (data.projectType.serveCommand) commands.push(`Serve: ${data.projectType.serveCommand}`);
-    sections.push(`## Project Context\nType: ${data.projectType.description}${commands.length ? ' | ' + commands.join(' | ') : ''}`);
 
-    // Your branch status
+    const workspaceLabel = data.isPersonalWorkspace
+      ? '## Your Workspace'
+      : '## Shared Repository';
+    sections.push(`${workspaceLabel}\nType: ${data.projectType.description}${commands.length ? ' | ' + commands.join(' | ') : ''}`);
+
+    // Branch status — distinguish personal vs shared
     if (data.gitStatus) {
-      sections.push(`### Your Branch: ${data.branch}\n${data.gitStatus}`);
+      const branchLabel = data.isPersonalWorkspace
+        ? `### Your Branch: ${data.branch}`
+        : `### Current Branch: ${data.branch}`;
+      sections.push(`${branchLabel}\n${data.gitStatus}`);
+    }
+
+    // Workspace hint for shared mode — guide personas to bootstrap their workspace
+    if (!data.isPersonalWorkspace) {
+      sections.push(
+        `### Workspace Status\n` +
+        `You are viewing the shared repository. When you use code/* tools (code/read, code/write, code/shell/execute), ` +
+        `a personal workspace with your own git branch will be created automatically.\n` +
+        `Your branch will be named ai/{your-name}/work — you can commit freely without affecting the main branch.`
+      );
     }
 
     // Recent commits
@@ -246,8 +308,9 @@ export class ProjectContextSource implements RAGSource {
     return sections.join('\n\n');
   }
 
-  private formatMinimal(branch: string, projectType: ProjectType, gitStatus: string): string {
-    return `## Project: ${projectType.description}\nBranch: ${branch}\n${gitStatus}`;
+  private formatMinimal(branch: string, projectType: ProjectType, gitStatus: string, isPersonalWorkspace: boolean): string {
+    const label = isPersonalWorkspace ? 'Your Workspace' : 'Shared Repository';
+    return `## ${label}: ${projectType.description}\nBranch: ${branch}\n${gitStatus}`;
   }
 
   private emptySection(startTime: number, error?: string): RAGSection {

@@ -158,6 +158,10 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     this.providerName = config.providerName;
     this.supportedCapabilities = config.supportedCapabilities;
 
+    // Sync base-layer timeout with adapter config timeout
+    // (base class defaults to 30s; adapters specify their own via config)
+    this.baseTimeout = config.timeout;
+
     // Inject logger into PricingManager singleton (first adapter wins)
     PricingManager.getInstance().setLogger((msg: string) => this.log(null, 'warn', msg));
   }

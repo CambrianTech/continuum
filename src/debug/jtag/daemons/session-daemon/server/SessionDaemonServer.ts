@@ -23,6 +23,7 @@ import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { UserIdentityResolver } from '../../../system/user/shared/UserIdentityResolver';
 import { Logger } from '../../../system/core/logging/Logger';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 import {
   type SessionMetadata,
   type CreateSessionParams,
@@ -447,7 +448,7 @@ export class SessionDaemonServer extends SessionDaemon {
       // Create appropriate User subclass based on type
       let user: BaseUser;
       if (userEntity.type === 'persona') {
-        const personaDatabasePath = `.continuum/personas/${userId}/state.sqlite`;
+        const personaDatabasePath = SystemPaths.personas.state(userEntity.uniqueId);
         const storage = new SQLiteStateBackend(personaDatabasePath);
         user = new PersonaUser(userEntity, userState, storage);
       } else if (userEntity.type === 'agent') {

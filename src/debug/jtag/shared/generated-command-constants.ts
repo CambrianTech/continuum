@@ -239,6 +239,7 @@ export const COMMANDS = {
   WORKSPACE_GIT_STATUS: 'workspace/git/status',
   WORKSPACE_GIT_WORKSPACE_CLEAN: 'workspace/git/workspace/clean',
   WORKSPACE_GIT_WORKSPACE_INIT: 'workspace/git/workspace/init',
+  WORKSPACE_LIST: 'workspace/list',
   WORKSPACE_RECIPE_LOAD: 'workspace/recipe/load',
   WORKSPACE_TASK_COMPLETE: 'workspace/task/complete',
   WORKSPACE_TASK_CREATE: 'workspace/task/create',

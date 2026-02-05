@@ -491,7 +491,7 @@ export class AICapabilityRegistry {
     this.registerProvider({
       providerId: 'together',
       providerName: 'Together AI',
-      defaultCapabilities: ['text-input', 'text-output', 'streaming'],
+      defaultCapabilities: ['text-input', 'text-output', 'streaming', 'function-calling'],
       models: [
         {
           modelId: 'meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo',
@@ -545,7 +545,7 @@ export class AICapabilityRegistry {
     this.registerProvider({
       providerId: 'groq',
       providerName: 'Groq',
-      defaultCapabilities: ['text-input', 'text-output', 'streaming'],
+      defaultCapabilities: ['text-input', 'text-output', 'streaming', 'function-calling'],
       models: [
         {
           modelId: 'llama-3.2-90b-vision-preview',

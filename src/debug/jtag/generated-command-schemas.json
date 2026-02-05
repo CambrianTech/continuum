@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-04T23:37:20.476Z",
+  "generated": "2026-02-05T16:14:25.713Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -184,6 +184,22 @@
           "type": "boolean",
           "required": false,
           "description": "reload parameter"
+        }
+      }
+    },
+    {
+      "name": "workspace/list",
+      "description": "Workspace List Command - Shared Types\n *\n * List all persona workspaces across the team — worktree paths, git branches,\n * modified files, shell activity. Scans both in-memory active workspaces and\n * persisted git worktrees on disk.",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "includeGitStatus": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeGitStatus parameter"
         }
       }
     },

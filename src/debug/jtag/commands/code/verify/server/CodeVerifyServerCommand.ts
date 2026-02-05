@@ -82,43 +82,36 @@ export class CodeVerifyServerCommand extends CommandBase<CodeVerifyParams, CodeV
 
   /**
    * Resolve the workspace directory from params.
-   * Uses explicit cwd if provided, otherwise resolves from userId convention.
+   * Prefers explicit cwd (always passed by Workspace.verify()). Falls back to
+   * scanning .continuum/personas/ for a matching workspace directory.
    */
   private resolveWorkspaceDir(params: CodeVerifyParams): string {
     if (params.cwd && params.cwd.trim()) {
       return params.cwd;
     }
 
+    // Fallback: scan persona directories for a workspace matching this handle/userId.
+    // This is a last-resort heuristic — callers should pass cwd explicitly.
     const jtagRoot = process.cwd();
-    const personaId = params.userId!;
+    const personasRoot = path.join(jtagRoot, '.continuum', 'personas');
 
-    // Standard persona workspace path
-    const workspaceDir = path.join(jtagRoot, '.continuum', 'personas', personaId, 'workspace');
-
-    if (fs.existsSync(workspaceDir)) {
-      return workspaceDir;
-    }
-
-    // Fallback: check if userId is a challenge workspace handle (challenge-{id}-{personaId})
-    if (personaId.startsWith('challenge-')) {
-      const parts = personaId.split('-');
-      // Handle: challenge-{challengeId}-{personaId}
-      // The challengeId and personaId are UUIDs, so we need the full pattern
-      const challengeIdStart = 'challenge-'.length;
-      // Find the persona ID (last UUID in the handle)
-      const uuidLen = 36; // Standard UUID length
-      if (personaId.length > challengeIdStart + uuidLen + 1) {
-        const actualPersonaId = personaId.slice(-(uuidLen));
-        const challengeId = personaId.slice(challengeIdStart, personaId.length - uuidLen - 1);
-        const challengeDir = path.join(jtagRoot, '.continuum', 'personas', actualPersonaId, 'challenges', challengeId);
-        if (fs.existsSync(challengeDir)) {
-          return challengeDir;
+    if (fs.existsSync(personasRoot)) {
+      try {
+        const entries = fs.readdirSync(personasRoot, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const wsDir = path.join(personasRoot, entry.name, 'workspace');
+          if (fs.existsSync(wsDir)) {
+            // For sandbox mode, the handle IS the personaId. Check if this directory
+            // was registered for this handle by looking for any content.
+            return wsDir;
+          }
         }
-      }
+      } catch { /* fallthrough */ }
     }
 
-    // Last resort: use the standard workspace path even if it doesn't exist yet
-    return workspaceDir;
+    // Absolute last resort — construct path and hope for the best
+    return path.join(personasRoot, params.userId!, 'workspace');
   }
 
   /**

@@ -8,6 +8,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GitPushParams, GitPushResult } from '../shared/GitPushTypes';
 import { createGitPushResultFromParams } from '../shared/GitPushTypes';
+import { resolveWorkspacePathFromUserId } from '../../shared/resolveWorkspacePath';
 import * as path from 'path';
 import * as fs from 'fs';
 import { promisify } from 'util';
@@ -24,9 +25,7 @@ export class GitPushServerCommand extends CommandBase<GitPushParams, GitPushResu
   async execute(params: GitPushParams): Promise<GitPushResult> {
     try {
       const userId = params.userId || 'unknown';
-      const workspacePath = params.workspacePath || path.resolve(
-        process.cwd(), '.continuum/sessions/user/shared', userId, 'workspace'
-      );
+      const workspacePath = params.workspacePath || await resolveWorkspacePathFromUserId(userId);
 
       if (!fs.existsSync(workspacePath)) {
         throw new Error(`Workspace not found at ${workspacePath}`);

@@ -625,7 +625,7 @@ export class PersonaResponseGenerator {
       // Inject available tools for autonomous tool discovery (Phase 3A)
       // Use adapter-based formatting for harmony with parser
       // CRITICAL: Only inject tools for models that can actually emit tool calls.
-      // Models without tool capability (groq, together, etc.) narrate instead of calling tools,
+      // Models without tool capability narrate instead of calling tools,
       // wasting tokens and clogging chat with useless "let me use tool X" text.
       const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
       const availableTools = toolCap !== 'none'
@@ -645,8 +645,11 @@ export class PersonaResponseGenerator {
         category: t.category
       }));
 
-      if (availableTools.length > 0) {
-        // Use primary adapter to format tools (harmonious with parser)
+      if (availableTools.length > 0 && !supportsNativeTools(this.modelConfig.provider || 'candle')) {
+        // Text-based tool injection for non-native providers (XML tool callers like DeepSeek).
+        // Native tool providers (Anthropic, OpenAI, Together, Groq) get tools via the JSON
+        // `tools` request parameter instead — injecting text descriptions alongside native specs
+        // confuses Llama models into narrating tool usage rather than calling the native API.
         const adapter = getPrimaryAdapter();
         const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
 
@@ -654,7 +657,7 @@ export class PersonaResponseGenerator {
 ================================`;
 
         systemPrompt += toolsSection;
-        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
+        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into system prompt (text format)`);
       }
 
       // Inject recipe activity context (strategy rules + highlighted tools)
@@ -1055,7 +1058,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         }
 
         request.tools = convertToNativeToolSpecs(prioritizedTools);
-        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
+        request.tool_choice = 'auto';
+        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format, tool_choice=auto)`);
       }
       pipelineTiming['3.2_format'] = Date.now() - phase32Start;
       this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
@@ -1186,8 +1190,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         // 🔧 PHASE 3.3.5a: GARBAGE DETECTION
         // Detect and reject garbage output (Unicode garbage, repetition, encoding errors)
-        // This catches model failures that produce gibberish instead of coherent text
-        const garbageCheck = GarbageDetector.isGarbage(aiResponse.text);
+        // This catches model failures that produce gibberish instead of coherent text.
+        // Skip when the response has native tool calls — models with function calling often
+        // return empty text + tool_calls, which is valid (the agent loop will execute them).
+        const hasToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
+        const garbageCheck = hasToolCalls ? { isGarbage: false, reason: '', details: '', score: 0 } : GarbageDetector.isGarbage(aiResponse.text);
         if (garbageCheck.isGarbage) {
           this.log(`🗑️ ${this.personaName}: [PHASE 3.3.5a] GARBAGE DETECTED (${garbageCheck.reason}: ${garbageCheck.details})`);
 
@@ -1224,7 +1231,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         // - Response is truncated mid-tool-call (DeepSeek's issue)
         // - AI repeats same content with minor variations
         // - Tool-level detection would miss it
-        if (this.isResponseLoop(aiResponse.text)) {
+        if (!hasToolCalls && this.isResponseLoop(aiResponse.text)) {
           this.log(`🔁 ${this.personaName}: [PHASE 3.3.5b] Response loop detected - DISCARDING response`);
 
           // Release inference slot

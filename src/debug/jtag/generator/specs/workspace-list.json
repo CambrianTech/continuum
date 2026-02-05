@@ -1,0 +1,48 @@
+{
+  "name": "workspace/list",
+  "description": "List all persona workspaces across the team — worktree paths, git branches, modified files, shell activity. Scans both in-memory active workspaces and persisted git worktrees on disk.",
+  "params": [
+    {
+      "name": "personaId",
+      "type": "string",
+      "optional": true,
+      "description": "Filter to a specific persona's workspaces. If omitted, returns all."
+    },
+    {
+      "name": "includeGitStatus",
+      "type": "boolean",
+      "optional": true,
+      "description": "Include git status (branch, modified files, staged) for each workspace. Defaults to true."
+    }
+  ],
+  "results": [
+    {
+      "name": "workspaces",
+      "type": "WorkspaceInfo[]",
+      "description": "Array of workspace info objects for each discovered workspace"
+    },
+    {
+      "name": "totalCount",
+      "type": "number",
+      "description": "Total number of workspaces found"
+    },
+    {
+      "name": "activeCount",
+      "type": "number",
+      "description": "Number of workspaces currently active in memory (server session)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "List all persona workspaces",
+      "command": "./jtag workspace/list",
+      "expectedResult": "{ workspaces: [...], totalCount: 3, activeCount: 1 }"
+    },
+    {
+      "description": "List workspaces for a specific persona",
+      "command": "./jtag workspace/list --personaId=\"deepseek\"",
+      "expectedResult": "{ workspaces: [{ personaId: 'deepseek', branch: 'ai/deepseek-assistant/default', ... }] }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

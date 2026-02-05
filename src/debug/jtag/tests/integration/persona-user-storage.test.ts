@@ -3,7 +3,7 @@
  *
  * Tests that PersonaUser uses SQLiteStateBackend correctly with paranoid verification:
  * 1. SessionDaemon assigns SQLiteStateBackend to PersonaUser (not MemoryStateBackend)
- * 2. Each PersonaUser gets dedicated SQLite path: `.continuum/personas/{personaId}/state.sqlite`
+ * 2. Each PersonaUser gets dedicated SQLite path via SystemPaths: `.continuum/personas/{uniqueId}/data/state.db`
  * 3. PersonaUser.saveState() persists to SQLite database
  * 4. PersonaUser.loadState() reads from SQLite database
  * 5. Control test: AgentUser still uses MemoryStateBackend (ephemeral)
@@ -17,6 +17,7 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
+import { SystemPaths } from '../../system/core/config/SystemPaths';
 
 interface PersonaTestResult {
   readonly testName: string;
@@ -98,10 +99,12 @@ function executeJtagCommand<T = Record<string, unknown>>(command: string): T {
 }
 
 /**
- * Verify SQLite database file exists at expected path
+ * Verify SQLite database file exists at expected path.
+ * Accepts either uniqueId (human-readable) or UUID — tries SystemPaths first.
  */
-function verifyDatabaseFileExists(personaId: UUID): { exists: boolean; path: string } {
-  const expectedPath = join(process.cwd(), `.continuum/personas/${personaId}/state.sqlite`);
+function verifyDatabaseFileExists(identifier: string): { exists: boolean; path: string } {
+  // Use SystemPaths (single source of truth for persona directory layout)
+  const expectedPath = SystemPaths.personas.state(identifier);
   const exists = existsSync(expectedPath);
 
   console.log(`   🔍 Checking database file: ${expectedPath}`);
@@ -269,7 +272,7 @@ async function testPersonaUserStorage(): Promise<void> {
     // TEST 3: Verify Dedicated SQLite Database Path
     // ============================================
     console.log('📝 Test 3: Verify dedicated SQLite database file');
-    console.log(`   Expected path: .continuum/personas/${personaUserId}/state.sqlite\n`);
+    console.log(`   Expected path: ${SystemPaths.personas.state(personaUserId)}\n`);
 
     const dbFile = verifyDatabaseFileExists(personaUserId);
 

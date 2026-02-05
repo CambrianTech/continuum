@@ -39,15 +39,16 @@ export class UserDirectoryManager {
   }
 
   /**
-   * Get all paths for a user
-   * Supports legacy .continuum/personas/ paths for backward compatibility
+   * Get all paths for a user.
+   * Note: Persona directories now use uniqueId (human-readable), not UUID.
+   * The legacy UUID fallback checks `.continuum/personas/{userId}` for backward compat.
    */
   getPaths(userId: UUID): UserDirectoryPaths {
     let root = path.join(this.baseDir, userId);
 
     // Check if new path exists
     if (!fs.existsSync(root)) {
-      // Fall back to legacy persona path if it exists
+      // Fall back to legacy persona path if it exists (may be UUID-named from old code)
       const legacyPath = path.join('.continuum/personas', userId);
       if (fs.existsSync(legacyPath)) {
         root = legacyPath;

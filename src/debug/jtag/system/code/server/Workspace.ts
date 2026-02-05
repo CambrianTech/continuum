@@ -141,6 +141,7 @@ export class Workspace {
       userId: this.handle,
       typeCheck,
       testFiles,
+      cwd: this.dir,  // Explicit path — don't rely on UUID-based path derivation
     });
   }
 

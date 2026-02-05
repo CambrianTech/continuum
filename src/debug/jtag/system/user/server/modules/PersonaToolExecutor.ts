@@ -16,6 +16,7 @@
  */
 
 import { CognitionLogger } from './cognition/CognitionLogger';
+import { SentinelAutoConfig } from '../../../code/server/SentinelAutoConfig';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { generateUUID } from '../../../core/types/CrossPlatformUUID';
@@ -391,6 +392,24 @@ export class PersonaToolExecutor {
       media: registryResult.media,  // ← Preserve structured media
       error: registryResult.error
     };
+
+    // Auto-inject sentinel rules for code/shell/execute commands (fire-and-forget).
+    // When a build/test/lint command starts, sentinel classifies output lines
+    // so the persona gets filtered Error/Warning/Success instead of raw stdout.
+    if (toolCall.toolName === 'code/shell/execute' && result.success && result.content) {
+      try {
+        const execResult = JSON.parse(result.content);
+        if (execResult.executionId && execResult.status === 'running') {
+          SentinelAutoConfig.applyIfApplicable(
+            context.personaId,
+            execResult.executionId,
+            toolCall.parameters.cmd || '',
+          ).catch(err => this.log.warn(`Sentinel auto-config failed: ${err.message}`));
+        }
+      } catch {
+        // Result wasn't JSON or missing fields — skip sentinel
+      }
+    }
 
     const duration = Date.now() - startTime;
 

@@ -1798,10 +1798,10 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Get persona database path
+   * Get persona database path — delegates to SystemPaths (single source of truth)
    */
   getPersonaDatabasePath(): string {
-    return `.continuum/personas/${this.entity.id}/state.sqlite`;
+    return SystemPaths.personas.state(this.entity.uniqueId);
   }
 
   /**

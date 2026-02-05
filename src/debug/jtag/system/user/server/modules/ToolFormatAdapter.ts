@@ -575,17 +575,18 @@ export function convertToNativeToolSpecs(tools: ToolDefinition[]): NativeToolSpe
 }
 
 /**
- * Check if a provider supports native JSON tool calling
+ * Check if a provider supports native JSON tool calling.
+ * Together AI and Groq both implement the OpenAI-compatible function calling spec
+ * (tools parameter + tool_calls in response).
  */
 export function supportsNativeTools(provider: string): boolean {
-  // Providers that support native tool_use JSON format
-  const nativeToolProviders = ['anthropic', 'openai', 'azure'];
+  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq'];
   return nativeToolProviders.includes(provider.toLowerCase());
 }
 
 /**
  * Tool capability tier for a given provider/model combination.
- * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure)
+ * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq)
  * - 'xml': XML tool calls parsed by ToolCallParser (DeepSeek — proven to work)
  * - 'none': Model narrates instead of calling tools — don't inject tools
  */
@@ -607,6 +608,6 @@ export function getToolCapability(
   const xmlCapable = ['deepseek'];
   if (xmlCapable.includes(provider.toLowerCase())) return 'xml';
 
-  // Everything else: groq, together, xai, fireworks, candle, sentinel, ollama
+  // Everything else: xai, fireworks, candle, sentinel, ollama
   return 'none';
 }

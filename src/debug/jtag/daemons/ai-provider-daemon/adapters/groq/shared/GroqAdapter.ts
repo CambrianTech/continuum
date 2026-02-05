@@ -45,7 +45,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 131072,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         },
         {
           id: 'llama-3.1-8b-instant',
@@ -54,7 +54,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 131072,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         },
         // Mixtral family (Mistral AI)
         {
@@ -64,7 +64,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 32768,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         },
         // Gemma family (Google)
         {
@@ -74,7 +74,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 8192,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         }
       ]
     });

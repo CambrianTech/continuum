@@ -24,7 +24,7 @@ export const STORAGE_PATHS = {
   LOGS: '.continuum/logs',
   CONFIG: (homeDir: string) => `${homeDir}/.continuum`,
   SESSION: (sessionId: string) => `.continuum/jtag/sessions/user/${sessionId}`,
-  PERSONA: (personaId: string) => `${process.env.HOME}/.continuum/personas/${personaId}`
+  PERSONA: (personaUniqueId: string) => `${process.env.HOME}/.continuum/personas/${personaUniqueId}`
 } as const;
 
 // Artifacts operation types

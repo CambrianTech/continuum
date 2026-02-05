@@ -56,11 +56,11 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
 
       const persona = userResult.data as UserEntity;
 
-      // 3. Generate workspace path (.continuum/sessions/user/shared/{personaId}/workspace)
+      // 3. Generate workspace path — use human-readable uniqueId for directory names
       const workspacePath = path.resolve(
         process.cwd(),
         '.continuum/sessions/user/shared',
-        personaId,
+        persona.uniqueId || personaId,
         'workspace'
       );
 

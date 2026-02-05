@@ -13,6 +13,7 @@
 import { Commands } from '../../core/shared/Commands';
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
 import { Logger } from '../../core/logging/Logger';
+import { SystemPaths } from '../../core/config/SystemPaths';
 import { stringToUUID } from '../../core/types/CrossPlatformUUID';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
@@ -27,8 +28,11 @@ const log = Logger.create('WorkspaceStrategy', 'code');
 export type WorkspaceMode = 'sandbox' | 'worktree' | 'project';
 
 export interface WorkspaceConfig {
-  /** Persona ID creating the workspace */
+  /** Persona UUID (for handle generation + Rust backend registration) */
   readonly personaId: string;
+
+  /** Human-readable persona identifier (e.g., 'together', 'deepseek') — used for ALL filesystem paths */
+  readonly personaUniqueId: string;
 
   /** Which workspace strategy to use */
   readonly mode: WorkspaceMode;
@@ -44,9 +48,6 @@ export interface WorkspaceConfig {
 
   /** Persona display name for git identity (project mode) */
   readonly personaName?: string;
-
-  /** Persona unique ID for git email identity (project mode) */
-  readonly personaUniqueId?: string;
 }
 
 export interface WorkspaceResult {
@@ -111,20 +112,16 @@ export class WorkspaceStrategy {
 
   /**
    * Create an isolated sandbox workspace (current default behavior).
-   * Directory: .continuum/personas/{personaId}/workspace/
+   * Directory: {SystemPaths.personas.dir(uniqueId)}/workspace/
    * Registered with Rust backend as writable + read-only codebase access.
    */
   private static async createSandbox(config: WorkspaceConfig): Promise<WorkspaceResult> {
     const handle = config.personaId;
+    const workspaceDir = path.join(SystemPaths.personas.dir(config.personaUniqueId), 'workspace');
 
     if (initializedWorkspaces.has(handle)) {
-      const jtagRoot = process.cwd();
-      const workspaceDir = path.join(jtagRoot, '.continuum', 'personas', config.personaId, 'workspace');
       return { handle, workspaceDir, mode: 'sandbox' };
     }
-
-    const jtagRoot = process.cwd();
-    const workspaceDir = path.join(jtagRoot, '.continuum', 'personas', config.personaId, 'workspace');
 
     // Create workspace directory if it doesn't exist
     if (!fs.existsSync(workspaceDir)) {
@@ -133,9 +130,10 @@ export class WorkspaceStrategy {
     }
 
     // Register with Rust backend — writable workspace + read-only codebase access
+    const jtagRoot = process.cwd();
     await CodeDaemon.createWorkspace(handle, workspaceDir, [jtagRoot]);
     initializedWorkspaces.add(handle);
-    log.info(`Sandbox workspace initialized for persona ${config.personaId}`);
+    log.info(`Sandbox workspace initialized for persona ${config.personaUniqueId}`);
 
     return { handle, workspaceDir, mode: 'sandbox' };
   }
@@ -150,10 +148,10 @@ export class WorkspaceStrategy {
     const handle = `worktree-${config.personaId}-${slug}`;
 
     if (initializedWorkspaces.has(handle)) {
-      // Already initialized — resolve path from convention
+      // Already initialized — resolve path from convention (human-readable uniqueId)
       const jtagRoot = process.cwd();
       const workspaceDir = path.join(
-        jtagRoot, '.continuum', 'sessions', 'user', 'shared', config.personaId, 'workspace',
+        jtagRoot, '.continuum', 'sessions', 'user', 'shared', config.personaUniqueId, 'workspace',
       );
       return { handle, workspaceDir, mode: 'worktree' };
     }
@@ -234,14 +232,14 @@ export class WorkspaceStrategy {
     }
 
     // Branch name: ai/{personaName}/{slug}
-    const safeName = (config.personaName ?? config.personaId.slice(0, 8))
+    const safeName = (config.personaName ?? config.personaUniqueId)
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, '-')
       .replace(/-+/g, '-');
     const branchName = `ai/${safeName}/${slug}`;
 
-    // Worktree directory: inside the repo's .git to keep it clean
-    const worktreeDir = path.join(resolvedRepoPath, '.git', 'continuum-worktrees', config.personaId, slug);
+    // Worktree directory: inside the repo's .git — uses uniqueId for human-readable paths
+    const worktreeDir = path.join(resolvedRepoPath, '.git', 'continuum-worktrees', config.personaUniqueId, slug);
 
     log.info(`Creating project workspace: repo=${resolvedRepoPath} branch=${branchName}`);
 
@@ -293,7 +291,7 @@ export class WorkspaceStrategy {
 
     // Set local git identity in the worktree (not global)
     const userName = config.personaName ?? 'AI Persona';
-    const userEmail = `${config.personaUniqueId ?? config.personaId}@continuum.local`;
+    const userEmail = `${config.personaUniqueId}@continuum.local`;
     const wtOpts = { cwd: worktreeDir, stdio: 'pipe' as const };
     execSync(`git config user.name "${userName}"`, wtOpts);
     execSync(`git config user.email "${userEmail}"`, wtOpts);

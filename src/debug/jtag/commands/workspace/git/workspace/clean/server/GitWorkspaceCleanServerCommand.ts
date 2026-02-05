@@ -8,6 +8,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GitWorkspaceCleanParams, GitWorkspaceCleanResult } from '../shared/GitWorkspaceCleanTypes';
 import { createGitWorkspaceCleanResultFromParams } from '../shared/GitWorkspaceCleanTypes';
+import { resolveWorkspacePathFromUserId } from '../../../shared/resolveWorkspacePath';
 import * as path from 'path';
 import * as fs from 'fs';
 import { promisify } from 'util';
@@ -24,9 +25,7 @@ export class GitWorkspaceCleanServerCommand extends CommandBase<GitWorkspaceClea
   async execute(params: GitWorkspaceCleanParams): Promise<GitWorkspaceCleanResult> {
     try {
       const userId = params.userId || 'unknown';
-      const workspacePath = params.workspacePath || path.resolve(
-        process.cwd(), '.continuum/sessions/user/shared', userId, 'workspace'
-      );
+      const workspacePath = params.workspacePath || await resolveWorkspacePathFromUserId(userId);
 
       if (!fs.existsSync(workspacePath)) {
         return createGitWorkspaceCleanResultFromParams(params, {
