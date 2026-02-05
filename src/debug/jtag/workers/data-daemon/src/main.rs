@@ -23,18 +23,21 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use std::{fs, thread};
-use ts_rs::TS;
 use uuid::Uuid;
 
 mod timing;
 use timing::{RequestTimer, METRICS};
 
+// IPC types — single source of truth, ts-rs exported for TypeScript
+mod types;
+pub use types::*;
+
 // ============================================================================
-// Core Types (ts-rs exported for TypeScript)
+// Core Types (internal, not exported to TypeScript)
 // ============================================================================
 
 /// Opaque handle to a database adapter (like textureId)
-/// Serialized as UUID string in JSON
+/// Serialized as UUID string in JSON — TypeScript sees it as string
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdapterHandle(Uuid);
 
@@ -42,26 +45,6 @@ impl AdapterHandle {
     fn new() -> Self {
         Self(Uuid::new_v4())
     }
-}
-
-/// Adapter type (determines concurrency strategy)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-#[serde(rename_all = "lowercase")]
-pub enum AdapterType {
-    Sqlite,
-    Postgres,
-    Json,
-}
-
-/// Adapter configuration
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-pub struct AdapterConfig {
-    adapter_type: AdapterType,
-    connection_string: String,
-    #[ts(skip)]
-    options: Option<HashMap<String, Value>>,
 }
 
 // ============================================================================
@@ -172,14 +155,22 @@ enum Request {
         /// Raw SQL query string (SELECT only, no modifications)
         sql: String,
     },
+
+    /// Truncate (delete all rows from) a collection
+    #[serde(rename = "data/truncate")]
+    DataTruncate {
+        handle: AdapterHandle,
+        collection: String,
+    },
+
+    /// List all table names in the database
+    #[serde(rename = "data/list_tables")]
+    DataListTables {
+        handle: AdapterHandle,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-pub struct OrderBy {
-    field: String,
-    direction: String, // "asc" | "desc"
-}
+// OrderBy is now in types.rs (ts-rs exported)
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status")]
@@ -1259,6 +1250,18 @@ impl RustDataDaemon {
                 Ok(data) => Response::Ok { data },
                 Err(e) => Response::Error { message: e },
             },
+
+            Request::DataTruncate { handle, collection } => {
+                match self.data_truncate(handle, &collection) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::DataListTables { handle } => match self.data_list_tables(handle) {
+                Ok(data) => Response::Ok { data },
+                Err(e) => Response::Error { message: e },
+            },
         }
     }
 
@@ -1549,6 +1552,47 @@ impl RustDataDaemon {
 
                 let execute_start = Instant::now();
                 let result = self.data_query(handle, &sql);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => {
+                        let count = data
+                            .get("count")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataTruncate { handle, collection } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.data_truncate(handle, &collection);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataListTables { handle } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.data_list_tables(handle);
                 timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
 
                 match result {
@@ -2218,6 +2262,32 @@ impl RustDataDaemon {
         println!("📊 DataQuery: {sql}");
         self.registry.execute_read(handle, sql)
     }
+
+    /// Truncate (delete all rows from) a collection
+    fn data_truncate(&self, handle: AdapterHandle, collection: &str) -> Result<Value, String> {
+        let query = format!("DELETE FROM {collection}");
+        println!("🗑️  DataTruncate: {query}");
+        self.registry.execute_write(handle, &query, &json!({}))
+    }
+
+    /// List all table names in the database (excluding SQLite internals)
+    fn data_list_tables(&self, handle: AdapterHandle) -> Result<Value, String> {
+        let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name";
+        let result = self.registry.execute_read(handle, sql)?;
+        // Result has items: [{name: "table1"}, ...] — extract just the names
+        let items = result.get("items").and_then(|v| v.as_array());
+        let tables: Vec<String> = items
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|row| row.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let count = tables.len();
+        // Use typed struct (matches generated TypeScript type ListTablesResult)
+        let result = ListTablesResult { tables, count };
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    }
 }
 
 // ============================================================================
@@ -2270,6 +2340,8 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
             Request::BlobDelete { .. } => "blob/delete",
             Request::BlobStats { .. } => "blob/stats",
             Request::DataQuery { .. } => "data/query",
+            Request::DataTruncate { .. } => "data/truncate",
+            Request::DataListTables { .. } => "data/list_tables",
         };
 
         // Start request timer

@@ -240,20 +240,15 @@ export class DataDaemonServer extends DataDaemonBase {
   }
   
   /**
-   * Connect to Rust data-daemon worker and register it for observability collections.
+   * Connect to Rust data-daemon worker and route ALL collections through it.
    *
-   * Strategy: Per-collection migration via DataDaemon.registerCollectionAdapter().
-   * Instead of swapping the default adapter (which failed 4 times), we route
-   * specific collections through Rust incrementally.
+   * Strategy: Per-collection routing via DataDaemon.registerCollectionAdapter().
+   * TypeScript retains DDL (schema creation via ensureSchema through default adapter).
+   * Rust handles ALL DML (INSERT, UPDATE, DELETE, SELECT) off the main thread.
    *
-   * NO FALLBACK. If the Rust worker isn't available, this method retries until
-   * it connects. DaemonBase.runDeferredInitialization() catches errors silently,
-   * so we must guarantee success here — not throw and get swallowed.
-   *
-   * Phase 1 (this PR): Observability collections (write-heavy, non-critical)
-   * Phase 2 (next PR): Memory + task collections
-   * Phase 3 (later):   Chat messages + core collections
-   * Phase 4 (later):   Default adapter swap
+   * NO FALLBACK. If the Rust worker isn't available, this method polls until
+   * it connects or exits the process. DaemonBase.runDeferredInitialization()
+   * catches errors silently, so we use process.exit(1) on failure.
    */
   private async connectRustDataWorker(): Promise<void> {
     const SOCKET_PATH = '/tmp/jtag-data-daemon-worker.sock';
@@ -291,25 +286,15 @@ export class DataDaemonServer extends DataDaemonBase {
 
     this.log.info('Connected to Rust data-daemon worker');
 
-    // Phase 1: Observability collections (write-heavy, non-critical)
-    const RUST_COLLECTIONS = [
-      'cognition_state_snapshots',
-      'cognition_plan_records',
-      'cognition_plan_step_executions',
-      'cognition_self_state_updates',
-      'cognition_memory_operations',
-      'cognition_plan_replans',
-      'adapter_decision_logs',
-      'adapter_reasoning_logs',
-      'response_generation_logs',
-      'tool_execution_logs',
-    ];
+    // Route ALL collections through Rust worker for off-main-thread I/O
+    const { COLLECTIONS } = await import('../../../system/shared/Constants');
+    const allCollections = Object.values(COLLECTIONS);
 
-    for (const collection of RUST_COLLECTIONS) {
+    for (const collection of allCollections) {
       DataDaemon.registerCollectionAdapter(collection, rustAdapter);
     }
 
-    this.log.info(`🦀 Rust data-daemon: routed ${RUST_COLLECTIONS.length} observability collections through Rust worker`);
+    this.log.info(`🦀 Rust data-daemon: routed ALL ${allCollections.length} collections through Rust worker`);
   }
 
   /**

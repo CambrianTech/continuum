@@ -206,11 +206,9 @@ export class DataDaemon {
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(collection);
 
-    // Ensure schema exists (orchestrate table creation via adapter)
-    // Skip for custom adapters (they handle their own schema)
-    if (adapter === this.adapter) {
-      await this.ensureSchema(collection);
-    }
+    // Ensure schema exists via default adapter (DDL).
+    // Custom adapters (Rust) handle DML only — schema creation stays in TypeScript.
+    await this.ensureSchema(collection);
 
     // Validate context and data
     const validationResult = this.validateOperation(collection, data, context);
@@ -275,11 +273,8 @@ export class DataDaemon {
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(collection);
 
-    // Ensure schema exists before reading (prevents "no such table" errors)
-    // Skip for custom adapters (they handle their own schema)
-    if (adapter === this.adapter) {
-      await this.ensureSchema(collection);
-    }
+    // Ensure schema exists via default adapter (DDL).
+    await this.ensureSchema(collection);
 
     const result = await adapter.read<T>(collection, id);
 
@@ -330,11 +325,8 @@ export class DataDaemon {
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(query.collection);
 
-    // Ensure schema exists before querying (prevents "no such table" errors)
-    // Skip for custom adapters (they handle their own schema)
-    if (adapter === this.adapter) {
-      await this.ensureSchema(query.collection);
-    }
+    // Ensure schema exists via default adapter (DDL).
+    await this.ensureSchema(query.collection);
 
     const result = await adapter.query<T>(query);
 
@@ -367,10 +359,8 @@ export class DataDaemon {
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(collection);
 
-    // Ensure schema exists before updating (prevents "no such table" errors)
-    if (adapter === this.adapter) {
-      await this.ensureSchema(collection);
-    }
+    // Ensure schema exists via default adapter (DDL).
+    await this.ensureSchema(collection);
 
     // Read existing entity to merge with partial update
     // TODO: Performance optimization - Consider adding skipValidation flag for trusted internal updates,
@@ -425,10 +415,8 @@ export class DataDaemon {
     // Get adapter for this collection (may be custom adapter like JSON file)
     const adapter = this.getAdapterForCollection(collection);
 
-    // Ensure schema exists before deleting (prevents "no such table" errors)
-    if (adapter === this.adapter) {
-      await this.ensureSchema(collection);
-    }
+    // Ensure schema exists via default adapter (DDL).
+    await this.ensureSchema(collection);
 
     // Read entity before deletion for event emission
     const readResult = await adapter.read(collection, id);

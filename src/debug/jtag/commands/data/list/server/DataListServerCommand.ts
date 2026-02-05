@@ -84,14 +84,13 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
       const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
       if (!result.success) {
-        const availableCollections = Object.values(COLLECTIONS).join(', ');
-        const errorWithHint = `${result.error || 'Unknown DataDaemon error'}. Valid collections are: ${availableCollections}`;
-        console.error(`❌ DATA SERVER: DataDaemon query failed:`, errorWithHint);
+        const errorMsg = result.error || 'Unknown DataDaemon error';
+        console.error(`❌ DATA SERVER: DataDaemon query failed for '${collection}':`, errorMsg);
         return createDataListResultFromParams(params, {
           success: false,
           items: [],
           count: 0,
-          error: errorWithHint
+          error: errorMsg
         });
       }
 
@@ -139,14 +138,12 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
 
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      const availableCollections = Object.values(COLLECTIONS).join(', ');
-      const errorWithHint = `${errorMessage}. Valid collections are: ${availableCollections}`;
-      console.error(`❌ DATA SERVER: DataDaemon execution failed:`, errorWithHint);
+      console.error(`❌ DATA SERVER: DataDaemon execution failed for '${collection}':`, errorMessage);
       return createDataListResultFromParams(params, {
         success: false,
         items: [],
         count: 0,
-        error: errorWithHint
+        error: errorMessage
       });
     }
   }
