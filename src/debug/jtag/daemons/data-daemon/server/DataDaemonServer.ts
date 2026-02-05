@@ -112,6 +112,9 @@ export class DataDaemonServer extends DataDaemonBase {
     await this.registerDatabaseHandles();
     this.log.debug('Database handles registered');
 
+    // Connect to Rust data-daemon worker and route observability collections through it
+    await this.connectRustDataWorker();
+
     // Initialize CodeDaemon for code/read operations
     const { initializeCodeDaemon } = await import('../../code-daemon/server/CodeDaemonServer');
     await initializeCodeDaemon(this.context);
@@ -236,6 +239,79 @@ export class DataDaemonServer extends DataDaemonBase {
     this.log.info(`Registered 'archive' handle: ${archiveDbPath} (emitEvents=false)`);
   }
   
+  /**
+   * Connect to Rust data-daemon worker and register it for observability collections.
+   *
+   * Strategy: Per-collection migration via DataDaemon.registerCollectionAdapter().
+   * Instead of swapping the default adapter (which failed 4 times), we route
+   * specific collections through Rust incrementally.
+   *
+   * NO FALLBACK. If the Rust worker isn't available, this method retries until
+   * it connects. DaemonBase.runDeferredInitialization() catches errors silently,
+   * so we must guarantee success here — not throw and get swallowed.
+   *
+   * Phase 1 (this PR): Observability collections (write-heavy, non-critical)
+   * Phase 2 (next PR): Memory + task collections
+   * Phase 3 (later):   Chat messages + core collections
+   * Phase 4 (later):   Default adapter swap
+   */
+  private async connectRustDataWorker(): Promise<void> {
+    const SOCKET_PATH = '/tmp/jtag-data-daemon-worker.sock';
+    const fs = await import('fs');
+
+    // Wait for the Rust worker socket to appear (workers start in parallel with Node.js)
+    const MAX_WAIT_MS = 30_000;
+    const POLL_INTERVAL_MS = 500;
+    const startWait = Date.now();
+
+    while (!fs.existsSync(SOCKET_PATH)) {
+      const elapsed = Date.now() - startWait;
+      if (elapsed >= MAX_WAIT_MS) {
+        this.log.error(`FATAL: Rust data-daemon worker socket not found at ${SOCKET_PATH} after ${MAX_WAIT_MS / 1000}s`);
+        process.exit(1);
+      }
+      if (elapsed % 5000 < POLL_INTERVAL_MS) {
+        this.log.warn(`Waiting for Rust data-daemon worker socket... (${Math.round(elapsed / 1000)}s)`);
+      }
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+
+    const { RustWorkerStorageAdapter } = await import('./RustWorkerStorageAdapter');
+
+    const rustAdapter = new RustWorkerStorageAdapter();
+    await rustAdapter.initialize({
+      type: 'rust' as any,
+      namespace: 'rust-default',
+      options: {
+        socketPath: SOCKET_PATH,
+        dbPath: getDatabasePath(),
+        timeout: 30000
+      }
+    });
+
+    this.log.info('Connected to Rust data-daemon worker');
+
+    // Phase 1: Observability collections (write-heavy, non-critical)
+    const RUST_COLLECTIONS = [
+      'cognition_state_snapshots',
+      'cognition_plan_records',
+      'cognition_plan_step_executions',
+      'cognition_self_state_updates',
+      'cognition_memory_operations',
+      'cognition_plan_replans',
+      'adapter_decision_logs',
+      'adapter_reasoning_logs',
+      'response_generation_logs',
+      'tool_execution_logs',
+    ];
+
+    for (const collection of RUST_COLLECTIONS) {
+      DataDaemon.registerCollectionAdapter(collection, rustAdapter);
+    }
+
+    this.log.info(`🦀 Rust data-daemon: routed ${RUST_COLLECTIONS.length} observability collections through Rust worker`);
+  }
+
   /**
    * Emit CRUD event - centralized event emission for all data operations
    * NOTE: This method is no longer used - event emission now handled by DataDaemon layer

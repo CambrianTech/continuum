@@ -15,7 +15,7 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -1075,13 +1075,58 @@ impl AdapterRegistry {
 
 struct RustDataDaemon {
     registry: Arc<AdapterRegistry>,
+    /// Cache of table column names per collection (populated via PRAGMA table_info)
+    table_columns_cache: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
 
 impl RustDataDaemon {
     fn new() -> Self {
         Self {
             registry: Arc::new(AdapterRegistry::new()),
+            table_columns_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get the valid column names for a table, using PRAGMA table_info.
+    /// Results are cached per (handle, collection) to avoid repeated PRAGMA queries.
+    fn get_table_columns(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+    ) -> Result<HashSet<String>, String> {
+        // Check cache first
+        {
+            let cache = self.table_columns_cache.lock().unwrap();
+            if let Some(columns) = cache.get(collection) {
+                return Ok(columns.clone());
+            }
+        }
+
+        // Query PRAGMA table_info to discover actual columns
+        let pragma_query = format!("PRAGMA table_info({})", collection);
+        let result = self.registry.execute_read(handle, &pragma_query)?;
+
+        let items = result
+            .get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("PRAGMA table_info({}) returned no items", collection))?;
+
+        let columns: HashSet<String> = items
+            .iter()
+            .filter_map(|row| row.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        if columns.is_empty() {
+            return Err(format!("Table {} has no columns (does it exist?)", collection));
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.table_columns_cache.lock().unwrap();
+            cache.insert(collection.to_string(), columns.clone());
+        }
+
+        Ok(columns)
     }
 
     #[allow(dead_code)]
@@ -1606,17 +1651,23 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        // Build INSERT query
-        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        let values: Vec<String> = obj
-            .values()
-            .map(|v| match v {
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
+        let filtered: Vec<(&String, &Value)> = obj
+            .iter()
+            .filter(|(k, _)| valid_columns.contains(k.as_str()))
+            .collect();
+
+        let columns: Vec<&str> = filtered.iter().map(|(k, _)| k.as_str()).collect();
+        let values: Vec<String> = filtered
+            .iter()
+            .map(|(_, v)| match v {
                 Value::String(s) => format!("'{}'", s.replace("'", "''")),
                 Value::Number(n) => n.to_string(),
                 Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
                 Value::Null => "NULL".to_string(),
                 Value::Array(_) | Value::Object(_) => {
-                    // Serialize complex types as JSON strings
                     format!(
                         "'{}'",
                         serde_json::to_string(v)
@@ -1669,10 +1720,12 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        // Build SET clauses
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
         let set_clauses: Vec<String> = obj
             .iter()
-            .filter(|(key, _)| *key != "id") // Don't update id
+            .filter(|(key, _)| *key != "id" && valid_columns.contains(key.as_str()))
             .map(|(key, value)| {
                 let val_str = match value {
                     Value::String(s) => format!("'{}'", s.replace("'", "''")),
@@ -1680,7 +1733,6 @@ impl RustDataDaemon {
                     Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
                     Value::Null => "NULL".to_string(),
                     Value::Array(_) | Value::Object(_) => {
-                        // Serialize complex types as JSON strings
                         format!(
                             "'{}'",
                             serde_json::to_string(value)
@@ -1819,10 +1871,18 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        let values: Vec<String> = obj
-            .values()
-            .map(|v| match v {
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
+        let filtered: Vec<(&String, &Value)> = obj
+            .iter()
+            .filter(|(k, _)| valid_columns.contains(k.as_str()))
+            .collect();
+
+        let columns: Vec<&str> = filtered.iter().map(|(k, _)| k.as_str()).collect();
+        let values: Vec<String> = filtered
+            .iter()
+            .map(|(_, v)| match v {
                 Value::String(s) => format!("'{}'", s.replace("'", "''")),
                 Value::Number(n) => n.to_string(),
                 Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
@@ -1894,9 +1954,12 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
         let set_clauses: Vec<String> = obj
             .iter()
-            .filter(|(key, _)| *key != "id")
+            .filter(|(key, _)| *key != "id" && valid_columns.contains(key.as_str()))
             .map(|(key, value)| {
                 let val_str = match value {
                     Value::String(s) => format!("'{}'", s.replace("'", "''")),
