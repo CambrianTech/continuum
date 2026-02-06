@@ -13,7 +13,7 @@
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ContentItem } from '@system/data/entities/UserStateEntity';
 import { UserStateEntity } from '@system/data/entities/UserStateEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import { Logger, type ComponentLogger } from '@system/core/logging/Logger';
 
@@ -27,7 +27,7 @@ export class SessionStateHelper {
    */
   static async getUserState(userId: UUID): Promise<UserStateEntity | null> {
     try {
-      const userStateData = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const userStateData = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
 
       if (!userStateData) {
         this.log.warn(`UserState not found for userId: ${userId}`);

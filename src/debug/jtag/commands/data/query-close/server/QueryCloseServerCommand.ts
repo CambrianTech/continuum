@@ -8,7 +8,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { QueryCloseCommand } from '../shared/QueryCloseCommand';
 import type { DataQueryCloseParams, DataQueryCloseResult } from '../shared/QueryCloseTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 
 export class QueryCloseServerCommand extends QueryCloseCommand {
 
@@ -25,7 +25,7 @@ export class QueryCloseServerCommand extends QueryCloseCommand {
 
     try {
       // Close query using static DataDaemon interface
-      DataDaemon.closePaginatedQuery(queryHandle);
+      ORM.closePaginatedQuery(queryHandle);
 
       console.debug(`✅ QUERY-CLOSE SERVER: Closed query ${queryHandle}`);
 

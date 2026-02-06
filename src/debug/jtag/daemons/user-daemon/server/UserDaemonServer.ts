@@ -13,7 +13,7 @@ import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteSt
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { ORM } from '../../data-daemon/shared/ORM';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
@@ -204,7 +204,7 @@ export class UserDaemonServer extends UserDaemon {
       }
 
       // Delete UserState (cascade)
-      await DataDaemon.remove(COLLECTIONS.USER_STATES, userEntity.id);
+      await ORM.remove(COLLECTIONS.USER_STATES, userEntity.id);
 
     } catch (error) {
       this.log.error(`❌ UserDaemon: Failed to cleanup user ${userEntity.displayName}:`, error);
@@ -219,7 +219,7 @@ export class UserDaemonServer extends UserDaemon {
     try {
       // Query all PersonaUser entities from database
       this.log.info('🔧 UserDaemon: Querying personas from database...');
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'persona' }
       });
@@ -289,7 +289,7 @@ export class UserDaemonServer extends UserDaemon {
   private async createPersonaClient(userEntity: UserEntity): Promise<void> {
     try {
       // Load UserStateEntity (must exist - created by user/create command)
-      const userState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
+      const userState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
 
       if (!userState) {
         throw new Error(`UserStateEntity not found for persona ${userEntity.displayName} (${userEntity.id}) - user must be created via user/create command`);
@@ -333,7 +333,7 @@ export class UserDaemonServer extends UserDaemon {
   protected async ensureUserHasState(userId: UUID): Promise<boolean> {
     try {
       // Check if UserState exists
-      const existingState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const existingState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
 
       if (existingState) {
         return true; // UserState exists
@@ -354,7 +354,7 @@ export class UserDaemonServer extends UserDaemon {
   private async createUserState(userId: UUID): Promise<boolean> {
     try {
       // Load user entity to get type
-      const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
       if (!user) {
         this.log.error(`❌ UserDaemon: User ${userId} not found`);
         return false;
@@ -368,7 +368,7 @@ export class UserDaemonServer extends UserDaemon {
       userState.preferences = getDefaultPreferencesForType(user.type as 'human' | 'agent' | 'persona');
 
       // Store UserState
-      const storeResult = await DataDaemon.store<UserStateEntity>(
+      const storeResult = await ORM.store<UserStateEntity>(
         COLLECTIONS.USER_STATES,
         userState
       );
@@ -413,7 +413,7 @@ export class UserDaemonServer extends UserDaemon {
   private async runUserMonitoringLoop(): Promise<void> {
     try {
       // Query ALL users from database
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: {} // ALL users
       });
@@ -447,7 +447,7 @@ export class UserDaemonServer extends UserDaemon {
   private async runStateReconciliationLoop(): Promise<void> {
     try {
       // Find personas that should have clients but don't
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'persona' }
       });

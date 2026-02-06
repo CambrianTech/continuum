@@ -1,7 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { RAGLoadParams, RAGLoadResult, LoadedMessage } from '../shared/RAGLoadTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
 import { contentPreview, getTextSafe } from '../../../../shared/utils/StringUtils';
@@ -78,7 +78,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
       const tokenBudget = Math.floor(availableForMessages * targetUtilization);
 
       // Load all messages from room (most recent first)
-      const result = await DataDaemon.query<ChatMessageEntity>({
+      const result = await ORM.query<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         filter: { roomId },
         limit: 100 // Cap at 100 for safety
@@ -206,7 +206,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
    */
   private async findRoom(roomIdOrName: string): Promise<{ id: string; }> {
     // Try by ID first
-    const byIdResult = await DataDaemon.query({
+    const byIdResult = await ORM.query({
       collection: 'rooms',
       filter: { id: roomIdOrName },
       limit: 1
@@ -218,7 +218,7 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
     }
 
     // Try by name
-    const byNameResult = await DataDaemon.query({
+    const byNameResult = await ORM.query({
       collection: 'rooms',
       filter: { name: roomIdOrName },
       limit: 1

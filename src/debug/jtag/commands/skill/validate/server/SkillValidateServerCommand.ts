@@ -12,7 +12,7 @@ import type { SkillValidateParams, SkillValidateResult } from '../shared/SkillVa
 import { createSkillValidateResultFromParams } from '../shared/SkillValidateTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
 import type { SkillValidationResults } from '@system/data/entities/SkillEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { ExecutionSandbox } from '@system/code/server/ExecutionSandbox';
 import type { SandboxConfig } from '@system/code/server/ExecutionSandbox';
@@ -32,7 +32,7 @@ export class SkillValidateServerCommand extends CommandBase<SkillValidateParams,
     }
 
     // Load skill entity
-    const skill = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
     if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
@@ -130,7 +130,7 @@ export class SkillValidateServerCommand extends CommandBase<SkillValidateParams,
     if (!passed) {
       updateData.failureReason = errors.join('; ');
     }
-    await DataDaemon.update<SkillEntity>(
+    await ORM.update<SkillEntity>(
       COLLECTIONS.SKILLS,
       skill.id as UUID,
       updateData,

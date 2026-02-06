@@ -17,7 +17,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { RoomMembershipDaemon } from '../shared/RoomMembershipDaemon';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS } from '../../../system/core/shared/EventConstants';
-import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { ORM } from '../../data-daemon/shared/ORM';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
 import { ACTIVITY_UNIQUE_IDS } from '../../../system/data/constants/ActivityConstants';
@@ -120,7 +120,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     this.log.info('🔄 MembershipDaemon: Ensuring all existing users are in correct rooms and activities...');
     try {
       // Query all users
-      const queryResult = await DataDaemon.query<UserEntity>({
+      const queryResult = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: {}
       });
@@ -256,7 +256,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     for (const roomUniqueId of roomUniqueIds) {
       try {
         // Query for room
-        const queryResult = await DataDaemon.query<RoomEntity>({
+        const queryResult = await ORM.query<RoomEntity>({
           collection: COLLECTIONS.ROOMS,
           filter: { uniqueId: roomUniqueId }
         });
@@ -296,7 +296,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         this.log.info(`🔄 RoomMembershipDaemon: Updating room ${roomUniqueId} (recordId: ${roomRecord.id}) to add ${displayName}`);
 
         // Update room (use roomRecord.id not room.id!)
-        await DataDaemon.update<RoomEntity>(
+        await ORM.update<RoomEntity>(
           COLLECTIONS.ROOMS,
           roomRecord.id,  // Record ID, not entity ID
           { members: updatedMembers }
@@ -337,7 +337,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
 
     try {
       // Query all users
-      const queryResult = await DataDaemon.query<UserEntity>({
+      const queryResult = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: {}
       });
@@ -419,7 +419,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
     for (const activityUniqueId of activityUniqueIds) {
       try {
         // Query for activity
-        const queryResult = await DataDaemon.query<ActivityEntity>({
+        const queryResult = await ORM.query<ActivityEntity>({
           collection: COLLECTIONS.ACTIVITIES,
           filter: { uniqueId: activityUniqueId }
         });
@@ -464,7 +464,7 @@ export class RoomMembershipDaemonServer extends RoomMembershipDaemon {
         this.log.info(`🔄 MembershipDaemon: Updating activity ${activityUniqueId} (recordId: ${activityRecord.id}) to add ${displayName}`);
 
         // Update activity (use activityRecord.id not activity.id!)
-        await DataDaemon.update<ActivityEntity>(
+        await ORM.update<ActivityEntity>(
           COLLECTIONS.ACTIVITIES,
           activityRecord.id,  // Record ID, not entity ID
           { participants: updatedParticipants }

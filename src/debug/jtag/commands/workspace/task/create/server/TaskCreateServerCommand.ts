@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { TaskCreateParams, TaskCreateResult } from '../shared/TaskCreateTypes';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { TaskEntity } from '@system/data/entities/TaskEntity';
 import { v4 as uuidv4 } from 'uuid';
@@ -31,7 +31,7 @@ export class TaskCreateServerCommand extends CommandBase<TaskCreateParams, TaskC
 
     try {
       // Validate assignee exists
-      const assigneeResult = await DataDaemon.query({
+      const assigneeResult = await ORM.query({
         collection: COLLECTIONS.USERS,
         filter: { id: createParams.assigneeId },
         limit: 1
@@ -66,8 +66,8 @@ export class TaskCreateServerCommand extends CommandBase<TaskCreateParams, TaskC
         updatedAt: now
       };
 
-      // Store task in database - DataDaemon.store(collection, data)
-      const storedTask = await DataDaemon.store(COLLECTIONS.TASKS, taskData as TaskEntity);
+      // Store task in database - ORM.store(collection, data)
+      const storedTask = await ORM.store(COLLECTIONS.TASKS, taskData as TaskEntity);
 
       if (!storedTask) {
         return transformPayload(params, {

@@ -11,7 +11,7 @@ import { createCanvasStrokeAddResult, CANVAS_STROKE_EVENTS } from '../shared/Can
 import { CanvasStrokeEntity } from '@system/data/entities/CanvasStrokeEntity';
 import { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '@system/data/entities/RoomEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { Events } from '@system/core/shared/Events';
 import { Commands } from '@system/core/shared/Commands';
 import { COLLECTIONS } from '@system/shared/Constants';
@@ -81,7 +81,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       }
 
       // Save to database (throws on failure, returns entity on success)
-      await DataDaemon.store(COLLECTIONS.CANVAS_STROKES, stroke);
+      await ORM.store(COLLECTIONS.CANVAS_STROKES, stroke);
 
       // Emit real-time event for all clients to sync
       Events.emit(CANVAS_STROKE_EVENTS.STROKE_ADDED, {

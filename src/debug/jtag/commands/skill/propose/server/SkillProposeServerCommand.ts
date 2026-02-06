@@ -12,7 +12,7 @@ import type { SkillProposeParams, SkillProposeResult } from '../shared/SkillProp
 import { createSkillProposeResultFromParams } from '../shared/SkillProposeTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
 import type { SkillSpec, SkillParamSpec, SkillResultSpec, SkillScope } from '@system/data/entities/SkillEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionPropose } from '@commands/collaboration/decision/propose/shared/DecisionProposeTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -41,7 +41,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
     }
 
     // Check for duplicate active skill
-    const existingResult = await DataDaemon.query<SkillEntity>({
+    const existingResult = await ORM.query<SkillEntity>({
       collection: COLLECTIONS.SKILLS,
       filter: { name, status: 'active' },
       limit: 1,
@@ -82,7 +82,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
     }
 
     // Persist
-    const stored = await DataDaemon.store<SkillEntity>(COLLECTIONS.SKILLS, entity);
+    const stored = await ORM.store<SkillEntity>(COLLECTIONS.SKILLS, entity);
 
     // For team-scoped skills, create a governance proposal via the decision/propose command
     let proposalId = '';
@@ -102,7 +102,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
         });
         proposalId = proposalResult.proposalId ?? '';
         if (proposalId) {
-          await DataDaemon.update<SkillEntity>(
+          await ORM.update<SkillEntity>(
             COLLECTIONS.SKILLS,
             stored.id,
             { proposalId: proposalId as UUID } as Partial<SkillEntity>,

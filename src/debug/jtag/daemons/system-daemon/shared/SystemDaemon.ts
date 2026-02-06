@@ -22,7 +22,7 @@
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { Events } from '../../../system/core/shared/Events';
-import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { ORM } from '../../data-daemon/shared/ORM';
 import { SystemConfigEntity, FACTORY_DEFAULTS, type SettingValue } from '../../../system/data/entities/SystemConfigEntity';
 import type { StorageQuery, StorageResult } from '../../data-daemon/shared/DataStorageAdapter';
 import { Logger } from '../../../system/core/logging/Logger';
@@ -92,7 +92,7 @@ export class SystemDaemon {
       limit: 1
     };
 
-    const result = await DataDaemon.query<SystemConfigEntity>(query);
+    const result = await ORM.query<SystemConfigEntity>(query);
 
     if (!result.success || !result.data || result.data.length === 0) {
       // Config doesn't exist - create with factory defaults
@@ -136,7 +136,7 @@ export class SystemDaemon {
     }
 
     // Store in database
-    const storedConfig = await DataDaemon.store<SystemConfigEntity>(
+    const storedConfig = await ORM.store<SystemConfigEntity>(
       SystemConfigEntity.collection,
       config
     );
@@ -198,7 +198,7 @@ export class SystemDaemon {
     this.configCache.set(path, value, changedBy, reason);
 
     // Persist to database (event automatically emitted by DataDaemon)
-    await DataDaemon.update<SystemConfigEntity>(
+    await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
       this.configCache
@@ -218,7 +218,7 @@ export class SystemDaemon {
     this.configCache.reset(path, changedBy);
 
     // Persist to database
-    await DataDaemon.update<SystemConfigEntity>(
+    await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
       this.configCache
@@ -238,7 +238,7 @@ export class SystemDaemon {
     this.configCache.resetGroup(groupPath, changedBy);
 
     // Persist to database
-    await DataDaemon.update<SystemConfigEntity>(
+    await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
       this.configCache
@@ -276,7 +276,7 @@ export class SystemDaemon {
     };
 
     // Persist to database
-    await DataDaemon.update<SystemConfigEntity>(
+    await ORM.update<SystemConfigEntity>(
       SystemConfigEntity.collection,
       this.configCache.id,
       { systemState: this.configCache.systemState }

@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { TaskListParams, TaskListResult, TaskSummary } from '../shared/TaskListTypes';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { TaskEntity } from '@system/data/entities/TaskEntity';
 import type { DataRecord } from '@daemons/data-daemon/shared/DataTypes';
@@ -61,7 +61,7 @@ export class TaskListServerCommand extends CommandBase<TaskListParams, TaskListR
       }
 
       // Query tasks
-      const queryResult = await DataDaemon.query<TaskEntity>({
+      const queryResult = await ORM.query<TaskEntity>({
         collection: COLLECTIONS.TASKS,
         filter,
         limit: listParams.limit ?? 50

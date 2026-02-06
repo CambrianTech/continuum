@@ -16,7 +16,7 @@ import { AgentUser } from '../../../system/user/shared/AgentUser';
 import { PersonaUser } from '../../../system/user/server/PersonaUser';
 import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
 import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
-import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { ORM } from '../../data-daemon/shared/ORM';
 import { Events } from '../../../system/core/shared/Events';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
@@ -352,7 +352,7 @@ export class SessionDaemonServer extends SessionDaemon {
      */
     private async findUserByUniqueId(uniqueId: string): Promise<BaseUser | null> {
       // Query users by uniqueId (the single source of truth for citizen identity)
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { uniqueId }
       });
@@ -426,13 +426,13 @@ export class SessionDaemonServer extends SessionDaemon {
       }
 
       // Load UserEntity from database
-      const userEntity = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      const userEntity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
       if (!userEntity) {
         throw new Error(`User ${userId} not found in database`);
       }
 
       // Load UserStateEntity from database
-      const userState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const userState = await ORM.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
       if (!userState) {
         throw new Error(`UserState for ${userId} not found in database`);
       }
@@ -479,7 +479,7 @@ export class SessionDaemonServer extends SessionDaemon {
       console.error(`🔍🔍🔍 findSeededHumanOwner: Starting search...`);
 
       // Look for all human users
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'human' }
       });

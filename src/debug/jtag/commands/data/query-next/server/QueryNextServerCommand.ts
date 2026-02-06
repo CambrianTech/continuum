@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { QueryNextCommand } from '../shared/QueryNextCommand';
 import type { DataQueryNextParams, DataQueryNextResult } from '../shared/QueryNextTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 
 export class QueryNextServerCommand extends QueryNextCommand {
 
@@ -26,7 +26,7 @@ export class QueryNextServerCommand extends QueryNextCommand {
 
     try {
       // Get next page using static DataDaemon interface
-      const page = await DataDaemon.getNextPage(queryHandle);
+      const page = await ORM.getNextPage(queryHandle);
 
       console.debug(`✅ QUERY-NEXT SERVER: Fetched page ${page.pageNumber} (${page.items.length} items, hasMore=${page.hasMore})`);
 

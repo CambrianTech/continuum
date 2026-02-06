@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataTruncateParams, DataTruncateResult } from '../shared/DataTruncateTypes';
 import { createDataTruncateResultFromParams } from '../shared/DataTruncateTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { Events } from '../../../../system/core/shared/Events';
 import { getDataEventName } from '../../shared/DataEventConstants';
 
@@ -24,7 +24,7 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
 
     try {
       // Get record count before truncating for reporting
-      const statsResult = await DataDaemon.listCollections();
+      const statsResult = await ORM.listCollections();
       let recordCount = 0;
 
       if (statsResult.success && statsResult.data?.includes(collection)) {
@@ -34,7 +34,7 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
       }
 
       // Use adapter truncate() method - proper abstraction layer
-      const result = await DataDaemon.truncate(collection);
+      const result = await ORM.truncate(collection);
 
       if (result.success) {
 

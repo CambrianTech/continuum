@@ -118,6 +118,7 @@ function parseExportedTypes(filePath: string): string[] {
 
 /**
  * Generate the master barrel at shared/generated/index.ts
+ * Handles duplicate type names across subdirectories by using explicit exports.
  */
 function generateMasterBarrel(): void {
   const subdirs = fs.readdirSync(GENERATED_DIR, { withFileTypes: true })
@@ -130,14 +131,24 @@ function generateMasterBarrel(): void {
     .filter(f => f.endsWith('.ts') && f !== 'index.ts')
     .sort();
 
-  // Collect all type names exported by subdirectories (to detect duplicates)
-  const subdirTypes = new Set<string>();
+  // Map: typeName -> first subdir that exports it
+  // This detects duplicates across subdirectories
+  const typeToDir = new Map<string, string>();
+  const duplicateTypes = new Set<string>();
+
   for (const dir of subdirs) {
     const dirPath = path.join(GENERATED_DIR, dir);
     const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.ts') && f !== 'index.ts');
     for (const f of files) {
       const types = parseExportedTypes(path.join(dirPath, f));
-      types.forEach(t => subdirTypes.add(t));
+      for (const t of types) {
+        if (typeToDir.has(t)) {
+          duplicateTypes.add(t);
+          console.log(`  ⚠️  Duplicate type '${t}' in ${dir} (first seen in ${typeToDir.get(t)})`);
+        } else {
+          typeToDir.set(t, dir);
+        }
+      }
     }
   }
 
@@ -148,11 +159,43 @@ function generateMasterBarrel(): void {
     '',
   ];
 
-  // Re-export subdirectories
+  // For directories with NO duplicate types, use wildcard export
+  // For directories WITH duplicate types, use explicit exports (excluding duplicates)
   for (const dir of subdirs) {
     const indexPath = path.join(GENERATED_DIR, dir, 'index.ts');
-    if (fs.existsSync(indexPath)) {
+    if (!fs.existsSync(indexPath)) continue;
+
+    const dirPath = path.join(GENERATED_DIR, dir);
+    const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.ts') && f !== 'index.ts');
+
+    // Collect types in this directory
+    const dirTypes: string[] = [];
+    for (const f of files) {
+      const types = parseExportedTypes(path.join(dirPath, f));
+      dirTypes.push(...types);
+    }
+
+    // Check if this dir has any duplicates
+    const hasDuplicates = dirTypes.some(t => duplicateTypes.has(t));
+
+    if (!hasDuplicates) {
+      // Safe to use wildcard
       lines.push(`export * from './${dir}';`);
+    } else {
+      // Use explicit exports, skipping types that are duplicated
+      // Only export from the FIRST directory that had the type
+      lines.push(`// ${dir}: explicit exports (has duplicate types)`);
+      for (const typeName of dirTypes) {
+        if (duplicateTypes.has(typeName)) {
+          // Only export if this is the first directory
+          if (typeToDir.get(typeName) === dir) {
+            lines.push(`export type { ${typeName} } from './${dir}';`);
+          }
+          // else skip - it's exported from another dir
+        } else {
+          lines.push(`export type { ${typeName} } from './${dir}';`);
+        }
+      }
     }
   }
 
@@ -163,7 +206,7 @@ function generateMasterBarrel(): void {
     const moduleName = file.replace('.ts', '');
 
     for (const typeName of types) {
-      if (subdirTypes.has(typeName)) {
+      if (typeToDir.has(typeName)) {
         console.log(`  ⚠️  Skipping ${file} → ${typeName} (already exported by subdirectory)`);
         continue;
       }

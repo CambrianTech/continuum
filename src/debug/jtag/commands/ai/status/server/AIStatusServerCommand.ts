@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIStatusParams, AIStatusResult, PersonaHealth } from '../shared/AIStatusTypes';
 import { UserDaemonServer } from '../../../../daemons/user-daemon/server/UserDaemonServer';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { PersonaUser } from '../../../../system/user/server/PersonaUser';
@@ -61,7 +61,7 @@ export class AIStatusServerCommand extends AIStatusCommand {
   private async executeWithDaemon(userDaemon: UserDaemonServer, params: AIStatusParams): Promise<AIStatusResult> {
 
     // Query all PersonaUser entities from database
-    const result = await DataDaemon.query<UserEntity>({
+    const result = await ORM.query<UserEntity>({
       collection: COLLECTIONS.USERS,
       filter: { type: 'persona' }
     });

@@ -8,7 +8,7 @@
  * Path convention: .continuum/sessions/user/shared/{uniqueId}/workspace
  */
 
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import * as path from 'path';
@@ -22,7 +22,7 @@ export async function resolveWorkspacePathFromUserId(userId: string): Promise<st
   let dirName = userId; // fallback to UUID if lookup fails
 
   try {
-    const entity = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const entity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
     if (entity?.uniqueId) {
       dirName = entity.uniqueId;
     }

@@ -28,7 +28,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { TrainingDaemon } from '../shared/TrainingDaemon';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS } from '../../../system/core/shared/EventConstants';
-import { DataDaemon } from '../../data-daemon/shared/DataDaemon';
+import { ORM } from '../../data-daemon/shared/ORM';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
@@ -102,7 +102,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
 
     for (const roomUniqueId of this.config.enabledRooms) {
       try {
-        // Use Commands.execute instead of DataDaemon.query for reliability
+        // Use Commands.execute instead of ORM.query for reliability
         const result = await DataList.execute<RoomEntity>({
           collection: COLLECTIONS.ROOMS,
           filter: { uniqueId: roomUniqueId },
@@ -204,7 +204,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
       }
 
       // Store training example
-      const storedEntity = await DataDaemon.store<TrainingExampleEntity>(
+      const storedEntity = await ORM.store<TrainingExampleEntity>(
         TrainingExampleEntity.collection,
         trainingExample
       );
@@ -227,7 +227,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
     windowSize: number
   ): Promise<ChatMessageEntity[]> {
     try {
-      const queryResult = await DataDaemon.query<ChatMessageEntity>({
+      const queryResult = await ORM.query<ChatMessageEntity>({
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
@@ -289,7 +289,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
    */
   private async fetchUser(userId: UUID): Promise<UserEntity | null> {
     try {
-      return await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      return await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
     } catch (error) {
       this.log.error(`❌ TrainingDaemon: Failed to fetch user ${userId}:`, error);
       return null;
@@ -310,7 +310,7 @@ export class TrainingDaemonServer extends TrainingDaemon {
    */
   private async checkAutoFineTuneThreshold(): Promise<void> {
     try {
-      const queryResult = await DataDaemon.query<TrainingExampleEntity>({
+      const queryResult = await ORM.query<TrainingExampleEntity>({
         collection: TrainingExampleEntity.collection,
         filter: {},
         limit: 1  // Just need count

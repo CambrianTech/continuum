@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { QueryOpenCommand } from '../shared/QueryOpenCommand';
 import type { DataQueryOpenParams, DataQueryOpenResult } from '../shared/QueryOpenTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 
 export class QueryOpenServerCommand extends QueryOpenCommand {
 
@@ -26,7 +26,7 @@ export class QueryOpenServerCommand extends QueryOpenCommand {
 
     try {
       // Open paginated query using static DataDaemon interface
-      const handle = await DataDaemon.openPaginatedQuery({
+      const handle = await ORM.openPaginatedQuery({
         collection: params.collection,
         filter: params.filter,
         orderBy: params.orderBy,

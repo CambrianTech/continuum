@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataDeleteParams, DataDeleteResult } from '../shared/DataDeleteTypes';
 import { createDataDeleteResultFromParams } from '../shared/DataDeleteTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import type { BaseEntity } from '@system/data/entities/BaseEntity';
 
 export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataDeleteResult> {
@@ -25,7 +25,7 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
     // First read the entity before deletion for the event
     let entityBeforeDelete: BaseEntity | null;
     try {
-      entityBeforeDelete = await DataDaemon.read(collection, params.id);
+      entityBeforeDelete = await ORM.read(collection, params.id);
     } catch (error: any) {
       return createDataDeleteResultFromParams(params, {
         error: `Record not found: ${collection}/${params.id}`,
@@ -36,7 +36,7 @@ export class DataDeleteServerCommand extends CommandBase<DataDeleteParams, DataD
     // DataDaemon throws on failure, returns success result on success
     // Events are emitted by DataDaemon.remove() via universal Events system
     // Pass suppressEvents flag to prevent events during internal operations (e.g., archiving)
-    const result = await DataDaemon.remove(collection, params.id, params.suppressEvents);
+    const result = await ORM.remove(collection, params.id, params.suppressEvents);
 
     if (!result.success) {
       throw new Error(result.error ?? 'Unknown error during data delete');

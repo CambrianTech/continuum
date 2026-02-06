@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataClearParams, DataClearResult } from '../shared/DataClearTypes';
 import { createDataClearResultFromParams } from '../shared/DataClearTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 
 export class DataClearServerCommand extends CommandBase<DataClearParams, DataClearResult> {
 
@@ -21,11 +21,11 @@ export class DataClearServerCommand extends CommandBase<DataClearParams, DataCle
 
     try {
       // Get collections before clearing for reporting
-      const collectionsResult = await DataDaemon.listCollections();
+      const collectionsResult = await ORM.listCollections();
       const collectionCount = collectionsResult.success && collectionsResult.data ? collectionsResult.data.length : 0;
 
       // Use adapter clear() method - proper abstraction layer
-      const result = await DataDaemon.clear();
+      const result = await ORM.clear();
 
       if (result.success) {
 

@@ -13,7 +13,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { SkillGenerateParams, SkillGenerateResult } from '../shared/SkillGenerateTypes';
 import { createSkillGenerateResultFromParams } from '../shared/SkillGenerateTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { CommandGenerator } from '@generator/CommandGenerator';
 import type { CommandSpec } from '@generator/CommandNaming';
@@ -33,7 +33,7 @@ export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams,
     }
 
     // Load skill entity
-    const skill = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
     if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
@@ -87,7 +87,7 @@ export class SkillGenerateServerCommand extends CommandBase<SkillGenerateParams,
     const generatedFiles = this.collectFiles(outputDir);
 
     // Update entity
-    await DataDaemon.update<SkillEntity>(
+    await ORM.update<SkillEntity>(
       COLLECTIONS.SKILLS,
       skill.id as UUID,
       {

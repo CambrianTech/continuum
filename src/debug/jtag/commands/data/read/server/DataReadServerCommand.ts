@@ -8,7 +8,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { MediaItem, ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { DataReadCommand } from '../shared/DataReadCommand';
@@ -39,7 +39,7 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
     try {
       // Use DataDaemon for consistent storage access
-      const entity = await DataDaemon.read<BaseEntity>(params.collection, params.id);
+      const entity = await ORM.read<BaseEntity>(params.collection, params.id);
 
       if (entity) {
 

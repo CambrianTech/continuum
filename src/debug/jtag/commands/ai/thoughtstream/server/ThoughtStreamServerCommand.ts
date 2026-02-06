@@ -14,7 +14,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
 import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
@@ -74,7 +74,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
 
         try {
           // Query data daemon for the message
-          const msg = await DataDaemon.read<ChatMessageEntity>(
+          const msg = await ORM.read<ChatMessageEntity>(
             COLLECTIONS.CHAT_MESSAGES,
             stream.messageId
           );
@@ -497,7 +497,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
 
     try {
       // Query user collection by displayName field
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { displayName: name },
         limit: 1
@@ -583,7 +583,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
 
   private async getPersonaName(personaId: string, params: ThoughtStreamParams): Promise<string> {
     try {
-      const user = await DataDaemon.read<UserEntity>(
+      const user = await ORM.read<UserEntity>(
         COLLECTIONS.USERS,
         personaId
       );

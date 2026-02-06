@@ -11,7 +11,7 @@ import type {
   BackfillVectorsResult
 } from '../shared/BackfillVectorsCommandTypes';
 import { createBackfillVectorsResultFromParams } from '../shared/BackfillVectorsCommandTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
 
 const DEFAULT_CONFIG = {
@@ -87,7 +87,7 @@ export class BackfillVectorsServerCommand extends CommandBase<BackfillVectorsPar
       };
 
       // Execute backfill via DataDaemon
-      const backfillResult = await DataDaemon.backfillVectors(
+      const backfillResult = await ORM.backfillVectors(
         {
           collection: params.collection,
           textField: params.textField,
