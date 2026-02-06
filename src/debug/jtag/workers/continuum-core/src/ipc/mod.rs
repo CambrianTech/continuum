@@ -8,11 +8,19 @@
 /// - Tokio async for concurrent request handling
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
+/// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
 use crate::voice::{UtteranceEvent, VoiceParticipant};
-use crate::persona::{PersonaInbox, PersonaCognitionEngine, InboxMessage, SenderType, Modality, ChannelRegistry, ChannelEnqueueRequest, ActivityDomain, PersonaState};
+use crate::persona::{PersonaInbox, PersonaCognitionEngine, ChannelRegistry, ChannelEnqueueRequest, PersonaState};
 use crate::rag::RagEngine;
-use crate::logging::TimingGuard;
-use crate::code::{self, FileEngine, PathSecurity, ShellSession};
+use crate::code::{self, FileEngine, ShellSession};
+use crate::runtime::{Runtime, CommandResult};
+use crate::modules::health::HealthModule;
+use crate::modules::cognition::{CognitionModule, CognitionState};
+use crate::modules::channel::{ChannelModule, ChannelState};
+use crate::modules::models::ModelsModule;
+use crate::modules::memory::{MemoryModule, MemoryState};
+use crate::modules::voice::{VoiceModule, VoiceState};
+use crate::modules::code::{CodeModule, CodeState};
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -22,13 +30,6 @@ use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 use dashmap::DashMap;
-
-// ============================================================================
-// Response Field Names - Single Source of Truth
-// ============================================================================
-
-/// Voice response field: Array of AI participant UUIDs
-const VOICE_RESPONSE_FIELD_RESPONDER_IDS: &str = "responder_ids";
 
 // ============================================================================
 // Request/Response Protocol
@@ -54,33 +55,9 @@ pub struct InboxMessageRequest {
     pub voice_session_id: Option<String>,
 }
 
-impl InboxMessageRequest {
-    fn to_inbox_message(&self) -> Result<InboxMessage, String> {
-        Ok(InboxMessage {
-            id: Uuid::parse_str(&self.id).map_err(|e| format!("Invalid id: {e}"))?,
-            room_id: Uuid::parse_str(&self.room_id).map_err(|e| format!("Invalid room_id: {e}"))?,
-            sender_id: Uuid::parse_str(&self.sender_id).map_err(|e| format!("Invalid sender_id: {e}"))?,
-            sender_name: self.sender_name.clone(),
-            sender_type: match self.sender_type.as_str() {
-                "human" => SenderType::Human,
-                "persona" => SenderType::Persona,
-                "agent" => SenderType::Agent,
-                "system" => SenderType::System,
-                _ => return Err(format!("Invalid sender_type: {}", self.sender_type)),
-            },
-            content: self.content.clone(),
-            timestamp: self.timestamp,
-            priority: self.priority,
-            source_modality: self.source_modality.as_ref().map(|m| match m.as_str() {
-                "voice" => Modality::Voice,
-                _ => Modality::Chat,
-            }),
-            voice_session_id: self.voice_session_id.as_ref()
-                .map(|s| Uuid::parse_str(s).ok())
-                .flatten(),
-        })
-    }
-}
+// NOTE: InboxMessageRequest is used for ts-rs TypeScript generation.
+// The to_inbox_message() method was removed when migrating to CognitionModule.
+// See modules/cognition.rs for the parsing logic.
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command")]
@@ -556,6 +533,11 @@ impl Response {
 // IPC Server State
 // ============================================================================
 
+/// ServerState holds Arc references that are passed to ServiceModules during initialization.
+/// After modules are registered with the runtime, these fields are not accessed directly
+/// by ServerState methods — all command handling goes through runtime.dispatch().
+/// The fields are kept here to ensure the Arc lifetimes outlive the modules.
+#[allow(dead_code)]
 struct ServerState {
     voice_service: Arc<crate::voice::voice_service::VoiceService>,
     /// Per-persona inboxes — DashMap for per-key locking (no cross-persona contention).
@@ -581,1395 +563,119 @@ struct ServerState {
     file_engines: Arc<DashMap<String, FileEngine>>,
     /// Per-persona shell sessions — persistent bash per workspace with handle+poll.
     shell_sessions: Arc<DashMap<String, ShellSession>>,
+    /// Modular runtime — ServiceModule-based command routing.
+    /// Phase 1+: routes health-check, get-stats through HealthModule.
+    /// Phase 2+: routes cognition/, channel/ through CognitionModule, ChannelModule.
+    /// Eventually replaces the entire match statement below.
+    runtime: Arc<Runtime>,
 }
 
 impl ServerState {
-    fn new(
+    /// Create with shared state (for module state sharing).
+    /// Phase 3+: Modules and ServerState share all per-persona and service state.
+    fn new_with_shared_state(
         call_manager: Arc<crate::voice::call_server::CallManager>,
         rt_handle: tokio::runtime::Handle,
         memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+        runtime: Arc<Runtime>,
+        cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
+        inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
+        channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
+        rag_engine: Arc<RagEngine>,
+        voice_service: Arc<crate::voice::voice_service::VoiceService>,
+        audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
+        file_engines: Arc<DashMap<String, FileEngine>>,
+        shell_sessions: Arc<DashMap<String, ShellSession>>,
     ) -> Self {
         Self {
-            voice_service: Arc::new(crate::voice::voice_service::VoiceService::new()),
-            inboxes: Arc::new(DashMap::new()),
-            cognition_engines: Arc::new(DashMap::new()),
-            channel_registries: Arc::new(DashMap::new()),
-            rag_engine: Arc::new(RagEngine::new()),
+            voice_service,
+            inboxes,
+            cognition_engines,
+            channel_registries,
+            rag_engine,
             call_manager,
-            audio_pool: Arc::new(crate::voice::audio_buffer::AudioBufferPool::new()),
+            audio_pool,
             rt_handle,
             memory_manager,
-            file_engines: Arc::new(DashMap::new()),
-            shell_sessions: Arc::new(DashMap::new()),
+            file_engines,
+            shell_sessions,
+            runtime,
         }
     }
 
+    /// Legacy request handler — DEPRECATED.
+    ///
+    /// All commands should now be routed through the modular runtime.
+    /// This function exists only as a fallback during migration.
+    /// If this code is reached, it means a command's prefix wasn't registered with any module.
+    #[allow(unused_variables)]
     fn handle_request(&self, request: Request) -> HandleResult {
-        match request {
-            Request::VoiceRegisterSession {
-                session_id,
-                room_id,
-                participants,
-            } => {
-                let _timer = TimingGuard::new("ipc", "voice_register_session");
-
-                HandleResult::Json(match self.voice_service.register_session(&session_id, &room_id, participants) {
-                    Ok(_) => Response::success(serde_json::json!({ "registered": true })),
-                    Err(e) => Response::error(e),
-                })
-            }
-
-            Request::VoiceOnUtterance { event } => {
-                let _timer = TimingGuard::new("ipc", "voice_on_utterance").with_threshold(10);
-
-                HandleResult::Json(match self.voice_service.on_utterance(event) {
-                    Ok(responder_ids) => Response::success(serde_json::json!({
-                        VOICE_RESPONSE_FIELD_RESPONDER_IDS: responder_ids.into_iter().map(|id| id.to_string()).collect::<Vec<String>>()
-                    })),
-                    Err(e) => Response::error(e),
-                })
-            }
-
-            Request::VoiceShouldRouteTts {
-                session_id,
-                persona_id,
-            } => {
-                let _timer = TimingGuard::new("ipc", "voice_should_route_tts");
-
-                HandleResult::Json(match self.voice_service.should_route_tts(&session_id, &persona_id) {
-                    Ok(should_route) => Response::success(serde_json::json!({ "should_route": should_route })),
-                    Err(e) => Response::error(e),
-                })
-            }
-
-            Request::VoiceSynthesize { text, voice, adapter } => {
-                let _timer = TimingGuard::new("ipc", "voice_synthesize");
-
-                // Delegate to TTS service (synchronous wrapper handles runtime)
-                use crate::voice::tts_service;
-
-                let result = tts_service::synthesize_speech_sync(
-                    &text,
-                    voice.as_deref(),
-                    adapter.as_deref()
-                );
-
-                match result {
-                    Ok(synthesis) => {
-                        // Raw PCM bytes — NO base64, NO JSON encoding of audio.
-                        // Binary framing sends these bytes directly over the socket.
-                        let pcm_bytes: Vec<u8> = synthesis.samples.iter()
-                            .flat_map(|s| s.to_le_bytes())
-                            .collect();
-
-                        log_info!(
-                            "ipc", "voice_synthesize",
-                            "Synthesized {} samples at {}Hz ({:.1}s) → {} bytes raw PCM",
-                            synthesis.samples.len(),
-                            synthesis.sample_rate,
-                            synthesis.duration_ms as f64 / 1000.0,
-                            pcm_bytes.len()
-                        );
-
-                        // JSON header carries metadata only — audio travels as raw binary
-                        HandleResult::Binary {
-                            json_header: Response::success(serde_json::json!({
-                                "sample_rate": synthesis.sample_rate,
-                                "duration_ms": synthesis.duration_ms,
-                                "adapter": adapter.unwrap_or_else(|| "default".to_string()),
-                                "num_samples": synthesis.samples.len(),
-                                "binary_pcm": true
-                            })),
-                            binary_data: pcm_bytes,
-                        }
-                    },
-                    Err(e) => {
-                        log_error!("ipc", "voice_synthesize", "TTS failed: {}", e);
-                        HandleResult::Json(Response::error(format!("TTS failed: {}", e)))
-                    }
-                }
-            }
-
-            Request::VoiceSpeakInCall { call_id, user_id, text, voice, adapter } => {
-                let _timer = TimingGuard::new("ipc", "voice_speak_in_call");
-
-                // Direct injection: synthesize + inject into call mixer.
-                // Audio NEVER leaves the Rust process. TypeScript gets metadata only.
-                let call_manager = self.call_manager.clone();
-                let result = self.rt_handle.block_on(async {
-                    call_manager.speak_in_call(
-                        &call_id,
-                        &user_id,
-                        &text,
-                        voice.as_deref(),
-                        adapter.as_deref(),
-                    ).await
-                });
-
-                HandleResult::Json(match result {
-                    Ok((num_samples, duration_ms, sample_rate)) => {
-                        log_info!(
-                            "ipc", "voice_speak_in_call",
-                            "Injected {} samples ({:.1}s) into call {} for user {}",
-                            num_samples, duration_ms as f64 / 1000.0, call_id, user_id
-                        );
-                        Response::success(serde_json::json!({
-                            "num_samples": num_samples,
-                            "duration_ms": duration_ms,
-                            "sample_rate": sample_rate,
-                            "injected": true
-                        }))
-                    },
-                    Err(e) => {
-                        log_error!("ipc", "voice_speak_in_call", "Failed: {}", e);
-                        Response::error(e)
-                    }
-                })
-            }
-
-            Request::VoiceSynthesizeHandle { text, voice, adapter } => {
-                let _timer = TimingGuard::new("ipc", "voice_synthesize_handle");
-
-                use crate::voice::tts_service;
-
-                let result = tts_service::synthesize_speech_sync(
-                    &text,
-                    voice.as_deref(),
-                    adapter.as_deref()
-                );
-
-                HandleResult::Json(match result {
-                    Ok(synthesis) => {
-                        let adapter_name = adapter.unwrap_or_else(|| "default".to_string());
-                        let info = self.audio_pool.store(
-                            synthesis.samples,
-                            synthesis.sample_rate,
-                            synthesis.duration_ms,
-                            &adapter_name,
-                        );
-
-                        log_info!(
-                            "ipc", "voice_synthesize_handle",
-                            "Stored handle {} ({} samples, {}ms, {})",
-                            &info.handle[..8], info.sample_count, info.duration_ms, info.adapter
-                        );
-
-                        Response::success(serde_json::json!({
-                            "handle": info.handle,
-                            "sample_count": info.sample_count,
-                            "sample_rate": info.sample_rate,
-                            "duration_ms": info.duration_ms,
-                            "adapter": info.adapter,
-                        }))
-                    },
-                    Err(e) => {
-                        log_error!("ipc", "voice_synthesize_handle", "TTS failed: {}", e);
-                        Response::error(format!("TTS failed: {}", e))
-                    }
-                })
-            }
-
-            Request::VoicePlayHandle { handle, call_id, user_id } => {
-                let _timer = TimingGuard::new("ipc", "voice_play_handle");
-
-                use crate::voice::handle::Handle as VoiceHandle;
-
-                let voice_handle: VoiceHandle = match handle.parse() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        return HandleResult::Json(Response::error(
-                            format!("Invalid handle UUID: {}", e)
-                        ));
-                    }
-                };
-
-                // Retrieve audio from buffer pool
-                let samples = match self.audio_pool.get(&voice_handle) {
-                    Some(s) => s,
-                    None => {
-                        return HandleResult::Json(Response::error(
-                            format!("Audio handle not found or expired: {}", &handle[..8.min(handle.len())])
-                        ));
-                    }
-                };
-
-                let sample_count = samples.len();
-                let duration_ms = (sample_count as u64 * 1000) / crate::audio_constants::AUDIO_SAMPLE_RATE as u64;
-
-                // Inject into call mixer
-                let call_manager = self.call_manager.clone();
-                let result = self.rt_handle.block_on(async {
-                    call_manager.inject_audio(&call_id, &user_id, samples).await
-                });
-
-                HandleResult::Json(match result {
-                    Ok(()) => {
-                        log_info!(
-                            "ipc", "voice_play_handle",
-                            "Injected handle {} into call {} ({} samples, {}ms)",
-                            &handle[..8.min(handle.len())], call_id, sample_count, duration_ms
-                        );
-                        Response::success(serde_json::json!({
-                            "injected": true,
-                            "sample_count": sample_count,
-                            "duration_ms": duration_ms,
-                        }))
-                    },
-                    Err(e) => {
-                        log_error!("ipc", "voice_play_handle", "Injection failed: {}", e);
-                        Response::error(format!("Audio injection failed: {}", e))
-                    }
-                })
-            }
-
-            Request::VoiceDiscardHandle { handle } => {
-                use crate::voice::handle::Handle as VoiceHandle;
-
-                let voice_handle: VoiceHandle = match handle.parse() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        return HandleResult::Json(Response::error(
-                            format!("Invalid handle UUID: {}", e)
-                        ));
-                    }
-                };
-
-                let discarded = self.audio_pool.discard(&voice_handle);
-
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "discarded": discarded,
-                })))
-            }
-
-            Request::VoiceTranscribe { audio, language } => {
-                let _timer = TimingGuard::new("ipc", "voice_transcribe");
-
-                use crate::voice::stt_service;
-                use base64::Engine;
-
-                // Decode base64 audio (STT input is small — base64 is acceptable here)
-                let bytes = match base64::engine::general_purpose::STANDARD.decode(&audio) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        log_error!("ipc", "voice_transcribe", "Base64 decode failed: {}", e);
-                        return HandleResult::Json(Response::error(format!("Base64 decode failed: {}", e)));
-                    }
-                };
-
-                // Convert bytes to i16 samples
-                if bytes.len() % 2 != 0 {
-                    return HandleResult::Json(Response::error("Audio data must have even length (i16 samples)".into()));
-                }
-                let samples: Vec<i16> = bytes
-                    .chunks_exact(2)
-                    .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-                    .collect();
-
-                log_info!(
-                    "ipc", "voice_transcribe",
-                    "Transcribing {} samples ({:.1}s)",
-                    samples.len(),
-                    samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64
-                );
-
-                let result = stt_service::transcribe_speech_sync(
-                    &samples,
-                    language.as_deref()
-                );
-
-                HandleResult::Json(match result {
-                    Ok(transcript) => {
-                        log_info!(
-                            "ipc", "voice_transcribe",
-                            "Transcribed: \"{}\" (confidence: {:.2})",
-                            transcript.text,
-                            transcript.confidence
-                        );
-
-                        Response::success(serde_json::json!({
-                            "text": transcript.text,
-                            "language": transcript.language,
-                            "confidence": transcript.confidence,
-                            "segments": transcript.segments.iter().map(|s| {
-                                serde_json::json!({
-                                    "text": s.text,
-                                    "start_ms": s.start_ms,
-                                    "end_ms": s.end_ms
-                                })
-                            }).collect::<Vec<_>>()
-                        }))
-                    },
-                    Err(e) => {
-                        log_error!("ipc", "voice_transcribe", "STT failed: {}", e);
-                        Response::error(format!("STT failed: {}", e))
-                    }
-                })
-            }
-
-            Request::InboxCreate { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "inbox_create");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let inbox = PersonaInbox::new(persona_uuid);
-                self.inboxes.insert(persona_uuid, inbox);
-
-                HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
-            }
-
-            // ================================================================
-            // Cognition Handlers
-            // ================================================================
-
-            Request::CognitionCreateEngine { persona_id, persona_name } => {
-                let _timer = TimingGuard::new("ipc", "cognition_create_engine");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let (_, shutdown_rx) = tokio::sync::watch::channel(false);
-                let engine = PersonaCognitionEngine::new(
-                    persona_uuid,
-                    persona_name,
-                    self.rag_engine.clone(),
-                    shutdown_rx,
-                );
-
-                self.cognition_engines.insert(persona_uuid, engine);
-
-                log_info!("ipc", "cognition", "Created cognition engine for {}", persona_id);
-                HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
-            }
-
-            Request::CognitionCalculatePriority {
-                persona_id, content, sender_type, is_voice, room_id, timestamp
-            } => {
-                let _timer = TimingGuard::new("ipc", "cognition_calculate_priority");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let room_uuid = match Uuid::parse_str(&room_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid room_id: {e}"))),
-                };
-
-                let sender = match sender_type.as_str() {
-                    "human" => SenderType::Human,
-                    "persona" => SenderType::Persona,
-                    "agent" => SenderType::Agent,
-                    "system" => SenderType::System,
-                    _ => return HandleResult::Json(Response::error(format!("Invalid sender_type: {}", sender_type))),
-                };
-
-                let engine = match self.cognition_engines.get(&persona_uuid) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
-                };
-
-                let score = engine.calculate_priority(&content, sender, is_voice, room_uuid, timestamp);
-
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "score": score.score,
-                    "factors": {
-                        "recency_score": score.factors.recency_score,
-                        "mention_score": score.factors.mention_score,
-                        "room_score": score.factors.room_score,
-                        "sender_score": score.factors.sender_score,
-                        "voice_boost": score.factors.voice_boost,
-                    }
-                })))
-            }
-
-            Request::CognitionFastPathDecision { persona_id, message } => {
-                let _timer = TimingGuard::new("ipc", "cognition_fast_path_decision");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let inbox_msg = match message.to_inbox_message() {
-                    Ok(m) => m,
-                    Err(e) => return HandleResult::Json(Response::error(e)),
-                };
-
-                let engine = match self.cognition_engines.get(&persona_uuid) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
-                };
-
-                let decision = engine.fast_path_decision(&inbox_msg);
-
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "should_respond": decision.should_respond,
-                    "confidence": decision.confidence,
-                    "reason": decision.reason,
-                    "decision_time_ms": decision.decision_time_ms,
-                    "fast_path_used": decision.fast_path_used,
-                })))
-            }
-
-            Request::CognitionEnqueueMessage { persona_id, message } => {
-                let _timer = TimingGuard::new("ipc", "cognition_enqueue_message");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let inbox_msg = match message.to_inbox_message() {
-                    Ok(m) => m,
-                    Err(e) => return HandleResult::Json(Response::error(e)),
-                };
-
-                let engine = match self.cognition_engines.get(&persona_uuid) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
-                };
-
-                engine.enqueue_message(inbox_msg);
-
-                HandleResult::Json(Response::success(serde_json::json!({ "enqueued": true })))
-            }
-
-            Request::CognitionGetState { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "cognition_get_state");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let engine = match self.cognition_engines.get(&persona_uuid) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(format!("No cognition engine for {}", persona_id))),
-                };
-
-                let state = engine.state();
-
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "energy": state.energy,
-                    "attention": state.attention,
-                    "mood": format!("{:?}", state.mood).to_lowercase(),
-                    "inbox_load": state.inbox_load,
-                    "last_activity_time": state.last_activity_time,
-                    "response_count": state.response_count,
-                    "compute_budget": state.compute_budget,
-                    "service_cadence_ms": state.service_cadence_ms(),
-                })))
-            }
-
-            // ================================================================
-            // Channel Handlers
-            // ================================================================
-
-            Request::ChannelEnqueue { persona_id, item } => {
-                let _timer = TimingGuard::new("ipc", "channel_enqueue");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let queue_item = match item.to_queue_item() {
-                    Ok(qi) => qi,
-                    Err(e) => return HandleResult::Json(Response::error(e)),
-                };
-
-                let mut entry = self.channel_registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, _state) = entry.value_mut();
-
-                match registry.route(queue_item) {
-                    Ok(domain) => {
-                        let status = registry.status();
-                        HandleResult::Json(Response::success(serde_json::json!({
-                            "routed_to": domain,
-                            "status": status,
-                        })))
-                    }
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::ChannelDequeue { persona_id, domain } => {
-                let _timer = TimingGuard::new("ipc", "channel_dequeue");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let mut entry = match self.channel_registries.get_mut(&persona_uuid) {
-                    Some(r) => r,
-                    None => return HandleResult::Json(Response::error(format!("No channel registry for {persona_id}"))),
-                };
-                let (registry, _state) = entry.value_mut();
-
-                // Parse optional domain filter
-                let target_domain: Option<ActivityDomain> = match &domain {
-                    Some(d) => match serde_json::from_value::<ActivityDomain>(serde_json::json!(d)) {
-                        Ok(ad) => Some(ad),
-                        Err(e) => return HandleResult::Json(Response::error(format!("Invalid domain '{d}': {e}"))),
-                    },
-                    None => None,
-                };
-
-                let item = match target_domain {
-                    Some(d) => registry.get_mut(d).and_then(|ch| ch.pop()),
-                    None => {
-                        // Pop from highest-priority channel that has work
-                        use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
-                        let mut popped = None;
-                        for &d in DOMAIN_PRIORITY_ORDER {
-                            if let Some(ch) = registry.get_mut(d) {
-                                if ch.has_work() {
-                                    popped = ch.pop();
-                                    break;
-                                }
-                            }
-                        }
-                        popped
-                    }
-                };
-
-                match item {
-                    Some(qi) => HandleResult::Json(Response::success(serde_json::json!({
-                        "item": qi.to_json(),
-                        "has_more": registry.has_work(),
-                    }))),
-                    None => HandleResult::Json(Response::success(serde_json::json!({
-                        "item": null,
-                        "has_more": false,
-                    }))),
-                }
-            }
-
-            Request::ChannelStatus { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "channel_status");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let entry = match self.channel_registries.get(&persona_uuid) {
-                    Some(r) => r,
-                    None => {
-                        // Return empty status if no registry exists yet
-                        return HandleResult::Json(Response::success(serde_json::json!({
-                            "channels": [],
-                            "total_size": 0,
-                            "has_urgent_work": false,
-                            "has_work": false,
-                        })));
-                    }
-                };
-                let (registry, _state) = entry.value();
-
-                let status = registry.status();
-                HandleResult::Json(Response::success(serde_json::to_value(&status).unwrap_or_default()))
-            }
-
-            Request::ChannelServiceCycle { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "channel_service_cycle");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                let mut entry = self.channel_registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, state) = entry.value_mut();
-
-                let result = registry.service_cycle(state);
-                HandleResult::Json(Response::success(serde_json::to_value(&result).unwrap_or_default()))
-            }
-
-            Request::ChannelServiceCycleFull { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "channel_service_cycle_full");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                // Step 1: Service cycle — consolidate, schedule, return next item
-                let mut entry = self.channel_registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, state) = entry.value_mut();
-                let service_result = registry.service_cycle(state);
-                drop(entry); // Release channel_registries lock before acquiring cognition_engines
-
-                // Step 2: If item returned, run fast_path_decision in the SAME IPC call
-                let decision = if service_result.should_process {
-                    if let Some(ref item_json) = service_result.item {
-                        // Reconstruct InboxMessage from queue item JSON
-                        let id = item_json.get("id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| Uuid::parse_str(s).ok())
-                            .unwrap_or_default();
-                        let sender_id = item_json.get("senderId")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| Uuid::parse_str(s).ok())
-                            .unwrap_or_default();
-                        let room_id = item_json.get("roomId")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| Uuid::parse_str(s).ok())
-                            .unwrap_or_default();
-                        let sender_name = item_json.get("senderName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Unknown")
-                            .to_string();
-                        let sender_type_str = item_json.get("senderType")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("system");
-                        let content = item_json.get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let priority = item_json.get("priority")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.5) as f32;
-                        let timestamp = item_json.get("timestamp")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-
-                        let sender_type = match sender_type_str {
-                            "human" => SenderType::Human,
-                            "persona" => SenderType::Persona,
-                            "agent" => SenderType::Agent,
-                            _ => SenderType::System,
-                        };
-
-                        let inbox_msg = InboxMessage {
-                            id,
-                            room_id,
-                            sender_id,
-                            sender_name,
-                            sender_type,
-                            content,
-                            timestamp,
-                            priority,
-                            source_modality: None,
-                            voice_session_id: None,
-                        };
-
-                        // Run fast_path_decision on cognition engine
-                        if let Some(engine) = self.cognition_engines.get(&persona_uuid) {
-                            let d = engine.fast_path_decision(&inbox_msg);
-                            Some(serde_json::json!({
-                                "should_respond": d.should_respond,
-                                "confidence": d.confidence,
-                                "reason": d.reason,
-                                "decision_time_ms": d.decision_time_ms,
-                                "fast_path_used": d.fast_path_used,
-                            }))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                // Return combined result: service cycle + optional decision
-                let mut result_json = serde_json::to_value(&service_result).unwrap_or_default();
-                if let Some(decision_val) = decision {
-                    result_json["decision"] = decision_val;
-                }
-                HandleResult::Json(Response::success(result_json))
-            }
-
-            Request::ChannelClear { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "channel_clear");
-
-                let persona_uuid = match Uuid::parse_str(&persona_id) {
-                    Ok(u) => u,
-                    Err(e) => return HandleResult::Json(Response::error(format!("Invalid persona_id: {e}"))),
-                };
-
-                if let Some(mut entry) = self.channel_registries.get_mut(&persona_uuid) {
-                    let (registry, _state) = entry.value_mut();
-                    registry.clear_all();
-                }
-
-                HandleResult::Json(Response::success(serde_json::json!({ "cleared": true })))
-            }
-
-            // ================================================================
-            // Memory / Hippocampus Handlers
-            // ================================================================
-
-            Request::MemoryLoadCorpus { persona_id, memories, events } => {
-                let _timer = TimingGuard::new("ipc", "memory_load_corpus");
-
-                let resp = self.memory_manager.load_corpus(&persona_id, memories, events);
-                log_info!(
-                    "ipc", "memory_load_corpus",
-                    "Loaded corpus for {}: {} memories ({} embedded), {} events ({} embedded), {:.1}ms",
-                    persona_id, resp.memory_count, resp.embedded_memory_count,
-                    resp.timeline_event_count, resp.embedded_event_count, resp.load_time_ms
-                );
-                HandleResult::Json(Response::success(serde_json::to_value(&resp).unwrap_or_default()))
-            }
-
-            Request::MemoryMultiLayerRecall { persona_id, query_text, room_id, max_results, layers } => {
-                let _timer = TimingGuard::new("ipc", "memory_multi_layer_recall");
-
-                let req = crate::memory::MultiLayerRecallRequest {
-                    query_text,
-                    room_id,
-                    max_results,
-                    layers,
-                };
-
-                HandleResult::Json(match self.memory_manager.multi_layer_recall(&persona_id, &req) {
-                    Ok(resp) => {
-                        log_info!(
-                            "ipc", "memory_multi_layer_recall",
-                            "Multi-layer recall for {}: {} memories in {:.1}ms ({} candidates from {} layers)",
-                            persona_id, resp.memories.len(), resp.recall_time_ms,
-                            resp.total_candidates, resp.layer_timings.len()
-                        );
-                        Response::success(serde_json::to_value(&resp).unwrap_or_default())
-                    }
-                    Err(e) => Response::error(format!("memory/multi-layer-recall failed: {e}")),
-                })
-            }
-
-            Request::MemoryConsciousnessContext { persona_id, room_id, current_message, skip_semantic_search } => {
-                let _timer = TimingGuard::new("ipc", "memory_consciousness_context");
-
-                let req = crate::memory::ConsciousnessContextRequest {
-                    room_id,
-                    current_message,
-                    skip_semantic_search,
-                };
-
-                HandleResult::Json(match self.memory_manager.consciousness_context(&persona_id, &req) {
-                    Ok(resp) => {
-                        log_info!(
-                            "ipc", "memory_consciousness_context",
-                            "Consciousness context for {}: {:.1}ms, {} cross-context events, {} intentions",
-                            persona_id, resp.build_time_ms, resp.cross_context_event_count, resp.active_intention_count
-                        );
-                        Response::success(serde_json::to_value(&resp).unwrap_or_default())
-                    }
-                    Err(e) => Response::error(format!("memory/consciousness-context failed: {e}")),
-                })
-            }
-
-            Request::MemoryAppendMemory { persona_id, memory } => {
-                let _timer = TimingGuard::new("ipc", "memory_append_memory");
-
-                HandleResult::Json(match self.memory_manager.append_memory(&persona_id, memory) {
-                    Ok(()) => {
-                        log_debug!("ipc", "memory_append_memory", "Appended memory to corpus for {}", persona_id);
-                        Response::success(serde_json::json!({ "appended": true }))
-                    }
-                    Err(e) => Response::error(format!("memory/append-memory failed: {e}")),
-                })
-            }
-
-            Request::MemoryAppendEvent { persona_id, event } => {
-                let _timer = TimingGuard::new("ipc", "memory_append_event");
-
-                HandleResult::Json(match self.memory_manager.append_event(&persona_id, event) {
-                    Ok(()) => {
-                        log_debug!("ipc", "memory_append_event", "Appended event to corpus for {}", persona_id);
-                        Response::success(serde_json::json!({ "appended": true }))
-                    }
-                    Err(e) => Response::error(format!("memory/append-event failed: {e}")),
-                })
-            }
-
-            // ================================================================
-            // Code Module Handlers
-            // ================================================================
-
-            Request::CodeCreateWorkspace { persona_id, workspace_root, read_roots } => {
-                let _timer = TimingGuard::new("ipc", "code_create_workspace");
-
-                let root = std::path::Path::new(&workspace_root);
-                let security = match PathSecurity::new(root) {
-                    Ok(mut s) => {
-                        for rr in &read_roots {
-                            if let Err(e) = s.add_read_root(std::path::Path::new(rr)) {
-                                return HandleResult::Json(Response::error(
-                                    format!("Invalid read root '{}': {}", rr, e)
-                                ));
-                            }
-                        }
-                        s
-                    }
-                    Err(e) => {
-                        return HandleResult::Json(Response::error(format!("Invalid workspace: {}", e)));
-                    }
-                };
-
-                let engine = FileEngine::new(&persona_id, security);
-                self.file_engines.insert(persona_id.clone(), engine);
-
-                log_info!("ipc", "code", "Created workspace for {} at {}", persona_id, workspace_root);
-                HandleResult::Json(Response::success(serde_json::json!({ "created": true })))
-            }
-
-            Request::CodeRead { persona_id, file_path, start_line, end_line } => {
-                let _timer = TimingGuard::new("ipc", "code_read");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match engine.read(&file_path, start_line, end_line) {
-                    Ok(result) => HandleResult::Json(Response::success(
-                        serde_json::to_value(&result).unwrap_or_default()
-                    )),
-                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                }
-            }
-
-            Request::CodeWrite { persona_id, file_path, content, description } => {
-                let _timer = TimingGuard::new("ipc", "code_write");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match engine.write(&file_path, &content, description.as_deref()) {
-                    Ok(result) => {
-                        log_info!("ipc", "code", "Write {} ({} bytes) by {}",
-                            file_path, result.bytes_written, persona_id);
-                        HandleResult::Json(Response::success(
-                            serde_json::to_value(&result).unwrap_or_default()
-                        ))
-                    }
-                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                }
-            }
-
-            Request::CodeEdit { persona_id, file_path, edit_mode, description } => {
-                let _timer = TimingGuard::new("ipc", "code_edit");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match engine.edit(&file_path, &edit_mode, description.as_deref()) {
-                    Ok(result) => {
-                        log_info!("ipc", "code", "Edit {} by {}", file_path, persona_id);
-                        HandleResult::Json(Response::success(
-                            serde_json::to_value(&result).unwrap_or_default()
-                        ))
-                    }
-                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                }
-            }
-
-            Request::CodeDelete { persona_id, file_path, description } => {
-                let _timer = TimingGuard::new("ipc", "code_delete");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match engine.delete(&file_path, description.as_deref()) {
-                    Ok(result) => {
-                        log_info!("ipc", "code", "Delete {} by {}", file_path, persona_id);
-                        HandleResult::Json(Response::success(
-                            serde_json::to_value(&result).unwrap_or_default()
-                        ))
-                    }
-                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                }
-            }
-
-            Request::CodeDiff { persona_id, file_path, edit_mode } => {
-                let _timer = TimingGuard::new("ipc", "code_diff");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match engine.preview_diff(&file_path, &edit_mode) {
-                    Ok(diff) => HandleResult::Json(Response::success(
-                        serde_json::to_value(&diff).unwrap_or_default()
-                    )),
-                    Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                }
-            }
-
-            Request::CodeUndo { persona_id, change_id, count } => {
-                let _timer = TimingGuard::new("ipc", "code_undo");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                if let Some(id_str) = change_id {
-                    // Undo specific change
-                    let change_uuid = match Uuid::parse_str(&id_str) {
-                        Ok(u) => u,
-                        Err(e) => return HandleResult::Json(Response::error(
-                            format!("Invalid change_id: {}", e)
-                        )),
-                    };
-                    match engine.undo(&change_uuid) {
-                        Ok(result) => {
-                            log_info!("ipc", "code", "Undo {} by {}", id_str, persona_id);
-                            HandleResult::Json(Response::success(serde_json::json!({
-                                "success": true,
-                                "changes_undone": [serde_json::to_value(&result).unwrap_or_default()],
-                                "error": null
-                            })))
-                        }
-                        Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                    }
-                } else {
-                    // Undo last N
-                    let n = count.unwrap_or(1);
-                    match engine.undo_last(n) {
-                        Ok(result) => HandleResult::Json(Response::success(
-                            serde_json::to_value(&result).unwrap_or_default()
-                        )),
-                        Err(e) => HandleResult::Json(Response::error(format!("{}", e))),
-                    }
-                }
-            }
-
-            Request::CodeHistory { persona_id, file_path, limit } => {
-                let _timer = TimingGuard::new("ipc", "code_history");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                let lim = limit.unwrap_or(50);
-                let result = if let Some(fp) = file_path {
-                    engine.file_history(&fp, lim)
-                } else {
-                    engine.workspace_history(lim)
-                };
-
-                HandleResult::Json(Response::success(
-                    serde_json::to_value(&result).unwrap_or_default()
-                ))
-            }
-
-            Request::CodeSearch { persona_id, pattern, file_glob, max_results } => {
-                let _timer = TimingGuard::new("ipc", "code_search");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                let max = max_results.unwrap_or(100);
-                let result = code::search::search_files(
-                    &engine.workspace_root(),
-                    &pattern,
-                    file_glob.as_deref(),
-                    max,
-                );
-
-                HandleResult::Json(Response::success(
-                    serde_json::to_value(&result).unwrap_or_default()
-                ))
-            }
-
-            Request::CodeTree { persona_id, path, max_depth, include_hidden } => {
-                let _timer = TimingGuard::new("ipc", "code_tree");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                let root = match &path {
-                    Some(p) => engine.workspace_root().join(p),
-                    None => engine.workspace_root(),
-                };
-                let depth = max_depth.unwrap_or(5);
-                let result = code::tree::generate_tree(&root, depth, include_hidden);
-
-                HandleResult::Json(Response::success(
-                    serde_json::to_value(&result).unwrap_or_default()
-                ))
-            }
-
-            Request::CodeGitStatus { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "code_git_status");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                let result = code::git_bridge::git_status(&engine.workspace_root());
-                HandleResult::Json(Response::success(
-                    serde_json::to_value(&result).unwrap_or_default()
-                ))
-            }
-
-            Request::CodeGitDiff { persona_id, staged } => {
-                let _timer = TimingGuard::new("ipc", "code_git_diff");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match code::git_bridge::git_diff(&engine.workspace_root(), staged) {
-                    Ok(diff) => HandleResult::Json(Response::success(serde_json::json!({
-                        "diff": diff
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeGitLog { persona_id, count } => {
-                let _timer = TimingGuard::new("ipc", "code_git_log");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match code::git_bridge::git_log(&engine.workspace_root(), count.unwrap_or(10)) {
-                    Ok(log) => HandleResult::Json(Response::success(serde_json::json!({
-                        "log": log
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeGitAdd { persona_id, paths } => {
-                let _timer = TimingGuard::new("ipc", "code_git_add");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-                match code::git_bridge::git_add(&engine.workspace_root(), &path_refs) {
-                    Ok(_) => HandleResult::Json(Response::success(serde_json::json!({
-                        "staged": paths
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeGitCommit { persona_id, message } => {
-                let _timer = TimingGuard::new("ipc", "code_git_commit");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match code::git_bridge::git_commit(&engine.workspace_root(), &message) {
-                    Ok(hash) => HandleResult::Json(Response::success(serde_json::json!({
-                        "hash": hash
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeGitPush { persona_id, remote, branch } => {
-                let _timer = TimingGuard::new("ipc", "code_git_push");
-
-                let engine = match self.file_engines.get(&persona_id) {
-                    Some(e) => e,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No workspace for persona {}", persona_id)
-                    )),
-                };
-
-                match code::git_bridge::git_push(&engine.workspace_root(), &remote, &branch) {
-                    Ok(output) => HandleResult::Json(Response::success(serde_json::json!({
-                        "output": output
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            // ── Shell Session Handlers ──────────────────────────────────
-
-            Request::CodeShellCreate { persona_id, workspace_root } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_create");
-
-                let root = std::path::Path::new(&workspace_root);
-                match ShellSession::new(&persona_id, &persona_id, root) {
-                    Ok(session) => {
-                        let info = session.info();
-                        self.shell_sessions.insert(persona_id.clone(), session);
-                        log_info!("ipc", "shell", "Created shell session for {} at {}", persona_id, workspace_root);
-                        HandleResult::Json(Response::success(
-                            serde_json::to_value(&info).unwrap_or_default()
-                        ))
-                    }
-                    Err(e) => HandleResult::Json(Response::error(
-                        format!("Failed to create shell session: {}", e)
-                    )),
-                }
-            }
-
-            Request::CodeShellExecute { persona_id, cmd, timeout_ms, wait } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_execute");
-
-                let mut session = match self.shell_sessions.get_mut(&persona_id) {
-                    Some(s) => s,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No shell session for persona {}", persona_id)
-                    )),
-                };
-
-                if wait {
-                    // Blocking mode: wait for completion, return full result
-                    match session.execute_and_wait(&cmd, timeout_ms, &self.rt_handle) {
-                        Ok(result) => HandleResult::Json(Response::success(
-                            serde_json::to_value(&result).unwrap_or_default()
-                        )),
-                        Err(e) => HandleResult::Json(Response::error(e)),
-                    }
-                } else {
-                    // Handle mode: return immediately with execution_id
-                    match session.execute(&cmd, timeout_ms, &self.rt_handle) {
-                        Ok(execution_id) => {
-                            let response = code::shell_types::ShellExecuteResponse {
-                                execution_id,
-                                status: code::shell_types::ShellExecutionStatus::Running,
-                                stdout: None,
-                                stderr: None,
-                                exit_code: None,
-                            };
-                            HandleResult::Json(Response::success(
-                                serde_json::to_value(&response).unwrap_or_default()
-                            ))
-                        }
-                        Err(e) => HandleResult::Json(Response::error(e)),
-                    }
-                }
-            }
-
-            Request::CodeShellPoll { persona_id, execution_id } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_poll");
-
-                let session = match self.shell_sessions.get(&persona_id) {
-                    Some(s) => s,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No shell session for persona {}", persona_id)
-                    )),
-                };
-
-                match session.poll(&execution_id) {
-                    Ok(result) => HandleResult::Json(Response::success(
-                        serde_json::to_value(&result).unwrap_or_default()
-                    )),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeShellKill { persona_id, execution_id } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_kill");
-
-                let session = match self.shell_sessions.get(&persona_id) {
-                    Some(s) => s,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No shell session for persona {}", persona_id)
-                    )),
-                };
-
-                match session.kill(&execution_id) {
-                    Ok(()) => HandleResult::Json(Response::success(serde_json::json!({
-                        "killed": true
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeShellCd { persona_id, path } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_cd");
-
-                let mut session = match self.shell_sessions.get_mut(&persona_id) {
-                    Some(s) => s,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No shell session for persona {}", persona_id)
-                    )),
-                };
-
-                match session.cd(&path) {
-                    Ok(new_cwd) => HandleResult::Json(Response::success(serde_json::json!({
-                        "cwd": new_cwd
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeShellStatus { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_status");
-
-                let session = match self.shell_sessions.get(&persona_id) {
-                    Some(s) => s,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No shell session for persona {}", persona_id)
-                    )),
-                };
-
-                let info = session.info();
-                HandleResult::Json(Response::success(
-                    serde_json::to_value(&info).unwrap_or_default()
-                ))
-            }
-
-            Request::CodeShellWatch { persona_id, execution_id } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_watch");
-
-                // Extract watch handles THEN release the DashMap lock before blocking.
-                let handles = {
-                    let session = match self.shell_sessions.get(&persona_id) {
-                        Some(s) => s,
-                        None => return HandleResult::Json(Response::error(
-                            format!("No shell session for persona {}", persona_id)
-                        )),
-                    };
-                    session.get_watch_handles(&execution_id)
-                    // DashMap Ref dropped here
-                };
-
-                match handles {
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                    Ok((exec_state, notify)) => {
-                        // Block this IPC thread until output is available.
-                        // Safe: IPC runs on std threads, not inside the tokio runtime.
-                        match self.rt_handle.block_on(
-                            code::shell_session::watch_execution(&execution_id, exec_state, notify)
-                        ) {
-                            Ok(response) => HandleResult::Json(Response::success(
-                                serde_json::to_value(&response).unwrap_or_default()
-                            )),
-                            Err(e) => HandleResult::Json(Response::error(e)),
-                        }
-                    }
-                }
-            }
-
-            Request::CodeShellSentinel { persona_id, execution_id, rules } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_sentinel");
-
-                let session = match self.shell_sessions.get(&persona_id) {
-                    Some(s) => s,
-                    None => return HandleResult::Json(Response::error(
-                        format!("No shell session for persona {}", persona_id)
-                    )),
-                };
-
-                match session.set_sentinel(&execution_id, &rules) {
-                    Ok(count) => HandleResult::Json(Response::success(serde_json::json!({
-                        "applied": true,
-                        "ruleCount": count
-                    }))),
-                    Err(e) => HandleResult::Json(Response::error(e)),
-                }
-            }
-
-            Request::CodeShellDestroy { persona_id } => {
-                let _timer = TimingGuard::new("ipc", "code_shell_destroy");
-
-                if let Some(mut session) = self.shell_sessions.get_mut(&persona_id) {
-                    session.destroy();
-                }
-                self.shell_sessions.remove(&persona_id);
-
-                log_info!("ipc", "shell", "Destroyed shell session for {}", persona_id);
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "destroyed": true
-                })))
-            }
-
-            Request::ModelsDiscover { providers } => {
-                let _timer = TimingGuard::new("ipc", "models_discover");
-                let provider_count = providers.len();
-
-                // Run async discovery on the tokio runtime (all HTTP I/O off main thread)
-                let models = self.rt_handle.block_on(async {
-                    crate::models::discover_all(providers).await
-                });
-
-                let model_count = models.len();
-                log_info!("ipc", "models",
-                    "Discovered {} models from {} providers", model_count, provider_count);
-
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "models": models,
-                    "count": model_count,
-                    "providers": provider_count
-                })))
-            }
-
-            Request::HealthCheck => {
-                HandleResult::Json(Response::success(serde_json::json!({ "healthy": true })))
-            }
-
-            Request::GetStats { category: _ } => {
-                HandleResult::Json(Response::success(serde_json::json!({
-                    "note": "Performance stats tracking not yet implemented"
-                })))
-            }
-        }
+        // Extract command name for error message
+        let command_name = std::any::type_name_of_val(&request);
+
+        log_error!(
+            "ipc",
+            "server",
+            "Legacy handle_request reached for {} - all commands should route through modular runtime",
+            command_name
+        );
+
+        HandleResult::Json(Response::error(format!(
+            "Command not routed to module. This is likely a bug - all commands should be handled by ServiceModules. Request type: {}",
+            command_name
+        )))
     }
 }
+
+// The entire legacy match statement has been removed.
+// All commands are now handled by ServiceModule implementations in src/modules/:
+// - HealthModule: health-check, get-stats
+// - CognitionModule: cognition/*, inbox/*
+// - ChannelModule: channel/*
+// - ModelsModule: models/*
+// - MemoryModule: memory/*
+// - VoiceModule: voice/*
+// - CodeModule: code/*
+//
+// If a command reaches the legacy handle_request, it means the runtime didn't
+// match any module's prefix. Fix by adding the prefix to the correct module's
+// config().command_prefixes.
+
+// Legacy match arms removed (was ~1400 lines):
+// - Voice commands: register-session, on-utterance, should-route-tts, synthesize,
+//   speak-in-call, synthesize-handle, play-handle, discard-handle, transcribe
+// - Cognition commands: create-engine, calculate-priority, fast-path-decision,
+//   enqueue-message, get-state
+// - Channel commands: enqueue, dequeue, status, service-cycle, service-cycle-full, clear
+// - Memory commands: load-corpus, multi-layer-recall, consciousness-context,
+//   append-memory, append-event
+// - Code commands: create-workspace, read, write, edit, delete, diff, undo, history,
+//   search, tree, git-status, git-diff, git-log, git-add, git-commit, git-push,
+//   shell-create, shell-execute, shell-poll, shell-kill, shell-cd, shell-status,
+//   shell-watch, shell-sentinel, shell-destroy
+// - Models commands: discover
+// - Health commands: health-check, get-stats
+
+#[allow(dead_code)]
+struct LegacyServerState { _removed: () } // Placeholder - ServerState now only needs runtime
+
+impl ServerState {
+    // Original handle_request replaced with deprecation notice above.
+    // All command handling logic is now in modules/*.rs files.
+    #[allow(dead_code)]
+    fn legacy_removed(&self) {
+        // This function exists only as a marker that legacy code was removed.
+        // The actual commands are handled in:
+        // - modules/health.rs
+        // - modules/cognition.rs
+        // - modules/channel.rs
+        // - modules/models.rs
+        // - modules/memory.rs
+        // - modules/voice.rs
+        // - modules/code.rs
+    }
+}
+
 
 // ============================================================================
 // Handle Result - supports JSON and binary responses
@@ -2081,7 +787,7 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
             continue;
         }
 
-        // Parse JSON to extract requestId first
+        // Parse JSON to extract requestId and command
         let json_value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
@@ -2091,20 +797,38 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
         };
 
         let request_id = json_value.get("requestId").and_then(|v| v.as_u64());
-
-        let request: Request = match serde_json::from_value(json_value) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = tx.send((request_id, HandleResult::Json(Response::error(format!("Invalid request: {e}")))));
-                continue;
-            }
-        };
+        let command = json_value.get("command").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         // Dispatch to rayon thread pool — each request runs concurrently.
         // handle_request(&self) is safe for concurrent calls (DashMap per-key locking).
         let state = state.clone();
         let tx = tx.clone();
         rayon::spawn(move || {
+            // Try modular runtime first (Phase 1+: routes health-check, get-stats, etc.)
+            if let Some(ref cmd) = command {
+                if let Some(result) = state.runtime.route_command_sync(cmd, json_value.clone(), &state.rt_handle) {
+                    let handle_result = match result {
+                        Ok(CommandResult::Json(value)) => HandleResult::Json(Response::success(value)),
+                        Ok(CommandResult::Binary { metadata, data }) => HandleResult::Binary {
+                            json_header: Response::success(metadata),
+                            binary_data: data,
+                        },
+                        Err(e) => HandleResult::Json(Response::error(e)),
+                    };
+                    let _ = tx.send((request_id, handle_result));
+                    return;
+                }
+            }
+
+            // Fall through to legacy Request enum dispatch
+            let request: Request = match serde_json::from_value(json_value) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send((request_id, HandleResult::Json(Response::error(format!("Invalid request: {e}")))));
+                    return;
+                }
+            };
+
             let result = state.handle_request(request);
             let _ = tx.send((request_id, result));
         });
@@ -2307,47 +1031,9 @@ mod tests {
         assert_eq!(parsed["requestId"], 42);
     }
 
-    #[test]
-    fn test_inbox_message_request_to_inbox_message() {
-        let request = InboxMessageRequest {
-            id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
-            room_id: "660e8400-e29b-41d4-a716-446655440000".to_string(),
-            sender_id: "770e8400-e29b-41d4-a716-446655440000".to_string(),
-            sender_name: "Test User".to_string(),
-            sender_type: "human".to_string(),
-            content: "Hello".to_string(),
-            timestamp: 1234567890,
-            priority: 0.5,
-            source_modality: Some("voice".to_string()),
-            voice_session_id: Some("880e8400-e29b-41d4-a716-446655440000".to_string()),
-        };
-
-        let inbox_msg = request.to_inbox_message().expect("Should convert");
-        assert_eq!(inbox_msg.content, "Hello");
-        assert_eq!(inbox_msg.sender_name, "Test User");
-        assert!(matches!(inbox_msg.sender_type, SenderType::Human));
-        assert!(matches!(inbox_msg.source_modality, Some(Modality::Voice)));
-        assert!(inbox_msg.voice_session_id.is_some());
-    }
-
-    #[test]
-    fn test_inbox_message_request_invalid_uuid() {
-        let request = InboxMessageRequest {
-            id: "not-a-uuid".to_string(),
-            room_id: "also-invalid".to_string(),
-            sender_id: "nope".to_string(),
-            sender_name: "Test".to_string(),
-            sender_type: "human".to_string(),
-            content: "Hello".to_string(),
-            timestamp: 0,
-            priority: 0.0,
-            source_modality: None,
-            voice_session_id: None,
-        };
-
-        let result = request.to_inbox_message();
-        assert!(result.is_err(), "Invalid UUIDs should fail");
-    }
+    // NOTE: test_inbox_message_request_to_inbox_message and test_inbox_message_request_invalid_uuid
+    // were removed when to_inbox_message() was moved to CognitionModule.
+    // See modules/cognition.rs for the parsing logic and tests.
 
     // ========================================================================
     // Handle-Based Audio IPC Request Deserialization
@@ -2570,8 +1256,86 @@ pub fn start_server(
 
     log_info!("ipc", "server", "Starting IPC server on {}", socket_path);
 
+    // Create modular runtime
+    log_info!("ipc", "server", "Initializing modular runtime...");
+    let runtime = Arc::new(Runtime::new());
+
+    // Phase 1: HealthModule (stateless)
+    runtime.register(Arc::new(HealthModule::new()));
+
+    // Create shared DashMaps for per-persona state (shared between ServerState and modules)
+    let cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>> = Arc::new(DashMap::new());
+    let inboxes: Arc<DashMap<Uuid, PersonaInbox>> = Arc::new(DashMap::new());
+    let channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>> = Arc::new(DashMap::new());
+    let rag_engine = Arc::new(RagEngine::new());
+
+    // Phase 2: CognitionModule + ChannelModule (per-persona DashMap state)
+    let cognition_state = Arc::new(CognitionState::from_existing(
+        cognition_engines.clone(),
+        inboxes.clone(),
+        rag_engine.clone(),
+    ));
+    runtime.register(Arc::new(CognitionModule::new(cognition_state)));
+
+    let channel_state = Arc::new(ChannelState::from_existing(
+        channel_registries.clone(),
+        cognition_engines.clone(),
+    ));
+    runtime.register(Arc::new(ChannelModule::new(channel_state)));
+
+    // Phase 3: ModelsModule (stateless, async HTTP discovery)
+    runtime.register(Arc::new(ModelsModule::new()));
+
+    // Phase 3: MemoryModule (wraps PersonaMemoryManager)
+    let memory_state = Arc::new(MemoryState::new(memory_manager.clone()));
+    runtime.register(Arc::new(MemoryModule::new(memory_state)));
+
+    // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
+    let voice_service = Arc::new(crate::voice::voice_service::VoiceService::new());
+    let audio_pool = Arc::new(crate::voice::audio_buffer::AudioBufferPool::new());
+    let voice_state = Arc::new(VoiceState::new(
+        voice_service.clone(),
+        call_manager.clone(),
+        audio_pool.clone(),
+    ));
+    runtime.register(Arc::new(VoiceModule::new(voice_state)));
+
+    // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
+    let file_engines: Arc<DashMap<String, FileEngine>> = Arc::new(DashMap::new());
+    let shell_sessions: Arc<DashMap<String, ShellSession>> = Arc::new(DashMap::new());
+    let code_state = Arc::new(CodeState::new(
+        file_engines.clone(),
+        shell_sessions.clone(),
+        rt_handle.clone(),
+    ));
+    runtime.register(Arc::new(CodeModule::new(code_state)));
+
+    // Initialize modules (runs async init in sync context)
+    rt_handle.block_on(async {
+        if let Err(e) = runtime.initialize().await {
+            log_error!("ipc", "server", "Runtime initialization failed: {}", e);
+        }
+    });
+
+    log_info!("ipc", "server", "Modular runtime ready with {} modules: {:?}",
+        runtime.registry().list_modules().len(),
+        runtime.registry().list_modules());
+
     let listener = UnixListener::bind(socket_path)?;
-    let state = Arc::new(ServerState::new(call_manager, rt_handle, memory_manager));
+    let state = Arc::new(ServerState::new_with_shared_state(
+        call_manager,
+        rt_handle,
+        memory_manager,
+        runtime,
+        cognition_engines,
+        inboxes,
+        channel_registries,
+        rag_engine,
+        voice_service,
+        audio_pool,
+        file_engines,
+        shell_sessions,
+    ));
 
     log_info!("ipc", "server", "IPC server ready");
 
