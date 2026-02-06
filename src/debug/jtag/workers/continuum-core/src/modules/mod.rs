@@ -15,3 +15,4 @@ pub mod models;
 pub mod memory;
 pub mod voice;
 pub mod code;
+pub mod rag;

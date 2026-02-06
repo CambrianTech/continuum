@@ -21,6 +21,7 @@ use crate::modules::models::ModelsModule;
 use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::voice::{VoiceModule, VoiceState};
 use crate::modules::code::{CodeModule, CodeState};
+use crate::modules::rag::{RagModule, RagState};
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -1289,6 +1290,10 @@ pub fn start_server(
     // Phase 3: MemoryModule (wraps PersonaMemoryManager)
     let memory_state = Arc::new(MemoryState::new(memory_manager.clone()));
     runtime.register(Arc::new(MemoryModule::new(memory_state)));
+
+    // Phase 3: RagModule (batched RAG composition with parallel Rayon loading)
+    let rag_state = Arc::new(RagState::new(memory_manager.clone()));
+    runtime.register(Arc::new(RagModule::new(rag_state)));
 
     // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
     let voice_service = Arc::new(crate::voice::voice_service::VoiceService::new());
