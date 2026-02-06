@@ -97,8 +97,12 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
   constructor(
     private readonly storageAdapter: DataStorageAdapter,
     private readonly vectorOps: VectorStorageOperations,
-    private readonly dbPath?: string
-  ) {}
+    private readonly dbPath: string
+  ) {
+    if (!dbPath) {
+      throw new Error('VectorSearchAdapterBase requires explicit dbPath - no fallbacks allowed');
+    }
+  }
 
   // ============================================================================
   // GENERIC IMPLEMENTATIONS - Work for all backends

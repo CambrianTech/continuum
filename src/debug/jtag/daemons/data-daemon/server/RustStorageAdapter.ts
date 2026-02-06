@@ -28,7 +28,6 @@ import {
   type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
-import { getDatabasePath } from '../../../system/config/ServerConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
 import {
@@ -84,6 +83,7 @@ interface RustSqliteOptions {
 export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorSearchAdapter {
   private config: StorageAdapterConfig | null = null;
   private isInitialized: boolean = false;
+  private dbPath!: string;  // Stored during initialization - REQUIRED for all operations
 
   // Rust-backed executor (replaces SqliteRawExecutor)
   private executor!: RustSqliteExecutor;
@@ -122,18 +122,27 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
     log.info('Starting Rust-backed initialization...');
 
     this.config = config;
-    const options = config.options as RustSqliteOptions || {};
+    const options = config.options as RustSqliteOptions & { basePath?: string; databaseName?: string } || {};
 
-    // Use explicit filename from options, or fall back to default database path
-    const dbPath = options.filename || getDatabasePath();
-    log.info(`Using database path: ${dbPath}`);
+    // Database path MUST be provided explicitly - NO fallbacks
+    // Accept either:
+    // 1. options.filename (full path)
+    // 2. options.basePath + options.databaseName (construct path)
+    if (options.filename) {
+      this.dbPath = options.filename;
+    } else if (options.basePath && options.databaseName) {
+      this.dbPath = path.join(options.basePath, options.databaseName);
+    } else {
+      throw new Error('RustStorageAdapter requires explicit filename OR (basePath + databaseName) in options - no fallbacks allowed');
+    }
+    log.info(`Using database path: ${this.dbPath}`);
 
     // Socket path to Rust worker
     const socketPath = options.socketPath || '/tmp/data-worker.sock';
     log.info(`Using Rust worker socket: ${socketPath}`);
 
     // Ensure directory exists with proper permissions
-    const dbDir = path.dirname(dbPath);
+    const dbDir = path.dirname(this.dbPath);
 
     // Skip permission changes for system directories (/tmp, /var, etc.)
     const isSystemDir = ['/tmp', '/var', '/usr', '/etc'].some(sysDir =>
@@ -169,7 +178,7 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
       // Check if database file exists before connection
       let dbFileExists = false;
       try {
-        const stats = await fs.stat(dbPath);
+        const stats = await fs.stat(this.dbPath);
         log.debug(`Existing database found - Size: ${stats.size} bytes, Mode: ${stats.mode.toString(8)}`);
         dbFileExists = true;
       } catch (error) {
@@ -179,13 +188,13 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
       // Create empty file BEFORE opening connection
       if (!dbFileExists) {
         log.debug('Creating empty database file');
-        await fs.writeFile(dbPath, '', { mode: 0o666 });
+        await fs.writeFile(this.dbPath, '', { mode: 0o666 });
         log.debug('Empty file created with mode 0o666');
       }
 
       if (!isSystemDir) {
         log.debug('Setting file permissions to 0o666');
-        await fs.chmod(dbPath, 0o666);
+        await fs.chmod(this.dbPath, 0o666);
         log.debug('File permissions set successfully');
       } else {
         log.debug('Skipping chmod on system directory file');
@@ -195,7 +204,7 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
       if (process.platform === 'darwin' && !isSystemDir) {
         try {
           log.debug('Clearing macOS extended attributes');
-          await execAsync(`xattr -c "${dbPath}"`);
+          await execAsync(`xattr -c "${this.dbPath}"`);
           log.debug('Extended attributes cleared');
         } catch (error) {
           log.debug('Could not clear extended attributes (non-fatal):', error);
@@ -211,7 +220,7 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
 
     // Initialize Rust-backed executor (replaces SqliteRawExecutor)
     this.executor = new RustSqliteExecutor(
-      dbPath,
+      this.dbPath,
       options.dbHandle,
       socketPath
     );
@@ -270,7 +279,8 @@ export class RustStorageAdapter extends SqlStorageAdapterBase implements VectorS
     log.debug('Initializing vector search manager');
     this.vectorSearchManager = new SqliteVectorSearchManager(
       this.executor,
-      this  // DataStorageAdapter for CRUD operations
+      this,  // DataStorageAdapter for CRUD operations
+      this.dbPath  // REQUIRED - no fallbacks allowed
     );
     log.debug('Vector search manager initialized');
 

@@ -12,7 +12,6 @@
 
 import * as net from 'net';
 import { Logger } from '../logging/Logger';
-import { getDatabasePath } from '../../config/ServerConfig';
 
 const log = Logger.create('RustVectorSearchClient', 'vector');
 
@@ -53,7 +52,6 @@ export class RustVectorSearchClient {
   private socketPath: string;
   /** Handle cache: dbPath → handle */
   private handles: Map<string, string> = new Map();
-  private defaultDbPath: string;
 
   /** Track availability to avoid repeated connection attempts */
   private _available: boolean | null = null;
@@ -82,7 +80,6 @@ export class RustVectorSearchClient {
 
   private constructor(socketPath: string = DEFAULT_SOCKET_PATH) {
     this.socketPath = socketPath;
-    this.defaultDbPath = getDatabasePath();
   }
 
   /** Get shared instance */
@@ -126,11 +123,10 @@ export class RustVectorSearchClient {
   /**
    * Open adapter and get handle (cached per database path)
    *
-   * @param dbPath - Database path (defaults to main database)
+   * @param dbPath - Database path (REQUIRED - no fallbacks)
    */
-  private async ensureHandle(dbPath?: string): Promise<string> {
-    const actualDbPath = dbPath || this.defaultDbPath;
-    const cached = this.handles.get(actualDbPath);
+  private async ensureHandle(dbPath: string): Promise<string> {
+    const cached = this.handles.get(dbPath);
     if (cached) {
       return cached;
     }
@@ -139,7 +135,7 @@ export class RustVectorSearchClient {
       command: 'adapter/open',
       config: {
         adapter_type: 'sqlite',
-        connection_string: actualDbPath
+        connection_string: dbPath
       }
     });
 
@@ -148,8 +144,8 @@ export class RustVectorSearchClient {
     }
 
     const handle = response.data.handle as string;
-    this.handles.set(actualDbPath, handle);
-    log.info(`Opened Rust adapter for ${actualDbPath}: ${handle}`);
+    this.handles.set(dbPath, handle);
+    log.info(`Opened Rust adapter for ${dbPath}: ${handle}`);
     return handle;
   }
 
@@ -161,7 +157,7 @@ export class RustVectorSearchClient {
    * @param k - Number of results (default: 10)
    * @param threshold - Minimum similarity threshold (default: 0.0)
    * @param includeData - Include full record data in results (default: true)
-   * @param dbPath - Database path (defaults to main database)
+   * @param dbPath - Database path (REQUIRED - no fallbacks)
    */
   async search(
     collection: string,
@@ -169,10 +165,9 @@ export class RustVectorSearchClient {
     k: number = 10,
     threshold: number = 0.0,
     includeData: boolean = true,
-    dbPath?: string
+    dbPath: string
   ): Promise<RustVectorSearchResponse> {
-    const actualDbPath = dbPath || this.defaultDbPath;
-    const handle = await this.ensureHandle(actualDbPath);
+    const handle = await this.ensureHandle(dbPath);
     const startTime = Date.now();
 
     const response = await this.sendRequest({
@@ -189,7 +184,7 @@ export class RustVectorSearchClient {
       // If handle expired, clear it and retry once
       if (response.message?.includes('Adapter not found')) {
         log.warn('Adapter handle expired, reconnecting...');
-        this.handles.delete(actualDbPath);
+        this.handles.delete(dbPath);
         return this.search(collection, queryVector, k, threshold, includeData, dbPath);
       }
       throw new Error(response.message || 'Vector search failed');

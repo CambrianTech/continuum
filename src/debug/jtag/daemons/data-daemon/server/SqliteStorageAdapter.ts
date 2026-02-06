@@ -25,7 +25,6 @@ import {
   type CollectionSchema
 } from '../shared/DataStorageAdapter';
 import { SqlStorageAdapterBase, type SqlDialect, type SqlValue } from './SqlStorageAdapterBase';
-import { getDatabasePath } from '../../../system/config/ServerConfig';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { SqliteQueryBuilder } from './SqliteQueryBuilder';
 import { getFieldMetadata, hasFieldMetadata, type FieldMetadata, type FieldType } from '../../../system/data/decorators/FieldDecorators';
@@ -117,11 +116,19 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     log.info('Starting initialization...');
 
     this.config = config;
-    const options = config.options as SqliteOptions || {};
+    const options = config.options as SqliteOptions & { basePath?: string; databaseName?: string } || {};
 
-    // Use explicit filename from options, or fall back to default database path
-    // This allows multi-database support (training DBs, etc.) while maintaining backward compatibility
-    this.dbPath = options.filename || getDatabasePath();
+    // Database path MUST be provided explicitly - NO fallbacks
+    // Accept either:
+    // 1. options.filename (full path)
+    // 2. options.basePath + options.databaseName (construct path)
+    if (options.filename) {
+      this.dbPath = options.filename;
+    } else if (options.basePath && options.databaseName) {
+      this.dbPath = path.join(options.basePath, options.databaseName);
+    } else {
+      throw new Error('SqliteStorageAdapter requires explicit filename OR (basePath + databaseName) in options - no fallbacks allowed');
+    }
     log.info(`Using database path: ${this.dbPath}`);
 
     // Ensure directory exists with proper permissions

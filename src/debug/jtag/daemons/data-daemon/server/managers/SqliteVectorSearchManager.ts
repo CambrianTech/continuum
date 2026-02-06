@@ -42,8 +42,11 @@ export class SqliteVectorSearchManager implements VectorSearchAdapter {
   constructor(
     private executor: SqlExecutor,
     private storageAdapter: DataStorageAdapter,
-    private dbPath?: string
+    private dbPath: string
   ) {
+    if (!dbPath) {
+      throw new Error('SqliteVectorSearchManager requires explicit dbPath - no fallbacks allowed');
+    }
     // Initialize VectorSearchAdapterBase with composition pattern
     const vectorOps: VectorStorageOperations = {
       ensureVectorStorage: (collection, dimensions) => this.ensureVectorTable(collection, dimensions),
