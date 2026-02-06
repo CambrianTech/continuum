@@ -444,7 +444,7 @@ export class PersonaBrainWidget extends ReactiveWidget {
         },
         motorCortex: {
           status: toolCount > 0 ? 'active' : 'idle',
-          toolsAvailable: toolCount > 0 ? 12 : 0  // Tool count is hardcoded for now
+          toolsAvailable: aiStatus?.toolsAvailable ?? 0  // Dynamic from ai/status
         },
         cns: {
           status: aiStatus?.isSubscribed ? 'active' : 'idle',

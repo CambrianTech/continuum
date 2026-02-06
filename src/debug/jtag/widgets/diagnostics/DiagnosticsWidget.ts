@@ -19,8 +19,24 @@ import { PositronWidgetState } from '../shared/services/state/PositronWidgetStat
 import { ContentService } from '../../system/state/ContentService';
 
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
+import { CodeTree, type CodeTreeResult } from '../../commands/code/tree/shared/CodeTreeTypes';
+import type { TreeNode } from '../../shared/generated/code/TreeNode';
+
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
+
+// Log category classification based on filename
+const LOG_CATEGORY_MAP: Record<string, LogFileInfo['category']> = {
+  'hippocampus': 'memory',
+  'mind': 'cognition',
+  'soul': 'cognition',
+  'body': 'system',
+  'cns': 'integration',
+  'decision': 'cognition',
+  'tool': 'system',
+  'rag': 'memory',
+  'inference': 'cognition'
+};
 
 interface PersonaInfo {
   uniqueId: string;
@@ -39,10 +55,23 @@ interface LogFileInfo {
   category: 'cognition' | 'memory' | 'system' | 'integration';
 }
 
+interface SystemHealth {
+  memoryDbStatus: 'operational' | 'degraded' | 'offline';
+  hippocampusStatus: 'operational' | 'degraded' | 'offline';
+  ragStatus: 'operational' | 'degraded' | 'offline';
+  rustWorkerStatus: 'operational' | 'degraded' | 'offline';
+}
+
 export class DiagnosticsWidget extends BasePanelWidget {
   private personas: PersonaInfo[] = [];
   private selectedPersona: string | null = null;
   private isLoading = true;
+  private systemHealth: SystemHealth = {
+    memoryDbStatus: 'offline',
+    hippocampusStatus: 'offline',
+    ragStatus: 'offline',
+    rustWorkerStatus: 'offline'
+  };
 
   constructor() {
     super({
@@ -55,8 +84,38 @@ export class DiagnosticsWidget extends BasePanelWidget {
   }
 
   protected async onPanelInitialize(): Promise<void> {
-    await this.loadPersonas();
+    // Load personas and check system health in parallel
+    await Promise.all([
+      this.loadPersonas(),
+      this.checkSystemHealth()
+    ]);
     this.emitPositronContext();
+  }
+
+  /**
+   * Check actual system health via ping command
+   */
+  private async checkSystemHealth(): Promise<void> {
+    try {
+      // Use ping command to check Rust worker connectivity
+      const pingResult = await Commands.execute('ping', {}) as any;
+
+      if (pingResult?.success && pingResult?.services) {
+        // Check Rust worker (continuum-core)
+        this.systemHealth.rustWorkerStatus = pingResult.services.continuumCore ? 'operational' : 'offline';
+
+        // Check memory services
+        this.systemHealth.memoryDbStatus = pingResult.services.database ? 'operational' : 'offline';
+
+        // Hippocampus and RAG inferred from active personas
+        const activePersonas = this.personas.filter(p => p.status === 'online').length;
+        this.systemHealth.hippocampusStatus = activePersonas > 0 ? 'operational' : 'degraded';
+        this.systemHealth.ragStatus = this.systemHealth.rustWorkerStatus;
+      }
+    } catch (error) {
+      verbose() && console.error('DiagnosticsWidget: Health check failed:', error);
+      // Keep default offline status
+    }
   }
 
   /**
@@ -100,23 +159,57 @@ export class DiagnosticsWidget extends BasePanelWidget {
   }
 
   private async getLogFilesForPersona(uniqueId: string): Promise<LogFileInfo[]> {
-    // TODO: Implement actual log file discovery
-    // For now, return expected log files
-    const logCategories = [
-      { name: 'hippocampus.log', category: 'memory' as const },
-      { name: 'mind.log', category: 'cognition' as const },
-      { name: 'soul.log', category: 'cognition' as const },
-      { name: 'body.log', category: 'system' as const },
-      { name: 'cns.log', category: 'integration' as const }
-    ];
+    const logsPath = `.continuum/personas/${uniqueId}/logs`;
 
-    return logCategories.map(log => ({
-      name: log.name,
-      path: `.continuum/personas/${uniqueId}/logs/${log.name}`,
-      size: 0,
-      lastModified: new Date().toISOString(),
-      category: log.category
-    }));
+    try {
+      // Use code/tree to discover actual log files via Rust
+      const result = await CodeTree.execute({
+        path: logsPath,
+        maxDepth: 1,
+        includeHidden: false
+      }) as CodeTreeResult;
+
+      if (!result.success || !result.root) {
+        verbose() && console.log(`DiagnosticsWidget: No logs found at ${logsPath}`);
+        return [];
+      }
+
+      // Extract .log files from tree
+      const logFiles: LogFileInfo[] = [];
+      const children = result.root.children || [];
+
+      for (const node of children) {
+        if (!node.is_directory && node.name.endsWith('.log')) {
+          const baseName = node.name.replace('.log', '').toLowerCase();
+          const category = this.inferLogCategory(baseName);
+
+          logFiles.push({
+            name: node.name,
+            path: `${logsPath}/${node.name}`,
+            size: node.size_bytes || 0,
+            lastModified: new Date().toISOString(), // Tree doesn't have mtime yet
+            category
+          });
+        }
+      }
+
+      return logFiles;
+    } catch (error) {
+      verbose() && console.error(`DiagnosticsWidget: Error discovering logs for ${uniqueId}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Infer log category from filename
+   */
+  private inferLogCategory(baseName: string): LogFileInfo['category'] {
+    for (const [keyword, category] of Object.entries(LOG_CATEGORY_MAP)) {
+      if (baseName.includes(keyword)) {
+        return category;
+      }
+    }
+    return 'system'; // Default category
   }
 
   protected getStyles(): string {
@@ -136,6 +229,18 @@ export class DiagnosticsWidget extends BasePanelWidget {
   }
 
   private renderSystemHealth(): string {
+    const statusClass = (status: 'operational' | 'degraded' | 'offline') => {
+      if (status === 'operational') return 'status-operational';
+      if (status === 'degraded') return 'status-degraded';
+      return 'status-offline';
+    };
+
+    const statusLabel = (status: 'operational' | 'degraded' | 'offline') => {
+      if (status === 'operational') return 'Online';
+      if (status === 'degraded') return 'Degraded';
+      return 'Offline';
+    };
+
     return this.createSection('System Health', `
       <div class="health-grid">
         <div class="health-item">
@@ -144,15 +249,15 @@ export class DiagnosticsWidget extends BasePanelWidget {
         </div>
         <div class="health-item">
           <span class="health-label">Memory DBs</span>
-          <span class="health-value status-operational">Healthy</span>
+          <span class="health-value ${statusClass(this.systemHealth.memoryDbStatus)}">${statusLabel(this.systemHealth.memoryDbStatus)}</span>
         </div>
         <div class="health-item">
           <span class="health-label">Hippocampus</span>
-          <span class="health-value status-operational">Active</span>
+          <span class="health-value ${statusClass(this.systemHealth.hippocampusStatus)}">${statusLabel(this.systemHealth.hippocampusStatus)}</span>
         </div>
         <div class="health-item">
           <span class="health-label">RAG System</span>
-          <span class="health-value status-operational">Online</span>
+          <span class="health-value ${statusClass(this.systemHealth.ragStatus)}">${statusLabel(this.systemHealth.ragStatus)}</span>
         </div>
       </div>
     `);
@@ -335,6 +440,18 @@ const DIAGNOSTICS_STYLES = `
     font-size: 14px;
     font-weight: 600;
     color: var(--content-accent, #00d4ff);
+  }
+
+  .health-value.status-operational {
+    color: #00ff88;
+  }
+
+  .health-value.status-degraded {
+    color: #ffaa00;
+  }
+
+  .health-value.status-offline {
+    color: #ff5555;
   }
 
   .persona-card {
