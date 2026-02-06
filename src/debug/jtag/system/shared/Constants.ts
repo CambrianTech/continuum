@@ -147,6 +147,31 @@ export const COLLECTIONS = {
   CODING_CHALLENGES: 'coding_challenges',
 } as const;
 
+/**
+ * Offline Cacheable Collections - SINGLE SOURCE OF TRUTH
+ *
+ * Collections listed here are automatically:
+ * 1. Created as IndexedDB object stores (browser)
+ * 2. Subscribed to data events for cache invalidation
+ * 3. Cached locally for offline-first reads
+ *
+ * To add offline caching to a collection:
+ * 1. Add it to this array
+ * 2. Bump DB_VERSION in IndexedDBBackend.ts (triggers store creation)
+ *
+ * ⚠️ NEVER add per-collection logic to OfflineStorageAdapter
+ * ⚠️ This constant drives all offline caching behavior
+ */
+export const OFFLINE_CACHEABLE_COLLECTIONS = [
+  COLLECTIONS.USERS,
+  COLLECTIONS.USER_STATES,
+  COLLECTIONS.ROOMS,
+  COLLECTIONS.CHAT_MESSAGES,
+  COLLECTIONS.ACTIVITIES,
+] as const;
+
+export type OfflineCacheableCollection = typeof OFFLINE_CACHEABLE_COLLECTIONS[number];
+
 
 /**
  * Fine-Tuning Providers - Supported providers for LoRA training

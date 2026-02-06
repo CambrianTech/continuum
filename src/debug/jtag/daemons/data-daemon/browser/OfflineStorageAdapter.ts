@@ -25,6 +25,7 @@ import { LocalStorageDataBackend } from './LocalStorageDataBackend';
 import { IndexedDBBackend } from './IndexedDBBackend';
 import { SyncQueue, type SyncOperation } from './SyncQueue';
 import { ConnectionStatus } from './ConnectionStatus';
+import { OFFLINE_CACHEABLE_COLLECTIONS } from '../../../system/shared/Constants';
 
 /**
  * OfflineStorageAdapter - The core dual-storage adapter
@@ -326,29 +327,37 @@ export class OfflineStorageAdapter {
   /**
    * Subscribe to server events for cache invalidation
    *
-   * When server pushes changes, update local cache.
+   * Auto-wired from OFFLINE_CACHEABLE_COLLECTIONS (Constants.ts).
+   * When server pushes changes, update local IndexedDB cache.
+   *
+   * ⚠️ NO per-collection code here - all driven by the constant
    */
   private subscribeToServerEvents(): void {
-    // user_states uses IndexedDB (async, non-blocking) instead of localStorage
-    Events.subscribe('data:user_states:updated', async (data: { id: UUID; [key: string]: unknown }) => {
-      if (data && data.id) {
-        // IndexedDB is async - doesn't block main thread
-        await IndexedDBBackend.update('user_states', data.id, data as any);
-      }
-    });
+    // Auto-subscribe to all cacheable collections
+    for (const collection of OFFLINE_CACHEABLE_COLLECTIONS) {
+      // Subscribe to created events
+      Events.subscribe(`data:${collection}:created`, async (data: { id: UUID; [key: string]: unknown }) => {
+        if (data && data.id) {
+          await IndexedDBBackend.create(collection, data as any);
+        }
+      });
 
-    Events.subscribe('data:user_states:deleted', async (data: { id: UUID }) => {
-      if (data && data.id) {
-        await IndexedDBBackend.delete('user_states', data.id);
-      }
-    });
+      // Subscribe to updated events
+      Events.subscribe(`data:${collection}:updated`, async (data: { id: UUID; [key: string]: unknown }) => {
+        if (data && data.id) {
+          await IndexedDBBackend.update(collection, data.id, data as any);
+        }
+      });
 
-    Events.subscribe('data:user_states:created', async (data: { id: UUID; [key: string]: unknown }) => {
-      if (data && data.id) {
-        // IndexedDB is async - doesn't block main thread
-        await IndexedDBBackend.create('user_states', data as any);
-      }
-    });
+      // Subscribe to deleted events
+      Events.subscribe(`data:${collection}:deleted`, async (data: { id: UUID }) => {
+        if (data && data.id) {
+          await IndexedDBBackend.delete(collection, data.id);
+        }
+      });
+    }
+
+    console.log(`OfflineStorageAdapter: Auto-wired cache invalidation for ${OFFLINE_CACHEABLE_COLLECTIONS.length} collections`);
   }
 
   /**

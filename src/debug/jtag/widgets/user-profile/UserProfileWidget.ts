@@ -200,25 +200,52 @@ export class UserProfileWidget extends BaseWidget {
       return;
     }
 
+    const userIdToDelete = this.user.id;
+    const userNameToDelete = this.user.displayName;
+
     try {
-      await DataDelete.execute({
+      // Delete the user from database
+      const result = await DataDelete.execute({
         collection: 'users',
-        id: this.user.id
+        id: userIdToDelete
       });
 
-      // Emit event so user list can refresh
-      Events.emit('data:users:deleted', { id: this.user.id });
-
-      // OPTIMISTIC: Navigate back to chat instantly
-      if (this.userState?.userId) {
-        ContentService.setUserId(this.userState.userId as UUID);
+      if (!result.deleted) {
+        console.error(`Failed to delete user ${userNameToDelete}:`, result);
+        alert(`Failed to delete user: ${result.error || (result.found ? 'Delete failed' : 'User not found')}`);
+        return;
       }
-      ContentService.open('chat', 'general', {
-        title: 'General',
-        uniqueId: 'general'
-      });
+
+      console.log(`✅ User ${userNameToDelete} deleted successfully`);
+
+      // Server emits 'data:users:deleted' but also emit locally to ensure UI updates
+      // This provides redundancy in case WebSocket event delivery has any delay
+      Events.emit('data:users:deleted', { id: userIdToDelete });
+
+      // Close THIS profile tab (not just navigate away)
+      // Find the current profile tab and close it
+      const { contentState } = await import('../../system/state/ContentStateService');
+      const currentTab = contentState.openItems.find(
+        item => item.entityId === userIdToDelete ||
+               (item.type === 'profile' && contentState.currentItemId === item.id)
+      );
+
+      if (currentTab) {
+        ContentService.close(currentTab.id);
+        console.log(`✅ Closed profile tab for deleted user ${userNameToDelete}`);
+      } else {
+        // Fallback: just navigate to general chat
+        if (this.userState?.userId) {
+          ContentService.setUserId(this.userState.userId as UUID);
+        }
+        ContentService.open('chat', 'general', {
+          title: 'General',
+          uniqueId: 'general'
+        });
+      }
     } catch (err) {
       console.error('Failed to delete user:', err);
+      alert(`Failed to delete user: ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   }
 

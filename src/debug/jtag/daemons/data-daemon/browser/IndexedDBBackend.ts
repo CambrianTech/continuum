@@ -3,26 +3,26 @@
  *
  * Replaces LocalStorageDataBackend to prevent main thread blocking.
  * IndexedDB operations are async by design - no blocking.
+ *
+ * Collections to cache are defined in OFFLINE_CACHEABLE_COLLECTIONS (Constants.ts)
+ * This file just reads from that single source of truth.
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
+import { OFFLINE_CACHEABLE_COLLECTIONS } from '../../../system/shared/Constants';
 
 const DB_NAME = 'jtag-offline-cache';
-const DB_VERSION = 2; // Bumped to add more stores
+const DB_VERSION = 3; // Bumped: using OFFLINE_CACHEABLE_COLLECTIONS from Constants.ts
 
 let dbInstance: IDBDatabase | null = null;
 let dbInitPromise: Promise<IDBDatabase> | null = null;
 
-// Collections that need offline caching
-const COLLECTIONS = [
-  'user_states',
-  'users',
-  'rooms',
-  'chat_messages',
-  'activities',
-  'sync_queue'
-];
+// Internal-only collection for sync queue (not exposed as cacheable entity)
+const INTERNAL_COLLECTIONS = ['sync_queue'] as const;
+
+// All collections = cacheable entities + internal collections
+const ALL_COLLECTIONS = [...OFFLINE_CACHEABLE_COLLECTIONS, ...INTERNAL_COLLECTIONS];
 
 /**
  * Get or initialize the IndexedDB database
@@ -48,8 +48,8 @@ async function getDB(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
 
-      // Create object stores for all collections
-      for (const collection of COLLECTIONS) {
+      // Create object stores for all collections (cacheable entities + internal)
+      for (const collection of ALL_COLLECTIONS) {
         if (!db.objectStoreNames.contains(collection)) {
           db.createObjectStore(collection, { keyPath: 'id' });
         }
