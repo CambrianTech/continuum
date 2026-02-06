@@ -26,6 +26,8 @@ export interface PersonaUserForMotorCortex {
   readonly homeDirectory: string;
   readonly logger: import('../PersonaLogger').PersonaLogger;
   readonly memory: { genome: import('../PersonaGenome').PersonaGenome };  // For trained LoRA adapter access
+  /** Auto-bootstrap workspace when code/* tools are invoked */
+  readonly ensureCodeWorkspace?: () => Promise<void>;
 }
 
 export class MotorCortex {
@@ -42,7 +44,11 @@ export class MotorCortex {
     this.logger.info('Motor cortex initializing...');
 
     // Create toolExecutor and toolRegistry first
-    this.toolExecutor = new PersonaToolExecutor(personaUser);
+    // Pass ensureCodeWorkspace callback so code/* tools auto-bootstrap a workspace
+    this.toolExecutor = new PersonaToolExecutor({
+      ...personaUser,
+      ensureCodeWorkspace: personaUser.ensureCodeWorkspace,
+    });
     this.toolRegistry = new PersonaToolRegistry();
     this.toolRegistry.registerPersona(personaUser.id, 'assistant'); // Default to assistant role
 

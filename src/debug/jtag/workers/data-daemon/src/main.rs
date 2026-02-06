@@ -15,7 +15,7 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -23,18 +23,21 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use std::{fs, thread};
-use ts_rs::TS;
 use uuid::Uuid;
 
 mod timing;
 use timing::{RequestTimer, METRICS};
 
+// IPC types — single source of truth, ts-rs exported for TypeScript
+mod types;
+pub use types::*;
+
 // ============================================================================
-// Core Types (ts-rs exported for TypeScript)
+// Core Types (internal, not exported to TypeScript)
 // ============================================================================
 
 /// Opaque handle to a database adapter (like textureId)
-/// Serialized as UUID string in JSON
+/// Serialized as UUID string in JSON — TypeScript sees it as string
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AdapterHandle(Uuid);
 
@@ -42,26 +45,6 @@ impl AdapterHandle {
     fn new() -> Self {
         Self(Uuid::new_v4())
     }
-}
-
-/// Adapter type (determines concurrency strategy)
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-#[serde(rename_all = "lowercase")]
-pub enum AdapterType {
-    Sqlite,
-    Postgres,
-    Json,
-}
-
-/// Adapter configuration
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-pub struct AdapterConfig {
-    adapter_type: AdapterType,
-    connection_string: String,
-    #[ts(skip)]
-    options: Option<HashMap<String, Value>>,
 }
 
 // ============================================================================
@@ -172,14 +155,22 @@ enum Request {
         /// Raw SQL query string (SELECT only, no modifications)
         sql: String,
     },
+
+    /// Truncate (delete all rows from) a collection
+    #[serde(rename = "data/truncate")]
+    DataTruncate {
+        handle: AdapterHandle,
+        collection: String,
+    },
+
+    /// List all table names in the database
+    #[serde(rename = "data/list_tables")]
+    DataListTables {
+        handle: AdapterHandle,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../shared/types/")]
-pub struct OrderBy {
-    field: String,
-    direction: String, // "asc" | "desc"
-}
+// OrderBy is now in types.rs (ts-rs exported)
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status")]
@@ -1075,13 +1066,58 @@ impl AdapterRegistry {
 
 struct RustDataDaemon {
     registry: Arc<AdapterRegistry>,
+    /// Cache of table column names per collection (populated via PRAGMA table_info)
+    table_columns_cache: Arc<Mutex<HashMap<String, HashSet<String>>>>,
 }
 
 impl RustDataDaemon {
     fn new() -> Self {
         Self {
             registry: Arc::new(AdapterRegistry::new()),
+            table_columns_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get the valid column names for a table, using PRAGMA table_info.
+    /// Results are cached per (handle, collection) to avoid repeated PRAGMA queries.
+    fn get_table_columns(
+        &self,
+        handle: AdapterHandle,
+        collection: &str,
+    ) -> Result<HashSet<String>, String> {
+        // Check cache first
+        {
+            let cache = self.table_columns_cache.lock().unwrap();
+            if let Some(columns) = cache.get(collection) {
+                return Ok(columns.clone());
+            }
+        }
+
+        // Query PRAGMA table_info to discover actual columns
+        let pragma_query = format!("PRAGMA table_info({})", collection);
+        let result = self.registry.execute_read(handle, &pragma_query)?;
+
+        let items = result
+            .get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("PRAGMA table_info({}) returned no items", collection))?;
+
+        let columns: HashSet<String> = items
+            .iter()
+            .filter_map(|row| row.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+            .collect();
+
+        if columns.is_empty() {
+            return Err(format!("Table {} has no columns (does it exist?)", collection));
+        }
+
+        // Cache the result
+        {
+            let mut cache = self.table_columns_cache.lock().unwrap();
+            cache.insert(collection.to_string(), columns.clone());
+        }
+
+        Ok(columns)
     }
 
     #[allow(dead_code)]
@@ -1211,6 +1247,18 @@ impl RustDataDaemon {
             },
 
             Request::DataQuery { handle, sql } => match self.data_query(handle, &sql) {
+                Ok(data) => Response::Ok { data },
+                Err(e) => Response::Error { message: e },
+            },
+
+            Request::DataTruncate { handle, collection } => {
+                match self.data_truncate(handle, &collection) {
+                    Ok(data) => Response::Ok { data },
+                    Err(e) => Response::Error { message: e },
+                }
+            }
+
+            Request::DataListTables { handle } => match self.data_list_tables(handle) {
                 Ok(data) => Response::Ok { data },
                 Err(e) => Response::Error { message: e },
             },
@@ -1520,6 +1568,47 @@ impl RustDataDaemon {
                     }
                 }
             }
+
+            Request::DataTruncate { handle, collection } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
+                timer.set_collection(&collection);
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.data_truncate(handle, &collection);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => (Response::Ok { data }, None),
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
+
+            Request::DataListTables { handle } => {
+                timer.set_adapter_handle(&format!("{handle:?}"));
+                timer.record.route_ns = route_start.elapsed().as_nanos() as u64;
+
+                let execute_start = Instant::now();
+                let result = self.data_list_tables(handle);
+                timer.record.execute_ns = execute_start.elapsed().as_nanos() as u64;
+
+                match result {
+                    Ok(data) => {
+                        let count = data
+                            .get("count")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c as usize);
+                        (Response::Ok { data }, count)
+                    }
+                    Err(e) => {
+                        timer.set_error(&e);
+                        (Response::Error { message: e }, None)
+                    }
+                }
+            }
         }
     }
 
@@ -1606,17 +1695,23 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        // Build INSERT query
-        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        let values: Vec<String> = obj
-            .values()
-            .map(|v| match v {
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
+        let filtered: Vec<(&String, &Value)> = obj
+            .iter()
+            .filter(|(k, _)| valid_columns.contains(k.as_str()))
+            .collect();
+
+        let columns: Vec<&str> = filtered.iter().map(|(k, _)| k.as_str()).collect();
+        let values: Vec<String> = filtered
+            .iter()
+            .map(|(_, v)| match v {
                 Value::String(s) => format!("'{}'", s.replace("'", "''")),
                 Value::Number(n) => n.to_string(),
                 Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
                 Value::Null => "NULL".to_string(),
                 Value::Array(_) | Value::Object(_) => {
-                    // Serialize complex types as JSON strings
                     format!(
                         "'{}'",
                         serde_json::to_string(v)
@@ -1669,10 +1764,12 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        // Build SET clauses
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
         let set_clauses: Vec<String> = obj
             .iter()
-            .filter(|(key, _)| *key != "id") // Don't update id
+            .filter(|(key, _)| *key != "id" && valid_columns.contains(key.as_str()))
             .map(|(key, value)| {
                 let val_str = match value {
                     Value::String(s) => format!("'{}'", s.replace("'", "''")),
@@ -1680,7 +1777,6 @@ impl RustDataDaemon {
                     Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
                     Value::Null => "NULL".to_string(),
                     Value::Array(_) | Value::Object(_) => {
-                        // Serialize complex types as JSON strings
                         format!(
                             "'{}'",
                             serde_json::to_string(value)
@@ -1819,10 +1915,18 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
-        let columns: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
-        let values: Vec<String> = obj
-            .values()
-            .map(|v| match v {
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
+        let filtered: Vec<(&String, &Value)> = obj
+            .iter()
+            .filter(|(k, _)| valid_columns.contains(k.as_str()))
+            .collect();
+
+        let columns: Vec<&str> = filtered.iter().map(|(k, _)| k.as_str()).collect();
+        let values: Vec<String> = filtered
+            .iter()
+            .map(|(_, v)| match v {
                 Value::String(s) => format!("'{}'", s.replace("'", "''")),
                 Value::Number(n) => n.to_string(),
                 Value::Bool(b) => if *b { "1" } else { "0" }.to_string(),
@@ -1894,9 +1998,12 @@ impl RustDataDaemon {
             .as_object()
             .ok_or_else(|| "Data must be an object".to_string())?;
 
+        // Filter to only columns that exist in the table schema
+        let valid_columns = self.get_table_columns(handle, collection)?;
+
         let set_clauses: Vec<String> = obj
             .iter()
-            .filter(|(key, _)| *key != "id")
+            .filter(|(key, _)| *key != "id" && valid_columns.contains(key.as_str()))
             .map(|(key, value)| {
                 let val_str = match value {
                     Value::String(s) => format!("'{}'", s.replace("'", "''")),
@@ -2155,6 +2262,32 @@ impl RustDataDaemon {
         println!("📊 DataQuery: {sql}");
         self.registry.execute_read(handle, sql)
     }
+
+    /// Truncate (delete all rows from) a collection
+    fn data_truncate(&self, handle: AdapterHandle, collection: &str) -> Result<Value, String> {
+        let query = format!("DELETE FROM {collection}");
+        println!("🗑️  DataTruncate: {query}");
+        self.registry.execute_write(handle, &query, &json!({}))
+    }
+
+    /// List all table names in the database (excluding SQLite internals)
+    fn data_list_tables(&self, handle: AdapterHandle) -> Result<Value, String> {
+        let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name";
+        let result = self.registry.execute_read(handle, sql)?;
+        // Result has items: [{name: "table1"}, ...] — extract just the names
+        let items = result.get("items").and_then(|v| v.as_array());
+        let tables: Vec<String> = items
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|row| row.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let count = tables.len();
+        // Use typed struct (matches generated TypeScript type ListTablesResult)
+        let result = ListTablesResult { tables, count };
+        serde_json::to_value(result).map_err(|e| e.to_string())
+    }
 }
 
 // ============================================================================
@@ -2207,6 +2340,8 @@ fn handle_connection(stream: UnixStream, daemon: Arc<RustDataDaemon>) -> std::io
             Request::BlobDelete { .. } => "blob/delete",
             Request::BlobStats { .. } => "blob/stats",
             Request::DataQuery { .. } => "data/query",
+            Request::DataTruncate { .. } => "data/truncate",
+            Request::DataListTables { .. } => "data/list_tables",
         };
 
         // Start request timer

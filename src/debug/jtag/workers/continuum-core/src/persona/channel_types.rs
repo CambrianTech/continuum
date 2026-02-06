@@ -26,13 +26,10 @@ pub enum ActivityDomain {
     Audio,
     /// Chat messages: per-room consolidation, mention urgency, RTOS aging
     Chat,
+    /// Code: workspace-scoped coding tasks, not urgent, never kicked, slow aging
+    Code,
     /// Background tasks: dependency-aware, overdue urgency
     Background,
-    // Future domains:
-    // RealtimeGame,
-    // Code,
-    // Music,
-    // RobotControl,
 }
 
 /// All currently registered domains in priority order (highest first).
@@ -40,6 +37,7 @@ pub enum ActivityDomain {
 pub const DOMAIN_PRIORITY_ORDER: &[ActivityDomain] = &[
     ActivityDomain::Audio,
     ActivityDomain::Chat,
+    ActivityDomain::Code,
     ActivityDomain::Background,
 ];
 
@@ -229,6 +227,7 @@ mod tests {
     fn test_domain_priority_order() {
         assert_eq!(DOMAIN_PRIORITY_ORDER[0], ActivityDomain::Audio);
         assert_eq!(DOMAIN_PRIORITY_ORDER[1], ActivityDomain::Chat);
-        assert_eq!(DOMAIN_PRIORITY_ORDER[2], ActivityDomain::Background);
+        assert_eq!(DOMAIN_PRIORITY_ORDER[2], ActivityDomain::Code);
+        assert_eq!(DOMAIN_PRIORITY_ORDER[3], ActivityDomain::Background);
     }
 }

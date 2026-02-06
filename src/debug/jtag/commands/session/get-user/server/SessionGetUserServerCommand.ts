@@ -29,20 +29,18 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
       // CRITICAL FIX: If userId is directly provided (e.g., PersonaUsers), use it directly
       // PersonaUsers have unregistered sessions but valid userIds
       if (getUserParams.userId) {
-        const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, getUserParams.userId);
+        const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, getUserParams.userId);
 
-        if (!userResult.success || !userResult.data) {
+        if (!user) {
           return transformPayload(getUserParams, {
             success: false,
             error: `User not found: ${getUserParams.userId}`
           });
         }
 
-        const user = userResult.data.data as UserEntity;
-
         return transformPayload(getUserParams, {
           success: true,
-          user: user
+          user
         });
       }
 
@@ -91,17 +89,14 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
       const userId = sessionResponse.session.userId;
 
       // Look up user entity from database
-      const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
 
-      if (!userResult.success || !userResult.data) {
+      if (!user) {
         return transformPayload(getUserParams, {
           success: false,
           error: `User not found: ${userId}`
         });
       }
-
-      // Extract user entity from DataRecord
-      const user = userResult.data.data as UserEntity;
 
       return transformPayload(getUserParams, {
         success: true,

@@ -22,6 +22,7 @@ import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientServer';
 import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 
 export class UserDaemonServer extends UserDaemon {
   private static instance: UserDaemonServer | null = null;
@@ -288,16 +289,14 @@ export class UserDaemonServer extends UserDaemon {
   private async createPersonaClient(userEntity: UserEntity): Promise<void> {
     try {
       // Load UserStateEntity (must exist - created by user/create command)
-      const userStateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
+      const userState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userEntity.id);
 
-      if (!userStateResult.success || !userStateResult.data) {
+      if (!userState) {
         throw new Error(`UserStateEntity not found for persona ${userEntity.displayName} (${userEntity.id}) - user must be created via user/create command`);
       }
 
-      const userState: UserStateEntity = userStateResult.data.data;
-
-      // Initialize SQLite storage backend
-      const dbPath = `.continuum/personas/${userEntity.id}/state.sqlite`;
+      // Initialize SQLite storage backend — path via SystemPaths (single source of truth)
+      const dbPath = SystemPaths.personas.state(userEntity.uniqueId);
       const storage = new SQLiteStateBackend(dbPath);
 
       // Create JTAGClientServer for this persona via static connect method
@@ -334,9 +333,9 @@ export class UserDaemonServer extends UserDaemon {
   protected async ensureUserHasState(userId: UUID): Promise<boolean> {
     try {
       // Check if UserState exists
-      const result = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      const existingState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
 
-      if (result.success && result.data) {
+      if (existingState) {
         return true; // UserState exists
       }
 
@@ -355,13 +354,11 @@ export class UserDaemonServer extends UserDaemon {
   private async createUserState(userId: UUID): Promise<boolean> {
     try {
       // Load user entity to get type
-      const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
-      if (!userResult.success || !userResult.data) {
+      const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      if (!user) {
         this.log.error(`❌ UserDaemon: User ${userId} not found`);
         return false;
       }
-
-      const user: UserEntity = userResult.data.data;
 
       // Create UserState with type-specific defaults
       const userState = new UserStateEntity();

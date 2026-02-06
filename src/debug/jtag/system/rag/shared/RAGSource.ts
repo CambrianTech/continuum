@@ -103,7 +103,39 @@ export interface RAGSource {
    * @returns Section of RAG context
    */
   load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection>;
+
+  /**
+   * Whether this source supports batched loading via Rust IPC.
+   * If true, the source can be loaded in a single Rust call with other batching sources.
+   * Default: false (TypeScript-only sources).
+   */
+  readonly supportsBatching?: boolean;
+
+  /**
+   * Get the batch request for this source.
+   * Only called if supportsBatching is true.
+   * Returns the RagSourceRequest to be sent to Rust's rag/compose endpoint.
+   *
+   * @param context - Source context
+   * @param allocatedBudget - Token budget allocated to this source
+   * @returns Batch request or null if batching not applicable for this context
+   */
+  getBatchRequest?(context: RAGSourceContext, allocatedBudget: number): RagSourceRequest | null;
+
+  /**
+   * Convert a Rust RagSourceResult to a TypeScript RAGSection.
+   * Only called if supportsBatching is true.
+   * Transforms the typed Rust result into the RAGSection format.
+   *
+   * @param result - The result from Rust's rag/compose endpoint
+   * @param loadTimeMs - How long the load took
+   * @returns The RAGSection to include in the composition result
+   */
+  fromBatchResult?(result: RagSourceResult, loadTimeMs: number): RAGSection;
 }
+
+// Re-export Rust-generated types for batch support
+import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
 
 /**
  * Result of composing all RAG sources

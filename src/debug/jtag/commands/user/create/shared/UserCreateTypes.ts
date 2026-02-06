@@ -46,6 +46,7 @@ export interface ModelConfig {
   readonly promptFormat?: PromptFormat; // How this model expects prompts formatted
   readonly requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned (e.g., @sentinel)
   readonly ragCertified?: boolean;      // Has this model been tested/certified with our complex RAG system?
+  readonly toolCapability?: 'native' | 'xml' | 'none';  // Override provider-based tool capability detection
 }
 
 /**

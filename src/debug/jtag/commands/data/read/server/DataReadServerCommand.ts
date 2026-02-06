@@ -39,16 +39,16 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
     try {
       // Use DataDaemon for consistent storage access
-      const result = await DataDaemon.read<BaseEntity>(params.collection, params.id);
+      const entity = await DataDaemon.read<BaseEntity>(params.collection, params.id);
 
-      if (result.success && result.data) {
+      if (entity) {
 
         // Extract media if this is a chat message with attachments
         let media: MediaItem[] = [];
-        let cleanedData = result.data.data;
+        let cleanedData: BaseEntity = entity;
 
-        if (params.collection === 'chat_messages' && result.data.data) {
-          const messageData = result.data.data as ChatMessageEntity;
+        if (params.collection === 'chat_messages') {
+          const messageData = entity as ChatMessageEntity;
           if (messageData.content?.media && Array.isArray(messageData.content.media)) {
             // Extract media to top level
             media = messageData.content.media;

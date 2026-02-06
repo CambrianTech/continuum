@@ -47,12 +47,23 @@ export const createLogsConfigParams = (
 /**
  * Logs Config Command Result
  */
+export interface PersonaLoggingStatus {
+  persona: string;
+  enabled: boolean;
+  categories: string[];
+  source: 'explicit' | 'default';
+}
+
 export interface LogsConfigResult extends CommandResult {
   success: boolean;
   // Full logging configuration
   config: LoggingConfigData;
   // Config for specific persona
   personaConfig: { enabled: boolean; categories: string[] };
+  // Per-persona status list (for overview display)
+  statuses?: PersonaLoggingStatus[];
+  // Available categories
+  availableCategories?: string[];
   // Status message
   message: string;
   error?: JTAGError;

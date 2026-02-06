@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/code/shell/status",
+  "version": "1.0.0",
+  "description": "Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
+  "main": "server/CodeShellStatusServerCommand.ts",
+  "types": "shared/CodeShellStatusTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/CodeShellStatusIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "code/shell/status"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

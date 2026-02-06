@@ -48,6 +48,7 @@ import { AIDecisionService, type AIDecisionContext } from '../../ai/server/AIDec
 import { getModelConfigForProvider } from './config/PersonaModelConfigs';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../data/entities/CoordinationDecisionEntity';
+import type { RAGContext as PipelineRAGContext } from '../../rag/shared/RAGTypes';
 import { PersonaWorkerThread } from '../../../shared/workers/PersonaWorkerThread';
 import {
   AI_DECISION_EVENTS,
@@ -117,6 +118,7 @@ import { RustCognitionBridge, type PersonaUserForRustCognition } from './modules
 import { SystemPaths } from '../../core/config/SystemPaths';
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
+import { Workspace } from '../../code/server/Workspace';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { DataOpen } from '../../../commands/data/open/shared/DataOpenTypes';
 import type { CorpusMemory } from '../../../workers/continuum-core/bindings/CorpusMemory';
@@ -197,6 +199,10 @@ export class PersonaUser extends AIUser {
 
   // MEMORY LEAK FIX: Track event subscriptions for cleanup
   private _eventUnsubscribes: (() => void)[] = [];
+
+  // Workspace handles — lazy-created per context key, retained for session lifetime
+  // Keyed by context (e.g., room uniqueId) so personas can have per-room workspaces
+  private _workspaces: Map<string, Workspace> = new Map();
 
   /**
    * Get unified consciousness for cross-context awareness
@@ -303,6 +309,52 @@ export class PersonaUser extends AIUser {
   public get planFormulator(): SimplePlanFormulator {
     if (!this.prefrontal) throw new Error('Prefrontal cortex not initialized');
     return this.prefrontal.planFormulator;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // Workspace — per-persona code workspace (lazy-created, session-scoped)
+  // ════════════════════════════════════════════════════════════════════════════
+
+  /** Get a workspace by context key (null if not yet created for that context) */
+  public getWorkspace(contextKey: string = 'default'): Workspace | null {
+    return this._workspaces.get(contextKey) ?? null;
+  }
+
+  /**
+   * Ensure a workspace exists for this persona in the given context.
+   * Creates on first call per context key, retains for session lifetime.
+   * Called automatically when persona receives a code-domain task.
+   *
+   * @param options.contextKey  Room uniqueId or other scope key (default: 'default')
+   * @param options.mode        'sandbox' for isolated, 'worktree' for real git branches
+   * @param options.taskSlug    Used for branch naming in worktree mode
+   * @param options.sparsePaths Sparse checkout paths for worktree mode
+   */
+  public async ensureWorkspace(options?: {
+    contextKey?: string;
+    mode?: 'sandbox' | 'worktree' | 'project';
+    taskSlug?: string;
+    sparsePaths?: string[];
+    repoPath?: string;
+  }): Promise<Workspace> {
+    const key = options?.contextKey ?? 'default';
+    const existing = this._workspaces.get(key);
+    if (existing) return existing;
+
+    const mode = options?.mode ?? 'sandbox';
+    this.log.info(`${this.displayName}: Creating workspace (${mode} mode, context=${key})`);
+    const ws = await Workspace.create({
+      personaId: this.id,
+      mode,
+      taskSlug: options?.taskSlug ?? key,
+      sparsePaths: options?.sparsePaths,
+      repoPath: options?.repoPath,
+      personaName: this.displayName,
+      personaUniqueId: this.entity.uniqueId,
+    });
+    this._workspaces.set(key, ws);
+    this.log.info(`${this.displayName}: Workspace created — handle=${ws.handle}, dir=${ws.dir}, mode=${mode}${ws.branch ? `, branch=${ws.branch}` : ''}`);
+    return ws;
   }
 
   // BEING ARCHITECTURE: Delegate to body for toolExecutor
@@ -428,7 +480,28 @@ export class PersonaUser extends AIUser {
       getSessionId: () => this.sessionId,
       homeDirectory: this.homeDirectory,
       logger: this.logger,
-      memory: this.memory  // For accessing trained LoRA adapters during inference
+      memory: this.memory,  // For accessing trained LoRA adapters during inference
+      ensureCodeWorkspace: async () => {
+        // Reuse any existing workspace (project or sandbox) before creating a new one.
+        // This allows workspaces created via explicit commands to be preserved.
+        const existing = this._workspaces.get('default') ?? this._workspaces.values().next().value;
+        if (existing) {
+          // Ensure shell session exists even for pre-existing workspaces.
+          // code/shell/* commands call CodeDaemon directly (bypass Workspace object),
+          // so the Rust-side shell session must be eagerly created.
+          await existing.ensureShell();
+          return;
+        }
+        // Default to project mode: all personas get git worktree branches on the shared repo.
+        // This enables collaboration — AIs can see each other's branches, review, merge.
+        // WorkspaceStrategy auto-detects the git root from process.cwd().
+        const ws = await this.ensureWorkspace({
+          contextKey: 'default',
+          mode: 'project',
+          repoPath: process.cwd(),
+        });
+        await ws.ensureShell();
+      },
     });
 
     // RUST COGNITION: Fast-path decision engine via IPC
@@ -650,16 +723,13 @@ export class PersonaUser extends AIUser {
         timestamp: number;
         targetPersonaId: UUID;
       }) => {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Received voice:transcription:directed event, targetPersonaId=${transcriptionData.targetPersonaId?.slice(0, 8)}, myId=${this.id?.slice(0, 8)}`);
         // Only process if directed at THIS persona
         if (transcriptionData.targetPersonaId === this.id) {
-          console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: MATCH! Processing directed voice transcription: "${transcriptionData.transcript.slice(0, 50)}..."`);
           this.log.info(`🎙️ ${this.displayName}: Received DIRECTED voice transcription`);
           await this.handleVoiceTranscription(transcriptionData);
         }
       }, undefined, this.id);
       this._eventUnsubscribes.push(unsubVoiceTranscription);
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Subscribed to voice:transcription:directed events (personaId=${this.id?.slice(0, 8)})`);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to voice:transcription:directed events`);
 
       // Subscribe to TTS audio events and inject into CallServer
@@ -1153,21 +1223,16 @@ export class PersonaUser extends AIUser {
     language: string;
     timestamp?: string | number;
   }): Promise<void> {
-    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: handleVoiceTranscription CALLED with transcript: "${transcriptionData.transcript.slice(0, 50)}..."`);
-
     // STEP 1: Ignore our own transcriptions
     if (transcriptionData.speakerId === this.id) {
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Ignoring own transcription`);
       return;
     }
 
     this.log.debug(`🎤 ${this.displayName}: Received transcription from ${transcriptionData.speakerName}: "${transcriptionData.transcript.slice(0, 50)}..."`);
 
     // STEP 2: Deduplication - prevent evaluating same transcription multiple times
-    // Use transcript + timestamp as unique key
     const transcriptionKey = `${transcriptionData.speakerId}-${transcriptionData.timestamp || Date.now()}`;
     if (this.rateLimiter.hasEvaluatedMessage(transcriptionKey)) {
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Deduplication - already processed this transcription`);
       return;
     }
     this.rateLimiter.markMessageEvaluated(transcriptionKey);
@@ -1218,7 +1283,6 @@ export class PersonaUser extends AIUser {
     await this.inbox.enqueue(inboxMessage);
     this.personaState.updateInboxLoad(this.inbox.getSize());
 
-    console.log(`🎙️🔊 VOICE-DEBUG [${this.displayName}]: Enqueued voice message to inbox (priority=${boostedPriority.toFixed(2)}, voiceSessionId=${transcriptionData.sessionId?.slice(0, 8)}, inboxSize=${this.inbox.getSize()})`);
     this.log.info(`🎙️ ${this.displayName}: Enqueued voice transcription (priority=${boostedPriority.toFixed(2)}, confidence=${transcriptionData.confidence}, inbox size=${this.inbox.getSize()})`);
 
     // UNIFIED CONSCIOUSNESS: Record voice event in global timeline
@@ -1340,7 +1404,8 @@ export class PersonaUser extends AIUser {
    */
   public async respondToMessage(
     originalMessage: ProcessableMessage,
-    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
+    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
+    preBuiltRagContext?: PipelineRAGContext
   ): Promise<void> {
     // Check dormancy state before responding
     const shouldRespond = this.responseGenerator.shouldRespondToMessage(
@@ -1353,7 +1418,7 @@ export class PersonaUser extends AIUser {
       return;
     }
 
-    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext);
+    const result = await this.responseGenerator.generateAndPostResponse(originalMessage, decisionContext, preBuiltRagContext);
 
     // Mark tool results as processed to prevent infinite loops
     if (result.success && result.storedToolResultIds.length > 0) {
@@ -1733,10 +1798,10 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Get persona database path
+   * Get persona database path — delegates to SystemPaths (single source of truth)
    */
   getPersonaDatabasePath(): string {
-    return `.continuum/personas/${this.entity.id}/state.sqlite`;
+    return SystemPaths.personas.state(this.entity.uniqueId);
   }
 
   /**
@@ -1959,6 +2024,17 @@ export class PersonaUser extends AIUser {
 
     // Stop autonomous servicing loop
     await this.autonomousLoop.stopServicing();
+
+    // Clean up all workspaces (shell sessions + worktrees)
+    for (const [key, ws] of this._workspaces) {
+      try {
+        await ws.destroy();
+        this.log.info(`${this.displayName}: Workspace destroyed (context=${key})`);
+      } catch (e) {
+        this.log.warn(`${this.displayName}: Workspace cleanup failed (context=${key}): ${e}`);
+      }
+    }
+    this._workspaces.clear();
 
     // PHASE 6: Shutdown memory module (genome + RAG)
     await this.memory.shutdown();

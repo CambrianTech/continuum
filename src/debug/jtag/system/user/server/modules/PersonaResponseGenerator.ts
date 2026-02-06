@@ -13,16 +13,16 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
+// DATA_COMMANDS import removed — response posting now uses DataDaemon.store() directly
+import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
-import type { DataCreateParams, DataCreateResult } from '../../../../commands/data/create/shared/DataCreateTypes';
+// DataCreateParams/DataCreateResult imports removed — response posting now uses DataDaemon.store() directly
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -46,17 +46,19 @@ import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './Person
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
 import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
-import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, getToolCapability, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 import { ResponseCleaner } from './ResponseCleaner';
-import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+// AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
+// import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
+import type { RAGContext } from '../../../rag/shared/RAGTypes';
 
-import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
-import { DataCreate } from '../../../../commands/data/create/shared/DataCreateTypes';
+// import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
+// DataCreate import removed — response posting now uses DataDaemon.store() directly
 /**
  * Response generation result
  */
@@ -230,55 +232,74 @@ export class PersonaResponseGenerator {
    * @param roomId - The room ID for context
    * @returns true if should BLOCK (>0.85 similarity), false otherwise
    */
-  private async checkSemanticLoop(responseText: string, roomId: UUID): Promise<{ shouldBlock: boolean; similarity: number; reason: string }> {
-    try {
-      // Short responses are unlikely to be loops - skip expensive embedding check
-      if (responseText.length < 50) {
-        return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
-      }
+  /**
+   * Inline Jaccard n-gram similarity — O(n) text comparison, no DB or embedding calls.
+   * Returns 0-1 score (1 = identical).
+   */
+  private jaccardSimilarity(text1: string, text2: string): number {
+    if (!text1 || !text2) return 0;
+    if (text1 === text2) return 1.0;
 
-      const result = await AiDetectSemanticLoop.execute({
-        messageText: responseText,
-        personaId: this.personaId,
-        roomId: roomId,
-        lookbackCount: 10,  // Check last 10 messages
-        similarityThreshold: 0.75,  // Start detecting at 0.75
-        timeWindowMinutes: 30  // Last 30 minutes
-      });
+    const tokenize = (text: string): Set<string> => {
+      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+      const ngrams = new Set<string>();
+      for (const word of words) ngrams.add(word);
+      for (let i = 0; i < words.length - 1; i++) ngrams.add(`${words[i]} ${words[i + 1]}`);
+      return ngrams;
+    };
 
-      if (!result.success) {
-        this.log(`⚠️ Semantic loop check failed: ${result.error || 'Unknown error'}, allowing response`);
-        return { shouldBlock: false, similarity: 0, reason: 'Check failed, allowing' };
-      }
-
-      const maxSimilarity = result.maxSimilarity ?? 0;
-      const recommendation = result.recommendation || 'ALLOW';
-
-      // Log the check result
-      if (recommendation === 'BLOCK') {
-        this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
-        if (result.matches && result.matches.length > 0) {
-          this.log(`   Most similar to: "${result.matches[0].excerpt}"`);
-        }
-        return { shouldBlock: true, similarity: maxSimilarity, reason: result.explanation || 'Very high semantic similarity' };
-      } else if (recommendation === 'WARN') {
-        this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
-        if (result.matches && result.matches.length > 0) {
-          this.log(`   Similar to: "${result.matches[0].excerpt}"`);
-        }
-        // WARN but don't block - preserve autonomy
-        return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
-      }
-
-      // ALLOW - no action needed
-      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
-
-    } catch (error) {
-      // On error, allow the response (fail open to preserve autonomy)
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      this.log(`⚠️ Semantic loop check error: ${errorMsg}, allowing response`);
-      return { shouldBlock: false, similarity: 0, reason: `Error: ${errorMsg}` };
+    const set1 = tokenize(text1);
+    const set2 = tokenize(text2);
+    let intersection = 0;
+    for (const gram of set1) {
+      if (set2.has(gram)) intersection++;
     }
+    const union = set1.size + set2.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+  }
+
+  /**
+   * Check semantic loop using in-memory RAG context (0ms, no DB/embedding calls).
+   * Previous implementation called AiDetectSemanticLoop.execute() which did embedding IPC + DB query (~20s).
+   * Now uses inline Jaccard n-gram similarity against already-loaded conversation history.
+   */
+  private checkSemanticLoop(
+    responseText: string,
+    conversationHistory: Array<{ role: string; content: string; name?: string }>
+  ): { shouldBlock: boolean; similarity: number; reason: string } {
+    // Short responses are unlikely to be loops
+    if (responseText.length < 50) {
+      return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
+    }
+
+    // Compare against last 10 messages in the already-loaded RAG context
+    const recentMessages = conversationHistory.slice(-10);
+    let maxSimilarity = 0;
+    let mostSimilarExcerpt = '';
+
+    for (const msg of recentMessages) {
+      if (!msg.content || msg.content.length < 20) continue;
+      const similarity = this.jaccardSimilarity(responseText, msg.content);
+      if (similarity > maxSimilarity) {
+        maxSimilarity = similarity;
+        mostSimilarExcerpt = msg.content.slice(0, 100);
+      }
+    }
+
+    // Thresholds (same as AiDetectSemanticLoopServerCommand)
+    const WARN_THRESHOLD = 0.80;
+    const BLOCK_THRESHOLD = 0.95;
+
+    if (maxSimilarity >= BLOCK_THRESHOLD) {
+      this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
+      this.log(`   Most similar to: "${mostSimilarExcerpt}"`);
+      return { shouldBlock: true, similarity: maxSimilarity, reason: `${Math.round(maxSimilarity * 100)}% similar to recent message` };
+    } else if (maxSimilarity >= WARN_THRESHOLD) {
+      this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
+      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
+    }
+
+    return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -399,6 +420,30 @@ export class PersonaResponseGenerator {
   }
 
   /**
+   * Safety cap for agent tool loop iterations, tiered by model capability.
+   * Frontier models (Anthropic, OpenAI) are trusted to self-terminate via finishReason.
+   * Mid-tier models with native tool support get moderate cap.
+   * XML-based / local models get tight leash since they can't signal "I'm done" via finishReason.
+   */
+  private getSafetyMaxIterations(provider: string): number {
+    if (['anthropic', 'openai', 'azure'].includes(provider)) return 25;
+    if (supportsNativeTools(provider)) return 10;
+    return 5;
+  }
+
+  /**
+   * Convert MediaItems to ContentPart blocks for inclusion in model messages.
+   */
+  private mediaToContentParts(media: MediaItem[]): ContentPart[] {
+    return media.map(m => {
+      if (m.type === 'image') return { type: 'image' as const, image: m };
+      if (m.type === 'audio') return { type: 'audio' as const, audio: m };
+      if (m.type === 'video') return { type: 'video' as const, video: m };
+      return { type: 'image' as const, image: m }; // Default fallback
+    });
+  }
+
+  /**
    * Calculate safe message count based on model's context window
    *
    * Strategy: Fill to ~90% of (contextWindow - maxTokens - systemPrompt)
@@ -508,7 +553,8 @@ export class PersonaResponseGenerator {
    */
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
-    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>
+    decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
+    preBuiltRagContext?: RAGContext
   ): Promise<ResponseGenerationResult> {
     this.log(`🔧 TRACE-POINT-D: Entered respondToMessage (timestamp=${Date.now()})`);
     // Voice modality is a typed field — no cast needed
@@ -516,34 +562,46 @@ export class PersonaResponseGenerator {
     const generateStartTime = Date.now();  // Track total response time for decision logging
     const allStoredResultIds: UUID[] = [];  // Collect all tool result message IDs for task tracking
     try {
-      // 🔧 SUB-PHASE 3.1: Build RAG context
-      // Bug #5 fix: Pass modelId to ChatRAGBuilder for dynamic message count calculation
-      this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
-      const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
-      // Voice mode detection - pass voiceSessionId to RAG for faster response (skips semantic search)
-      const voiceSessionId = originalMessage.voiceSessionId;
-      const fullRAGContext = await ragBuilder.buildContext(
-        originalMessage.roomId,
-        this.personaId,
-        {
-          modelId: this.modelConfig.model,  // Bug #5 fix: Dynamic budget calculation
-          maxMemories: 5,  // Limit to 5 recent important memories (token budget management)
-          includeArtifacts: true,  // Enable vision support for multimodal-capable models
-          includeMemories: true,   // Enable Hippocampus LTM retrieval
-          // Voice mode: Pass session ID so RAG sources can optimize for speed
-          voiceSessionId,
-          // ✅ FIX: Include current message even if not yet persisted to database
-          currentMessage: {
-            role: 'user',
-            content: originalMessage.content.text,
-            name: originalMessage.senderName,
-            timestamp: this.timestampToNumber(originalMessage.timestamp)
+      // Pipeline timing tracker — filled as each phase completes
+      const pipelineTiming: Record<string, number> = {};
+
+      // 🔧 SUB-PHASE 3.1: Build RAG context (or use pre-built from evaluator)
+      const phase31Start = Date.now();
+      let fullRAGContext: RAGContext;
+
+      if (preBuiltRagContext) {
+        // OPTIMIZATION: Evaluator already built full RAG context — reuse it, skip redundant build
+        fullRAGContext = preBuiltRagContext;
+        pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
+        this.log(`⚡ ${this.personaName}: [PHASE 3.1] Using pre-built RAG context (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
+      } else {
+        // Fallback: Build RAG context from scratch (for code paths that don't go through evaluator)
+        this.log(`🔧 ${this.personaName}: [PHASE 3.1] Building RAG context with model=${this.modelConfig.model}...`);
+        const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+        const voiceSessionId = originalMessage.voiceSessionId;
+        fullRAGContext = await ragBuilder.buildContext(
+          originalMessage.roomId,
+          this.personaId,
+          {
+            modelId: this.modelConfig.model,
+            maxMemories: 5,
+            includeArtifacts: true,
+            includeMemories: true,
+            voiceSessionId,
+            currentMessage: {
+              role: 'user',
+              content: originalMessage.content.text,
+              name: originalMessage.senderName,
+              timestamp: this.timestampToNumber(originalMessage.timestamp)
+            }
           }
-        }
-      );
-      this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages)`);
+        );
+        pipelineTiming['3.1_rag'] = Date.now() - phase31Start;
+        this.log(`✅ ${this.personaName}: [PHASE 3.1] RAG context built (${fullRAGContext.conversationHistory.length} messages, ${pipelineTiming['3.1_rag']}ms)`);
+      }
 
       // 🔧 SUB-PHASE 3.2: Build message history for LLM
+      const phase32Start = Date.now();
       this.log(`🔧 ${this.personaName}: [PHASE 3.2] Building LLM message array...`);
       // ✅ Support multimodal content (images, audio, video) for vision-capable models
       // Adapters will transform based on model capability (raw images vs text descriptions)
@@ -566,8 +624,17 @@ export class PersonaResponseGenerator {
 
       // Inject available tools for autonomous tool discovery (Phase 3A)
       // Use adapter-based formatting for harmony with parser
-      // CRITICAL: Use async version to ensure tool cache is initialized before injection
-      const availableTools = await this.toolRegistry.listToolsForPersonaAsync(this.personaId);
+      // CRITICAL: Only inject tools for models that can actually emit tool calls.
+      // Models without tool capability narrate instead of calling tools,
+      // wasting tokens and clogging chat with useless "let me use tool X" text.
+      const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
+      const availableTools = toolCap !== 'none'
+        ? await this.toolRegistry.listToolsForPersonaAsync(this.personaId)
+        : [];
+
+      if (toolCap === 'none') {
+        this.log(`🚫 ${this.personaName}: Tool injection skipped (provider=${this.modelConfig.provider}, toolCapability=none)`);
+      }
 
       // Convert PersonaToolDefinitions to adapter format (used for both XML injection and native tools)
       // Hoisted to outer scope so it's available for native tool_use injection later
@@ -578,8 +645,11 @@ export class PersonaResponseGenerator {
         category: t.category
       }));
 
-      if (availableTools.length > 0) {
-        // Use primary adapter to format tools (harmonious with parser)
+      if (availableTools.length > 0 && !supportsNativeTools(this.modelConfig.provider || 'candle')) {
+        // Text-based tool injection for non-native providers (XML tool callers like DeepSeek).
+        // Native tool providers (Anthropic, OpenAI, Together, Groq) get tools via the JSON
+        // `tools` request parameter instead — injecting text descriptions alongside native specs
+        // confuses Llama models into narrating tool usage rather than calling the native API.
         const adapter = getPrimaryAdapter();
         const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
 
@@ -587,7 +657,39 @@ export class PersonaResponseGenerator {
 ================================`;
 
         systemPrompt += toolsSection;
-        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into context`);
+        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into system prompt (text format)`);
+      }
+
+      // Inject recipe activity context (strategy rules + highlighted tools)
+      // Recipe tools are HIGHLIGHTS, not filters — they tell the LLM what's most relevant
+      if (fullRAGContext.recipeStrategy || fullRAGContext.recipeTools) {
+        let activitySection = '\n\n=== ACTIVITY CONTEXT ===';
+
+        if (fullRAGContext.recipeStrategy) {
+          const strategy = fullRAGContext.recipeStrategy;
+          activitySection += `\nActivity pattern: ${strategy.conversationPattern}`;
+
+          if (strategy.responseRules.length > 0) {
+            activitySection += '\n\nRules for this activity:\n' +
+              strategy.responseRules.map(rule => `- ${rule}`).join('\n');
+          }
+
+          if (strategy.decisionCriteria.length > 0) {
+            activitySection += '\n\nWhen deciding whether to respond, consider:\n' +
+              strategy.decisionCriteria.map(c => `- ${c}`).join('\n');
+          }
+        }
+
+        if (fullRAGContext.recipeTools && fullRAGContext.recipeTools.length > 0) {
+          const aiTools = fullRAGContext.recipeTools.filter(t => t.enabledFor.includes('ai'));
+          activitySection += '\n\nYOU MUST use these tools to do real work in this activity (call them directly):\n' +
+            aiTools.map(t => `- ${t.name}: ${t.description}`).join('\n') +
+            '\n\nDo NOT just discuss or describe what should be done — call the tools above to actually do it.';
+        }
+
+        activitySection += '\n================================';
+        systemPrompt += activitySection;
+        this.log(`📋 ${this.personaName}: Injected activity context (strategy + ${fullRAGContext.recipeTools?.length ?? 0} tool highlights)`);
       }
 
       // Inject governance guidance for democratic participation
@@ -903,16 +1005,72 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
       // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
       // This enables tool_use blocks instead of XML parsing for more reliable tool execution
+      // CRITICAL: Prioritize relevant tools. Sending 200+ tools overwhelms models, causing them
+      // to loop on meta-tools (search_tools) instead of calling the actual tools they need.
       if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
-        request.tools = convertToNativeToolSpecs(toolDefinitions);
-        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format)`);
+        // Exclude meta-tools from native specs — models with native tool calling
+        // don't need discovery tools. search_tools/list_tools cause infinite loops.
+        const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
+        let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
+
+        // Recipe tools define the activity's core toolset. When present, recipe tools
+        // go FIRST and the cap is tighter — models use early tools and get confused by 64+.
+        const recipeToolNames = new Set(
+          (fullRAGContext.recipeTools || [])
+            .filter(t => t.enabledFor.includes('ai'))
+            .map(t => t.name)
+        );
+        const hasRecipeTools = recipeToolNames.size > 0;
+        const MAX_NATIVE_TOOLS = hasRecipeTools ? 32 : 64;
+
+        if (prioritizedTools.length > MAX_NATIVE_TOOLS) {
+          // Three-tier priority:
+          // 1. Recipe tools (the activity's core tools — go FIRST)
+          // 2. Essentials (bare minimum for coordination)
+          // 3. Everything else (fill remaining slots)
+          const ESSENTIAL_TOOLS = new Set([
+            'collaboration/chat/send', 'collaboration/chat/history',
+            'collaboration/decision/propose', 'collaboration/decision/vote',
+          ]);
+          const essentialPrefixes = hasRecipeTools
+            ? [] // When recipe tools exist, only allow exact essential matches
+            : ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
+
+          const recipe: AdapterToolDefinition[] = [];
+          const essential: AdapterToolDefinition[] = [];
+          const rest: AdapterToolDefinition[] = [];
+
+          for (const tool of prioritizedTools) {
+            if (recipeToolNames.has(tool.name)) {
+              recipe.push(tool);
+            } else if (ESSENTIAL_TOOLS.has(tool.name) ||
+                       essentialPrefixes.some(p => tool.name.startsWith(p))) {
+              essential.push(tool);
+            } else {
+              rest.push(tool);
+            }
+          }
+
+          // Recipe tools FIRST, then essentials, then fill from rest
+          const remaining = MAX_NATIVE_TOOLS - recipe.length - essential.length;
+          prioritizedTools = [...recipe, ...essential, ...rest.slice(0, Math.max(0, remaining))];
+          this.log(`🔧 ${this.personaName}: Tool prioritization: ${recipe.length} recipe + ${essential.length} essential + ${Math.max(0, remaining)} general = ${prioritizedTools.length} (from ${toolDefinitions.length} total, cap=${MAX_NATIVE_TOOLS})`);
+        }
+
+        request.tools = convertToNativeToolSpecs(prioritizedTools);
+        request.tool_choice = 'auto';
+        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format, tool_choice=auto)`);
       }
+      pipelineTiming['3.2_format'] = Date.now() - phase32Start;
+      this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
+
       // Check for mentions by both uniqueId (@helper) and displayName (@Helper AI)
       const messageText = originalMessage.content.text.toLowerCase();
       const isMentioned =
         messageText.includes(`@${this.entity.uniqueId.toLowerCase()}`) ||
         messageText.includes(`@${this.personaName.toLowerCase()}`);
 
+      const phase33aStart = Date.now();
       const slotGranted = await InferenceCoordinator.requestSlot(
         this.personaId,
         originalMessage.id,
@@ -920,10 +1078,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         { isMentioned }
       );
 
+      pipelineTiming['3.3a_slot'] = Date.now() - phase33aStart;
+
       if (!slotGranted) {
-        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied - skipping response`);
+        this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot denied (${pipelineTiming['3.3a_slot']}ms) - skipping response`);
         return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Treat as redundant (another AI will respond)
       }
+      this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot granted (${pipelineTiming['3.3a_slot']}ms)`);
 
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
@@ -938,6 +1099,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       try {
         // Wait for AIProviderDaemon to initialize (max 30 seconds)
         // This handles race condition where PersonaUser tries to respond before daemon is ready
+        const phase33bStart = Date.now();
         const MAX_WAIT_MS = 30000;
         const POLL_INTERVAL_MS = 100;
         let waitedMs = 0;
@@ -945,14 +1107,20 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
           waitedMs += POLL_INTERVAL_MS;
         }
+        pipelineTiming['3.3b_daemon_init'] = Date.now() - phase33bStart;
+        if (pipelineTiming['3.3b_daemon_init'] > 50) {
+          this.log(`⏳ ${this.personaName}: [PHASE 3.3b] AIProviderDaemon init wait: ${pipelineTiming['3.3b_daemon_init']}ms`);
+        }
         if (!AIProviderDaemon.isInitialized()) {
           throw new Error(`AIProviderDaemon not initialized after ${MAX_WAIT_MS}ms`);
         }
 
+        const inferenceStart = Date.now();
         aiResponse = await Promise.race([
           AIProviderDaemon.generateText(request),
           timeoutPromise
         ]);
+        pipelineTiming['3.3_inference'] = Date.now() - inferenceStart;
 
         // 🎰 Release slot on success
         InferenceCoordinator.releaseSlot(this.personaId, provider);
@@ -1022,17 +1190,20 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         // 🔧 PHASE 3.3.5a: GARBAGE DETECTION
         // Detect and reject garbage output (Unicode garbage, repetition, encoding errors)
-        // This catches model failures that produce gibberish instead of coherent text
-        const garbageCheck = GarbageDetector.isGarbage(aiResponse.text);
+        // This catches model failures that produce gibberish instead of coherent text.
+        // Skip when the response has native tool calls — models with function calling often
+        // return empty text + tool_calls, which is valid (the agent loop will execute them).
+        const hasToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
+        const garbageCheck = hasToolCalls ? { isGarbage: false, reason: '', details: '', score: 0 } : GarbageDetector.isGarbage(aiResponse.text);
         if (garbageCheck.isGarbage) {
           this.log(`🗑️ ${this.personaName}: [PHASE 3.3.5a] GARBAGE DETECTED (${garbageCheck.reason}: ${garbageCheck.details})`);
 
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators
+          // Emit event to clear UI indicators (fire-and-forget)
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1047,7 +1218,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 gatingModel: 'garbage-detector'
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           // Return failure so caller knows this wasn't successful
@@ -1060,15 +1231,15 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         // - Response is truncated mid-tool-call (DeepSeek's issue)
         // - AI repeats same content with minor variations
         // - Tool-level detection would miss it
-        if (this.isResponseLoop(aiResponse.text)) {
+        if (!hasToolCalls && this.isResponseLoop(aiResponse.text)) {
           this.log(`🔁 ${this.personaName}: [PHASE 3.3.5b] Response loop detected - DISCARDING response`);
 
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators
+          // Emit event to clear UI indicators (fire-and-forget)
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1086,7 +1257,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 scope: EVENT_SCOPES.ROOM,
                 scopeId: originalMessage.roomId
               }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           // Return early - treat as redundant (don't post this looping response)
@@ -1105,7 +1276,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           // Treat truncated tool calls the same as loops - they will just repeat forever
           InferenceCoordinator.releaseSlot(this.personaId, provider);
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1120,25 +1291,25 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 gatingModel: 'truncated-tool-detector'
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
-        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION
-        // Check if this response is semantically too similar to recent messages in the room
-        // This catches cases where multiple AIs post the same explanation (Teacher AI + Local Assistant issue)
-        // AUTONOMY-PRESERVING: Only blocks at >0.85 similarity, warns at 0.75-0.85
-        const semanticCheck = await this.checkSemanticLoop(aiResponse.text, originalMessage.roomId);
+        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION (inline, ~0ms)
+        // Uses Jaccard n-gram similarity against already-loaded RAG context.
+        // Previous: AiDetectSemanticLoop.execute() — embedding IPC + DB query (~20 seconds)
+        // Now: inline text comparison against in-memory conversation history (~0ms)
+        const semanticCheck = this.checkSemanticLoop(aiResponse.text, fullRAGContext.conversationHistory);
         if (semanticCheck.shouldBlock) {
           this.log(`🚫 ${this.personaName}: [PHASE 3.3.5d] SEMANTIC LOOP BLOCKED (${semanticCheck.similarity.toFixed(2)} similarity)`);
 
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators
+          // Emit event to clear UI indicators (fire-and-forget)
           if (this.client) {
-            await Events.emit<AIDecidedSilentEventData>(
+            Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
               AI_DECISION_EVENTS.DECIDED_SILENT,
               {
@@ -1153,181 +1324,193 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 gatingModel: 'semantic-loop-detector'
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            );
+            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
-        // 🔧 PHASE 3.3.6: Tool execution loop - parse and execute tool calls, then regenerate response
-        // This allows personas to autonomously use tools like code/read during their inference
+        // 🔧 CANONICAL AGENT LOOP — model decides when to stop
+        // Pattern: while (finishReason === 'tool_use') { execute → full results → regenerate }
+        // Full tool results go back to the model (not summaries). Tools stay enabled.
+        // The model signals completion by returning text without tool_use.
+        // Safety cap prevents infinite loops for dumber models.
+        const agentLoopStart = Date.now();
+        const SAFETY_MAX = this.getSafetyMaxIterations(provider);
         let toolIterations = 0;
-        const MAX_TOOL_ITERATIONS = 3;
+        const useNativeProtocol = supportsNativeTools(provider);
 
-        while (toolIterations < MAX_TOOL_ITERATIONS) {
-          // Check for native tool calls first (from Anthropic, OpenAI JSON tool_use format)
-          // Then fall back to XML parsing for other providers
-          let toolCalls: ExecutorToolCall[];
+        // Build execution context once (loop-invariant — persona, session, room don't change)
+        const sessionId = this.getSessionId();
+        if (!sessionId) {
+          throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
+        }
+        const toolExecutionContext = {
+          personaId: this.personaId,
+          personaName: this.personaName,
+          sessionId,
+          contextId: originalMessage.roomId,
+          context: this.client!.context,
+          personaConfig: this.mediaConfig,
+        };
 
-          if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
-            // Convert native format { id, name, input } to executor format { toolName, parameters }
-            // Unsanitize tool names: data__list -> data/list (API requires no slashes, we use double underscores)
-            toolCalls = aiResponse.toolCalls.map((tc: NativeToolCall) => ({
-              toolName: unsanitizeToolName(tc.name),
-              parameters: Object.fromEntries(
-                Object.entries(tc.input).map(([k, v]) => [k, String(v)])
-              ) as Record<string, string>
-            }));
-            this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Using native tool_use format (${toolCalls.length} calls)`);
-          } else {
-            // Fall back to XML parsing for non-native providers
-            toolCalls = this.toolExecutor.parseToolCalls(aiResponse.text);
-          }
+        while (toolIterations < SAFETY_MAX) {
+          // Check for tool calls — native first, then XML fallback
+          const hasNativeToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
+          const hasXmlToolCalls = !hasNativeToolCalls && this.toolExecutor.parseToolCalls(aiResponse.text).length > 0;
 
-          if (toolCalls.length === 0) {
-            // No tools found, proceed to post response
-            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] No tool calls found, proceeding`);
+          if (!hasNativeToolCalls && !hasXmlToolCalls) {
+            // Model chose to stop — no more tool calls
+            if (toolIterations > 0) {
+              this.log(`✅ ${this.personaName}: [AGENT-LOOP] Model stopped after ${toolIterations} iteration(s)`);
+            }
             break;
           }
 
-          this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Found ${toolCalls.length} tool call(s), iteration ${toolIterations + 1}/${MAX_TOOL_ITERATIONS}`);
           toolIterations++;
+          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
 
-          // Execute tool calls via adapter with media configuration
-          const sessionId = this.getSessionId();
-          if (!sessionId) {
-            throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
+          if (useNativeProtocol && hasNativeToolCalls) {
+            // ── Native tool protocol (Anthropic, OpenAI, etc.) ──
+            // Full results go back as tool_result content blocks
+            const nativeToolCalls = aiResponse.toolCalls!;
+            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)`);
+
+            let toolResults: NativeToolResult[];
+            let toolMedia: MediaItem[] = [];
+            try {
+              const execResult = await this.toolExecutor.executeNativeToolCalls(
+                nativeToolCalls,
+                toolExecutionContext,
+              );
+              toolResults = execResult.results;
+              toolMedia = execResult.media;
+              allStoredResultIds.push(...execResult.storedIds);
+            } catch (toolExecError) {
+              // Tool execution batch failed — return error results for all tool calls
+              // so the model can see what happened and decide what to do
+              const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
+              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Tool execution failed: ${errMsg}`);
+              toolResults = nativeToolCalls.map(tc => ({
+                tool_use_id: tc.id,
+                content: `Tool execution error: ${errMsg}`,
+                is_error: true as const,
+              }));
+            }
+
+            // Push assistant message with tool_use content blocks (as the model produced them)
+            const assistantContent: ContentPart[] = aiResponse.content ?? [
+              ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
+              ...nativeToolCalls.map(tc => ({
+                type: 'tool_use' as const,
+                id: tc.id,
+                name: tc.name,
+                input: tc.input,
+              })),
+            ];
+            messages.push({ role: 'assistant' as const, content: assistantContent });
+
+            // Push tool results as user message with tool_result content blocks (FULL results)
+            const toolResultContent: ContentPart[] = toolResults.map(r => ({
+              type: 'tool_result' as const,
+              tool_use_id: r.tool_use_id,
+              content: r.content,
+              ...(r.is_error && { is_error: true }),
+            }));
+
+            // Include media if present (screenshots, etc.)
+            if (toolMedia.length > 0) {
+              toolResultContent.push(...this.mediaToContentParts(toolMedia));
+            }
+
+            messages.push({ role: 'user' as const, content: toolResultContent });
+
+          } else {
+            // ── XML fallback for non-native providers ──
+            // Parse XML tool calls, execute, return results as text
+            const xmlToolCalls = hasNativeToolCalls
+              ? aiResponse.toolCalls!.map((tc: NativeToolCall) => ({
+                  toolName: unsanitizeToolName(tc.name),
+                  parameters: Object.fromEntries(
+                    Object.entries(tc.input).map(([k, v]) => [k, String(v)])
+                  ) as Record<string, string>,
+                }))
+              : this.toolExecutor.parseToolCalls(aiResponse.text);
+
+            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${xmlToolCalls.length} XML tool call(s)`);
+
+            let formattedResults: string;
+            let xmlToolMedia: MediaItem[] = [];
+            try {
+              const xmlExecResult = await this.toolExecutor.executeToolCalls(
+                xmlToolCalls,
+                toolExecutionContext,
+              );
+              formattedResults = xmlExecResult.formattedResults;
+              xmlToolMedia = xmlExecResult.media ?? [];
+              allStoredResultIds.push(...xmlExecResult.storedResultIds);
+            } catch (toolExecError) {
+              const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
+              this.log(`❌ ${this.personaName}: [AGENT-LOOP] XML tool execution failed: ${errMsg}`);
+              formattedResults = `<tool_result>\n<status>error</status>\n<error>\n\`\`\`\nTool execution error: ${errMsg}\n\`\`\`\n</error>\n</tool_result>`;
+            }
+
+            // Strip tool blocks from response text for the assistant message
+            const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
+
+            messages.push({ role: 'assistant' as const, content: explanationText });
+
+            // Full tool results as user message (NOT summarized)
+            const toolResultContent: (ContentPart | { type: 'text'; text: string })[] = [
+              { type: 'text' as const, text: formattedResults },
+            ];
+            if (xmlToolMedia.length > 0) {
+              toolResultContent.push(...this.mediaToContentParts(xmlToolMedia));
+            }
+            messages.push({ role: 'user' as const, content: toolResultContent });
           }
 
-          const toolExecutionContext = {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            sessionId,  // AI's own sessionId for sandboxed tool execution
-            contextId: originalMessage.roomId,
-            context: this.client!.context,  // PersonaUser's enriched context (with callerType='persona')
-            personaConfig: this.mediaConfig
-          };
-
-          const { formattedResults: toolResults, media: toolMedia, storedResultIds } = await this.toolExecutor.executeToolCalls(
-            toolCalls,
-            toolExecutionContext
-          );
-
-          // Collect tool result message IDs for task tracking (prevent infinite loops)
-          allStoredResultIds.push(...storedResultIds);
-
-          // Strip tool blocks from response to get explanation text
-          const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
-
-          // Phase 3B: Build lean summary with UUID references for lazy loading
-          // Extract summaries from formatted results (first line of each <tool_result>)
-          const toolSummaries = toolResults.split('<tool_result>').slice(1).map((result, i) => {
-            const toolName = result.match(/<tool_name>(.*?)<\/tool_name>/)?.[1] || 'unknown';
-            const status = result.match(/<status>(.*?)<\/status>/)?.[1] || 'unknown';
-            const resultId = storedResultIds[i];
-
-            if (status === 'success') {
-              // Extract first line of content as summary
-              const contentMatch = result.match(/<content>\n?(.*?)(?:\n|<\/content>)/s);
-              const firstLine = contentMatch?.[1]?.split('\n')[0]?.trim() || 'completed';
-              return `✅ ${toolName}: ${firstLine} (ID: ${resultId?.slice(0, 8) ?? 'unknown'})`;
-            } else {
-              // Extract error message
-              const errorMatch = result.match(/<error>\n?```\n?(.*?)(?:\n|```)/s);
-              const errorMsg = errorMatch?.[1]?.slice(0, 100) || 'unknown error';
-              return `❌ ${toolName}: ${errorMsg} (ID: ${resultId?.slice(0, 8) ?? 'unknown'})`;
-            }
-          }).join('\n');
-
-          // Count successes and failures
-          const failedTools = toolCalls.filter((_, i) => {
-            const resultXML = toolResults.split('<tool_result>')[i + 1];
-            return resultXML && resultXML.includes('<status>error</status>');
-          });
-
-          const hasFailures = failedTools.length > 0;
-          const failureWarning = hasFailures
-            ? `\n\n⚠️ IMPORTANT: ${failedTools.length} tool(s) FAILED. You MUST mention these failures in your response and explain what went wrong. Do NOT retry the same failed command without changing your approach.\n`
-            : '';
-
-          // Phase 3B: Inject lean summary + UUID references instead of full results
-          const leanSummary = `TOOL RESULTS (Phase 3B - Lean RAG):\n\n${toolSummaries}\n\n📋 Full details stored in working memory.\n💡 To read full results: ${DATA_COMMANDS.READ} --collection=chat_messages --id=<ID>\n\n${failureWarning}Based on these summaries, provide your analysis. Only use ${DATA_COMMANDS.READ} if you need the full details.`;
-
-          // Build tool results message with optional media
-          const toolResultsMessage: ChatMessage = toolMedia && toolMedia.length > 0
-            ? {
-                role: 'user' as const,
-                content: [
-                  {
-                    type: 'text',
-                    text: leanSummary
-                  },
-                  ...toolMedia.map(m => {
-                    if (m.type === 'image') {
-                      return { type: 'image' as const, image: m };
-                    } else if (m.type === 'audio') {
-                      return { type: 'audio' as const, audio: m };
-                    } else if (m.type === 'video') {
-                      return { type: 'video' as const, video: m };
-                    }
-                    // Fallback: treat as image if type is unclear
-                    return { type: 'image' as const, image: m };
-                  })
-                ]
-              }
-            : {
-                role: 'user' as const,
-                content: leanSummary
-              };
-
-          // Regenerate response with tool results
-          this.log(`🔧 ${this.personaName}: [PHASE 3.3.6] Regenerating response with tool results...`);
-          this.log(`📊 ${this.personaName}: Tool summary length: ${leanSummary.length} chars, ${toolCalls.length} calls, ${toolMedia?.length || 0} media items`);
-
-          const regenerateRequest: TextGenerationRequest = {
-            ...request,
-            messages: [
-              ...request.messages,
-              { role: 'assistant' as const, content: explanationText }, // Previous response (without tool blocks)
-              toolResultsMessage // Tool results
-            ]
-          };
-
-          this.log(`📊 ${this.personaName}: Regenerate request has ${regenerateRequest.messages.length} messages total`);
+          // Regenerate — tools stay enabled, model decides when to stop
+          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools enabled)`);
 
           try {
             const regenerateStartTime = Date.now();
-            const regeneratedResponse = await AIProviderDaemon.generateText(regenerateRequest);
+            const regeneratedResponse = await AIProviderDaemon.generateText({
+              ...request,
+              messages, // Tools NOT stripped — model decides when to stop
+            });
             const regenerateDuration = Date.now() - regenerateStartTime;
 
-            this.log(`⏱️  ${this.personaName}: Regeneration took ${regenerateDuration}ms`);
+            this.log(`⏱️  ${this.personaName}: [AGENT-LOOP] Regeneration took ${regenerateDuration}ms, finishReason: ${regeneratedResponse.finishReason}`);
 
-            if (!regeneratedResponse.text) {
-              this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Tool regeneration returned empty response, using previous response`);
-              // Remove tool blocks from original response before posting
-              aiResponse.text = explanationText;
+            if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
+              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Empty response, using previous text`);
+              aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
               break;
             }
 
-            // Update aiResponse with regenerated response
-            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text.trim());
-            this.log(`✅ ${this.personaName}: [PHASE 3.3.6] Response regenerated with tool results (${regeneratedResponse.text.length} chars)`);
+            // Update full response state
+            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text?.trim() || '');
+            aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
+            aiResponse.content = regeneratedResponse.content ?? undefined;
+            aiResponse.finishReason = regeneratedResponse.finishReason;
+
+            this.log(`✅ ${this.personaName}: [AGENT-LOOP] Got response (${aiResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
-            this.log(`❌ ${this.personaName}: [PHASE 3.3.6] Regeneration failed with error: ${errorMsg}`);
-            this.log(`   Stack:`, regenerateError instanceof Error ? regenerateError.stack : 'N/A');
-            // Remove tool blocks from original response before posting
-            aiResponse.text = explanationText;
+            this.log(`❌ ${this.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
+            aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
             break;
           }
-
-          // Loop will check again for more tool calls (up to MAX_TOOL_ITERATIONS)
         }
 
-        if (toolIterations >= MAX_TOOL_ITERATIONS) {
-          this.log(`⚠️  ${this.personaName}: [PHASE 3.3.6] Reached max tool iterations (${MAX_TOOL_ITERATIONS}), stopping`);
-          // Strip any remaining tool blocks from final response
+        if (toolIterations >= SAFETY_MAX) {
+          this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
           aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+        }
+        pipelineTiming['3.4_agent_loop'] = Date.now() - agentLoopStart;
+        if (toolIterations > 0) {
+          this.log(`⏱️ ${this.personaName}: [AGENT-LOOP] Total: ${pipelineTiming['3.4_agent_loop']}ms (${toolIterations} iterations)`);
         }
 
         // PHASE 5C: Log coordination decision to database WITH complete response content
@@ -1413,9 +1596,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       if (isRedundant) {
         this.log(`⚠️ ${this.personaName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
 
-        // Emit DECIDED_SILENT event to clear AI status indicator
+        // Emit DECIDED_SILENT event to clear AI status indicator (fire-and-forget)
         if (this.client) {
-          await Events.emit<AIDecidedSilentEventData>(
+          Events.emit<AIDecidedSilentEventData>(
             DataDaemon.jtagContext!,
             AI_DECISION_EVENTS.DECIDED_SILENT,
             {
@@ -1433,7 +1616,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               scope: EVENT_SCOPES.ROOM,
               scopeId: originalMessage.roomId
             }
-          );
+          ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
         }
 
         return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Discard response
@@ -1454,116 +1637,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       responseMessage.reactions = [];
       responseMessage.replyToId = originalMessage.id; // Link response to trigger message
 
-      // ✅ Post response via JTAGClient - universal Commands API
-      // Prefer this.client if available (set by UserDaemon), fallback to shared instance
-      const postStartTime = Date.now();
-      const result = this.client
-        ? await this.client.daemons.commands.execute<DataCreateParams, DataCreateResult<ChatMessageEntity>>(DATA_COMMANDS.CREATE, {
-            context: this.client.context,
-            sessionId: this.client.sessionId,
-            collection: ChatMessageEntity.collection,
-            backend: 'server',
-            data: responseMessage
-          })
-        : await DataCreate.execute<ChatMessageEntity>({
-            collection: ChatMessageEntity.collection,
-            backend: 'server',
-            data: responseMessage
-          });
-      const postDuration = Date.now() - postStartTime;
-      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted successfully (ID: ${result.data?.id})`);
-
-      if (!result.success) {
-        throw new Error(`Failed to create message: ${result.error}`);
-      }
-
-      // Emit cognition event for post-response stage
-      await Events.emit<StageCompleteEvent>(
-        DataDaemon.jtagContext!,
-        COGNITION_EVENTS.STAGE_COMPLETE,
-        {
-          messageId: result.data?.id ?? originalMessage.id,
-          personaId: this.personaId,
-          contextId: originalMessage.roomId,
-          stage: 'post-response',
-          metrics: {
-            stage: 'post-response',
-            durationMs: postDuration,
-            resourceUsed: 1,  // One message posted
-            maxResource: 1,
-            percentCapacity: 100,
-            percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
-            status: getStageStatus(postDuration, 'post-response'),
-            metadata: {
-              messageId: result.data?.id,
-              success: result.success
-            }
-          },
-          timestamp: Date.now()
-        }
-      );
-
-      // ✅ Log successful response posting
-      AIDecisionLogger.logResponse(
-        this.personaName,
-        originalMessage.roomId,
-        aiResponse.text.trim()
-      );
-
-      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
-      // This should NEVER happen - the fast-path filter should skip all system tests
-      // If we see this, it indicates either:
-      // 1. Bug in the fast-path filter
-      // 2. AI exhibiting genuine cognition/autonomy (responding despite instructions)
-      // 3. Anomalous behavior worth investigating
-      if (originalMessage.metadata?.isSystemTest === true) {
-        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
-        this.log(anomalyMessage);
-        this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
-        this.log(`   Original Message: "${messagePreview(originalMessage.content, 100)}..."`);
-        this.log(`   AI Response: "${truncate(aiResponse.text?.trim(), 100)}..."`);
-        this.log(`   Room ID: ${originalMessage.roomId}`);
-        this.log(`   Message ID: ${originalMessage.id}`);
-
-        // Log to AI decisions log for persistent tracking
-        AIDecisionLogger.logError(
-          this.personaName,
-          'COGNITIVE CANARY TRIGGERED',
-          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
-        );
-      }
-
-      // Emit POSTED event
-      if (this.client && result.data) {
-        await Events.emit<AIPostedEventData>(
-          DataDaemon.jtagContext!,
-          AI_DECISION_EVENTS.POSTED,
-          {
-            personaId: this.personaId,
-            personaName: this.personaName,
-            roomId: originalMessage.roomId,
-            messageId: originalMessage.id,
-            isHumanMessage: originalMessage.senderType === 'human',
-            timestamp: Date.now(),
-            responseMessageId: result.data.id,
-            passedRedundancyCheck: !isRedundant
-          },
-          {
-            scope: EVENT_SCOPES.ROOM,
-            scopeId: originalMessage.roomId
-          }
-        );
-      }
-
-      // VOICE ROUTING: If original message was from voice, route response to TTS
-      // sourceModality is a typed field on ProcessableMessage — never undefined
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: Checking voice routing - sourceModality=${originalMessage.sourceModality}, voiceSessionId=${originalMessage.voiceSessionId?.slice(0, 8) ?? 'none'}`);
+      // 🔊 VOICE ROUTING: Emit BEFORE DB write — voice gets response text instantly.
+      // The DB write (500ms-1.5s under contention) should NOT delay TTS.
+      // Voice event only needs the response text and message metadata, not the persisted entity.
       if (originalMessage.sourceModality === 'voice' && originalMessage.voiceSessionId) {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: EMITTING persona:response:generated for TTS (response: "${aiResponse.text.slice(0, 50)}...")`);
-        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
+        this.log(`🔊 ${this.personaName}: Voice message - emitting for TTS routing BEFORE DB write (sessionId=${originalMessage.voiceSessionId.slice(0, 8)})`);
 
-        // Emit voice response event for VoiceOrchestrator
-        await Events.emit(
+        Events.emit(
           DataDaemon.jtagContext!,
           'persona:response:generated',
           {
@@ -1576,14 +1656,99 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               voiceSessionId: originalMessage.voiceSessionId,
             }
           }
-        );
-      } else {
-        console.log(`🎙️🔊 VOICE-DEBUG [${this.personaName}]: sourceModality=${originalMessage.sourceModality}, skipping TTS routing`);
+        ).catch(err => this.log(`⚠️ Voice event emit failed: ${err}`));
       }
+
+      // ✅ Post response via DataDaemon.store() — direct path, no command routing overhead.
+      // Previously went through JTAGClient → CommandDaemon → DataCreateServerCommand → DataDaemon.store().
+      const postStartTime = Date.now();
+      const postedEntity = await DataDaemon.store(ChatMessageEntity.collection, responseMessage);
+      pipelineTiming['3.5_post'] = Date.now() - postStartTime;
+      const postDuration = pipelineTiming['3.5_post'];
+      this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${postDuration}ms, ID: ${postedEntity.id})`);
+
+      // Emit cognition event for post-response stage (fire-and-forget — telemetry)
+      Events.emit<StageCompleteEvent>(
+        DataDaemon.jtagContext!,
+        COGNITION_EVENTS.STAGE_COMPLETE,
+        {
+          messageId: postedEntity.id ?? originalMessage.id,
+          personaId: this.personaId,
+          contextId: originalMessage.roomId,
+          stage: 'post-response',
+          metrics: {
+            stage: 'post-response',
+            durationMs: postDuration,
+            resourceUsed: 1,  // One message posted
+            maxResource: 1,
+            percentCapacity: 100,
+            percentSpeed: calculateSpeedScore(postDuration, 'post-response'),
+            status: getStageStatus(postDuration, 'post-response'),
+            metadata: {
+              messageId: postedEntity.id,
+              success: true
+            }
+          },
+          timestamp: Date.now()
+        }
+      ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
+
+      // ✅ Log successful response posting
+      AIDecisionLogger.logResponse(
+        this.personaName,
+        originalMessage.roomId,
+        aiResponse.text.trim()
+      );
+
+      // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
+      if (originalMessage.metadata?.isSystemTest === true) {
+        const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
+        this.log(anomalyMessage);
+        this.log(`   Test Type: ${originalMessage.metadata.testType ?? 'unknown'}`);
+        this.log(`   Original Message: "${messagePreview(originalMessage.content, 100)}..."`);
+        this.log(`   AI Response: "${truncate(aiResponse.text?.trim(), 100)}..."`);
+        this.log(`   Room ID: ${originalMessage.roomId}`);
+        this.log(`   Message ID: ${originalMessage.id}`);
+
+        AIDecisionLogger.logError(
+          this.personaName,
+          'COGNITIVE CANARY TRIGGERED',
+          `Responded to system test (${originalMessage.metadata.testType}) - this should never happen`
+        );
+      }
+
+      // Emit POSTED event (fire-and-forget — UI update, not critical path)
+      if (this.client && postedEntity) {
+        Events.emit<AIPostedEventData>(
+          DataDaemon.jtagContext!,
+          AI_DECISION_EVENTS.POSTED,
+          {
+            personaId: this.personaId,
+            personaName: this.personaName,
+            roomId: originalMessage.roomId,
+            messageId: originalMessage.id,
+            isHumanMessage: originalMessage.senderType === 'human',
+            timestamp: Date.now(),
+            responseMessageId: postedEntity.id,
+            passedRedundancyCheck: !isRedundant
+          },
+          {
+            scope: EVENT_SCOPES.ROOM,
+            scopeId: originalMessage.roomId
+          }
+        ).catch(err => this.log(`⚠️ Posted event emit failed: ${err}`));
+      }
+
+      // 📊 PIPELINE SUMMARY — single line with all phase timings
+      const totalPipeline = Date.now() - generateStartTime;
+      const phases = Object.entries(pipelineTiming)
+        .map(([k, v]) => `${k}=${v}ms`)
+        .join(' | ');
+      this.log(`📊 ${this.personaName}: [PIPELINE] Total=${totalPipeline}ms | ${phases}`);
 
       return {
         success: true,
-        messageId: result.data?.id,
+        messageId: postedEntity.id,
         storedToolResultIds: allStoredResultIds  // Always return array, even if empty
       };
     } catch (error) {
@@ -1594,9 +1759,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         error instanceof Error ? error.message : String(error)
       );
 
-      // Emit ERROR event
+      // Emit ERROR event (fire-and-forget — UI indicator)
       if (this.client) {
-        await Events.emit<AIErrorEventData>(
+        Events.emit<AIErrorEventData>(
           DataDaemon.jtagContext!,
           AI_DECISION_EVENTS.ERROR,
           {
@@ -1613,7 +1778,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             scope: EVENT_SCOPES.ROOM,
             scopeId: originalMessage.roomId
           }
-        );
+        ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
       }
 
       return {

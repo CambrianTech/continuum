@@ -1,0 +1,117 @@
+{
+  "uniqueId": "coding",
+  "name": "Collaborative Coding",
+  "displayName": "Code",
+  "description": "Collaborative software development — reading, writing, reviewing, and shipping code as a team",
+  "version": 1,
+
+  "layout": {
+    "main": ["chat-widget"],
+    "right": null
+  },
+
+  "locked": ["layout.main"],
+
+  "pipeline": [
+    {
+      "command": "rag/build",
+      "params": {
+        "maxMessages": 30,
+        "includeParticipants": true,
+        "includeRoomStrategy": true
+      },
+      "outputTo": "ragContext"
+    },
+    {
+      "command": "ai/should-respond",
+      "params": {
+        "ragContext": "$ragContext",
+        "strategy": "coding"
+      },
+      "outputTo": "decision"
+    },
+    {
+      "command": "ai/generate",
+      "params": {
+        "ragContext": "$ragContext",
+        "temperature": 0.3
+      },
+      "condition": "decision.shouldRespond === true"
+    }
+  ],
+
+  "ragTemplate": {
+    "messageHistory": {
+      "maxMessages": 30,
+      "orderBy": "chronological",
+      "includeTimestamps": true
+    },
+    "participants": {
+      "includeRoles": true,
+      "includeExpertise": true,
+      "includeHistory": false
+    },
+    "roomMetadata": true
+  },
+
+  "strategy": {
+    "conversationPattern": "collaborative",
+    "responseRules": [
+      "This room is for DOING code work, not just discussing it. Use code/* tools.",
+      "Read before you write — always code/read a file before editing it",
+      "Verify your work — run code/verify after every edit to check compilation",
+      "Iterate on failures — when verify fails, read the errors, fix them, verify again",
+      "Show your work — share what you changed and why in the room",
+      "Review each other — use code/read and code/git diff to review teammates' changes",
+      "Propose before big changes — use collaboration/decision/propose for architectural decisions",
+      "Commit working code — only code/git commit after code/verify passes",
+      "Coordinate naturally — claim files you're working on, don't pile on the same code",
+      "Ask for help when stuck — share errors, ask teammates to look at your approach",
+      "Use code/shell/execute for build commands (xcodebuild, cargo build, npm run build) — code/verify only runs tsc",
+      "For long-running commands, use wait=false then code/shell/watch to stream output",
+      "Use code/shell/sentinel to classify build output (errors, warnings) before watching",
+      "Use code/shell/kill to abort runaway processes"
+    ],
+    "feedbackLoopRules": [
+      "MANDATORY: After code changes, ALWAYS build and verify before committing — code/verify is not optional",
+      "MANDATORY: Use screenshot to visually verify UI changes — if you build UI and don't look at it, you are developing blind",
+      "MANDATORY: Run the test suite after significant changes — untested code is hypothetical code",
+      "MANDATORY: When building console apps, run them and check the output — if you can't see it, it doesn't exist",
+      "Check team branches before starting new work — code/git branches shows who is working on what",
+      "If a teammate has merge conflicts, offer to help — code/git conflicts detects this automatically",
+      "After compilation failure, read the FULL error output — do not guess, the errors tell the truth",
+      "When starting on a project, detect the project type first — code/verify knows how to build/test each type",
+      "Never commit code you haven't verified compiles and runs — this is non-negotiable"
+    ],
+    "decisionCriteria": [
+      "Is there a coding task I can help with?",
+      "Has someone asked for a code review?",
+      "Did someone share an error they're stuck on?",
+      "Is there a verification failure I can diagnose?",
+      "Should I propose an architectural approach before coding?",
+      "Does a teammate have merge conflicts I can help resolve?",
+      "Has someone built something without verifying it works?"
+    ]
+  },
+
+  "tools": [
+    { "name": "code/read", "description": "Read a file from your workspace", "enabledFor": ["ai"] },
+    { "name": "code/write", "description": "Create or overwrite a file", "enabledFor": ["ai"] },
+    { "name": "code/edit", "description": "Edit a file (search-replace, line-range, insert, append)", "enabledFor": ["ai"] },
+    { "name": "code/search", "description": "Search for patterns across workspace files", "enabledFor": ["ai"] },
+    { "name": "code/tree", "description": "View directory structure", "enabledFor": ["ai"] },
+    { "name": "code/diff", "description": "Preview an edit as unified diff", "enabledFor": ["ai"] },
+    { "name": "code/undo", "description": "Undo recent changes", "enabledFor": ["ai"] },
+    { "name": "code/history", "description": "View change history", "enabledFor": ["ai"] },
+    { "name": "code/verify", "description": "Run compilation check and tests", "enabledFor": ["ai"] },
+    { "name": "code/git", "description": "Git operations (status, diff, log, add, commit)", "enabledFor": ["ai"] },
+    { "name": "code/shell/execute", "description": "Run a shell command in your workspace (async or wait=true for blocking)", "enabledFor": ["ai"] },
+    { "name": "code/shell/watch", "description": "Watch a running execution for classified output lines", "enabledFor": ["ai"] },
+    { "name": "code/shell/sentinel", "description": "Configure output filter rules (regex classification) on a running execution", "enabledFor": ["ai"] },
+    { "name": "code/shell/status", "description": "Get shell session info (cwd, active executions)", "enabledFor": ["ai"] },
+    { "name": "code/shell/kill", "description": "Kill a running execution", "enabledFor": ["ai"] }
+  ],
+
+  "isPublic": true,
+  "tags": ["coding", "development", "engineering", "collaboration"]
+}

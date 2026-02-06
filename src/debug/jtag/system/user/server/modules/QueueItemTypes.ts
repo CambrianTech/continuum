@@ -181,6 +181,29 @@ export function fromRustServiceItem(json: Record<string, unknown>): QueueItem | 
     return msg;
   }
 
+  if (itemType === 'code') {
+    // Map Rust CodeQueueItem → TS InboxTask with domain='code'
+    const task: InboxTask = {
+      id: json.id as UUID,
+      type: 'task',
+      taskId: json.id as UUID,
+      assigneeId: json.persona_id as UUID ?? json.personaId as UUID,
+      createdBy: json.persona_id as UUID ?? json.personaId as UUID,
+      domain: 'code' as TaskDomain,
+      taskType: (json.is_review ?? json.isReview) ? 'review-code' as TaskType : 'write-feature' as TaskType,
+      contextId: json.room_id as UUID ?? json.roomId as UUID,
+      description: json.task_description as string ?? json.taskDescription as string ?? '',
+      priority: json.priority as number,
+      status: 'pending' as TaskStatus,
+      timestamp: json.timestamp as number,
+      enqueuedAt: json.timestamp as number,
+      metadata: {
+        roomId: json.room_id as UUID ?? json.roomId as UUID,
+      },
+    };
+    return task;
+  }
+
   if (itemType === 'task') {
     const task: InboxTask = {
       id: json.id as UUID,

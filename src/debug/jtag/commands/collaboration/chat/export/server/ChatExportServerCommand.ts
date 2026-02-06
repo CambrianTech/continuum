@@ -118,6 +118,11 @@ export class ChatExportServerCommand extends ChatExportCommand {
       filtered = filtered.filter(m => m.metadata?.source !== 'system');
     }
 
+    // Filter tool result messages (stored by PersonaToolExecutor for RAG, not for display)
+    if (!params.includeSystem) {
+      filtered = filtered.filter(m => !m.metadata?.toolResult);
+    }
+
     // Filter test messages
     if (!params.includeTests) {
       filtered = filtered.filter(m => !m.metadata?.isSystemTest);

@@ -9,10 +9,18 @@
  * All layers execute concurrently via Rayon in ~30ms total,
  * bypassing the Node.js event loop entirely.
  *
- * Previous implementation used TS Hippocampus through the event loop (3-10s under load).
+ * BATCHING SUPPORT:
+ * This source implements supportsBatching=true to participate in RAGComposer's
+ * batched loading. Instead of making individual IPC calls, it provides a
+ * RagSourceRequest that's combined with other batching sources into ONE Rust call.
+ *
+ * Performance:
+ * - Before: 1 IPC call per persona per RAG build (1-7s under socket congestion)
+ * - After: Combined into single rag/compose call (~30ms total for all sources)
  */
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
+import type { RagSourceRequest, RagSourceResult } from '../../../shared/generated/rag';
 import type { PersonaMemory } from '../shared/RAGTypes';
 import { Logger } from '../../core/logging/Logger';
 
@@ -25,10 +33,87 @@ export class SemanticMemorySource implements RAGSource {
   readonly name = 'semantic-memory';
   readonly priority = 60;  // Medium-high - memories inform persona behavior
   readonly defaultBudgetPercent = 15;
+  readonly supportsBatching = true;  // Participate in batched Rust IPC
 
-  isApplicable(_context: RAGSourceContext): boolean {
-    // Always try - will return empty if persona has no memories
+  // Negative cache: when Rust returns "No memory corpus", skip IPC for 60s.
+  // Without this, each failing persona makes a 1-3s IPC call every RAG build.
+  private static _corpusUnavailable: Map<string, number> = new Map();
+  private static readonly NEGATIVE_CACHE_TTL_MS = 60_000;
+
+  isApplicable(context: RAGSourceContext): boolean {
+    // Skip if we recently learned this persona's corpus is unavailable
+    const failedAt = SemanticMemorySource._corpusUnavailable.get(context.personaId);
+    if (failedAt && (Date.now() - failedAt) < SemanticMemorySource.NEGATIVE_CACHE_TTL_MS) {
+      return false;
+    }
     return true;
+  }
+
+  /**
+   * Get the batch request for this source.
+   * Returns a RagSourceRequest with source_type='memory' for Rust rag/compose.
+   */
+  getBatchRequest(context: RAGSourceContext, allocatedBudget: number): RagSourceRequest | null {
+    const queryText = this.buildSemanticQuery(context);
+
+    return {
+      source_type: 'memory',
+      budget_tokens: allocatedBudget,
+      params: {
+        query_text: queryText,
+        layers: undefined,  // All layers
+      }
+    };
+  }
+
+  /**
+   * Convert Rust RagSourceResult to TypeScript RAGSection.
+   * Maps Rust's memory format back to PersonaMemory[].
+   */
+  fromBatchResult(result: RagSourceResult, loadTimeMs: number): RAGSection {
+    // Extract memories from sections
+    const memories: PersonaMemory[] = [];
+
+    for (const section of result.sections) {
+      // Memory sections have section_type='memory' and contain JSON
+      if (section.section_type === 'memory' && section.content) {
+        try {
+          const mem = JSON.parse(section.content);
+          memories.push({
+            id: mem.id,
+            type: this.mapMemoryType(mem.memory_type || mem.type),
+            content: mem.content,
+            timestamp: new Date(mem.timestamp),
+            relevanceScore: section.relevance ?? mem.importance ?? 0.5
+          });
+        } catch (e) {
+          // If not JSON, treat as raw content
+          memories.push({
+            id: crypto.randomUUID(),
+            type: 'observation',
+            content: section.content,
+            timestamp: new Date(),
+            relevanceScore: section.relevance ?? 0.5
+          });
+        }
+      }
+    }
+
+    // Extract metadata from the result
+    const metadata = result.metadata as any || {};
+
+    return {
+      sourceName: this.name,
+      tokenCount: result.tokens_used,
+      loadTimeMs,
+      memories,
+      metadata: {
+        memoryCount: memories.length,
+        totalCandidates: metadata.total_candidates,
+        rustRecallMs: metadata.recall_time_ms,
+        layers: metadata.layers
+      }
+    };
   }
 
   async load(context: RAGSourceContext, allocatedBudget: number): Promise<RAGSection> {
@@ -105,7 +190,13 @@ export class SemanticMemorySource implements RAGSource {
         }
       };
     } catch (error: any) {
-      log.error(`Failed to load memories: ${error.message}`);
+      // Negative-cache "No memory corpus" errors — skip IPC for 60s
+      if (error.message?.includes('No memory corpus')) {
+        SemanticMemorySource._corpusUnavailable.set(context.personaId, Date.now());
+        log.debug(`Corpus unavailable for ${context.personaId.slice(0, 8)}, negative-cached for 60s`);
+      } else {
+        log.error(`Failed to load memories: ${error.message}`);
+      }
       return this.emptySection(startTime, error.message);
     }
   }

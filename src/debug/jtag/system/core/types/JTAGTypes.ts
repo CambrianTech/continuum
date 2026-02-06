@@ -557,11 +557,26 @@ export interface CommandParams extends JTAGPayload {
   readonly userId?: UUID;
 
   /**
-   * Optional execution timeout in milliseconds
-   * If command execution exceeds this timeout, it will be automatically aborted
+   * Optional execution timeout in milliseconds.
+   * If command execution exceeds this timeout, behavior is controlled by onTimeout.
    * Default: No timeout (command runs until completion or error)
    */
   timeout?: number;
+
+  /**
+   * Return handle immediately and execute command asynchronously.
+   * Result will be available via Commands.await(handle) or Events subscription.
+   * When true, execute() returns { handle, handleId } immediately.
+   */
+  background?: boolean;
+
+  /**
+   * Behavior when timeout fires. Only meaningful when timeout is set.
+   *   'cancel'   — Cancel the operation, mark handle as cancelled, throw TimeoutError
+   *   'continue' — Return handle, let command keep running in background
+   *   'fail'     — (default) Mark handle as failed, throw TimeoutError
+   */
+  onTimeout?: 'cancel' | 'continue' | 'fail';
 }
 
 /**
@@ -570,6 +585,15 @@ export interface CommandParams extends JTAGPayload {
 export interface CommandResult extends JTAGPayload {
   // Base command results - specific commands add specific fields
   // Note: Some commands extend BaseResponsePayload for standardized success/timestamp
+
+  /** Short handle ID (e.g., "#a1b2c3") — populated for background/timeout-tracked commands */
+  handle?: string;
+
+  /** Full handle UUID — populated for background/timeout-tracked commands */
+  handleId?: UUID;
+
+  /** True when timeout fired but command continues running (onTimeout='continue') */
+  timedOut?: boolean;
 }
 
 /**

@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/skill/activate",
+  "version": "1.0.0",
+  "description": "Activate a validated skill by registering it as a live command. The skill becomes available for use by the creator (personal) or all personas (team).",
+  "main": "server/SkillActivateServerCommand.ts",
+  "types": "shared/SkillActivateTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/SkillActivateIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "skill/activate"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

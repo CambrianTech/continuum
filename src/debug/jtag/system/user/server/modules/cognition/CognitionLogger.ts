@@ -129,14 +129,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      // Store to database (fire-and-forget)
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.COGNITION_STATE_SNAPSHOTS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger state snapshot write failed:', err));
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log state snapshot:`, error);
       // Don't throw - logging failures shouldn't break persona functionality
@@ -223,14 +224,15 @@ export class CognitionLogger {
         modelUsed
       };
 
-      // Store to database (fire-and-forget)
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger plan formulation write failed:', err));
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log plan formulation:`, error);
     }
@@ -240,130 +242,134 @@ export class CognitionLogger {
    * Log plan completion
    * Called when a plan finishes (success or failure)
    */
-  static async logPlanCompletion(
+  static logPlanCompletion(
     planId: UUID,
     status: 'completed' | 'failed' | 'aborted',
     steps: PlanStepSnapshot[],
     evaluation?: Evaluation
-  ): Promise<void> {
-    try {
-      // Find the plan record in database
-      const planRecords = await DataList.execute({
-        collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
-        filter: { planId },
-        limit: 1,
-        backend: 'server',
-        context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      }) as DataListResult<CognitionPlanEntity>;
+  ): void {
+    // Fire-and-forget: run the async chain but don't block caller
+    (async () => {
+      try {
+        // Find the plan record in database
+        const planRecords = await DataList.execute({
+          collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
+          filter: { planId },
+          limit: 1,
+          backend: 'server',
+          context: DataDaemon.jtagContext!,
+          sessionId: DataDaemon.jtagContext!.uuid
+        }) as DataListResult<CognitionPlanEntity>;
 
-      if (!planRecords.items || planRecords.items.length === 0) {
-        console.warn(`⚠️ CognitionLogger: No plan record found for planId=${planId}`);
-        return;
+        if (!planRecords.items || planRecords.items.length === 0) {
+          return;
+        }
+
+        const planRecord = planRecords.items[0];
+
+        // Build evaluation snapshot if provided
+        let evaluationSnapshot: PlanEvaluation | undefined;
+        if (evaluation) {
+          evaluationSnapshot = {
+            meetsSuccessCriteria: evaluation.meetsSuccessCriteria,
+            criteriaBreakdown: evaluation.criteriaBreakdown,
+            whatWorked: evaluation.whatWorked,
+            mistakes: evaluation.mistakes,
+            improvements: evaluation.improvements,
+            extractedPattern: evaluation.extractedPattern,
+            evaluatedAt: evaluation.evaluatedAt,
+            duration: evaluation.duration,
+            stepsExecuted: evaluation.stepsExecuted,
+            replansRequired: evaluation.replansRequired
+          };
+        }
+
+        // Update plan record
+        const completedAt = Date.now();
+        const totalDuration = completedAt - planRecord.startedAt;
+
+        await DataUpdate.execute({
+          collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
+          id: planRecord.id,
+          data: {
+            status,
+            steps,
+            completedAt,
+            totalDuration,
+            evaluation: evaluationSnapshot
+          },
+          backend: 'server',
+          context: DataDaemon.jtagContext!,
+          sessionId: DataDaemon.jtagContext!.uuid
+        });
+      } catch (error) {
+        console.error(`❌ CognitionLogger: Failed to log plan completion:`, error);
       }
-
-      const planRecord = planRecords.items[0];
-
-      // Build evaluation snapshot if provided
-      let evaluationSnapshot: PlanEvaluation | undefined;
-      if (evaluation) {
-        evaluationSnapshot = {
-          meetsSuccessCriteria: evaluation.meetsSuccessCriteria,
-          criteriaBreakdown: evaluation.criteriaBreakdown,
-          whatWorked: evaluation.whatWorked,
-          mistakes: evaluation.mistakes,
-          improvements: evaluation.improvements,
-          extractedPattern: evaluation.extractedPattern,
-          evaluatedAt: evaluation.evaluatedAt,
-          duration: evaluation.duration,
-          stepsExecuted: evaluation.stepsExecuted,
-          replansRequired: evaluation.replansRequired
-        };
-      }
-
-      // Update plan record
-      const completedAt = Date.now();
-      const totalDuration = completedAt - planRecord.startedAt;
-
-      await DataUpdate.execute({
-        collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
-        id: planRecord.id,
-        data: {
-          status,
-          steps,
-          completedAt,
-          totalDuration,
-          evaluation: evaluationSnapshot
-        },
-        backend: 'server',
-        context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
-    } catch (error) {
-      console.error(`❌ CognitionLogger: Failed to log plan completion:`, error);
-    }
+    })();
   }
 
   /**
    * Log plan adjustment
    * Called when a plan is adjusted mid-execution
    */
-  static async logPlanAdjustment(
+  static logPlanAdjustment(
     planId: UUID,
     adjustment: PlanAdjustment
-  ): Promise<void> {
-    try {
-      // Find the plan record in database
-      const planRecords = await DataList.execute({
-        collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
-        filter: { planId },
-        limit: 1,
-        backend: 'server',
-        context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      }) as DataListResult<CognitionPlanEntity>;
+  ): void {
+    // Fire-and-forget: run the async chain but don't block caller
+    (async () => {
+      try {
+        // Find the plan record in database
+        const planRecords = await DataList.execute({
+          collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
+          filter: { planId },
+          limit: 1,
+          backend: 'server',
+          context: DataDaemon.jtagContext!,
+          sessionId: DataDaemon.jtagContext!.uuid
+        }) as DataListResult<CognitionPlanEntity>;
 
-      if (!planRecords.items || planRecords.items.length === 0) {
-        console.warn(`⚠️ CognitionLogger: No plan record found for planId=${planId}`);
-        return;
+        if (!planRecords.items || planRecords.items.length === 0) {
+          return;
+        }
+
+        const planRecord = planRecords.items[0];
+
+        // Build adjustment snapshot
+        const adjustmentSnapshot: PlanAdjustmentSnapshot = {
+          timestamp: Date.now(),
+          reason: `Plan adjustment: ${adjustment.action}`,
+          action: adjustment.action,
+          updatedSteps: adjustment.updatedPlan.steps.map(s => ({
+            stepNumber: s.stepNumber,
+            action: s.action,
+            expectedOutcome: s.expectedOutcome,
+            completed: s.completed,
+            completedAt: s.completedAt,
+            result: s.result
+          })),
+          reasoning: adjustment.reasoning
+        };
+
+        // Update plan record
+        const updatedAdjustments = [...planRecord.adjustments, adjustmentSnapshot];
+
+        await DataUpdate.execute({
+          collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
+          id: planRecord.id,
+          data: {
+            adjustments: updatedAdjustments,
+            steps: adjustmentSnapshot.updatedSteps,
+            currentStep: adjustment.updatedPlan.currentStep
+          },
+          backend: 'server',
+          context: DataDaemon.jtagContext!,
+          sessionId: DataDaemon.jtagContext!.uuid
+        });
+      } catch (error) {
+        console.error(`❌ CognitionLogger: Failed to log plan adjustment:`, error);
       }
-
-      const planRecord = planRecords.items[0];
-
-      // Build adjustment snapshot
-      const adjustmentSnapshot: PlanAdjustmentSnapshot = {
-        timestamp: Date.now(),
-        reason: `Plan adjustment: ${adjustment.action}`,
-        action: adjustment.action,
-        updatedSteps: adjustment.updatedPlan.steps.map(s => ({
-          stepNumber: s.stepNumber,
-          action: s.action,
-          expectedOutcome: s.expectedOutcome,
-          completed: s.completed,
-          completedAt: s.completedAt,
-          result: s.result
-        })),
-        reasoning: adjustment.reasoning
-      };
-
-      // Update plan record
-      const updatedAdjustments = [...planRecord.adjustments, adjustmentSnapshot];
-
-      await DataUpdate.execute({
-        collection: COLLECTIONS.COGNITION_PLAN_RECORDS,
-        id: planRecord.id,
-        data: {
-          adjustments: updatedAdjustments,
-          steps: adjustmentSnapshot.updatedSteps,
-          currentStep: adjustment.updatedPlan.currentStep
-        },
-        backend: 'server',
-        context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
-    } catch (error) {
-      console.error(`❌ CognitionLogger: Failed to log plan adjustment:`, error);
-    }
+    })();
   }
 
   /**
@@ -429,14 +435,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      // Store to database (fire-and-forget)
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.TOOL_EXECUTION_LOGS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger tool execution write failed:', err));
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log tool execution:`, error);
     }
@@ -494,14 +501,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      // Store to database (fire-and-forget)
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.ADAPTER_DECISION_LOGS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger adapter decision write failed:', err));
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log adapter decision:`, error);
     }
@@ -578,14 +586,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      // Store to database (fire-and-forget)
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.RESPONSE_GENERATION_LOGS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger response generation write failed:', err));
     } catch (error) {
       console.error(`❌ CognitionLogger: Failed to log response generation:`, error);
     }
@@ -636,13 +645,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger plan step write failed:', err));
 
       // Success log removed - data already persisted
     } catch (error) {
@@ -689,13 +700,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.COGNITION_SELF_STATE_UPDATES,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger self-state update write failed:', err));
 
       // Success log removed - data already persisted
     } catch (error) {
@@ -746,13 +759,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.COGNITION_MEMORY_OPERATIONS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger memory operation write failed:', err));
 
       // Success log removed - data already persisted
     } catch (error) {
@@ -801,13 +816,15 @@ export class CognitionLogger {
         sequenceNumber
       };
 
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.ADAPTER_REASONING_LOGS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger adapter reasoning write failed:', err));
 
       // Success log removed - data already persisted
     } catch (error) {
@@ -864,13 +881,15 @@ export class CognitionLogger {
         modelUsed
       };
 
-      await DataCreate.execute({
+      // Fire-and-forget: cognition logs are observability, not user-facing
+      DataCreate.execute({
         collection: COLLECTIONS.COGNITION_PLAN_REPLANS,
         data: entityData,
         backend: 'server',
         context: DataDaemon.jtagContext!,
-        sessionId: DataDaemon.jtagContext!.uuid
-      });
+        sessionId: DataDaemon.jtagContext!.uuid,
+        suppressEvents: true
+      }).catch(err => console.error('CognitionLogger plan replan write failed:', err));
 
       // Success log removed - data already persisted
     } catch (error) {

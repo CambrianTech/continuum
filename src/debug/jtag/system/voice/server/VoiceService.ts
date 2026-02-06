@@ -10,6 +10,7 @@ import type { VoiceConfig, TTSAdapter } from '../shared/VoiceConfig';
 import { DEFAULT_VOICE_CONFIG } from '../shared/VoiceConfig';
 import { AUDIO_SAMPLE_RATE } from '../../../shared/AudioConstants';
 import { VoiceSynthesize } from '../../../commands/voice/synthesize/shared/VoiceSynthesizeTypes';
+import { VoiceTranscribe } from '../../../commands/voice/transcribe/shared/VoiceTranscribeTypes';
 export interface SynthesizeSpeechRequest {
   text: string;
   userId?: string;         // For per-user preferences
@@ -171,11 +172,24 @@ export class VoiceService {
   }
 
   /**
-   * Transcribe audio to text (future - not implemented yet)
+   * Transcribe audio to text via voice/transcribe command (Rust Whisper STT)
    */
   async transcribeAudio(audioSamples: Int16Array, sampleRate: number): Promise<string> {
-    // TODO: Implement STT via voice/transcribe command
-    throw new Error('Not implemented yet');
+    // Convert Int16Array to base64 for the command
+    const buffer = Buffer.from(audioSamples.buffer, audioSamples.byteOffset, audioSamples.byteLength);
+    const audio = buffer.toString('base64');
+
+    const result = await VoiceTranscribe.execute({
+      audio,
+      format: 'pcm16',
+      language: 'auto',
+    });
+
+    if (!result.success) {
+      throw new Error(result.error?.message ?? 'Transcription failed');
+    }
+
+    return result.text;
   }
 }
 

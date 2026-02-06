@@ -136,6 +136,15 @@ export const COLLECTIONS = {
 
   // Universal Handle System — persistent async operation references
   HANDLES: 'handles',
+
+  // Coding Agent System (Phase 4: Multi-Agent Coordination)
+  CODING_PLANS: 'coding_plans',
+
+  // Self-Modifying Skills (Phase 4B: AI-Created Commands)
+  SKILLS: 'skills',
+
+  // Coding Challenges & Learning (Phase 4D: Progressive Training)
+  CODING_CHALLENGES: 'coding_challenges',
 } as const;
 
 

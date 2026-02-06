@@ -51,6 +51,9 @@ export interface PersonaHealth {
   errorCount?: number;                 // Total errors in session
   lastError?: string;                  // Most recent error message
   lastErrorTime?: number;              // Unix timestamp of last error
+
+  // Tool capabilities
+  toolsAvailable?: number;             // Number of tools available to this persona
 }
 
 export interface AIStatusResult {

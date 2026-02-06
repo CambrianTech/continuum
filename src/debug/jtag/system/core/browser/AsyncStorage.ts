@@ -149,7 +149,19 @@ class AsyncStorageQueue {
           localStorage.removeItem(write.key);
         }
       } catch (error) {
-        console.error(`AsyncStorage: Failed to write ${write.key}:`, error);
+        if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+          this.evictEntityCache();
+          // Retry once after eviction
+          try {
+            if (write.value !== null) {
+              localStorage.setItem(write.key, write.value);
+            }
+          } catch {
+            console.warn(`AsyncStorage: Quota exceeded for ${write.key} even after eviction`);
+          }
+        } else {
+          console.error(`AsyncStorage: Failed to write ${write.key}:`, error);
+        }
       }
     }
 
@@ -164,6 +176,48 @@ class AsyncStorageQueue {
   }
 
   /**
+   * Evict oldest entity cache entries to free localStorage quota.
+   *
+   * Targets `continuum-entity-*` keys (the browser entity cache).
+   * Removes the oldest 50% by entity timestamp. These are cache entries —
+   * the server has the source of truth; evicted data re-fetches on next access.
+   */
+  private evictEntityCache(): void {
+    const ENTITY_PREFIX = 'continuum-entity-';
+    const entityKeys: { key: string; timestamp: number }[] = [];
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(ENTITY_PREFIX)) {
+        let timestamp = 0;
+        try {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            const ts = parsed.updatedAt || parsed.createdAt || parsed.timestamp;
+            timestamp = typeof ts === 'string' ? new Date(ts).getTime() : (ts || 0);
+          }
+        } catch {
+          // Unparseable — evict first (timestamp 0 = oldest)
+        }
+        entityKeys.push({ key, timestamp });
+      }
+    }
+
+    if (entityKeys.length === 0) return;
+
+    // Sort oldest first, remove 50%
+    entityKeys.sort((a, b) => a.timestamp - b.timestamp);
+    const removeCount = Math.max(1, Math.ceil(entityKeys.length * 0.5));
+
+    for (let i = 0; i < removeCount; i++) {
+      localStorage.removeItem(entityKeys[i].key);
+    }
+
+    console.log(`AsyncStorage: Evicted ${removeCount}/${entityKeys.length} entity cache entries to free quota`);
+  }
+
+  /**
    * Force immediate flush (use sparingly, e.g., before page unload)
    */
   flushSync(): void {
@@ -175,7 +229,18 @@ class AsyncStorageQueue {
           localStorage.removeItem(write.key);
         }
       } catch (error) {
-        console.error(`AsyncStorage: Sync flush failed for ${write.key}:`, error);
+        if (error instanceof DOMException && error.name === 'QuotaExceededError') {
+          this.evictEntityCache();
+          try {
+            if (write.value !== null) {
+              localStorage.setItem(write.key, write.value);
+            }
+          } catch {
+            // Still full — skip
+          }
+        } else {
+          console.error(`AsyncStorage: Sync flush failed for ${write.key}:`, error);
+        }
       }
     }
     this.queue.clear();

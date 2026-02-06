@@ -104,6 +104,29 @@ pub fn active_category_count(file_cache: &FileCache) -> usize {
     file_cache.lock().unwrap().len()
 }
 
+/// Flush all open file handles to disk.
+///
+/// Called periodically by the writer thread (every 250ms or after a batch).
+/// This is the ONLY place flush() should be called — individual writes do NOT flush.
+///
+/// PERFORMANCE: Acquires global cache lock briefly to snapshot handles,
+/// then flushes each file with per-file locks (no global contention during I/O).
+pub fn flush_all(file_cache: &FileCache) {
+    // Snapshot all file handles (brief global lock)
+    let handles: Vec<LockedFile> = {
+        let cache = file_cache.lock().unwrap();
+        cache.values().cloned().collect()
+    }; // Global lock released
+
+    // Flush each file independently (per-file locks)
+    for locked_file in handles {
+        let mut file = locked_file.lock().unwrap();
+        if let Err(e) = file.flush() {
+            eprintln!("❌ Logger flush error: {e}");
+        }
+    }
+}
+
 // ============================================================================
 // Internal Implementation
 // ============================================================================
@@ -195,10 +218,10 @@ fn write_header(
     }; // Global lock released here
 
     // Write header using per-file lock (no global contention)
+    // NOTE: No flush() here — batched flushing via flush_all()
     {
         let mut file = locked_file.lock().unwrap();
         file.write_all(header.as_bytes())?;
-        file.flush()?;
     } // Per-file lock released here
 
     // Mark header as written
@@ -208,10 +231,11 @@ fn write_header(
     Ok(bytes)
 }
 
-/// Write log entry to file.
+/// Write log entry to file (NO flush — caller is responsible for periodic flushing).
 ///
 /// PERFORMANCE: Global cache lock held ONLY during lookup.
 /// File write uses per-file lock (no contention).
+/// Flush is deferred to `flush_all()` which runs on a periodic timer.
 fn write_entry(category: &str, log_entry: &str, file_cache: &FileCache) -> WriteResult {
     // Get locked file handle from cache (brief global lock)
     let locked_file = {
@@ -220,10 +244,10 @@ fn write_entry(category: &str, log_entry: &str, file_cache: &FileCache) -> Write
     }; // Global lock released here
 
     // Write entry using per-file lock (no global contention)
+    // NOTE: No flush() here — batched flushing via flush_all() is ~100x faster
     {
         let mut file = locked_file.lock().unwrap();
         file.write_all(log_entry.as_bytes())?;
-        file.flush()?;
     } // Per-file lock released here
 
     Ok(log_entry.len())

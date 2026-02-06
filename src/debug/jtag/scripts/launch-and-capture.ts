@@ -647,39 +647,49 @@ async function main(): Promise<void> {
         console.log(`🌐 ${instanceConfig.name}: http://localhost:${httpPort}/`);
         console.log(`🔌 WebSocket: ws://localhost:${wsPort}/`);
 
-        // Check if browser is connected via ping, then refresh AND open
-        console.log('🔄 Checking browser connection...');
+        // --- Browser Detection (server already running) ---
+        // Ping to check if a browser tab is already connected.
+        // If yes → refresh it. If no → open a new tab.
+        // IMPORTANT: Retry ping up to 3 times with delays — browser tabs
+        // may be momentarily disconnected (WebSocket reconnecting, etc.)
+        console.log('🔍 Detecting browser connection...');
         try {
           const browserUrl = `http://localhost:${httpPort}/`;
 
-          // Check ping to see if browser is connected
-          const pingResult = await new Promise<{ browserConnected: boolean; browserUrl?: string }>((resolve) => {
-            exec('./jtag ping', { timeout: 5000 }, (error, stdout) => {
-              if (error) {
-                resolve({ browserConnected: false });
-              } else {
+          const pingForBrowser = (): Promise<boolean> => {
+            return new Promise<boolean>((resolve) => {
+              exec('./jtag ping', { timeout: 5000 }, (error, stdout) => {
+                if (error) {
+                  resolve(false);
+                  return;
+                }
                 try {
                   const result = JSON.parse(stdout);
-                  // Browser is connected if ping returns browser info
-                  const connected = result.browser && result.browser.type === 'browser';
-                  resolve({
-                    browserConnected: connected,
-                    browserUrl: result.browser?.url
-                  });
+                  resolve(!!(result.success && result.browser && result.browser.type === 'browser'));
                 } catch {
-                  resolve({ browserConnected: false });
+                  resolve(false);
                 }
-              }
+              });
             });
-          });
+          };
 
-          if (pingResult.browserConnected) {
-            // Browser is connected - just refresh it
-            console.log('🔄 Browser connected, refreshing...');
+          let browserConnected = await pingForBrowser();
+
+          if (!browserConnected) {
+            // Wait and retry — browser tab may be reconnecting after restart
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              console.log(`🔍 No browser on attempt ${attempt} — waiting 3s for reconnect...`);
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              browserConnected = await pingForBrowser();
+              if (browserConnected) break;
+            }
+          }
+
+          if (browserConnected) {
+            console.log('✅ Browser connected — refreshing existing tab');
             exec('./jtag interface/navigate', { timeout: 5000 }, () => {});
           } else {
-            // No browser connected - open new tab
-            console.log('🌐 Opening browser...');
+            console.log('🌐 No browser detected after 3 attempts — opening new tab');
             spawn('open', [browserUrl], { detached: true, stdio: 'ignore' }).unref();
           }
         } catch {

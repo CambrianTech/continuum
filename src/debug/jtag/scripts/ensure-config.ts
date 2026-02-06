@@ -39,11 +39,12 @@ WS_PORT=9001
 # Log Level - Controls verbosity of logs
 # Values: debug, info, warn, error, silent
 # - debug: Everything (verbose, for debugging only)
-# - info: Info, warnings, errors (default for development)
-# - warn: Warnings and errors (recommended for production)
+# - info: Info, warnings, errors
+# - warn: Warnings and errors (default — keeps system quiet)
 # - error: Only errors
 # - silent: No logs
-LOG_LEVEL=info
+# Per-component overrides via LogLevelRegistry (runtime mutable)
+LOG_LEVEL=warn
 
 # Timestamps - Add timestamps to log entries
 # Values: 0 (disabled), 1 (enabled)
@@ -67,6 +68,11 @@ LOG_TO_FILES=1
 # - archive: Rotate logs (not implemented yet, falls back to append)
 # Default: clean
 LOG_FILE_MODE=clean
+
+# Performance Timing - Record operation timing to /tmp/jtag-timing.jsonl
+# Values: true (enabled), false (disabled)
+# Default: false (enable when analyzing performance)
+JTAG_TIMING_ENABLED=false
 
 # ============================================
 # API KEYS

@@ -1,0 +1,47 @@
+{
+  "name": "code/shell/watch",
+  "description": "Watch a shell execution for new output. Blocks until output is available — no timeout, no polling. Returns classified output lines filtered through sentinel rules. Call in a loop until finished is true.",
+  "params": [
+    {
+      "name": "executionId",
+      "type": "string",
+      "optional": false,
+      "description": "Execution handle from shell/exec"
+    }
+  ],
+  "results": [
+    {
+      "name": "executionId",
+      "type": "string",
+      "description": "Echo of the execution handle"
+    },
+    {
+      "name": "lines",
+      "type": "ClassifiedLine[]",
+      "description": "New output lines since last watch call (classified and filtered)"
+    },
+    {
+      "name": "finished",
+      "type": "boolean",
+      "description": "True when execution is complete"
+    },
+    {
+      "name": "exitCode",
+      "type": "number",
+      "description": "Process exit code (present when finished)"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Watch a running build for new output",
+      "command": "./jtag code/shell/watch --executionId=\"exec-abc123\"",
+      "expectedResult": "{ executionId: \"exec-abc123\", lines: [{text: \"Compiling...\", classification: \"Info\"}], finished: false }"
+    },
+    {
+      "description": "Final watch call when execution completes",
+      "command": "./jtag code/shell/watch --executionId=\"exec-abc123\"",
+      "expectedResult": "{ executionId: \"exec-abc123\", lines: [], finished: true, exitCode: 0 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

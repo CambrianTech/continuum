@@ -10,12 +10,9 @@
  * If it fails, it fails loudly. No "protective" nonsense.
  *
  * LOGGING:
- * - Per-persona: writes to persona's adapters.log when personaContext available
- * - Fallback: console.log for requests without personaContext
+ * Uses base class log() which routes through Logger.ts (async, respects levels)
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { BaseAIProviderAdapter } from '../../../shared/BaseAIProviderAdapter';
 import type {
@@ -40,26 +37,6 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     super();
     this.client = InferenceGrpcClient.sharedInstance();
     this.baseTimeout = 300000; // 5 minutes - let it complete
-  }
-
-  /**
-   * Log to persona's adapters.log if personaContext available, else console
-   */
-  private logToPersona(logDir: string | undefined, message: string): void {
-    const timestamp = new Date().toISOString();
-    const logLine = `[${timestamp}] ${message}\n`;
-
-    if (logDir) {
-      try {
-        const logFile = path.join(logDir, 'adapters.log');
-        fs.appendFileSync(logFile, logLine);
-      } catch {
-        // Fallback to console if file write fails
-        console.log(`[CandleGrpcAdapter] ${message}`);
-      }
-    } else {
-      console.log(`[CandleGrpcAdapter] ${message}`);
-    }
   }
 
   async initialize(): Promise<void> {
@@ -126,12 +103,11 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     // Cap tokens reasonably
     const maxTokens = Math.min(request.maxTokens || 150, 200);
 
-    // Extract persona context for per-persona logging
+    // Extract persona context for gRPC call
     const personaId = request.personaContext?.uniqueId || '';
     const personaName = request.personaContext?.displayName || 'unknown';
-    const logDir = request.personaContext?.logDir;
 
-    this.logToPersona(logDir, `[Candle] Generate: prompt=${prompt.length} chars, maxTokens=${maxTokens}`);
+    this.log(request, 'info', `[Candle] Generate: prompt=${prompt.length} chars, maxTokens=${maxTokens}`);
 
     // Just call the gRPC server and wait - includes persona info for Rust logging
     const result = await this.client.generate('Llama-3.2-3B-Instruct', prompt, {
@@ -159,7 +135,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       modelRequested: request.model || 'llama3.2:3b',
     };
 
-    this.logToPersona(logDir, `[Candle] Complete: ${result.tokens} tokens in ${responseTime}ms`);
+    this.log(request, 'info', `[Candle] Complete: ${result.tokens} tokens in ${responseTime}ms`);
 
     return {
       text: result.text,

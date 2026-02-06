@@ -8,6 +8,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GitStatusParams, GitStatusResult } from '../shared/GitStatusTypes';
 import { createGitStatusResultFromParams } from '../shared/GitStatusTypes';
+import { resolveWorkspacePathFromUserId } from '../../shared/resolveWorkspacePath';
 import * as path from 'path';
 import * as fs from 'fs';
 import { promisify } from 'util';
@@ -24,9 +25,7 @@ export class GitStatusServerCommand extends CommandBase<GitStatusParams, GitStat
   async execute(params: GitStatusParams): Promise<GitStatusResult> {
     try {
       const userId = params.userId || 'unknown';
-      const workspacePath = params.workspacePath || path.resolve(
-        process.cwd(), '.continuum/sessions/user/shared', userId, 'workspace'
-      );
+      const workspacePath = params.workspacePath || await resolveWorkspacePathFromUserId(userId);
 
       if (!fs.existsSync(workspacePath)) {
         throw new Error(`Workspace not found at ${workspacePath}`);

@@ -21,7 +21,7 @@
 
 import { DataStorageAdapter } from '../shared/DataStorageAdapter';
 import { SqliteStorageAdapter } from './SqliteStorageAdapter';
-// RustWorkerStorageAdapter removed - using TypeScript SQLite only
+import { RustWorkerStorageAdapter } from './RustWorkerStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { getDatabasePath, getServerConfig } from '../../../system/config/ServerConfig';
@@ -219,14 +219,12 @@ export class DatabaseHandleRegistry {
     let storageAdapter: DataStorageAdapter;
 
     switch (adapter) {
-      case 'sqlite':
-      case 'rust': {  // Rust deprecated - use SQLite
+      case 'sqlite': {
         const sqliteConfig = config as SqliteConfig;
         const dbPath = sqliteConfig.path || sqliteConfig.filename;
         if (!dbPath) {
           throw new Error('SQLite config requires either "path" or "filename" property');
         }
-        console.log(`📦 DatabaseHandleRegistry: Opening SQLite at: ${dbPath}`);
         storageAdapter = new SqliteStorageAdapter();
         await storageAdapter.initialize({
           type: 'sqlite',
@@ -238,10 +236,32 @@ export class DatabaseHandleRegistry {
         break;
       }
 
+      case 'rust': {
+        const rustConfig = config as RustConfig;
+        if (!rustConfig.filename) {
+          throw new Error('Rust config requires "filename" property (database path)');
+        }
+        const socketPath = rustConfig.socketPath || '/tmp/jtag-data-daemon-worker.sock';
+        storageAdapter = new RustWorkerStorageAdapter({
+          socketPath,
+          dbPath: rustConfig.filename,
+          timeout: 30000
+        });
+        await storageAdapter.initialize({
+          type: 'rust' as any,
+          namespace: handle as string,
+          options: {
+            socketPath,
+            dbPath: rustConfig.filename
+          }
+        });
+        break;
+      }
+
       case 'json':
       case 'vector':
       case 'graph':
-        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' is currently supported.`);
+        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' and 'rust' are currently supported.`);
 
       default:
         throw new Error(`Unknown adapter type: ${adapter}`);
@@ -257,7 +277,6 @@ export class DatabaseHandleRegistry {
       emitEvents: options?.emitEvents ?? true  // Default to emitting events
     });
 
-    console.log(`🔌 DatabaseHandleRegistry: Opened ${adapter} handle ${handle} (emitEvents=${options?.emitEvents ?? true})`);
 
     return handle;
   }
@@ -281,7 +300,6 @@ export class DatabaseHandleRegistry {
       throw new Error(`Cannot register alias '${alias}': handle '${handle}' does not exist`);
     }
     this.handleAliases.set(alias, handle);
-    console.log(`🔌 DatabaseHandleRegistry: Registered alias '${alias}' → ${handle}`);
   }
 
   /**

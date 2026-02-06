@@ -488,7 +488,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
               }
             }
 
-            // Append to Rust corpus — keeps in-memory cache coherent with longterm.db
+            // Append to Rust corpus (fire-and-forget — cache coherence, not blocking)
             // Without this, Rust recall is blind to memories created after startup.
             const bridge = this.persona.rustCognitionBridge;
             if (bridge) {
@@ -513,7 +513,9 @@ export class Hippocampus extends PersonaContinuousSubprocess {
                 },
                 embedding: memory.embedding ?? null,
               };
-              await bridge.memoryAppendMemory(corpusMemory);
+              bridge.memoryAppendMemory(corpusMemory).catch(err =>
+                this.log(`⚠️ Rust corpus append failed for ${memory.id}: ${err}`)
+              );
             }
           } else {
             failedCount++;

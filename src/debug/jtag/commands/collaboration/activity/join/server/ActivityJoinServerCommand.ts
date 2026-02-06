@@ -25,6 +25,13 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
     const params = payload as ActivityJoinParams;
     const { activityId, role = 'participant', roleConfig } = params;
 
+    if (!activityId) {
+      return transformPayload(params, {
+        success: false,
+        error: 'activityId is required — provide the activity ID or uniqueId to join'
+      });
+    }
+
     // Get user ID from params or context
     const userId = params.userId || params.context?.userId;
     if (!userId) {

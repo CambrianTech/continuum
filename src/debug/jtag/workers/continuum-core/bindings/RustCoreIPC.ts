@@ -26,6 +26,24 @@ import type {
 	ChannelRegistryStatus,
 	ChannelEnqueueRequest,
 	ServiceCycleResult,
+	// Code module types
+	EditMode,
+	ReadResult,
+	WriteResult,
+	SearchMatch,
+	SearchResult,
+	TreeNode,
+	TreeResult,
+	UndoResult,
+	ChangeNode,
+	HistoryResult,
+	GitStatusInfo,
+	// Shell session types
+	ShellExecuteResponse,
+	ShellPollResponse,
+	ShellSessionInfo,
+	ShellWatchResponse,
+	SentinelRule,
 } from '../../../shared/generated';
 
 // Memory subsystem types (Hippocampus in Rust — corpus-based, no SQL)
@@ -35,6 +53,12 @@ import type { LoadCorpusResponse } from './LoadCorpusResponse';
 import type { MemoryRecallResponse } from './MemoryRecallResponse';
 import type { MultiLayerRecallRequest } from './MultiLayerRecallRequest';
 import type { ConsciousnessContextResponse } from './ConsciousnessContextResponse';
+
+// RAG module types (batched parallel loading via Rayon)
+import type {
+	RagSourceRequest,
+	RagComposeResult,
+} from '../../../shared/generated/rag';
 
 // ============================================================================
 // Types
@@ -56,6 +80,11 @@ export interface UtteranceEvent {
 	confidence: number;
 	timestamp: number;
 }
+
+// ============================================================================
+// Code Module Types — imported from ts-rs generated (Rust is source of truth)
+// All code types imported at top level from shared/generated
+// ============================================================================
 
 interface Response {
 	success: boolean;
@@ -80,6 +109,11 @@ export class RustCoreIPCClient extends EventEmitter {
 	private pendingRequests: Map<number, (result: IPCResponse) => void> = new Map();
 	private nextRequestId = 1;
 	private connected = false;
+
+	/** Rate-limit slow IPC warnings globally: command -> last warning timestamp */
+	private static slowWarningTimestamps: Map<string, number> = new Map();
+	private static readonly SLOW_IPC_THRESHOLD_MS = 500;
+	private static readonly SLOW_WARNING_COOLDOWN_MS = 10_000;
 
 	constructor(private socketPath: string) {
 		super();
@@ -194,8 +228,13 @@ export class RustCoreIPCClient extends EventEmitter {
 
 			this.pendingRequests.set(requestId, (result) => {
 				const duration = performance.now() - start;
-				if (duration > 10) {
-					console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(2)}ms`);
+				if (duration > RustCoreIPCClient.SLOW_IPC_THRESHOLD_MS) {
+					const now = Date.now();
+					const lastWarned = RustCoreIPCClient.slowWarningTimestamps.get(command.command) ?? 0;
+					if (now - lastWarned > RustCoreIPCClient.SLOW_WARNING_COOLDOWN_MS) {
+						RustCoreIPCClient.slowWarningTimestamps.set(command.command, now);
+						console.warn(`⚠️  Slow IPC call: ${command.command} took ${duration.toFixed(0)}ms`);
+					}
 				}
 				resolve(result);
 			});
@@ -721,6 +760,618 @@ export class RustCoreIPCClient extends EventEmitter {
 		}
 
 		return response.result as ConsciousnessContextResponse;
+	}
+
+	// ========================================================================
+	// Code Module Methods (file operations, change tracking, code intelligence)
+	// ========================================================================
+
+	/**
+	 * Initialize a per-persona workspace with file engine and change graph.
+	 * Must be called before any other code/* operations for this persona.
+	 *
+	 * @param personaId - The persona's UUID
+	 * @param workspaceRoot - Absolute path to the persona's workspace directory
+	 * @param readRoots - Optional read-only root directories (e.g., main codebase for discovery)
+	 */
+	async codeCreateWorkspace(
+		personaId: string,
+		workspaceRoot: string,
+		readRoots?: string[]
+	): Promise<void> {
+		const response = await this.request({
+			command: 'code/create-workspace',
+			persona_id: personaId,
+			workspace_root: workspaceRoot,
+			read_roots: readRoots ?? [],
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create workspace');
+		}
+	}
+
+	/**
+	 * Read a file or line range from the persona's workspace.
+	 */
+	async codeRead(
+		personaId: string,
+		filePath: string,
+		startLine?: number,
+		endLine?: number
+	): Promise<ReadResult> {
+		const response = await this.request({
+			command: 'code/read',
+			persona_id: personaId,
+			file_path: filePath,
+			start_line: startLine ?? null,
+			end_line: endLine ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to read file');
+		}
+
+		return response.result as ReadResult;
+	}
+
+	/**
+	 * Write or create a file in the persona's workspace.
+	 * Creates a ChangeNode in the change graph for undo support.
+	 */
+	async codeWrite(
+		personaId: string,
+		filePath: string,
+		content: string,
+		description?: string
+	): Promise<WriteResult> {
+		const response = await this.request({
+			command: 'code/write',
+			persona_id: personaId,
+			file_path: filePath,
+			content,
+			description: description ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to write file');
+		}
+
+		return response.result as WriteResult;
+	}
+
+	/**
+	 * Edit a file using one of four edit modes:
+	 * - line_range: Replace content between line numbers
+	 * - search_replace: Find and replace text
+	 * - insert_at: Insert content at a specific line
+	 * - append: Add content to end of file
+	 */
+	async codeEdit(
+		personaId: string,
+		filePath: string,
+		editMode: EditMode,
+		description?: string
+	): Promise<WriteResult> {
+		const response = await this.request({
+			command: 'code/edit',
+			persona_id: personaId,
+			file_path: filePath,
+			edit_mode: editMode,
+			description: description ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to edit file');
+		}
+
+		return response.result as WriteResult;
+	}
+
+	/**
+	 * Delete a file from the persona's workspace.
+	 * Full content is preserved in the change graph for undo.
+	 */
+	async codeDelete(
+		personaId: string,
+		filePath: string,
+		description?: string
+	): Promise<WriteResult> {
+		const response = await this.request({
+			command: 'code/delete',
+			persona_id: personaId,
+			file_path: filePath,
+			description: description ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to delete file');
+		}
+
+		return response.result as WriteResult;
+	}
+
+	/**
+	 * Preview an edit as a unified diff without applying it.
+	 */
+	async codeDiff(
+		personaId: string,
+		filePath: string,
+		editMode: EditMode
+	): Promise<{ success: boolean; unified: string }> {
+		const response = await this.request({
+			command: 'code/diff',
+			persona_id: personaId,
+			file_path: filePath,
+			edit_mode: editMode,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compute diff');
+		}
+
+		return response.result as { success: boolean; unified: string };
+	}
+
+	/**
+	 * Undo a specific change or the last N changes.
+	 * Pass changeId to undo a specific operation, or count to undo last N.
+	 */
+	async codeUndo(
+		personaId: string,
+		changeId?: string,
+		count?: number
+	): Promise<UndoResult> {
+		const response = await this.request({
+			command: 'code/undo',
+			persona_id: personaId,
+			change_id: changeId ?? null,
+			count: count ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to undo');
+		}
+
+		return response.result as UndoResult;
+	}
+
+	/**
+	 * Get change history for a file or entire workspace.
+	 */
+	async codeHistory(
+		personaId: string,
+		filePath?: string,
+		limit?: number
+	): Promise<HistoryResult> {
+		const response = await this.request({
+			command: 'code/history',
+			persona_id: personaId,
+			file_path: filePath ?? null,
+			limit: limit ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get history');
+		}
+
+		return response.result as HistoryResult;
+	}
+
+	/**
+	 * Search for a regex pattern across workspace files.
+	 * Respects .gitignore, supports glob filtering.
+	 */
+	async codeSearch(
+		personaId: string,
+		pattern: string,
+		fileGlob?: string,
+		maxResults?: number
+	): Promise<SearchResult> {
+		const response = await this.request({
+			command: 'code/search',
+			persona_id: personaId,
+			pattern,
+			file_glob: fileGlob ?? null,
+			max_results: maxResults ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to search');
+		}
+
+		return response.result as SearchResult;
+	}
+
+	/**
+	 * Generate a directory tree for the workspace.
+	 */
+	async codeTree(
+		personaId: string,
+		path?: string,
+		maxDepth?: number,
+		includeHidden?: boolean
+	): Promise<TreeResult> {
+		const response = await this.request({
+			command: 'code/tree',
+			persona_id: personaId,
+			path: path ?? null,
+			max_depth: maxDepth ?? null,
+			include_hidden: includeHidden ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to generate tree');
+		}
+
+		return response.result as TreeResult;
+	}
+
+	/**
+	 * Get git status for the workspace.
+	 */
+	async codeGitStatus(personaId: string): Promise<GitStatusInfo> {
+		const response = await this.request({
+			command: 'code/git-status',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get git status');
+		}
+
+		return response.result as GitStatusInfo;
+	}
+
+	/**
+	 * Get git diff for the workspace.
+	 */
+	async codeGitDiff(personaId: string, staged?: boolean): Promise<{ success: boolean; diff: string }> {
+		const response = await this.request({
+			command: 'code/git-diff',
+			persona_id: personaId,
+			staged: staged ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get git diff');
+		}
+
+		return response.result as { success: boolean; diff: string };
+	}
+
+	/**
+	 * Get git log for the workspace.
+	 */
+	async codeGitLog(personaId: string, count?: number): Promise<{ success: boolean; log: string }> {
+		const response = await this.request({
+			command: 'code/git-log',
+			persona_id: personaId,
+			count: count ?? 10,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get git log');
+		}
+
+		return response.result as { success: boolean; log: string };
+	}
+
+	/**
+	 * Stage files for commit.
+	 */
+	async codeGitAdd(personaId: string, paths: string[]): Promise<{ staged: string[] }> {
+		const response = await this.request({
+			command: 'code/git-add',
+			persona_id: personaId,
+			paths,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to stage files');
+		}
+
+		return response.result as { staged: string[] };
+	}
+
+	/**
+	 * Create a git commit.
+	 */
+	async codeGitCommit(personaId: string, message: string): Promise<{ hash: string }> {
+		const response = await this.request({
+			command: 'code/git-commit',
+			persona_id: personaId,
+			message,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create commit');
+		}
+
+		return response.result as { hash: string };
+	}
+
+	/**
+	 * Push to remote.
+	 */
+	async codeGitPush(personaId: string, remote?: string, branch?: string): Promise<{ output: string }> {
+		const response = await this.request({
+			command: 'code/git-push',
+			persona_id: personaId,
+			remote: remote ?? '',
+			branch: branch ?? '',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to push');
+		}
+
+		return response.result as { output: string };
+	}
+
+	// ── Shell Session Methods ──────────────────────────────────────
+
+	/**
+	 * Create a shell session for a workspace.
+	 */
+	async shellCreate(personaId: string, workspaceRoot: string): Promise<ShellSessionInfo> {
+		const response = await this.request({
+			command: 'code/shell-create',
+			persona_id: personaId,
+			workspace_root: workspaceRoot,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to create shell session');
+		}
+
+		return response.result as ShellSessionInfo;
+	}
+
+	/**
+	 * Execute a command in a shell session.
+	 *
+	 * Two modes:
+	 * - `wait: false` (default) — returns immediately with execution handle. Poll for output.
+	 * - `wait: true` — blocks until completion, returns full stdout/stderr.
+	 */
+	async shellExecute(
+		personaId: string,
+		cmd: string,
+		options?: { timeoutMs?: number; wait?: boolean },
+	): Promise<ShellExecuteResponse> {
+		const response = await this.request({
+			command: 'code/shell-execute',
+			persona_id: personaId,
+			cmd,
+			timeout_ms: options?.timeoutMs ?? null,
+			wait: options?.wait ?? false,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to execute command');
+		}
+
+		return response.result as ShellExecuteResponse;
+	}
+
+	/**
+	 * Poll an execution for new output since last poll.
+	 * Call repeatedly until `finished` is true.
+	 */
+	async shellPoll(personaId: string, executionId: string): Promise<ShellPollResponse> {
+		const response = await this.request({
+			command: 'code/shell-poll',
+			persona_id: personaId,
+			execution_id: executionId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to poll execution');
+		}
+
+		return response.result as ShellPollResponse;
+	}
+
+	/**
+	 * Kill a running execution.
+	 */
+	async shellKill(personaId: string, executionId: string): Promise<void> {
+		const response = await this.request({
+			command: 'code/shell-kill',
+			persona_id: personaId,
+			execution_id: executionId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to kill execution');
+		}
+	}
+
+	/**
+	 * Change shell session working directory.
+	 */
+	async shellCd(personaId: string, path: string): Promise<{ cwd: string }> {
+		const response = await this.request({
+			command: 'code/shell-cd',
+			persona_id: personaId,
+			path,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to change directory');
+		}
+
+		return response.result as { cwd: string };
+	}
+
+	/**
+	 * Get shell session status/info.
+	 */
+	async shellStatus(personaId: string): Promise<ShellSessionInfo> {
+		const response = await this.request({
+			command: 'code/shell-status',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get shell status');
+		}
+
+		return response.result as ShellSessionInfo;
+	}
+
+	/**
+	 * Destroy a shell session (kills all running executions).
+	 */
+	async shellDestroy(personaId: string): Promise<void> {
+		const response = await this.request({
+			command: 'code/shell-destroy',
+			persona_id: personaId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to destroy shell session');
+		}
+	}
+
+	/**
+	 * Watch a shell execution for new output.
+	 * Blocks until output is available — no timeout, no polling.
+	 * Returns classified output lines filtered through sentinel rules.
+	 */
+	async shellWatch(personaId: string, executionId: string): Promise<ShellWatchResponse> {
+		const response = await this.request({
+			command: 'code/shell-watch',
+			persona_id: personaId,
+			execution_id: executionId,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to watch execution');
+		}
+
+		return response.result as ShellWatchResponse;
+	}
+
+	/**
+	 * Configure sentinel filter rules on a shell execution.
+	 * Rules classify output lines and control which are emitted or suppressed during watch.
+	 */
+	async shellSentinel(personaId: string, executionId: string, rules: SentinelRule[]): Promise<{ applied: boolean; ruleCount: number }> {
+		const response = await this.request({
+			command: 'code/shell-sentinel',
+			persona_id: personaId,
+			execution_id: executionId,
+			rules,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to set sentinel rules');
+		}
+
+		return response.result as { applied: boolean; ruleCount: number };
+	}
+
+	// ========================================================================
+	// Model Discovery Methods
+	// ========================================================================
+
+	/**
+	 * Discover model metadata from provider APIs.
+	 * ALL HTTP I/O runs in Rust (off Node.js main thread).
+	 * Returns discovered models for ModelRegistry population.
+	 */
+	async modelsDiscover(providers: Array<{
+		provider_id: string;
+		api_key: string;
+		base_url: string;
+		static_models?: Array<{
+			id: string;
+			context_window: number;
+			max_output_tokens?: number;
+			capabilities?: string[];
+			cost_per_1k_tokens?: { input: number; output: number };
+		}>;
+	}>): Promise<{
+		models: Array<{
+			modelId: string;
+			contextWindow: number;
+			maxOutputTokens?: number;
+			provider: string;
+			capabilities?: string[];
+			costPer1kTokens?: { input: number; output: number };
+			discoveredAt: number;
+		}>;
+		count: number;
+		providers: number;
+	}> {
+		const response = await this.request({
+			command: 'models/discover',
+			providers,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to discover models');
+		}
+
+		return response.result as {
+			models: Array<{
+				modelId: string;
+				contextWindow: number;
+				maxOutputTokens?: number;
+				provider: string;
+				capabilities?: string[];
+				costPer1kTokens?: { input: number; output: number };
+				discoveredAt: number;
+			}>;
+			count: number;
+			providers: number;
+		};
+	}
+
+	// ========================================================================
+	// RAG Module Methods (batched parallel source loading)
+	// ========================================================================
+
+	/**
+	 * Compose RAG context from multiple sources in a single batched call.
+	 * Rust processes all sources in parallel using Rayon.
+	 *
+	 * This replaces N sequential IPC calls with ONE call:
+	 * - Memory recall
+	 * - Consciousness context
+	 * - Scene (games/VR)
+	 * - Project (code context)
+	 * - Custom sources
+	 *
+	 * @param personaId - The persona's UUID
+	 * @param roomId - Current room/context ID
+	 * @param sources - Array of source requests with typed params
+	 * @param queryText - Optional query for semantic search
+	 * @param totalBudget - Total token budget across all sources
+	 */
+	async ragCompose(
+		personaId: string,
+		roomId: string,
+		sources: RagSourceRequest[],
+		queryText?: string,
+		totalBudget: number = 2000
+	): Promise<RagComposeResult> {
+		const response = await this.request({
+			command: 'rag/compose',
+			persona_id: personaId,
+			room_id: roomId,
+			sources,
+			query_text: queryText ?? null,
+			total_budget: totalBudget,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compose RAG context');
+		}
+
+		return response.result as RagComposeResult;
 	}
 
 	/**

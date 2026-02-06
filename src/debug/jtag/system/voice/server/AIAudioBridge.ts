@@ -225,7 +225,6 @@ export class AIAudioBridge {
    *                The Rust adapter's resolve_voice() handles all mapping.
    */
   async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
-    console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge.speak CALLED - userId=${userId?.slice(0, 8)}, text="${text.slice(0, 50)}..."`);
     const key = `${callId}-${userId}`;
     const connection = this.connections.get(key);
 
@@ -257,7 +256,6 @@ export class AIAudioBridge {
       // Pass userId as voice identifier — Rust adapter's resolve_voice() handles mapping
       // This ensures each AI always gets a consistent unique voice per adapter
       const voiceId = voice ?? userId;
-      console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge calling VoiceService.synthesizeSpeech with voiceId=${voiceId.slice(0, 8)}...`);
 
       // Use VoiceService (handles TTS synthesis)
       const voiceService = getVoiceService();
@@ -271,7 +269,6 @@ export class AIAudioBridge {
       // result.audioSamples is already i16 array ready to send
       const samples = result.audioSamples;
       const audioDurationSec = samples.length / 16000;
-      console.log(`🎙️🔊 VOICE-DEBUG: AIAudioBridge TTS result - samples=${samples.length}, duration=${audioDurationSec.toFixed(2)}s`);
 
       // SERVER-SIDE BUFFERING: Send ALL audio at once
       // Rust server has a 60-second ring buffer per AI participant

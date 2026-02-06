@@ -60,11 +60,40 @@ const MAX_AGING_BOOST = 0.5;        // Maximum priority boost from aging (0.5)
  * - Fresh text  (base 0.65), waited 0s: effective = 0.65
  * - After ~12s, the voice item overtakes the fresh text item
  */
-export function getEffectivePriority(item: QueueItem): number {
+export function getEffectivePriority(item: QueueItem, now?: number): number {
   const enqueuedAt = item.enqueuedAt ?? item.timestamp;
-  const waitMs = Date.now() - enqueuedAt;
+  const waitMs = (now ?? Date.now()) - enqueuedAt;
   const agingBoost = Math.min(MAX_AGING_BOOST, (waitMs / AGING_RATE_MS) * MAX_AGING_BOOST);
   return Math.min(1.0, item.priority + agingBoost);
+}
+
+/**
+ * Sort queue by effective priority (highest first) with a single Date.now() snapshot.
+ * Avoids calling Date.now() per comparison (O(N log N) syscalls → 1 syscall).
+ */
+function sortByEffectivePriority(queue: QueueItem[]): void {
+  const now = Date.now();
+  queue.sort((a, b) => getEffectivePriority(b, now) - getEffectivePriority(a, now));
+}
+
+/**
+ * Binary-insert an item into a queue already sorted by effective priority (descending).
+ * O(log N) search + O(N) shift — still better than full O(N log N) re-sort for single insert.
+ */
+function binaryInsert(queue: QueueItem[], item: QueueItem): void {
+  const now = Date.now();
+  const itemPriority = getEffectivePriority(item, now);
+  let lo = 0;
+  let hi = queue.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (getEffectivePriority(queue[mid], now) > itemPriority) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  queue.splice(lo, 0, item);
 }
 
 /**
@@ -150,9 +179,6 @@ export class PersonaInbox {
           if (isInboxMessage(item)) {
             const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
             this.log(`🦀 Routed ${enqueueRequest.item_type} → Rust ${result.routed_to}: ${senderIdPreview} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
-            if (item.sourceModality === 'voice') {
-              console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Routed VOICE → Rust ${result.routed_to}: voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-            }
           } else if (isInboxTask(item)) {
             this.log(`🦀 Routed task → Rust ${result.routed_to}: ${item.taskType} (priority=${item.priority.toFixed(2)}, total=${result.status.total_size}, ipc=${enqueueMs.toFixed(1)}ms)`);
           }
@@ -172,7 +198,7 @@ export class PersonaInbox {
     // Check if over capacity
     if (this.queue.length >= this.config.maxSize) {
       // Sort by effective priority (highest first) — aged items survive shedding
-      this.queue.sort((a, b) => getEffectivePriority(b) - getEffectivePriority(a));
+      sortByEffectivePriority(this.queue);
 
       // Drop lowest effective priority item (traffic shed)
       const dropped = this.queue.pop();
@@ -182,21 +208,14 @@ export class PersonaInbox {
     // Stamp enqueue time for RTOS aging
     item.enqueuedAt = Date.now();
 
-    // Add item
-    this.queue.push(item);
-
-    // Sort by effective priority (base + aging boost)
-    this.queue.sort((a, b) => getEffectivePriority(b) - getEffectivePriority(a));
+    // Binary insert into sorted position (O(log N) search, avoids full O(N log N) re-sort)
+    binaryInsert(this.queue, item);
 
     // Log with type-specific details
     if (isInboxMessage(item)) {
       // Defensive: handle undefined senderId
       const senderIdPreview = item.senderId?.slice(0, 8) ?? '[no-senderId]';
       this.log(`📬 Enqueued message: ${senderIdPreview} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
-      // VOICE DEBUG: Log voice metadata at enqueue time
-      if (item.sourceModality === 'voice') {
-        console.log(`🎙️🔊 VOICE-DEBUG [Inbox] Enqueued VOICE message: sourceModality=${item.sourceModality}, voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-      }
     } else if (isInboxTask(item)) {
       this.log(`📬 Enqueued task: ${item.taskType} → priority=${item.priority.toFixed(2)} (queue=${this.queue.length})`);
     }
@@ -251,16 +270,9 @@ export class PersonaInbox {
    */
   async peek(limit: number = 10): Promise<QueueItem[]> {
     // Re-sort by effective priority (aging changes order over time)
-    this.queue.sort((a, b) => getEffectivePriority(b) - getEffectivePriority(a));
+    sortByEffectivePriority(this.queue);
 
     const items = this.queue.slice(0, limit);
-    // VOICE DEBUG: Log voice metadata when peeking
-    for (const item of items) {
-      if (isInboxMessage(item) && item.sourceModality === 'voice') {
-        const eff = getEffectivePriority(item);
-        console.log(`🎙️🔊 VOICE-DEBUG [Inbox.peek] VOICE message in queue: sourceModality=${item.sourceModality}, basePriority=${item.priority.toFixed(2)}, effectivePriority=${eff.toFixed(2)}, voiceSessionId=${item.voiceSessionId?.slice(0, 8) || 'undefined'}`);
-      }
-    }
     return items;
   }
 
@@ -268,51 +280,57 @@ export class PersonaInbox {
    * Remove and return next item (blocking with timeout)
    * Returns null if no item within timeout
    *
+   * Uses signal-based waiting (EventEmitter) — no polling.
    * RTOS behavior: re-sorts by effective priority before popping,
    * ensuring aged items get served before fresh higher-base-priority items.
    */
   async pop(timeoutMs: number = 5000): Promise<QueueItem | null> {
     // Immediate check
     if (this.queue.length > 0) {
-      // Re-sort by effective priority (aging may have changed order)
-      this.queue.sort((a, b) => getEffectivePriority(b) - getEffectivePriority(a));
-      const item = this.queue.shift()!;
-      if (isInboxMessage(item)) {
-        // Defensive: handle undefined id
-        const idPreview = item.id?.slice(0, 8) ?? '[no-id]';
-        this.log(`📭 Popped message: ${idPreview} (queue=${this.queue.length})`);
-      } else if (isInboxTask(item)) {
-        // Defensive: handle undefined taskId
-        const taskIdPreview = item.taskId?.slice(0, 8) ?? '[no-taskId]';
-        this.log(`📭 Popped task: ${taskIdPreview} (queue=${this.queue.length})`);
-      }
-      return item;
+      return this.popImmediate();
     }
 
-    // Wait for item
+    // Signal-based wait (no polling — matches waitForWork pattern)
     return new Promise<QueueItem | null>((resolve) => {
-      const startTime = Date.now();
+      let settled = false;
 
-      const checkInterval = setInterval(() => {
-        if (this.queue.length > 0) {
-          clearInterval(checkInterval);
-          const item = this.queue.shift()!;
-          if (isInboxMessage(item)) {
-            // Defensive: handle undefined id
-            const idPreview = item.id?.slice(0, 8) ?? '[no-id]';
-            this.log(`📭 Popped message (after wait): ${idPreview} (queue=${this.queue.length})`);
-          } else if (isInboxTask(item)) {
-            // Defensive: handle undefined taskId
-            const taskIdPreview = item.taskId?.slice(0, 8) ?? '[no-taskId]';
-            this.log(`📭 Popped task (after wait): ${taskIdPreview} (queue=${this.queue.length})`);
-          }
-          resolve(item);
-        } else if (Date.now() - startTime > timeoutMs) {
-          clearInterval(checkInterval);
-          resolve(null); // Timeout
-        }
-      }, 100); // Check every 100ms
+      const workHandler = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.signal.removeListener('work-available', workHandler);
+        resolve(this.popImmediate());
+      };
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.signal.removeListener('work-available', workHandler);
+        resolve(null); // Timeout
+      }, timeoutMs);
+
+      this.signal.on('work-available', workHandler);
     });
+  }
+
+  /**
+   * Pop the highest-priority item immediately (non-blocking).
+   * Re-sorts by effective priority to account for aging.
+   */
+  private popImmediate(): QueueItem | null {
+    if (this.queue.length === 0) return null;
+
+    // Re-sort by effective priority (aging may have changed order)
+    sortByEffectivePriority(this.queue);
+    const item = this.queue.shift()!;
+    if (isInboxMessage(item)) {
+      const idPreview = item.id?.slice(0, 8) ?? '[no-id]';
+      this.log(`📭 Popped message: ${idPreview} (queue=${this.queue.length})`);
+    } else if (isInboxTask(item)) {
+      const taskIdPreview = item.taskId?.slice(0, 8) ?? '[no-taskId]';
+      this.log(`📭 Popped task: ${taskIdPreview} (queue=${this.queue.length})`);
+    }
+    return item;
   }
 
   /**
@@ -392,12 +410,12 @@ export class PersonaInbox {
     highestEffectivePriority: number | null;
     oldestWaitMs: number | null;
   } {
+    const now = Date.now();
     const highestPriority = this.queue.length > 0 ? this.queue[0].priority : null;
     const lowestPriority = this.queue.length > 0 ? this.queue[this.queue.length - 1].priority : null;
     const highestEffective = this.queue.length > 0
-      ? Math.max(...this.queue.map(getEffectivePriority))
+      ? Math.max(...this.queue.map(item => getEffectivePriority(item, now)))
       : null;
-    const now = Date.now();
     const oldestWait = this.queue.length > 0
       ? Math.max(...this.queue.map(item => now - (item.enqueuedAt ?? item.timestamp)))
       : null;
@@ -447,8 +465,7 @@ export class PersonaInbox {
  * - Recent message: +0.2 (fresher = more relevant)
  * - Active conversation: +0.1 (persona recently active in room)
  * - Relevant expertise: +0.1 (matches persona's domain)
- * - Hot conversation (temp ≥ 0.7): +0.15 (PHASE 3BIS)
- * - Cold conversation (temp ≤ 0.3): -0.1 (PHASE 3BIS)
+ * - Hot conversation (temp ≥ 0.7): +0.1 (activity signal, not a gate)
  *
  * Base: 0.2 (all messages have baseline relevance)
  */
@@ -492,18 +509,17 @@ export function calculateMessagePriority(
     }
   }
 
-  // PHASE 3BIS: Temperature-based priority adjustment (activity ambient state)
-  // Hot conversations = more responsive, Cold conversations = less urgent
+  // Temperature is informational context — the AI's own cognition decides
+  // whether to respond, not a formula. Hot rooms get a small boost but
+  // cold rooms are NOT penalized. The AI might have something important
+  // to say regardless of room temperature.
   const temperature = getChatCoordinator().getTemperature(message.roomId);
 
   if (temperature >= 0.7) {
-    // Hot conversation - be more responsive
-    priority += 0.15;
-  } else if (temperature <= 0.3) {
-    // Cold conversation - less urgent (but still respond to mentions)
-    priority -= 0.1;
+    // Hot conversation - slight boost for responsiveness
+    priority += 0.1;
   }
-  // Neutral temperature (0.3-0.7) - no adjustment
+  // Cold/neutral: no penalty — let the AI's cognition decide
 
   return Math.min(1.0, priority); // Cap at 1.0
 }

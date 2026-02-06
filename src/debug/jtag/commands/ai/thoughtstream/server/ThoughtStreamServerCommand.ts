@@ -74,16 +74,14 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
 
         try {
           // Query data daemon for the message
-          const result = await DataDaemon.read<ChatMessageEntity>(
+          const msg = await DataDaemon.read<ChatMessageEntity>(
             COLLECTIONS.CHAT_MESSAGES,
             stream.messageId
           );
 
-          if (result.success && result.data) {
-            const msg = result.data as any;
-            // Try different possible structures for message data
-            messageSender = msg.senderName || msg.data?.senderName || 'Unknown';
-            messageContent = msg.content?.text || msg.data?.content?.text || msg.text || '';
+          if (msg) {
+            messageSender = msg.senderName || 'Unknown';
+            messageContent = msg.content?.text ?? '';
           }
         } catch (error) {
           console.warn(`⚠️ Could not load message ${stream.messageId}:`, error);
@@ -585,14 +583,13 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
 
   private async getPersonaName(personaId: string, params: ThoughtStreamParams): Promise<string> {
     try {
-      const result = await DataDaemon.read<UserEntity>(
+      const user = await DataDaemon.read<UserEntity>(
         COLLECTIONS.USERS,
         personaId
       );
 
-      if (result.success && result.data) {
-        const userData = result.data as any;
-        return userData.displayName || userData.name || personaId.slice(0, 8);
+      if (user) {
+        return user.displayName || personaId.slice(0, 8);
       }
       return personaId.slice(0, 8);
     } catch {

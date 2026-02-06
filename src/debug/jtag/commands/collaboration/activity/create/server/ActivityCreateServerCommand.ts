@@ -30,6 +30,13 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
     const params = payload as ActivityCreateParams;
     const { recipeId, displayName, description, ownerId, participants, config, tags } = params;
 
+    if (!recipeId) {
+      return transformPayload(params, {
+        success: false,
+        error: 'recipeId is required — provide the recipe uniqueId to create an activity from'
+      });
+    }
+
     // Get owner ID from params (CLI injects userId at top level)
     const ownerUserId = ownerId || params.userId || params.context?.userId;
     if (!ownerUserId) {

@@ -77,6 +77,19 @@ export interface RecipeStrategy {
 }
 
 /**
+ * Tool declaration in a recipe — HIGHLIGHTS, not filters.
+ *
+ * These tell the LLM "these tools are especially relevant for this activity."
+ * They do NOT restrict access — all 225+ tools remain available.
+ * The recipe just provides context about what's useful.
+ */
+export interface RecipeToolDeclaration {
+  name: string;
+  description: string;
+  enabledFor: ('ai' | 'human')[];
+}
+
+/**
  * Recipe input parameter definition
  * Recipe = function definition, Activity = function call with arguments
  *
@@ -155,6 +168,9 @@ export interface RecipeEntity {
    */
   locked?: string[];
 
+  // Tool highlights — which tools are especially relevant for this activity
+  tools?: RecipeToolDeclaration[];
+
   // Sharing
   isPublic: boolean;
   createdBy: UUID;
@@ -211,6 +227,9 @@ export interface RecipeDefinition {
   pipeline: RecipeStep[];
   ragTemplate: RAGTemplate;
   strategy: RecipeStrategy;
+
+  // Tool highlights — which tools are especially relevant for this activity
+  tools?: RecipeToolDeclaration[];
 
   // UI composition (optional - defaults handled by layout system)
   layout?: ActivityUILayout;

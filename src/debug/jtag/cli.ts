@@ -15,7 +15,6 @@ import { COMMANDS } from './shared/generated-command-constants';
 import { DATA_COMMANDS } from './commands/data/shared/DataCommandConstants';
 import { FILE_COMMANDS } from './commands/file/shared/FileCommandConstants';
 import { USER_COMMANDS } from './commands/shared/SystemCommandConstants';
-import { CODE_COMMANDS } from './commands/development/code/shared/CodeCommandConstants';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -226,8 +225,8 @@ async function main() {
       // Map of commands to their primary parameter name
       const singleParamCommands: Record<string, string> = {
         'help': 'commandName',
-        [CODE_COMMANDS.READ]: 'path',
-        [CODE_COMMANDS.FIND]: 'pattern',
+        'code/read': 'path',
+        'code/search': 'pattern',
         [FILE_COMMANDS.LOAD]: 'path',
         [FILE_COMMANDS.SAVE]: 'path',
         [DATA_COMMANDS.READ]: 'id',
@@ -389,8 +388,11 @@ async function main() {
       const isInferenceCommand = command.startsWith('inference/');
       const isSocialCommand = command.startsWith('social/');
       const isCollaborationCommand = command.startsWith('collaboration/');
-      const needsLongerTimeout = isAICommand || isInferenceCommand || isSocialCommand || isInterfaceCommand || isCollaborationCommand;
-      const timeoutMs = isGenomeCommand ? 300000 : needsLongerTimeout ? 60000 : 10000; // 5min for genome, 60s for AI/inference/social/interface/collaboration, 10s for others
+      const isChallengeCommand = command.startsWith('challenge/');
+      const isCodeCommand = command.startsWith('code/');
+      const needsLongerTimeout = isAICommand || isInferenceCommand || isSocialCommand || isInterfaceCommand || isCollaborationCommand || isCodeCommand;
+      const needsLongTimeout = isGenomeCommand || isChallengeCommand;
+      const timeoutMs = needsLongTimeout ? 300000 : needsLongerTimeout ? 60000 : 10000; // 5min for genome/challenge, 60s for AI/inference/social/interface/collaboration/code, 10s for others
       const timeoutSeconds = timeoutMs / 1000;
 
       const commandTimeout = new Promise((_, reject) =>

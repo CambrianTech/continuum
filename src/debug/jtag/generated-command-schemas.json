@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-01T20:13:44.015Z",
+  "generated": "2026-02-06T18:30:20.331Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -184,6 +184,22 @@
           "type": "boolean",
           "required": false,
           "description": "reload parameter"
+        }
+      }
+    },
+    {
+      "name": "workspace/list",
+      "description": "Workspace List Command - Shared Types\n *\n * List all persona workspaces across the team — worktree paths, git branches,\n * modified files, shell activity. Scans both in-memory active workspaces and\n * persisted git worktrees on disk.",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        },
+        "includeGitStatus": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeGitStatus parameter"
         }
       }
     },
@@ -1315,6 +1331,116 @@
           "type": "string",
           "required": false,
           "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/validate",
+      "description": "Skill Validate Command - Shared Types\n *\n * Validate a generated skill by running TypeScript compilation and tests in an ExecutionSandbox. Updates SkillEntity with validation results.",
+      "params": {
+        "skillId": {
+          "type": "string",
+          "required": true,
+          "description": "skillId parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/propose",
+      "description": "Skill Propose Command - Shared Types\n *\n * Propose a new skill (command) specification. Creates a SkillEntity with status 'proposed'. For team-scoped skills, creates a DecisionProposal for governance approval.",
+      "params": {
+        "name": {
+          "type": "string",
+          "required": true,
+          "description": "name parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": true,
+          "description": "description parameter"
+        },
+        "skillParams": {
+          "type": "array",
+          "required": true,
+          "description": "skillParams parameter"
+        },
+        "skillResults": {
+          "type": "array",
+          "required": true,
+          "description": "skillResults parameter"
+        },
+        "implementation": {
+          "type": "string",
+          "required": true,
+          "description": "implementation parameter"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "scope parameter"
+        },
+        "examples": {
+          "type": "array",
+          "required": false,
+          "description": "examples parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/list",
+      "description": "Skill List Command - Shared Types\n *\n * List skills with optional filters by status, scope, and creator. Returns SkillEntity records from the database.",
+      "params": {
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
+        },
+        "scope": {
+          "type": "string",
+          "required": false,
+          "description": "scope parameter"
+        },
+        "createdById": {
+          "type": "string",
+          "required": false,
+          "description": "createdById parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/generate",
+      "description": "Skill Generate Command - Shared Types\n *\n * Generate code files for a proposed skill using the CommandGenerator. Retrieves the SkillEntity and produces source files.",
+      "params": {
+        "skillId": {
+          "type": "string",
+          "required": true,
+          "description": "skillId parameter"
+        },
+        "outputDir": {
+          "type": "string",
+          "required": false,
+          "description": "outputDir parameter"
+        }
+      }
+    },
+    {
+      "name": "skill/activate",
+      "description": "Skill Activate Command - Shared Types\n *\n * Activate a validated skill by registering it as a live command. The skill becomes available for use by the creator (personal) or all personas (team).",
+      "params": {
+        "skillId": {
+          "type": "string",
+          "required": true,
+          "description": "skillId parameter"
         }
       }
     },
@@ -3744,83 +3870,6 @@
       }
     },
     {
-      "name": "development/code/read",
-      "description": "code/read command types",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "path": {
-          "type": "string",
-          "required": true,
-          "description": "path parameter"
-        },
-        "startLine": {
-          "type": "number",
-          "required": false,
-          "description": "startLine parameter"
-        },
-        "endLine": {
-          "type": "number",
-          "required": false,
-          "description": "endLine parameter"
-        },
-        "includeMetadata": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeMetadata parameter"
-        },
-        "forceRefresh": {
-          "type": "boolean",
-          "required": false,
-          "description": "forceRefresh parameter"
-        }
-      }
-    },
-    {
-      "name": "development/code/pattern-search",
-      "description": "code/find command types - Find files by name pattern",
-      "params": {
-        "backend": {
-          "type": "string",
-          "required": true,
-          "description": "backend parameter"
-        },
-        "pattern": {
-          "type": "string",
-          "required": true,
-          "description": "pattern parameter"
-        },
-        "baseDir": {
-          "type": "string",
-          "required": false,
-          "description": "baseDir parameter"
-        },
-        "caseInsensitive": {
-          "type": "boolean",
-          "required": false,
-          "description": "caseInsensitive parameter"
-        },
-        "maxResults": {
-          "type": "number",
-          "required": false,
-          "description": "maxResults parameter"
-        },
-        "includeHidden": {
-          "type": "boolean",
-          "required": false,
-          "description": "includeHidden parameter"
-        },
-        "excludeDirs": {
-          "type": "array",
-          "required": false,
-          "description": "excludeDirs parameter"
-        }
-      }
-    },
-    {
       "name": "development/build",
       "description": "Development Build Command - Shared Types\n *\n * Zero-friction TypeScript build check. Returns success or structured errors.",
       "params": {
@@ -5172,6 +5221,376 @@
           "type": "array",
           "required": false,
           "description": "tags parameter"
+        }
+      }
+    },
+    {
+      "name": "code/write",
+      "description": "Code Write Command - Shared Types\n *\n * Write or create a file in the persona's workspace. Creates a ChangeNode in the change graph for undo support. File extension must be in the allowlist.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": true,
+          "description": "content parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        }
+      }
+    },
+    {
+      "name": "code/verify",
+      "description": "Code Verify Command - Shared Types\n *\n * Run TypeScript compilation checks and optionally execute tests against a persona workspace.\n * Returns structured errors with file, line, column, and message for each issue found.",
+      "params": {
+        "typeCheck": {
+          "type": "boolean",
+          "required": false,
+          "description": "typeCheck parameter"
+        },
+        "testFiles": {
+          "type": "array",
+          "required": false,
+          "description": "testFiles parameter"
+        },
+        "cwd": {
+          "type": "string",
+          "required": false,
+          "description": "cwd parameter"
+        }
+      }
+    },
+    {
+      "name": "code/undo",
+      "description": "Code Undo Command - Shared Types\n *\n * Undo a specific change or the last N changes. Applies reverse diffs from the change graph to restore previous file state.",
+      "params": {
+        "changeId": {
+          "type": "string",
+          "required": false,
+          "description": "changeId parameter"
+        },
+        "count": {
+          "type": "number",
+          "required": false,
+          "description": "count parameter"
+        }
+      }
+    },
+    {
+      "name": "code/tree",
+      "description": "Code Tree Command - Shared Types\n *\n * Generate a directory tree for the workspace or a subdirectory. Shows file/directory structure with sizes. Skips common ignored directories (node_modules, .git, etc).",
+      "params": {
+        "path": {
+          "type": "string",
+          "required": false,
+          "description": "path parameter"
+        },
+        "maxDepth": {
+          "type": "number",
+          "required": false,
+          "description": "maxDepth parameter"
+        },
+        "includeHidden": {
+          "type": "boolean",
+          "required": false,
+          "description": "includeHidden parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/watch",
+      "description": "Code Shell Watch Command - Shared Types\n *\n * Watch a shell execution for new output. Blocks until output is available — no timeout, no polling.\n * Returns classified output lines filtered through sentinel rules. Call in a loop until finished is true.",
+      "params": {
+        "executionId": {
+          "type": "string",
+          "required": true,
+          "description": "executionId parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/status",
+      "description": "Code Shell Status Command - Shared Types\n *\n * Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/sentinel",
+      "description": "Code Shell Sentinel Command - Shared Types\n *\n * Configure sentinel filter rules on a shell execution. Rules classify output lines\n * and control which lines are emitted or suppressed during watch.\n * Patterns are compiled to regex on the Rust side for performance.",
+      "params": {
+        "executionId": {
+          "type": "string",
+          "required": true,
+          "description": "executionId parameter"
+        },
+        "rules": {
+          "type": "array",
+          "required": true,
+          "description": "rules parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/kill",
+      "description": "Code Shell Kill Command - Shared Types\n *\n * Kill a running shell execution. Use the executionId returned by code/shell/execute to identify the target.",
+      "params": {
+        "executionId": {
+          "type": "string",
+          "required": true,
+          "description": "executionId parameter"
+        }
+      }
+    },
+    {
+      "name": "code/shell/execute",
+      "description": "Code Shell Execute Command - Shared Types\n *\n * Execute a shell command in the persona's workspace. Async mode (default) returns execution handle immediately — use code/shell/watch to stream output. Sync mode (wait=true) blocks until completion and returns full stdout/stderr.",
+      "params": {
+        "cmd": {
+          "type": "string",
+          "required": true,
+          "description": "cmd parameter"
+        },
+        "wait": {
+          "type": "boolean",
+          "required": false,
+          "description": "wait parameter"
+        },
+        "timeoutMs": {
+          "type": "number",
+          "required": false,
+          "description": "timeoutMs parameter"
+        }
+      }
+    },
+    {
+      "name": "code/search",
+      "description": "Code Search Command - Shared Types\n *\n * Search for a regex pattern across workspace files. Respects .gitignore, supports glob-based file filtering. Returns matching lines with context.",
+      "params": {
+        "pattern": {
+          "type": "string",
+          "required": true,
+          "description": "pattern parameter"
+        },
+        "fileGlob": {
+          "type": "string",
+          "required": false,
+          "description": "fileGlob parameter"
+        },
+        "maxResults": {
+          "type": "number",
+          "required": false,
+          "description": "maxResults parameter"
+        }
+      }
+    },
+    {
+      "name": "code/read",
+      "description": "Code Read Command - Shared Types\n *\n * Read a file or line range from the persona's workspace. Returns content with line numbers and metadata. Supports partial reads via start/end line parameters.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        }
+      }
+    },
+    {
+      "name": "code/history",
+      "description": "Code History Command - Shared Types\n *\n * Get change history for a specific file or the entire workspace. Returns change graph nodes with diffs, timestamps, and descriptions.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": false,
+          "description": "filePath parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "code/git",
+      "description": "Code Git Command - Shared Types\n *\n * Workspace-scoped git operations for the coding agent pipeline.\n * Operations: status, diff, log, add, commit, push.\n * All operations are routed through the Rust IPC backend for per-persona workspace isolation.",
+      "params": {
+        "userId": {
+          "type": "string",
+          "required": true,
+          "description": "userId parameter"
+        },
+        "operation": {
+          "type": "string",
+          "required": true,
+          "description": "operation parameter"
+        },
+        "paths": {
+          "type": "array",
+          "required": false,
+          "description": "paths parameter"
+        },
+        "message": {
+          "type": "string",
+          "required": false,
+          "description": "message parameter"
+        },
+        "remote": {
+          "type": "string",
+          "required": false,
+          "description": "remote parameter"
+        },
+        "branch": {
+          "type": "string",
+          "required": false,
+          "description": "branch parameter"
+        },
+        "staged": {
+          "type": "boolean",
+          "required": false,
+          "description": "staged parameter"
+        },
+        "count": {
+          "type": "number",
+          "required": false,
+          "description": "count parameter"
+        }
+      }
+    },
+    {
+      "name": "code/edit",
+      "description": "Code Edit Command - Shared Types\n *\n * Edit a file using search-replace, line-range replacement, insert-at, or append. Creates a ChangeNode for undo. Safer than full file write for targeted modifications.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "editType": {
+          "type": "string",
+          "required": true,
+          "description": "editType parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "replace": {
+          "type": "string",
+          "required": false,
+          "description": "replace parameter"
+        },
+        "replaceAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "replaceAll parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "newContent": {
+          "type": "string",
+          "required": false,
+          "description": "newContent parameter"
+        },
+        "line": {
+          "type": "number",
+          "required": false,
+          "description": "line parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        }
+      }
+    },
+    {
+      "name": "code/diff",
+      "description": "Code Diff Command - Shared Types\n *\n * Preview an edit as a unified diff without applying it. Useful for reviewing changes before committing them. Uses the same edit modes as code/edit.",
+      "params": {
+        "filePath": {
+          "type": "string",
+          "required": true,
+          "description": "filePath parameter"
+        },
+        "editType": {
+          "type": "string",
+          "required": true,
+          "description": "editType parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        },
+        "replace": {
+          "type": "string",
+          "required": false,
+          "description": "replace parameter"
+        },
+        "replaceAll": {
+          "type": "boolean",
+          "required": false,
+          "description": "replaceAll parameter"
+        },
+        "startLine": {
+          "type": "number",
+          "required": false,
+          "description": "startLine parameter"
+        },
+        "endLine": {
+          "type": "number",
+          "required": false,
+          "description": "endLine parameter"
+        },
+        "newContent": {
+          "type": "string",
+          "required": false,
+          "description": "newContent parameter"
+        },
+        "line": {
+          "type": "number",
+          "required": false,
+          "description": "line parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
         }
       }
     },

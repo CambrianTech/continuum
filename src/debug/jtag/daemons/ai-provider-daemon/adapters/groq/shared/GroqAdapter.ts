@@ -37,24 +37,24 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
       timeout: 60000,
       supportedCapabilities: ['text-generation', 'chat'],
       models: [
-        // Llama 3.1 family (Meta)
+        // Llama 3.1 family (Meta) — Groq supports 128K context for these
         {
           id: 'llama-3.1-405b-reasoning',
           name: 'Llama 3.1 405B',
           provider: 'groq',
           capabilities: ['text-generation', 'chat'],
-          contextWindow: 8192,
+          contextWindow: 131072,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         },
         {
           id: 'llama-3.1-8b-instant',
           name: 'Llama 3.1 8B (Default)',
           provider: 'groq',
           capabilities: ['text-generation', 'chat'],
-          contextWindow: 8192,
+          contextWindow: 131072,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         },
         // Mixtral family (Mistral AI)
         {
@@ -64,7 +64,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 32768,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         },
         // Gemma family (Google)
         {
@@ -74,7 +74,7 @@ export class GroqAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 8192,
           supportsStreaming: true,
-          supportsFunctions: false
+          supportsFunctions: true
         }
       ]
     });

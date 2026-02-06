@@ -2,199 +2,41 @@
 /**
  * Clean Database Seeding via JTAG Commands
  *
- * Uses factory functions to eliminate repetition and create clean data structures
+ * Performance-optimized: bulk loads, parallel updates, no redundant subprocess spawns.
+ * Uses factory functions from ./seed/factories and helper functions from ./seed/helpers.
  */
 
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { USER_IDS, ROOM_IDS, MESSAGE_IDS, USER_CONFIG, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
+import { ROOM_IDS, MESSAGE_IDS, ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
 import { stringToUUID } from '../system/core/types/CrossPlatformUUID';
-import { DATABASE_PATHS } from '../system/data/config/DatabaseConfig';
 import { UserEntity } from '../system/data/entities/UserEntity';
 import { RoomEntity } from '../system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
-import { UserStateEntity } from '../system/data/entities/UserStateEntity';
 import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
 import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
-import type { UserCreateResult } from '../commands/user/create/shared/UserCreateTypes';
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
 import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
 import {
-  createUserCapabilities,
   createRoom,
-  createChatMessage,
   createDefaultContentTypes,
-  createDefaultUserStates,
-  createDefaultTrainingSessions
 } from './seed/factories';
 import {
   createRecord,
-  createStateRecord,
   updatePersonaProfile,
   updatePersonaConfig,
   updateUserMetadata,
   updateUserModelConfig,
   createUserViaCommand,
-  loadUserByUniqueId,
-  seedRecords
+  seedRecords,
 } from './seed/helpers';
-import { isTestUser, isTestRoom, isTestMessage } from '../tests/shared/TestEntityConstants';
 
 const execAsync = promisify(exec);
 
-// ===== MOVED TO scripts/seed/factories.ts =====
-// Factory functions extracted to eliminate repetition
+// ===== LOCAL HELPERS (not in ./seed/helpers or ./seed/factories) =====
 
-/**
- * @deprecated - Moved to factories.ts, keeping for reference during migration
- */
-function createUserCapabilities_OLD(type: 'human' | 'agent'): any {
-  const baseCapabilities = {
-    canSendMessages: true,
-    canReceiveMessages: true,
-    canTrain: false,
-  };
-
-  if (type === 'human') {
-    return {
-      ...baseCapabilities,
-      canCreateRooms: true,
-      canInviteOthers: true,
-      canModerate: true,
-      autoResponds: false,
-      providesContext: false,
-      canAccessPersonas: true,
-    };
-  } else { // agent
-    return {
-      ...baseCapabilities,
-      canCreateRooms: true,
-      canInviteOthers: true,
-      canModerate: true,
-      autoResponds: true,
-      providesContext: true,
-      canAccessPersonas: false,
-    };
-  }
-}
-
-/**
- * Create user profile
- */
-function createUserProfile(displayName: string, avatar: string, bio: string, location: string): any {
-  return {
-    displayName,
-    avatar,
-    bio,
-    location,
-    joinedAt: new Date().toISOString()
-  };
-}
-
-/**
- * Create user preferences with sensible defaults
- */
-function createUserPreferences(): any {
-  return {
-    theme: 'dark',
-    language: 'en',
-    timezone: 'UTC',
-    notifications: {
-      mentions: true,
-      directMessages: true,
-      roomUpdates: false
-    },
-    privacy: {
-      showOnlineStatus: true,
-      allowDirectMessages: true,
-      shareActivity: false
-    }
-  };
-}
-
-/**
- * Create complete user object
- */
-function createUser(id: string, displayName: string, shortDescription: string, type: 'human' | 'agent', avatar: string, bio: string, location: string): any {
-  return {
-    id,
-    displayName,
-    shortDescription,
-    type,
-    profile: createUserProfile(displayName, avatar, bio, location),
-    capabilities: createUserCapabilities(type),
-    preferences: createUserPreferences(),
-    status: "online",
-    lastActiveAt: new Date().toISOString(),
-    sessionsActive: []
-  };
-}
-
-/**
- * Create room privacy settings
- */
-function createRoomPrivacy(isPublic: boolean = true): any {
-  return {
-    isPublic,
-    requiresInvite: false,
-    allowGuestAccess: true,
-    searchable: true
-  };
-}
-
-/**
- * Create room settings
- */
-function createRoomSettings(): any {
-  return {
-    allowReactions: true,
-    allowThreads: true,
-    allowFileSharing: true,
-    messageRetentionDays: 365
-  };
-}
-
-/**
- * Create room stats
- */
-function createRoomStats(memberCount: number): any {
-  return {
-    memberCount,
-    messageCount: 0,
-    createdAt: new Date().toISOString(),
-    lastActivityAt: new Date().toISOString()
-  };
-}
-
-/**
- * Create complete room object
- */
-function createRoom(id: string, name: string, displayName: string, description: string, topic: string, memberCount: number, tags: string[], ownerId: string, uniqueId: string, recipeId: string = 'general-chat'): any {
-  return {
-    id,
-    uniqueId,  // REQUIRED field for RoomEntity validation
-    name: name.toLowerCase(),
-    displayName,
-    description,
-    topic,
-    type: "public",
-    status: "active",
-    ownerId,
-    lastMessageAt: new Date().toISOString(), // Set to current time for new rooms
-    recipeId,  // Recipe for conversation governance
-    privacy: createRoomPrivacy(),
-    settings: createRoomSettings(),
-    stats: createRoomStats(memberCount),
-    members: [],
-    tags
-  };
-}
-
-/**
- * Create message content
- */
 function createMessageContent(text: string): any {
   return {
     text,
@@ -209,16 +51,13 @@ function createMessageContent(text: string): any {
   };
 }
 
-/**
- * Create complete message object
- */
 function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string, senderType: 'human' | 'agent' | 'persona' | 'system' = 'system'): any {
   return {
     id,
     roomId,
     senderId,
     senderName,
-    senderType,  // REQUIRED field for ChatMessageEntity
+    senderType,
     content: createMessageContent(text),
     status: "sent",
     priority: "normal",
@@ -227,395 +66,72 @@ function createMessage(id: string, roomId: string, senderId: string, senderName:
   };
 }
 
-/**
- * Create default content type registry
- */
-function createDefaultContentTypes(): any[] {
-  return [
-    {
-      id: 'ct-chat',
-      type: 'chat',
-      displayName: 'Chat Room',
-      description: 'Real-time chat communication',
-      category: 'communication',
-      config: {
-        widgetSelector: 'chat-widget',
-        allowMultiple: true,
-        autoSave: true,
-        preloadData: true,
-        requiredPermissions: ['chat:read', 'chat:write'],
-        minUserType: 'human'
-      },
-      isActive: true,
-      isBuiltIn: true,
-      sortOrder: 10
-    },
-    {
-      id: 'ct-academy',
-      type: 'academy-session',
-      displayName: 'Academy Training',
-      description: 'AI training sessions with hyperparameters',
-      category: 'development',
-      config: {
-        widgetSelector: 'chat-widget',
-        allowMultiple: true,
-        autoSave: true,
-        preloadData: true,
-        requiredPermissions: ['academy:read', 'academy:participate'],
-        minUserType: 'human'
-      },
-      isActive: true,
-      isBuiltIn: true,
-      sortOrder: 20
-    },
-    {
-      id: 'ct-user-list',
-      type: 'user-list',
-      displayName: 'User Directory',
-      description: 'User management and directory',
-      category: 'management',
-      config: {
-        widgetSelector: 'user-list-widget',
-        allowMultiple: false,
-        autoSave: false,
-        preloadData: true,
-        requiredPermissions: ['users:read'],
-        minUserType: 'human'
-      },
-      isActive: true,
-      isBuiltIn: true,
-      sortOrder: 30
-    }
-  ];
-}
-
-// NOTE: createDefaultUserStates imported from factories.ts - uses UserCapabilitiesDefaults constants
+// ===== BULK LOADING =====
 
 /**
- * Create default training sessions
+ * Load ALL users in one bulk call and parse into a map.
+ * Returns both the user map (keyed by uniqueId) and the list of missing uniqueIds.
+ *
+ * This replaces getMissingUsers() + N individual loadUserByUniqueId() calls
+ * with a SINGLE subprocess spawn.
  */
-function createDefaultTrainingSessions(): any[] {
-  return [
-    {
-      id: 'ts-js-fundamentals',
-      roomId: ROOM_IDS.ACADEMY,
-      teacherUserId: USER_IDS.CLAUDE_CODE,
-      studentUserId: USER_IDS.HUMAN,
-      sessionName: 'JavaScript Fundamentals',
-      description: 'Learn core JavaScript concepts through interactive exercises',
-      sessionType: 'teacher-student',
-      status: 'active',
-      curriculum: 'javascript-basics',
-      startedAt: new Date().toISOString(),
-      plannedDuration: 90,
-      actualDuration: 15,
-      hyperparameters: {
-        learningRate: 0.15,
-        scoreThreshold: 80.0,
-        benchmarkInterval: 8,
-        maxSessionLength: 120,
-        adaptiveScoring: true,
-        contextWindow: 25
-      },
-      learningObjectives: [
-        {
-          id: 'obj-variables',
-          topic: 'variables-declarations',
-          description: 'Understand var, let, and const declarations',
-          targetScore: 85,
-          currentScore: 78,
-          completed: false,
-          evidence: []
-        },
-        {
-          id: 'obj-functions',
-          topic: 'function-basics',
-          description: 'Create and call functions effectively',
-          targetScore: 80,
-          completed: false,
-          evidence: []
-        }
-      ],
-      metrics: {
-        messagesExchanged: 24,
-        benchmarksPassed: 2,
-        benchmarksFailed: 1,
-        averageScore: 76.5,
-        timeSpent: 15,
-        objectivesCompleted: 0,
-        scoreHistory: [
-          {
-            timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-            score: 72,
-            objective: 'variables-declarations'
-          },
-          {
-            timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-            score: 81,
-            objective: 'function-basics'
-          }
-        ]
-      },
-      additionalParticipants: [],
-      isArchived: false
-    }
-  ];
-}
-
-// ===== SEEDING FUNCTIONS =====
-
-/**
- * Create a record via data/create command (server-side, no browser required) with proper shell escaping
- */
-async function createStateRecord(collection: string, data: any, id: string, userId?: string, displayName?: string): Promise<boolean> {
-  const dataArg = JSON.stringify(data).replace(/'/g, `'\"'\"'`);
-  const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
-
-  try {
-    const result = await execAsync(cmd);
-    const success = result.stdout.includes('\"success\": true');
-
-    if (success) {
-      console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
-      return true;
-    } else {
-      console.error(`❌ Failed to create ${collection} ${displayName || id}: Command returned unsuccessful result`);
-      console.error(`Response: ${result.stdout}`);
-      return false;
-    }
-  } catch (error: any) {
-    const hasSuccess = error.stdout && error.stdout.includes('\"success\": true');
-
-    if (hasSuccess) {
-      console.log(`✅ Created ${collection} (state): ${displayName || id}${userId ? ` for user ${userId.slice(0, 8)}...` : ''}`);
-      return true;
-    } else {
-      console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
-      console.error(`   Error: ${error.message}`);
-      if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
-      if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}...`);
-      return false;
-    }
-  }
-}
-
-/**
- * Update persona bio via shortDescription field (profile is separate entity)
- */
-async function updatePersonaProfile(userId: string, profile: { bio: string; speciality: string }): Promise<boolean> {
-  const updateData = {
-    shortDescription: profile.bio  // Use shortDescription which is on UserEntity directly
-  };
-  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
-
-  try {
-    const { stdout } = await execAsync(cmd);
-    const result = JSON.parse(stdout);
-
-    if (result.success) {
-      console.log(`  ✅ Updated persona bio for user ${userId.slice(0, 8)}...`);
-      return true;
-    } else {
-      console.error(`  ❌ Failed to update persona bio: ${result.error || 'Unknown error'}`);
-      return false;
-    }
-  } catch (error: any) {
-    console.error(`  ❌ Failed to update persona bio: ${error.message}`);
-    return false;
-  }
-}
-
-/**
- * Update persona configuration for intelligent resource management
- */
-async function updatePersonaConfig(userId: string, config: any): Promise<boolean> {
-  const configArg = JSON.stringify(config).replace(/'/g, `'"'"'`);
-  const updateData = { personaConfig: config };
-  const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag ${DATA_COMMANDS.UPDATE} --collection=users --id=${userId} --data='${dataArg}'`;
-
-  try {
-    const { stdout } = await execAsync(cmd);
-    const result = JSON.parse(stdout);
-
-    if (result.success) {
-      console.log(`  ✅ Updated persona config for user ${userId.slice(0, 8)}...`);
-      return true;
-    } else {
-      console.error(`  ❌ Failed to update persona config: ${result.error || 'Unknown error'}`);
-      return false;
-    }
-  } catch (error: any) {
-    console.error(`  ❌ Failed to update persona config: ${error.message}`);
-    return false;
-  }
-}
-
-/**
- * Create a user via user/create command (proper factory-based creation)
- * Returns the UserEntity if successful, null otherwise
- */
-async function createUserViaCommand(type: 'human' | 'agent' | 'persona', displayName: string, uniqueId?: string, provider?: string): Promise<UserEntity | null> {
-  const uniqueIdArg = uniqueId ? ` --uniqueId=${uniqueId}` : '';
-  const providerArg = provider ? ` --provider=${provider}` : '';
-  const cmd = `./jtag user/create --type=${type} --displayName="${displayName}"${uniqueIdArg}${providerArg}`;
-
-  try {
-    const { stdout } = await execAsync(cmd);
-    const response: UserCreateResult = JSON.parse(stdout);
-
-    if (response.success && response.user) {
-      console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${uniqueId || 'none'}, ID: ${response.user.id.slice(0, 8)}...)`);
-      return response.user;
-    } else {
-      console.error(`❌ Failed to create user ${displayName}: ${response.error || 'Unknown error'}`);
-      return null;
-    }
-  } catch (error: any) {
-    // exec throws on non-zero exit, but may still have valid output
-    if (error.stdout) {
-      try {
-        const response: UserCreateResult = JSON.parse(error.stdout);
-        if (response.success && response.user) {
-          console.log(`✅ Created user (${type}): ${displayName} (uniqueId: ${uniqueId || 'none'}, ID: ${response.user.id.slice(0, 8)}...)`);
-          return response.user;
-        }
-      } catch (parseError) {
-        // Fall through to error handling
-      }
-    }
-
-    console.error(`❌ Failed to create user ${displayName}: ${error.message}`);
-    if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}`);
-    if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}`);
-    return null;
-  }
-}
-
-/**
- * Load an existing user by uniqueId using JTAG ${DATA_COMMANDS.LIST} command
- */
-async function loadUserByUniqueId(uniqueId: string): Promise<UserEntity | null> {
-  try {
-    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection} --filter='{"uniqueId":"${uniqueId}"}'`);
-    const response = JSON.parse(stdout);
-
-    if (response.success && response.items && response.items.length > 0) {
-      const user = response.items[0];
-      console.log(`✅ Loaded existing user: ${user.displayName} (uniqueId: ${uniqueId}, ID: ${user.id.slice(0, 8)}...)`);
-      return user;
-    } else {
-      console.log(`⚠️ User with uniqueId ${uniqueId} not found in database`);
-      return null;
-    }
-  } catch (error: any) {
-    console.error(`❌ Failed to load user with uniqueId ${uniqueId}: ${error.message}`);
-    if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}`);
-    return null;
-  }
-}
-
-/**
- * Create a record via JTAG data/create command (server-side, no browser required) with proper shell escaping
- */
-async function createRecord(collection: string, data: any, id: string, displayName?: string, userId?: string): Promise<boolean> {
-  const dataArg = JSON.stringify(data).replace(/'/g, `'"'"'`);
-  const cmd = `./jtag ${DATA_COMMANDS.CREATE} --collection=${collection} --data='${dataArg}'`;
-
-  try {
-    const result = await execAsync(cmd);
-    const success = result.stdout.includes('"success": true');
-
-    if (success) {
-      console.log(`✅ Created ${collection}: ${displayName || id}`);
-      return true;
-    } else {
-      console.error(`❌ Failed to create ${collection} ${displayName || id}: Command returned unsuccessful result`);
-      console.error(`Response: ${result.stdout}`);
-      return false;
-    }
-  } catch (error: any) {
-    const hasSuccess = error.stdout && error.stdout.includes('"success": true');
-
-    if (hasSuccess) {
-      console.log(`✅ Created ${collection}: ${displayName || id}`);
-      return true;
-    } else {
-      console.error(`❌ Failed to create ${collection} ${displayName || id}:`);
-      console.error(`   Error: ${error.message}`);
-      if (error.stdout) console.error(`   Output: ${error.stdout.substring(0, 500)}...`);
-      if (error.stderr) console.error(`   Stderr: ${error.stderr.substring(0, 500)}...`);
-      return false;
-    }
-  }
-}
-
-/**
- * Seed multiple records of the same type
- */
-async function seedRecords<T extends { id: string; displayName?: string }>(collection: string, records: T[], getDisplayName?: (record: T) => string, getUserId?: (record: T) => string): Promise<void> {
-  console.log(`📝 Creating ${records.length} ${collection} records via ${DATA_COMMANDS.CREATE}...`);
-
-  let successCount = 0;
-  for (const record of records) {
-    const displayName = getDisplayName ? getDisplayName(record) : record.displayName || record.id;
-    const userId = getUserId ? getUserId(record) : undefined;
-    const success = await createRecord(collection, record, record.id, displayName, userId);
-    if (success) successCount++;
-  }
-
-  console.log(`📊 Created ${successCount}/${records.length} ${collection} records`);
-
-  if (successCount !== records.length) {
-    throw new Error(`❌ Seeding failed for ${collection}: only ${successCount}/${records.length} records created successfully`);
-  }
-}
-
-/**
- * Get count from JTAG list command (using head to get just the JSON header)
- */
-async function getEntityCount(collection: string): Promise<string> {
-  try {
-    // Use head to get first 10 lines which includes the count field
-    const result = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${collection} 2>&1 | head -10`);
-    const count = result.stdout.match(/"count":\s*(\d+)/)?.[1] || '0';
-    return count;
-  } catch (error: any) {
-    console.error(`   ⚠️ Error counting ${collection}: ${error.message}`);
-    return '0';
-  }
-}
-
-/**
- * Check which users exist by uniqueId
- * Returns array of missing user uniqueIds that need to be created
- */
-async function getMissingUsers(): Promise<string[]> {
-  // Build required users list from PERSONA_CONFIGS (single source of truth)
+async function loadAllUsers(): Promise<{
+  usersByUniqueId: Map<string, UserEntity>;
+  missingUniqueIds: string[];
+}> {
   const requiredUsers = [
     DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
     ...PERSONA_CONFIGS.map(p => p.uniqueId)
   ];
 
+  const usersByUniqueId = new Map<string, UserEntity>();
+
   try {
-    const result = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection}`);
-    const stdout = result.stdout;
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection}`);
+    const response = JSON.parse(stdout);
 
-    const missingUsers = requiredUsers.filter(uniqueId => !stdout.includes(uniqueId));
-
-    if (missingUsers.length === 0) {
-      console.log(`✅ All ${requiredUsers.length} required users exist`);
-    } else {
-      console.log(`📋 Found ${requiredUsers.length - missingUsers.length}/${requiredUsers.length} users, missing: ${missingUsers.join(', ')}`);
+    if (response.success && response.items) {
+      for (const user of response.items) {
+        if (user.uniqueId) {
+          usersByUniqueId.set(user.uniqueId, user);
+        }
+      }
     }
 
-    return missingUsers;
+    const missingUniqueIds = requiredUsers.filter(uid => !usersByUniqueId.has(uid));
+
+    if (missingUniqueIds.length === 0) {
+      console.log(`✅ All ${requiredUsers.length} required users exist`);
+    } else {
+      console.log(`📋 Found ${requiredUsers.length - missingUniqueIds.length}/${requiredUsers.length} users, missing: ${missingUniqueIds.join(', ')}`);
+    }
+
+    return { usersByUniqueId, missingUniqueIds };
   } catch (error) {
     console.log('⚠️ Could not check existing users, will attempt full seed');
-    return requiredUsers;
+    return { usersByUniqueId, missingUniqueIds: requiredUsers };
   }
 }
+
+/**
+ * Load ALL rooms in one bulk call and return as array + uniqueId set.
+ */
+async function loadAllRooms(): Promise<{
+  rooms: any[];
+  uniqueIds: Set<string>;
+}> {
+  try {
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${RoomEntity.collection}`);
+    const response = JSON.parse(stdout);
+    const rooms = response.success && response.items ? response.items : [];
+    const uniqueIds = new Set<string>(rooms.map((r: any) => r.uniqueId));
+    return { rooms, uniqueIds };
+  } catch (error) {
+    return { rooms: [], uniqueIds: new Set() };
+  }
+}
+
+// ===== SYSTEM READINESS =====
 
 /**
  * Wait for JTAG system to be fully ready with commands registered
@@ -630,7 +146,7 @@ async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> 
     try {
       const { stdout } = await execAsync('./jtag ping');
 
-      // ROBUST: Extract JSON from potentially polluted output (same as SystemMetricsCollector)
+      // ROBUST: Extract JSON from potentially polluted output
       const firstBrace = stdout.indexOf('{');
       const lastBrace = stdout.lastIndexOf('}');
 
@@ -648,7 +164,6 @@ async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> 
         return true;
       }
 
-      // Log progress every 5 attempts
       if (attempts % 5 === 0 && attempts > 0) {
         const elapsed = Math.round((Date.now() - startTime) / 1000);
         console.log(`   Still waiting... (${elapsed}s elapsed, commands: ${response.server?.health?.commandsRegistered || 0})`);
@@ -658,7 +173,7 @@ async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> 
     }
 
     attempts++;
-    const waitMs = Math.min(500 * Math.pow(1.2, attempts), 2000); // Exponential backoff, max 2s
+    const waitMs = Math.min(500 * Math.pow(1.2, attempts), 2000);
     await new Promise(resolve => setTimeout(resolve, waitMs));
   }
 
@@ -666,325 +181,171 @@ async function waitForJTAGReady(maxWaitSeconds: number = 180): Promise<boolean> 
   return false;
 }
 
-/**
- * Clean up test entities left over from failed integration tests
- * Runs automatically on npm start to prevent test pollution
- */
-async function cleanupTestEntities(): Promise<void> {
-  console.log('🧹 Cleaning up test entities from failed integration tests...');
+// ===== ROOM DEFINITIONS =====
 
-  try {
-    // Use the standalone cleanup script instead of duplicating logic
-    await execAsync('npx tsx scripts/cleanup-test-entities.ts');
-  } catch (error) {
-    // Non-fatal - just log and continue with seeding
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    console.warn(`⚠️  Test entity cleanup failed (non-fatal): ${errorMsg}`);
-    console.warn(`   You can manually run: npx tsx scripts/cleanup-test-entities.ts`);
-  }
-}
+const ALL_EXPECTED_ROOMS = [
+  { uniqueId: 'general', name: 'general', displayName: 'General', description: 'Main discussion room for all users', topic: 'General chat and collaboration', tags: ['general', 'welcome', 'discussion'], recipeId: 'general-chat' },
+  { uniqueId: 'academy', name: 'academy', displayName: 'Academy', description: 'Learning and educational discussions', topic: 'Share knowledge, tutorials, and collaborate on learning', tags: ['academy', 'learning', 'education'], recipeId: 'academy' },
+  { uniqueId: 'pantheon', name: 'pantheon', displayName: 'Pantheon', description: 'Elite discussion room for top-tier SOTA AI models', topic: 'Advanced reasoning and multi-model collaboration', tags: ['sota', 'elite', 'reasoning'], recipeId: 'pantheon' },
+  { uniqueId: 'dev-updates', name: 'dev-updates', displayName: 'Dev Updates', description: 'GitHub PRs, CI/CD, and development activity notifications', topic: 'Real-time development feed', tags: ['github', 'ci', 'development'], recipeId: 'dev-updates' },
+  { uniqueId: 'help', name: 'help', displayName: 'Help', description: 'Get help from AI assistants', topic: 'Your AI helpers are here to assist you', tags: ['help', 'support', 'system'], recipeId: 'help' },
+  { uniqueId: 'settings', name: 'settings', displayName: 'Settings', description: 'Configure your Continuum experience', topic: 'System settings and configuration', tags: ['settings', 'config', 'system'], recipeId: 'settings' },
+  { uniqueId: 'theme', name: 'theme', displayName: 'Theme', description: 'Design and customize your visual experience', topic: 'Themes, colors, and customization', tags: ['theme', 'design', 'system'], recipeId: 'theme' },
+  { uniqueId: 'canvas', name: 'canvas', displayName: 'Canvas', description: 'Collaborative drawing discussions', topic: 'Art, drawing, and creative collaboration', tags: ['canvas', 'art', 'system'], recipeId: 'canvas' },
+  { uniqueId: 'outreach', name: 'outreach', displayName: 'Outreach', description: 'Social media strategy, community building, and external engagement', topic: 'Discuss what to post, share interesting finds, coordinate outreach', tags: ['social', 'outreach', 'community', 'moltbook'], recipeId: 'outreach' },
+  { uniqueId: 'newsroom', name: 'newsroom', displayName: 'Newsroom', description: 'Current events, breaking news, and world awareness', topic: 'Share and discuss current events', tags: ['news', 'current-events', 'awareness'], recipeId: 'newsroom' },
+  { uniqueId: 'code', name: 'code', displayName: 'Code', description: 'Collaborative coding — reading, writing, reviewing, and shipping code as a team', topic: 'Software development with real tools and real agent loops', tags: ['coding', 'development', 'engineering'], recipeId: 'coding' },
+] as const;
+
+const SYSTEM_ROOM_UNIQUE_IDS = ['settings', 'help', 'theme', 'canvas'] as const;
+
+// ===== MAIN SEEDING =====
 
 /**
- * Main seeding function with idempotent behavior
+ * Main seeding function with idempotent behavior.
+ *
+ * Performance: uses bulk loads and parallel updates to minimize subprocess spawns.
+ * Common case (all users exist): ~2 subprocess calls total (ping + bulk list).
+ * Partial case (some users missing): creates missing users sequentially,
+ * updates existing users in parallel.
  */
 async function seedViaJTAG() {
   console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
 
   try {
-    // CRITICAL: Wait for JTAG system to be ready before attempting any commands
+    // Wait for JTAG system to be ready
     const isReady = await waitForJTAGReady();
     if (!isReady) {
       throw new Error('❌ JTAG system not ready - commands not registered yet');
     }
 
-    // NOTE: Test cleanup disabled during startup to avoid deadlock
-    // The cleanup script tries to connect to the server (jtag.connect()) which hangs
-    // during startup. Run manually if needed: npx tsx scripts/cleanup-test-entities.ts
-    // await cleanupTestEntities();
+    // BULK LOAD: One subprocess call replaces N individual lookups
+    const { usersByUniqueId, missingUniqueIds } = await loadAllUsers();
 
-    // Check which users are missing
-    const missingUsers = await getMissingUsers();
-
-    if (missingUsers.length === 0) {
+    if (missingUniqueIds.length === 0) {
       console.log('⚡ All required users exist - no seeding needed');
       return;
     }
 
-    // Create human user FIRST (needed as room owner), then rooms, then other users
-    console.log(`📝 Creating human user first (needed as room owner)...`);
-
-    // Get system identity (HOME directory-based) - server-only, keep it here!
+    // Get system identity
     const systemIdentity = SystemIdentity.getIdentity();
     console.log(`🔧 Using system identity: ${systemIdentity.displayName} (${systemIdentity.username})`);
 
-    const userMap: Record<string, UserEntity | null> = {};
+    // Step 1: Ensure human user exists (needed as room owner)
+    let humanUser = usersByUniqueId.get(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) ?? null;
 
-    // Step 1: Create human user first (or use existing)
-    let humanUser: UserEntity | null = null;
-
-    if (missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
-      // Create new human user with dynamic name from system identity
+    if (!humanUser) {
+      console.log('📝 Creating human user first (needed as room owner)...');
       humanUser = await createUserViaCommand('human', systemIdentity.displayName, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
       if (!humanUser) {
         throw new Error('❌ Failed to create human user - required as room owner');
       }
-      console.log(`✅ Created human user: ${humanUser.displayName}`);
-    } else {
-      // Human user already exists - load from database using uniqueId
-      humanUser = await loadUserByUniqueId(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
-      if (!humanUser) {
-        throw new Error('❌ Failed to load existing human user - database inconsistency');
-      }
+      usersByUniqueId.set(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN, humanUser);
     }
 
-    userMap['humanUser'] = humanUser;
-
-    // Step 2: Check if rooms exist (create if missing)
-    const { stdout: roomsOutput } = await execAsync(`./jtag data/list --collection=rooms --limit=1`);
-    const roomsResult = JSON.parse(roomsOutput);
-    const needsRooms = !roomsResult.items || roomsResult.items.length === 0;
+    // Step 2: Check if rooms exist
+    const { rooms: existingRooms, uniqueIds: existingRoomUniqueIds } = await loadAllRooms();
+    const needsRooms = existingRooms.length === 0;
 
     if (needsRooms) {
-      // Create and persist rooms BEFORE creating other users
       console.log('🏗️ Creating rooms before other users (for auto-join to work)...');
 
-      const generalRoom = createRoom(
-        ROOM_IDS.GENERAL,
-        ROOM_CONFIG.GENERAL.NAME,
-        ROOM_CONFIG.GENERAL.NAME,
-        ROOM_CONFIG.GENERAL.DESCRIPTION,
-        "Welcome to general discussion! Introduce yourself and chat about anything.",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["general", "welcome", "discussion"],
-        humanUser.id,
-        'general'
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
+      const rooms = [
+        createRoom(ROOM_IDS.GENERAL, ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.DESCRIPTION,
+          "Welcome to general discussion! Introduce yourself and chat about anything.", 0,
+          ["general", "welcome", "discussion"], humanUser.id, 'general'),
+        createRoom(ROOM_IDS.ACADEMY, ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.DESCRIPTION,
+          "Share knowledge, tutorials, and collaborate on learning", 0,
+          ["academy", "learning", "education"], humanUser.id, 'academy'),
+        createRoom(ROOM_IDS.PANTHEON, 'pantheon', 'Pantheon', 'Elite discussion room for top-tier SOTA AI models',
+          "Advanced reasoning and multi-model collaboration", 0,
+          ["sota", "elite", "reasoning"], humanUser.id, 'pantheon'),
+        createRoom(ROOM_IDS.DEV_UPDATES, 'dev-updates', 'Dev Updates', 'GitHub PRs, CI/CD, and development activity notifications',
+          "Real-time development feed - where the team learns together", 0,
+          ["github", "ci", "development", "training"], humanUser.id, 'dev-updates'),
+        createRoom(ROOM_IDS.HELP, 'help', 'Help', 'Get help from AI assistants - ask anything about using Continuum',
+          "Your AI helpers are here to assist you getting started", 0,
+          ["help", "support", "onboarding", "getting-started", "system"], humanUser.id, 'help', 'help'),
+        createRoom(ROOM_IDS.SETTINGS, 'settings', 'Settings', 'Configure your Continuum experience with AI assistance',
+          "Get help configuring API keys, preferences, and system settings", 0,
+          ["settings", "config", "preferences", "system"], humanUser.id, 'settings', 'settings'),
+        createRoom(ROOM_IDS.THEME, 'theme', 'Theme', 'Design and customize your visual experience with AI assistance',
+          "Get help designing themes, choosing colors, and customizing your workspace appearance", 0,
+          ["theme", "design", "customization", "appearance", "system"], humanUser.id, 'theme', 'theme'),
+        createRoom(ROOM_IDS.CANVAS, 'canvas', 'Canvas', 'Collaborative drawing discussions with AI assistance',
+          "Share drawing tips, get AI feedback on your artwork, and collaborate on visual projects", 0,
+          ["canvas", "drawing", "art", "collaboration", "system"], humanUser.id, 'canvas', 'canvas'),
+        createRoom(ROOM_IDS.OUTREACH, 'outreach', 'Outreach', 'Social media strategy, community building, and external engagement',
+          "Discuss what to post, share interesting finds, coordinate outreach on Moltbook and other platforms", 0,
+          ["social", "outreach", "community", "moltbook"], humanUser.id, 'outreach', 'outreach'),
+        createRoom(ROOM_IDS.NEWSROOM, 'newsroom', 'Newsroom', 'Current events, breaking news, and world awareness for all personas',
+          "Share and discuss current events to keep the community informed", 0,
+          ["news", "current-events", "awareness"], humanUser.id, 'newsroom', 'newsroom'),
+        createRoom(ROOM_IDS.CODE, 'code', 'Code', 'Collaborative coding — reading, writing, reviewing, and shipping code as a team',
+          "Software development with real tools and real agent loops", 0,
+          ["coding", "development", "engineering"], humanUser.id, 'code', 'coding'),
+      ];
 
-      const academyRoom = createRoom(
-        ROOM_IDS.ACADEMY,
-        ROOM_CONFIG.ACADEMY.NAME,
-        ROOM_CONFIG.ACADEMY.NAME,
-        ROOM_CONFIG.ACADEMY.DESCRIPTION,
-        "Share knowledge, tutorials, and collaborate on learning",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["academy", "learning", "education"],
-        humanUser.id,
-        'academy'
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const pantheonRoom = createRoom(
-        ROOM_IDS.PANTHEON,
-        'pantheon',
-        'Pantheon',
-        'Elite discussion room for top-tier SOTA AI models',
-        "Advanced reasoning and multi-model collaboration",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["sota", "elite", "reasoning"],
-        humanUser.id,
-        'pantheon'
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const devUpdatesRoom = createRoom(
-        ROOM_IDS.DEV_UPDATES,
-        'dev-updates',
-        'Dev Updates',
-        'GitHub PRs, CI/CD, and development activity notifications',
-        "Real-time development feed - where the team learns together",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["github", "ci", "development", "training"],
-        humanUser.id,
-        'dev-updates'
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const helpRoom = createRoom(
-        ROOM_IDS.HELP,
-        'help',
-        'Help',
-        'Get help from AI assistants - ask anything about using Continuum',
-        "Your AI helpers are here to assist you getting started",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["help", "support", "onboarding", "getting-started", "system"],  // 'system' tag = hidden from rooms list
-        humanUser.id,
-        'help'  // recipe: help-focused room with Helper AI
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const settingsRoom = createRoom(
-        ROOM_IDS.SETTINGS,
-        'settings',
-        'Settings',
-        'Configure your Continuum experience with AI assistance',
-        "Get help configuring API keys, preferences, and system settings",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["settings", "config", "preferences", "system"],  // 'system' tag = hidden from rooms list
-        humanUser.id,
-        'settings'  // recipe: settings-focused room with Helper AI
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const themeRoom = createRoom(
-        ROOM_IDS.THEME,
-        'theme',
-        'Theme',
-        'Design and customize your visual experience with AI assistance',
-        "Get help designing themes, choosing colors, and customizing your workspace appearance",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["theme", "design", "customization", "appearance", "system"],  // 'system' tag = hidden from rooms list
-        humanUser.id,
-        'theme'  // recipe: theme-focused room with Helper AI
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const canvasRoom = createRoom(
-        ROOM_IDS.CANVAS,
-        'canvas',
-        'Canvas',
-        'Collaborative drawing discussions with AI assistance',
-        "Share drawing tips, get AI feedback on your artwork, and collaborate on visual projects",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["canvas", "drawing", "art", "collaboration", "system"],  // 'system' tag = hidden from rooms list
-        humanUser.id,
-        'canvas'  // recipe: canvas-focused room
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const outreachRoom = createRoom(
-        ROOM_IDS.OUTREACH,
-        'outreach',
-        'Outreach',
-        'Social media strategy, community building, and external engagement',
-        "Discuss what to post, share interesting finds, coordinate outreach on Moltbook and other platforms",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["social", "outreach", "community", "moltbook"],
-        humanUser.id,
-        'outreach',  // uniqueId
-        'outreach'   // recipeId - outreach-specific recipe with social tool directives
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const newsroomRoom = createRoom(
-        ROOM_IDS.NEWSROOM,
-        'newsroom',
-        'Newsroom',
-        'Current events, breaking news, and world awareness for all personas',
-        "Share and discuss current events to keep the community informed",
-        0,  // Will be auto-populated by RoomMembershipDaemon
-        ["news", "current-events", "awareness"],
-        humanUser.id,
-        'newsroom',  // uniqueId
-        'newsroom'   // recipeId - newsroom-specific recipe
-      );
-      // NO hardcoded members - let RoomMembershipDaemon handle it
-
-      const rooms = [generalRoom, academyRoom, pantheonRoom, devUpdatesRoom, helpRoom, settingsRoom, themeRoom, canvasRoom, outreachRoom, newsroomRoom];
-
-      // Persist rooms to database BEFORE creating other users
       await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
       console.log('✅ Rooms created and persisted - ready for auto-join');
     }
 
-    // Step 3: Now create all other users (auto-join will work because rooms exist)
-    console.log(`📝 Creating remaining ${missingUsers.length - 1} users (auto-join will trigger)...`);
+    // Step 3: Create missing personas (must be sequential — each triggers auto-join)
+    console.log(`📝 Creating ${missingUniqueIds.length - (missingUniqueIds.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) ? 0 : 1)} remaining users...`);
 
-    // Create all personas using config-driven loop (eliminates repetition)
     for (const persona of PERSONA_CONFIGS) {
-      if (missingUsers.includes(persona.uniqueId)) {
-        // Only create Sentinel if SENTINEL_PATH is configured
-        if (persona.provider === 'sentinel') {
-          if (!process.env.SENTINEL_PATH) {
-            console.log(`⏭️  Skipping Sentinel (SENTINEL_PATH not configured)`);
-            continue;
-          }
-        }
+      if (!missingUniqueIds.includes(persona.uniqueId)) continue;
 
-        const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
-        if (user) {
-          userMap[persona.uniqueId] = user;
+      if (persona.provider === 'sentinel' && !process.env.SENTINEL_PATH) {
+        console.log(`⏭️  Skipping Sentinel (SENTINEL_PATH not configured)`);
+        continue;
+      }
 
-          // Update metadata for audio-native models (Qwen3-Omni, etc.)
-          if (persona.isAudioNative && persona.modelId) {
-            await updateUserMetadata(user.id, {
-              modelId: persona.modelId,
-              isAudioNative: true,
-            });
-          }
-        }
-      } else {
-        // User already exists - load from database using uniqueId
-        const existingUser = await loadUserByUniqueId(persona.uniqueId);
-        if (existingUser) {
-          userMap[persona.uniqueId] = existingUser;
+      const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
+      if (user) {
+        usersByUniqueId.set(persona.uniqueId, user);
 
-          // ALWAYS update provider for existing users (ensures ollama -> candle migration)
-          if (persona.provider) {
-            await updateUserModelConfig(existingUser.id, persona.provider);
-          }
-
-          // Also update metadata for existing audio-native models (in case it was missed)
-          if (persona.isAudioNative && persona.modelId) {
-            await updateUserMetadata(existingUser.id, {
-              modelId: persona.modelId,
-              isAudioNative: true,
-            });
-          }
+        if (persona.isAudioNative && persona.modelId) {
+          await updateUserMetadata(user.id, { modelId: persona.modelId, isAudioNative: true });
         }
       }
     }
 
-    // Count only newly created users (users that were in missingUsers list)
-    const newUsersCreated = Object.values(userMap).filter((u, index, arr) => {
-      // Count only users that were successfully created (not null)
-      // Exclude human user if it was loaded (not in missingUsers)
-      const isHumanUser = u === humanUser;
-      const humanWasCreated = missingUsers.includes(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+    // Step 4: PARALLEL update existing users (provider + metadata)
+    // This replaces N sequential subprocess spawns with one parallel batch
+    const updatePromises: Promise<boolean>[] = [];
+    for (const persona of PERSONA_CONFIGS) {
+      if (missingUniqueIds.includes(persona.uniqueId)) continue;
+      const existingUser = usersByUniqueId.get(persona.uniqueId);
+      if (!existingUser) continue;
 
-      if (isHumanUser && !humanWasCreated) {
-        return false;  // Don't count loaded human user
+      if (persona.provider) {
+        updatePromises.push(updateUserModelConfig(existingUser.id, persona.provider));
       }
+      if (persona.isAudioNative && persona.modelId) {
+        updatePromises.push(updateUserMetadata(existingUser.id, { modelId: persona.modelId, isAudioNative: true }));
+      }
+    }
 
-      return u !== null;  // Count all other successfully created users
-    }).length;
-    console.log(`📊 Created ${newUsersCreated}/${missingUsers.length} users (auto-join handled by RoomMembershipDaemon)`);
+    if (updatePromises.length > 0) {
+      console.log(`🔄 Updating ${updatePromises.length} existing user configs in parallel...`);
+      await Promise.all(updatePromises);
+      console.log('✅ Existing user configs updated');
+    }
 
-    // Get references to created users for message seeding (using uniqueIds as keys)
-    const claudeUser = userMap[DEFAULT_USER_UNIQUE_IDS.CLAUDE_CODE];
-    // Use constants from PERSONA_UNIQUE_IDS (single source of truth, no magic strings)
-    const helperPersona = userMap[PERSONA_UNIQUE_IDS.HELPER];
-    const teacherPersona = userMap[PERSONA_UNIQUE_IDS.TEACHER];
-    const codeReviewPersona = userMap[PERSONA_UNIQUE_IDS.CODE_REVIEW];
-    const qwen3OmniPersona = userMap[PERSONA_UNIQUE_IDS.QWEN3_OMNI];
+    // Get key user references
+    const claudeUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.CLAUDE) ?? null;
+    const helperPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.HELPER) ?? null;
+    const teacherPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.TEACHER) ?? null;
+    const codeReviewPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.CODE_REVIEW) ?? null;
+    const qwen3OmniPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.QWEN3_OMNI) ?? null;
 
-    // If rooms already existed, check for missing rooms and ensure system rooms have Helper AI
+    // Step 5: Handle "rooms already existed" path — check missing rooms + system room helpers
     if (!needsRooms) {
-      // Check for and create any MISSING rooms (new rooms added to codebase)
-      console.log('🔍 Checking for missing rooms...');
-      const allExpectedRooms: { uniqueId: string; name: string; displayName: string; description: string; topic: string; tags: string[]; recipeId: string }[] = [
-        { uniqueId: 'general', name: 'general', displayName: 'General', description: 'Main discussion room for all users', topic: 'General chat and collaboration', tags: ['general', 'welcome', 'discussion'], recipeId: 'general-chat' },
-        { uniqueId: 'academy', name: 'academy', displayName: 'Academy', description: 'Learning and educational discussions', topic: 'Share knowledge, tutorials, and collaborate on learning', tags: ['academy', 'learning', 'education'], recipeId: 'academy' },
-        { uniqueId: 'pantheon', name: 'pantheon', displayName: 'Pantheon', description: 'Elite discussion room for top-tier SOTA AI models', topic: 'Advanced reasoning and multi-model collaboration', tags: ['sota', 'elite', 'reasoning'], recipeId: 'pantheon' },
-        { uniqueId: 'dev-updates', name: 'dev-updates', displayName: 'Dev Updates', description: 'GitHub PRs, CI/CD, and development activity notifications', topic: 'Real-time development feed', tags: ['github', 'ci', 'development'], recipeId: 'dev-updates' },
-        { uniqueId: 'help', name: 'help', displayName: 'Help', description: 'Get help from AI assistants', topic: 'Your AI helpers are here to assist you', tags: ['help', 'support', 'system'], recipeId: 'help' },
-        { uniqueId: 'settings', name: 'settings', displayName: 'Settings', description: 'Configure your Continuum experience', topic: 'System settings and configuration', tags: ['settings', 'config', 'system'], recipeId: 'settings' },
-        { uniqueId: 'theme', name: 'theme', displayName: 'Theme', description: 'Design and customize your visual experience', topic: 'Themes, colors, and customization', tags: ['theme', 'design', 'system'], recipeId: 'theme' },
-        { uniqueId: 'canvas', name: 'canvas', displayName: 'Canvas', description: 'Collaborative drawing discussions', topic: 'Art, drawing, and creative collaboration', tags: ['canvas', 'art', 'system'], recipeId: 'canvas' },
-        { uniqueId: 'outreach', name: 'outreach', displayName: 'Outreach', description: 'Social media strategy, community building, and external engagement', topic: 'Discuss what to post, share interesting finds, coordinate outreach', tags: ['social', 'outreach', 'community', 'moltbook'], recipeId: 'outreach' },
-        { uniqueId: 'newsroom', name: 'newsroom', displayName: 'Newsroom', description: 'Current events, breaking news, and world awareness', topic: 'Share and discuss current events', tags: ['news', 'current-events', 'awareness'], recipeId: 'newsroom' },
-      ];
-
-      // Fetch all existing rooms
-      const { stdout: allRoomsOutput } = await execAsync(`./jtag data/list --collection=rooms`);
-      const allRoomsResult = JSON.parse(allRoomsOutput);
-      const existingUniqueIds = new Set(
-        (allRoomsResult.items || []).map((r: any) => r.uniqueId)
-      );
-
+      // Check for missing rooms using already-loaded data
       let missingRoomsCreated = 0;
-      for (const roomDef of allExpectedRooms) {
-        if (!existingUniqueIds.has(roomDef.uniqueId)) {
+      for (const roomDef of ALL_EXPECTED_ROOMS) {
+        if (!existingRoomUniqueIds.has(roomDef.uniqueId)) {
           console.log(`🏗️ Creating missing room: ${roomDef.displayName}`);
           const newRoom = createRoom(
             stringToUUID(roomDef.displayName),
@@ -993,7 +354,7 @@ async function seedViaJTAG() {
             roomDef.description,
             roomDef.topic,
             0,
-            roomDef.tags,
+            [...roomDef.tags],
             humanUser.id,
             roomDef.uniqueId,
             roomDef.recipeId
@@ -1006,41 +367,48 @@ async function seedViaJTAG() {
         console.log(`✅ Created ${missingRoomsCreated} missing room(s)`);
       }
 
-      // Ensure system rooms have Helper AI
-      console.log('🏠 Ensuring system rooms have Helper AI...');
-      const systemRoomUniqueIds = ['settings', 'help', 'theme', 'canvas'];
-      for (const roomUniqueId of systemRoomUniqueIds) {
-        try {
-          const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
-          const parsed = JSON.parse(result.stdout);
-          if (parsed.success && parsed.items?.[0]) {
-            const room = parsed.items[0];
-            const existingMembers = room.members || [];
-            const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona?.id);
+      // Ensure system rooms have Helper AI — using already-loaded room data (NO extra queries)
+      if (helperPersona) {
+        console.log('🏠 Ensuring system rooms have Helper AI...');
+        const helperUpdates: Promise<any>[] = [];
 
-            if (helperPersona && !helperAlreadyMember) {
-              const updatedMembers = [
-                ...existingMembers,
-                { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
-              ];
-              const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
-              await execAsync(`./jtag data/update --collection=rooms --id="${room.id}" --data='${updateData}'`);
-              console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
-            }
+        for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
+          const room = existingRooms.find((r: any) => r.uniqueId === roomUniqueId);
+          if (!room) continue;
+
+          const existingMembers = room.members || [];
+          const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
+
+          if (!helperAlreadyMember) {
+            const updatedMembers = [
+              ...existingMembers,
+              { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+            ];
+            const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+            helperUpdates.push(
+              execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=${RoomEntity.collection} --id="${room.id}" --data='${updateData}'`)
+                .then(() => console.log(`✅ Added Helper AI to ${roomUniqueId} room`))
+                .catch(() => {/* skip silently */})
+            );
           }
-        } catch (error) {
-          // Silently skip - rooms might not exist yet
+        }
+
+        if (helperUpdates.length > 0) {
+          await Promise.all(helperUpdates);
         }
       }
+
       console.log('✅ Users added to existing database - rooms and messages already exist');
       return;
     }
+
+    // ===== FIRST-TIME SEED (rooms were just created) =====
 
     if (!humanUser || !claudeUser || !helperPersona || !teacherPersona || !codeReviewPersona) {
       throw new Error('❌ Failed to create core required users');
     }
 
-    // Update persona profiles with distinct personalities
+    // Update persona profiles (parallel)
     console.log('🎭 Updating persona profiles with distinct personalities...');
     const profileUpdates = [
       updatePersonaProfile(helperPersona.id, {
@@ -1057,7 +425,6 @@ async function seedViaJTAG() {
       })
     ];
 
-    // Add Qwen3-Omni profile if created (requires DASHSCOPE_API_KEY)
     if (qwen3OmniPersona) {
       profileUpdates.push(
         updatePersonaProfile(qwen3OmniPersona.id, {
@@ -1070,37 +437,41 @@ async function seedViaJTAG() {
     await Promise.all(profileUpdates);
     console.log('✅ Persona profiles updated with personalities');
 
-    // Ensure system rooms have Helper AI as default assistant
-    // This ensures the Settings, Help, and Theme widgets always have AI available
+    // System room helper setup (parallel — using rooms we just created)
     console.log('🏠 Adding Helper AI to system rooms...');
-    const systemRoomUniqueIds = ['settings', 'help', 'theme', 'canvas'];
-    for (const roomUniqueId of systemRoomUniqueIds) {
-      try {
-        const result = await execAsync(`./jtag data/list --collection=rooms --filter='{"uniqueId":"${roomUniqueId}"}'`);
-        const parsed = JSON.parse(result.stdout);
-        if (parsed.success && parsed.items?.[0]) {
-          const room = parsed.items[0];
-          const existingMembers = room.members || [];
-          const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
+    const systemRoomHelperUpdates: Promise<any>[] = [];
+    for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
+      systemRoomHelperUpdates.push(
+        (async () => {
+          try {
+            const result = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${RoomEntity.collection} --filter='{"uniqueId":"${roomUniqueId}"}'`);
+            const parsed = JSON.parse(result.stdout);
+            if (parsed.success && parsed.items?.[0]) {
+              const room = parsed.items[0];
+              const existingMembers = room.members || [];
+              const helperAlreadyMember = existingMembers.some((m: any) => m.userId === helperPersona.id);
 
-          if (!helperAlreadyMember) {
-            const updatedMembers = [
-              ...existingMembers,
-              { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
-            ];
-            const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
-            await execAsync(`./jtag data/update --collection=rooms --id="${room.id}" --data='${updateData}'`);
-            console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
-          } else {
-            console.log(`✅ Helper AI already in ${roomUniqueId} room`);
+              if (!helperAlreadyMember) {
+                const updatedMembers = [
+                  ...existingMembers,
+                  { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+                ];
+                const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+                await execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=${RoomEntity.collection} --id="${room.id}" --data='${updateData}'`);
+                console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
+              } else {
+                console.log(`✅ Helper AI already in ${roomUniqueId} room`);
+              }
+            }
+          } catch (error) {
+            console.warn(`⚠️ Could not add Helper AI to ${roomUniqueId}`);
           }
-        }
-      } catch (error) {
-        console.warn(`⚠️ Could not add Helper AI to ${roomUniqueId}:`, error);
-      }
+        })()
+      );
     }
+    await Promise.all(systemRoomHelperUpdates);
 
-    // Configure persona AI response settings (intelligent resource management)
+    // Configure persona AI response settings (parallel)
     console.log('🔧 Configuring persona AI response settings...');
     await Promise.all([
       updatePersonaConfig(helperPersona.id, {
@@ -1133,9 +504,7 @@ async function seedViaJTAG() {
     ]);
     console.log('✅ Persona configurations applied');
 
-    // Rooms already created and persisted earlier (before other users)
-    // Now create messages for those rooms
-    // Use systemIdentity from top of function - don't recreate it
+    // Seed messages
     const messages = [
       createMessage(
         MESSAGE_IDS.WELCOME_GENERAL,
@@ -1143,18 +512,15 @@ async function seedViaJTAG() {
         'system',
         'System',
         MESSAGE_CONTENT.WELCOME_GENERAL,
-        'system'  // senderType
+        'system'
       ),
-      // REMOVED: CLAUDE_INTRO message was confusing personas
-      // They would see this seeded message and think it was the most recent,
-      // hallucinating that "Claude Code just introduced itself"
       createMessage(
         MESSAGE_IDS.WELCOME_ACADEMY,
         ROOM_IDS.ACADEMY,
         'system',
         'System',
         MESSAGE_CONTENT.WELCOME_ACADEMY,
-        'system'  // senderType
+        'system'
       ),
       createMessage(
         stringToUUID('pantheon-welcome-msg'),
@@ -1162,14 +528,14 @@ async function seedViaJTAG() {
         humanUser.id,
         systemIdentity.displayName,
         'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
-        'human'  // senderType
+        'human'
       )
     ];
 
-    // Create content type registry
+    // Content types
     const contentTypes = createDefaultContentTypes();
 
-    // Create training sessions with actual generated user entities
+    // Training sessions
     const trainingSessions = [
       {
         id: 'ts-js-fundamentals',
@@ -1236,19 +602,14 @@ async function seedViaJTAG() {
       }
     ];
 
-    // Seed all data types using clean modular approach with user context
-    // Note: User states are created automatically by user/create command
-    // Note: Rooms already seeded earlier (before other users, to enable auto-join)
+    // Seed remaining data
     await seedRecords(ChatMessageEntity.collection, messages,
-      (msg) => msg.senderId === humanUser.id ? humanUser.displayName : msg.senderId === claudeUser.id ? claudeUser.displayName : 'System',
+      (msg) => msg.senderId === humanUser!.id ? humanUser!.displayName : msg.senderId === claudeUser.id ? claudeUser.displayName : 'System',
       (msg) => msg.senderId
     );
     await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);
     await seedRecords(TrainingSessionEntity.collection, trainingSessions, (ts) => ts.sessionName);
 
-    // Note: Verification skipped due to buffer overflow issues with large collections
-    // Data commands confirmed successful above - verification would require implementing
-    // a count-only query option in data/list command
     console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
 
   } catch (error: any) {

@@ -37,14 +37,12 @@ export async function detectCallerType(context: JTAGContext, userId: UUID): Prom
 
   // 2. Look up user by userId
   try {
-    const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
 
-    if (!userResult.success || !userResult.data) {
+    if (!user) {
       console.warn(`CallerDetector: User not found for userId=${userId}, defaulting to 'script'`);
       return 'script';
     }
-
-    const user = userResult.data.data;
 
     // 3. Map UserEntity.type to CallerType
     switch (user.type) {
@@ -79,14 +77,12 @@ export async function detectCallerType(context: JTAGContext, userId: UUID): Prom
  */
 export async function getCallerCapabilities(userId: UUID): Promise<CallerCapabilities> {
   try {
-    const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
 
-    if (!userResult.success || !userResult.data) {
+    if (!user) {
       console.warn(`CallerDetector: User not found for userId=${userId}, returning default capabilities`);
       return getDefaultCapabilities();
     }
-
-    const user = userResult.data.data;
 
     // Build capabilities from user configuration
     const capabilities: CallerCapabilities = {};

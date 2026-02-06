@@ -23,6 +23,7 @@ import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { UserIdentityResolver } from '../../../system/user/shared/UserIdentityResolver';
 import { Logger } from '../../../system/core/logging/Logger';
+import { SystemPaths } from '../../../system/core/config/SystemPaths';
 import {
   type SessionMetadata,
   type CreateSessionParams,
@@ -425,34 +426,29 @@ export class SessionDaemonServer extends SessionDaemon {
       }
 
       // Load UserEntity from database
-      const userResult = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
-      if (!userResult.success || !userResult.data) {
+      const userEntity = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      if (!userEntity) {
         throw new Error(`User ${userId} not found in database`);
       }
 
-      // DataRecord has { id, collection, data, metadata }
-      // Ensure id is present in the data (Rust adapter may not include it in data.data)
-      const userEntity = userResult.data.data as UserEntity;
-      if (!userEntity.id) {
-        (userEntity as any).id = userResult.data.id;
-      }
-
       // Load UserStateEntity from database
-      const stateResult = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
-      if (!stateResult.success || !stateResult.data) {
+      const userState = await DataDaemon.read<UserStateEntity>(COLLECTIONS.USER_STATES, userId);
+      if (!userState) {
         throw new Error(`UserState for ${userId} not found in database`);
       }
 
-      // Ensure id is present in the state data
-      const userState = stateResult.data.data as UserStateEntity;
+      // Ensure IDs are present (Rust adapter may not include them)
+      if (!userEntity.id) {
+        (userEntity as any).id = userId;
+      }
       if (!userState.id) {
-        (userState as any).id = stateResult.data.id;
+        (userState as any).id = userId;
       }
 
       // Create appropriate User subclass based on type
       let user: BaseUser;
       if (userEntity.type === 'persona') {
-        const personaDatabasePath = `.continuum/personas/${userId}/state.sqlite`;
+        const personaDatabasePath = SystemPaths.personas.state(userEntity.uniqueId);
         const storage = new SQLiteStateBackend(personaDatabasePath);
         user = new PersonaUser(userEntity, userState, storage);
       } else if (userEntity.type === 'agent') {
@@ -700,18 +696,7 @@ export class SessionDaemonServer extends SessionDaemon {
       const identity = enhancedContext?.identity;
       const assistant = enhancedContext?.assistant;
 
-      // DEBUG: BYPASS LOGGER - Use console.error to guarantee visibility
-      console.error(`🔍🔍🔍 SESSION CREATE DEBUG`);
-      console.error(`  clientType: ${clientType} (type: ${typeof clientType})`);
-      console.error(`  hasEnhancedContext: ${!!enhancedContext}`);
-      console.error(`  enhancedContext keys: ${enhancedContext ? Object.keys(enhancedContext).join(', ') : 'none'}`);
-      console.error(`  hasIdentity: ${!!identity}`);
-      console.error(`  identity: ${JSON.stringify(identity)}`);
-      console.error(`  params.userId: ${params.userId}`);
-      console.error(`  deviceId: ${identity?.deviceId?.slice(0, 12)}`);
-
-      // DEBUG: Log what we received
-      this.log.info(`🔍 Session create: clientType=${clientType}, hasEnhancedContext=${!!enhancedContext}, hasIdentity=${!!identity}, userId=${params.userId}, deviceId=${identity?.deviceId?.slice(0, 12)}`);
+      this.log.info(`🔍 Session create: clientType=${clientType}, hasIdentity=${!!identity}, userId=${params.userId}`);
 
       // Log assistant for attribution (NOT for identity resolution!)
       if (assistant) {

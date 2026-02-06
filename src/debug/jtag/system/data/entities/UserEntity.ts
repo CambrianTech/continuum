@@ -124,6 +124,7 @@ export class UserEntity extends BaseEntity {
     capabilities?: readonly string[];
     ragCertified?: boolean;  // Has this model been tested with our complex RAG system?
     requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned
+    toolCapability?: 'native' | 'xml' | 'none';  // Override provider-based tool capability detection
   };
 
   // Media configuration (for AI users that can process images/audio/video)

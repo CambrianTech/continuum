@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/workspace/list",
+  "version": "1.0.0",
+  "description": "List all persona workspaces across the team — worktree paths, git branches, modified files, shell activity. Scans both in-memory active workspaces and persisted git worktrees on disk.",
+  "main": "server/WorkspaceListServerCommand.ts",
+  "types": "shared/WorkspaceListTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/WorkspaceListIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "workspace/list"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

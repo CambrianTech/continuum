@@ -2,10 +2,11 @@
  * Default Storage Adapter Factory - Creates storage adapters based on configuration
  *
  * Provides factory pattern for creating different storage adapter types
- * (SQLite, Memory, File) based on StorageAdapterConfig
+ * (SQLite, Rust, Memory, File) based on StorageAdapterConfig
  */
 
 import { SqliteStorageAdapter } from '../server/SqliteStorageAdapter';
+import { RustWorkerStorageAdapter } from '../server/RustWorkerStorageAdapter';
 import { MemoryStorageAdapter } from '../server/MemoryStorageAdapter';
 import { FileStorageAdapter } from '../server/FileStorageAdapter';
 import type { DataStorageAdapter, StorageAdapterConfig } from '../shared/DataStorageAdapter';
@@ -20,8 +21,9 @@ export class DefaultStorageAdapterFactory {
   createAdapter(config: StorageAdapterConfig): DataStorageAdapter {
     switch (config.type) {
       case 'sqlite':
-      case 'rust':  // Rust adapter deprecated - use SQLite
         return new SqliteStorageAdapter();
+      case 'rust':
+        return new RustWorkerStorageAdapter();
       case 'memory':
         return new MemoryStorageAdapter();
       case 'file':

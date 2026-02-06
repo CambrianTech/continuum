@@ -70,25 +70,27 @@ export class MediaContentFormatter {
    * { type: 'image_url', image_url: { url: 'data:image/png;base64,...' } }
    */
   static formatForOpenAI(content: ContentPart[], detail: 'auto' | 'low' | 'high' = 'auto'): OpenAIContentPart[] {
-    return content.map(part => {
-      if (part.type === 'text') {
-        return { type: 'text', text: part.text };
-      }
+    return content
+      .filter(part => part.type !== 'tool_use' && part.type !== 'tool_result') // Tool blocks handled by adapter
+      .map(part => {
+        if (part.type === 'text') {
+          return { type: 'text', text: part.text };
+        }
 
-      if (part.type === 'image') {
-        const imageUrl = this.getImageUrl(part.image);
-        return {
-          type: 'image_url',
-          image_url: {
-            url: imageUrl,
-            detail,
-          },
-        };
-      }
+        if (part.type === 'image') {
+          const imageUrl = this.getImageUrl(part.image);
+          return {
+            type: 'image_url',
+            image_url: {
+              url: imageUrl,
+              detail,
+            },
+          };
+        }
 
-      // Audio/video: extract as text placeholder for now
-      return { type: 'text', text: `[${part.type}]` };
-    });
+        // Audio/video: extract as text placeholder for now
+        return { type: 'text', text: `[${part.type}]` };
+      });
   }
 
   /**
@@ -99,41 +101,43 @@ export class MediaContentFormatter {
    * { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '...' } }
    */
   static formatForAnthropic(content: ContentPart[]): AnthropicContentPart[] {
-    return content.map(part => {
-      if (part.type === 'text') {
-        return { type: 'text', text: part.text };
-      }
-
-      if (part.type === 'image') {
-        const image = part.image;
-
-        // Prefer base64 for Anthropic
-        if (image.base64) {
-          return {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: image.mimeType || 'image/png',
-              data: image.base64,
-            },
-          };
+    return content
+      .filter(part => part.type !== 'tool_use' && part.type !== 'tool_result') // Tool blocks handled by adapter
+      .map(part => {
+        if (part.type === 'text') {
+          return { type: 'text', text: part.text };
         }
 
-        // URL fallback
-        if (image.url) {
-          return {
-            type: 'image',
-            source: {
-              type: 'url',
-              url: image.url,
-            },
-          };
-        }
-      }
+        if (part.type === 'image') {
+          const image = part.image;
 
-      // Audio/video: extract as text placeholder
-      return { type: 'text', text: `[${part.type}]` };
-    });
+          // Prefer base64 for Anthropic
+          if (image.base64) {
+            return {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: image.mimeType || 'image/png',
+                data: image.base64,
+              },
+            };
+          }
+
+          // URL fallback
+          if (image.url) {
+            return {
+              type: 'image',
+              source: {
+                type: 'url',
+                url: image.url,
+              },
+            };
+          }
+        }
+
+        // Audio/video: extract as text placeholder
+        return { type: 'text', text: `[${part.type}]` };
+      });
   }
 
   /**
@@ -186,8 +190,12 @@ export class MediaContentFormatter {
    */
   static extractTextOnly(content: ContentPart[]): string {
     return content
-      .filter(part => part.type === 'text')
-      .map(part => (part as { type: 'text'; text: string }).text)
+      .filter(part => part.type === 'text' || part.type === 'tool_result')
+      .map(part => {
+        if (part.type === 'text') return part.text;
+        if (part.type === 'tool_result') return part.content;
+        return '';
+      })
       .join('\n');
   }
 

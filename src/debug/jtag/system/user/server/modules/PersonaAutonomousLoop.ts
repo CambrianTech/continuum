@@ -18,6 +18,7 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
+import { RoomEntity } from '../../../data/entities/RoomEntity';
 import { taskEntityToInboxTask, inboxMessageToProcessable, type InboxTask, type QueueItem } from './QueueItemTypes';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 
@@ -235,8 +236,6 @@ export class PersonaAutonomousLoop {
       const senderIsHuman = item.senderType === 'human';
       const messageText = item.content ?? '';
 
-      console.log(`🎙️🔊 VOICE-DEBUG [${this.personaUser.displayName}] CNS->handleChatMessageFromCNS: sourceModality=${processable.sourceModality}, voiceSessionId=${processable.voiceSessionId?.slice(0, 8) ?? 'none'}`);
-
       // Process message using cognition-enhanced evaluation logic
       // Pass pre-computed decision from Rust serviceCycleFull (eliminates separate IPC call)
       const evalStart = performance.now();
@@ -275,12 +274,38 @@ export class PersonaAutonomousLoop {
   /**
    * PHASE 5: Execute a task based on its type
    *
-   * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work, etc.
+   * Handles all task types: memory-consolidation, skill-audit, fine-tune-lora, resume-work,
+   * and code tasks (write-feature, review-code).
    * Delegates to PersonaTaskExecutor module for actual execution.
    */
   private async executeTask(task: InboxTask): Promise<void> {
+    // For code-domain tasks, ensure workspace exists with room-aware mode
+    if (task.domain === 'code') {
+      const roomId = task.metadata?.roomId ?? task.contextId;
+      const roomSlug = await this.resolveRoomSlug(roomId);
+      await this.personaUser.ensureWorkspace({
+        contextKey: roomSlug,
+        mode: 'worktree',
+        taskSlug: roomSlug,
+      });
+    }
+
     // Delegate to task executor module
     await this.personaUser.taskExecutor.executeTask(task);
+  }
+
+  /**
+   * Resolve a room UUID to its uniqueId slug for workspace naming.
+   * Falls back to truncated UUID if room lookup fails.
+   */
+  private async resolveRoomSlug(roomId: UUID): Promise<string> {
+    try {
+      const room = await DataDaemon.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+      if (room?.uniqueId) return room.uniqueId;
+    } catch {
+      // Room lookup failed — use truncated UUID
+    }
+    return roomId.slice(0, 8);
   }
 
   /**

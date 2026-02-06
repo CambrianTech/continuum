@@ -32,16 +32,21 @@ export function createRoom(
   memberCount: number,
   tags: string[],
   ownerId: string,
-  uniqueId: string
+  uniqueId: string,
+  recipeId: string = 'general-chat'
 ): any {
   return {
     id,
-    name,
+    uniqueId,
+    name: name.toLowerCase(),
     displayName,
     description,
     topic,
     type: "public",
     status: "active",
+    ownerId,
+    lastMessageAt: new Date().toISOString(),
+    recipeId,
     privacy: {
       isPublic: true,
       requiresInvite: false,
@@ -61,9 +66,7 @@ export function createRoom(
       lastActivityAt: new Date().toISOString()
     },
     members: [], // Empty - let RoomMembershipDaemon handle auto-join
-    tags,
-    ownerId,
-    uniqueId
+    tags
   };
 }
 

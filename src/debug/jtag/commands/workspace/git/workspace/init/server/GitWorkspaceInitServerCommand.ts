@@ -56,11 +56,11 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
 
       const persona = userResult.data as UserEntity;
 
-      // 3. Generate workspace path (.continuum/sessions/user/shared/{personaId}/workspace)
+      // 3. Generate workspace path — use human-readable uniqueId for directory names
       const workspacePath = path.resolve(
         process.cwd(),
         '.continuum/sessions/user/shared',
-        personaId,
+        persona.uniqueId || personaId,
         'workspace'
       );
 
@@ -84,8 +84,25 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
         fs.mkdirSync(workspaceParent, { recursive: true });
       }
 
-      // 8. Validate paths parameter (REQUIRED)
-      if (!params.paths || params.paths.length === 0) {
+      // 8. Validate and coerce paths parameter (REQUIRED)
+      // LLMs frequently pass arrays as JSON strings: "[\"src/\"]" instead of ["src/"]
+      let paths: string[];
+      const rawPaths = params.paths as unknown;
+      if (Array.isArray(rawPaths)) {
+        paths = rawPaths;
+      } else if (typeof rawPaths === 'string') {
+        try {
+          const parsed = JSON.parse(rawPaths);
+          paths = Array.isArray(parsed) ? parsed : [rawPaths];
+        } catch {
+          // Treat as single path
+          paths = [rawPaths];
+        }
+      } else {
+        paths = [];
+      }
+
+      if (paths.length === 0) {
         throw new ValidationError(
           'paths',
           'Must specify paths to checkout (e.g., --paths=\'["docs/"]\').\n' +
@@ -95,14 +112,14 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
       }
 
       // 9. Create sparse checkout worktree
-      console.log(`Creating sparse worktree at ${workspacePath} with paths: ${params.paths.join(', ')}`);
+      console.log(`Creating sparse worktree at ${workspacePath} with paths: ${paths.join(', ')}`);
       await execAsync(
         `git worktree add --no-checkout -b "${branchName}" "${workspacePath}" main`,
         { cwd: mainRepoPath }
       );
 
       // 10. Enable sparse checkout with specified paths
-      const pathsArg = params.paths.join(' ');
+      const pathsArg = paths.join(' ');
       await execAsync(
         `git sparse-checkout init --cone && git sparse-checkout set ${pathsArg}`,
         { cwd: workspacePath }

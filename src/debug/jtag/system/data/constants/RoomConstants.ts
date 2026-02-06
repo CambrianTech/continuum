@@ -15,7 +15,8 @@ export const ROOM_UNIQUE_IDS = {
   SETTINGS: 'settings',
   CANVAS: 'canvas',
   OUTREACH: 'outreach',
-  NEWSROOM: 'newsroom'
+  NEWSROOM: 'newsroom',
+  CODE: 'code'
 } as const;
 
 export type RoomUniqueId = typeof ROOM_UNIQUE_IDS[keyof typeof ROOM_UNIQUE_IDS];

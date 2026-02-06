@@ -53,5 +53,11 @@ ts-rs.workspace = true  # TypeScript type generation
 # Memory/Hippocampus — pure compute engine (data from TS ORM via IPC)
 fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC hop)
 
+# Code module — file operations, change tracking, code intelligence
+similar = "2.6"                  # Unified diff computation
+ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
+regex = "1"                      # Regex search for code search
+
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3"                   # Temp directories for code module tests

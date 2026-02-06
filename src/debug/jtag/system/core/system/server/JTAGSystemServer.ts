@@ -220,6 +220,10 @@ export class JTAGSystemServer extends JTAGSystem {
     });
     console.log(`🎉 JTAG System: System ready event emitted`);
 
+    // Initialize server-side tracked command execution (background, timeout, handles)
+    const { ServerCommands } = await import('../../server/ServerCommands');
+    ServerCommands.initialize();
+
     return system;
   }
 

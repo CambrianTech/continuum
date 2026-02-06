@@ -27,6 +27,7 @@ import { AbstractMessageAdapter } from '../adapters/AbstractMessageAdapter';
 import { MessageEventDelegator } from '../adapters/MessageEventDelegator';
 import { ImageMessageAdapter } from '../adapters/ImageMessageAdapter';
 import { URLCardAdapter } from '../adapters/URLCardAdapter';
+import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
@@ -966,6 +967,10 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       this.eventDelegator.onAction('url-open-external', (target) => URLCardAdapter.handleOpenExternal(target));
       this.eventDelegator.onAction('url-ai-summarize', (target) => URLCardAdapter.handleAISummarize(target));
       this.eventDelegator.onAction('url-retry-preview', (target) => URLCardAdapter.handleRetryPreview(target));
+
+      // Register ToolOutputAdapter action handlers
+      this.eventDelegator.onAction('tool-copy', (target) => ToolOutputAdapter.handleCopy(target));
+      this.eventDelegator.onAction('tool-open-tab', (target) => ToolOutputAdapter.handleOpenInTab(target));
 
       verbose() && console.log('✅ ChatWidget: Event delegator attached with action handlers');
     }

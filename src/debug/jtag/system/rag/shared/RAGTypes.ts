@@ -11,6 +11,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 
 /**
  * Domain types that can provide RAG context
@@ -123,6 +124,9 @@ export interface RAGContext {
   // Conversation governance rules (from recipe)
   recipeStrategy?: RecipeStrategy;
 
+  // Recipe-highlighted tools (context for LLM, NOT a filter)
+  recipeTools?: RecipeToolDeclaration[];
+
   // Conversation history (public context)
   conversationHistory: LLMMessage[];
 
@@ -158,6 +162,9 @@ export interface RAGContext {
 
     // Social media engagement awareness
     hasSocialAwareness?: boolean;  // Whether social media HUD was included in system prompt
+
+    // Project workspace context (git, team, build)
+    hasProjectContext?: boolean;  // Whether project workspace context was included in system prompt
   };
 }
 

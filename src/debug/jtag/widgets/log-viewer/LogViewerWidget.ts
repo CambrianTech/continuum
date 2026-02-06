@@ -92,6 +92,21 @@ export class LogViewerWidget extends BasePanelWidget {
                     (this as any).entityId ||
                     '.continuum/personas/helper/logs/hippocampus.log'; // Default for testing
 
+    // Check for inline tool output content (opened from ToolOutputAdapter "Open" button)
+    if (logPath.startsWith('tool:')) {
+      const key = logPath.slice(5); // strip "tool:" prefix
+      try {
+        const { ToolOutputAdapter } = await import('../chat/adapters/ToolOutputAdapter');
+        const entry = ToolOutputAdapter.getInlineContent(key);
+        if (entry) {
+          this.renderInlineContent(entry.content, entry.toolName);
+          return;
+        }
+      } catch (err) {
+        console.warn('📜 LogViewer: Failed to load inline content, falling back to file-based loading', err);
+      }
+    }
+
     this.logData.logPath = logPath;
     this.logData.logName = logPath.split('/').pop() || 'log';
 
@@ -101,6 +116,41 @@ export class LogViewerWidget extends BasePanelWidget {
 
     await this.loadLog();
     this.startAutoRefresh();
+  }
+
+  private renderInlineContent(content: string, toolName: string): void {
+    const lines: LogLine[] = content.split('\n').map((text, i) => ({
+      lineNumber: i + 1,
+      content: text,
+      level: this.detectLevel(text),
+      timestamp: undefined,
+      component: undefined
+    }));
+
+    this.logData = {
+      ...this.logData,
+      logPath: toolName,
+      logName: toolName,
+      lines,
+      totalLines: lines.length,
+      hasMore: false,
+      isLoading: false,
+      autoFollow: false, // Static content — no auto-refresh
+      error: undefined
+    };
+
+    this.panelConfig.panelTitle = toolName;
+    this.panelConfig.panelSubtitle = `${lines.length} lines`;
+
+    this.renderWidget();
+  }
+
+  private detectLevel(text: string): string | undefined {
+    if (/\berror\b|\bERR\b|\bfailed\b|\bFAIL\b/i.test(text)) return 'ERROR';
+    if (/\bwarn\b|\bWARN\b|\bwarning\b/i.test(text)) return 'WARN';
+    if (/\binfo\b|\bINFO\b/i.test(text)) return 'INFO';
+    if (/\bdebug\b|\bDEBUG\b/i.test(text)) return 'DEBUG';
+    return undefined;
   }
 
   private async loadLog(): Promise<void> {

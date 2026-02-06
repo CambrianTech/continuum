@@ -31,6 +31,8 @@ import type {
   EmbeddingRequest,
   EmbeddingResponse,
   HealthStatus,
+  ContentPart,
+  ToolCall,
 } from '../AIProviderTypesV2';
 import { AIProviderError } from '../AIProviderTypesV2';
 import { BaseAIProviderAdapter } from '../BaseAIProviderAdapter';
@@ -65,6 +67,11 @@ export interface OpenAIModelData {
   object?: string;
   created?: number;
   owned_by?: string;
+  // Extended metadata (varies by provider — Groq, Together, etc. may include these)
+  context_length?: number;
+  context_window?: number;
+  max_input_tokens?: number;
+  max_tokens?: number;
 }
 
 export interface OpenAIImageData {
@@ -90,7 +97,15 @@ export interface OpenAIChatCompletionResponse {
     index: number;
     message: {
       role: string;
-      content: string;
+      content: string | null;
+      tool_calls?: Array<{
+        id: string;
+        type: 'function';
+        function: {
+          name: string;
+          arguments: string; // JSON string
+        };
+      }>;
     };
     finish_reason: string;
   }>;
@@ -142,6 +157,10 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     this.providerId = config.providerId;
     this.providerName = config.providerName;
     this.supportedCapabilities = config.supportedCapabilities;
+
+    // Sync base-layer timeout with adapter config timeout
+    // (base class defaults to 30s; adapters specify their own via config)
+    this.baseTimeout = config.timeout;
 
     // Inject logger into PricingManager singleton (first adapter wins)
     PricingManager.getInstance().setLogger((msg: string) => this.log(null, 'warn', msg));
@@ -231,26 +250,66 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
                            this.supportedCapabilities.includes('image-analysis') ||
                            this.supportedCapabilities.includes('multimodal');
 
-      // Convert messages to OpenAI format
-      const messages = request.messages.map(msg => {
+      // Convert messages to OpenAI format, handling text, multimodal, and tool protocol
+      const messages: Array<Record<string, unknown>> = [];
+
+      for (const msg of request.messages) {
         if (typeof msg.content === 'string') {
-          return { role: msg.role, content: msg.content, ...(msg.name && { name: msg.name }) };
+          messages.push({ role: msg.role, content: msg.content, ...(msg.name && { name: msg.name }) });
+          continue;
         }
 
-        // Multimodal content (ContentPart[])
+        // Check for tool protocol content blocks
+        const parts = msg.content as ContentPart[];
+        const hasToolBlocks = parts.some(p => p.type === 'tool_use' || p.type === 'tool_result');
+
+        if (hasToolBlocks) {
+          // tool_use blocks → assistant message with tool_calls array (OpenAI format)
+          const toolUseBlocks = parts.filter(p => p.type === 'tool_use');
+          const toolResultBlocks = parts.filter(p => p.type === 'tool_result');
+          const textBlocks = parts.filter(p => p.type === 'text');
+          const textContent = textBlocks.map(b => b.type === 'text' ? b.text : '').join('');
+
+          if (toolUseBlocks.length > 0) {
+            // Assistant message with tool_calls
+            messages.push({
+              role: 'assistant',
+              content: textContent || null,
+              tool_calls: toolUseBlocks.map(b => {
+                if (b.type !== 'tool_use') return null;
+                return {
+                  id: b.id,
+                  type: 'function',
+                  function: { name: b.name, arguments: JSON.stringify(b.input) },
+                };
+              }).filter(Boolean),
+            });
+          }
+
+          // tool_result blocks → separate tool role messages (OpenAI format)
+          for (const block of toolResultBlocks) {
+            if (block.type !== 'tool_result') continue;
+            messages.push({
+              role: 'tool',
+              tool_call_id: block.tool_use_id,
+              content: block.content,
+            });
+          }
+          continue;
+        }
+
+        // Standard multimodal content
         if (!supportsVision) {
-          // Non-vision model: Extract text only using MediaContentFormatter
-          const flattenedContent = MediaContentFormatter.extractTextOnly(msg.content);
-          return { role: msg.role, content: flattenedContent, ...(msg.name && { name: msg.name }) };
+          const flattenedContent = MediaContentFormatter.extractTextOnly(parts);
+          messages.push({ role: msg.role, content: flattenedContent, ...(msg.name && { name: msg.name }) });
+        } else {
+          messages.push({
+            role: msg.role,
+            content: MediaContentFormatter.formatForOpenAI(parts),
+            ...(msg.name && { name: msg.name }),
+          });
         }
-
-        // Vision model: Format multimodal content using MediaContentFormatter
-        return {
-          role: msg.role,
-          content: MediaContentFormatter.formatForOpenAI(msg.content),
-          ...(msg.name && { name: msg.name }),
-        };
-      });
+      }
 
       // Add system prompt if provided
       if (request.systemPrompt) {
@@ -274,6 +333,37 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         this.log(request, 'warn', `⚠️  ${this.providerName} (${model}): Requested ${request.maxTokens} output tokens, but only ${availableOutputTokens} available (context: ${contextWindow}, input: ${estimatedInputTokens}). Capping to ${adjustedMaxTokens}.`);
       }
 
+      // Build request body
+      const requestBody: Record<string, unknown> = {
+        model,
+        messages,
+        temperature: request.temperature ?? 0.7,
+        max_tokens: adjustedMaxTokens,
+        top_p: request.topP,
+        stop: request.stopSequences,
+        stream: false,
+      };
+
+      // Add native tools if provided (OpenAI function calling format)
+      const hasNativeTools = request.tools && request.tools.length > 0;
+      if (hasNativeTools) {
+        requestBody.tools = request.tools!.map(tool => ({
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.input_schema,
+          },
+        }));
+        if (request.tool_choice) {
+          if (typeof request.tool_choice === 'object' && 'name' in request.tool_choice) {
+            requestBody.tool_choice = { type: 'function', function: { name: request.tool_choice.name } };
+          } else {
+            requestBody.tool_choice = request.tool_choice;
+          }
+        }
+      }
+
       // Make API request
       const response = await this.makeRequest<OpenAIChatCompletionResponse>('/v1/chat/completions', {
         method: 'POST',
@@ -281,15 +371,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.config.apiKey}`,
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: request.temperature ?? 0.7,
-          max_tokens: adjustedMaxTokens,
-          top_p: request.topP,
-          stop: request.stopSequences,
-          stream: false,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const responseTime = Date.now() - startTime;
@@ -300,8 +382,39 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         throw new AIProviderError('No completion in response', 'provider', 'NO_COMPLETION');
       }
 
+      // Parse tool_calls from OpenAI format
+      const toolCalls: ToolCall[] = [];
+      const contentBlocks: ContentPart[] = [];
+
+      if (choice.message?.content) {
+        contentBlocks.push({ type: 'text', text: choice.message.content });
+      }
+
+      if (choice.message?.tool_calls?.length) {
+        for (const tc of choice.message.tool_calls) {
+          let parsedArgs: Record<string, unknown> = {};
+          try {
+            parsedArgs = JSON.parse(tc.function.arguments);
+          } catch {
+            parsedArgs = { _raw: tc.function.arguments };
+          }
+          toolCalls.push({
+            id: tc.id,
+            name: tc.function.name,
+            input: parsedArgs,
+          });
+          contentBlocks.push({
+            type: 'tool_use',
+            id: tc.id,
+            name: tc.function.name,
+            input: parsedArgs,
+          });
+        }
+      }
+
       const generationResponse: TextGenerationResponse = {
         text: choice.message?.content || '',
+        content: contentBlocks.length > 0 ? contentBlocks : undefined,
         finishReason: this.mapFinishReason(choice.finish_reason),
         model: response.model || model,
         provider: this.providerId,
@@ -313,9 +426,9 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         },
         responseTime,
         requestId,
+        ...(toolCalls.length > 0 && { toolCalls }),
       };
 
-      // Database logging handled by AIProviderDaemon (single source of truth)
       return generationResponse;
     } catch (error) {
       // Error logging handled by AIProviderDaemon
@@ -554,7 +667,12 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       name: modelData.id,
       provider: this.providerId,
       capabilities: ['text-generation'],  // Default, override in subclass
-      contextWindow: 4096,  // Default, override in subclass
+      // Use provider-reported context window when available
+      contextWindow: modelData.context_length
+        || modelData.context_window
+        || modelData.max_input_tokens
+        || 4096,
+      maxOutputTokens: modelData.max_tokens,
       supportsStreaming: true,
       supportsFunctions: false,
     };
@@ -566,9 +684,10 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
   /**
    * Map OpenAI finish reason to our enum
    */
-  protected mapFinishReason(reason: string): 'stop' | 'length' | 'error' {
+  protected mapFinishReason(reason: string): 'stop' | 'length' | 'error' | 'tool_use' {
     if (reason === 'stop') return 'stop';
     if (reason === 'length') return 'length';
+    if (reason === 'tool_calls') return 'tool_use'; // OpenAI 'tool_calls' → our 'tool_use'
     return 'error';
   }
 

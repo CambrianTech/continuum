@@ -1,0 +1,38 @@
+{
+  "name": "code/shell/sentinel",
+  "description": "Configure sentinel filter rules on a shell execution. Rules classify output lines and control which lines are emitted or suppressed during watch. Patterns are compiled to regex on the Rust side for performance.",
+  "params": [
+    {
+      "name": "executionId",
+      "type": "string",
+      "optional": false,
+      "description": "Execution handle to attach sentinel rules to"
+    },
+    {
+      "name": "rules",
+      "type": "SentinelRule[]",
+      "optional": false,
+      "description": "Array of classification rules: { pattern: string, classification: OutputClassification, action: SentinelAction }"
+    }
+  ],
+  "results": [
+    {
+      "name": "applied",
+      "type": "boolean",
+      "description": "Whether rules were applied successfully"
+    },
+    {
+      "name": "ruleCount",
+      "type": "number",
+      "description": "Number of sentinel rules configured"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Filter build output to only errors and warnings",
+      "command": "./jtag code/shell/sentinel --executionId=\"exec-abc123\" --rules='[{\"pattern\":\"^error\",\"classification\":\"Error\",\"action\":\"Emit\"},{\"pattern\":\".*\",\"classification\":\"Verbose\",\"action\":\"Suppress\"}]'",
+      "expectedResult": "{ applied: true, ruleCount: 2 }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

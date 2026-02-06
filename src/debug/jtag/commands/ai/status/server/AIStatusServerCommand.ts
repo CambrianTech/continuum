@@ -15,6 +15,7 @@ import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { PersonaUser } from '../../../../system/user/server/PersonaUser';
 import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
 import { JTAGSystemServer } from '../../../../system/core/system/server/JTAGSystemServer';
+import { PersonaToolRegistry } from '../../../../system/user/server/modules/PersonaToolRegistry';
 
 export class AIStatusServerCommand extends AIStatusCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -132,6 +133,10 @@ export class AIStatusServerCommand extends AIStatusCommand {
         undefined // timeSinceLastResponse - not tracked yet
       );
 
+      // Get tools available to this persona
+      const toolRegistry = PersonaToolRegistry.sharedInstance();
+      const availableTools = toolRegistry.listToolsForPersona(entity.id);
+
       // Build health object
       const health: PersonaHealth = {
         userId: entity.id,
@@ -143,7 +148,8 @@ export class AIStatusServerCommand extends AIStatusCommand {
         hasWorker,
         provider: modelConfig?.provider ?? 'unknown',
         model: modelConfig?.model ?? 'unknown',
-        temperature: modelConfig?.temperature
+        temperature: modelConfig?.temperature,
+        toolsAvailable: availableTools.length
       };
 
       // Add verbose metrics if requested

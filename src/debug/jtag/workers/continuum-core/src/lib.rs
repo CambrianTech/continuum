@@ -20,6 +20,10 @@ pub mod ffi;
 pub mod utils;
 pub mod rag;
 pub mod memory;
+pub mod code;
+pub mod models;
+pub mod runtime;
+pub mod modules;
 
 pub use audio_constants::*;
 

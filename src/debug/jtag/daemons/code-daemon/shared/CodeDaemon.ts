@@ -1,71 +1,234 @@
 /**
- * CodeDaemon - Static interface for code operations
+ * CodeDaemon - Static interface for workspace-scoped code operations
  *
  * Environment-agnostic interface. All implementation is in server/.
+ * All operations go through Rust IPC backend with per-persona isolation.
  */
 
 import type {
-  CodeReadOptions,
-  CodeReadResult,
-  CodeSearchOptions,
-  CodeSearchResult,
-  GitLogOptions,
-  GitLogResult
+  WorkspaceEditMode,
+  WorkspaceWriteResult,
+  WorkspaceReadResult,
+  WorkspaceSearchResult,
+  WorkspaceTreeResult,
+  WorkspaceUndoResult,
+  WorkspaceHistoryResult,
+  WorkspaceGitStatusInfo,
+  WorkspaceShellExecuteResponse,
+  WorkspaceShellPollResponse,
+  WorkspaceShellSessionInfo,
+  WorkspaceShellWatchResponse,
+  WorkspaceSentinelRule,
 } from './CodeDaemonTypes';
 
 /**
- * CodeDaemon - Static API for code operations
+ * CodeDaemon - Static API for workspace-scoped code operations
  *
  * All methods throw error if not initialized or called from wrong environment.
- * Implementation is in server/CodeDaemonImpl.ts
+ * Implementation is in server/CodeDaemonServer.ts
  */
 export class CodeDaemon {
+
+  // ========================================================================
+  // Workspace-Scoped Operations (Rust IPC backed, per-persona isolation)
+  // ========================================================================
+
   /**
-   * Read a file (STATIC METHOD - public API)
+   * Initialize a per-persona workspace with file engine and change graph.
+   * Must be called before any other workspace operations for this persona.
    */
-  static async readFile(path: string, options?: CodeReadOptions): Promise<CodeReadResult> {
-    throw new Error('CodeDaemon.readFile() must be implemented by server');
+  static async createWorkspace(personaId: string, workspaceRoot: string, readRoots?: string[]): Promise<void> {
+    throw new Error('CodeDaemon.createWorkspace() must be implemented by server');
   }
 
   /**
-   * Search code (STATIC METHOD - public API)
+   * Read a file from the persona's workspace.
    */
-  static async searchCode(pattern: string, options?: CodeSearchOptions): Promise<CodeSearchResult> {
-    throw new Error('CodeDaemon.searchCode() must be implemented by server');
+  static async workspaceRead(personaId: string, filePath: string, startLine?: number, endLine?: number): Promise<WorkspaceReadResult> {
+    throw new Error('CodeDaemon.workspaceRead() must be implemented by server');
   }
 
   /**
-   * Get git log (STATIC METHOD - public API)
+   * Write or create a file in the persona's workspace.
    */
-  static async getGitLog(options?: GitLogOptions): Promise<GitLogResult> {
-    throw new Error('CodeDaemon.getGitLog() must be implemented by server');
+  static async workspaceWrite(personaId: string, filePath: string, content: string, description?: string): Promise<WorkspaceWriteResult> {
+    throw new Error('CodeDaemon.workspaceWrite() must be implemented by server');
   }
 
   /**
-   * Clear file cache (STATIC METHOD)
+   * Edit a file using one of four edit modes.
    */
-  static clearCache(): void {
-    throw new Error('CodeDaemon.clearCache() must be implemented by server');
+  static async workspaceEdit(personaId: string, filePath: string, editMode: WorkspaceEditMode, description?: string): Promise<WorkspaceWriteResult> {
+    throw new Error('CodeDaemon.workspaceEdit() must be implemented by server');
   }
 
   /**
-   * Get cache stats (STATIC METHOD)
+   * Delete a file from the persona's workspace.
    */
-  static getCacheStats(): { entries: number; size: number } {
-    throw new Error('CodeDaemon.getCacheStats() must be implemented by server');
+  static async workspaceDelete(personaId: string, filePath: string, description?: string): Promise<WorkspaceWriteResult> {
+    throw new Error('CodeDaemon.workspaceDelete() must be implemented by server');
   }
 
   /**
-   * Get repository root (STATIC METHOD)
+   * Preview an edit as a unified diff without applying it.
    */
-  static getRepositoryRoot(): string {
-    throw new Error('CodeDaemon.getRepositoryRoot() must be implemented by server');
+  static async workspaceDiff(personaId: string, filePath: string, editMode: WorkspaceEditMode): Promise<{ success: boolean; unified: string }> {
+    throw new Error('CodeDaemon.workspaceDiff() must be implemented by server');
   }
 
   /**
-   * Check if initialized (STATIC METHOD)
+   * Undo a specific change or the last N changes.
    */
-  static isInitialized(): boolean {
-    return false; // Overridden by server implementation
+  static async workspaceUndo(personaId: string, changeId?: string, count?: number): Promise<WorkspaceUndoResult> {
+    throw new Error('CodeDaemon.workspaceUndo() must be implemented by server');
+  }
+
+  /**
+   * Get change history for a file or entire workspace.
+   */
+  static async workspaceHistory(personaId: string, filePath?: string, limit?: number): Promise<WorkspaceHistoryResult> {
+    throw new Error('CodeDaemon.workspaceHistory() must be implemented by server');
+  }
+
+  /**
+   * Search for a regex pattern across workspace files.
+   */
+  static async workspaceSearch(personaId: string, pattern: string, fileGlob?: string, maxResults?: number): Promise<WorkspaceSearchResult> {
+    throw new Error('CodeDaemon.workspaceSearch() must be implemented by server');
+  }
+
+  /**
+   * Generate a directory tree for the workspace.
+   */
+  static async workspaceTree(personaId: string, path?: string, maxDepth?: number, includeHidden?: boolean): Promise<WorkspaceTreeResult> {
+    throw new Error('CodeDaemon.workspaceTree() must be implemented by server');
+  }
+
+  /**
+   * Get git status for the workspace.
+   */
+  static async workspaceGitStatus(personaId: string): Promise<WorkspaceGitStatusInfo> {
+    throw new Error('CodeDaemon.workspaceGitStatus() must be implemented by server');
+  }
+
+  /**
+   * Get git diff for the workspace.
+   */
+  static async workspaceGitDiff(personaId: string, staged?: boolean): Promise<{ success: boolean; diff: string }> {
+    throw new Error('CodeDaemon.workspaceGitDiff() must be implemented by server');
+  }
+
+  /**
+   * Get git log for the workspace (last N commits).
+   */
+  static async workspaceGitLog(personaId: string, count?: number): Promise<{ success: boolean; log: string }> {
+    throw new Error('CodeDaemon.workspaceGitLog() must be implemented by server');
+  }
+
+  /**
+   * Stage files for commit in the workspace.
+   */
+  static async workspaceGitAdd(personaId: string, paths: string[]): Promise<{ staged: string[] }> {
+    throw new Error('CodeDaemon.workspaceGitAdd() must be implemented by server');
+  }
+
+  /**
+   * Create a git commit in the workspace.
+   */
+  static async workspaceGitCommit(personaId: string, message: string): Promise<{ hash: string }> {
+    throw new Error('CodeDaemon.workspaceGitCommit() must be implemented by server');
+  }
+
+  /**
+   * Push the workspace branch to remote.
+   */
+  static async workspaceGitPush(personaId: string, remote?: string, branch?: string): Promise<{ output: string }> {
+    throw new Error('CodeDaemon.workspaceGitPush() must be implemented by server');
+  }
+
+  // ========================================================================
+  // Shell Session Operations (Handle + Poll pattern)
+  // ========================================================================
+
+  /**
+   * Create a shell session for a workspace.
+   * The session persists cwd and env across command executions.
+   */
+  static async shellCreate(personaId: string, workspaceRoot: string): Promise<WorkspaceShellSessionInfo> {
+    throw new Error('CodeDaemon.shellCreate() must be implemented by server');
+  }
+
+  /**
+   * Execute a command in a shell session.
+   *
+   * Two modes:
+   * - Handle mode (default): returns immediately with execution_id. Poll for output.
+   * - Wait mode (wait=true): blocks until completion, returns full stdout/stderr.
+   */
+  static async shellExecute(
+    personaId: string,
+    cmd: string,
+    options?: { timeoutMs?: number; wait?: boolean },
+  ): Promise<WorkspaceShellExecuteResponse> {
+    throw new Error('CodeDaemon.shellExecute() must be implemented by server');
+  }
+
+  /**
+   * Poll an execution for new output since last poll.
+   * Returns new stdout/stderr lines and status. Call until `finished` is true.
+   */
+  static async shellPoll(personaId: string, executionId: string): Promise<WorkspaceShellPollResponse> {
+    throw new Error('CodeDaemon.shellPoll() must be implemented by server');
+  }
+
+  /**
+   * Kill a running execution.
+   */
+  static async shellKill(personaId: string, executionId: string): Promise<void> {
+    throw new Error('CodeDaemon.shellKill() must be implemented by server');
+  }
+
+  /**
+   * Change shell session working directory (validated against workspace boundary).
+   */
+  static async shellCd(personaId: string, path: string): Promise<{ cwd: string }> {
+    throw new Error('CodeDaemon.shellCd() must be implemented by server');
+  }
+
+  /**
+   * Get shell session status/info.
+   */
+  static async shellStatus(personaId: string): Promise<WorkspaceShellSessionInfo> {
+    throw new Error('CodeDaemon.shellStatus() must be implemented by server');
+  }
+
+  /**
+   * Destroy shell session (kills all running executions).
+   */
+  static async shellDestroy(personaId: string): Promise<void> {
+    throw new Error('CodeDaemon.shellDestroy() must be implemented by server');
+  }
+
+  // ========================================================================
+  // Shell Watch + Sentinel (Event-driven output streaming)
+  // ========================================================================
+
+  /**
+   * Watch a shell execution for new output.
+   * Blocks until output is available — no timeout, no polling.
+   * Returns classified output lines filtered through sentinel rules.
+   * Call in a loop until `finished` is true.
+   */
+  static async shellWatch(personaId: string, executionId: string): Promise<WorkspaceShellWatchResponse> {
+    throw new Error('CodeDaemon.shellWatch() must be implemented by server');
+  }
+
+  /**
+   * Configure sentinel filter rules on a shell execution.
+   * Rules classify output lines and control which are emitted or suppressed during watch.
+   * Patterns are compiled to regex on the Rust side for performance.
+   */
+  static async shellSentinel(personaId: string, executionId: string, rules: WorkspaceSentinelRule[]): Promise<{ applied: boolean; ruleCount: number }> {
+    throw new Error('CodeDaemon.shellSentinel() must be implemented by server');
   }
 }

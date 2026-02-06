@@ -36,10 +36,7 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
   describe('loadLearningConfig', () => {
     it('should return undefined when room does not exist', async () => {
       // Mock DataDaemon to return no room
-      vi.mocked(DataDaemon.read).mockResolvedValueOnce({
-        success: false,
-        data: undefined
-      } as never);
+      vi.mocked(DataDaemon.read).mockResolvedValueOnce(null as never);
 
       const context = await ragBuilder.buildContext(testRoomId, testPersonaId);
 
@@ -64,10 +61,8 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
       };
 
       vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-        if (collection === 'rooms') {
-          return { success: true, data: { data: mockRoom } } as never;
-        }
-        return { success: false } as never;
+        if (collection === 'rooms') return mockRoom as never;
+        return null as never;
       });
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -107,13 +102,9 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
       };
 
       vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-        if (collection === 'rooms') {
-          return { success: true, data: { data: mockRoom } } as never;
-        }
-        if (collection === 'users' && id === testPersonaId) {
-          return { success: true, data: { data: mockUser } } as never;
-        }
-        return { success: false } as never;
+        if (collection === 'rooms') return mockRoom as never;
+        if (collection === 'users' && id === testPersonaId) return mockUser as never;
+        return null as never;
       });
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -157,13 +148,9 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
       };
 
       vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-        if (collection === 'rooms') {
-          return { success: true, data: { data: mockRoom } } as never;
-        }
-        if (collection === 'users' && id === testPersonaId) {
-          return { success: true, data: { data: mockUser } } as never;
-        }
-        return { success: false } as never;
+        if (collection === 'rooms') return mockRoom as never;
+        if (collection === 'users' && id === testPersonaId) return mockUser as never;
+        return null as never;
       });
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -205,13 +192,9 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
       };
 
       vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-        if (collection === 'rooms') {
-          return { success: true, data: { data: mockRoom } } as never;
-        }
-        if (collection === 'users' && id === testPersonaId) {
-          return { success: true, data: { data: mockUser } } as never;
-        }
-        return { success: false } as never;
+        if (collection === 'rooms') return mockRoom as never;
+        if (collection === 'users' && id === testPersonaId) return mockUser as never;
+        return null as never;
       });
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -256,13 +239,9 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
         };
 
         vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-          if (collection === 'rooms') {
-            return { success: true, data: { data: mockRoom } } as never;
-          }
-          if (collection === 'users' && id === testPersonaId) {
-            return { success: true, data: { data: mockUser } } as never;
-          }
-          return { success: false } as never;
+          if (collection === 'rooms') return mockRoom as never;
+          if (collection === 'users' && id === testPersonaId) return mockUser as never;
+          return null as never;
         });
 
         vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -307,13 +286,9 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
       };
 
       vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-        if (collection === 'rooms') {
-          return { success: true, data: { data: mockRoom } } as never;
-        }
-        if (collection === 'users' && id === testPersonaId) {
-          return { success: true, data: { data: mockUser } } as never;
-        }
-        return { success: false } as never;
+        if (collection === 'rooms') return mockRoom as never;
+        if (collection === 'users' && id === testPersonaId) return mockUser as never;
+        return null as never;
       });
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -366,13 +341,9 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
       };
 
       vi.mocked(DataDaemon.read).mockImplementation(async (collection, id) => {
-        if (collection === 'rooms') {
-          return { success: true, data: { data: mockRoom } } as never;
-        }
-        if (collection === 'users' && id === testPersonaId) {
-          return { success: true, data: { data: mockUser } } as never;
-        }
-        return { success: false } as never;
+        if (collection === 'rooms') return mockRoom as never;
+        if (collection === 'users' && id === testPersonaId) return mockUser as never;
+        return null as never;
       });
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
@@ -411,10 +382,7 @@ describe('ChatRAGBuilder - Learning Mode (Phase 2)', () => {
     });
 
     it('should handle malformed room data', async () => {
-      vi.mocked(DataDaemon.read).mockResolvedValue({
-        success: true,
-        data: { data: null }
-      } as never);
+      vi.mocked(DataDaemon.read).mockResolvedValue(null as never);
 
       vi.mocked(DataDaemon.query).mockResolvedValue({
         success: true,

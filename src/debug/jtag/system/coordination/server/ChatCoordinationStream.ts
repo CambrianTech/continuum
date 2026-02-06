@@ -213,14 +213,19 @@ export class ChatCoordinationStream extends BaseCoordinationStream<ChatThought, 
   }
 
   /**
-   * Called when a message is serviced by a persona (decreases temperature)
+   * Called when a persona responds in a room (conversation is active — warm it)
+   *
+   * Previous design subtracted -0.2 per response, killing rooms within seconds
+   * when 14 personas all serviced simultaneously. That's backwards — a response
+   * means the conversation is alive. The coordination stream's maxResponders
+   * already prevents pile-ons. Temperature should reflect activity, not throttle it.
    */
   onMessageServiced(roomId: UUID, personaId?: UUID): void {
     const current = this.roomTemperatures.get(roomId) ?? 0.5;
-    const newTemp = Math.max(0, current - 0.2);
+    const newTemp = Math.min(1.0, current + 0.05);
     this.roomTemperatures.set(roomId, newTemp);
     const who = personaId ? ` by ${personaId.slice(0, 8)}` : '';
-    this.log(`🌡️ Temperature -0.2 (serviced${who}): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
+    this.log(`🌡️ Temperature +0.05 (AI active${who}): room=${roomId.slice(0, 8)} temp=${newTemp.toFixed(2)}`);
   }
 
   /**
