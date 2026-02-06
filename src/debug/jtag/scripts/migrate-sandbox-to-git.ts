@@ -58,8 +58,9 @@ function migrateWorkspace(personaId: string, workspacePath: string): MigrationRe
     execSync('git init', opts);
 
     // Set identity — use persona ID as placeholder; proper names set when project workspaces are created
-    execSync(`git config user.name "AI Persona (${personaId.slice(0, 8)})"`, opts);
-    execSync(`git config user.email "${personaId}@continuum.local"`, opts);
+    // MUST use --local to avoid polluting global git config
+    execSync(`git config --local user.name "AI Persona (${personaId.slice(0, 8)})"`, opts);
+    execSync(`git config --local user.email "${personaId}@continuum.local"`, opts);
 
     // Create .gitignore for common build artifacts
     const gitignore = 'node_modules/\ndist/\n.DS_Store\n*.log\n';

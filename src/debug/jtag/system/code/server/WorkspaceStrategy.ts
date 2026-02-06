@@ -289,12 +289,12 @@ export class WorkspaceStrategy {
       }
     }
 
-    // Set local git identity in the worktree (not global)
+    // Set local git identity in the worktree (MUST use --local to avoid polluting global config)
     const userName = config.personaName ?? 'AI Persona';
     const userEmail = `${config.personaUniqueId}@continuum.local`;
     const wtOpts = { cwd: worktreeDir, stdio: 'pipe' as const };
-    execSync(`git config user.name "${userName}"`, wtOpts);
-    execSync(`git config user.email "${userEmail}"`, wtOpts);
+    execSync(`git config --local user.name "${userName}"`, wtOpts);
+    execSync(`git config --local user.email "${userEmail}"`, wtOpts);
 
     // Register with Rust CodeDaemon — worktree IS the repo checkout, no extra read roots
     await CodeDaemon.createWorkspace(handle, worktreeDir, []);
