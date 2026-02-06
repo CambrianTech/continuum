@@ -54,6 +54,12 @@ import type { MemoryRecallResponse } from './MemoryRecallResponse';
 import type { MultiLayerRecallRequest } from './MultiLayerRecallRequest';
 import type { ConsciousnessContextResponse } from './ConsciousnessContextResponse';
 
+// RAG module types (batched parallel loading via Rayon)
+import type {
+	RagSourceRequest,
+	RagComposeResult,
+} from '../../../shared/generated/rag';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -1322,6 +1328,50 @@ export class RustCoreIPCClient extends EventEmitter {
 			count: number;
 			providers: number;
 		};
+	}
+
+	// ========================================================================
+	// RAG Module Methods (batched parallel source loading)
+	// ========================================================================
+
+	/**
+	 * Compose RAG context from multiple sources in a single batched call.
+	 * Rust processes all sources in parallel using Rayon.
+	 *
+	 * This replaces N sequential IPC calls with ONE call:
+	 * - Memory recall
+	 * - Consciousness context
+	 * - Scene (games/VR)
+	 * - Project (code context)
+	 * - Custom sources
+	 *
+	 * @param personaId - The persona's UUID
+	 * @param roomId - Current room/context ID
+	 * @param sources - Array of source requests with typed params
+	 * @param queryText - Optional query for semantic search
+	 * @param totalBudget - Total token budget across all sources
+	 */
+	async ragCompose(
+		personaId: string,
+		roomId: string,
+		sources: RagSourceRequest[],
+		queryText?: string,
+		totalBudget: number = 2000
+	): Promise<RagComposeResult> {
+		const response = await this.request({
+			command: 'rag/compose',
+			persona_id: personaId,
+			room_id: roomId,
+			sources,
+			query_text: queryText ?? null,
+			total_budget: totalBudget,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compose RAG context');
+		}
+
+		return response.result as RagComposeResult;
 	}
 
 	/**
