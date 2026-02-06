@@ -22,6 +22,7 @@ use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::voice::{VoiceModule, VoiceState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::rag::{RagModule, RagState};
+use crate::modules::data::DataModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -1314,6 +1315,10 @@ pub fn start_server(
         rt_handle.clone(),
     ));
     runtime.register(Arc::new(CodeModule::new(code_state)));
+
+    // Phase 4: DataModule (database-agnostic storage via ORM adapters)
+    // DB path is passed per-request from TypeScript - NO defaults
+    runtime.register(Arc::new(DataModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

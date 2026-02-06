@@ -58,6 +58,7 @@ pub struct ModuleConfig {
 
 /// Result of handling a command.
 /// Supports both JSON-only and binary responses (audio, embeddings).
+#[derive(Debug)]
 pub enum CommandResult {
     /// Standard JSON response
     Json(Value),

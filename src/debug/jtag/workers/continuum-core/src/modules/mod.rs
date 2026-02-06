@@ -16,3 +16,4 @@ pub mod memory;
 pub mod voice;
 pub mod code;
 pub mod rag;
+pub mod data;
