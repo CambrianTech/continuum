@@ -6,7 +6,7 @@
 /// CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
 /// NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
 
-use crate::log_error;
+use crate::{log_error, log_info};
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
     query::{FieldFilter, StorageQuery},
@@ -88,6 +88,7 @@ impl ServiceModule for DataModule {
         command: &str,
         params: Value,
     ) -> Result<CommandResult, String> {
+        log_info!("data", "handle_command", "Received: {} params: {}", command, params);
         match command {
             "data/create" => self.handle_create(params).await,
             "data/read" => self.handle_read(params).await,
@@ -299,11 +300,14 @@ impl DataModule {
     }
 
     async fn handle_query(&self, params: Value) -> Result<CommandResult, String> {
+        log_info!("data", "query", "Starting query handler");
         let params: QueryParams =
             serde_json::from_value(params.clone()).map_err(|e| {
                 log_error!("data", "query", "Parse error: {}, params: {}", e, params);
                 format!("Invalid params: {e}")
             })?;
+
+        log_info!("data", "query", "Parsed params: collection={}, db_path={}", params.collection, params.db_path);
 
         let query = StorageQuery {
             collection: params.collection.clone(),
@@ -314,9 +318,13 @@ impl DataModule {
             ..Default::default()
         };
 
+        log_info!("data", "query", "Getting adapter for: {}", params.db_path);
         let adapter = self.get_adapter(&params.db_path).await?;
+        log_info!("data", "query", "Got adapter, acquiring lock");
         let adapter = adapter.lock().await;
+        log_info!("data", "query", "Got lock, executing query");
         let result = adapter.query(query).await;
+        log_info!("data", "query", "Query complete: success={}", result.success);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
