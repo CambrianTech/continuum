@@ -29,44 +29,48 @@ export interface ORMCollectionConfig {
 
 /**
  * Per-collection configuration
- * Start with everything on TypeScript, migrate incrementally
+ * Phase 4 Complete: All collections now route to Rust DataModule
  */
 const COLLECTION_CONFIG: Record<string, ORMCollectionConfig> = {
-  // Core entities - migrate last (highest risk)
-  'users': { backend: 'typescript', logOperations: false },
-  'chatMessages': { backend: 'typescript', logOperations: false },
-  'chat_messages': { backend: 'typescript', logOperations: false },
-  'memories': { backend: 'typescript', logOperations: false },
-  'rooms': { backend: 'typescript', logOperations: false },
-  'room_memberships': { backend: 'typescript', logOperations: false },
+  // Core entities - now on Rust
+  'users': { backend: 'rust', logOperations: false },
+  'chatMessages': { backend: 'rust', logOperations: false },
+  'chat_messages': { backend: 'rust', logOperations: false },
+  'memories': { backend: 'rust', logOperations: false },
+  'rooms': { backend: 'rust', logOperations: false },
+  'room_memberships': { backend: 'rust', logOperations: false },
 
   // Persona entities
-  'persona_states': { backend: 'typescript', logOperations: false },
-  'persona_skills': { backend: 'typescript', logOperations: false },
-  'persona_tasks': { backend: 'typescript', logOperations: false },
+  'persona_states': { backend: 'rust', logOperations: false },
+  'persona_skills': { backend: 'rust', logOperations: false },
+  'persona_tasks': { backend: 'rust', logOperations: false },
 
   // Session/state entities
-  'sessions': { backend: 'typescript', logOperations: false },
-  'user_states': { backend: 'typescript', logOperations: false },
+  'sessions': { backend: 'rust', logOperations: false },
+  'user_states': { backend: 'rust', logOperations: false },
 
-  // Training entities - lower risk, migrate early
-  'training_samples': { backend: 'typescript', logOperations: false },
-  'training_runs': { backend: 'typescript', logOperations: false },
+  // Training entities
+  'training_samples': { backend: 'rust', logOperations: false },
+  'training_runs': { backend: 'rust', logOperations: false },
 
   // Skill entities
-  'skills': { backend: 'typescript', logOperations: false },
-  'skill_activations': { backend: 'typescript', logOperations: false },
+  'skills': { backend: 'rust', logOperations: false },
+  'skill_activations': { backend: 'rust', logOperations: false },
 
   // Canvas/collaboration
-  'canvas_strokes': { backend: 'typescript', logOperations: false },
-  'wall_documents': { backend: 'typescript', logOperations: false },
+  'canvas_strokes': { backend: 'rust', logOperations: false },
+  'wall_documents': { backend: 'rust', logOperations: false },
+
+  // Tasks collection
+  'tasks': { backend: 'rust', logOperations: false },
 };
 
 /**
  * Default config for collections not explicitly listed
+ * Phase 4: Default to Rust for all collections
  */
 const DEFAULT_CONFIG: ORMCollectionConfig = {
-  backend: 'typescript',
+  backend: 'rust',
   logOperations: false,
   slowThresholdMs: 100,
 };
@@ -75,6 +79,14 @@ const DEFAULT_CONFIG: ORMCollectionConfig = {
  * GLOBAL KILL SWITCH
  * When true, ALL operations go to TypeScript regardless of collection config
  * Use this to instantly revert if anything goes wrong
+ *
+ * Phase 4 Status:
+ * - ORMRustClient IPC wired to Rust continuum-core DataModule
+ * - SqlNamingConverter removed from ORM layer (Rust handles naming)
+ * - Filter format conversion added ($eq → eq, $gt → gt, etc.)
+ * - Store/update operations still failing when enabled
+ *
+ * Set to false to enable Rust backend. Currently true (TypeScript) pending debug.
  */
 export const FORCE_TYPESCRIPT_BACKEND = true;
 
