@@ -10,15 +10,10 @@ import { TextField, JsonField } from '../decorators/FieldDecorators';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
 /**
- * Collection name for persona RAG contexts
- */
-export const PERSONA_RAG_CONTEXTS_COLLECTION = 'persona_rag_contexts';
-
-/**
  * PersonaRAGContextEntity - Persists working memory for personas
  */
 export class PersonaRAGContextEntity extends BaseEntity {
-  static readonly collection = PERSONA_RAG_CONTEXTS_COLLECTION;
+  static readonly collection = 'persona_rag_contexts';
 
   @TextField({ index: true })
   personaId!: UUID;

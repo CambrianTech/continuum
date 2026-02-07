@@ -95,20 +95,38 @@ impl Runtime {
         params: serde_json::Value,
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
-        let (module, full_cmd) = self.registry.route_command(command)?;
+        eprintln!("[Runtime.route_command_sync] command={}", command);
+
+        let route_result = self.registry.route_command(command);
+        if route_result.is_none() {
+            eprintln!("[Runtime.route_command_sync] No module found for command: {}", command);
+            return None;
+        }
+        let (module, full_cmd) = route_result?;
+        eprintln!("[Runtime.route_command_sync] Routed to module, full_cmd={}", full_cmd);
 
         // Use sync channel to bridge async -> sync safely
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
 
+        let cmd_for_log = full_cmd.clone();
         rt_handle.spawn(async move {
+            eprintln!("[Runtime.route_command_sync] Async task starting for: {}", cmd_for_log);
             let result = module.handle_command(&full_cmd, params).await;
+            eprintln!("[Runtime.route_command_sync] Async task complete: {:?}", result.is_ok());
             let _ = tx.send(result);
         });
 
+        eprintln!("[Runtime.route_command_sync] Waiting for result...");
         // Wait for result from the tokio task
         match rx.recv() {
-            Ok(result) => Some(result),
-            Err(_) => Some(Err("Command handler task was dropped".to_string())),
+            Ok(result) => {
+                eprintln!("[Runtime.route_command_sync] Got result: {:?}", result.is_ok());
+                Some(result)
+            }
+            Err(e) => {
+                eprintln!("[Runtime.route_command_sync] Channel error: {}", e);
+                Some(Err("Command handler task was dropped".to_string()))
+            }
         }
     }
 

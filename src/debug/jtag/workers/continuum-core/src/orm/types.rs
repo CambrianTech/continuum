@@ -39,8 +39,8 @@ pub struct SchemaField {
     pub unique: bool,
     #[serde(default)]
     pub nullable: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_length: Option<usize>,
+    #[ts(optional)]
+        pub max_length: Option<usize>,
 }
 
 /// Composite index definition
@@ -73,12 +73,12 @@ pub struct RecordMetadata {
     pub created_at: String,
     pub updated_at: String,
     pub version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl: Option<u64>,
+    #[ts(optional)]
+        pub tags: Option<Vec<String>>,
+    #[ts(optional)]
+        pub schema: Option<String>,
+    #[ts(optional)]
+        pub ttl: Option<u64>,
 }
 
 impl Default for RecordMetadata {
@@ -113,12 +113,12 @@ pub struct DataRecord {
 #[serde(rename_all = "camelCase")]
 pub struct StorageResult<T> {
     pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<T>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<ResultMetadata>,
+    #[ts(optional)]
+        pub data: Option<T>,
+    #[ts(optional)]
+        pub error: Option<String>,
+    #[ts(optional)]
+        pub metadata: Option<ResultMetadata>,
 }
 
 impl<T> StorageResult<T> {
@@ -151,12 +151,12 @@ impl<T> StorageResult<T> {
 #[ts(export, export_to = "../../../shared/generated/orm/ResultMetadata.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ResultMetadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub total_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query_time_ms: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_hit: Option<bool>,
+    #[ts(optional)]
+        pub total_count: Option<usize>,
+    #[ts(optional)]
+        pub query_time_ms: Option<u64>,
+    #[ts(optional)]
+        pub cache_hit: Option<bool>,
 }
 
 /// Collection statistics
@@ -168,10 +168,10 @@ pub struct CollectionStats {
     pub record_count: usize,
     pub total_size: usize,
     pub last_modified: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub indices: Option<Vec<String>>,
+    #[ts(optional)]
+        pub schema: Option<String>,
+    #[ts(optional)]
+        pub indices: Option<Vec<String>>,
 }
 
 /// Batch operation type
@@ -192,10 +192,8 @@ pub enum BatchOperationType {
 pub struct BatchOperation {
     pub operation_type: BatchOperationType,
     pub collection: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<UUID>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Record<string, unknown> | undefined")]
+        pub id: Option<UUID>,
+        #[ts(type = "Record<string, unknown> | undefined")]
     pub data: Option<Value>,
 }
 

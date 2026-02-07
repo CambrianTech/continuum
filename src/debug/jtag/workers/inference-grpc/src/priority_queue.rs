@@ -9,6 +9,11 @@
 //! - Requests are sorted by priority, then by arrival time
 //! - HOT requests preempt WARM/BACKGROUND
 //! - Stats tracked per priority level for monitoring
+//!
+//! NOTE: Currently only Priority enum is used. Full queue implementation
+//! is ready for when inference-grpc switches to priority-based processing.
+
+#![allow(dead_code)] // Queue implementation ready for future use
 
 use log::info;
 use std::cmp::Ordering;

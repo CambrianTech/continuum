@@ -497,12 +497,9 @@ enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
     success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "requestId")]
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+        #[serde(rename = "requestId")]
     request_id: Option<u64>,
 }
 

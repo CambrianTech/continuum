@@ -178,9 +178,64 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
 
 // ─── Synchronous Database Operations ─────────────────────────────────────────
 
+/// Ensure table exists by creating it dynamically from record data.
+/// This mimics TypeScript's auto-table-creation behavior.
+fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
+    // Build columns from the data object, inferring types
+    let mut columns = vec![
+        "id TEXT PRIMARY KEY".to_string(),
+        "created_at TEXT NOT NULL".to_string(),
+        "updated_at TEXT NOT NULL".to_string(),
+        "version INTEGER NOT NULL DEFAULT 1".to_string(),
+    ];
+
+    if let Value::Object(obj) = data {
+        for (key, value) in obj {
+            // Skip fields already in base columns to avoid duplicates
+            if key == "id" || key == "createdAt" || key == "created_at"
+                || key == "updatedAt" || key == "updated_at"
+                || key == "version" {
+                continue;
+            }
+            let col_name = naming::to_snake_case(key);
+            let col_type = match value {
+                Value::Bool(_) => "INTEGER",
+                Value::Number(n) => {
+                    if n.is_i64() {
+                        "INTEGER"
+                    } else {
+                        "REAL"
+                    }
+                }
+                Value::String(_) => "TEXT",
+                Value::Array(_) | Value::Object(_) => "TEXT", // JSON stored as text
+                Value::Null => "TEXT", // Default to TEXT for null
+            };
+            columns.push(format!("{} {}", col_name, col_type));
+        }
+    }
+
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS {} ({})",
+        table,
+        columns.join(", ")
+    );
+
+    eprintln!("[SqliteAdapter.ensure_table_exists] SQL: {}", sql);
+
+    if let Err(e) = conn.execute(&sql, []) {
+        eprintln!("[SqliteAdapter.ensure_table_exists] ERROR: {}", e);
+    }
+}
+
 fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord> {
     let table = naming::to_table_name(&record.collection);
     let now = chrono::Utc::now().to_rfc3339();
+
+    eprintln!("[SqliteAdapter.do_create] table={}, id={}", table, record.id);
+
+    // Auto-create table if it doesn't exist (like TypeScript does)
+    ensure_table_exists(conn, &table, &record.data);
 
     // Build column list and values from data
     let mut columns = vec!["id".to_string(), "created_at".to_string(), "updated_at".to_string(), "version".to_string()];
@@ -194,7 +249,10 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
 
     if let Value::Object(data) = &record.data {
         for (key, value) in data {
-            if key == "id" {
+            // Skip fields already in base columns to avoid duplicates
+            if key == "id" || key == "createdAt" || key == "created_at"
+                || key == "updatedAt" || key == "updated_at"
+                || key == "version" {
                 continue;
             }
             columns.push(naming::to_snake_case(key));
@@ -210,19 +268,27 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
         placeholders.join(", ")
     );
 
+    eprintln!("[SqliteAdapter.do_create] SQL: {}", sql);
+
     let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
 
     match conn.execute(&sql, params.as_slice()) {
-        Ok(_) => StorageResult::ok(DataRecord {
-            metadata: RecordMetadata {
-                created_at: now.clone(),
-                updated_at: now,
-                version: 1,
-                ..record.metadata
-            },
-            ..record
-        }),
-        Err(e) => StorageResult::err(format!("Insert failed: {}", e)),
+        Ok(rows) => {
+            eprintln!("[SqliteAdapter.do_create] SUCCESS, rows affected: {}", rows);
+            StorageResult::ok(DataRecord {
+                metadata: RecordMetadata {
+                    created_at: now.clone(),
+                    updated_at: now,
+                    version: 1,
+                    ..record.metadata
+                },
+                ..record
+            })
+        }
+        Err(e) => {
+            eprintln!("[SqliteAdapter.do_create] ERROR: {}", e);
+            StorageResult::err(format!("Insert failed: {}", e))
+        }
     }
 }
 
@@ -232,7 +298,13 @@ fn do_read(conn: &Connection, collection: &str, id: &UUID) -> StorageResult<Data
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
-        Err(e) => return StorageResult::err(format!("Prepare failed: {}", e)),
+        Err(e) => {
+            // If table doesn't exist, return "not found" instead of error
+            if e.to_string().contains("no such table") {
+                return StorageResult::err(format!("Record not found: {}", id));
+            }
+            return StorageResult::err(format!("Prepare failed: {}", e));
+        }
     };
 
     let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
@@ -504,9 +576,21 @@ fn row_to_record(
     let mut version: Option<u32> = None;
 
     for (i, col) in columns.iter().enumerate() {
+        // Check if this column is likely a boolean (is_*, has_*, *_active, etc.)
+        let is_boolean_col = col.starts_with("is_") || col.starts_with("has_")
+            || col.ends_with("_active") || col.ends_with("_enabled")
+            || col.ends_with("_visible") || col.ends_with("_deleted");
+
         let value: Value = match row.get_ref(i)? {
             rusqlite::types::ValueRef::Null => Value::Null,
-            rusqlite::types::ValueRef::Integer(n) => json!(n),
+            rusqlite::types::ValueRef::Integer(n) => {
+                // Convert 0/1 to false/true for boolean columns
+                if is_boolean_col && (n == 0 || n == 1) {
+                    json!(n == 1)
+                } else {
+                    json!(n)
+                }
+            }
             rusqlite::types::ValueRef::Real(n) => json!(n),
             rusqlite::types::ValueRef::Text(s) => {
                 let s = std::str::from_utf8(s).unwrap_or("");
@@ -538,8 +622,18 @@ fn row_to_record(
         }
     }
 
+    // Include base fields in data for TypeScript compatibility
     if let Some(ref id_str) = id {
         data.insert("id".to_string(), json!(id_str));
+    }
+    if let Some(ref ts) = created_at {
+        data.insert("createdAt".to_string(), json!(ts));
+    }
+    if let Some(ref ts) = updated_at {
+        data.insert("updatedAt".to_string(), json!(ts));
+    }
+    if let Some(v) = version {
+        data.insert("version".to_string(), json!(v));
     }
 
     Ok(DataRecord {

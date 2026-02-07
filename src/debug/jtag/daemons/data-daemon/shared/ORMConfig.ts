@@ -11,7 +11,13 @@
  * If config says 'rust' and Rust fails, the operation FAILS.
  * If config says 'typescript', TypeScript handles it. Period.
  * NEVER add "try X, catch, use Y" logic anywhere in the ORM.
+ *
+ * ⚠️  COLLECTIONS ARE TYPED ⚠️
+ * All collection names come from generated-collection-constants.ts
+ * which is derived from entity definitions. You CANNOT use a random string.
  */
+
+import { COLLECTIONS, type CollectionName } from '../../../shared/generated-collection-constants';
 
 export type ORMBackend = 'typescript' | 'rust' | 'shadow';
 export type ShadowMode = 'read' | 'write' | 'both';
@@ -30,39 +36,110 @@ export interface ORMCollectionConfig {
 /**
  * Per-collection configuration
  * Phase 4 Complete: All collections now route to Rust DataModule
+ *
+ * Keys MUST be CollectionName values from generated constants.
+ * TypeScript will error if you try to use an invalid collection name.
  */
-const COLLECTION_CONFIG: Record<string, ORMCollectionConfig> = {
+const COLLECTION_CONFIG: Partial<Record<CollectionName, ORMCollectionConfig>> = {
   // Core entities - now on Rust
-  'users': { backend: 'rust', logOperations: false },
-  'chatMessages': { backend: 'rust', logOperations: false },
-  'chat_messages': { backend: 'rust', logOperations: false },
-  'memories': { backend: 'rust', logOperations: false },
-  'rooms': { backend: 'rust', logOperations: false },
-  'room_memberships': { backend: 'rust', logOperations: false },
+  [COLLECTIONS.USERS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.CHAT_MESSAGES]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.MEMORIES]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.ROOMS]: { backend: 'rust', logOperations: false },
 
-  // Persona entities
-  'persona_states': { backend: 'rust', logOperations: false },
-  'persona_skills': { backend: 'rust', logOperations: false },
-  'persona_tasks': { backend: 'rust', logOperations: false },
-
-  // Session/state entities
-  'sessions': { backend: 'rust', logOperations: false },
-  'user_states': { backend: 'rust', logOperations: false },
-
-  // Training entities
-  'training_samples': { backend: 'rust', logOperations: false },
-  'training_runs': { backend: 'rust', logOperations: false },
+  // User state
+  [COLLECTIONS.USER_STATES]: { backend: 'rust', logOperations: false },
 
   // Skill entities
-  'skills': { backend: 'rust', logOperations: false },
-  'skill_activations': { backend: 'rust', logOperations: false },
+  [COLLECTIONS.SKILLS]: { backend: 'rust', logOperations: false },
 
   // Canvas/collaboration
-  'canvas_strokes': { backend: 'rust', logOperations: false },
-  'wall_documents': { backend: 'rust', logOperations: false },
+  [COLLECTIONS.CANVAS_STROKES]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.WALL_DOCUMENTS]: { backend: 'rust', logOperations: false },
 
   // Tasks collection
-  'tasks': { backend: 'rust', logOperations: false },
+  [COLLECTIONS.TASKS]: { backend: 'rust', logOperations: false },
+
+  // Training entities
+  [COLLECTIONS.TRAINING_DATASETS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.TRAINING_EXAMPLES]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.TRAINING_SESSIONS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.TRAINING_CHECKPOINTS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.TRAINING_LOGS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.TRAINING_METRICS]: { backend: 'rust', logOperations: false },
+
+  // Fine-tuning
+  [COLLECTIONS.FINE_TUNING_JOBS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.FINE_TUNING_DATASETS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.FINE_TUNED_MODELS]: { backend: 'rust', logOperations: false },
+
+  // Cognition logging
+  [COLLECTIONS.COGNITION_STATE_SNAPSHOTS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.COGNITION_PLAN_RECORDS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.COGNITION_PLAN_STEP_EXECUTIONS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.COGNITION_SELF_STATE_UPDATES]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.COGNITION_MEMORY_OPERATIONS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.COGNITION_PLAN_REPLANS]: { backend: 'rust', logOperations: false },
+
+  // Tool/adapter logging
+  [COLLECTIONS.TOOL_EXECUTION_LOGS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.ADAPTER_DECISION_LOGS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.ADAPTER_REASONING_LOGS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.RESPONSE_GENERATION_LOGS]: { backend: 'rust', logOperations: false },
+
+  // Persona RAG contexts
+  [COLLECTIONS.PERSONA_RAG_CONTEXTS]: { backend: 'rust', logOperations: false },
+
+  // Timeline
+  [COLLECTIONS.TIMELINE_EVENTS]: { backend: 'rust', logOperations: false },
+
+  // Activities
+  [COLLECTIONS.ACTIVITIES]: { backend: 'rust', logOperations: false },
+
+  // Handles
+  [COLLECTIONS.HANDLES]: { backend: 'rust', logOperations: false },
+
+  // Voting
+  [COLLECTIONS.FILE_VOTE_PROPOSALS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.DECISION_PROPOSALS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.DECISIONS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.COORDINATION_DECISIONS]: { backend: 'rust', logOperations: false },
+
+  // Pinned items
+  [COLLECTIONS.PINNED_ITEMS]: { backend: 'rust', logOperations: false },
+
+  // Recipes
+  [COLLECTIONS.RECIPES]: { backend: 'rust', logOperations: false },
+
+  // System config
+  [COLLECTIONS.SYSTEM_CONFIG]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.SYSTEM_CHECKPOINTS]: { backend: 'rust', logOperations: false },
+
+  // Feedback
+  [COLLECTIONS.FEEDBACK_PATTERNS]: { backend: 'rust', logOperations: false },
+
+  // Social
+  [COLLECTIONS.SOCIAL_CREDENTIALS]: { backend: 'rust', logOperations: false },
+
+  // Calls
+  [COLLECTIONS.CALLS]: { backend: 'rust', logOperations: false },
+
+  // Webhook events
+  [COLLECTIONS.WEBHOOK_EVENTS]: { backend: 'rust', logOperations: false },
+
+  // AI generations
+  [COLLECTIONS.AI_GENERATIONS]: { backend: 'rust', logOperations: false },
+
+  // Genome
+  [COLLECTIONS.GENOMES]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.GENOME_LAYERS]: { backend: 'rust', logOperations: false },
+
+  // Code index
+  [COLLECTIONS.CODE_INDEX]: { backend: 'rust', logOperations: false },
+
+  // Test/dataset executions
+  [COLLECTIONS.TEST_EXECUTIONS]: { backend: 'rust', logOperations: false },
+  [COLLECTIONS.DATASET_EXECUTIONS]: { backend: 'rust', logOperations: false },
 };
 
 /**
@@ -79,16 +156,8 @@ const DEFAULT_CONFIG: ORMCollectionConfig = {
  * GLOBAL KILL SWITCH
  * When true, ALL operations go to TypeScript regardless of collection config
  * Use this to instantly revert if anything goes wrong
- *
- * Phase 4 Status:
- * - ORMRustClient IPC wired to Rust continuum-core DataModule
- * - SqlNamingConverter removed from ORM layer (Rust handles naming)
- * - Filter format conversion added ($eq → eq, $gt → gt, etc.)
- * - Store/update operations still failing when enabled
- *
- * Set to false to enable Rust backend. Currently true (TypeScript) pending debug.
  */
-export const FORCE_TYPESCRIPT_BACKEND = true;
+export const FORCE_TYPESCRIPT_BACKEND = false;
 
 /**
  * Enable shadow mode globally (run both backends, compare results)
@@ -109,7 +178,7 @@ export function getCollectionConfig(collection: string): ORMCollectionConfig {
     return { ...DEFAULT_CONFIG, backend: 'typescript' };
   }
 
-  return COLLECTION_CONFIG[collection] ?? DEFAULT_CONFIG;
+  return COLLECTION_CONFIG[collection as CollectionName] ?? DEFAULT_CONFIG;
 }
 
 /**
@@ -143,7 +212,7 @@ export function shouldLog(collection: string): boolean {
 /**
  * Set collection backend at runtime (for testing/debugging)
  */
-export function setCollectionBackend(collection: string, backend: ORMBackend): void {
+export function setCollectionBackend(collection: CollectionName, backend: ORMBackend): void {
   COLLECTION_CONFIG[collection] = {
     ...(COLLECTION_CONFIG[collection] ?? DEFAULT_CONFIG),
     backend,
@@ -156,7 +225,9 @@ export function setCollectionBackend(collection: string, backend: ORMBackend): v
 export function getBackendStatus(): Record<string, ORMBackend> {
   const status: Record<string, ORMBackend> = {};
   for (const [collection, config] of Object.entries(COLLECTION_CONFIG)) {
-    status[collection] = FORCE_TYPESCRIPT_BACKEND ? 'typescript' : config.backend;
+    if (config) {
+      status[collection] = FORCE_TYPESCRIPT_BACKEND ? 'typescript' : config.backend;
+    }
   }
   return status;
 }
@@ -169,7 +240,7 @@ export function getActiveBackend(collection: string): ORMBackend {
   if (FORCE_TYPESCRIPT_BACKEND) {
     return 'typescript';
   }
-  const config = COLLECTION_CONFIG[collection] ?? DEFAULT_CONFIG;
+  const config = COLLECTION_CONFIG[collection as CollectionName] ?? DEFAULT_CONFIG;
   return config.backend;
 }
 
@@ -178,7 +249,7 @@ export function getActiveBackend(collection: string): ORMBackend {
  * Use this to validate your assumptions at runtime.
  * Throws if the backend doesn't match expectations.
  */
-export function assertBackend(collection: string, expected: ORMBackend): void {
+export function assertBackend(collection: CollectionName, expected: ORMBackend): void {
   const actual = getActiveBackend(collection);
   if (actual !== expected) {
     throw new Error(
@@ -207,3 +278,6 @@ export function printBackendConfig(): void {
   console.log('\n⚠️  NO FALLBACKS: If rust fails, it fails. No silent TypeScript bypass.');
   console.log('================================\n');
 }
+
+// Re-export for convenience
+export { COLLECTIONS, type CollectionName };

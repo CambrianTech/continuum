@@ -177,10 +177,15 @@ export class ORMRustClient {
         : payload;
 
       try {
-        const response = JSON.parse(jsonBytes.toString('utf8')) as RustIPCResponse;
+        const jsonStr = jsonBytes.toString('utf8');
+        console.log(`[ORMRustClient.onData] Received ${jsonStr.length} bytes`);
+        const response = JSON.parse(jsonStr) as RustIPCResponse;
+        if (!response.success) {
+          console.error(`[ORMRustClient.onData] ERROR response: ${response.error}`);
+        }
         this.handleResponse(response);
       } catch (e) {
-        console.error('[ORMRustClient] Failed to parse response:', e);
+        console.error('[ORMRustClient] Failed to parse response:', e, 'raw:', jsonBytes.toString('utf8').substring(0, 200));
       }
     }
   }
@@ -208,15 +213,19 @@ export class ORMRustClient {
     const requestId = this.nextRequestId++;
     const requestWithId = { ...command, requestId };
 
+    console.log(`[ORMRustClient.request] Sending: ${command.command} (id=${requestId})`);
+
     return new Promise((resolve, reject) => {
       const json = JSON.stringify(requestWithId) + '\n';
 
       this.pendingRequests.set(requestId, (result) => {
+        console.log(`[ORMRustClient.request] Response for ${command.command} (id=${requestId}): success=${result.success}, error=${result.error ?? 'none'}`);
         resolve(result as RustIPCResponse<T>);
       });
 
       this.socket!.write(json, (err) => {
         if (err) {
+          console.error(`[ORMRustClient.request] Write error for ${command.command}:`, err);
           this.pendingRequests.delete(requestId);
           reject(err);
         }
@@ -225,6 +234,7 @@ export class ORMRustClient {
       // Timeout after 30 seconds
       setTimeout(() => {
         if (this.pendingRequests.has(requestId)) {
+          console.error(`[ORMRustClient.request] TIMEOUT for ${command.command} (id=${requestId})`);
           this.pendingRequests.delete(requestId);
           reject(new Error(`Request timeout: ${command.command}`));
         }

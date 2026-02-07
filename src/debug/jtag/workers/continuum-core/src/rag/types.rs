@@ -23,10 +23,8 @@ pub enum MessageRole {
 pub struct LlmMessage {
     pub role: MessageRole,
     pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<i64>,
+        pub name: Option<String>,
+        pub timestamp: Option<i64>,
 }
 
 /// Section loaded by a RAG source (internal, not exported to TS)

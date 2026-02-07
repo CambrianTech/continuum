@@ -37,10 +37,15 @@ impl DataModule {
 
     /// Get or create adapter for the given path. Path is REQUIRED.
     async fn get_adapter(&self, db_path: &str) -> Result<Arc<Mutex<SqliteAdapter>>, String> {
+        eprintln!("[DataModule.get_adapter] db_path={}", db_path);
+
         // Check cache first
         if let Some(adapter) = self.adapters.get(db_path) {
+            eprintln!("[DataModule.get_adapter] Using cached adapter for {}", db_path);
             return Ok(adapter.clone());
         }
+
+        eprintln!("[DataModule.get_adapter] Creating NEW adapter for {}", db_path);
 
         // Create and initialize new adapter
         let mut adapter = SqliteAdapter::new();
@@ -55,16 +60,8 @@ impl DataModule {
         let adapter = Arc::new(Mutex::new(adapter));
         self.adapters.insert(db_path.to_string(), adapter.clone());
 
+        eprintln!("[DataModule.get_adapter] Adapter initialized and cached for {}", db_path);
         Ok(adapter)
-    }
-
-    /// Extract dbPath from params - REQUIRED, no fallbacks
-    fn extract_db_path(params: &Value) -> Result<String, String> {
-        params
-            .get("dbPath")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| "Missing required parameter: dbPath".to_string())
     }
 }
 
@@ -241,12 +238,18 @@ struct DbPathOnly {
 
 impl DataModule {
     async fn handle_create(&self, params: Value) -> Result<CommandResult, String> {
+        eprintln!("[DataModule.handle_create] Parsing params...");
         let params: CreateParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
+            serde_json::from_value(params.clone()).map_err(|e| {
+                eprintln!("[DataModule.handle_create] Parse error: {e}, params: {params}");
+                format!("Invalid params: {e}")
+            })?;
 
         let id = params.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        eprintln!("[DataModule.handle_create] collection={}, id={}", params.collection, id);
+
         let record = DataRecord {
-            id,
+            id: id.clone(),
             collection: params.collection,
             data: params.data,
             metadata: RecordMetadata::default(),
@@ -254,7 +257,9 @@ impl DataModule {
 
         let adapter = self.get_adapter(&params.db_path).await?;
         let adapter = adapter.lock().await;
+        eprintln!("[DataModule.handle_create] Creating record...");
         let result = adapter.create(record).await;
+        eprintln!("[DataModule.handle_create] Result: success={}, error={:?}", result.success, result.error);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -271,11 +276,18 @@ impl DataModule {
     }
 
     async fn handle_update(&self, params: Value) -> Result<CommandResult, String> {
+        eprintln!("[DataModule.handle_update] Parsing params...");
         let params: UpdateParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
+            serde_json::from_value(params.clone()).map_err(|e| {
+                eprintln!("[DataModule.handle_update] Parse error: {e}, params: {params}");
+                format!("Invalid params: {e}")
+            })?;
+
+        eprintln!("[DataModule.handle_update] collection={}, id={}", params.collection, params.id);
 
         let adapter = self.get_adapter(&params.db_path).await?;
         let adapter = adapter.lock().await;
+        eprintln!("[DataModule.handle_update] Updating record...");
         let result = adapter
             .update(
                 &params.collection,
@@ -284,6 +296,7 @@ impl DataModule {
                 params.increment_version,
             )
             .await;
+        eprintln!("[DataModule.handle_update] Result: success={}, error={:?}", result.success, result.error);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -300,11 +313,17 @@ impl DataModule {
     }
 
     async fn handle_query(&self, params: Value) -> Result<CommandResult, String> {
+        eprintln!("[DataModule.handle_query] Parsing params...");
         let params: QueryParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
+            serde_json::from_value(params.clone()).map_err(|e| {
+                eprintln!("[DataModule.handle_query] Parse error: {e}, params: {params}");
+                format!("Invalid params: {e}")
+            })?;
+
+        eprintln!("[DataModule.handle_query] collection={}, filter={:?}", params.collection, params.filter);
 
         let query = StorageQuery {
-            collection: params.collection,
+            collection: params.collection.clone(),
             filter: params.filter,
             sort: params.sort,
             limit: params.limit,
@@ -314,7 +333,9 @@ impl DataModule {
 
         let adapter = self.get_adapter(&params.db_path).await?;
         let adapter = adapter.lock().await;
+        eprintln!("[DataModule.handle_query] Executing query on adapter...");
         let result = adapter.query(query).await;
+        eprintln!("[DataModule.handle_query] Result: success={}, count={}", result.success, result.data.as_ref().map(|d| d.len()).unwrap_or(0));
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }

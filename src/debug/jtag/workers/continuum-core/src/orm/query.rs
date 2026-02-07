@@ -65,14 +65,17 @@ pub enum QueryOperator {
 }
 
 /// Field filter - either a direct value or an operator
+/// CRITICAL: Operator MUST come before Value in untagged enum!
+/// serde tries variants in order - Operator has more specific pattern ($-prefixed keys)
+/// while Value matches ANY JSON value. If Value comes first, Operator never gets tried.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/orm/FieldFilter.ts")]
 #[serde(untagged)]
 pub enum FieldFilter {
-    /// Direct value (implies Eq)
-    Value(#[ts(type = "string | number | boolean | null")] ComparableValue),
-    /// Operator-based filter
+    /// Operator-based filter (must come first for correct parsing)
     Operator(QueryOperator),
+    /// Direct value (implies Eq) - fallback for non-operator values
+    Value(#[ts(type = "string | number | boolean | null")] ComparableValue),
 }
 
 /// Sort specification
@@ -109,10 +112,10 @@ pub enum CursorDirection {
 #[ts(export, export_to = "../../../shared/generated/orm/TimeRange.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct TimeRange {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub start: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub end: Option<String>,
+    #[ts(optional)]
+        pub start: Option<String>,
+    #[ts(optional)]
+        pub end: Option<String>,
 }
 
 /// Join specification for related data loading
@@ -131,8 +134,8 @@ pub struct JoinSpec {
     /// Join type
     pub join_type: JoinType,
     /// Fields to select from joined collection
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub select: Option<Vec<String>>,
+    #[ts(optional)]
+        pub select: Option<Vec<String>>,
 }
 
 /// Join type
@@ -150,21 +153,29 @@ pub enum JoinType {
 #[serde(rename_all = "camelCase")]
 pub struct StorageQuery {
     pub collection: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub filter: Option<std::collections::HashMap<String, FieldFilter>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub sort: Option<Vec<SortSpec>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub limit: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub offset: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub cursor: Option<Cursor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub tags: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub time_range: Option<TimeRange>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[serde(default)]
     pub joins: Option<Vec<JoinSpec>>,
 }
 

@@ -27,8 +27,7 @@ pub struct EmbeddingModel {
     pub name: String,
     pub dimensions: usize,
     pub provider: EmbeddingProvider,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<usize>,
+        pub max_tokens: Option<usize>,
 }
 
 /// Embedding provider
@@ -92,10 +91,8 @@ pub struct VectorSearchOptions {
     pub collection: String,
 
     /// Query can be text (will generate embedding) OR pre-computed vector
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Array<number> | undefined")]
+        pub query_text: Option<String>,
+        #[ts(type = "Array<number> | undefined")]
     pub query_vector: Option<VectorEmbedding>,
 
     /// Number of results (default: 10)
@@ -115,19 +112,15 @@ pub struct VectorSearchOptions {
     pub hybrid_ratio: f32,
 
     /// Metadata filters
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Record<string, unknown> | undefined")]
+        #[ts(type = "Record<string, unknown> | undefined")]
     pub filter: Option<Value>,
 
     /// Model selection
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<EmbeddingModel>,
+        pub embedding_model: Option<EmbeddingModel>,
 
     /// Pagination
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offset: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<usize>,
+        pub offset: Option<usize>,
+        pub limit: Option<usize>,
 
     /// Similarity metric
     #[serde(default)]
@@ -173,8 +166,7 @@ pub struct VectorSearchResult {
     pub score: f32,
     /// Vector distance (lower = more similar)
     pub distance: f32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<VectorResultMetadata>,
+        pub metadata: Option<VectorResultMetadata>,
 }
 
 /// Metadata for vector search result
@@ -183,10 +175,8 @@ pub struct VectorSearchResult {
 #[serde(rename_all = "camelCase")]
 pub struct VectorResultMetadata {
     pub collection: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query_time: Option<u64>,
+        pub embedding_model: Option<String>,
+        pub query_time: Option<u64>,
 }
 
 /// Full vector search response
@@ -196,8 +186,7 @@ pub struct VectorResultMetadata {
 pub struct VectorSearchResponse {
     pub results: Vec<VectorSearchResult>,
     pub total_results: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Array<number> | undefined")]
+        #[ts(type = "Array<number> | undefined")]
     pub query_vector: Option<VectorEmbedding>,
     pub metadata: VectorResponseMetadata,
 }
@@ -211,8 +200,7 @@ pub struct VectorResponseMetadata {
     pub search_mode: HybridSearchMode,
     pub embedding_model: String,
     pub query_time: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_hit: Option<bool>,
+        pub cache_hit: Option<bool>,
 }
 
 /// Embedding generation request
@@ -221,8 +209,7 @@ pub struct VectorResponseMetadata {
 #[serde(rename_all = "camelCase")]
 pub struct GenerateEmbeddingRequest {
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<EmbeddingModel>,
+        pub model: Option<EmbeddingModel>,
 }
 
 /// Embedding generation response
@@ -233,10 +220,8 @@ pub struct GenerateEmbeddingResponse {
     #[ts(type = "Array<number>")]
     pub embedding: VectorEmbedding,
     pub model: EmbeddingModel,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generation_time: Option<u64>,
+        pub token_count: Option<usize>,
+        pub generation_time: Option<u64>,
 }
 
 /// Index vector request - store embedding for a record
@@ -248,8 +233,7 @@ pub struct IndexVectorRequest {
     pub id: UUID,
     #[ts(type = "Array<number>")]
     pub embedding: VectorEmbedding,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<IndexVectorMetadata>,
+        pub metadata: Option<IndexVectorMetadata>,
 }
 
 /// Metadata for index vector request
@@ -257,10 +241,8 @@ pub struct IndexVectorRequest {
 #[ts(export, export_to = "../../../shared/generated/orm/IndexVectorMetadata.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct IndexVectorMetadata {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generated_at: Option<String>,
+        pub embedding_model: Option<String>,
+        pub generated_at: Option<String>,
 }
 
 /// Backfill vectors request - generate embeddings for existing records
@@ -272,14 +254,12 @@ pub struct BackfillVectorsRequest {
     /// Field to generate embeddings from (e.g., 'content')
     pub text_field: String,
     /// Only backfill matching records
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "Record<string, unknown> | undefined")]
+        #[ts(type = "Record<string, unknown> | undefined")]
     pub filter: Option<Value>,
     /// Process N records at a time (default: 100)
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<EmbeddingModel>,
+        pub model: Option<EmbeddingModel>,
 }
 
 fn default_batch_size() -> usize {
@@ -295,8 +275,7 @@ pub struct BackfillVectorsProgress {
     pub processed: usize,
     pub failed: usize,
     pub elapsed_time: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub estimated_remaining: Option<u64>,
+        pub estimated_remaining: Option<u64>,
 }
 
 /// Vector index statistics
@@ -308,12 +287,9 @@ pub struct VectorIndexStats {
     pub total_records: usize,
     pub records_with_vectors: usize,
     pub vector_dimensions: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding_model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index_size: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_updated: Option<String>,
+        pub embedding_model: Option<String>,
+        pub index_size: Option<usize>,
+        pub last_updated: Option<String>,
 }
 
 /// Vector search capabilities
