@@ -52,13 +52,29 @@ export class DataOpenServerCommand {
    * @param params - Adapter type and config
    * @returns Result with dbHandle on success, error message on failure
    */
+  /** Valid adapter types for helpful error messages */
+  private static readonly VALID_ADAPTERS = ['sqlite', 'json', 'vector', 'graph', 'rust'] as const;
+
   async execute(params: DataOpenParams): Promise<DataOpenResult> {
     try {
       // Validate adapter type
       if (!params.adapter) {
         return createDataOpenResultFromParams(params, {
           success: false,
-          error: 'Missing required parameter: adapter'
+          error: `Missing required parameter: adapter. ` +
+            `Valid adapters: ${DataOpenServerCommand.VALID_ADAPTERS.join(', ')}. ` +
+            `NOTE: Most commands use the default database automatically - ` +
+            `you probably want data/list or data/read instead of data/open.`
+        });
+      }
+
+      // Validate adapter is a known type
+      if (!DataOpenServerCommand.VALID_ADAPTERS.includes(params.adapter as any)) {
+        return createDataOpenResultFromParams(params, {
+          success: false,
+          error: `Unknown adapter type: '${params.adapter}'. ` +
+            `Valid adapters: ${DataOpenServerCommand.VALID_ADAPTERS.join(', ')}. ` +
+            `Example: data/open --adapter="sqlite" --config='{"path":"/tmp/my.db"}'`
         });
       }
 
@@ -66,7 +82,10 @@ export class DataOpenServerCommand {
       if (!params.config) {
         return createDataOpenResultFromParams(params, {
           success: false,
-          error: 'Missing required parameter: config'
+          error: `Missing required parameter: config. ` +
+            `For ${params.adapter}, use: --config='{"path":"/path/to/database"}'. ` +
+            `NOTE: Most commands use the default database automatically - ` +
+            `you probably want data/list or data/read instead.`
         });
       }
 

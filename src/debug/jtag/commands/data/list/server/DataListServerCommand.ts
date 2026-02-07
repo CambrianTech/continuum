@@ -36,6 +36,23 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
   async execute(params: DataListParams): Promise<DataListResult<T>> {
     const collection = params.collection;
 
+    // Validate collection is provided
+    if (!collection) {
+      // Get all registered collections from COLLECTIONS constant
+      const allCollections = Object.values(COLLECTIONS);
+      const commonCollections = ['users', 'rooms', 'chat_messages', 'memories', 'tasks', 'skills', 'wall_documents'];
+
+      return createDataListResultFromParams(params, {
+        success: false,
+        items: [],
+        count: 0,
+        error: `Missing required parameter: collection. ` +
+          `Common: ${commonCollections.join(', ')}. ` +
+          `All ${allCollections.length} collections: ${allCollections.slice(0, 15).join(', ')}... ` +
+          `Example: data/list --collection="users" --limit=10`
+      });
+    }
+
     try {
       const limit = Math.min(params.limit ?? DEFAULT_CONFIG.database.queryLimit, DEFAULT_CONFIG.database.maxBatchSize);
 
