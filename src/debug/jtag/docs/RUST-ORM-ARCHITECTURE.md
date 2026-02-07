@@ -302,10 +302,15 @@ commands/data/list/server/DataListServerCommand.ts (dbHandle path)
 - [x] All collections now route to Rust DataModule
 - [ ] Remove old DataDaemon code (Phase 5 cleanup)
 
-### Phase 5: Cleanup (TODO)
-- [ ] Remove redundant DataDaemon code
+### Phase 5: Cleanup (IN PROGRESS)
+- [x] Removed dead DataDaemon fallback paths from ORM CRUD methods
+- [x] Removed debug console.log spam from ORM.ts
+- [x] Updated ORM header comments to reflect Rust-first architecture
+- [ ] Move batch operations to Rust
+- [ ] Move paginated queries to Rust
+- [ ] Move vector operations to Rust
+- [ ] Remove DataDaemon once all ops migrated
 - [ ] Remove FORCE_TYPESCRIPT_BACKEND kill switch once stable
-- [ ] Add shadow mode for verification
 
 ## Success Criteria
 
