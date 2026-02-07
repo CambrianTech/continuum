@@ -16,6 +16,7 @@ import {
   DataStorageAdapter,
   type DataRecord,
   type StorageQuery,
+  type StorageQueryWithJoin,
   type StorageResult,
   type StorageAdapterConfig,
   type CollectionStats,
@@ -347,7 +348,173 @@ export class SqliteStorageAdapter extends SqlStorageAdapterBase implements Vecto
     return this.queryExecutor.count(query);
   }
 
-  // Removed relational query methods - cross-cutting concerns
+  /**
+   * Query with JOINs for optimal loading
+   * Builds a SQL query with JOINs and executes directly.
+   * Joined data is nested under the alias key in each result.
+   */
+  async queryWithJoin<T extends RecordData>(
+    query: StorageQueryWithJoin
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    try {
+      // Ensure schema for main collection and all joined collections
+      await this.ensureSchema(query.collection);
+      for (const join of query.joins) {
+        await this.ensureSchema(join.collection);
+      }
+
+      const primaryTable = SqlNamingConverter.toTableName(query.collection);
+      const primaryAlias = 'p';
+
+      // Build SELECT clause
+      const selectClauses: string[] = [`${primaryAlias}.*`];
+      const joinAliasMap: Map<string, { alias: string; select?: readonly string[] }> = new Map();
+
+      query.joins.forEach((join, index) => {
+        const joinAlias = `j${index}`;
+        joinAliasMap.set(join.alias, { alias: joinAlias, select: join.select });
+
+        if (join.select && join.select.length > 0) {
+          // Select specific fields with alias prefix
+          join.select.forEach(field => {
+            const snakeField = SqlNamingConverter.toSnakeCase(field);
+            selectClauses.push(`${joinAlias}.${snakeField} AS ${join.alias}_${snakeField}`);
+          });
+        } else {
+          // Select all fields from joined table
+          selectClauses.push(`${joinAlias}.*`);
+        }
+      });
+
+      // Build JOIN clauses
+      const joinClauses: string[] = [];
+      query.joins.forEach((join, index) => {
+        const joinTable = SqlNamingConverter.toTableName(join.collection);
+        const joinAlias = `j${index}`;
+        const joinType = join.type === 'inner' ? 'INNER JOIN' : 'LEFT JOIN';
+        const localField = SqlNamingConverter.toSnakeCase(join.localField);
+        const foreignField = SqlNamingConverter.toSnakeCase(join.foreignField);
+
+        joinClauses.push(
+          `${joinType} ${joinTable} ${joinAlias} ON ${primaryAlias}.${localField} = ${joinAlias}.${foreignField}`
+        );
+      });
+
+      // Build WHERE clause
+      let whereClause = '';
+      if (query.filter && Object.keys(query.filter).length > 0) {
+        const conditions = Object.entries(query.filter).map(([key, value]) => {
+          const snakeKey = SqlNamingConverter.toSnakeCase(key);
+          if (value === null) {
+            return `${primaryAlias}.${snakeKey} IS NULL`;
+          }
+          const escapedValue = typeof value === 'string'
+            ? `'${value.replace(/'/g, "''")}'`
+            : value;
+          return `${primaryAlias}.${snakeKey} = ${escapedValue}`;
+        });
+        whereClause = `WHERE ${conditions.join(' AND ')}`;
+      }
+
+      // Build ORDER BY clause
+      let orderByClause = '';
+      if (query.sort && query.sort.length > 0) {
+        const orderParts = query.sort.map(s => {
+          const snakeField = SqlNamingConverter.toSnakeCase(s.field);
+          return `${primaryAlias}.${snakeField} ${s.direction.toUpperCase()}`;
+        });
+        orderByClause = `ORDER BY ${orderParts.join(', ')}`;
+      }
+
+      // Build LIMIT/OFFSET
+      const limitClause = query.limit ? `LIMIT ${query.limit}` : '';
+      const offsetClause = query.offset ? `OFFSET ${query.offset}` : '';
+
+      // Assemble full SQL
+      const sql = [
+        `SELECT ${selectClauses.join(', ')}`,
+        `FROM ${primaryTable} ${primaryAlias}`,
+        ...joinClauses,
+        whereClause,
+        orderByClause,
+        limitClause,
+        offsetClause
+      ].filter(Boolean).join(' ');
+
+      log.debug(`queryWithJoin SQL: ${sql}`);
+
+      // Execute SQL directly
+      const rows = await new Promise<any[]>((resolve, reject) => {
+        if (!this.db) {
+          reject(new Error('Database not initialized'));
+          return;
+        }
+        this.db.all(sql, [], (err: Error | null, rows: any[]) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        });
+      });
+
+      // Transform results: nest joined data under alias keys
+      const records: DataRecord<T>[] = rows.map((row: any) => {
+        // Extract primary entity fields (those without alias prefix)
+        const primaryData: Record<string, any> = {};
+        const joinedData: Record<string, Record<string, any>> = {};
+
+        // Initialize nested objects for each join alias
+        for (const join of query.joins) {
+          joinedData[join.alias] = {};
+        }
+
+        for (const [key, value] of Object.entries(row)) {
+          // Check if this is a joined field (has alias_ prefix)
+          let isJoinedField = false;
+          for (const join of query.joins) {
+            if (key.startsWith(`${join.alias}_`)) {
+              const fieldName = key.slice(join.alias.length + 1);
+              const camelField = SqlNamingConverter.toCamelCase(fieldName);
+              joinedData[join.alias][camelField] = value;
+              isJoinedField = true;
+              break;
+            }
+          }
+
+          if (!isJoinedField) {
+            const camelKey = SqlNamingConverter.toCamelCase(key);
+            primaryData[camelKey] = value;
+          }
+        }
+
+        // Merge joined data into primary data
+        const entityData = {
+          ...primaryData,
+          ...joinedData
+        } as T;
+
+        return {
+          id: row.id as UUID,
+          collection: query.collection,
+          data: entityData,
+          metadata: {
+            createdAt: row.created_at || new Date().toISOString(),
+            updatedAt: row.updated_at || new Date().toISOString(),
+            version: row.version || 1
+          }
+        };
+      });
+
+      return {
+        success: true,
+        data: records,
+        metadata: {
+          totalCount: records.length
+        }
+      };
+    } catch (error: any) {
+      log.error(`queryWithJoin failed: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
 
   /**
    * Update an existing record - delegates to SqliteWriteManager

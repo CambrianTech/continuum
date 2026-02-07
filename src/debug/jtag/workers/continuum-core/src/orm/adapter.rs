@@ -85,6 +85,10 @@ pub trait StorageAdapter: Send + Sync {
     /// Query records with filters
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>>;
 
+    /// Query with JOINs for optimal loading of related data
+    /// Returns records with joined data nested under alias keys
+    async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>>;
+
     /// Count records matching query (uses SQL COUNT, not fetch all)
     async fn count(&self, query: StorageQuery) -> StorageResult<usize>;
 

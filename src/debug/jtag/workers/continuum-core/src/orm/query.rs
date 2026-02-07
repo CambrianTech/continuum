@@ -19,35 +19,48 @@ pub enum SortDirection {
 pub type ComparableValue = Value;
 
 /// Query operators for filtering
+/// Uses MongoDB-style $-prefixed operators to match TypeScript format directly
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/orm/QueryOperator.ts")]
-#[serde(rename_all = "camelCase")]
 pub enum QueryOperator {
     /// Equal to
+    #[serde(rename = "$eq")]
     Eq(#[ts(type = "string | number | boolean | null")] ComparableValue),
     /// Not equal to
+    #[serde(rename = "$ne")]
     Ne(#[ts(type = "string | number | boolean | null")] ComparableValue),
     /// Greater than
+    #[serde(rename = "$gt")]
     Gt(#[ts(type = "string | number | boolean")] ComparableValue),
     /// Greater than or equal
+    #[serde(rename = "$gte")]
     Gte(#[ts(type = "string | number | boolean")] ComparableValue),
     /// Less than
+    #[serde(rename = "$lt")]
     Lt(#[ts(type = "string | number | boolean")] ComparableValue),
     /// Less than or equal
+    #[serde(rename = "$lte")]
     Lte(#[ts(type = "string | number | boolean")] ComparableValue),
     /// In array
+    #[serde(rename = "$in")]
     In(#[ts(type = "Array<string | number | boolean>")] Vec<ComparableValue>),
     /// Not in array
+    #[serde(rename = "$nin")]
     NotIn(#[ts(type = "Array<string | number | boolean>")] Vec<ComparableValue>),
     /// Field exists
+    #[serde(rename = "$exists")]
     Exists(bool),
     /// Regex match
+    #[serde(rename = "$regex")]
     Regex(String),
     /// String contains (case insensitive)
+    #[serde(rename = "$contains")]
     Contains(String),
     /// Is null
+    #[serde(rename = "$isNull")]
     IsNull,
     /// Is not null
+    #[serde(rename = "$isNotNull")]
     IsNotNull,
 }
 

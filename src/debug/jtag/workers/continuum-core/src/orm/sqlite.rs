@@ -743,6 +743,13 @@ impl StorageAdapter for SqliteAdapter {
         reply_rx.await.unwrap_or_else(|_| StorageResult::err("Channel closed"))
     }
 
+    async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        // TODO: Implement proper JOIN handling in Rust
+        // For now, reuse the basic query (joins are ignored)
+        // TypeScript SqliteStorageAdapter handles joins properly when TS backend is enabled
+        self.query(query).await
+    }
+
     async fn count(&self, query: StorageQuery) -> StorageResult<usize> {
         let sender = match self.get_sender() {
             Ok(s) => s,

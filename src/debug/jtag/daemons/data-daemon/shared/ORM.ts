@@ -40,7 +40,7 @@ import type {
   VectorSearchCapabilities,
 } from './VectorSearchTypes';
 
-// Import DataDaemon for delegation
+// Import DataDaemon for delegation (TypeScript backend)
 import { DataDaemon } from './DataDaemon';
 
 // Import config and logging
@@ -50,6 +50,16 @@ import {
   shouldShadow,
   getBackendStatus,
 } from './ORMConfig';
+
+// Lazy import for Rust client (server-only, avoid circular deps)
+let _rustClient: import('../server/ORMRustClient').ORMRustClient | null = null;
+async function getRustClient(): Promise<import('../server/ORMRustClient').ORMRustClient> {
+  if (!_rustClient) {
+    const { ORMRustClient } = await import('../server/ORMRustClient');
+    _rustClient = ORMRustClient.getInstance();
+  }
+  return _rustClient;
+}
 import {
   logOperationStart,
   logOperationError,
@@ -90,8 +100,13 @@ export class ORM {
 
     try {
       if (shouldUseRust(collection)) {
-        // TODO: Phase 4 - IPC to Rust ConnectionManager
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.store<T>(collection, data);
+        if (!result.success) {
+          throw new Error(result.error || 'Rust store failed');
+        }
+        done();
+        return result.data!;
       }
 
       const result = await DataDaemon.store<T>(collection, data, suppressEvents);
@@ -116,7 +131,10 @@ export class ORM {
 
     try {
       if (shouldUseRust(query.collection)) {
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.query<T>(query);
+        done();
+        return result;
       }
 
       const result = await DataDaemon.query<T>(query);
@@ -136,7 +154,10 @@ export class ORM {
 
     try {
       if (shouldUseRust(query.collection)) {
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.count(query);
+        done();
+        return result;
       }
 
       const result = await DataDaemon.count(query);
@@ -158,7 +179,10 @@ export class ORM {
 
     try {
       if (shouldUseRust(query.collection)) {
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.queryWithJoin<T & BaseEntity>(query);
+        done();
+        return result;
       }
 
       const result = await DataDaemon.queryWithJoin<T>(query);
@@ -181,7 +205,10 @@ export class ORM {
 
     try {
       if (shouldUseRust(collection)) {
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.read<T>(collection, id);
+        done();
+        return result;
       }
 
       const result = await DataDaemon.read<T>(collection, id);
@@ -206,7 +233,10 @@ export class ORM {
 
     try {
       if (shouldUseRust(collection)) {
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.update<T>(collection, id, data, incrementVersion);
+        done();
+        return result;
       }
 
       const result = await DataDaemon.update<T>(collection, id, data, incrementVersion);
@@ -230,7 +260,10 @@ export class ORM {
 
     try {
       if (shouldUseRust(collection)) {
-        throw new Error('Rust ORM not implemented yet');
+        const client = await getRustClient();
+        const result = await client.remove(collection, id);
+        done();
+        return result;
       }
 
       const result = await DataDaemon.remove(collection, id, suppressEvents);
@@ -336,6 +369,7 @@ export class ORM {
 
   /**
    * Perform vector similarity search
+   * NOTE: Vector search stays in TypeScript for now - not yet in Rust DataModule
    */
   static async vectorSearch<T extends RecordData>(
     options: VectorSearchOptions
@@ -343,10 +377,7 @@ export class ORM {
     const done = logOperationStart('vectorSearch', options.collection, { k: options.k });
 
     try {
-      if (shouldUseRust(options.collection)) {
-        throw new Error('Rust ORM not implemented yet');
-      }
-
+      // Vector search not yet in Rust DataModule - use TypeScript
       const result = await DataDaemon.vectorSearch<T>(options);
       done();
       return result;

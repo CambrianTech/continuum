@@ -22,7 +22,11 @@ import type {
   StorageResult,
   StorageOperation,
   RecordData,
+  JoinSpec,
 } from '../shared/DataStorageAdapter';
+
+// Input type for joins (allows optional properties)
+type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;
 import { getServerConfig } from '../../../system/config/ServerConfig';
 // NOTE: No SqlNamingConverter import - Rust SqliteAdapter handles all naming conversions
 
@@ -258,19 +262,17 @@ export class ORMRustClient {
   /**
    * Query entities
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * NOTE: Filter passed directly - Rust now accepts $eq/$gt format (MongoDB-style)
    */
   async query<T extends BaseEntity>(
     query: StorageQuery
   ): Promise<StorageResult<DataRecord<T>[]>> {
-    // Convert filter from TypeScript $eq/$gt format to Rust eq/gt format
-    const rustFilter = this.convertFilterForRust(query.filter as Record<string, unknown> | undefined);
-
     const response = await this.request<RustDataRecord[]>({
       command: 'data/query',
       dbPath: this.dbPath,
       collection: query.collection,  // Rust converts to snake_case table name
-      filter: rustFilter,             // Converted to Rust format
-      sort: query.sort,               // Rust converts sort field names
+      filter: query.filter,          // Rust accepts $eq/$gt format directly
+      sort: query.sort,              // Rust converts sort field names
       limit: query.limit,
       offset: query.offset,
     });
@@ -321,18 +323,78 @@ export class ORMRustClient {
   }
 
   /**
+   * Query entities with JOINs
+   * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * NOTE: Filter passed directly - Rust now accepts $eq/$gt format (MongoDB-style)
+   */
+  async queryWithJoin<T extends BaseEntity>(
+    query: StorageQuery & { joins?: readonly JoinSpecInput[] }
+  ): Promise<StorageResult<DataRecord<T>[]>> {
+    const response = await this.request<RustDataRecord[]>({
+      command: 'data/queryWithJoin',
+      dbPath: this.dbPath,
+      collection: query.collection,
+      filter: query.filter,
+      sort: query.sort,
+      limit: query.limit,
+      offset: query.offset,
+      joins: query.joins,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Query with join failed' };
+    }
+
+    // Rust returns: { result: { data: [...records...], success: true } }
+    const rustResult = response.result;
+    const rawRecords: RustDataRecord[] = rustResult?.data ?? [];
+
+    const records: DataRecord<T>[] = rawRecords.map((item: RustDataRecord) => {
+      let entityData: T;
+
+      if (typeof item.data === 'string') {
+        entityData = JSON.parse(item.data) as T;
+      } else if (item.data && typeof item.data === 'object') {
+        entityData = item.data as T;
+      } else {
+        const { id: _id, created_at: _ca, updated_at: _ua, version: _v, collection: _c, metadata: _m, ...rest } = item as unknown as Record<string, unknown>;
+        entityData = this.toCamelCaseObject(rest) as T;
+      }
+
+      if (!entityData.id) {
+        (entityData as BaseEntity).id = item.id as UUID;
+      }
+
+      return {
+        id: item.id,
+        collection: query.collection,
+        data: entityData,
+        metadata: {
+          createdAt: item.metadata?.created_at || new Date().toISOString(),
+          updatedAt: item.metadata?.updated_at || new Date().toISOString(),
+          version: item.metadata?.version || 1,
+        },
+      };
+    });
+
+    return {
+      success: true,
+      data: records,
+      metadata: { totalCount: records.length },
+    };
+  }
+
+  /**
    * Count entities
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * NOTE: Filter passed directly - Rust now accepts $eq/$gt format (MongoDB-style)
    */
   async count(query: StorageQuery): Promise<StorageResult<number>> {
-    // Convert filter from TypeScript $eq/$gt format to Rust eq/gt format
-    const rustFilter = this.convertFilterForRust(query.filter as Record<string, unknown> | undefined);
-
     const response = await this.request<number>({
       command: 'data/count',
       dbPath: this.dbPath,
       collection: query.collection,  // Rust converts to snake_case
-      filter: rustFilter,             // Converted to Rust format
+      filter: query.filter,          // Rust accepts $eq/$gt format directly
     });
 
     if (!response.success) {
@@ -518,70 +580,6 @@ export class ORMRustClient {
     }
 
     return { success: true, data: true };
-  }
-
-  // ─── Filter Conversion ──────────────────────────────────────────────────────
-  // TypeScript uses $eq, $gt etc. Rust uses eq, gt etc.
-
-  /**
-   * Convert TypeScript filter format to Rust format
-   * TypeScript: { roomId: "abc", timestamp: { $gte: "2024-01-01" } }
-   * Rust: { roomId: "abc", timestamp: { gte: "2024-01-01" } }
-   */
-  private convertFilterForRust(filter: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-    if (!filter) return undefined;
-
-    const result: Record<string, unknown> = {};
-    for (const [field, value] of Object.entries(filter)) {
-      if (value === null || typeof value !== 'object') {
-        // Direct value - pass through
-        result[field] = value;
-      } else if (this.isOperatorObject(value)) {
-        // Operator object - convert $eq → eq, $gt → gt, etc.
-        result[field] = this.convertOperatorObject(value as Record<string, unknown>);
-      } else {
-        // Nested object - pass through
-        result[field] = value;
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Check if value is an operator object (has $eq, $gt, etc.)
-   */
-  private isOperatorObject(value: unknown): boolean {
-    if (typeof value !== 'object' || value === null) return false;
-    const obj = value as Record<string, unknown>;
-    return Object.keys(obj).some(k => k.startsWith('$'));
-  }
-
-  /**
-   * Convert operator object from TypeScript to Rust format
-   * { $eq: "abc" } → { eq: "abc" }
-   * { $gte: "2024-01-01" } → { gte: "2024-01-01" }
-   */
-  private convertOperatorObject(obj: Record<string, unknown>): Record<string, unknown> {
-    const operatorMap: Record<string, string> = {
-      '$eq': 'eq',
-      '$ne': 'ne',
-      '$gt': 'gt',
-      '$gte': 'gte',
-      '$lt': 'lt',
-      '$lte': 'lte',
-      '$in': 'in',
-      '$nin': 'notIn',
-      '$exists': 'exists',
-      '$regex': 'regex',
-      '$contains': 'contains',
-    };
-
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      const rustKey = operatorMap[key] ?? key.replace(/^\$/, '');
-      result[rustKey] = value;
-    }
-    return result;
   }
 
   // ─── Case Conversion Helpers ────────────────────────────────────────────────

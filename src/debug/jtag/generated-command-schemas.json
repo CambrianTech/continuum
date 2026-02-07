@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-07T00:23:27.749Z",
+  "generated": "2026-02-07T14:03:16.549Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4121,7 +4121,7 @@
     },
     {
       "name": "data/list",
-      "description": "Data List Command - Shared Types",
+      "description": "Data List Command - Query entities from collections\n *\n * Common collections: users, rooms, chat_messages, memories, tasks, skills, wall_documents\n *\n * @example data/list --collection=\"users\" --limit=10\n * @example data/list --collection=\"chat_messages\" --filter='{\"roomId\":\"abc\"}' --orderBy='[{\"field\":\"timestamp\",\"direction\":\"desc\"}]'",
       "params": {
         "collection": {
           "type": "string",

@@ -102,6 +102,7 @@ impl ServiceModule for DataModule {
             "data/update" => self.handle_update(params).await,
             "data/delete" => self.handle_delete(params).await,
             "data/query" | "data/list" => self.handle_query(params).await,
+            "data/queryWithJoin" => self.handle_query_with_join(params).await,
             "data/count" => self.handle_count(params).await,
             "data/batch" => self.handle_batch(params).await,
             "data/ensure-schema" => self.handle_ensure_schema(params).await,
@@ -183,6 +184,23 @@ struct QueryParams {
     limit: Option<usize>,
     #[serde(default)]
     offset: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryWithJoinParams {
+    db_path: String,
+    collection: String,
+    #[serde(default)]
+    filter: Option<std::collections::HashMap<String, FieldFilter>>,
+    #[serde(default)]
+    sort: Option<Vec<crate::orm::query::SortSpec>>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    joins: Option<Vec<crate::orm::query::JoinSpec>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -297,6 +315,27 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
         let adapter = adapter.lock().await;
         let result = adapter.query(query).await;
+
+        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+    }
+
+    async fn handle_query_with_join(&self, params: Value) -> Result<CommandResult, String> {
+        let params: QueryWithJoinParams =
+            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
+
+        let query = StorageQuery {
+            collection: params.collection,
+            filter: params.filter,
+            sort: params.sort,
+            limit: params.limit,
+            offset: params.offset,
+            joins: params.joins,
+            ..Default::default()
+        };
+
+        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = adapter.lock().await;
+        let result = adapter.query_with_join(query).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
