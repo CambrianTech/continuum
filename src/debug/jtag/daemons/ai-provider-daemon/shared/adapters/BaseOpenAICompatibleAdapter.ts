@@ -645,7 +645,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
     const pricing = pricingManager.getModelPricing(this.providerId, model);
 
     if (!pricing) {
-      this.log(null, 'warn', `⚠️  ${this.providerName}: No pricing found for model ${model}, cost = $0`);
+      // PricingManager already logs the warning - no duplicate needed
       return 0;
     }
 

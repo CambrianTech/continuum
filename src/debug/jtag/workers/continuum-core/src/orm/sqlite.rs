@@ -221,18 +221,14 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
         columns.join(", ")
     );
 
-    eprintln!("[SqliteAdapter.ensure_table_exists] SQL: {}", sql);
-
     if let Err(e) = conn.execute(&sql, []) {
-        eprintln!("[SqliteAdapter.ensure_table_exists] ERROR: {}", e);
+        eprintln!("SQLite table creation error for '{}': {}", table, e);
     }
 }
 
 fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord> {
     let table = naming::to_table_name(&record.collection);
     let now = chrono::Utc::now().to_rfc3339();
-
-    eprintln!("[SqliteAdapter.do_create] table={}, id={}", table, record.id);
 
     // Auto-create table if it doesn't exist (like TypeScript does)
     ensure_table_exists(conn, &table, &record.data);
@@ -268,13 +264,10 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
         placeholders.join(", ")
     );
 
-    eprintln!("[SqliteAdapter.do_create] SQL: {}", sql);
-
     let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
 
     match conn.execute(&sql, params.as_slice()) {
-        Ok(rows) => {
-            eprintln!("[SqliteAdapter.do_create] SUCCESS, rows affected: {}", rows);
+        Ok(_) => {
             StorageResult::ok(DataRecord {
                 metadata: RecordMetadata {
                     created_at: now.clone(),
@@ -286,7 +279,6 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
             })
         }
         Err(e) => {
-            eprintln!("[SqliteAdapter.do_create] ERROR: {}", e);
             StorageResult::err(format!("Insert failed: {}", e))
         }
     }
