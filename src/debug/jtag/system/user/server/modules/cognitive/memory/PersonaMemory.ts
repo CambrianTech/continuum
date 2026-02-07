@@ -17,7 +17,7 @@ import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
 import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
 import type { ProcessableMessage } from '../../QueueItemTypes';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
-import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../../../daemons/data-daemon/shared/ORM';
 import { PERSONA_RAG_CONTEXTS_COLLECTION } from '../../../../../data/entities/PersonaRAGContextEntity';
 
 /**
@@ -84,14 +84,14 @@ export class PersonaMemory {
 
     try {
       // Check if record exists
-      const existing = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
+      const existing = await ORM.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
 
       if (existing) {
         // Update existing record (DataDaemon handles updatedAt)
-        await DataDaemon.update(PERSONA_RAG_CONTEXTS_COLLECTION, recordId, record as any);
+        await ORM.update(PERSONA_RAG_CONTEXTS_COLLECTION, recordId, record as any);
       } else {
         // Create new record
-        await DataDaemon.store(PERSONA_RAG_CONTEXTS_COLLECTION, record as any);
+        await ORM.store(PERSONA_RAG_CONTEXTS_COLLECTION, record as any);
       }
     } catch (error) {
       this.log(`❌ Failed to store RAG context: ${error}`);
@@ -108,7 +108,7 @@ export class PersonaMemory {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      const entity = await DataDaemon.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
+      const entity = await ORM.read(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
 
       if (!entity) {
         return null;
@@ -187,7 +187,7 @@ export class PersonaMemory {
     const recordId = `rag-${this.personaId}-${roomId}`;
 
     try {
-      await DataDaemon.remove(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
+      await ORM.remove(PERSONA_RAG_CONTEXTS_COLLECTION, recordId);
       this.log(`🗑️ Cleared memory for room ${roomId}`);
     } catch (error) {
       this.log(`❌ Failed to clear room memory: ${error}`);

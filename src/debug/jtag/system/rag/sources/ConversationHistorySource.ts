@@ -11,7 +11,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { LLMMessage } from '../shared/RAGTypes';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/shared/ORM';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { Events } from '../../core/shared/Events';
 import { Logger } from '../../core/logging/Logger';
@@ -225,7 +225,7 @@ export class ConversationHistorySource implements RAGSource {
   private async fetchMessages(roomId: string, maxMessages: number): Promise<MessageWithSender[]> {
     // Try queryWithJoin first (4.5x faster), fall back to regular query
     try {
-      const result = await DataDaemon.queryWithJoin<MessageWithSender>({
+      const result = await ORM.queryWithJoin<MessageWithSender>({
         collection: ChatMessageEntity.collection,
         filter: { roomId },
         joins: [{
@@ -247,7 +247,7 @@ export class ConversationHistorySource implements RAGSource {
       // queryWithJoin not supported - fall back to regular query
       log.debug(`queryWithJoin not available (${joinError.message}), using regular query`);
 
-      const result = await DataDaemon.query<ChatMessageEntity>({
+      const result = await ORM.query<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],

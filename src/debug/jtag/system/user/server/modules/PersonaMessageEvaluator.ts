@@ -13,6 +13,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
@@ -192,7 +193,7 @@ export class PersonaMessageEvaluator {
    */
   private async getPrecedingAIMessage(humanMessage: ProcessableMessage): Promise<ChatMessageEntity | null> {
     try {
-      const result = await DataDaemon.query<ChatMessageEntity>({
+      const result = await ORM.query<ChatMessageEntity>({
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: {
           roomId: humanMessage.roomId,
@@ -222,7 +223,7 @@ export class PersonaMessageEvaluator {
    */
   private async getRecentConversationHistory(roomId: UUID, limit: number = 10): Promise<ChatMessageEntity[]> {
     try {
-      const result = await DataDaemon.query<ChatMessageEntity>({
+      const result = await ORM.query<ChatMessageEntity>({
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
@@ -965,7 +966,7 @@ export class PersonaMessageEvaluator {
     const containsQuestion = messageEntity.content?.text?.includes('?') || false;
 
     // 2. Get recent messages for context
-    const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+    const recentMessages = await ORM.query<ChatMessageEntity>({
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: { roomId: messageEntity.roomId },
       sort: [{ field: 'timestamp', direction: 'desc' }],
@@ -1032,7 +1033,7 @@ export class PersonaMessageEvaluator {
 
     try {
       // Query the sender's UserEntity to check their type using DataDaemon directly
-      const sender = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, senderId);
+      const sender = await ORM.read<UserEntity>(COLLECTIONS.USERS, senderId);
 
       if (!sender) {
         this.log(`⚠️  PersonaUser ${this.personaUser.displayName}: Could not read sender ${senderId}, BLOCKING response`);
@@ -1062,7 +1063,7 @@ export class PersonaMessageEvaluator {
     threshold: number = 0.3
   ): Promise<boolean> {
     // Query recent messages from this room
-    const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+    const recentMessages = await ORM.query<ChatMessageEntity>({
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: { roomId },
       sort: [{ field: 'timestamp', direction: 'desc' }],

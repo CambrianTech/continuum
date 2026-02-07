@@ -11,7 +11,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { PersonaIdentity } from '../shared/RAGTypes';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/shared/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { Logger } from '../../core/logging/Logger';
 
@@ -36,7 +36,7 @@ export class PersonaIdentitySource implements RAGSource {
 
     PersonaIdentitySource._preWarmPromise = (async () => {
       try {
-        const result = await DataDaemon.query<UserEntity>({
+        const result = await ORM.query<UserEntity>({
           collection: UserEntity.collection,
           filter: { type: 'persona' },
           limit: 100
@@ -77,7 +77,7 @@ export class PersonaIdentitySource implements RAGSource {
       }
       if (!user) {
         // Still not found after batch load — try individual read (edge case: new persona)
-        user = await DataDaemon.read<UserEntity>(UserEntity.collection, context.personaId);
+        user = await ORM.read<UserEntity>(UserEntity.collection, context.personaId);
         if (user) {
           PersonaIdentitySource._identityCache.set(context.personaId, user);
         }

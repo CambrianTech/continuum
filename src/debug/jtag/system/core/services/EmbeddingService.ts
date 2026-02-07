@@ -13,7 +13,7 @@
  *   const embeddedBatch = await EmbeddingService.embedBatch(memories);
  */
 
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/shared/ORM';
 import type { EmbeddingModel } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
 import { DEFAULT_EMBEDDING_MODELS, toNumberArray } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
 import type { IEmbeddable } from '../../data/interfaces/IEmbeddable';
@@ -100,7 +100,7 @@ export class EmbeddingService {
     // Generate embedding via DataDaemon
     const startTime = Date.now();
     try {
-      const result = await DataDaemon.generateEmbedding({
+      const result = await ORM.generateEmbedding({
         text: content,
         model
       });
@@ -197,9 +197,9 @@ export class EmbeddingService {
     }
 
     try {
-      const result = await DataDaemon.generateEmbedding({ text, model });
+      const result = await ORM.generateEmbedding({ text, model });
       if (!result.success) {
-        console.warn(`⚠️ EmbeddingService.embedText: DataDaemon.generateEmbedding failed: ${result.error}`);
+        console.warn(`⚠️ EmbeddingService.embedText: ORM.generateEmbedding failed: ${result.error}`);
       }
       // Convert to number[] for public API (Float32Array used internally for search)
       return result.success && result.data ? toNumberArray(result.data.embedding) : null;

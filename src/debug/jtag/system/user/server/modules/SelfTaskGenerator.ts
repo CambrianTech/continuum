@@ -13,7 +13,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { TaskEntity } from '../../../data/entities/TaskEntity';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 
 export interface SelfTaskGeneratorConfig {
@@ -166,7 +166,7 @@ export class SelfTaskGenerator {
   private async detectUnfinishedWork(): Promise<TaskEntity[]> {
     try {
       // Query for in_progress tasks assigned to this persona
-      const result = await DataDaemon.query<TaskEntity>({
+      const result = await ORM.query<TaskEntity>({
         collection: COLLECTIONS.TASKS,
         filter: {
           assigneeId: this.personaId,
@@ -224,7 +224,7 @@ export class SelfTaskGenerator {
   private async detectLearningOpportunities(): Promise<TaskEntity[]> {
     try {
       // Query for recent failed tasks
-      const result = await DataDaemon.query<TaskEntity>({
+      const result = await ORM.query<TaskEntity>({
         collection: COLLECTIONS.TASKS,
         filter: {
           assigneeId: this.personaId,

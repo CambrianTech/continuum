@@ -20,7 +20,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/shared/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
@@ -90,7 +90,7 @@ export class HumanUser extends BaseUser {
     }
     // Note: other id fields handled by constructor if not explicitly set
 
-    const storedEntity = await DataDaemon.store<UserEntity>(
+    const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
       userEntity
     );
@@ -99,7 +99,7 @@ export class HumanUser extends BaseUser {
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('human');
 
-    const storedState = await DataDaemon.store<UserStateEntity>(
+    const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
       userState
     );
