@@ -1,10 +1,16 @@
 /**
- * Data Open Command - Shared Types
+ * Data Open Command - ADVANCED: Opens secondary database handles
  *
- * Opens a new database handle for multi-database operations.
- * Storage-adapter-agnostic: works with SQLite, JSON, Vector DB, Graph DB, etc.
+ * WARNING: Most commands use the default database automatically.
+ * You probably want data/list or data/read instead of this command.
  *
- * See docs/MULTI-DATABASE-HANDLES.md for architecture
+ * Only use data/open when you need to access a DIFFERENT database file.
+ *
+ * Required params:
+ * - adapter: MUST be 'sqlite', 'json', 'vector', 'graph', or 'rust'
+ * - config: { path: "/path/to/database" } for sqlite/json
+ *
+ * @example data/open --adapter="sqlite" --config='{"path":"/tmp/other.db"}'
  */
 
 import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
@@ -23,13 +29,29 @@ import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * Data Open Parameters
+ *
+ * @description Opens a new database handle. Most commands use the default database
+ * automatically - you only need this for multi-database scenarios.
+ *
+ * Valid adapter types: 'sqlite', 'json', 'vector', 'graph', 'rust'
+ * - sqlite: SQLite database file (most common)
+ * - json: JSON file storage
+ * - vector: Vector database (Qdrant, Pinecone)
+ * - graph: Graph database (Neo4j)
+ * - rust: Rust worker storage
  */
 export interface DataOpenParams extends CommandParams {
-  // Adapter type: 'sqlite', 'json', 'vector', 'graph'
+  /**
+   * Adapter type - MUST be one of: 'sqlite', 'json', 'vector', 'graph', 'rust'
+   * @example "sqlite"
+   */
   readonly adapter: AdapterType;
 
-  // Adapter-specific configuration
-  // Type depends on adapter (SqliteConfig, JsonConfig, etc.)
+  /**
+   * Adapter-specific configuration object.
+   * For sqlite: { path: "/path/to/db.sqlite" }
+   * For json: { path: "/path/to/file.json" }
+   */
   readonly config: AdapterConfig;
 }
 

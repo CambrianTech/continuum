@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-06T23:03:26.218Z",
+  "generated": "2026-02-07T00:09:36.561Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4100,7 +4100,7 @@
     },
     {
       "name": "data/open",
-      "description": "Data Open Command - Shared Types\n *\n * Opens a new database handle for multi-database operations.\n * Storage-adapter-agnostic: works with SQLite, JSON, Vector DB, Graph DB, etc.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
+      "description": "Data Open Command - ADVANCED: Opens secondary database handles\n *\n * WARNING: Most commands use the default database automatically.\n * You probably want data/list or data/read instead of this command.\n *\n * Only use data/open when you need to access a DIFFERENT database file.\n *\n * Required params:\n * - adapter: MUST be 'sqlite', 'json', 'vector', 'graph', or 'rust'\n * - config: { path: \"/path/to/database\" } for sqlite/json\n *\n * @example data/open --adapter=\"sqlite\" --config='{\"path\":\"/tmp/other.db\"}'",
       "params": {
         "adapter": {
           "type": "string",
