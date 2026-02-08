@@ -1,19 +1,17 @@
 /**
  * Rust Embedding Client
  *
- * Communicates with the Rust embedding-worker over Unix socket.
+ * Communicates with continuum-core over Unix socket.
  * Uses fastembed (ONNX-based) for native embedding generation without HTTP overhead.
  *
  * Performance: ~5ms per embedding (vs ~80ms via Ollama HTTP)
  * Batch: 100 texts in ~100ms (vs ~8s via Ollama HTTP)
  *
- * PROTOCOL:
+ * PROTOCOL (continuum-core length-prefixed framing):
  * - Requests: JSON (newline-delimited)
  * - Responses:
- *   - Control (ping, model/list): JSON
- *   - Data (embedding/generate): BINARY
- *     - JSON header (newline-terminated): {"type":"binary","length":1536,...}
- *     - Raw f32 bytes (no serialization overhead)
+ *   - JSON: [4 bytes u32 BE length][JSON payload bytes]
+ *   - Binary: [4 bytes u32 BE total_length][JSON header bytes][\0][raw binary bytes]
  */
 
 import * as net from 'net';
@@ -32,8 +30,8 @@ interface BinaryHeader {
   model?: string;
 }
 
-/** Default socket path for embedding worker */
-const DEFAULT_SOCKET_PATH = '/tmp/jtag-embedding.sock';
+/** Default socket path - now uses continuum-core (EmbeddingModule absorbed embedding worker) */
+const DEFAULT_SOCKET_PATH = '/tmp/continuum-core.sock';
 
 /** Available embedding models in Rust worker */
 export type RustEmbeddingModel =
@@ -52,9 +50,14 @@ export interface RustModelInfo {
   loaded: boolean;
 }
 
-/** Response from Rust worker */
+/** Response from Rust worker (continuum-core format) */
 interface RustResponse {
-  status: 'ok' | 'error' | 'pong';
+  success: boolean;
+  result?: any;
+  error?: string | null;
+  requestId?: number | null;
+  // Backwards compat with old format
+  status?: 'ok' | 'error' | 'pong';
   data?: any;
   message?: string;
   uptime_seconds?: number;
@@ -92,8 +95,10 @@ export class RustEmbeddingClient {
     resolve: (value: number[][]) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
-    header?: BinaryHeader;
   } | null = null;
+
+  // Frame parsing state
+  private expectedFrameLength: number | null = null;
 
   /** Track availability to avoid repeated connection attempts */
   private _available: boolean | null = null;
@@ -138,14 +143,20 @@ export class RustEmbeddingClient {
   }
 
   /**
-   * Ping the worker to check connectivity
+   * Ping the worker to check connectivity.
+   * Uses health-check (supported by continuum-core) instead of ping.
    */
   async ping(): Promise<{ uptime_seconds: number }> {
-    const response = await this.sendCommand('ping', {});
-    if (response.status === 'pong') {
-      return { uptime_seconds: response.uptime_seconds || 0 };
+    const response = await this.sendCommand('health-check', {});
+    // continuum-core format: {success: true, result: {healthy: true, uptime_seconds: N}}
+    if (response.success && response.result?.healthy) {
+      return { uptime_seconds: response.result.uptime_seconds || 0 };
     }
-    throw new Error(response.message || 'Ping failed');
+    // Old format fallback: {status: 'ok', data: {...}}
+    if (response.status === 'ok' && response.data?.healthy) {
+      return { uptime_seconds: response.data.uptime_seconds || 0 };
+    }
+    throw new Error(response.error || response.message || 'Health check failed');
   }
 
   /**
@@ -197,10 +208,15 @@ export class RustEmbeddingClient {
    */
   async listModels(): Promise<RustModelInfo[]> {
     const response = await this.sendCommand('embedding/model/list', {});
-    if (response.status !== 'ok' || !response.data?.models) {
-      throw new Error(response.message || 'Failed to list models');
+    // continuum-core format: {success: true, result: {models: [...]}}
+    if (response.success && response.result?.models) {
+      return response.result.models;
     }
-    return response.data.models;
+    // Old format fallback
+    if (response.status === 'ok' && response.data?.models) {
+      return response.data.models;
+    }
+    throw new Error(response.error || response.message || 'Failed to list models');
   }
 
   /**
@@ -210,8 +226,8 @@ export class RustEmbeddingClient {
    */
   async loadModel(model: RustEmbeddingModel): Promise<void> {
     const response = await this.sendCommand('embedding/model/load', { model });
-    if (response.status !== 'ok') {
-      throw new Error(response.message || 'Failed to load model');
+    if (!response.success && response.status !== 'ok') {
+      throw new Error(response.error || response.message || 'Failed to load model');
     }
     log.info(`Loaded model: ${model}`);
   }
@@ -221,8 +237,8 @@ export class RustEmbeddingClient {
    */
   async unloadModel(model: RustEmbeddingModel): Promise<void> {
     const response = await this.sendCommand('embedding/model/unload', { model });
-    if (response.status !== 'ok') {
-      throw new Error(response.message || 'Failed to unload model');
+    if (!response.success && response.status !== 'ok') {
+      throw new Error(response.error || response.message || 'Failed to unload model');
     }
     log.info(`Unloaded model: ${model}`);
   }
@@ -246,6 +262,7 @@ export class RustEmbeddingClient {
       this.pendingBinaryResponse = null;
     }
     this._available = null;
+    this.expectedFrameLength = null;
   }
 
   // ============================================================================
@@ -263,6 +280,7 @@ export class RustEmbeddingClient {
     return new Promise((resolve, reject) => {
       this.socket = net.createConnection(this.socketPath);
       this.buffer = Buffer.alloc(0);
+      this.expectedFrameLength = null;
 
       this.socket.on('connect', () => {
         log.debug(`Connected to Rust embedding worker: ${this.socketPath}`);
@@ -299,104 +317,142 @@ export class RustEmbeddingClient {
 
   /**
    * Handle incoming data from Rust worker
-   * Supports both JSON (control) and BINARY (data) protocols
+   *
+   * Protocol: Length-prefixed framing
+   * - [4 bytes u32 BE length][payload]
+   * - For JSON: payload is JSON bytes
+   * - For Binary: payload is [JSON header bytes][\0][raw binary bytes]
    */
   private handleData(data: Buffer): void {
     // Append to buffer
     this.buffer = Buffer.concat([this.buffer, data]);
 
-    // Handle BINARY response (embedding/generate)
-    if (this.pendingBinaryResponse) {
-      this.handleBinaryData();
-      return;
-    }
-
-    // Handle JSON response (control messages)
-    this.handleJsonData();
+    // Process complete frames
+    this.processFrames();
   }
 
   /**
-   * Handle JSON response data (control messages)
+   * Process complete length-prefixed frames from buffer
    */
-  private handleJsonData(): void {
-    // Find newline
-    const newlineIdx = this.buffer.indexOf(0x0a); // '\n'
-    if (newlineIdx === -1) return;
+  private processFrames(): void {
+    while (true) {
+      // Step 1: Read frame length if not yet known
+      if (this.expectedFrameLength === null) {
+        if (this.buffer.length < 4) {
+          return; // Need more data for length prefix
+        }
+        this.expectedFrameLength = this.buffer.readUInt32BE(0);
+        this.buffer = this.buffer.subarray(4);
+      }
 
-    const line = this.buffer.subarray(0, newlineIdx).toString();
-    this.buffer = this.buffer.subarray(newlineIdx + 1);
+      // Step 2: Wait for complete frame payload
+      if (this.buffer.length < this.expectedFrameLength) {
+        return; // Need more data
+      }
 
-    if (!line.trim()) return;
+      // Step 3: Extract frame payload
+      const framePayload = this.buffer.subarray(0, this.expectedFrameLength);
+      this.buffer = this.buffer.subarray(this.expectedFrameLength);
+      this.expectedFrameLength = null;
+
+      // Step 4: Dispatch to appropriate handler
+      if (this.pendingBinaryResponse) {
+        this.handleBinaryFrame(framePayload);
+      } else if (this.pendingJsonResponse) {
+        this.handleJsonFrame(framePayload);
+      } else {
+        log.warn('Received frame with no pending request');
+      }
+    }
+  }
+
+  /**
+   * Handle JSON response frame (control messages)
+   */
+  private handleJsonFrame(payload: Buffer): void {
+    const pending = this.pendingJsonResponse;
+    if (!pending) return;
 
     try {
-      const response: RustResponse = JSON.parse(line);
+      const jsonStr = payload.toString('utf8');
+      const response: RustResponse = JSON.parse(jsonStr);
 
-      if (this.pendingJsonResponse) {
-        clearTimeout(this.pendingJsonResponse.timeout);
-        const pending = this.pendingJsonResponse;
-        this.pendingJsonResponse = null;
-        pending.resolve(response);
-      }
+      clearTimeout(pending.timeout);
+      this.pendingJsonResponse = null;
+      pending.resolve(response);
     } catch (error) {
-      log.error(`Failed to parse JSON response: ${error}`);
+      clearTimeout(pending.timeout);
+      this.pendingJsonResponse = null;
+      pending.reject(new Error(`Failed to parse JSON response: ${error}`));
     }
   }
 
   /**
-   * Handle BINARY response data (embeddings)
+   * Handle BINARY response frame (embeddings)
    *
-   * Protocol: JSON header (newline-terminated) + raw f32 bytes
+   * Frame format: [JSON header bytes][\0][raw binary bytes]
    */
-  private handleBinaryData(): void {
+  private handleBinaryFrame(payload: Buffer): void {
     const pending = this.pendingBinaryResponse;
     if (!pending) return;
 
-    // Step 1: Parse header if not yet done
-    if (!pending.header) {
-      const newlineIdx = this.buffer.indexOf(0x0a);
-      if (newlineIdx === -1) return; // Need more data for header
+    try {
+      // Find null separator
+      const nullIdx = payload.indexOf(0x00);
+      if (nullIdx === -1) {
+        // No separator - this is a pure JSON response (error case)
+        const jsonStr = payload.toString('utf8');
+        const response = JSON.parse(jsonStr);
 
-      const headerStr = this.buffer.subarray(0, newlineIdx).toString();
-      this.buffer = this.buffer.subarray(newlineIdx + 1);
-
-      try {
-        const header = JSON.parse(headerStr);
-
-        // Check for error response (still JSON)
-        if (header.status === 'error') {
+        if (!response.success) {
           clearTimeout(pending.timeout);
           this.pendingBinaryResponse = null;
-          pending.reject(new Error(header.message || 'Embedding generation failed'));
+          pending.reject(new Error(response.error || 'Request failed'));
           return;
         }
 
-        if (header.type !== 'binary') {
-          clearTimeout(pending.timeout);
-          this.pendingBinaryResponse = null;
-          pending.reject(new Error(`Expected binary header, got: ${header.type}`));
-          return;
-        }
-
-        pending.header = header as BinaryHeader;
-      } catch (error) {
+        // Shouldn't happen - binary response without binary data
         clearTimeout(pending.timeout);
         this.pendingBinaryResponse = null;
-        pending.reject(new Error(`Failed to parse binary header: ${error}`));
+        pending.reject(new Error('Expected binary data but got pure JSON'));
         return;
       }
-    }
 
-    // Step 2: Wait for complete binary payload
-    const header = pending.header;
-    if (this.buffer.length < header.length) {
-      return; // Need more data
-    }
+      // Parse JSON header before null separator
+      const headerStr = payload.subarray(0, nullIdx).toString('utf8');
+      const response = JSON.parse(headerStr);
 
-    // Step 3: Extract binary payload and convert to embeddings
-    const binaryData = this.buffer.subarray(0, header.length);
-    this.buffer = this.buffer.subarray(header.length);
+      // Check for error
+      if (!response.success) {
+        clearTimeout(pending.timeout);
+        this.pendingBinaryResponse = null;
+        pending.reject(new Error(response.error || 'Embedding generation failed'));
+        return;
+      }
 
-    try {
+      // Extract metadata from result (continuum-core wraps in {success, result})
+      const metadata = response.result;
+      if (!metadata || metadata.type !== 'binary') {
+        clearTimeout(pending.timeout);
+        this.pendingBinaryResponse = null;
+        pending.reject(new Error(`Expected binary metadata, got: ${JSON.stringify(metadata)}`));
+        return;
+      }
+
+      // Extract binary data after null separator
+      const binaryData = payload.subarray(nullIdx + 1);
+
+      // Parse embeddings
+      const header: BinaryHeader = {
+        type: 'binary',
+        length: binaryData.length,
+        dtype: metadata.dtype || 'f32',
+        shape: metadata.shape || [384],
+        batchSize: metadata.batchSize || 1,
+        durationMs: metadata.durationMs,
+        model: metadata.model,
+      };
+
       const embeddings = this.parseBinaryEmbeddings(binaryData, header);
 
       clearTimeout(pending.timeout);
