@@ -19,7 +19,6 @@ use crate::memory::PersonaMemoryManager;
 use crate::logging::TimingGuard;
 use crate::log_info;
 use async_trait::async_trait;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
@@ -695,15 +694,25 @@ impl ServiceModule for RagModule {
                 let query_text = req.query_text.clone();
                 let sources = req.sources.clone();
 
-                // Clone state for parallel access
+                // Clone state for sequential access
                 let state = Arc::clone(&self.state);
 
                 // ═══════════════════════════════════════════════════════════
-                // PARALLEL SOURCE LOADING WITH RAYON
-                // This is the key optimization - all sources run in parallel
+                // SEQUENTIAL SOURCE LOADING (CRITICAL FIX)
+                //
+                // Previously used par_iter() but this caused Rayon thread starvation:
+                // - IPC dispatch uses rayon::spawn() for each request
+                // - Rayon threads block on rx.recv_timeout(30s) waiting for tokio
+                // - Tokio calls handle_command which used par_iter()
+                // - par_iter() needs Rayon threads - but they're all blocked!
+                //
+                // Sequential iteration is fine because:
+                // - Individual source loading is fast (~5ms each)
+                // - Typically only 2-3 sources per compose
+                // - Total time is still <50ms
                 // ═══════════════════════════════════════════════════════════
                 let source_results: Vec<RagSourceResult> = sources
-                    .par_iter()
+                    .iter()
                     .map(|source| {
                         state.load_source(
                             source,

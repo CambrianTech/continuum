@@ -103,6 +103,8 @@ impl Default for SqliteAdapter {
 
 /// Worker thread that owns the SQLite connection
 fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
+    eprintln!("[sqlite_worker] Starting worker for path: {}", path);
+
     // Open connection
     let conn = match Connection::open_with_flags(
         &path,
@@ -112,18 +114,38 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
     ) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("SQLite open error: {}", e);
+            eprintln!("[sqlite_worker] ERROR: SQLite open failed: {}", e);
             return;
         }
     };
+    eprintln!("[sqlite_worker] Connection opened successfully");
 
-    // Enable WAL mode
-    if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;") {
-        eprintln!("PRAGMA error: {}", e);
+    // Enable WAL mode for better concurrency
+    if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;") {
+        eprintln!("[sqlite_worker] PRAGMA error: {}", e);
     }
+
+    let mut query_count = 0u64;
 
     // Process commands until channel closes
     while let Some(cmd) = receiver.blocking_recv() {
+        query_count += 1;
+        let _cmd_type = match &cmd {
+            SqliteCommand::Create { .. } => "create",
+            SqliteCommand::Read { .. } => "read",
+            SqliteCommand::Query { .. } => "query",
+            SqliteCommand::Count { .. } => "count",
+            SqliteCommand::Update { .. } => "update",
+            SqliteCommand::Delete { .. } => "delete",
+            SqliteCommand::EnsureSchema { .. } => "ensure_schema",
+            SqliteCommand::ListCollections { .. } => "list_collections",
+            SqliteCommand::Truncate { .. } => "truncate",
+            SqliteCommand::ClearAll { .. } => "clear_all",
+            SqliteCommand::Cleanup { .. } => "cleanup",
+            SqliteCommand::Close => "close",
+        };
+        let start = std::time::Instant::now();
+
         match cmd {
             SqliteCommand::Create { record, reply } => {
                 let result = do_create(&conn, record);
@@ -134,7 +156,11 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
                 let _ = reply.send(result);
             }
             SqliteCommand::Query { query, reply } => {
+                let collection = query.collection.clone();
                 let result = do_query(&conn, query);
+                if start.elapsed().as_millis() > 100 {
+                    eprintln!("[sqlite_worker] SLOW query #{} on {}: {}ms", query_count, collection, start.elapsed().as_millis());
+                }
                 let _ = reply.send(result);
             }
             SqliteCommand::Count { query, reply } => {

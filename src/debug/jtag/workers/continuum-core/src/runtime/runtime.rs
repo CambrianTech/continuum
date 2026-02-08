@@ -105,11 +105,16 @@ impl Runtime {
             let _ = tx.send(result);
         });
 
-        // Wait for result from the tokio task
-        match rx.recv() {
+        // Wait for result from the tokio task with timeout.
+        // If sqlite worker is backed up, fail gracefully instead of blocking forever.
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
             Ok(result) => Some(result),
-            Err(e) => {
-                error!("Command handler task was dropped: {}", e);
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                error!("Command handler timeout after 30s: {}", command);
+                Some(Err(format!("Command timeout: {}", command)))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                error!("Command handler task was dropped");
                 Some(Err("Command handler task was dropped".to_string()))
             }
         }

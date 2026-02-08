@@ -44,7 +44,8 @@ import {
   type AIEvaluatingEventData,
   type AIDecidedSilentEventData,
   type AIDecidedRespondEventData,
-  type AIGeneratingEventData
+  type AIGeneratingEventData,
+  type AIErrorEventData
 } from '../../../events/shared/AIDecisionEvents';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
 import {
@@ -1301,6 +1302,7 @@ export class PersonaMessageEvaluator {
       this.log(`❌ ${this.personaUser.displayName}: Should-respond evaluation failed:`, error);
 
       const durationMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
       // Emit cognition event for error case (fire-and-forget — telemetry)
       Events.emit<StageCompleteEvent>(
@@ -1321,18 +1323,40 @@ export class PersonaMessageEvaluator {
             status: 'bottleneck',
             metadata: {
               error: true,
-              errorMessage: error instanceof Error ? error.message : String(error)
+              errorMessage
             }
           },
           timestamp: Date.now()
         }
       ).catch(err => this.log(`⚠️ Stage event emit failed: ${err}`));
 
+      // Emit ERROR event to update UI status (clears "thinking" status)
+      if (this.personaUser.client) {
+        Events.emit<AIErrorEventData>(
+          DataDaemon.jtagContext!,
+          AI_DECISION_EVENTS.ERROR,
+          {
+            personaId: this.personaUser.id,
+            personaName: this.personaUser.displayName,
+            roomId: message.roomId,
+            messageId: message.id,
+            isHumanMessage: message.senderType === 'human',
+            timestamp: Date.now(),
+            error: errorMessage,
+            phase: 'evaluating'
+          },
+          {
+            scope: EVENT_SCOPES.ROOM,
+            scopeId: message.roomId
+          }
+        ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
+      }
+
       // Error in evaluation = SILENT. No fallback guessing.
       return {
         shouldRespond: false as const,
         confidence: 0,
-        reason: `Error in evaluation: ${error instanceof Error ? error.message : String(error)}`,
+        reason: `Error in evaluation: ${errorMessage}`,
         model: 'error'
       };
     }

@@ -28,6 +28,63 @@ import { TimingHarness } from '../../core/shared/TimingHarness';
 
 const log = Logger.create('RAGComposer', 'rag');
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SHARED IPC CLIENT — Persistent connection to avoid socket congestion
+// ═══════════════════════════════════════════════════════════════════════════
+
+import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+
+let sharedIPCClient: RustCoreIPCClientType | null = null;
+let ipcConnecting: Promise<void> | null = null;
+
+/**
+ * Get or create a shared IPC client with persistent connection.
+ * Prevents socket congestion from multiple personas creating connections.
+ */
+async function getSharedIPCClient(): Promise<RustCoreIPCClientType> {
+  // Already have a connected client - reuse it
+  if (sharedIPCClient) {
+    return sharedIPCClient;
+  }
+
+  // Connection in progress - wait for it
+  if (ipcConnecting) {
+    await ipcConnecting;
+    if (sharedIPCClient) {
+      return sharedIPCClient;
+    }
+  }
+
+  // Create new client and connect
+  const { RustCoreIPCClient } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+  const client = new RustCoreIPCClient('/tmp/continuum-core.sock');
+
+  ipcConnecting = client.connect().then(() => {
+    sharedIPCClient = client;
+    log.info('RAG IPC client connected (shared)');
+
+    // Handle disconnection - clear the shared client so next call reconnects
+    client.on('close', () => {
+      log.warn('RAG IPC client disconnected - will reconnect on next call');
+      if (sharedIPCClient === client) {
+        sharedIPCClient = null;
+      }
+    });
+
+    client.on('error', (err: Error) => {
+      log.error(`RAG IPC client error: ${err.message}`);
+      if (sharedIPCClient === client) {
+        sharedIPCClient = null;
+      }
+    });
+  }).finally(() => {
+    ipcConnecting = null;
+  });
+
+  await ipcConnecting;
+  return client;
+}
+
 export class RAGComposer {
   private sources: RAGSource[] = [];
 
@@ -200,12 +257,9 @@ export class RAGComposer {
     const sourceTimer = TimingHarness.start('rag/batch', 'rag');
     sourceTimer.setMeta('sourceCount', batchingSources.length);
 
-    // Create IPC client outside try so we can cleanup in finally
-    const { RustCoreIPCClient } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
-    const ipc = new RustCoreIPCClient('/tmp/continuum-core.sock');
-
     try {
-      await ipc.connect();
+      // Use shared persistent connection instead of per-request connection
+      const ipc = await getSharedIPCClient();
 
       // Build request array
       const requests = batchingSources.map(bs => bs.request);
@@ -281,6 +335,11 @@ export class RAGComposer {
       const record = sourceTimer.finish();
       log.error(`Batch load failed after ${record.totalMs.toFixed(1)}ms: ${error.message}`);
 
+      // If connection error, clear shared client so next call reconnects
+      if (error.message?.includes('connect') || error.message?.includes('ENOENT')) {
+        sharedIPCClient = null;
+      }
+
       // Return failures for all batched sources
       return batchingSources.map(bs => ({
         success: false as const,
@@ -288,14 +347,8 @@ export class RAGComposer {
         error: error.message,
         loadTime: record.totalMs
       }));
-    } finally {
-      // Always cleanup the IPC connection
-      try {
-        ipc.disconnect();
-      } catch {
-        // Ignore disconnect errors
-      }
     }
+    // NOTE: Don't disconnect - shared client stays connected for reuse
   }
 
   /**

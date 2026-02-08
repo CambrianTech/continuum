@@ -3,18 +3,19 @@
  *
  * Single entry point for ALL data operations. Replaces scattered DataDaemon.* calls.
  *
- * ARCHITECTURE (from docs/RUST-ORM-ARCHITECTURE.md):
- * - Phase 0: Migrate all DataDaemon.* calls to ORM.* (this phase)
- * - Phase 1: Schema validation between TS and Rust
- * - Phase 2: Shadow mode (run both, compare)
- * - Phase 3-5: Incremental cutover
- * - Phase 6: Cleanup
+ * CURRENT STATE (2026-02-07):
+ * ✅ Core CRUD operations are FORCED to Rust (no fallback):
+ *    - store, query, count, queryWithJoin, read, update, remove
+ * 📝 Specialized operations remain on TypeScript DataDaemon:
+ *    - batch (multi-collection)
+ *    - listCollections, clear, clearAll, truncate (maintenance)
+ *    - paginated queries (stateful)
+ *    - vector search (not yet in Rust DataModule)
  *
  * ⚠️  NO FALLBACKS POLICY ⚠️
- * This code has ZERO fallback logic. If Rust is configured and fails, it FAILS LOUDLY.
- * There is NO "try Rust, catch, use TypeScript" pattern anywhere.
- * Backend selection is EXPLICIT and DETERMINISTIC based on config flags.
- * If you see fallback logic, DELETE IT IMMEDIATELY.
+ * Core CRUD has ZERO fallback logic. If Rust fails, it FAILS LOUDLY.
+ * There is NO "try Rust, catch, use TypeScript" pattern for CRUD.
+ * If you see fallback logic in CRUD methods, DELETE IT IMMEDIATELY.
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -97,32 +98,19 @@ export class ORM {
   static async store<T extends BaseEntity>(
     collection: CollectionName,
     data: T,
-    suppressEvents: boolean = false
+    _suppressEvents: boolean = false
   ): Promise<T> {
     const done = logOperationStart('store', collection, { id: (data as any).id });
 
-    const useRust = shouldUseRust(collection);
-    console.log(`[ORM.store] collection=${collection}, useRust=${useRust}, id=${(data as any).id}`);
-
     try {
-      if (useRust) {
-        const client = await getRustClient();
-        console.log(`[ORM.store] Sending to Rust client...`);
-        const result = await client.store<T>(collection, data);
-        console.log(`[ORM.store] Rust result: success=${result.success}, error=${result.error ?? 'none'}`);
-        if (!result.success) {
-          throw new Error(result.error || 'Rust store failed');
-        }
-        done();
-        return result.data!;
+      const client = await getRustClient();
+      const result = await client.store<T>(collection, data);
+      if (!result.success) {
+        throw new Error(result.error || 'Rust store failed');
       }
-
-      const result = await DataDaemon.store<T>(collection, data, suppressEvents);
-      console.log(`[ORM.store] TypeScript result: success`);
       done();
-      return result;
+      return result.data!;
     } catch (error) {
-      console.error(`[ORM.store] ERROR:`, error);
       logOperationError('store', collection, error);
       throw error;
     }
@@ -139,25 +127,12 @@ export class ORM {
       limit: query.limit,
     });
 
-    const useRust = shouldUseRust(query.collection);
-    console.log(`[ORM.query] collection=${query.collection}, useRust=${useRust}, filter=${JSON.stringify(query.filter)}`);
-
     try {
-      if (useRust) {
-        const client = await getRustClient();
-        console.log(`[ORM.query] Sending to Rust client...`);
-        const result = await client.query<T>(query);
-        console.log(`[ORM.query] Rust result: success=${result.success}, count=${result.data?.length ?? 0}, error=${result.error ?? 'none'}`);
-        done();
-        return result;
-      }
-
-      const result = await DataDaemon.query<T>(query);
-      console.log(`[ORM.query] TypeScript result: success=${result.success}, count=${result.data?.length ?? 0}`);
+      const client = await getRustClient();
+      const result = await client.query<T>(query);
       done();
       return result;
     } catch (error) {
-      console.error(`[ORM.query] ERROR:`, error);
       logOperationError('query', query.collection, error);
       throw error;
     }
@@ -169,15 +144,10 @@ export class ORM {
   static async count(query: StorageQuery): Promise<StorageResult<number>> {
     const done = logOperationStart('count', query.collection, { filter: query.filter });
 
+    // FORCED RUST PATH - no fallback
     try {
-      if (shouldUseRust(query.collection)) {
-        const client = await getRustClient();
-        const result = await client.count(query);
-        done();
-        return result;
-      }
-
-      const result = await DataDaemon.count(query);
+      const client = await getRustClient();
+      const result = await client.count(query);
       done();
       return result;
     } catch (error) {
@@ -194,15 +164,10 @@ export class ORM {
   ): Promise<StorageResult<DataRecord<T>[]>> {
     const done = logOperationStart('query', query.collection, { joins: query.joins?.length });
 
+    // FORCED RUST PATH - no fallback
     try {
-      if (shouldUseRust(query.collection)) {
-        const client = await getRustClient();
-        const result = await client.queryWithJoin<T & BaseEntity>(query);
-        done();
-        return result;
-      }
-
-      const result = await DataDaemon.queryWithJoin<T>(query);
+      const client = await getRustClient();
+      const result = await client.queryWithJoin<T & BaseEntity>(query);
       done();
       return result;
     } catch (error) {
@@ -220,15 +185,10 @@ export class ORM {
   ): Promise<T | null> {
     const done = logOperationStart('read', collection, { id });
 
+    // FORCED RUST PATH - no fallback
     try {
-      if (shouldUseRust(collection)) {
-        const client = await getRustClient();
-        const result = await client.read<T>(collection, id);
-        done();
-        return result;
-      }
-
-      const result = await DataDaemon.read<T>(collection, id);
+      const client = await getRustClient();
+      const result = await client.read<T>(collection, id);
       done();
       return result;
     } catch (error) {
@@ -248,25 +208,13 @@ export class ORM {
   ): Promise<T> {
     const done = logOperationStart('update', collection, { id, fields: Object.keys(data) });
 
-    const useRust = shouldUseRust(collection);
-    console.log(`[ORM.update] collection=${collection}, useRust=${useRust}, id=${id}, fields=${Object.keys(data).join(',')}`);
-
+    // FORCED RUST PATH - no fallback
     try {
-      if (useRust) {
-        const client = await getRustClient();
-        console.log(`[ORM.update] Sending to Rust client...`);
-        const result = await client.update<T>(collection, id, data, incrementVersion);
-        console.log(`[ORM.update] Rust result: id=${result?.id ?? 'undefined'}`);
-        done();
-        return result;
-      }
-
-      const result = await DataDaemon.update<T>(collection, id, data, incrementVersion);
-      console.log(`[ORM.update] TypeScript result: id=${result?.id ?? 'undefined'}`);
+      const client = await getRustClient();
+      const result = await client.update<T>(collection, id, data, incrementVersion);
       done();
       return result;
     } catch (error) {
-      console.error(`[ORM.update] ERROR:`, error);
       logOperationError('update', collection, error);
       throw error;
     }
@@ -278,19 +226,14 @@ export class ORM {
   static async remove(
     collection: CollectionName,
     id: UUID,
-    suppressEvents: boolean = false
+    _suppressEvents: boolean = false
   ): Promise<StorageResult<boolean>> {
     const done = logOperationStart('remove', collection, { id });
 
+    // FORCED RUST PATH - no fallback
     try {
-      if (shouldUseRust(collection)) {
-        const client = await getRustClient();
-        const result = await client.remove(collection, id);
-        done();
-        return result;
-      }
-
-      const result = await DataDaemon.remove(collection, id, suppressEvents);
+      const client = await getRustClient();
+      const result = await client.remove(collection, id);
       done();
       return result;
     } catch (error) {

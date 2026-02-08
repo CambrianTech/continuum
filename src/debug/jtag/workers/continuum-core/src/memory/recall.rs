@@ -16,7 +16,6 @@
 use crate::memory::corpus::MemoryCorpus;
 use crate::memory::embedding::{cosine_similarity, EmbeddingProvider};
 use crate::memory::types::*;
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -534,9 +533,10 @@ impl MultiLayerRecall {
                 .collect(),
         };
 
-        // Run all active layers in parallel via Rayon
+        // Run all active layers sequentially to avoid Rayon thread starvation
+        // (IPC dispatch uses Rayon threads that block waiting for these results)
         let layer_results: Vec<(String, Vec<ScoredMemory>, f64)> = active_layers
-            .par_iter()
+            .iter()
             .map(|layer| {
                 let layer_start = Instant::now();
                 let results = layer.recall(corpus, query, embedding_provider);

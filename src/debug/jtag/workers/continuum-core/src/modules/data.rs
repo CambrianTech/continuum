@@ -23,22 +23,39 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// DataModule manages storage operations. Database path comes from each request.
+///
+/// NOTE: SqliteAdapter uses an internal worker thread with mpsc channels.
+/// All methods take &self and the sender is Clone+Send, so we don't need
+/// a Mutex around the adapter - concurrent sends are safe.
 pub struct DataModule {
     /// Adapter cache: path -> initialized adapter
     /// Lazy initialization per unique path
-    adapters: DashMap<String, Arc<Mutex<SqliteAdapter>>>,
+    /// Uses Arc<SqliteAdapter> without Mutex - SqliteAdapter is internally thread-safe
+    adapters: DashMap<String, Arc<SqliteAdapter>>,
+    /// Mutex only used during adapter initialization (one-time setup)
+    init_lock: Mutex<()>,
 }
 
 impl DataModule {
     pub fn new() -> Self {
         Self {
             adapters: DashMap::new(),
+            init_lock: Mutex::new(()),
         }
     }
 
     /// Get or create adapter for the given path. Path is REQUIRED.
-    async fn get_adapter(&self, db_path: &str) -> Result<Arc<Mutex<SqliteAdapter>>, String> {
-        // Check cache first
+    /// NOTE: No Mutex around adapter - SqliteAdapter is internally thread-safe via mpsc channels.
+    async fn get_adapter(&self, db_path: &str) -> Result<Arc<SqliteAdapter>, String> {
+        // Check cache first (fast path - no lock needed)
+        if let Some(adapter) = self.adapters.get(db_path) {
+            return Ok(adapter.clone());
+        }
+
+        // Slow path: need to initialize. Use lock to prevent double-init.
+        let _guard = self.init_lock.lock().await;
+
+        // Double-check after acquiring lock
         if let Some(adapter) = self.adapters.get(db_path) {
             return Ok(adapter.clone());
         }
@@ -49,11 +66,11 @@ impl DataModule {
             connection_string: db_path.to_string(),
             namespace: None,
             timeout_ms: 30_000,
-            max_connections: 1,
+            max_connections: 20,
         };
         adapter.initialize(config).await?;
 
-        let adapter = Arc::new(Mutex::new(adapter));
+        let adapter = Arc::new(adapter);
         self.adapters.insert(db_path.to_string(), adapter.clone());
 
         Ok(adapter)
@@ -112,12 +129,17 @@ impl ServiceModule for DataModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
-        // Close all adapters
-        for entry in self.adapters.iter() {
-            let mut adapter = entry.value().lock().await;
-            let _ = adapter.close().await;
+        // Close all adapters - take ownership to get mutable access
+        let paths: Vec<String> = self.adapters.iter().map(|e| e.key().clone()).collect();
+        for path in paths {
+            if let Some((_, adapter)) = self.adapters.remove(&path) {
+                // Try to get exclusive access for proper close
+                // If other refs exist, drop will clean up eventually
+                if let Ok(mut adapter) = Arc::try_unwrap(adapter) {
+                    let _ = adapter.close().await;
+                }
+            }
         }
-        self.adapters.clear();
         Ok(())
     }
 
@@ -234,6 +256,7 @@ struct DbPathOnly {
 
 impl DataModule {
     async fn handle_create(&self, params: Value) -> Result<CommandResult, String> {
+        log_info!("data", "create", "[1] ENTER handle_create");
         let params: CreateParams =
             serde_json::from_value(params.clone()).map_err(|e| {
                 log_error!("data", "create", "Parse error: {}, params: {}", e, params);
@@ -241,6 +264,7 @@ impl DataModule {
             })?;
 
         let id = params.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        log_info!("data", "create", "[2] id={}, collection={}", id, params.collection);
 
         let record = DataRecord {
             id: id.clone(),
@@ -249,9 +273,11 @@ impl DataModule {
             metadata: RecordMetadata::default(),
         };
 
+        log_info!("data", "create", "[3] calling get_adapter");
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
+        log_info!("data", "create", "[4] got adapter, calling create");
         let result = adapter.create(record).await;
+        log_info!("data", "create", "[5] create done, success={}", result.success);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -261,8 +287,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.read(&params.collection, &params.id).await;
+                let result = adapter.read(&params.collection, &params.id).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -275,8 +300,7 @@ impl DataModule {
             })?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter
+                let result = adapter
             .update(
                 &params.collection,
                 &params.id,
@@ -293,8 +317,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.delete(&params.collection, &params.id).await;
+                let result = adapter.delete(&params.collection, &params.id).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -318,13 +341,11 @@ impl DataModule {
             ..Default::default()
         };
 
-        log_info!("data", "query", "Getting adapter for: {}", params.db_path);
+        log_info!("data", "query", "[3] Getting adapter for: {}", params.db_path);
         let adapter = self.get_adapter(&params.db_path).await?;
-        log_info!("data", "query", "Got adapter, acquiring lock");
-        let adapter = adapter.lock().await;
-        log_info!("data", "query", "Got lock, executing query");
+        log_info!("data", "query", "[4] Got adapter, executing query");
         let result = adapter.query(query).await;
-        log_info!("data", "query", "Query complete: success={}", result.success);
+        log_info!("data", "query", "[5] Query complete: success={}", result.success);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -344,8 +365,7 @@ impl DataModule {
         };
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.query_with_join(query).await;
+                let result = adapter.query_with_join(query).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -365,8 +385,7 @@ impl DataModule {
         };
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.count(query).await;
+                let result = adapter.count(query).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -376,8 +395,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.batch(params.operations).await;
+                let result = adapter.batch(params.operations).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -387,8 +405,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.ensure_schema(params.schema).await;
+                let result = adapter.ensure_schema(params.schema).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -398,8 +415,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.list_collections().await;
+                let result = adapter.list_collections().await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -409,8 +425,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.collection_stats(&params.collection).await;
+                let result = adapter.collection_stats(&params.collection).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -420,8 +435,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.truncate(&params.collection).await;
+                let result = adapter.truncate(&params.collection).await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -431,8 +445,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let result = adapter.clear_all().await;
+                let result = adapter.clear_all().await;
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -442,8 +455,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let caps = adapter.capabilities();
+                let caps = adapter.capabilities();
 
         Ok(CommandResult::Json(json!({
             "supportsTransactions": caps.supports_transactions,
@@ -461,8 +473,7 @@ impl DataModule {
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter = adapter.lock().await;
-        let caps = adapter.capabilities();
+                let caps = adapter.capabilities();
 
         Ok(CommandResult::Json(json!({
             "adapter": adapter.name(),
