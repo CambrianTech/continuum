@@ -256,7 +256,9 @@ struct DbPathOnly {
 
 impl DataModule {
     async fn handle_create(&self, params: Value) -> Result<CommandResult, String> {
-        log_info!("data", "create", "[1] ENTER handle_create");
+        use std::time::Instant;
+        let start = Instant::now();
+
         let params: CreateParams =
             serde_json::from_value(params.clone()).map_err(|e| {
                 log_error!("data", "create", "Parse error: {}, params: {}", e, params);
@@ -264,7 +266,7 @@ impl DataModule {
             })?;
 
         let id = params.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        log_info!("data", "create", "[2] id={}, collection={}", id, params.collection);
+        let collection = params.collection.clone();
 
         let record = DataRecord {
             id: id.clone(),
@@ -273,21 +275,43 @@ impl DataModule {
             metadata: RecordMetadata::default(),
         };
 
-        log_info!("data", "create", "[3] calling get_adapter");
+        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-        log_info!("data", "create", "[4] got adapter, calling create");
+        let adapter_ms = adapter_start.elapsed().as_millis();
+
+        let create_start = Instant::now();
         let result = adapter.create(record).await;
-        log_info!("data", "create", "[5] create done, success={}", result.success);
+        let create_ms = create_start.elapsed().as_millis();
+
+        let total_ms = start.elapsed().as_millis();
+        if total_ms > 50 {
+            log_info!("data", "create", "TIMING: collection={}, total={}ms (adapter={}ms, create={}ms), success={}",
+                collection, total_ms, adapter_ms, create_ms, result.success);
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
 
     async fn handle_read(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
         let params: ReadParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
+        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.read(&params.collection, &params.id).await;
+        let adapter_ms = adapter_start.elapsed().as_millis();
+
+        let read_start = Instant::now();
+        let result = adapter.read(&params.collection, &params.id).await;
+        let read_ms = read_start.elapsed().as_millis();
+
+        let total_ms = start.elapsed().as_millis();
+        if total_ms > 50 {
+            log_info!("data", "read", "TIMING: collection={}, total={}ms (adapter={}ms, read={}ms), success={}",
+                params.collection, total_ms, adapter_ms, read_ms, result.success);
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -323,14 +347,19 @@ impl DataModule {
     }
 
     async fn handle_query(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
         log_info!("data", "query", "Starting query handler");
         let params: QueryParams =
             serde_json::from_value(params.clone()).map_err(|e| {
                 log_error!("data", "query", "Parse error: {}, params: {}", e, params);
                 format!("Invalid params: {e}")
             })?;
+        let parse_ms = start.elapsed().as_millis();
 
-        log_info!("data", "query", "Parsed params: collection={}, db_path={}", params.collection, params.db_path);
+        log_info!("data", "query", "Parsed params: collection={}, db_path={} (parse: {}ms)",
+            params.collection, params.db_path, parse_ms);
 
         let query = StorageQuery {
             collection: params.collection.clone(),
@@ -341,11 +370,21 @@ impl DataModule {
             ..Default::default()
         };
 
-        log_info!("data", "query", "[3] Getting adapter for: {}", params.db_path);
+        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-        log_info!("data", "query", "[4] Got adapter, executing query");
+        let adapter_ms = adapter_start.elapsed().as_millis();
+
+        let query_start = Instant::now();
         let result = adapter.query(query).await;
-        log_info!("data", "query", "[5] Query complete: success={}", result.success);
+        let query_ms = query_start.elapsed().as_millis();
+
+        let total_ms = start.elapsed().as_millis();
+
+        // Log timing breakdown for slow queries (>50ms)
+        if total_ms > 50 {
+            log_info!("data", "query", "TIMING: collection={}, total={}ms (parse={}ms, adapter={}ms, query={}ms), success={}",
+                params.collection, total_ms, parse_ms, adapter_ms, query_ms, result.success);
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -371,11 +410,14 @@ impl DataModule {
     }
 
     async fn handle_count(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
         let params: CountParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
         let query = StorageQuery {
-            collection: params.collection,
+            collection: params.collection.clone(),
             filter: params.filter.map(|m| {
                 m.into_iter()
                     .map(|(k, v)| (k, FieldFilter::Value(v)))
@@ -384,8 +426,19 @@ impl DataModule {
             ..Default::default()
         };
 
+        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.count(query).await;
+        let adapter_ms = adapter_start.elapsed().as_millis();
+
+        let count_start = Instant::now();
+        let result = adapter.count(query).await;
+        let count_ms = count_start.elapsed().as_millis();
+
+        let total_ms = start.elapsed().as_millis();
+        if total_ms > 50 {
+            log_info!("data", "count", "TIMING: collection={}, total={}ms (adapter={}ms, count={}ms), success={}",
+                params.collection, total_ms, adapter_ms, count_ms, result.success);
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
