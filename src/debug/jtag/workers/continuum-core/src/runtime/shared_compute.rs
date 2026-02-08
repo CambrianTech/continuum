@@ -1,20 +1,20 @@
-/// SharedCompute — lazy-compute-once, share-many cache.
-///
-/// Like CBAR_VideoFrame's lazy getters: getRGBImage() computes once on first access,
-/// subsequent accesses return the cached result. Thread-safe via OnceCell.
-///
-/// Usage:
-/// ```ignore
-/// let embedding = compute.get_or_compute(
-///     "persona-123", "query_embedding",
-///     embed_model.embed(&text)
-/// ).await;
-/// // Second call returns cached result instantly
-/// let same_embedding = compute.get_or_compute(
-///     "persona-123", "query_embedding",
-///     embed_model.embed(&text)  // Never called — cached
-/// ).await;
-/// ```
+//! SharedCompute — lazy-compute-once, share-many cache.
+//!
+//! Like CBAR_VideoFrame's lazy getters: getRGBImage() computes once on first access,
+//! subsequent accesses return the cached result. Thread-safe via OnceCell.
+//!
+//! Usage:
+//! ```ignore
+//! let embedding = compute.get_or_compute(
+//!     "persona-123", "query_embedding",
+//!     embed_model.embed(&text)
+//! ).await;
+//! // Second call returns cached result instantly
+//! let same_embedding = compute.get_or_compute(
+//!     "persona-123", "query_embedding",
+//!     embed_model.embed(&text)  // Never called — cached
+//! ).await;
+//! ```
 
 use dashmap::DashMap;
 use std::any::Any;

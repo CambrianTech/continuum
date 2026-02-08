@@ -1,10 +1,10 @@
-/// VoiceModule — wraps voice synthesis, transcription, and call management.
-///
-/// Handles: voice/register-session, voice/on-utterance, voice/should-route-tts,
-///          voice/synthesize, voice/speak-in-call, voice/synthesize-handle,
-///          voice/play-handle, voice/discard-handle, voice/transcribe
-///
-/// Priority: Realtime — voice operations are time-critical.
+//! VoiceModule — wraps voice synthesis, transcription, and call management.
+//!
+//! Handles: voice/register-session, voice/on-utterance, voice/should-route-tts,
+//!          voice/synthesize, voice/speak-in-call, voice/synthesize-handle,
+//!          voice/play-handle, voice/discard-handle, voice/transcribe
+//!
+//! Priority: Realtime — voice operations are time-critical.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::voice::{UtteranceEvent, VoiceParticipant};
@@ -134,7 +134,8 @@ impl ServiceModule for VoiceModule {
 
                 use crate::voice::tts_service;
 
-                let result = tts_service::synthesize_speech_sync(text, voice, adapter);
+                // Use async version - we're already in an async context
+                let result = tts_service::synthesize_speech_async(text, voice, adapter).await;
 
                 match result {
                     Ok(synthesis) => {
@@ -230,7 +231,8 @@ impl ServiceModule for VoiceModule {
 
                 use crate::voice::tts_service;
 
-                let result = tts_service::synthesize_speech_sync(text, voice, adapter);
+                // Use async version - we're already in an async context
+                let result = tts_service::synthesize_speech_async(text, voice, adapter).await;
 
                 match result {
                     Ok(synthesis) => {

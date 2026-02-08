@@ -1,8 +1,8 @@
-/// RuntimeControl — Priority adjustment API for UI.
-///
-/// Allows runtime modification of module priorities.
-/// Exposed via runtime/control/* commands.
-/// TypeScript types generated via ts-rs for Ares (RTOS controller) integration.
+//! RuntimeControl — Priority adjustment API for UI.
+//!
+//! Allows runtime modification of module priorities.
+//! Exposed via runtime/control/* commands.
+//! TypeScript types generated via ts-rs for Ares (RTOS controller) integration.
 
 use super::registry::ModuleRegistry;
 use super::service_module::ModulePriority;

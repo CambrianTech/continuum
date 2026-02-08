@@ -23,6 +23,8 @@ use crate::modules::voice::{VoiceModule, VoiceState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::rag::{RagModule, RagState};
 use crate::modules::data::DataModule;
+use crate::modules::logger::LoggerModule;
+use crate::modules::search::SearchModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -572,6 +574,7 @@ struct ServerState {
 impl ServerState {
     /// Create with shared state (for module state sharing).
     /// Phase 3+: Modules and ServerState share all per-persona and service state.
+    #[allow(clippy::too_many_arguments)]
     fn new_with_shared_state(
         call_manager: Arc<crate::voice::call_server::CallManager>,
         rt_handle: tokio::runtime::Handle,
@@ -620,8 +623,7 @@ impl ServerState {
         );
 
         HandleResult::Json(Response::error(format!(
-            "Command not routed to module. This is likely a bug - all commands should be handled by ServiceModules. Request type: {}",
-            command_name
+            "Command not routed to module. This is likely a bug - all commands should be handled by ServiceModules. Request type: {command_name}"
         )))
     }
 }
@@ -1316,6 +1318,14 @@ pub fn start_server(
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
     runtime.register(Arc::new(DataModule::new()));
+
+    // Phase 4a: LoggerModule (absorbs standalone logger worker)
+    // Provides log/write, log/ping via main socket
+    runtime.register(Arc::new(LoggerModule::new()));
+
+    // Phase 4b: SearchModule (absorbs standalone search worker)
+    // Provides search/execute, search/vector, search/list, search/params
+    runtime.register(Arc::new(SearchModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

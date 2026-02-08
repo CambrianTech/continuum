@@ -84,8 +84,8 @@
       "binary": "workers/target/release/search-worker",
       "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
-      "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
-      "enabled": true
+      "description": "DEPRECATED - Migrated to SearchModule in continuum-core",
+      "enabled": false
     },
     {
       "name": "streaming-core",

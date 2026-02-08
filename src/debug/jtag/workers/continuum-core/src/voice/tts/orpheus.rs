@@ -192,7 +192,7 @@ impl OrpheusTts {
             .with_intra_threads(threads)
             .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC threads: {e}")))?
             .commit_from_file(model_path)
-            .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC model load {:?}: {e}", model_path)))
+            .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC model load {model_path:?}: {e}")))
     }
 
     /// Look up a special token ID from the tokenizer
@@ -201,10 +201,9 @@ impl OrpheusTts {
             .token_to_id(token)
             .ok_or_else(|| {
                 TTSError::ModelNotLoaded(format!(
-                    "Token '{}' not found in Orpheus tokenizer. \
+                    "Token '{token}' not found in Orpheus tokenizer. \
                      Ensure you're using the Orpheus-specific tokenizer.json, \
-                     not the base Llama tokenizer.",
-                    token
+                     not the base Llama tokenizer."
                 ))
             })
     }
@@ -212,11 +211,7 @@ impl OrpheusTts {
     /// Format the Orpheus prompt for TTS generation
     fn format_prompt(text: &str, voice: &str) -> String {
         // Orpheus prompt format: voice name on first line, then text, wrapped in special tokens
-        format!(
-            "<|text_start|>{voice}\n{text}<|text_end|><|audio_start|>",
-            voice = voice,
-            text = text
-        )
+        format!("<|text_start|>{voice}\n{text}<|text_end|><|audio_start|>")
     }
 
     /// Synchronous synthesis pipeline (runs on blocking thread)
@@ -279,7 +274,7 @@ impl OrpheusTts {
         let samples: Vec<i16> = pcm_16k
             .iter()
             .map(|&s| {
-                let clamped = s.max(-1.0).min(1.0);
+                let clamped = s.clamp(-1.0, 1.0);
                 (clamped * 32767.0) as i16
             })
             .collect();
@@ -405,8 +400,7 @@ impl OrpheusTts {
             }
             _ => {
                 return Err(TTSError::SynthesisFailed(format!(
-                    "Unexpected logits shape: {:?}",
-                    dims
+                    "Unexpected logits shape: {dims:?}"
                 )));
             }
         };
@@ -598,8 +592,7 @@ impl TextToSpeech for OrpheusTts {
                 missing.push("*.gguf (any quantized model file)".to_string());
             }
             return Err(TTSError::ModelNotLoaded(format!(
-                "Missing model files in {:?}: {:?}. Download from https://huggingface.co/canopylabs/orpheus-3b-0.1-ft",
-                model_dir, missing
+                "Missing model files in {model_dir:?}: {missing:?}. Download from https://huggingface.co/canopylabs/orpheus-3b-0.1-ft"
             )));
         }
 
@@ -706,8 +699,7 @@ impl TextToSpeech for OrpheusTts {
                 language: "en".to_string(),
                 gender: Some(gender.to_string()),
                 description: Some(format!(
-                    "Orpheus {} voice — supports emotion tags",
-                    gender
+                    "Orpheus {gender} voice — supports emotion tags"
                 )),
             })
             .collect()

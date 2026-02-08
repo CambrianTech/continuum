@@ -1,7 +1,7 @@
-/// ModuleLogger — Per-module segregated logging.
-///
-/// Each module gets its own log file: .continuum/jtag/logs/system/modules/{name}.log
-/// Automatic category prefixing. Zero configuration for module authors.
+//! ModuleLogger — Per-module segregated logging.
+//!
+//! Each module gets its own log file: .continuum/jtag/logs/system/modules/{name}.log
+//! Automatic category prefixing. Zero configuration for module authors.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

@@ -1,10 +1,10 @@
-/// DataModule — Storage and ORM operations via the StorageAdapter trait.
-///
-/// Handles: data/* commands (create, read, update, delete, query, batch)
-/// Uses the ORM module's StorageAdapter trait for database-agnostic operations.
-///
-/// CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
-/// NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
+//! DataModule — Storage and ORM operations via the StorageAdapter trait.
+//!
+//! Handles: data/* commands (create, read, update, delete, query, batch)
+//! Uses the ORM module's StorageAdapter trait for database-agnostic operations.
+//!
+//! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
+//! NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
 
 use crate::{log_error, log_info};
 use crate::orm::{

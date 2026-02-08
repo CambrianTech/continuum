@@ -1,5 +1,5 @@
-/// Phonemizer using espeak-ng for text-to-phoneme conversion
-/// Piper TTS models require espeak-ng IPA phonemes
+//! Phonemizer using espeak-ng for text-to-phoneme conversion
+//! Piper TTS models require espeak-ng IPA phonemes
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -12,10 +12,10 @@ impl Phonemizer {
     /// Load phoneme_id_map from Piper model config
     pub fn load_from_config(config_path: &str) -> Result<Self, String> {
         let config_content = std::fs::read_to_string(config_path)
-            .map_err(|e| format!("Failed to read model config: {}", e))?;
+            .map_err(|e| format!("Failed to read model config: {e}"))?;
 
         let config: serde_json::Value = serde_json::from_str(&config_content)
-            .map_err(|e| format!("Failed to parse model config: {}", e))?;
+            .map_err(|e| format!("Failed to parse model config: {e}"))?;
 
         let phoneme_id_map = config
             .get("phoneme_id_map")
@@ -39,25 +39,23 @@ impl Phonemizer {
     /// Call espeak-ng to phonemize text
     fn call_espeak(&self, text: &str) -> Result<String, String> {
         let output = Command::new("/opt/homebrew/bin/espeak-ng")
-            .args(&["-v", "en-us", "-q", "--ipa=3"])
+            .args(["-v", "en-us", "-q", "--ipa=3"])
             .arg(text)
             .output()
-            .map_err(|e| format!("Failed to run espeak-ng: {}", e))?;
+            .map_err(|e| format!("Failed to run espeak-ng: {e}"))?;
 
         if !output.status.success() {
-            return Err(format!("espeak-ng failed: {}", String::from_utf8_lossy(&output.stderr)));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("espeak-ng failed: {stderr}"));
         }
 
         let phonemes = String::from_utf8_lossy(&output.stdout)
             .trim()
             .to_string()
             // Remove zero-width joiners and other invisible characters
-            .replace('\u{200D}', "") // Zero-width joiner
-            .replace('\u{200C}', "") // Zero-width non-joiner
-            .replace('\u{FEFF}', "") // Zero-width no-break space
+            .replace(['\u{200D}', '\u{200C}', '\u{FEFF}'], "")
             // Replace newlines with spaces (espeak-ng outputs multiple lines for punctuation)
-            .replace('\n', " ")
-            .replace('\r', " ");
+            .replace(['\n', '\r'], " ");
 
         Ok(phonemes)
     }
@@ -68,7 +66,7 @@ impl Phonemizer {
         let phonemes = match self.call_espeak(text) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Phonemizer error: {}", e);
+                eprintln!("Phonemizer error: {e}");
                 // Return minimal valid sequence on error
                 return vec![1, 59, 2]; // ^, ə, $
             }
@@ -94,13 +92,15 @@ impl Phonemizer {
                 // Unknown phoneme - skip it
                 unknown_count += 1;
                 if unknown_count <= 5 {  // Only log first 5 to avoid spam
-                    eprintln!("Unknown phoneme '{}' (U+{:04X}), skipping", ch, ch as u32);
+                    let ch_code = ch as u32;
+                    eprintln!("Unknown phoneme '{ch}' (U+{ch_code:04X}), skipping");
                 }
             }
         }
 
         if unknown_count > 5 {
-            eprintln!("... and {} more unknown phonemes", unknown_count - 5);
+            let remaining = unknown_count - 5;
+            eprintln!("... and {remaining} more unknown phonemes");
         }
 
         // If we got no valid phonemes, return minimal sequence
@@ -121,7 +121,7 @@ impl Default for Phonemizer {
         // Load from default model config
         Self::load_from_config("../models/piper/en_US-libritts_r-medium.onnx.json")
             .unwrap_or_else(|e| {
-                eprintln!("Failed to load phoneme map from config: {}", e);
+                eprintln!("Failed to load phoneme map from config: {e}");
                 Self { phoneme_to_id: HashMap::new() }
             })
     }

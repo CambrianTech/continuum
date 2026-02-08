@@ -89,11 +89,11 @@ impl SileroVAD {
 
         // Search for the model in common locations
         let candidates = vec![
-            PathBuf::from(format!("models/vad/{}", model_name)),
+            PathBuf::from(format!("models/vad/{model_name}")),
             dirs::data_dir()
                 .unwrap_or_default()
-                .join(format!("silero/{}", model_name)),
-            PathBuf::from(format!("/usr/local/share/silero/{}", model_name)),
+                .join(format!("silero/{model_name}")),
+            PathBuf::from(format!("/usr/local/share/silero/{model_name}")),
         ];
 
         for path in &candidates {
@@ -103,7 +103,7 @@ impl SileroVAD {
         }
 
         // Default - will fail if not found, but error message will be helpful
-        PathBuf::from(format!("models/vad/{}", model_name))
+        PathBuf::from(format!("models/vad/{model_name}"))
     }
 
     /// Preprocess audio samples for Silero

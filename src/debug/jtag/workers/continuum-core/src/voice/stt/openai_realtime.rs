@@ -183,18 +183,18 @@ impl OpenAIRealtimeSTT {
             .ok_or_else(|| STTError::ModelNotLoaded("OPENAI_API_KEY not set".into()))?;
 
         // Connect to Realtime API
-        let url = format!("{}?model=gpt-4o-realtime-preview", REALTIME_API_URL);
+        let url = format!("{REALTIME_API_URL}?model=gpt-4o-realtime-preview");
 
         let request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Authorization", format!("Bearer {api_key}"))
             .header("OpenAI-Beta", "realtime=v1")
             .body(())
-            .map_err(|e| STTError::InferenceFailed(format!("Failed to build request: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Failed to build request: {e}")))?;
 
         let (ws_stream, _) = connect_async(request)
             .await
-            .map_err(|e| STTError::InferenceFailed(format!("WebSocket connect failed: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("WebSocket connect failed: {e}")))?;
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -205,7 +205,7 @@ impl OpenAIRealtimeSTT {
                     info!("OpenAI Realtime: Session created");
                 }
                 Ok(ServerEvent::Error { error }) => {
-                    return Err(STTError::InferenceFailed(format!("API error: {:?}", error)));
+                    return Err(STTError::InferenceFailed(format!("API error: {error:?}")));
                 }
                 _ => {}
             }
@@ -223,11 +223,11 @@ impl OpenAIRealtimeSTT {
 
         let update_event = ClientEvent::SessionUpdate { session: session_config };
         let json = serde_json::to_string(&update_event)
-            .map_err(|e| STTError::InferenceFailed(format!("JSON error: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
         write.send(Message::Text(json))
             .await
-            .map_err(|e| STTError::InferenceFailed(format!("Send failed: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
 
         // Send audio in chunks (24kHz expected, but we have 16kHz - need to document)
         // OpenAI expects 24kHz, so we may need resampling
@@ -236,21 +236,21 @@ impl OpenAIRealtimeSTT {
             let audio_b64 = Self::samples_to_base64(chunk);
             let append_event = ClientEvent::AudioAppend { audio: audio_b64 };
             let json = serde_json::to_string(&append_event)
-                .map_err(|e| STTError::InferenceFailed(format!("JSON error: {}", e)))?;
+                .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
             write.send(Message::Text(json))
                 .await
-                .map_err(|e| STTError::InferenceFailed(format!("Send failed: {}", e)))?;
+                .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
         }
 
         // Commit audio buffer
         let commit_event = ClientEvent::AudioCommit;
         let json = serde_json::to_string(&commit_event)
-            .map_err(|e| STTError::InferenceFailed(format!("JSON error: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
         write.send(Message::Text(json))
             .await
-            .map_err(|e| STTError::InferenceFailed(format!("Send failed: {}", e)))?;
+            .map_err(|e| STTError::InferenceFailed(format!("Send failed: {e}")))?;
 
         // Wait for transcription result
         let mut transcript = String::new();
@@ -277,7 +277,7 @@ impl OpenAIRealtimeSTT {
                             // Could emit partial results here via callback
                         }
                         Ok(ServerEvent::Error { error }) => {
-                            return Err(STTError::InferenceFailed(format!("API error: {:?}", error)));
+                            return Err(STTError::InferenceFailed(format!("API error: {error:?}")));
                         }
                         Ok(ServerEvent::SpeechStarted { .. }) => {
                             debug!("OpenAI Realtime: Speech started");

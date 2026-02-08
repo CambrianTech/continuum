@@ -1,10 +1,10 @@
-/// MemoryModule — wraps PersonaMemoryManager for memory/recall operations.
-///
-/// Handles: memory/load-corpus, memory/multi-layer-recall, memory/consciousness-context,
-///          memory/append-memory, memory/append-event
-///
-/// All memory operations are pure compute on in-memory corpus data.
-/// Data comes from TypeScript ORM via IPC. Zero SQL access.
+//! MemoryModule — wraps PersonaMemoryManager for memory/recall operations.
+//!
+//! Handles: memory/load-corpus, memory/multi-layer-recall, memory/consciousness-context,
+//!          memory/append-memory, memory/append-event
+//!
+//! All memory operations are pure compute on in-memory corpus data.
+//! Data comes from TypeScript ORM via IPC. Zero SQL access.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::memory::{

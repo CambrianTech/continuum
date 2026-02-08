@@ -54,8 +54,8 @@ VoiceActivityDetection trait (polymorphic)
 ```rust
 use streaming_core::VADFactory;
 
-// Creates Silero if model exists, RMS fallback otherwise
-let vad = VADFactory::default();
+// Creates best available VAD (Silero if model exists, RMS fallback otherwise)
+let vad = VADFactory::best_available();
 ```
 
 ### Manual Selection

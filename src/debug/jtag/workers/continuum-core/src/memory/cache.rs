@@ -78,6 +78,11 @@ impl<T: Clone> MemoryCache<T> {
     pub fn len(&self) -> usize {
         self.entries.lock().len()
     }
+
+    /// Check if cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.lock().is_empty()
+    }
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────────

@@ -498,6 +498,12 @@ pub struct MultiLayerRecall {
     layers: Vec<Box<dyn RecallLayer>>,
 }
 
+impl Default for MultiLayerRecall {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiLayerRecall {
     /// Create with all 6 default layers.
     pub fn new() -> Self {

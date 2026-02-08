@@ -197,7 +197,7 @@ impl TextToSpeech for EdgeTTS {
             .filter(|v| {
                 v.locale
                     .as_deref()
-                    .map_or(false, |loc| loc.starts_with("en-"))
+                    .is_some_and(|loc| loc.starts_with("en-"))
             })
             .map(|v| {
                 let short = v.short_name.as_deref().unwrap_or(&v.name);

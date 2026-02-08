@@ -64,7 +64,7 @@ pub fn load_wav_file<P: AsRef<Path>>(path: P) -> io::Result<Vec<i16>> {
 ///
 /// Loads from test_audio/background_noise/ directory
 pub fn load_background_noise(name: &str) -> io::Result<Vec<i16>> {
-    let path = format!("test_audio/background_noise/{}.wav", name);
+    let path = format!("test_audio/background_noise/{name}.wav");
     load_wav_file(path)
 }
 

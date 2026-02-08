@@ -45,6 +45,84 @@ else
     echo "⏭️  Phase 1: TypeScript compilation SKIPPED (disabled in config)"
 fi
 
+# ============================================================================
+# Phase 1.5: Strict Lint (MODIFIED FILES ONLY)
+# ============================================================================
+# This enforces strict rules on NEW code without breaking existing tech debt.
+# Only staged files are checked - incrementally improve quality.
+# ============================================================================
+echo ""
+echo "📋 Phase 1.5: Strict Lint (modified files only)"
+echo "-------------------------------------"
+
+# Get list of staged TypeScript files (excluding node_modules, dist, generated)
+TS_FILES=$(cd ../../.. && git diff --cached --name-only --diff-filter=ACMR | grep -E 'src/debug/jtag/.*\.tsx?$' | grep -v 'node_modules' | grep -v 'dist/' | grep -v '/generated' | grep -v 'generated-command' || true)
+
+# Get list of staged Rust files
+RS_FILES=$(cd ../../.. && git diff --cached --name-only --diff-filter=ACMR | grep -E 'src/debug/jtag/workers/.*\.rs$' | grep -v 'target/' || true)
+
+LINT_FAILED=false
+
+if [ -n "$TS_FILES" ]; then
+    echo "TypeScript files to lint:"
+    echo "$TS_FILES" | sed 's/^/  • /' | head -10
+    TS_COUNT=$(echo "$TS_FILES" | wc -l | tr -d ' ')
+    [ "$TS_COUNT" -gt 10 ] && echo "  ... and $((TS_COUNT - 10)) more"
+    echo ""
+
+    # Run ESLint on modified files only (paths relative to jtag dir)
+    LINT_OUTPUT=$(cd ../../.. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 2>&1) || {
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════════╗"
+        echo "║  ❌ TYPESCRIPT LINT FAILED - BLOCKING COMMIT                   ║"
+        echo "╠════════════════════════════════════════════════════════════════╣"
+        echo "║  Common violations:                                            ║"
+        echo "║  • Using 'any'          → Use specific types                   ║"
+        echo "║  • Using ||             → Use ?? (nullish coalescing)          ║"
+        echo "║  • Missing return type  → Add explicit return type             ║"
+        echo "║  • Unused variables     → Remove or prefix with _              ║"
+        echo "╚════════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo "$LINT_OUTPUT"
+        LINT_FAILED=true
+    }
+    [ "$LINT_FAILED" = false ] && echo "✅ TypeScript lint: PASSED"
+else
+    echo "⏭️  No TypeScript files staged - skipping ESLint"
+fi
+
+if [ -n "$RS_FILES" ]; then
+    echo ""
+    echo "Rust files to lint with clippy:"
+    echo "$RS_FILES" | sed 's/^/  • /' | head -10
+    echo ""
+
+    # Run clippy on the workspace (warnings as errors)
+    if ! (cd workers/continuum-core && cargo clippy --quiet -- -D warnings 2>&1); then
+        echo ""
+        echo "╔════════════════════════════════════════════════════════════════╗"
+        echo "║  ❌ RUST CLIPPY FAILED - BLOCKING COMMIT                       ║"
+        echo "╠════════════════════════════════════════════════════════════════╣"
+        echo "║  Common violations:                                            ║"
+        echo "║  • Dead code           → Remove unused functions/vars          ║"
+        echo "║  • Unused imports      → Remove unused 'use' statements        ║"
+        echo "║  • Unnecessary clone   → Remove or explain why needed          ║"
+        echo "╚════════════════════════════════════════════════════════════════╝"
+        LINT_FAILED=true
+    else
+        echo "✅ Rust clippy: PASSED"
+    fi
+else
+    echo "⏭️  No Rust files staged - skipping clippy"
+fi
+
+if [ "$LINT_FAILED" = true ]; then
+    echo ""
+    echo "❌ STRICT LINT FAILED - Fix violations in modified files before committing"
+    exit 1
+fi
+echo ""
+
 # Detect if code changes require deployment
 echo "🔍 Checking if code changes require deployment..."
 cd ../../..

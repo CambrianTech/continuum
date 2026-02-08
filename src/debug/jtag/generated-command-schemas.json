@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-08T16:27:34.014Z",
+  "generated": "2026-02-08T21:10:36.718Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1515,6 +1515,74 @@
           "type": "string",
           "required": false,
           "description": "component parameter"
+        }
+      }
+    },
+    {
+      "name": "search/vector",
+      "description": "Search Vector Command Types\n * Vector similarity search via Rust SearchModule",
+      "params": {
+        "queryVector": {
+          "type": "array",
+          "required": true,
+          "description": "queryVector parameter"
+        },
+        "corpusVectors": {
+          "type": "array",
+          "required": true,
+          "description": "corpusVectors parameter"
+        },
+        "normalize": {
+          "type": "boolean",
+          "required": false,
+          "description": "normalize parameter"
+        },
+        "threshold": {
+          "type": "number",
+          "required": false,
+          "description": "threshold parameter"
+        }
+      }
+    },
+    {
+      "name": "search/params",
+      "description": "Search Params Command Types\n * Get algorithm parameters from Rust SearchModule",
+      "params": {
+        "algorithm": {
+          "type": "string",
+          "required": true,
+          "description": "algorithm parameter"
+        }
+      }
+    },
+    {
+      "name": "search/list",
+      "description": "Search List Command Types\n * Lists available search algorithms from Rust SearchModule",
+      "params": {}
+    },
+    {
+      "name": "search/execute",
+      "description": "Search Execute Command Types\n * Executes text search via Rust SearchModule",
+      "params": {
+        "algorithm": {
+          "type": "string",
+          "required": false,
+          "description": "algorithm parameter"
+        },
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "corpus": {
+          "type": "array",
+          "required": true,
+          "description": "corpus parameter"
+        },
+        "params": {
+          "type": "object",
+          "required": false,
+          "description": "params parameter"
         }
       }
     },

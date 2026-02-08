@@ -28,7 +28,7 @@ impl TestAudioGenerator {
         let (f1, f2, f3) = vowel.formants();
         let fundamental = 150.0; // Typical male voice fundamental frequency
 
-        for i in 0..duration_samples {
+        for (i, sample_out) in samples.iter_mut().enumerate() {
             let t = i as f32 / self.sample_rate as f32;
 
             // Fundamental + harmonics (pitch)
@@ -52,7 +52,7 @@ impl TestAudioGenerator {
             let envelope = self.envelope(i, duration_samples);
 
             let sample = (formant_envelope * variation * envelope * 10000.0).clamp(-32767.0, 32767.0);
-            samples[i] = sample as i16;
+            *sample_out = sample as i16;
         }
 
         samples
@@ -86,11 +86,11 @@ impl TestAudioGenerator {
         let mut rng = rand::thread_rng();
         let mut samples = vec![0i16; duration_samples];
 
-        for i in 0..duration_samples {
+        for (i, sample_out) in samples.iter_mut().enumerate() {
             let envelope = self.envelope(i, duration_samples);
             // White noise burst
             let noise = rng.gen_range(-1.0..1.0);
-            samples[i] = (noise * envelope * 15000.0) as i16;
+            *sample_out = (noise * envelope * 15000.0) as i16;
         }
 
         samples
@@ -101,7 +101,7 @@ impl TestAudioGenerator {
         let mut rng = rand::thread_rng();
         let mut samples = vec![0i16; duration_samples];
 
-        for i in 0..duration_samples {
+        for (i, sample_out) in samples.iter_mut().enumerate() {
             let t = i as f32 / self.sample_rate as f32;
             let envelope = self.envelope(i, duration_samples);
 
@@ -109,7 +109,7 @@ impl TestAudioGenerator {
             let noise = rng.gen_range(-1.0..1.0);
             let carrier = (2.0 * PI * freq_center * t).sin();
 
-            samples[i] = (noise * carrier * envelope * 12000.0) as i16;
+            *sample_out = (noise * carrier * envelope * 12000.0) as i16;
         }
 
         samples
@@ -198,7 +198,7 @@ impl TestAudioGenerator {
         // C major chord: C (261Hz), E (329Hz), G (392Hz)
         let freqs = [261.0, 329.0, 392.0];
 
-        for i in 0..duration_samples {
+        for (i, sample_out) in samples.iter_mut().enumerate() {
             let t = i as f32 / self.sample_rate as f32;
             let mut signal = 0.0f32;
 
@@ -206,7 +206,7 @@ impl TestAudioGenerator {
                 signal += (2.0 * PI * freq * t).sin();
             }
 
-            samples[i] = (signal / 3.0 * 8000.0) as i16;
+            *sample_out = (signal / 3.0 * 8000.0) as i16;
         }
 
         samples
@@ -238,7 +238,7 @@ impl TestAudioGenerator {
         let mut rng = rand::thread_rng();
         let mut samples = vec![0i16; duration_samples];
 
-        for i in 0..duration_samples {
+        for (i, sample_out) in samples.iter_mut().enumerate() {
             let t = i as f32 / self.sample_rate as f32;
 
             // Base hum (60Hz electrical + 120Hz harmonic)
@@ -257,7 +257,7 @@ impl TestAudioGenerator {
             };
 
             let signal = hum + rumble + clank;
-            samples[i] = (signal * 8000.0).clamp(-32767.0, 32767.0) as i16;
+            *sample_out = (signal * 8000.0).clamp(-32767.0, 32767.0) as i16;
         }
 
         samples

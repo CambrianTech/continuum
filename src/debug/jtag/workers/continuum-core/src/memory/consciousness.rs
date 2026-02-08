@@ -80,13 +80,12 @@ fn format_consciousness_prompt(
     if let Some(ref context_name) = temporal.last_active_context_name {
         let away_desc = format_time_away(temporal.time_away_ms);
         sections.push(format!(
-            "Last active in: #{} ({})",
-            context_name, away_desc
+            "Last active in: #{context_name} ({away_desc})"
         ));
 
         if temporal.was_interrupted {
             if let Some(ref task) = temporal.interrupted_task {
-                sections.push(format!("Interrupted task: {}", task));
+                sections.push(format!("Interrupted task: {task}"));
             }
         }
     }
@@ -114,8 +113,7 @@ fn format_consciousness_prompt(
     // Active intentions
     if active_intention_count > 0 {
         sections.push(format!(
-            "Active intentions: {} task(s) in progress",
-            active_intention_count
+            "Active intentions: {active_intention_count} task(s) in progress"
         ));
     }
 
@@ -141,11 +139,11 @@ fn format_time_away(ms: i64) -> String {
     let days = hours / 24;
 
     if days > 0 {
-        format!("{} day(s) ago", days)
+        format!("{days} day(s) ago")
     } else if hours > 0 {
-        format!("{} hour(s) ago", hours)
+        format!("{hours} hour(s) ago")
     } else if minutes > 0 {
-        format!("{} minute(s) ago", minutes)
+        format!("{minutes} minute(s) ago")
     } else {
         "just now".into()
     }

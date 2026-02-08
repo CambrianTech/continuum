@@ -1,11 +1,11 @@
-/// ModuleRegistry — DashMap-based command routing + typed module discovery.
-///
-/// Replaces the 55-arm match statement in ipc/mod.rs with dynamic routing.
-/// `register(module)` auto-wires commands from the module's config.
-/// Like CBAR's appendAnalyzer() — register once, everything routes automatically.
-///
-/// Thread-safe: uses DashMap and RwLock for interior mutability.
-/// Can be shared via Arc across threads.
+//! ModuleRegistry — DashMap-based command routing + typed module discovery.
+//!
+//! Replaces the 55-arm match statement in ipc/mod.rs with dynamic routing.
+//! `register(module)` auto-wires commands from the module's config.
+//! Like CBAR's appendAnalyzer() — register once, everything routes automatically.
+//!
+//! Thread-safe: uses DashMap and RwLock for interior mutability.
+//! Can be shared via Arc across threads.
 
 use super::service_module::{ModuleConfig, ModulePriority, ServiceModule};
 use super::module_metrics::ModuleMetrics;

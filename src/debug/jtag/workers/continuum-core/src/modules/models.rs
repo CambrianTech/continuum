@@ -1,9 +1,9 @@
-/// ModelsModule — wraps model discovery functionality.
-///
-/// Handles: models/discover
-///
-/// Stateless module (like HealthModule) that performs async HTTP requests
-/// to provider APIs to discover available models.
+//! ModelsModule — wraps model discovery functionality.
+//!
+//! Handles: models/discover
+//!
+//! Stateless module (like HealthModule) that performs async HTTP requests
+//! to provider APIs to discover available models.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::models::{ProviderConfig, discover_all};

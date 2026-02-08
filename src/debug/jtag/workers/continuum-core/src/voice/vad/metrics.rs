@@ -285,8 +285,7 @@ impl VADEvaluator {
         let (optimal_threshold, optimal_f1) = self.optimal_threshold();
 
         format!(
-            "{}\nOptimal Threshold: {:.3} (F1: {:.3})",
-            matrix_display, optimal_threshold, optimal_f1
+            "{matrix_display}\nOptimal Threshold: {optimal_threshold:.3} (F1: {optimal_f1:.3})"
         )
     }
 }

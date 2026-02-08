@@ -445,8 +445,7 @@ impl SpeechToText for MoonshineStt {
                 .copied()
                 .collect();
             return Err(STTError::ModelNotLoaded(format!(
-                "Missing model files in {:?}: {:?}. Download from https://huggingface.co/UsefulSensors/moonshine",
-                model_dir, missing
+                "Missing model files in {model_dir:?}: {missing:?}. Download from https://huggingface.co/UsefulSensors/moonshine"
             )));
         }
 

@@ -110,6 +110,11 @@ impl CompiledSentinel {
         self.rules.len()
     }
 
+    /// Check if sentinel has no rules.
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
     /// Classify a single output line. Returns None if the line should be suppressed.
     pub fn classify(&self, text: &str, stream: &str, line_num: u64) -> Option<ClassifiedLine> {
         let ts = now();
@@ -226,7 +231,7 @@ impl ShellSession {
 
         let canonical = new_cwd
             .canonicalize()
-            .map_err(|e| format!("Cannot cd to '{}': {}", path, e))?;
+            .map_err(|e| format!("Cannot cd to '{path}': {e}"))?;
 
         if !canonical.starts_with(&self.workspace_root) {
             return Err(format!(
@@ -237,7 +242,7 @@ impl ShellSession {
         }
 
         if !canonical.is_dir() {
-            return Err(format!("Cannot cd to '{}': not a directory", path));
+            return Err(format!("Cannot cd to '{path}': not a directory"));
         }
 
         self.cwd = canonical.clone();
@@ -343,7 +348,7 @@ impl ShellSession {
             {
                 let s = state_arc
                     .lock()
-                    .map_err(|e| format!("Lock poisoned: {}", e))?;
+                    .map_err(|e| format!("Lock poisoned: {e}"))?;
                 if s.status != ShellExecutionStatus::Running {
                     return Ok(ShellExecuteResponse {
                         execution_id: s.id.clone(),
@@ -368,11 +373,11 @@ impl ShellSession {
         let state_arc = self
             .executions
             .get(execution_id)
-            .ok_or_else(|| format!("No execution '{}'", execution_id))?;
+            .ok_or_else(|| format!("No execution '{execution_id}'"))?;
 
         let mut state = state_arc
             .lock()
-            .map_err(|e| format!("Lock poisoned: {}", e))?;
+            .map_err(|e| format!("Lock poisoned: {e}"))?;
 
         let new_stdout: Vec<String> = state.stdout_lines[state.stdout_cursor..].to_vec();
         let new_stderr: Vec<String> = state.stderr_lines[state.stderr_cursor..].to_vec();
@@ -399,11 +404,11 @@ impl ShellSession {
         let state_arc = self
             .executions
             .get(execution_id)
-            .ok_or_else(|| format!("No execution '{}'", execution_id))?;
+            .ok_or_else(|| format!("No execution '{execution_id}'"))?;
 
         let mut state = state_arc
             .lock()
-            .map_err(|e| format!("Lock poisoned: {}", e))?;
+            .map_err(|e| format!("Lock poisoned: {e}"))?;
 
         if state.status != ShellExecutionStatus::Running {
             return Ok(()); // Already done
@@ -495,11 +500,11 @@ impl ShellSession {
         let exec_state = self
             .executions
             .get(execution_id)
-            .ok_or_else(|| format!("No execution '{}'", execution_id))?
+            .ok_or_else(|| format!("No execution '{execution_id}'"))?
             .clone();
         let notify = exec_state
             .lock()
-            .map_err(|e| format!("Lock poisoned: {}", e))?
+            .map_err(|e| format!("Lock poisoned: {e}"))?
             .output_notify
             .clone();
         Ok((exec_state, notify))
@@ -517,14 +522,14 @@ impl ShellSession {
         let exec_state = self
             .executions
             .get(execution_id)
-            .ok_or_else(|| format!("No execution '{}'", execution_id))?;
+            .ok_or_else(|| format!("No execution '{execution_id}'"))?;
 
         let compiled = CompiledSentinel::compile(rules)?;
         let count = compiled.len();
 
         let mut state = exec_state
             .lock()
-            .map_err(|e| format!("Lock poisoned: {}", e))?;
+            .map_err(|e| format!("Lock poisoned: {e}"))?;
         state.sentinel = compiled;
         Ok(count)
     }
@@ -548,7 +553,7 @@ pub async fn watch_execution(
         {
             let mut state = exec_state
                 .lock()
-                .map_err(|e| format!("Lock poisoned: {}", e))?;
+                .map_err(|e| format!("Lock poisoned: {e}"))?;
 
             let has_new_stdout = state.stdout_cursor < state.stdout_lines.len();
             let has_new_stderr = state.stderr_cursor < state.stderr_lines.len();
@@ -634,7 +639,7 @@ async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines
-                    .push(format!("Failed to spawn bash: {}", e));
+                    .push(format!("Failed to spawn bash: {e}"));
                 s.finished_at = Some(now());
                 s.output_notify.notify_one();
             }
@@ -695,7 +700,7 @@ async fn run_shell_command(
                     Ok(status) => Some(status),
                     Err(e) => {
                         if let Ok(mut s) = state_wait.lock() {
-                            s.stderr_lines.push(format!("Process wait error: {}", e));
+                            s.stderr_lines.push(format!("Process wait error: {e}"));
                         }
                         None
                     }
@@ -713,7 +718,7 @@ async fn run_shell_command(
                     if let Ok(mut s) = state_wait.lock() {
                         if s.status == ShellExecutionStatus::Running {
                             s.status = ShellExecutionStatus::TimedOut;
-                            s.stderr_lines.push(format!("Timed out after {}ms", timeout));
+                            s.stderr_lines.push(format!("Timed out after {timeout}ms"));
                             s.finished_at = Some(now());
                             s.output_notify.notify_one();
                         }
@@ -732,7 +737,7 @@ async fn run_shell_command(
                     Ok(status) => Some(status),
                     Err(e) => {
                         if let Ok(mut s) = state_for_error.lock() {
-                            s.stderr_lines.push(format!("Process wait error: {}", e));
+                            s.stderr_lines.push(format!("Process wait error: {e}"));
                         }
                         None
                     }

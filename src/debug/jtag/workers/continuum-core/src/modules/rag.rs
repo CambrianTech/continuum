@@ -1,18 +1,18 @@
-/// RagModule — Batched RAG context composition with parallel source loading.
-///
-/// Handles: rag/compose
-///
-/// Key optimization: Instead of TypeScript making N IPC calls (one per source),
-/// this module receives ALL source requests in ONE call and runs them in parallel
-/// using Rayon. This eliminates IPC round-trip overhead and leverages Rust's
-/// superior parallel execution.
-///
-/// Dynamic sources are supported via RagSourceRequest which specifies:
-/// - source_type: "memory" | "scene" | "widget" | "project" | "custom"
-/// - params: Source-specific parameters (JSON)
-///
-/// This allows video games to pass scene/move context, VR apps to pass spatial
-/// data, chat to pass conversation history - all in the same batched call.
+//! RagModule — Batched RAG context composition with parallel source loading.
+//!
+//! Handles: rag/compose
+//!
+//! Key optimization: Instead of TypeScript making N IPC calls (one per source),
+//! this module receives ALL source requests in ONE call and runs them in parallel
+//! using Rayon. This eliminates IPC round-trip overhead and leverages Rust's
+//! superior parallel execution.
+//!
+//! Dynamic sources are supported via RagSourceRequest which specifies:
+//! - source_type: "memory" | "scene" | "widget" | "project" | "custom"
+//! - params: Source-specific parameters (JSON)
+//!
+//! This allows video games to pass scene/move context, VR apps to pass spatial
+//! data, chat to pass conversation history - all in the same batched call.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::memory::PersonaMemoryManager;

@@ -1,8 +1,8 @@
-/// ModuleMetrics — Built-in IPC performance monitoring.
-///
-/// Automatic timing capture for every command. Rolling window stats.
-/// Exposed via runtime/metrics/* commands for dashboards and UI.
-/// TypeScript types generated via ts-rs for Ares (RTOS controller) integration.
+//! ModuleMetrics — Built-in IPC performance monitoring.
+//!
+//! Automatic timing capture for every command. Rolling window stats.
+//! Exposed via runtime/metrics/* commands for dashboards and UI.
+//! TypeScript types generated via ts-rs for Ares (RTOS controller) integration.
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};

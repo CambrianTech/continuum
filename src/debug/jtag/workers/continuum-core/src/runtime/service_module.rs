@@ -1,13 +1,13 @@
-/// ServiceModule — the ONE trait every module implements.
-///
-/// Inspired by CBAR's QueueThread<T>: implement handleItem(), register, done.
-/// Each module declares what commands it handles and what events it subscribes to.
-/// The runtime auto-wires routing from these declarations.
-///
-/// Adding a new module to the system:
-/// 1. Implement ServiceModule
-/// 2. runtime.register(Arc::new(MyModule::new()))
-/// 3. Done. Commands route automatically.
+//! ServiceModule — the ONE trait every module implements.
+//!
+//! Inspired by CBAR's QueueThread<T>: implement handleItem(), register, done.
+//! Each module declares what commands it handles and what events it subscribes to.
+//! The runtime auto-wires routing from these declarations.
+//!
+//! Adding a new module to the system:
+//! 1. Implement ServiceModule
+//! 2. runtime.register(Arc::new(MyModule::new()))
+//! 3. Done. Commands route automatically.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
