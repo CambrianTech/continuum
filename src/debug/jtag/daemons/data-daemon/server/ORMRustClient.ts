@@ -70,6 +70,17 @@ interface RustIPCResponse<T = unknown> {
 }
 
 /**
+ * Timing info for IPC performance analysis
+ */
+interface IPCTiming {
+  requestId: number;
+  command: string;
+  sendTime: number;      // hrtime when request sent
+  stringifyMs: number;   // JSON.stringify duration
+  writeMs: number;       // Socket write duration
+}
+
+/**
  * ORMRustClient - Singleton IPC client for data operations
  */
 export class ORMRustClient {
@@ -77,6 +88,7 @@ export class ORMRustClient {
   private socket: net.Socket | null = null;
   private buffer: Buffer = Buffer.alloc(0);
   private pendingRequests: Map<number, (result: RustIPCResponse<unknown>) => void> = new Map();
+  private pendingTimings: Map<number, IPCTiming> = new Map();
   private nextRequestId = 1;
   private connected = false;
   private connecting = false;
@@ -178,33 +190,50 @@ export class ORMRustClient {
 
       try {
         const jsonStr = jsonBytes.toString('utf8');
-        console.log(`[ORMRustClient.onData] Received ${jsonStr.length} bytes`);
+        const parseStart = Date.now();
         const response = JSON.parse(jsonStr) as RustIPCResponse;
+        const parseMs = Date.now() - parseStart;
         if (!response.success) {
-          console.error(`[ORMRustClient.onData] ERROR response: ${response.error}`);
+          console.error(`[ORMRustClient] ERROR response: ${response.error}`);
         }
-        this.handleResponse(response);
+        this.handleResponse(response, parseMs);
       } catch (e) {
         console.error('[ORMRustClient] Failed to parse response:', e, 'raw:', jsonBytes.toString('utf8').substring(0, 200));
       }
     }
   }
 
-  private handleResponse(response: RustIPCResponse): void {
+  private handleResponse(response: RustIPCResponse, parseMs: number): void {
     if (response.requestId !== undefined) {
       const callback = this.pendingRequests.get(response.requestId);
+      const timing = this.pendingTimings.get(response.requestId);
+
       if (callback) {
         callback(response);
         this.pendingRequests.delete(response.requestId);
+      }
+
+      if (timing) {
+        const totalMs = Date.now() - timing.sendTime;
+        const networkAndRustMs = totalMs - timing.stringifyMs - timing.writeMs - parseMs;
+        this.pendingTimings.delete(response.requestId);
+
+        // Log slow operations (>50ms threshold matches Rust)
+        if (totalMs > 50) {
+          console.warn(`[ORMRustClient] SLOW IPC: ${timing.command} total=${totalMs}ms (stringify=${timing.stringifyMs}ms write=${timing.writeMs}ms network+rust=${networkAndRustMs}ms parse=${parseMs}ms)`);
+        }
       }
     }
   }
 
   /**
    * Send request to Rust and wait for response
+   * Includes timing instrumentation to identify IPC bottlenecks
    */
   private async request<T>(command: Record<string, unknown>): Promise<RustIPCResponse<T>> {
+    const connectStart = Date.now();
     await this.ensureConnected();
+    const connectMs = Date.now() - connectStart;
 
     if (!this.socket) {
       throw new Error('Not connected to continuum-core');
@@ -212,31 +241,54 @@ export class ORMRustClient {
 
     const requestId = this.nextRequestId++;
     const requestWithId = { ...command, requestId };
+    const cmdName = command.command as string;
 
-    console.log(`[ORMRustClient.request] Sending: ${command.command} (id=${requestId})`);
+    // Time JSON.stringify
+    const stringifyStart = Date.now();
+    const json = JSON.stringify(requestWithId) + '\n';
+    const stringifyMs = Date.now() - stringifyStart;
 
     return new Promise((resolve, reject) => {
-      const json = JSON.stringify(requestWithId) + '\n';
+      // Track timing for this request
+      const timing: IPCTiming = {
+        requestId,
+        command: cmdName,
+        sendTime: Date.now(),
+        stringifyMs,
+        writeMs: 0,
+      };
+
+      this.pendingTimings.set(requestId, timing);
 
       this.pendingRequests.set(requestId, (result) => {
-        console.log(`[ORMRustClient.request] Response for ${command.command} (id=${requestId}): success=${result.success}, error=${result.error ?? 'none'}`);
         resolve(result as RustIPCResponse<T>);
       });
 
+      // Time socket write
+      const writeStart = Date.now();
       this.socket!.write(json, (err) => {
+        timing.writeMs = Date.now() - writeStart;
+
         if (err) {
-          console.error(`[ORMRustClient.request] Write error for ${command.command}:`, err);
+          console.error(`[ORMRustClient] Write error for ${cmdName}:`, err);
           this.pendingRequests.delete(requestId);
+          this.pendingTimings.delete(requestId);
           reject(err);
+        }
+
+        // Log slow connect/stringify/write (these should be <1ms each)
+        if (connectMs > 5 || stringifyMs > 5 || timing.writeMs > 5) {
+          console.warn(`[ORMRustClient] IPC overhead: ${cmdName} connect=${connectMs}ms stringify=${stringifyMs}ms write=${timing.writeMs}ms`);
         }
       });
 
       // Timeout after 30 seconds
       setTimeout(() => {
         if (this.pendingRequests.has(requestId)) {
-          console.error(`[ORMRustClient.request] TIMEOUT for ${command.command} (id=${requestId})`);
+          console.error(`[ORMRustClient] TIMEOUT for ${cmdName} (id=${requestId})`);
           this.pendingRequests.delete(requestId);
-          reject(new Error(`Request timeout: ${command.command}`));
+          this.pendingTimings.delete(requestId);
+          reject(new Error(`Request timeout: ${cmdName}`));
         }
       }, 30000);
     });
