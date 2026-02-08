@@ -306,11 +306,32 @@ commands/data/list/server/DataListServerCommand.ts (dbHandle path)
 - [x] Removed dead DataDaemon fallback paths from ORM CRUD methods
 - [x] Removed debug console.log spam from ORM.ts
 - [x] Updated ORM header comments to reflect Rust-first architecture
+- [x] ORM.store/update/remove emit events via DataDaemon.jtagContext for browser routing
+- [x] data-daemon-worker disabled (absorbed into continuum-core DataModule)
 - [ ] Move batch operations to Rust
 - [ ] Move paginated queries to Rust
 - [ ] Move vector operations to Rust
 - [ ] Remove DataDaemon once all ops migrated
 - [ ] Remove FORCE_TYPESCRIPT_BACKEND kill switch once stable
+
+### Phase 6: Performance & Optimization (PENDING)
+- [ ] **Query latency**: 4.7s for 10 chat messages is glacial - investigate
+- [ ] **Payload bloat**: chat/send response includes entire config object - strip it
+- [ ] **Event storm**: cognition:stage-complete, ai:decision:respond hitting 10x/100ms
+- [ ] **Socket traffic**: Too much crossing websocket, consider batching/debouncing
+- [ ] **IndexedDB version mismatch**: Browser cache issues on refresh
+
+## Known Issues
+
+### Performance
+- Simple queries taking 4-5 seconds (should be <50ms)
+- High CPU/memory from parsing overhead
+- Event system creates N events per message × M personas
+
+### Browser State
+- Messages don't appear without refresh (event routing issue)
+- IndexedDB version conflicts
+- User list shows "Unknown User" until refresh
 
 ## Success Criteria
 
@@ -319,3 +340,4 @@ commands/data/list/server/DataListServerCommand.ts (dbHandle path)
 3. **Parallel**: 40 concurrent queries from different personas execute in parallel
 4. **Fast**: P99 query latency < 50ms for simple queries
 5. **Fallback**: Can switch back to TS-only via flag
+6. **Real-time**: Browser updates without refresh when events fire

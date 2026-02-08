@@ -275,6 +275,7 @@ export class ORM {
 
   /**
    * Execute batch operations
+   * FORCED RUST PATH - no fallback
    */
   static async batch(
     operations: StorageOperation[]
@@ -283,8 +284,8 @@ export class ORM {
     const done = logOperationStart('batch', collections.join(','), { count: operations.length });
 
     try {
-      // Batch goes to TypeScript for now (mixed collections)
-      const result = await DataDaemon.batch(operations);
+      const client = await getRustClient();
+      const result = await client.batch(operations);
       done();
       return result;
     } catch (error) {
@@ -297,34 +298,74 @@ export class ORM {
 
   /**
    * List all collections
+   * FORCED RUST PATH - no fallback
    */
   static async listCollections(): Promise<StorageResult<string[]>> {
-    return DataDaemon.listCollections();
+    const done = logOperationStart('listCollections', '*', {});
+    try {
+      const client = await getRustClient();
+      const result = await client.listCollections();
+      done();
+      return result;
+    } catch (error) {
+      logOperationError('listCollections', '*', error);
+      throw error;
+    }
   }
 
   // ─── Maintenance Operations ─────────────────────────────────────────────────
 
   /**
    * Clear all data from all collections
+   * FORCED RUST PATH - no fallback
    */
   static async clear(): Promise<StorageResult<boolean>> {
-    return DataDaemon.clear();
+    const done = logOperationStart('clear', '*', {});
+    try {
+      const client = await getRustClient();
+      const result = await client.clearAll();
+      done();
+      return { success: result.success, data: result.success };
+    } catch (error) {
+      logOperationError('clear', '*', error);
+      throw error;
+    }
   }
 
   /**
    * Clear all data with detailed reporting
+   * FORCED RUST PATH - no fallback
    */
   static async clearAll(): Promise<
     StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>
   > {
-    return DataDaemon.clearAll();
+    const done = logOperationStart('clearAll', '*', {});
+    try {
+      const client = await getRustClient();
+      const result = await client.clearAll();
+      done();
+      return result;
+    } catch (error) {
+      logOperationError('clearAll', '*', error);
+      throw error;
+    }
   }
 
   /**
    * Truncate specific collection
+   * FORCED RUST PATH - no fallback
    */
   static async truncate(collection: CollectionName): Promise<StorageResult<boolean>> {
-    return DataDaemon.truncate(collection);
+    const done = logOperationStart('truncate', collection, {});
+    try {
+      const client = await getRustClient();
+      const result = await client.truncate(collection);
+      done();
+      return result;
+    } catch (error) {
+      logOperationError('truncate', collection, error);
+      throw error;
+    }
   }
 
   // ─── Paginated Queries ──────────────────────────────────────────────────────

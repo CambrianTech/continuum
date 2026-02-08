@@ -10,7 +10,7 @@
 
 import { shouldLog, LOG_ALL_OPERATIONS } from './ORMConfig';
 
-export type ORMOperation = 'store' | 'query' | 'read' | 'update' | 'remove' | 'count' | 'batch' | 'vectorSearch';
+export type ORMOperation = 'store' | 'query' | 'read' | 'update' | 'remove' | 'count' | 'batch' | 'vectorSearch' | 'listCollections' | 'clear' | 'clearAll' | 'truncate';
 
 interface OperationMetrics {
   count: number;
@@ -44,6 +44,10 @@ function getMetrics(collection: string): CollectionMetrics {
         count: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
         batch: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
         vectorSearch: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
+        listCollections: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
+        clear: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
+        clearAll: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
+        truncate: { count: 0, totalMs: 0, maxMs: 0, errors: 0 },
       },
       shadowMismatches: 0,
     };
