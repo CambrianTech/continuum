@@ -308,14 +308,26 @@ commands/data/list/server/DataListServerCommand.ts (dbHandle path)
 - [x] Updated ORM header comments to reflect Rust-first architecture
 - [x] ORM.store/update/remove emit events via DataDaemon.jtagContext for browser routing
 - [x] data-daemon-worker disabled (absorbed into continuum-core DataModule)
-- [ ] Move batch operations to Rust
+- [x] Move batch operations to Rust
+- [x] Move listCollections, clear, clearAll, truncate to Rust
 - [ ] Move paginated queries to Rust
 - [ ] Move vector operations to Rust
 - [ ] Remove DataDaemon once all ops migrated
 - [ ] Remove FORCE_TYPESCRIPT_BACKEND kill switch once stable
 
-### Phase 6: Performance & Optimization (PENDING)
-- [ ] **Query latency**: 4.7s for 10 chat messages is glacial - investigate
+### Phase 6: Performance & Optimization (IN PROGRESS)
+
+**Root Cause Identified (2026-02-08)**:
+- **1.7GB database** - 143k ai_generations, 96k memories, 68k cognition records
+- **Queries hitting 140-225ms** on indexed tables (should be <50ms)
+- **All personas share one ORMRustClient socket** - request multiplexing works, but serialization bottleneck
+
+**Priority fixes**:
+- [ ] **Add timing instrumentation** to Rust DataModule (know WHERE time is spent)
+- [ ] **Implement data archiving** - move old ai_generations/memories to cold storage
+- [ ] **Compound indexes** - add (assignee_id, status) compound index for tasks
+- [ ] **Per-persona connection pools** in Rust (eliminate socket serialization)
+- [ ] **Query latency**: Target P99 < 50ms for simple queries
 - [ ] **Payload bloat**: chat/send response includes entire config object - strip it
 - [ ] **Event storm**: cognition:stage-complete, ai:decision:respond hitting 10x/100ms
 - [ ] **Socket traffic**: Too much crossing websocket, consider batching/debouncing
@@ -324,8 +336,9 @@ commands/data/list/server/DataListServerCommand.ts (dbHandle path)
 ## Known Issues
 
 ### Performance
-- Simple queries taking 4-5 seconds (should be <50ms)
-- High CPU/memory from parsing overhead
+- 1.7GB database with 500k+ total records across tables
+- Queries hitting 140-225ms (ORM slow threshold is 100ms)
+- All personas serialize through single Unix socket
 - Event system creates N events per message × M personas
 
 ### Browser State
