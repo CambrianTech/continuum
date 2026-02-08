@@ -1,8 +1,8 @@
 /**
  * Data List Command - Server Implementation
  *
- * Storage-agnostic data listing using proper DataService abstraction
- * Supports any storage backend via configurable adapters
+ * Uses ORM for unified Rust-backed storage operations.
+ * Supports any storage backend via configurable adapters.
  */
 
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -11,6 +11,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
@@ -93,9 +94,9 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         countResult = await adapter.count(countQuery);
         result = await adapter.query<BaseEntity>(storageQuery);
       } else {
-        // Main database: use DataDaemon (backwards compatible)
-        countResult = await DataDaemon.count(countQuery);
-        result = await DataDaemon.query<BaseEntity>(storageQuery);
+        // Main database: use ORM (Rust-backed unified path)
+        countResult = await ORM.count(countQuery);
+        result = await ORM.query<BaseEntity>(storageQuery);
       }
 
       const totalCount = countResult.success ? (countResult.data ?? 0) : 0;

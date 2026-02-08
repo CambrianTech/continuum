@@ -44,6 +44,10 @@ import type {
 // Import DataDaemon for delegation (TypeScript backend)
 import { DataDaemon } from './DataDaemon';
 
+// Import Events for CRUD event emission
+import { Events } from '../../../system/core/shared/Events';
+import { getDataEventName } from '../../../system/core/shared/EventConstants';
+
 // Import config and logging
 import {
   FORCE_TYPESCRIPT_BACKEND,
@@ -94,11 +98,12 @@ export class ORM {
 
   /**
    * Store entity in collection
+   * Emits data:{collection}:created event via DataDaemon's jtagContext for browser routing
    */
   static async store<T extends BaseEntity>(
     collection: CollectionName,
     data: T,
-    _suppressEvents: boolean = false
+    suppressEvents: boolean = false
   ): Promise<T> {
     const done = logOperationStart('store', collection, { id: (data as any).id });
 
@@ -109,6 +114,14 @@ export class ORM {
         throw new Error(result.error || 'Rust store failed');
       }
       done();
+
+      // Emit event using DataDaemon's jtagContext for proper browser routing
+      if (!suppressEvents && DataDaemon.jtagContext) {
+        const eventName = getDataEventName(collection, 'created');
+        Events.emit(DataDaemon.jtagContext, eventName, result.data)
+          .catch(err => console.error(`ORM.store event emit failed for ${collection}:`, err));
+      }
+
       return result.data!;
     } catch (error) {
       logOperationError('store', collection, error);
@@ -213,6 +226,14 @@ export class ORM {
       const client = await getRustClient();
       const result = await client.update<T>(collection, id, data, incrementVersion);
       done();
+
+      // Emit event using DataDaemon's jtagContext for proper browser routing
+      if (DataDaemon.jtagContext) {
+        const eventName = getDataEventName(collection, 'updated');
+        Events.emit(DataDaemon.jtagContext, eventName, result)
+          .catch(err => console.error(`ORM.update event emit failed for ${collection}:`, err));
+      }
+
       return result;
     } catch (error) {
       logOperationError('update', collection, error);
@@ -226,7 +247,7 @@ export class ORM {
   static async remove(
     collection: CollectionName,
     id: UUID,
-    _suppressEvents: boolean = false
+    suppressEvents: boolean = false
   ): Promise<StorageResult<boolean>> {
     const done = logOperationStart('remove', collection, { id });
 
@@ -235,6 +256,14 @@ export class ORM {
       const client = await getRustClient();
       const result = await client.remove(collection, id);
       done();
+
+      // Emit event using DataDaemon's jtagContext for proper browser routing
+      if (!suppressEvents && result.success && DataDaemon.jtagContext) {
+        const eventName = getDataEventName(collection, 'deleted');
+        Events.emit(DataDaemon.jtagContext, eventName, { id, collection })
+          .catch(err => console.error(`ORM.remove event emit failed for ${collection}:`, err));
+      }
+
       return result;
     } catch (error) {
       logOperationError('remove', collection, error);
