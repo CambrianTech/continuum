@@ -19,3 +19,4 @@ pub mod rag;
 pub mod data;
 pub mod logger;
 pub mod search;
+pub mod embedding;

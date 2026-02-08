@@ -25,6 +25,7 @@ use crate::modules::rag::{RagModule, RagState};
 use crate::modules::data::DataModule;
 use crate::modules::logger::LoggerModule;
 use crate::modules::search::SearchModule;
+use crate::modules::embedding::EmbeddingModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -1326,6 +1327,10 @@ pub fn start_server(
     // Phase 4b: SearchModule (absorbs standalone search worker)
     // Provides search/execute, search/vector, search/list, search/params
     runtime.register(Arc::new(SearchModule::new()));
+
+    // Phase 4c: EmbeddingModule (absorbs standalone embedding worker)
+    // Provides embedding/generate, embedding/model/{load,list,info,unload}
+    runtime.register(Arc::new(EmbeddingModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

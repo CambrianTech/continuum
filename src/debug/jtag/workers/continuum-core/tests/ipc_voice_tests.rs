@@ -143,7 +143,7 @@ fn test_ipc_concurrent_requests() {
     let orchestrator = Arc::new(VoiceOrchestrator::new());
 
     // Register multiple sessions
-    for i in 0..5 {
+    for _ in 0..5 {
         let session_id = Uuid::new_v4();
         let room_id = Uuid::new_v4();
         orchestrator.register_session(

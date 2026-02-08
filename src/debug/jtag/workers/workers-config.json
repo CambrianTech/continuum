@@ -34,8 +34,8 @@
       "args": [
         "/tmp/jtag-embedding.sock"
       ],
-      "description": "Native embedding generation via fastembed (ONNX). ~5ms vs ~80ms Ollama HTTP.",
-      "enabled": true,
+      "description": "DEPRECATED - Migrated to EmbeddingModule in continuum-core",
+      "enabled": false,
       "memoryLimit": "2G"
     },
     {

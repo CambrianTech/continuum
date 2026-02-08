@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(manager.pool_count(), 0);
 
         // Query creates pool on demand
-        let result = manager
+        let _result = manager
             .query(&db_path, StorageQuery {
                 collection: "users".to_string(),
                 ..Default::default()

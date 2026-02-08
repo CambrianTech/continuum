@@ -775,7 +775,7 @@ mod tests {
     #[test]
     fn test_custom_source_passthrough() {
         // Custom sources should pass through pre-computed content
-        let params = serde_json::json!({
+        let _params = serde_json::json!({
             "content": "Player is in the forest facing a dragon",
             "relevance": 1.0,
             "source_ref": "game:scene:42"
