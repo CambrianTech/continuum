@@ -1,14 +1,20 @@
-/// Continuum Core Server - Combined IPC + WebSocket Voice Server
+/// Continuum Core Server - Unified Modular Rust Runtime
 ///
 /// Rust-first architecture for concurrent AI persona system.
-/// Provides:
-/// - VoiceOrchestrator and PersonaInbox via Unix socket IPC
-/// - WebSocket call server for live audio (replaces streaming-core)
+/// Provides via Unix socket IPC:
+/// - VoiceOrchestrator and PersonaInbox
+/// - DataModule (ORM operations via ORMRustClient)
+/// - EmbeddingModule (fastembed vector generation)
+/// - SearchModule (BM25, TF-IDF, vector search)
+/// - LoggerModule (structured logging)
+/// - WebSocket call server for live audio
 ///
-/// Usage: continuum-core-server <socket-path> <logger-socket-path>
-/// Example: continuum-core-server /tmp/continuum-core.sock /tmp/jtag-logger-worker.sock
+/// Usage: continuum-core-server <socket-path>
+/// Example: continuum-core-server /tmp/continuum-core.sock
+///
+/// NOTE: LoggerModule is now internal (Phase 4a). External logger socket no longer required.
 
-use continuum_core::{init_logger, start_server, CallManager};
+use continuum_core::{start_server, CallManager};
 use continuum_core::memory::{EmbeddingProvider, FastEmbedProvider, PersonaMemoryManager};
 use std::env;
 use std::sync::Arc;
@@ -33,27 +39,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
-    if args.len() < 3 {
-        eprintln!("Usage: {} <socket-path> <logger-socket-path>", args[0]);
-        eprintln!("Example: {} /tmp/continuum-core.sock /tmp/jtag-logger-worker.sock", args[0]);
+    if args.len() < 2 {
+        eprintln!("Usage: {} <socket-path>", args[0]);
+        eprintln!("Example: {} /tmp/continuum-core.sock", args[0]);
         std::process::exit(1);
     }
 
     let socket_path = args[1].clone();
-    let logger_socket_path = &args[2];
 
-    // Initialize logger
-    match init_logger(logger_socket_path) {
-        Ok(_) => info!("✅ Logger initialized"),
-        Err(e) => {
-            eprintln!("❌ Failed to initialize logger: {e}");
-            eprintln!("   (Server will continue without logging)");
-        }
-    }
-
+    // LoggerModule is now internal (Phase 4a) - no external socket needed.
+    // Rust-side logging uses tracing (FmtSubscriber above).
+    // TypeScript clients send log/write commands to this server's IPC socket.
     info!("🦀 Continuum Core Server starting...");
     info!("   IPC Socket: {socket_path}");
-    info!("   Logger: {logger_socket_path}");
+    info!("   LoggerModule: internal (Phase 4a unified runtime)");
 
     // Create shared CallManager — used by BOTH the IPC server and WebSocket call server.
     // This enables voice/speak-in-call: TypeScript sends text → Rust synthesizes → injects

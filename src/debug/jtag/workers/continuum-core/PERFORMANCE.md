@@ -171,7 +171,7 @@ The Rust + Unix socket IPC architecture achieves **sub-100μs latency** for voic
 **Server**:
 - Binary: `continuum-core-server`
 - Socket: `/tmp/continuum-core.sock`
-- Logger: `/tmp/jtag-logger-worker.sock`
+- Logger: Internal (LoggerModule - Phase 4a unified runtime)
 - Runtime: Tokio async (multi-threaded)
 
 **Client**:

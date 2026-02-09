@@ -1,7 +1,8 @@
 /// Integration test for logger client
 ///
-/// Tests that continuum-core can connect to the existing logger worker
-/// and send log messages via Unix socket.
+/// NOTE: LoggerModule is now internal to continuum-core (Phase 4a).
+/// These tests verify the internal logging infrastructure works correctly.
+/// The logger connects to the unified runtime socket.
 
 use continuum_core::{init_logger, logger};
 use std::sync::Once;
@@ -11,9 +12,10 @@ static LOGGER_INIT: Once = Once::new();
 /// Initialize logger once for all tests (global singleton).
 fn ensure_logger() {
     LOGGER_INIT.call_once(|| {
-        let socket_path = "/tmp/jtag-logger-worker.sock";
+        // LoggerModule is now part of continuum-core (Phase 4a unified runtime)
+        let socket_path = "/tmp/continuum-core.sock";
         if let Err(e) = init_logger(socket_path) {
-            eprintln!("Logger init failed (expected if logger worker not running): {e}");
+            eprintln!("Logger init failed (expected if continuum-core not running): {e}");
         }
     });
 }

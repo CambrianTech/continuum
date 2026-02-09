@@ -1,20 +1,22 @@
-/// LoggerClient - Rust Client for LoggerWorker (Rust-to-Rust Logging)
+/// LoggerClient - Rust Client for centralized logging over Unix socket
 ///
-/// This allows Rust workers to log to the central LoggerWorker over Unix socket.
+/// This allows Rust workers to log to a central logger over Unix socket.
 /// Uses the same JTAG protocol that TypeScript uses.
+///
+/// NOTE: LoggerModule is now part of continuum-core (Phase 4a).
+/// For new code in continuum-core, prefer using the tracing crate directly.
+/// This client is primarily for standalone workers (like archive-worker).
 ///
 /// USAGE:
 /// ```rust
 /// let mut logger = LoggerClient::connect(
-///     "/tmp/jtag-logger-worker.sock",
-///     "TrainingWorker"
+///     "/tmp/continuum-core.sock",  // Now unified runtime socket
+///     "ArchiveWorker"
 /// )?;
 ///
 /// logger.info("Worker starting...")?;
 /// logger.error(&format!("Failed to process: {}", err))?;
 /// ```
-///
-/// This replaces temporary debug_log() functions with production logging.
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -67,13 +69,13 @@ pub struct LoggerClient {
 }
 
 impl LoggerClient {
-    /// Connect to LoggerWorker.
+    /// Connect to logging server.
     ///
     /// If connection fails, logs will be silently dropped (fail-safe).
     ///
     /// # Arguments
-    /// * `socket_path` - Path to LoggerWorker socket (e.g., "/tmp/jtag-logger-worker.sock")
-    /// * `component` - Component name (e.g., "TrainingWorker", "DataWorker")
+    /// * `socket_path` - Path to logging socket (e.g., "/tmp/continuum-core.sock")
+    /// * `component` - Component name (e.g., "ArchiveWorker")
     pub fn connect(socket_path: &str, component: &str) -> Self {
         let stream = UnixStream::connect(socket_path).ok();
 
