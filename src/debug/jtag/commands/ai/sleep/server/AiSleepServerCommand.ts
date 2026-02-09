@@ -174,12 +174,20 @@ export class AiSleepServerCommand extends CommandBase<AiSleepParams, AiSleepResu
       });
     }
 
-    // Get persona ID - use explicit personaId, or callerId (injected by PersonaToolExecutor),
-    // or fall back to UserIdentityResolver for external callers (CLI, etc.)
-    let targetPersonaId = personaId || (params as any).callerId;
+    // Get persona ID - priority: context.userId, then explicit personaId, then callerId, then UserIdentityResolver
+    // Priority:
+    // 1. params.context?.userId - When a PersonaUser executes, their ID is in context
+    // 2. Explicit personaId param - For backwards compatibility
+    // 3. callerId (injected) - Legacy PersonaToolExecutor injection
+    // 4. UserIdentityResolver - Fallback for CLI calls
+    let targetPersonaId = params.context?.userId || personaId || (params as any).callerId;
+
+    if (params.context?.userId) {
+      console.log(`😴 ai/sleep: Using context.userId: ${params.context.userId}`);
+    }
 
     if (!targetPersonaId) {
-      // Fall back to UserIdentityResolver for external callers (CLI, Claude Code, etc.)
+      // FALLBACK: Use UserIdentityResolver for external callers (CLI, Claude Code, etc.)
       const identity = await UserIdentityResolver.resolve();
       if (identity.exists && identity.userId) {
         targetPersonaId = identity.userId;

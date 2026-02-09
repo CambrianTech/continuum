@@ -361,11 +361,11 @@ export class PersonaToolExecutor {
     // Resolve "current" room parameter to actual room name
     const resolvedParams = await this.resolveRoomParameters(toolCall.parameters, context.contextId);
 
-    // Inject userId (standard CommandParams field) and contextId
+    // Inject userId for workspace-scoped commands (code/*, etc.) that need to know
+    // which persona's workspace to operate on. Identity detection uses context.userId.
     const paramsWithCaller = {
       ...resolvedParams,
-      userId: context.personaId,    // Standard CommandParams.userId — THE identity field
-      personaId: context.personaId, // Backward compat (ai/sleep, ai/should-respond-fast)
+      userId: context.personaId,    // For workspace-scoped commands (code/*, etc.)
       contextId: context.contextId  // Room/context scope
     };
 

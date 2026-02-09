@@ -86,23 +86,39 @@ export class DmServerCommand extends DmCommand {
    * Resolve caller identity (who's initiating the DM)
    *
    * Priority:
-   * 1. params.callerId - Persona tool execution context
-   * 2. params.personaId - Alternative persona context
+   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
+   * 2. params.callerId/personaId - Legacy persona tool execution context (deprecated)
    * 3. UserIdentityResolver - Human/CLI context fallback
    */
   private async resolveCallerIdentity(params: DmParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // Priority 1: Use callerId from persona tool context
+    // FIRST: Check if caller's userId is in the context (PersonaUsers set this)
+    if (params.context?.userId) {
+      const result = await DataList.execute<UserEntity>({
+        collection: UserEntity.collection,
+        filter: { id: params.context.userId },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
+
+      if (result.success && result.items && result.items.length > 0) {
+        const user = result.items[0];
+        console.log('🔧 DmServerCommand.resolveCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
+        return { id: user.id, entity: user };
+      }
+    }
+
+    // SECOND: Check legacy callerId/personaId (deprecated)
     const callerIdFromParams = (params as any).callerId || (params as any).personaId;
 
     if (callerIdFromParams) {
       const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: callerIdFromParams },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
+        collection: UserEntity.collection,
+        filter: { id: callerIdFromParams },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
 
       if (result.success && result.items && result.items.length > 0) {
         const user = result.items[0];
@@ -110,18 +126,17 @@ export class DmServerCommand extends DmCommand {
       }
     }
 
-    // Priority 2: Fall back to UserIdentityResolver (human/CLI context)
+    // FALLBACK: Use UserIdentityResolver (human/CLI context)
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
       const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: identity.userId },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
+        collection: UserEntity.collection,
+        filter: { id: identity.userId },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
 
       if (result.success && result.items && result.items.length > 0) {
         const user = result.items[0];

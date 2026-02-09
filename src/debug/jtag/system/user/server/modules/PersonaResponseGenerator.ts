@@ -1346,12 +1346,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         if (!sessionId) {
           throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
         }
+        // Enrich context with userId so commands know the caller's identity
+        const enrichedContext = { ...this.client!.context, userId: this.personaId };
         const toolExecutionContext = {
           personaId: this.personaId,
           personaName: this.personaName,
           sessionId,
           contextId: originalMessage.roomId,
-          context: this.client!.context,
+          context: enrichedContext,
           personaConfig: this.mediaConfig,
         };
 

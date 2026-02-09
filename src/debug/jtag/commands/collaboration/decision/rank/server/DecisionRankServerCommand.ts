@@ -83,24 +83,26 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
       }
 
       // Get voter info - auto-detect caller identity
+      // Priority: 1) context.userId (PersonaUsers), 2) UserIdentityResolver (CLI)
       let voterId: UUID;
       let voterName: string;
 
-      if (params.voterId) {
-        // Explicit voterId provided
+      if (params.context?.userId) {
+        // FIRST: Check context.userId (PersonaUsers set this)
         const voterResult = await DataRead.execute<UserEntity>({
           collection: COLLECTIONS.USERS,
-          id: params.voterId
+          id: params.context.userId
         });
 
         if (!voterResult.success || !voterResult.data) {
-          return transformPayload(params, { success: false, error: 'Could not find voter user' });
+          return transformPayload(params, { success: false, error: 'Could not find voter user from context' });
         }
 
-        voterId = params.voterId;
+        voterId = params.context.userId;
         voterName = voterResult.data.displayName;
+        this.log.debug('Using context.userId for voter', { voterId, voterName });
       } else {
-        // Auto-detect caller identity using UserIdentityResolver
+        // FALLBACK: Auto-detect caller identity using UserIdentityResolver (CLI calls)
         const identity = await UserIdentityResolver.resolve();
 
         this.log.debug('Auto-detected voter identity', {

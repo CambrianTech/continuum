@@ -88,6 +88,9 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
     let proposalId = '';
     if (scope === 'team') {
       try {
+        // Inherit context from params but override userId so DecisionPropose knows who the proposer is
+        const proposeContext = params.context ? { ...params.context, userId: personaId as UUID } : undefined;
+
         const proposalResult = await DecisionPropose.execute({
           topic: `New Skill Proposal: ${name}`,
           rationale: `${description}\n\nImplementation: ${implementation}\n\nParams: ${JSON.stringify(spec.params)}\nResults: ${JSON.stringify(spec.results)}`,
@@ -98,7 +101,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
           ],
           scope: 'all',
           significanceLevel: 'medium',
-          proposerId: personaId as UUID,
+          context: proposeContext,
         });
         proposalId = proposalResult.proposalId ?? '';
         if (proposalId) {

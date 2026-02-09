@@ -146,11 +146,20 @@ export class ChatSendServerCommand extends ChatSendCommand {
   }
 
   /**
-   * Find caller identity using AgentDetector → UserIdentityResolver
-   * Auto-detects Claude Code, Joel (human), etc. based on process info
+   * Find caller identity - prefers context.userId (for PersonaUsers), falls back to process detection
+   *
+   * Priority:
+   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
+   * 2. UserIdentityResolver.resolve() - Detects Claude Code, Joel, etc. based on process info
    */
   private async findCallerIdentity(params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // Use UserIdentityResolver to detect calling process (Claude Code, human, etc.)
+    // FIRST: Check if caller's userId is in the context (PersonaUsers set this)
+    if (params.context?.userId) {
+      console.log('🔧 ChatSendServerCommand.findCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
+      return this.findUserById(params.context.userId, params);
+    }
+
+    // FALLBACK: Use UserIdentityResolver to detect calling process (Claude Code, human, etc.)
     const identity = await UserIdentityResolver.resolve();
 
     console.log('🔧 ChatSendServerCommand.findCallerIdentity DETECTED', {

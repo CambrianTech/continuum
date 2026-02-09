@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-08T21:41:38.866Z",
+  "generated": "2026-02-09T00:53:59.228Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4734,11 +4734,6 @@
           "type": "array",
           "required": true,
           "description": "rankedChoices parameter"
-        },
-        "voterId": {
-          "type": "string",
-          "required": false,
-          "description": "voterId parameter"
         }
       }
     },
@@ -4785,11 +4780,6 @@
           "type": "string",
           "required": false,
           "description": "significanceLevel parameter"
-        },
-        "proposerId": {
-          "type": "string",
-          "required": false,
-          "description": "proposerId parameter"
         }
       }
     },

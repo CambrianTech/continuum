@@ -144,23 +144,41 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
   }
 
   /**
-   * Find the user identity of the caller (Claude Code, Joel, etc.)
-   * Uses UserIdentityResolver to auto-detect calling process
+   * Find the user identity of the caller - prefers context.userId (for PersonaUsers)
+   *
+   * Priority:
+   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
+   * 2. UserIdentityResolver.resolve() - Detects Claude Code, Joel, etc. based on process info
    */
   private async findCallerIdentity(params: DecisionCreateParams): Promise<{ id: UUID; displayName: string }> {
-    // Resolve caller identity (async)
-    const identity = await UserIdentityResolver.resolve();
-    const uniqueId = identity.uniqueId;
-
-    // Find user by uniqueId in database using Commands.execute
-    const result = await DataList.execute<UserEntity>({
+    // FIRST: Check if caller's userId is in the context (PersonaUsers set this)
+    if (params.context?.userId) {
+      const result = await DataList.execute<UserEntity>({
         collection: UserEntity.collection,
-        filter: { uniqueId },
+        filter: { id: params.context.userId },
         limit: 1,
         context: params.context,
         sessionId: params.sessionId
+      });
+
+      if (result.success && result.items && result.items.length > 0) {
+        console.log('🔧 DecisionCreateServerCommand.findCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
+        return result.items[0];
       }
-    );
+    }
+
+    // FALLBACK: Resolve caller identity via process detection (async)
+    const identity = await UserIdentityResolver.resolve();
+    const uniqueId = identity.uniqueId;
+
+    // Find user by uniqueId in database
+    const result = await DataList.execute<UserEntity>({
+      collection: UserEntity.collection,
+      filter: { uniqueId },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId
+    });
 
     if (!result.success || !result.items || result.items.length === 0) {
       throw new Error(`Caller identity not found in database: ${identity.displayName} (uniqueId: ${uniqueId})`);

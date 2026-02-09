@@ -10,14 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DecisionVoteParams, DecisionVoteResult } from '../shared/DecisionVoteTypes';
 import { createDecisionVoteResultFromParams } from '../shared/DecisionVoteTypes';
 
-/**
- * Extended params with optional callerId/personaId injected by PersonaToolExecutor
- * These fields are dynamically added for AI tool calls but not part of base schema
- */
-interface DecisionVoteParamsWithCaller extends DecisionVoteParams {
-  callerId?: UUID;
-  personaId?: UUID;
-}
+// Caller identity now comes from context.userId - no need for callerId/personaId injection
 import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -170,45 +163,41 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
   }
 
   /**
-   * Find caller identity
-   * First checks for callerId/personaId in params (set by PersonaToolExecutor for AI tool calls)
-   * Falls back to UserIdentityResolver for CLI/direct calls
+   * Find caller identity - prefers context.userId (for PersonaUsers), falls back to process detection
+   *
+   * Priority:
+   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
+   * 2. UserIdentityResolver.resolve() - Detects Claude Code, Joel, etc. based on process info
    */
   private async findCallerIdentity(params: DecisionVoteParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // Check if callerId or personaId was injected (AI tool calls)
-    const paramsWithCaller = params as DecisionVoteParamsWithCaller;
-    const injectedCallerId = paramsWithCaller.callerId || paramsWithCaller.personaId;
-
-    if (injectedCallerId) {
-      // Look up user by injected ID
+    // FIRST: Check context.userId (PersonaUsers set this)
+    if (params.context?.userId) {
       const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: injectedCallerId },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
+        collection: UserEntity.collection,
+        filter: { id: params.context.userId },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
 
       if (result.success && result.items && result.items.length > 0) {
         const user = result.items[0];
+        console.log('🔧 DecisionVoteServerCommand.findCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
         return { id: user.id, entity: user };
       }
     }
 
-    // Fallback: Use UserIdentityResolver to detect calling process (CLI calls)
+    // FALLBACK: Use UserIdentityResolver to detect calling process (CLI calls)
     const identity = await UserIdentityResolver.resolve();
 
-    // If user exists in database, return it
     if (identity.exists && identity.userId) {
       const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: identity.userId },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
+        collection: UserEntity.collection,
+        filter: { id: identity.userId },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
 
       if (result.success && result.items && result.items.length > 0) {
         const user = result.items[0];
