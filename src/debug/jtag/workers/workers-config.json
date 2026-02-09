@@ -24,8 +24,8 @@
       "args": [
         "/tmp/jtag-data-daemon-worker.sock"
       ],
-      "description": "Data daemon worker for WAL cleanup and fast SQLite operations",
-      "enabled": true
+      "description": "DEPRECATED - Migrated to DataModule in continuum-core",
+      "enabled": false
     },
     {
       "name": "embedding",
