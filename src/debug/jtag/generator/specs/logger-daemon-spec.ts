@@ -50,7 +50,7 @@ export const loggerDaemonSpec: DaemonSpec = {
   ],
 
   lifecycle: {
-    onStart: 'Connect to Rust logger worker via Unix socket (/tmp/jtag-logger-worker.sock)',
-    onStop: 'Disconnect from Rust worker gracefully'
+    onStart: 'Connect to continuum-core LoggerModule via Unix socket (/tmp/continuum-core.sock)',
+    onStop: 'Disconnect from continuum-core gracefully'
   }
 };
