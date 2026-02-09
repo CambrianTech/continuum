@@ -22,6 +22,8 @@ export interface DataUpdateParams extends BaseDataParams {
   readonly format?: 'json' | 'yaml' | 'table';
   /** Increment version on update */
   readonly incrementVersion?: boolean;
+  /** Suppress event emission (useful for bulk updates like seeding) */
+  readonly suppressEvents?: boolean;
 }
 
 /**

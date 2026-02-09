@@ -36,8 +36,9 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
       collection as CollectionName,
       params.id,
       params.data as Partial<BaseEntity>,
-      true,
-      dbPath
+      params.incrementVersion ?? true,
+      dbPath,
+      params.suppressEvents ?? false
     );
 
     return createDataUpdateResultFromParams(params, {

@@ -231,31 +231,42 @@ export class ORM {
 
   /**
    * Update entity
+   * Emits data:{collection}:updated event with FULL entity (fetched after update)
+   * @param incrementVersion - If true, increment version on update (default: true)
    * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
+   * @param suppressEvents - If true, skip event emission (useful for bulk updates like seeding)
    */
   static async update<T extends BaseEntity>(
     collection: CollectionName,
     id: UUID,
     data: Partial<T>,
     incrementVersion: boolean = true,
-    dbPath?: string
+    dbPath?: string,
+    suppressEvents: boolean = false
   ): Promise<T> {
     const done = logOperationStart('update', collection, { id, fields: Object.keys(data) });
 
     // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
-      const result = await client.update<T>(collection, id, data, incrementVersion, dbPath);
+      await client.update<T>(collection, id, data, incrementVersion, dbPath);
+
+      // Fetch the FULL entity to return and emit (not just partial update data)
+      const fullEntity = await client.read<T>(collection, id, dbPath);
+      if (!fullEntity) {
+        throw new Error(`Update succeeded but entity ${id} not found in ${collection}`);
+      }
+
       done();
 
-      // Emit event using DataDaemon's jtagContext for proper browser routing
-      if (DataDaemon.jtagContext) {
+      // Emit event with FULL entity using DataDaemon's jtagContext for proper browser routing
+      if (!suppressEvents && DataDaemon.jtagContext) {
         const eventName = getDataEventName(collection, 'updated');
-        Events.emit(DataDaemon.jtagContext, eventName, result)
+        Events.emit(DataDaemon.jtagContext, eventName, fullEntity)
           .catch(err => console.error(`ORM.update event emit failed for ${collection}:`, err));
       }
 
-      return result;
+      return fullEntity;
     } catch (error) {
       logOperationError('update', collection, error);
       throw error;
