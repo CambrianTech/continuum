@@ -1,13 +1,13 @@
 /**
  * Rust Vector Search Client
  *
- * Routes vector similarity search to the Rust data-daemon-worker.
- * Vectors stay in Rust (read directly from SQLite) - only query vector sent over IPC.
+ * Routes vector similarity search to continuum-core DataModule.
+ * Vectors stay in Rust (read directly from SQLite, cached in memory) - only query vector sent over IPC.
  *
  * Performance: ~60ms for 3000+ vectors (vs ~500ms when vectors sent to TypeScript)
  *
- * NOTE: Only used for vector search. CRUD operations use TypeScript SqliteStorageAdapter.
- * The Rust worker has well-designed vector search but CRUD had concurrency issues.
+ * NOTE: Uses continuum-core socket (unified runtime) instead of separate data-daemon worker.
+ * DataModule caches vectors in memory for instant subsequent searches.
  */
 
 import * as net from 'net';
@@ -15,8 +15,8 @@ import { Logger } from '../logging/Logger';
 
 const log = Logger.create('RustVectorSearchClient', 'vector');
 
-/** Default socket path for data-daemon worker */
-const DEFAULT_SOCKET_PATH = '/tmp/jtag-data-daemon-worker.sock';
+/** Socket path for continuum-core (unified runtime) */
+const DEFAULT_SOCKET_PATH = '/tmp/continuum-core.sock';
 
 /** Response from Rust worker */
 interface RustResponse {
@@ -50,8 +50,6 @@ export class RustVectorSearchClient {
   private static _instance: RustVectorSearchClient | null = null;
 
   private socketPath: string;
-  /** Handle cache: dbPath → handle */
-  private handles: Map<string, string> = new Map();
 
   /** Track availability to avoid repeated connection attempts */
   private _available: boolean | null = null;
@@ -114,43 +112,18 @@ export class RustVectorSearchClient {
    */
   async ping(): Promise<{ uptime_seconds: number }> {
     const response = await this.sendRequest({ command: 'ping' });
-    if (response.status === 'pong') {
-      return { uptime_seconds: response.uptime_seconds || 0 };
+    // continuum-core returns 'ok' status with data
+    if (response.status === 'ok' || response.status === 'pong') {
+      return { uptime_seconds: response.uptime_seconds || response.data?.uptime_seconds || 0 };
     }
     throw new Error(response.message || 'Ping failed');
   }
 
   /**
-   * Open adapter and get handle (cached per database path)
-   *
-   * @param dbPath - Database path (REQUIRED - no fallbacks)
-   */
-  private async ensureHandle(dbPath: string): Promise<string> {
-    const cached = this.handles.get(dbPath);
-    if (cached) {
-      return cached;
-    }
-
-    const response = await this.sendRequest({
-      command: 'adapter/open',
-      config: {
-        adapter_type: 'sqlite',
-        connection_string: dbPath
-      }
-    });
-
-    if (response.status !== 'ok' || !response.data?.handle) {
-      throw new Error(response.message || 'Failed to open adapter');
-    }
-
-    const handle = response.data.handle as string;
-    this.handles.set(dbPath, handle);
-    log.info(`Opened Rust adapter for ${dbPath}: ${handle}`);
-    return handle;
-  }
-
-  /**
    * Perform vector similarity search
+   *
+   * Uses DataModule's vector search with in-memory caching.
+   * First search loads vectors from SQLite, subsequent searches are instant.
    *
    * @param collection - Collection name (e.g., 'memories')
    * @param queryVector - Query embedding (384 dims for all-minilm)
@@ -167,54 +140,39 @@ export class RustVectorSearchClient {
     includeData: boolean = true,
     dbPath: string
   ): Promise<RustVectorSearchResponse> {
-    const handle = await this.ensureHandle(dbPath);
     const startTime = Date.now();
 
+    // DataModule takes dbPath directly (no handles)
     const response = await this.sendRequest({
       command: 'vector/search',
-      handle,
+      dbPath,
       collection,
-      query_vector: queryVector,
+      queryVector,
       k,
       threshold,
-      include_data: includeData
+      includeData
     });
 
     if (response.status !== 'ok') {
-      // If handle expired, clear it and retry once
-      if (response.message?.includes('Adapter not found')) {
-        log.warn('Adapter handle expired, reconnecting...');
-        this.handles.delete(dbPath);
-        return this.search(collection, queryVector, k, threshold, includeData, dbPath);
-      }
       throw new Error(response.message || 'Vector search failed');
     }
 
     const duration = Date.now() - startTime;
-    log.debug(`Vector search: ${response.data.count}/${response.data.corpus_size} results in ${duration}ms`);
+    const data = response.data;
+    log.debug(`Vector search: ${data.count}/${data.corpusSize} results in ${duration}ms`);
 
-    return response.data;
+    // Map response to expected format (camelCase from Rust)
+    return {
+      corpus_size: data.corpusSize,
+      count: data.count,
+      results: data.results
+    };
   }
 
   /**
-   * Close all adapter handles
+   * Close client (no-op now that we don't use handles)
    */
   async close(): Promise<void> {
-    if (this.handles.size === 0) return;
-
-    for (const [dbPath, handle] of this.handles) {
-      try {
-        await this.sendRequest({
-          command: 'adapter/close',
-          handle
-        });
-        log.debug(`Closed adapter for ${dbPath}`);
-      } catch (error) {
-        log.debug(`Failed to close adapter for ${dbPath}: ${error}`);
-      }
-    }
-
-    this.handles.clear();
     this._available = null;
   }
 

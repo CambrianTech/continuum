@@ -1,6 +1,7 @@
 //! DataModule — Storage and ORM operations via the StorageAdapter trait.
 //!
 //! Handles: data/* commands (create, read, update, delete, query, batch)
+//! Also handles: vector/* commands (vector similarity search with in-memory caching)
 //! Uses the ORM module's StorageAdapter trait for database-agnostic operations.
 //!
 //! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
@@ -16,11 +17,31 @@ use crate::orm::{
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use dashmap::DashMap;
+use rayon::prelude::*;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::any::Any;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
+
+// ============================================================================
+// Vector Search Types and Cache
+// ============================================================================
+
+/// Cached vector for in-memory similarity search
+struct CachedVector {
+    id: String,
+    embedding: Vec<f64>,
+}
+
+/// Collection vector cache with Arc for zero-copy sharing during concurrent searches
+struct VectorCache {
+    vectors: Arc<Vec<CachedVector>>,
+}
+
+/// Cache key: (db_path, collection)
+type VectorCacheKey = (String, String);
 
 /// DataModule manages storage operations. Database path comes from each request.
 ///
@@ -34,6 +55,9 @@ pub struct DataModule {
     adapters: DashMap<String, Arc<SqliteAdapter>>,
     /// Mutex only used during adapter initialization (one-time setup)
     init_lock: Mutex<()>,
+    /// Vector cache: (db_path, collection) -> vectors
+    /// Uses RwLock for concurrent reads (no mutex contention during searches)
+    vector_cache: RwLock<HashMap<VectorCacheKey, VectorCache>>,
 }
 
 impl DataModule {
@@ -41,6 +65,7 @@ impl DataModule {
         Self {
             adapters: DashMap::new(),
             init_lock: Mutex::new(()),
+            vector_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -89,7 +114,7 @@ impl ServiceModule for DataModule {
         ModuleConfig {
             name: "data",
             priority: ModulePriority::Normal,
-            command_prefixes: &["data/", "adapter/"],
+            command_prefixes: &["data/", "adapter/", "vector/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -123,6 +148,9 @@ impl ServiceModule for DataModule {
 
             "adapter/capabilities" => self.handle_capabilities(params).await,
             "adapter/info" => self.handle_info(params).await,
+
+            // Vector search (migrated from data-daemon-worker)
+            "vector/search" => self.handle_vector_search(params).await,
 
             _ => Err(format!("Unknown data command: {command}")),
         }
@@ -253,6 +281,24 @@ struct CollectionParams {
 struct DbPathOnly {
     db_path: String,
 }
+
+/// Vector search params (matches data-daemon API)
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VectorSearchParams {
+    db_path: String,
+    collection: String,
+    query_vector: Vec<f64>,
+    #[serde(default = "default_k")]
+    k: usize,
+    #[serde(default)]
+    threshold: f64,
+    #[serde(default = "default_true")]
+    include_data: bool,
+}
+
+fn default_k() -> usize { 10 }
+fn default_true() -> bool { true }
 
 impl DataModule {
     async fn handle_create(&self, params: Value) -> Result<CommandResult, String> {
@@ -536,6 +582,224 @@ impl DataModule {
                 "supportsJoins": caps.supports_joins,
             }
         })))
+    }
+
+    // =========================================================================
+    // Vector Search (migrated from data-daemon-worker)
+    // =========================================================================
+
+    /// Vector similarity search with in-memory caching
+    ///
+    /// OPTIMIZATION: Vectors are cached in memory per (dbPath, collection).
+    /// First search loads from SQLite, subsequent searches are instant.
+    ///
+    /// Flow:
+    /// 1. Check cache (RwLock read - concurrent, no blocking)
+    /// 2. If miss, load from SQLite (serialized, but only once per collection)
+    /// 3. Parallel rayon search against cached vectors
+    async fn handle_vector_search(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let search_start = Instant::now();
+
+        let params: VectorSearchParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "vector/search", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let cache_key = (params.db_path.clone(), params.collection.clone());
+
+        // Step 1: Try to get vectors from cache (RwLock read - concurrent)
+        let cached_vectors: Option<Arc<Vec<CachedVector>>> = {
+            let cache = self.vector_cache.read().unwrap();
+            cache.get(&cache_key).map(|c| c.vectors.clone())
+        };
+
+        let corpus: Arc<Vec<CachedVector>> = if let Some(vectors) = cached_vectors {
+            log_info!("data", "vector/search", "Cache HIT for {} ({} vectors)",
+                params.collection, vectors.len());
+            vectors
+        } else {
+            // Cache MISS - load from SQLite
+            log_info!("data", "vector/search", "Cache MISS for {} - loading from SQLite",
+                params.collection);
+            let load_start = Instant::now();
+
+            // Get adapter and load vectors
+            let adapter = self.get_adapter(&params.db_path).await?;
+
+            // Query all records with embeddings
+            let query = StorageQuery {
+                collection: params.collection.clone(),
+                filter: None,
+                sort: None,
+                limit: None,
+                offset: None,
+                cursor: None,
+                tags: None,
+                time_range: None,
+                joins: None,
+            };
+
+            let result = adapter.query(query).await;
+            if !result.success {
+                return Err(result.error.unwrap_or_else(|| "Query failed".to_string()));
+            }
+
+            // Extract vectors from records
+            let mut vectors: Vec<CachedVector> = Vec::new();
+            for record in result.data.unwrap_or_default() {
+                if let Some(embedding) = record.data.get("embedding") {
+                    let vec = Self::parse_embedding(embedding);
+                    if !vec.is_empty() {
+                        vectors.push(CachedVector {
+                            id: record.id,
+                            embedding: vec,
+                        });
+                    }
+                }
+            }
+
+            let vectors_arc = Arc::new(vectors);
+            let count = vectors_arc.len();
+
+            // Store in cache
+            {
+                let mut cache = self.vector_cache.write().unwrap();
+                cache.insert(cache_key, VectorCache { vectors: vectors_arc.clone() });
+            }
+
+            log_info!("data", "vector/search", "Cached {} vectors for {} in {:?}",
+                count, params.collection, load_start.elapsed());
+            vectors_arc
+        };
+
+        if corpus.is_empty() {
+            return Ok(CommandResult::Json(json!({
+                "results": [],
+                "count": 0,
+                "corpusSize": 0
+            })));
+        }
+
+        let corpus_size = corpus.len();
+
+        // Step 2: Parallel cosine similarity with rayon
+        let query_vec = &params.query_vector;
+        let threshold = params.threshold;
+
+        let mut scored: Vec<(String, f64)> = corpus
+            .par_iter()
+            .filter_map(|cv| {
+                let score = Self::cosine_similarity(query_vec, &cv.embedding);
+                if score >= threshold {
+                    Some((cv.id.clone(), score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort by score descending
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let top_k: Vec<(String, f64)> = scored.into_iter().take(params.k).collect();
+        let count = top_k.len();
+
+        // Build results
+        let results: Vec<Value> = if params.include_data {
+            // Fetch full records for top-k (need another query)
+            let adapter = self.get_adapter(&params.db_path).await?;
+            let mut full_results = Vec::new();
+
+            for (id, score) in &top_k {
+                let result = adapter.read(&params.collection, id).await;
+                if result.success {
+                    if let Some(record) = result.data {
+                        full_results.push(json!({
+                            "id": id,
+                            "score": score,
+                            "distance": 1.0 - score,
+                            "data": record.data
+                        }));
+                    }
+                }
+            }
+            full_results
+        } else {
+            top_k.into_iter().map(|(id, score)| json!({
+                "id": id,
+                "score": score,
+                "distance": 1.0 - score
+            })).collect()
+        };
+
+        log_info!("data", "vector/search", "Complete: {} results from {} vectors in {:?}",
+            count, corpus_size, search_start.elapsed());
+
+        Ok(CommandResult::Json(json!({
+            "results": results,
+            "count": count,
+            "corpusSize": corpus_size
+        })))
+    }
+
+    /// Parse embedding from record data (supports BLOB and JSON array)
+    fn parse_embedding(value: &Value) -> Vec<f64> {
+        match value {
+            Value::Array(arr) => arr.iter()
+                .filter_map(|v| v.as_f64())
+                .collect(),
+            Value::String(s) => {
+                // Try parsing as JSON array
+                serde_json::from_str(s).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Cosine similarity between two vectors
+    /// Uses 4-way loop unrolling for SIMD-like performance
+    fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+        if a.len() != b.len() || a.is_empty() {
+            return 0.0;
+        }
+
+        let len = a.len();
+        let limit = len - (len % 4);
+
+        let mut dot = 0.0;
+        let mut norm_a = 0.0;
+        let mut norm_b = 0.0;
+
+        // 4-way unrolled loop
+        let mut i = 0;
+        while i < limit {
+            let a0 = a[i];
+            let a1 = a[i + 1];
+            let a2 = a[i + 2];
+            let a3 = a[i + 3];
+            let b0 = b[i];
+            let b1 = b[i + 1];
+            let b2 = b[i + 2];
+            let b3 = b[i + 3];
+
+            dot += a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
+            norm_a += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3;
+            norm_b += b0 * b0 + b1 * b1 + b2 * b2 + b3 * b3;
+            i += 4;
+        }
+
+        // Handle remainder
+        while i < len {
+            dot += a[i] * b[i];
+            norm_a += a[i] * a[i];
+            norm_b += b[i] * b[i];
+            i += 1;
+        }
+
+        let denominator = (norm_a * norm_b).sqrt();
+        if denominator == 0.0 { 0.0 } else { dot / denominator }
     }
 }
 

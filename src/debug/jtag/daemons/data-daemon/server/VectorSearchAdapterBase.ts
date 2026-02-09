@@ -155,7 +155,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
       if (!await rustClient.isAvailable()) {
         return {
           success: false,
-          error: 'Rust data-daemon-worker not available. Start with: ./workers/start-workers.sh'
+          error: 'Rust continuum-core not available. Start with: npm start'
         };
       }
       console.debug(`🔍 VECTOR-SEARCH-TIMING: Rust availability check in ${Date.now() - rustAvailStart}ms`);
