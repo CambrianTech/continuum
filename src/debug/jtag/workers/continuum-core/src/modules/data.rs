@@ -7,6 +7,7 @@
 //! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
 //! NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
 
+use chrono;
 use crate::{log_error, log_info};
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
@@ -151,6 +152,9 @@ impl ServiceModule for DataModule {
 
             // Vector search (migrated from data-daemon-worker)
             "vector/search" => self.handle_vector_search(params).await,
+            "vector/index" => self.handle_index_vector(params).await,
+            "vector/stats" => self.handle_vector_stats(params).await,
+            "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
 
             _ => Err(format!("Unknown data command: {command}")),
         }
@@ -299,6 +303,36 @@ struct VectorSearchParams {
 
 fn default_k() -> usize { 10 }
 fn default_true() -> bool { true }
+fn default_batch_size() -> usize { 100 }
+
+/// Index vector params - store embedding for a record
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexVectorParams {
+    db_path: String,
+    collection: String,
+    id: String,
+    embedding: Vec<f64>,
+}
+
+/// Backfill vectors params - generate embeddings for existing records
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackfillVectorsParams {
+    db_path: String,
+    collection: String,
+    text_field: String,
+    #[serde(default = "default_batch_size")]
+    batch_size: usize,
+}
+
+/// Vector stats params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VectorStatsParams {
+    db_path: String,
+    collection: String,
+}
 
 impl DataModule {
     async fn handle_create(&self, params: Value) -> Result<CommandResult, String> {
@@ -801,6 +835,136 @@ impl DataModule {
         let denominator = (norm_a * norm_b).sqrt();
         if denominator == 0.0 { 0.0 } else { dot / denominator }
     }
+
+    /// Index a vector - store embedding for a record
+    /// Updates the record's 'embedding' field with the provided vector
+    async fn handle_index_vector(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        let params: IndexVectorParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "vector/index", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let adapter = self.get_adapter(&params.db_path).await?;
+
+        // Update the record's embedding field
+        let update_data = json!({
+            "embedding": params.embedding
+        });
+
+        let result = adapter
+            .update(&params.collection, &params.id, update_data, false)
+            .await;
+
+        // Invalidate vector cache for this collection since we modified an embedding
+        {
+            let cache_key = (params.db_path.clone(), params.collection.clone());
+            let mut cache = self.vector_cache.write().unwrap();
+            cache.remove(&cache_key);
+        }
+
+        let total_ms = start.elapsed().as_millis();
+        log_info!("data", "vector/index", "Indexed vector for {} in {}ms, success={}",
+            params.id, total_ms, result.success);
+
+        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+    }
+
+    /// Get vector index statistics for a collection
+    async fn handle_vector_stats(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        let params: VectorStatsParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "vector/stats", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let adapter = self.get_adapter(&params.db_path).await?;
+
+        // Get total record count
+        let total_query = StorageQuery {
+            collection: params.collection.clone(),
+            ..Default::default()
+        };
+        let total_result = adapter.count(total_query).await;
+        let total_records = total_result.data.unwrap_or(0);
+
+        // Query to count records WITH embeddings
+        // We need to query and check which have embedding field
+        let query = StorageQuery {
+            collection: params.collection.clone(),
+            limit: Some(10000), // Reasonable limit
+            ..Default::default()
+        };
+        let result = adapter.query(query).await;
+
+        let mut records_with_vectors = 0;
+        let mut vector_dimensions = 0;
+
+        if let Some(records) = result.data {
+            for record in &records {
+                if let Some(embedding) = record.data.get("embedding") {
+                    let vec = Self::parse_embedding(embedding);
+                    if !vec.is_empty() {
+                        records_with_vectors += 1;
+                        if vector_dimensions == 0 {
+                            vector_dimensions = vec.len();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check cache status
+        let cache_key = (params.db_path.clone(), params.collection.clone());
+        let cached_count = {
+            let cache = self.vector_cache.read().unwrap();
+            cache.get(&cache_key).map(|c| c.vectors.len()).unwrap_or(0)
+        };
+
+        let total_ms = start.elapsed().as_millis();
+        log_info!("data", "vector/stats", "Stats for {} in {}ms: total={}, with_vectors={}, dims={}",
+            params.collection, total_ms, total_records, records_with_vectors, vector_dimensions);
+
+        Ok(CommandResult::Json(json!({
+            "collection": params.collection,
+            "totalRecords": total_records,
+            "recordsWithVectors": records_with_vectors,
+            "vectorDimensions": vector_dimensions,
+            "cachedVectors": cached_count,
+            "lastUpdated": chrono::Utc::now().to_rfc3339()
+        })))
+    }
+
+    /// Invalidate vector cache for a collection
+    /// Called when records are modified outside of vector/index
+    async fn handle_invalidate_vector_cache(&self, params: Value) -> Result<CommandResult, String> {
+        let params: CollectionParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "vector/invalidate-cache", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let cache_key = (params.db_path.clone(), params.collection.clone());
+        let removed = {
+            let mut cache = self.vector_cache.write().unwrap();
+            cache.remove(&cache_key).is_some()
+        };
+
+        log_info!("data", "vector/invalidate-cache", "Invalidated cache for {}: removed={}",
+            params.collection, removed);
+
+        Ok(CommandResult::Json(json!({
+            "success": true,
+            "collection": params.collection,
+            "cacheInvalidated": removed
+        })))
+    }
 }
 
 #[cfg(test)]
@@ -892,5 +1056,321 @@ mod tests {
                 assert_eq!(read["data"]["data"]["name"], "Alice");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_vector_index_and_stats() {
+        let module = DataModule::new();
+
+        // Create schema with embedding field
+        let schema = CollectionSchema {
+            collection: "test_vectors".to_string(),
+            fields: vec![
+                crate::orm::types::SchemaField {
+                    name: "content".to_string(),
+                    field_type: crate::orm::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+                crate::orm::types::SchemaField {
+                    name: "embedding".to_string(),
+                    field_type: crate::orm::types::FieldType::Json,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+            ],
+            indexes: vec![],
+        };
+
+        let _ = module
+            .handle_command(
+                "data/ensure-schema",
+                json!({
+                    "dbPath": ":memory:",
+                    "schema": schema
+                }),
+            )
+            .await;
+
+        // Create a record
+        let create_result = module
+            .handle_command(
+                "data/create",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_vectors",
+                    "data": { "content": "Hello world" }
+                }),
+            )
+            .await;
+
+        assert!(create_result.is_ok());
+        let record_id = if let Ok(CommandResult::Json(result)) = &create_result {
+            result["data"]["id"].as_str().unwrap().to_string()
+        } else {
+            panic!("Create failed");
+        };
+
+        // Index a vector for this record
+        let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
+        let index_result = module
+            .handle_command(
+                "vector/index",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_vectors",
+                    "id": record_id,
+                    "embedding": test_embedding
+                }),
+            )
+            .await;
+
+        assert!(index_result.is_ok());
+        if let Ok(CommandResult::Json(result)) = &index_result {
+            assert!(result["success"].as_bool().unwrap_or(false));
+        }
+
+        // Get vector stats
+        let stats_result = module
+            .handle_command(
+                "vector/stats",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_vectors"
+                }),
+            )
+            .await;
+
+        assert!(stats_result.is_ok());
+        if let Ok(CommandResult::Json(stats)) = stats_result {
+            assert_eq!(stats["collection"], "test_vectors");
+            assert_eq!(stats["totalRecords"], 1);
+            assert_eq!(stats["recordsWithVectors"], 1);
+            assert_eq!(stats["vectorDimensions"], 384);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_search_basic() {
+        let module = DataModule::new();
+
+        // Create schema
+        let schema = CollectionSchema {
+            collection: "test_search".to_string(),
+            fields: vec![
+                crate::orm::types::SchemaField {
+                    name: "content".to_string(),
+                    field_type: crate::orm::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+                crate::orm::types::SchemaField {
+                    name: "embedding".to_string(),
+                    field_type: crate::orm::types::FieldType::Json,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+            ],
+            indexes: vec![],
+        };
+
+        let _ = module
+            .handle_command(
+                "data/ensure-schema",
+                json!({
+                    "dbPath": ":memory:",
+                    "schema": schema
+                }),
+            )
+            .await;
+
+        // Create records with embeddings
+        let embeddings: Vec<Vec<f64>> = vec![
+            (0..384).map(|i| (i as f64) * 0.001).collect(),
+            (0..384).map(|i| (i as f64) * 0.002).collect(),
+            (0..384).map(|i| (i as f64) * 0.003).collect(),
+        ];
+
+        for (idx, emb) in embeddings.iter().enumerate() {
+            let _ = module
+                .handle_command(
+                    "data/create",
+                    json!({
+                        "dbPath": ":memory:",
+                        "collection": "test_search",
+                        "data": {
+                            "content": format!("Document {}", idx),
+                            "embedding": emb
+                        }
+                    }),
+                )
+                .await;
+        }
+
+        // Search for similar vectors
+        let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
+        let search_result = module
+            .handle_command(
+                "vector/search",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_search",
+                    "queryVector": query_vector,
+                    "k": 3,
+                    "threshold": 0.0,
+                    "includeData": true
+                }),
+            )
+            .await;
+
+        assert!(search_result.is_ok());
+        if let Ok(CommandResult::Json(result)) = search_result {
+            let results = result["results"].as_array().unwrap();
+            assert_eq!(results.len(), 3);
+            // First result should be most similar (score close to 1.0)
+            let first_score = results[0]["score"].as_f64().unwrap();
+            assert!(first_score > 0.9, "Expected high similarity, got {}", first_score);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vector_cache_invalidation() {
+        let module = DataModule::new();
+
+        // Create schema
+        let schema = CollectionSchema {
+            collection: "test_cache".to_string(),
+            fields: vec![
+                crate::orm::types::SchemaField {
+                    name: "embedding".to_string(),
+                    field_type: crate::orm::types::FieldType::Json,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+            ],
+            indexes: vec![],
+        };
+
+        let _ = module
+            .handle_command(
+                "data/ensure-schema",
+                json!({
+                    "dbPath": ":memory:",
+                    "schema": schema
+                }),
+            )
+            .await;
+
+        // Create a record with embedding
+        let _ = module
+            .handle_command(
+                "data/create",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_cache",
+                    "data": {
+                        "embedding": vec![1.0; 384]
+                    }
+                }),
+            )
+            .await;
+
+        // First search populates cache
+        let query: Vec<f64> = vec![1.0; 384];
+        let _ = module
+            .handle_command(
+                "vector/search",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_cache",
+                    "queryVector": query,
+                    "k": 1
+                }),
+            )
+            .await;
+
+        // Verify cache has vectors via stats
+        let stats_result = module
+            .handle_command(
+                "vector/stats",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_cache"
+                }),
+            )
+            .await;
+
+        if let Ok(CommandResult::Json(stats)) = &stats_result {
+            assert!(stats["cachedVectors"].as_u64().unwrap() > 0);
+        }
+
+        // Invalidate cache
+        let invalidate_result = module
+            .handle_command(
+                "vector/invalidate-cache",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_cache"
+                }),
+            )
+            .await;
+
+        assert!(invalidate_result.is_ok());
+        if let Ok(CommandResult::Json(result)) = invalidate_result {
+            assert!(result["success"].as_bool().unwrap_or(false));
+            assert!(result["cacheInvalidated"].as_bool().unwrap_or(false));
+        }
+
+        // Verify cache is empty
+        let stats_after = module
+            .handle_command(
+                "vector/stats",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_cache"
+                }),
+            )
+            .await;
+
+        if let Ok(CommandResult::Json(stats)) = stats_after {
+            assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn test_cosine_similarity() {
+        // Test identical vectors
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0, 0.0];
+        let sim = DataModule::cosine_similarity(&a, &b);
+        assert!((sim - 1.0).abs() < 0.001, "Identical vectors should have similarity 1.0");
+
+        // Test orthogonal vectors
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![0.0, 1.0, 0.0];
+        let sim = DataModule::cosine_similarity(&a, &b);
+        assert!(sim.abs() < 0.001, "Orthogonal vectors should have similarity 0.0");
+
+        // Test opposite vectors
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![-1.0, 0.0, 0.0];
+        let sim = DataModule::cosine_similarity(&a, &b);
+        assert!((sim + 1.0).abs() < 0.001, "Opposite vectors should have similarity -1.0");
+
+        // Test with 384-dimension vectors (typical embedding size)
+        let a: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
+        let b: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
+        let sim = DataModule::cosine_similarity(&a, &b);
+        assert!((sim - 1.0).abs() < 0.001, "Identical 384-dim vectors should have similarity 1.0");
     }
 }

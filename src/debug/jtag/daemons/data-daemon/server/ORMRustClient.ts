@@ -728,6 +728,117 @@ export class ORMRustClient {
     return { success: true, data: results };
   }
 
+  /**
+   * Index vector for a record
+   *
+   * Stores the embedding in the record's 'embedding' field.
+   * Also invalidates the vector cache for this collection.
+   *
+   * @param collection - Collection name
+   * @param id - Record ID
+   * @param embedding - Vector embedding to store
+   * @param dbPath - Optional database path for per-persona databases
+   */
+  async indexVector(
+    collection: string,
+    id: UUID,
+    embedding: number[],
+    dbPath?: string
+  ): Promise<StorageResult<boolean>> {
+    const response = await this.request<{ success: boolean }>({
+      command: 'vector/index',
+      dbPath: dbPath ?? this.dbPath,
+      collection,
+      id,
+      embedding,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Index vector failed' };
+    }
+
+    return { success: true, data: true };
+  }
+
+  /**
+   * Get vector index statistics for a collection
+   *
+   * @param collection - Collection name
+   * @param dbPath - Optional database path for per-persona databases
+   */
+  async getVectorIndexStats(
+    collection: string,
+    dbPath?: string
+  ): Promise<StorageResult<{
+    collection: string;
+    totalRecords: number;
+    recordsWithVectors: number;
+    vectorDimensions: number;
+    cachedVectors: number;
+    lastUpdated: string;
+  }>> {
+    interface RustVectorStats {
+      collection: string;
+      totalRecords: number;
+      recordsWithVectors: number;
+      vectorDimensions: number;
+      cachedVectors: number;
+      lastUpdated: string;
+    }
+
+    const response = await this.request<RustVectorStats>({
+      command: 'vector/stats',
+      dbPath: dbPath ?? this.dbPath,
+      collection,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Get vector stats failed' };
+    }
+
+    const stats = response.result?.data;
+    if (!stats) {
+      return { success: false, error: 'No stats returned' };
+    }
+
+    return {
+      success: true,
+      data: {
+        collection: stats.collection,
+        totalRecords: stats.totalRecords,
+        recordsWithVectors: stats.recordsWithVectors,
+        vectorDimensions: stats.vectorDimensions,
+        cachedVectors: stats.cachedVectors,
+        lastUpdated: stats.lastUpdated,
+      },
+    };
+  }
+
+  /**
+   * Invalidate vector cache for a collection
+   *
+   * Call this when records with embeddings are modified outside of vector/index
+   *
+   * @param collection - Collection name
+   * @param dbPath - Optional database path for per-persona databases
+   */
+  async invalidateVectorCache(
+    collection: string,
+    dbPath?: string
+  ): Promise<StorageResult<boolean>> {
+    const response = await this.request<{ success: boolean; cacheInvalidated: boolean }>({
+      command: 'vector/invalidate-cache',
+      dbPath: dbPath ?? this.dbPath,
+      collection,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Invalidate cache failed' };
+    }
+
+    return { success: true, data: true };
+  }
+
   // ─── Case Conversion Helpers ────────────────────────────────────────────────
   // NOTE: Only used for Rust response parsing (Rust returns snake_case, we need camelCase)
 

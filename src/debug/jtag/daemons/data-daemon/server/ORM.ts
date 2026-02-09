@@ -559,15 +559,45 @@ export class ORM {
 
   /**
    * Index vector for a record
+   *
+   * ✅ NOW ROUTED TO RUST
+   *
+   * Stores the embedding in the record's 'embedding' field via Rust DataModule.
+   * Also invalidates the Rust vector cache for the collection.
    */
   static async indexVector(
     request: IndexVectorRequest
   ): Promise<StorageResult<boolean>> {
-    return DataDaemon.indexVector(request);
+    const done = logOperationStart('indexVector', request.collection, { id: request.id });
+
+    try {
+      const client = await getRustClient();
+
+      // Convert embedding to number[] if needed
+      const embedding = Array.isArray(request.embedding)
+        ? request.embedding
+        : Array.from(request.embedding);
+
+      const result = await client.indexVector(
+        request.collection,
+        request.id,
+        embedding
+      );
+
+      done();
+      return result;
+    } catch (error) {
+      logOperationError('indexVector', request.collection, error);
+      throw error;
+    }
   }
 
   /**
    * Backfill vectors for existing records
+   *
+   * ⚠️ STILL USES TYPESCRIPT (requires cross-module coordination)
+   *
+   * TODO: Implement in Rust after EmbeddingModule ↔ DataModule coordination is in place
    */
   static async backfillVectors(
     request: BackfillVectorsRequest,
@@ -578,11 +608,41 @@ export class ORM {
 
   /**
    * Get vector index statistics
+   *
+   * ✅ NOW ROUTED TO RUST
+   *
+   * Returns stats about the vector index for a collection.
    */
   static async getVectorIndexStats(
-    collection: CollectionName
+    collection: CollectionName,
+    dbPath?: string
   ): Promise<StorageResult<VectorIndexStats>> {
-    return DataDaemon.getVectorIndexStats(collection);
+    const done = logOperationStart('vectorSearch', collection, {}); // Using vectorSearch op for stats
+
+    try {
+      const client = await getRustClient();
+      const result = await client.getVectorIndexStats(collection, dbPath);
+
+      done();
+
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error };
+      }
+
+      // Map Rust stats to VectorIndexStats format
+      return {
+        success: true,
+        data: {
+          collection: result.data.collection,
+          totalRecords: result.data.totalRecords,
+          recordsWithVectors: result.data.recordsWithVectors,
+          vectorDimensions: result.data.vectorDimensions,
+        },
+      };
+    } catch (error) {
+      logOperationError('vectorSearch', collection, error);
+      throw error;
+    }
   }
 
   /**
