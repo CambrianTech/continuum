@@ -5,7 +5,7 @@
  * Runs ts-rs export tests for all Rust packages that define TypeScript types,
  * then generates barrel index.ts files for each output directory.
  *
- * Output: shared/generated/ (code/, persona/, rag/, ipc/, data-daemon/, etc.)
+ * Output: shared/generated/ (code/, persona/, rag/, ipc/, data/, etc.)
  *
  * Run manually: npx tsx generator/generate-rust-bindings.ts
  * Runs automatically as part of prebuild (after worker:build compiles Rust).
@@ -26,13 +26,9 @@ const GENERATED_DIR = path.join(ROOT, 'shared', 'generated');
 const TS_RS_PACKAGES = [
   {
     package: 'continuum-core',
-    description: 'Core IPC types (code, persona, rag, ipc, memory, voice)',
-    // continuum-core exports to multiple subdirs: code/, persona/, rag/, ipc/
-  },
-  {
-    package: 'data-daemon-worker',
-    description: 'Data daemon storage adapter wire types',
-    // Exports to: data-daemon/
+    description: 'Core IPC types (code, persona, rag, ipc, memory, voice, data)',
+    // continuum-core exports to multiple subdirs: code/, persona/, rag/, ipc/, data/
+    // NOTE: data-daemon-worker removed - DataModule now in continuum-core
   },
 ];
 

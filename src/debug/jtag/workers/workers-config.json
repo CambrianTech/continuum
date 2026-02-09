@@ -18,16 +18,6 @@
       "enabled": true
     },
     {
-      "name": "data-daemon",
-      "binary": "workers/target/release/data-daemon-worker",
-      "socket": "/tmp/jtag-data-daemon-worker.sock",
-      "args": [
-        "/tmp/jtag-data-daemon-worker.sock"
-      ],
-      "description": "DEPRECATED - Migrated to DataModule in continuum-core",
-      "enabled": false
-    },
-    {
       "name": "embedding",
       "binary": "workers/target/release/embedding-worker",
       "socket": "/tmp/jtag-embedding.sock",
@@ -45,7 +35,7 @@
       "args": [
         "/tmp/jtag-inference.sock"
       ],
-      "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
+      "description": "DEPRECATED - Use inference-grpc instead",
       "enabled": false,
       "memoryLimit": "8G",
       "preloadModels": [
@@ -66,8 +56,8 @@
       "name": "logger",
       "binary": "workers/target/release/logger-worker",
       "socket": "/tmp/jtag-logger-worker.sock",
-      "description": "High-performance logging worker for file I/O",
-      "enabled": true
+      "description": "DEPRECATED - Migrated to LoggerModule in continuum-core",
+      "enabled": false
     },
     {
       "name": "continuum-core",
@@ -76,7 +66,7 @@
       "args": [
         "/tmp/jtag-logger-worker.sock"
       ],
-      "description": "Rust core: IPC (VoiceOrchestrator, PersonaInbox) + WebSocket voice calls on port 50053 (replaces streaming-core)",
+      "description": "Rust core: IPC (VoiceOrchestrator, PersonaInbox) + WebSocket voice calls on port 50053 + DataModule + EmbeddingModule + SearchModule + LoggerModule",
       "enabled": true
     },
     {
@@ -85,14 +75,6 @@
       "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
       "description": "DEPRECATED - Migrated to SearchModule in continuum-core",
-      "enabled": false
-    },
-    {
-      "name": "streaming-core",
-      "binary": "workers/target/release/streaming-core",
-      "type": "tcp",
-      "port": 50053,
-      "description": "DEPRECATED - Voice processing moved to continuum-core",
       "enabled": false
     }
   ],

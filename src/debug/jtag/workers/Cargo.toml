@@ -10,7 +10,6 @@ members = [
     "chat-drain",
     "continuum-core",
     "data",
-    "data-daemon",
     "embedding",
     "inference",
     "inference-grpc",
