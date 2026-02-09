@@ -9,7 +9,7 @@
 
 use chrono;
 use crate::{log_error, log_info};
-use crate::modules::embedding::{generate_embedding, generate_embeddings_batch};
+use crate::modules::embedding::generate_embeddings_batch;
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
     query::{FieldFilter, StorageQuery},
@@ -53,7 +53,7 @@ type VectorCacheKey = (String, String);
 /// Advantage over TypeScript: no IPC per page, just in-memory state
 #[derive(Debug)]
 struct PaginatedQueryState {
-    query_id: String,
+    // NOTE: query_id is NOT stored here - it's the DashMap key
     db_path: String,
     collection: String,
     filter: Option<std::collections::HashMap<String, FieldFilter>>,
@@ -64,6 +64,8 @@ struct PaginatedQueryState {
     /// Cursor: last ID from previous page for efficient keyset pagination
     cursor_id: Option<String>,
     has_more: bool,
+    /// Creation time for future TTL-based cleanup of stale queries
+    #[allow(dead_code)]
     created_at: std::time::Instant,
 }
 
@@ -1200,9 +1202,8 @@ impl DataModule {
         // Generate unique query ID
         let query_id = uuid::Uuid::new_v4().to_string();
 
-        // Create query state
+        // Create query state (query_id is the DashMap key, not stored in struct)
         let state = PaginatedQueryState {
-            query_id: query_id.clone(),
             db_path: params.db_path.clone(),
             collection: params.collection.clone(),
             filter: params.filter,
