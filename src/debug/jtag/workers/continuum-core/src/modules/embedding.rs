@@ -89,6 +89,52 @@ fn get_or_load_model(model_name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Public function for cross-module embedding generation
+/// Used by DataModule for backfillVectors
+pub fn generate_embedding(text: &str, model_name: &str) -> Result<Vec<f32>, String> {
+    // Load model if needed
+    get_or_load_model(model_name)?;
+
+    // Get model from cache
+    let cache = get_model_cache();
+    let models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+    let embedding_model = models
+        .get(model_name)
+        .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
+
+    // Generate embedding for single text
+    let embeddings = embedding_model
+        .embed(vec![text], None)
+        .map_err(|e| format!("Embedding generation failed: {e}"))?;
+
+    embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| "No embedding returned".to_string())
+}
+
+/// Batch embedding generation for efficiency
+pub fn generate_embeddings_batch(texts: &[&str], model_name: &str) -> Result<Vec<Vec<f32>>, String> {
+    if texts.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Load model if needed
+    get_or_load_model(model_name)?;
+
+    // Get model from cache
+    let cache = get_model_cache();
+    let models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+    let embedding_model = models
+        .get(model_name)
+        .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
+
+    // Generate embeddings
+    embedding_model
+        .embed(texts.to_vec(), None)
+        .map_err(|e| format!("Embedding generation failed: {e}"))
+}
+
 #[derive(Serialize)]
 struct ModelInfo {
     name: String,

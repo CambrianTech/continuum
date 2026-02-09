@@ -9,6 +9,7 @@
 
 use chrono;
 use crate::{log_error, log_info};
+use crate::modules::embedding::{generate_embedding, generate_embeddings_batch};
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
     query::{FieldFilter, StorageQuery},
@@ -186,6 +187,7 @@ impl ServiceModule for DataModule {
             "vector/index" => self.handle_index_vector(params).await,
             "vector/stats" => self.handle_vector_stats(params).await,
             "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
+            "vector/backfill" => self.handle_backfill_vectors(params).await,
 
             _ => Err(format!("Unknown data command: {command}")),
         }
@@ -355,6 +357,10 @@ struct BackfillVectorsParams {
     text_field: String,
     #[serde(default = "default_batch_size")]
     batch_size: usize,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    filter: Option<std::collections::HashMap<String, FieldFilter>>,
 }
 
 /// Vector stats params
@@ -1032,6 +1038,131 @@ impl DataModule {
             "success": true,
             "collection": params.collection,
             "cacheInvalidated": removed
+        })))
+    }
+
+    /// Backfill vectors - generate embeddings for records missing them
+    ///
+    /// Uses batch embedding generation for efficiency (10x faster than single).
+    /// Processes in configurable batch sizes to manage memory.
+    async fn handle_backfill_vectors(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        let params: BackfillVectorsParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "vector/backfill", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let model_name = params.model.as_deref().unwrap_or("AllMiniLML6V2");
+        let batch_size = params.batch_size;
+
+        let adapter = self.get_adapter(&params.db_path).await?;
+
+        // Query all records from collection
+        let query = StorageQuery {
+            collection: params.collection.clone(),
+            filter: params.filter.clone(),
+            ..Default::default()
+        };
+        let query_result = adapter.query(query).await;
+        if !query_result.success {
+            return Err(query_result.error.unwrap_or_else(|| "Query failed".to_string()));
+        }
+
+        let records = query_result.data.unwrap_or_default();
+        let total = records.len();
+        let mut processed = 0usize;
+        let mut failed = 0usize;
+        let mut skipped = 0usize;
+
+        log_info!("data", "vector/backfill", "Starting backfill for {} records in {}",
+            total, params.collection);
+
+        // Process in batches for memory efficiency
+        for chunk in records.chunks(batch_size) {
+            // Collect texts that need embeddings
+            let mut texts_to_embed: Vec<(usize, &str)> = Vec::new();
+
+            for (i, record) in chunk.iter().enumerate() {
+                // Check if already has embedding
+                if let Some(embedding) = record.data.get("embedding") {
+                    if !embedding.is_null() {
+                        skipped += 1;
+                        continue;
+                    }
+                }
+
+                // Extract text from specified field
+                if let Some(text) = record.data.get(&params.text_field) {
+                    if let Some(text_str) = text.as_str() {
+                        if !text_str.is_empty() {
+                            texts_to_embed.push((i, text_str));
+                        }
+                    }
+                }
+            }
+
+            if texts_to_embed.is_empty() {
+                continue;
+            }
+
+            // Batch generate embeddings
+            let text_refs: Vec<&str> = texts_to_embed.iter().map(|(_, t)| *t).collect();
+            match generate_embeddings_batch(&text_refs, model_name) {
+                Ok(embeddings) => {
+                    // Update each record with its embedding
+                    for ((idx, _), embedding) in texts_to_embed.iter().zip(embeddings.iter()) {
+                        let record = &chunk[*idx];
+
+                        // Convert f32 to f64 for JSON
+                        let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
+
+                        let update_data = json!({
+                            "embedding": embedding_f64
+                        });
+
+                        let update_result = adapter
+                            .update(&params.collection, &record.id, update_data, false)
+                            .await;
+
+                        if update_result.success {
+                            processed += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    }
+                }
+                Err(e) => {
+                    log_error!("data", "vector/backfill", "Batch embedding failed: {}", e);
+                    failed += texts_to_embed.len();
+                }
+            }
+        }
+
+        // Invalidate vector cache since we modified embeddings
+        {
+            let cache_key = (params.db_path.clone(), params.collection.clone());
+            let mut cache = self.vector_cache.write().unwrap();
+            cache.remove(&cache_key);
+        }
+
+        let total_ms = start.elapsed().as_millis();
+        log_info!("data", "vector/backfill",
+            "Backfill complete for {}: total={}, processed={}, skipped={}, failed={} in {}ms",
+            params.collection, total, processed, skipped, failed, total_ms);
+
+        Ok(CommandResult::Json(json!({
+            "success": true,
+            "data": {
+                "collection": params.collection,
+                "total": total,
+                "processed": processed,
+                "skipped": skipped,
+                "failed": failed,
+                "elapsedMs": total_ms
+            }
         })))
     }
 
@@ -1736,6 +1867,100 @@ mod tests {
         assert!(close_result.is_ok());
         if let Ok(CommandResult::Json(result)) = close_result {
             assert!(result["success"].as_bool().unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_backfill_vectors() {
+        let module = DataModule::new();
+
+        // Create schema with content and embedding fields
+        let schema = CollectionSchema {
+            collection: "test_backfill".to_string(),
+            fields: vec![
+                crate::orm::types::SchemaField {
+                    name: "content".to_string(),
+                    field_type: crate::orm::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+                crate::orm::types::SchemaField {
+                    name: "embedding".to_string(),
+                    field_type: crate::orm::types::FieldType::Json,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+            ],
+            indexes: vec![],
+        };
+
+        let _ = module
+            .handle_command(
+                "data/ensure-schema",
+                json!({
+                    "dbPath": ":memory:",
+                    "schema": schema
+                }),
+            )
+            .await;
+
+        // Create records without embeddings
+        for i in 0..5 {
+            let _ = module
+                .handle_command(
+                    "data/create",
+                    json!({
+                        "dbPath": ":memory:",
+                        "collection": "test_backfill",
+                        "data": { "content": format!("Test content number {}", i) }
+                    }),
+                )
+                .await;
+        }
+
+        // Run backfill
+        let backfill_result = module
+            .handle_command(
+                "vector/backfill",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_backfill",
+                    "textField": "content",
+                    "batchSize": 10
+                }),
+            )
+            .await;
+
+        assert!(backfill_result.is_ok(), "Backfill should succeed");
+
+        if let Ok(CommandResult::Json(result)) = backfill_result {
+            assert!(result["success"].as_bool().unwrap_or(false));
+            let data = &result["data"];
+            assert_eq!(data["total"].as_u64().unwrap(), 5);
+            assert_eq!(data["processed"].as_u64().unwrap(), 5);
+            assert_eq!(data["failed"].as_u64().unwrap(), 0);
+        }
+
+        // Verify embeddings were added
+        let stats_result = module
+            .handle_command(
+                "vector/stats",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_backfill"
+                }),
+            )
+            .await;
+
+        assert!(stats_result.is_ok());
+        if let Ok(CommandResult::Json(result)) = stats_result {
+            let stats = &result["data"];
+            assert_eq!(stats["recordsWithVectors"].as_u64().unwrap(), 5);
+            assert!(stats["vectorDimensions"].as_u64().unwrap() > 0);
         }
     }
 

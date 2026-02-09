@@ -954,6 +954,57 @@ export class ORMRustClient {
     return { success: true, data: true };
   }
 
+  // ─── Backfill Vectors ─────────────────────────────────────────────────────────
+
+  /**
+   * Backfill vectors - generate embeddings for records missing them
+   *
+   * Uses batch embedding generation in Rust for efficiency.
+   */
+  async backfillVectors(params: {
+    collection: string;
+    textField: string;
+    batchSize?: number;
+    model?: string;
+    filter?: Record<string, unknown>;
+    dbPath?: string;
+  }): Promise<StorageResult<{
+    collection: string;
+    total: number;
+    processed: number;
+    skipped: number;
+    failed: number;
+    elapsedMs: number;
+  }>> {
+    const response = await this.request<{
+      collection: string;
+      total: number;
+      processed: number;
+      skipped: number;
+      failed: number;
+      elapsedMs: number;
+    }>({
+      command: 'vector/backfill',
+      dbPath: params.dbPath ?? this.dbPath,
+      collection: params.collection,
+      textField: params.textField,
+      batchSize: params.batchSize ?? 100,
+      model: params.model,
+      filter: params.filter,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Backfill vectors failed' };
+    }
+
+    const result = response.result?.data;
+    if (!result) {
+      return { success: false, error: 'No result returned' };
+    }
+
+    return { success: true, data: result };
+  }
+
   // ─── Case Conversion Helpers ────────────────────────────────────────────────
   // NOTE: Only used for Rust response parsing (Rust returns snake_case, we need camelCase)
 

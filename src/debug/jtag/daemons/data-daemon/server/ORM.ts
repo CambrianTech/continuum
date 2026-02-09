@@ -662,15 +662,47 @@ export class ORM {
   /**
    * Backfill vectors for existing records
    *
-   * ⚠️ STILL USES TYPESCRIPT (requires cross-module coordination)
+   * ✅ NOW ROUTED TO RUST
    *
-   * TODO: Implement in Rust after EmbeddingModule ↔ DataModule coordination is in place
+   * Uses batch embedding generation via EmbeddingModule for efficiency.
+   * Note: Progress callback not supported in Rust implementation.
    */
   static async backfillVectors(
     request: BackfillVectorsRequest,
-    onProgress?: (progress: BackfillVectorsProgress) => void
+    _onProgress?: (progress: BackfillVectorsProgress) => void
   ): Promise<StorageResult<BackfillVectorsProgress>> {
-    return DataDaemon.backfillVectors(request, onProgress);
+    const done = logOperationStart('vectorSearch', request.collection, { batchSize: request.batchSize });
+
+    try {
+      const client = await getRustClient();
+      const result = await client.backfillVectors({
+        collection: request.collection,
+        textField: request.textField,
+        batchSize: request.batchSize,
+        model: request.model?.name,
+        filter: request.filter,
+      });
+
+      done();
+
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error };
+      }
+
+      // Map Rust result to BackfillVectorsProgress format
+      return {
+        success: true,
+        data: {
+          total: result.data.total,
+          processed: result.data.processed,
+          failed: result.data.failed,
+          elapsedTime: result.data.elapsedMs,
+        },
+      };
+    } catch (error) {
+      logOperationError('vectorSearch', request.collection, error);
+      throw error;
+    }
   }
 
   /**
