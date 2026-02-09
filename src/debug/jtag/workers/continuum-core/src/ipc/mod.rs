@@ -660,6 +660,10 @@ pub fn start_server(
     // Provides embedding/generate, embedding/model/{load,list,info,unload}
     runtime.register(Arc::new(EmbeddingModule::new()));
 
+    // RuntimeModule: Exposes metrics and control for AI-driven system management (Ares)
+    // Provides runtime/metrics/{all,module,slow}, runtime/list
+    runtime.register(Arc::new(crate::modules::runtime_control::RuntimeModule::new()));
+
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {
         if let Err(e) = runtime.initialize().await {

@@ -75,20 +75,41 @@ impl Runtime {
         Ok(())
     }
 
-    /// Route a command through the registry.
+    /// Route a command through the registry (async version).
     /// Returns None if no module handles this command.
+    ///
+    /// AUTOMATIC METRICS: Every command is timed and recorded.
     pub async fn route_command(
         &self,
         command: &str,
         params: serde_json::Value,
     ) -> Option<Result<CommandResult, String>> {
         let (module, full_cmd) = self.registry.route_command(command)?;
-        Some(module.handle_command(&full_cmd, params).await)
+        let module_name = module.config().name;
+
+        // Get metrics tracker for this module
+        let metrics = self.registry.get_metrics(module_name);
+        let queued_at = std::time::Instant::now();
+
+        // Execute command
+        let result = module.handle_command(&full_cmd, params).await;
+
+        // Record timing (automatic for ALL commands)
+        if let Some(metrics) = metrics {
+            let tracker = metrics.start_command(command, queued_at);
+            let timing = tracker.finish(result.is_ok());
+            metrics.record(timing);
+        }
+
+        Some(result)
     }
 
     /// Route a command synchronously (for use from rayon threads).
     /// Spawns async work on tokio and bridges via sync channel.
     /// This avoids "Cannot start a runtime from within a runtime" panics.
+    ///
+    /// AUTOMATIC METRICS: Every command is timed and recorded.
+    /// Module authors don't need to add timing code — the runtime handles it.
     pub fn route_command_sync(
         &self,
         command: &str,
@@ -96,6 +117,11 @@ impl Runtime {
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
         let (module, full_cmd) = self.registry.route_command(command)?;
+        let module_name = module.config().name;
+
+        // Get metrics tracker for this module (created at registration)
+        let metrics = self.registry.get_metrics(module_name);
+        let queued_at = std::time::Instant::now();
 
         // Use sync channel to bridge async -> sync safely
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -108,13 +134,22 @@ impl Runtime {
         // Wait for result from the tokio task - NO TIMEOUT.
         // Voice/TTS commands can run indefinitely for streaming audio.
         // If the task panics, recv() returns Err(RecvError).
-        match rx.recv() {
-            Ok(result) => Some(result),
+        let result = match rx.recv() {
+            Ok(result) => result,
             Err(_) => {
                 error!("Command handler task panicked or was cancelled: {command}");
-                Some(Err(format!("Command handler failed: {command}")))
+                Err(format!("Command handler failed: {command}"))
             }
+        };
+
+        // Record timing (automatic for ALL commands)
+        if let Some(metrics) = metrics {
+            let tracker = metrics.start_command(command, queued_at);
+            let timing = tracker.finish(result.is_ok());
+            metrics.record(timing);
         }
+
+        Some(result)
     }
 
     /// Get a reference to the registry for direct module lookup.
