@@ -13,10 +13,12 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
+import { SOCKETS } from '../../../shared/config';
+import { resolveSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
   // LoggerModule is now part of continuum-core (Phase 4a)
-  private readonly SOCKET_PATH = '/tmp/continuum-core.sock';
+  private readonly SOCKET_PATH = resolveSocketPath(SOCKETS.CONTINUUM_CORE);
   private loggerClient: LoggerWorkerClient | null = null;
   private connectionAttempted = false;
   private connectionFailed = false;

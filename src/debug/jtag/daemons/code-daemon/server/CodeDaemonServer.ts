@@ -11,7 +11,7 @@ import type {
   WorkspaceEditMode,
 } from '../shared/CodeDaemonTypes';
 import { Logger } from '../../../system/core/logging/Logger';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 /**
  * Initialize CodeDaemon for server usage.
@@ -25,7 +25,7 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
   // Workspace-Scoped Operations (Rust IPC backed)
   // ========================================================================
 
-  const rustClient = new RustCoreIPCClient('/tmp/continuum-core.sock');
+  const rustClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
   try {
     await rustClient.connect();
     log.info('Connected to continuum-core for workspace operations');

@@ -14,7 +14,31 @@
  */
 
 import net from 'net';
+import path from 'path';
 import { EventEmitter } from 'events';
+import { SOCKETS } from '../../../shared/config';
+
+/**
+ * Resolve socket path to absolute path.
+ * Socket config uses relative paths from project root.
+ * This helper resolves them to absolute paths for Unix socket connections.
+ */
+export function resolveSocketPath(socketPath: string): string {
+	// If already absolute, return as-is
+	if (path.isAbsolute(socketPath)) {
+		return socketPath;
+	}
+	// Resolve relative to current working directory (project root)
+	return path.resolve(process.cwd(), socketPath);
+}
+
+/**
+ * Get the default continuum-core socket path (resolved to absolute).
+ * Use this instead of hardcoding paths.
+ */
+export function getContinuumCoreSocketPath(): string {
+	return resolveSocketPath(SOCKETS.CONTINUUM_CORE);
+}
 
 // Import generated types from Rust (single source of truth)
 import type {
@@ -1464,6 +1488,154 @@ export class RustCoreIPCClient extends EventEmitter {
 		return {
 			params: response.result?.params || [],
 			values: response.result?.values || {},
+		};
+	}
+
+	// ========================================================================
+	// Runtime Module Methods (system monitoring & observability)
+	// ========================================================================
+
+	/**
+	 * List all registered modules with their configurations.
+	 * Returns module names, priorities, command prefixes, and thread settings.
+	 */
+	async runtimeList(): Promise<{
+		modules: Array<{
+			name: string;
+			priority: string;
+			command_prefixes: string[];
+			needs_dedicated_thread: boolean;
+			max_concurrency: number;
+		}>;
+		count: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/list',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to list runtime modules');
+		}
+
+		return response.result as {
+			modules: Array<{
+				name: string;
+				priority: string;
+				command_prefixes: string[];
+				needs_dedicated_thread: boolean;
+				max_concurrency: number;
+			}>;
+			count: number;
+		};
+	}
+
+	/**
+	 * Get performance metrics for all modules.
+	 * Returns aggregate stats including command counts, avg latency, percentiles.
+	 */
+	async runtimeMetricsAll(): Promise<{
+		modules: Array<{
+			moduleName: string;
+			totalCommands: number;
+			avgTimeMs: number;
+			slowCommandCount: number;
+			p50Ms: number;
+			p95Ms: number;
+			p99Ms: number;
+		}>;
+		count: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/metrics/all',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get runtime metrics');
+		}
+
+		// Convert bigint fields to number (ts-rs exports u64 as bigint)
+		const result = response.result as { modules: any[]; count: number };
+		return {
+			modules: result.modules.map((m: any) => ({
+				moduleName: m.moduleName,
+				totalCommands: Number(m.totalCommands),
+				avgTimeMs: Number(m.avgTimeMs),
+				slowCommandCount: Number(m.slowCommandCount),
+				p50Ms: Number(m.p50Ms),
+				p95Ms: Number(m.p95Ms),
+				p99Ms: Number(m.p99Ms),
+			})),
+			count: result.count,
+		};
+	}
+
+	/**
+	 * Get performance metrics for a specific module.
+	 */
+	async runtimeMetricsModule(moduleName: string): Promise<{
+		moduleName: string;
+		totalCommands: number;
+		avgTimeMs: number;
+		slowCommandCount: number;
+		p50Ms: number;
+		p95Ms: number;
+		p99Ms: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/metrics/module',
+			module: moduleName,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || `Failed to get metrics for module: ${moduleName}`);
+		}
+
+		// Convert bigint fields to number
+		const m = response.result as any;
+		return {
+			moduleName: m.moduleName,
+			totalCommands: Number(m.totalCommands),
+			avgTimeMs: Number(m.avgTimeMs),
+			slowCommandCount: Number(m.slowCommandCount),
+			p50Ms: Number(m.p50Ms),
+			p95Ms: Number(m.p95Ms),
+			p99Ms: Number(m.p99Ms),
+		};
+	}
+
+	/**
+	 * Get list of recent slow commands (>50ms) across all modules.
+	 * Sorted by total_ms descending.
+	 */
+	async runtimeMetricsSlow(): Promise<{
+		slow_commands: Array<{
+			module: string;
+			command: string;
+			total_ms: number;
+			execute_ms: number;
+			queue_ms: number;
+		}>;
+		count: number;
+		threshold_ms: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/metrics/slow',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get slow commands');
+		}
+
+		return response.result as {
+			slow_commands: Array<{
+				module: string;
+				command: string;
+				total_ms: number;
+				execute_ms: number;
+				queue_ms: number;
+			}>;
+			count: number;
+			threshold_ms: number;
 		};
 	}
 

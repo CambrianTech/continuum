@@ -11,12 +11,16 @@
  */
 
 import * as net from 'net';
+import * as path from 'path';
 import { Logger } from '../logging/Logger';
+import { SOCKETS } from '../../../shared/config';
 
 const log = Logger.create('RustVectorSearchClient', 'vector');
 
-/** Socket path for continuum-core (unified runtime) */
-const DEFAULT_SOCKET_PATH = '/tmp/continuum-core.sock';
+/** Socket path for continuum-core (unified runtime) - resolved from shared config */
+const DEFAULT_SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
+  ? SOCKETS.CONTINUUM_CORE
+  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
 
 /** Response from Rust worker */
 interface RustResponse {

@@ -6,7 +6,7 @@
  *
  * ARCHITECTURE:
  * - TypeScript ORM.ts delegates to this client when shouldUseRust() returns true
- * - This client sends JSON requests to /tmp/continuum-core.sock
+ * - This client sends JSON requests to continuum-core socket (from shared/config.ts)
  * - Rust DataModule handles all database I/O with connection pooling
  * - NO FALLBACKS: If Rust fails, we fail. Period.
  *
@@ -14,6 +14,7 @@
  */
 
 import net from 'net';
+import path from 'path';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import type {
@@ -25,14 +26,17 @@ import type {
   JoinSpec,
 } from '../shared/DataStorageAdapter';
 import type { VectorSearchResult } from '../shared/VectorSearchTypes';
+import { SOCKETS } from '../../../shared/config';
 
 // Input type for joins (allows optional properties)
 type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;
 import { getServerConfig } from '../../../system/config/ServerConfig';
 // NOTE: No SqlNamingConverter import - Rust SqliteAdapter handles all naming conversions
 
-// Socket path for continuum-core
-const SOCKET_PATH = '/tmp/continuum-core.sock';
+// Socket path for continuum-core - resolved from config
+const SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
+  ? SOCKETS.CONTINUUM_CORE
+  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
 
 /**
  * Rust StorageResult<T> - matches orm/types.rs StorageResult

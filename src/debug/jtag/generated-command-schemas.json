@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-09T19:58:28.752Z",
+  "generated": "2026-02-09T22:26:42.165Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1583,6 +1583,22 @@
           "type": "object",
           "required": false,
           "description": "params parameter"
+        }
+      }
+    },
+    {
+      "name": "runtime/metrics",
+      "description": "Runtime Metrics Command - Shared Types\n *\n * Query Rust module performance metrics including latency percentiles, command counts, and slow command tracking.\n * Enables AI-driven system analysis and optimization (Ares pattern).\n *\n * Uses ts-rs generated types from Rust as source of truth for wire format.",
+      "params": {
+        "mode": {
+          "type": "string",
+          "required": false,
+          "description": "mode parameter"
+        },
+        "module": {
+          "type": "string",
+          "required": false,
+          "description": "module parameter"
         }
       }
     },

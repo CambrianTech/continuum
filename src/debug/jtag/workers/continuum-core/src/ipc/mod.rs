@@ -671,6 +671,12 @@ pub fn start_server(
         }
     });
 
+    // Verify all expected modules are registered (fails server if any missing)
+    if let Err(e) = runtime.verify_registration() {
+        log_error!("ipc", "server", "{}", e);
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+    }
+
     log_info!("ipc", "server", "Modular runtime ready with {} modules: {:?}",
         runtime.registry().list_modules().len(),
         runtime.registry().list_modules());

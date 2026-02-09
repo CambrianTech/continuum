@@ -15,7 +15,7 @@
  * Rust handles: Fast compute, state tracking, deduplication
  */
 
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import type {
   InboxMessageRequest,
   CognitionDecision,
@@ -37,7 +37,7 @@ import type { MemoryRecallResponse } from '../../../../workers/continuum-core/bi
 import type { MultiLayerRecallRequest } from '../../../../workers/continuum-core/bindings/MultiLayerRecallRequest';
 import type { ConsciousnessContextResponse } from '../../../../workers/continuum-core/bindings/ConsciousnessContextResponse';
 
-const SOCKET_PATH = '/tmp/continuum-core.sock';
+const SOCKET_PATH = getContinuumCoreSocketPath();
 
 /**
  * Interface for PersonaUser dependency injection

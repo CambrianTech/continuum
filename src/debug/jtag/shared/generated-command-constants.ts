@@ -186,6 +186,7 @@ export const COMMANDS = {
   PROCESS_REGISTRY: 'process-registry',
   RAG_BUDGET: 'rag/budget',
   RAG_LOAD: 'rag/load',
+  RUNTIME_METRICS: 'runtime/metrics',
   SEARCH_EXECUTE: 'search/execute',
   SEARCH_LIST: 'search/list',
   SEARCH_PARAMS: 'search/params',

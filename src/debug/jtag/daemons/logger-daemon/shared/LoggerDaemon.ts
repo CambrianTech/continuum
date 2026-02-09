@@ -133,7 +133,7 @@ export abstract class LoggerDaemon extends DaemonBase {
   
   /**
    * Lifecycle: Start
-   * Connect to continuum-core LoggerModule via Unix socket (/tmp/continuum-core.sock)
+   * Connect to continuum-core LoggerModule via Unix socket (.continuum/sockets/continuum-core.sock)
    */
   protected async onStart(): Promise<void> {
     // TODO: Implement onStart logic

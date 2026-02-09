@@ -14,6 +14,18 @@
 export const HTTP_PORT = 9000;
 export const WS_PORT = 9001;
 
+// Socket Configuration - Single Source of Truth
+// All Rust workers and TypeScript clients use these paths
+export const SOCKET_DIR = '.continuum/sockets';
+export const SOCKETS = {
+  /** Main continuum-core runtime socket */
+  CONTINUUM_CORE: '.continuum/sockets/continuum-core.sock',
+  /** Archive worker socket */
+  ARCHIVE: '.continuum/sockets/archive-worker.sock',
+  /** Inference/GPU worker socket (gRPC) */
+  INFERENCE: '.continuum/sockets/inference.sock',
+} as const;
+
 // Active Example Configuration (from package.json)
 export const ACTIVE_EXAMPLE = 'widget-ui';
 

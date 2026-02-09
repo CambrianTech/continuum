@@ -7,14 +7,14 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { SearchListParams, SearchListResult } from '../shared/SearchListTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class SearchListServerCommand extends CommandBase<SearchListParams, SearchListResult> {
   private rustClient: RustCoreIPCClient;
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('search/list', context, subpath, commander);
-    this.rustClient = new RustCoreIPCClient('/tmp/continuum-core.sock');
+    this.rustClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
   }
 
   async execute(params: JTAGPayload): Promise<SearchListResult> {

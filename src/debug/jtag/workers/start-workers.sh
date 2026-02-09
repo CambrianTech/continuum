@@ -53,8 +53,9 @@ SCRIPT_DIR="$(dirname "$0")"
 (cd "$SCRIPT_DIR" && cargo build --release --quiet)
 echo -e "${GREEN}✅ Build complete${NC}"
 
-# Setup log directory
+# Setup directories
 mkdir -p .continuum/jtag/logs/system
+mkdir -p .continuum/sockets
 
 # Kill existing workers and clean sockets (same as stop-workers.sh)
 echo -e "${YELLOW}🔄 Stopping existing workers...${NC}"

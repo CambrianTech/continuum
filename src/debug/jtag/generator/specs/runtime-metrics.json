@@ -1,0 +1,69 @@
+{
+  "name": "runtime/metrics",
+  "description": "Query Rust module performance metrics including latency percentiles, command counts, and slow command tracking. Enables AI-driven system analysis and optimization.",
+  "params": [
+    {
+      "name": "mode",
+      "type": "'all' | 'module' | 'slow' | 'list'",
+      "optional": true,
+      "description": "Query mode: 'all' for all modules (default), 'module' for specific module, 'slow' for recent slow commands, 'list' for module configs"
+    },
+    {
+      "name": "module",
+      "type": "string",
+      "optional": true,
+      "description": "Module name when mode='module' (e.g., 'data', 'embedding', 'cognition')"
+    }
+  ],
+  "results": [
+    {
+      "name": "modules",
+      "type": "ModuleMetrics[]",
+      "description": "Array of module metrics (when mode='all' or 'module')"
+    },
+    {
+      "name": "slowCommands",
+      "type": "SlowCommand[]",
+      "description": "Array of slow commands (when mode='slow')"
+    },
+    {
+      "name": "moduleConfigs",
+      "type": "ModuleConfig[]",
+      "description": "Array of module configurations (when mode='list')"
+    },
+    {
+      "name": "count",
+      "type": "number",
+      "description": "Number of items in the result"
+    },
+    {
+      "name": "thresholdMs",
+      "type": "number",
+      "description": "Slow command threshold in ms (when mode='slow')"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Get metrics for all modules",
+      "command": "./jtag runtime/metrics",
+      "expectedResult": "{ modules: [...], count: 13 }"
+    },
+    {
+      "description": "Get metrics for a specific module",
+      "command": "./jtag runtime/metrics --mode=module --module=embedding",
+      "expectedResult": "{ modules: [{ moduleName: 'embedding', avgTimeMs: 90, p99Ms: 552, ... }], count: 1 }"
+    },
+    {
+      "description": "List recent slow commands",
+      "command": "./jtag runtime/metrics --mode=slow",
+      "expectedResult": "{ slowCommands: [...], count: 5, thresholdMs: 50 }"
+    },
+    {
+      "description": "List all module configurations",
+      "command": "./jtag runtime/metrics --mode=list",
+      "expectedResult": "{ moduleConfigs: [...], count: 13 }"
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "environment": "server"
+}

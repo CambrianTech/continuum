@@ -20,7 +20,7 @@ import { initializeSecrets, getSecret } from '../../../system/secrets/SecretMana
 import { Logger } from '../../../system/core/logging/Logger';
 import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class AIProviderDaemonServer extends AIProviderDaemon {
   private processPool?: ProcessPool;
@@ -305,7 +305,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     this.log.info(`Sending ${providers.length} provider configs to Rust for model discovery...`);
 
     // Fire-and-forget IPC call to Rust — all HTTP runs in the Rust process
-    const client = new RustCoreIPCClient('/tmp/continuum-core.sock');
+    const client = new RustCoreIPCClient(getContinuumCoreSocketPath());
     client.connect()
       .then(() => client.modelsDiscover(providers))
       .then(async (result) => {

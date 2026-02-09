@@ -50,7 +50,7 @@ export const loggerDaemonSpec: DaemonSpec = {
   ],
 
   lifecycle: {
-    onStart: 'Connect to continuum-core LoggerModule via Unix socket (/tmp/continuum-core.sock)',
+    onStart: 'Connect to continuum-core LoggerModule via Unix socket (.continuum/sockets/continuum-core.sock)',
     onStop: 'Disconnect from continuum-core gracefully'
   }
 };

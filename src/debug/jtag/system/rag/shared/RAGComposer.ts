@@ -56,8 +56,8 @@ async function getSharedIPCClient(): Promise<RustCoreIPCClientType> {
   }
 
   // Create new client and connect
-  const { RustCoreIPCClient } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
-  const client = new RustCoreIPCClient('/tmp/continuum-core.sock');
+  const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+  const client = new RustCoreIPCClient(getContinuumCoreSocketPath());
 
   ipcConnecting = client.connect().then(() => {
     sharedIPCClient = client;
