@@ -1702,6 +1702,48 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
+	 * Cluster embeddings using connected components algorithm.
+	 * Full clustering in Rust (similarity matrix + graph traversal).
+	 *
+	 * @param embeddings Array of embedding vectors (all same dimension)
+	 * @param minSimilarity Minimum similarity threshold (0-1, default 0.7)
+	 * @param minClusterSize Minimum cluster size (default 2)
+	 * @returns Array of clusters with indices, strength, and representative
+	 */
+	async embeddingCluster(
+		embeddings: number[][],
+		minSimilarity = 0.7,
+		minClusterSize = 2
+	): Promise<{
+		clusters: Array<{
+			indices: number[];
+			strength: number;
+			representative: number;
+		}>;
+		count: number;
+		clusterCount: number;
+		durationMs: number;
+	}> {
+		const response = await this.request({
+			command: 'embedding/cluster',
+			embeddings,
+			minSimilarity,
+			minClusterSize,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to cluster embeddings');
+		}
+
+		return {
+			clusters: response.result?.clusters || [],
+			count: response.result?.count as number,
+			clusterCount: response.result?.clusterCount as number,
+			durationMs: response.result?.durationMs as number,
+		};
+	}
+
+	/**
 	 * Helper: Get index into pairwise similarity flat array.
 	 * For n items, the flat array contains (0,1), (0,2), ..., (n-2, n-1).
 	 *

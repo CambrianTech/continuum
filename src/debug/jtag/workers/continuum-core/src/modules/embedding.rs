@@ -195,6 +195,112 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
     result
 }
 
+// ─── Clustering Functions ───────────────────────────────────────────────────
+
+/// Cluster result from connected components clustering.
+#[derive(Serialize)]
+pub struct Cluster {
+    /// Indices of items in this cluster
+    pub indices: Vec<usize>,
+    /// Average intra-cluster similarity (cluster cohesion)
+    pub strength: f32,
+    /// Index of the most representative item (highest avg similarity to others)
+    pub representative: usize,
+}
+
+/// Detect clusters using connected components algorithm.
+/// Two items are connected if their similarity >= min_similarity.
+/// Returns clusters sorted by strength (descending).
+pub fn detect_clusters(
+    embeddings: &[Vec<f32>],
+    min_similarity: f32,
+    min_cluster_size: usize,
+) -> Vec<Cluster> {
+    let n = embeddings.len();
+    if n < min_cluster_size {
+        return vec![];
+    }
+
+    // Compute full similarity matrix (needed for cluster strength)
+    let similarities = pairwise_similarity_matrix(embeddings);
+
+    // Helper to get similarity from flat array
+    let get_sim = |i: usize, j: usize| -> f32 {
+        if i == j {
+            return 1.0;
+        }
+        let (a, b) = if i < j { (i, j) } else { (j, i) };
+        let idx = a * n - (a * (a + 1)) / 2 + (b - a - 1);
+        similarities[idx]
+    };
+
+    // Connected components via BFS
+    let mut visited = vec![false; n];
+    let mut clusters = Vec::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+
+        // BFS to find connected component
+        let mut component = Vec::new();
+        let mut queue = vec![start];
+
+        while let Some(node) = queue.pop() {
+            if visited[node] {
+                continue;
+            }
+            visited[node] = true;
+            component.push(node);
+
+            // Add neighbors above threshold
+            for neighbor in 0..n {
+                if !visited[neighbor] && get_sim(node, neighbor) >= min_similarity {
+                    queue.push(neighbor);
+                }
+            }
+        }
+
+        // Only keep clusters meeting minimum size
+        if component.len() >= min_cluster_size {
+            // Compute cluster strength (average intra-cluster similarity)
+            let mut total_sim = 0.0f32;
+            let mut count = 0;
+            for (i, &a) in component.iter().enumerate() {
+                for &b in component.iter().skip(i + 1) {
+                    total_sim += get_sim(a, b);
+                    count += 1;
+                }
+            }
+            let strength = if count > 0 { total_sim / count as f32 } else { 1.0 };
+
+            // Find representative (highest avg similarity to others in cluster)
+            let representative = component.iter()
+                .map(|&item| {
+                    let avg: f32 = component.iter()
+                        .filter(|&&other| other != item)
+                        .map(|&other| get_sim(item, other))
+                        .sum::<f32>() / (component.len() - 1).max(1) as f32;
+                    (item, avg)
+                })
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .map(|(item, _)| item)
+                .unwrap_or(component[0]);
+
+            clusters.push(Cluster {
+                indices: component,
+                strength,
+                representative,
+            });
+        }
+    }
+
+    // Sort by strength descending
+    clusters.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap());
+    clusters
+}
+
 #[derive(Serialize)]
 struct ModelInfo {
     name: String,
@@ -469,6 +575,64 @@ impl EmbeddingModule {
             data: bytes,
         })
     }
+
+    /// Handle embedding/cluster - detect clusters via connected components
+    ///
+    /// Takes embeddings and clustering parameters, returns cluster assignments.
+    /// Full clustering algorithm in Rust (similarity matrix + connected components).
+    fn handle_cluster(&self, params: &Value) -> Result<CommandResult, String> {
+        let embeddings: Vec<Vec<f32>> = params.get("embeddings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or("Missing or invalid 'embeddings' array")?;
+
+        let min_similarity = params.get("minSimilarity")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.7) as f32;
+
+        let min_cluster_size = params.get("minClusterSize")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(2) as usize;
+
+        let n = embeddings.len();
+        if n < min_cluster_size {
+            return Ok(CommandResult::Json(json!({
+                "clusters": [],
+                "count": n,
+                "clusterCount": 0
+            })));
+        }
+
+        // Verify all embeddings have same dimensions
+        let dim = embeddings[0].len();
+        for (i, emb) in embeddings.iter().enumerate() {
+            if emb.len() != dim {
+                return Err(format!(
+                    "Dimension mismatch at index {}: expected {}, got {}",
+                    i, dim, emb.len()
+                ));
+            }
+        }
+
+        let start = Instant::now();
+        let clusters = detect_clusters(&embeddings, min_similarity, min_cluster_size);
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        let cluster_count = clusters.len();
+        info!(
+            "Detected {} clusters from {} embeddings ({}d) in {}ms",
+            cluster_count, n, dim, duration_ms
+        );
+
+        Ok(CommandResult::Json(json!({
+            "clusters": clusters,
+            "count": n,
+            "clusterCount": cluster_count,
+            "dimensions": dim,
+            "minSimilarity": min_similarity,
+            "minClusterSize": min_cluster_size,
+            "durationMs": duration_ms
+        })))
+    }
 }
 
 impl Default for EmbeddingModule {
@@ -507,6 +671,7 @@ impl ServiceModule for EmbeddingModule {
             "embedding/generate" => self.handle_generate(&params),
             "embedding/similarity" => self.handle_similarity(&params),
             "embedding/similarity-matrix" => self.handle_similarity_matrix(&params),
+            "embedding/cluster" => self.handle_cluster(&params),
             "embedding/model/load" => self.handle_model_load(&params),
             "embedding/model/list" => self.handle_model_list(),
             "embedding/model/info" => self.handle_model_info(&params),
