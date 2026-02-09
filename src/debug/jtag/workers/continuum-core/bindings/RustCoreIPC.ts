@@ -139,8 +139,39 @@ export class RustCoreIPCClient extends EventEmitter {
 	private static readonly SLOW_IPC_THRESHOLD_MS = 500;
 	private static readonly SLOW_WARNING_COOLDOWN_MS = 10_000;
 
+	/** Singleton instance for shared use across modules */
+	private static _instance: RustCoreIPCClient | null = null;
+	private static _instancePromise: Promise<RustCoreIPCClient> | null = null;
+
 	constructor(private socketPath: string) {
 		super();
+	}
+
+	/**
+	 * Get shared singleton instance (auto-connects on first call).
+	 * Use this for simple one-off calls where managing connection lifecycle isn't needed.
+	 * For long-running services, prefer creating a dedicated instance.
+	 */
+	static getInstance(): RustCoreIPCClient {
+		if (!RustCoreIPCClient._instance) {
+			RustCoreIPCClient._instance = new RustCoreIPCClient(getContinuumCoreSocketPath());
+			// Connect asynchronously - methods will wait for connection
+			RustCoreIPCClient._instancePromise = RustCoreIPCClient._instance.connect()
+				.then(() => RustCoreIPCClient._instance!);
+		}
+		return RustCoreIPCClient._instance;
+	}
+
+	/**
+	 * Get shared singleton instance, waiting for connection to be established.
+	 * Use this when you need to ensure the connection is ready before proceeding.
+	 */
+	static async getInstanceAsync(): Promise<RustCoreIPCClient> {
+		if (!RustCoreIPCClient._instance) {
+			RustCoreIPCClient.getInstance(); // Initialize
+		}
+		await RustCoreIPCClient._instancePromise;
+		return RustCoreIPCClient._instance!;
 	}
 
 	/**
@@ -235,13 +266,26 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
+	 * Ensure connected before making request.
+	 * If this is the singleton instance, waits for connection to complete.
+	 */
+	private async ensureConnected(): Promise<void> {
+		// If we're the singleton and have a pending connection, wait for it
+		if (this === RustCoreIPCClient._instance && RustCoreIPCClient._instancePromise) {
+			await RustCoreIPCClient._instancePromise;
+		}
+
+		if (!this.connected || !this.socket) {
+			throw new Error('Not connected to continuum-core server');
+		}
+	}
+
+	/**
 	 * Send a request and wait for full response (including optional binary data).
 	 * Used internally by request() and by methods that need binary payloads.
 	 */
 	private async requestFull(command: any): Promise<IPCResponse> {
-		if (!this.connected || !this.socket) {
-			throw new Error('Not connected to continuum-core server');
-		}
+		await this.ensureConnected();
 
 		const requestId = this.nextRequestId++;
 		const requestWithId = { ...command, requestId };
@@ -1739,6 +1783,50 @@ export class RustCoreIPCClient extends EventEmitter {
 			clusters: response.result?.clusters || [],
 			count: response.result?.count as number,
 			clusterCount: response.result?.clusterCount as number,
+			durationMs: response.result?.durationMs as number,
+		};
+	}
+
+	/**
+	 * Find top-k most similar embeddings to a query.
+	 * Parallelized with Rayon in Rust.
+	 *
+	 * Use this for semantic search - finding most similar items to a query.
+	 * This replaces TypeScript loops with Rust parallel computation.
+	 *
+	 * @param query The query embedding vector
+	 * @param targets Array of target embedding vectors to search
+	 * @param k Maximum number of results to return (default 10)
+	 * @param threshold Minimum similarity threshold (default 0.0)
+	 * @returns Array of { index, similarity } sorted by similarity descending
+	 */
+	async embeddingTopK(
+		query: number[],
+		targets: number[][],
+		k = 10,
+		threshold = 0.0
+	): Promise<{
+		results: Array<{ index: number; similarity: number }>;
+		count: number;
+		totalTargets: number;
+		durationMs: number;
+	}> {
+		const response = await this.request({
+			command: 'embedding/top-k',
+			query,
+			targets,
+			k,
+			threshold,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to find top-k similar');
+		}
+
+		return {
+			results: response.result?.results || [],
+			count: response.result?.count as number,
+			totalTargets: response.result?.totalTargets as number,
 			durationMs: response.result?.durationMs as number,
 		};
 	}

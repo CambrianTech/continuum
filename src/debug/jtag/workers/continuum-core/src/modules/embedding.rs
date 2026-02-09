@@ -195,6 +195,36 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
     result
 }
 
+/// Compute similarity of one query vector against multiple target vectors.
+/// Returns Vec<f32> of similarities (one per target), parallelized with Rayon.
+/// Use case: semantic search - find most similar items to a query.
+pub fn query_similarity_batch(query: &[f32], targets: &[Vec<f32>]) -> Vec<f32> {
+    targets.par_iter()
+        .map(|target| cosine_similarity(query, target))
+        .collect()
+}
+
+/// Find top-k most similar targets to a query.
+/// Returns indices and similarities sorted by similarity descending.
+pub fn top_k_similar(
+    query: &[f32],
+    targets: &[Vec<f32>],
+    k: usize,
+    threshold: f32,
+) -> Vec<(usize, f32)> {
+    let similarities: Vec<(usize, f32)> = targets.par_iter()
+        .enumerate()
+        .map(|(i, target)| (i, cosine_similarity(query, target)))
+        .filter(|(_, sim)| *sim >= threshold)
+        .collect();
+
+    // Sort by similarity descending and take top k
+    let mut sorted = similarities;
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    sorted.truncate(k);
+    sorted
+}
+
 // ─── Clustering Functions ───────────────────────────────────────────────────
 
 /// Cluster result from connected components clustering.
@@ -576,6 +606,70 @@ impl EmbeddingModule {
         })
     }
 
+    /// Handle embedding/top-k - find top-k most similar embeddings to a query
+    ///
+    /// Takes a query embedding and array of target embeddings, returns indices
+    /// and similarities of top-k matches. Parallelized with Rayon.
+    fn handle_top_k(&self, params: &Value) -> Result<CommandResult, String> {
+        let query: Vec<f32> = params.get("query")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or("Missing or invalid 'query' vector")?;
+
+        let targets: Vec<Vec<f32>> = params.get("targets")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or("Missing or invalid 'targets' array")?;
+
+        let k = params.get("k")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10) as usize;
+
+        let threshold = params.get("threshold")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as f32;
+
+        if targets.is_empty() {
+            return Ok(CommandResult::Json(json!({
+                "results": [],
+                "count": 0
+            })));
+        }
+
+        // Verify dimensions match
+        let dim = query.len();
+        for (i, target) in targets.iter().enumerate() {
+            if target.len() != dim {
+                return Err(format!(
+                    "Dimension mismatch at target index {}: expected {}, got {}",
+                    i, dim, target.len()
+                ));
+            }
+        }
+
+        let start = Instant::now();
+        let results = top_k_similar(&query, &targets, k, threshold);
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        info!(
+            "Found {} top-k matches from {} targets ({}d) in {}ms",
+            results.len(), targets.len(), dim, duration_ms
+        );
+
+        // Return as array of {index, similarity} objects
+        let result_objects: Vec<Value> = results.iter()
+            .map(|(idx, sim)| json!({ "index": idx, "similarity": sim }))
+            .collect();
+
+        Ok(CommandResult::Json(json!({
+            "results": result_objects,
+            "count": results.len(),
+            "totalTargets": targets.len(),
+            "k": k,
+            "threshold": threshold,
+            "dimensions": dim,
+            "durationMs": duration_ms
+        })))
+    }
+
     /// Handle embedding/cluster - detect clusters via connected components
     ///
     /// Takes embeddings and clustering parameters, returns cluster assignments.
@@ -671,6 +765,7 @@ impl ServiceModule for EmbeddingModule {
             "embedding/generate" => self.handle_generate(&params),
             "embedding/similarity" => self.handle_similarity(&params),
             "embedding/similarity-matrix" => self.handle_similarity_matrix(&params),
+            "embedding/top-k" => self.handle_top_k(&params),
             "embedding/cluster" => self.handle_cluster(&params),
             "embedding/model/load" => self.handle_model_load(&params),
             "embedding/model/list" => self.handle_model_list(),
