@@ -81,7 +81,6 @@ export const DAEMON_DEPENDENCIES: DaemonDependency[] = [
   { name: 'LoggerDaemon', waitFor: [], phase: 'lightweight' },
   { name: 'ConsoleDaemon', waitFor: ['LoggerDaemon'], phase: 'lightweight' },
   { name: 'ArtifactsDaemon', waitFor: [], phase: 'lightweight' },
-  { name: 'CommsTestDaemon', waitFor: [], phase: 'lightweight' },
 ];
 
 // ============================================================================
