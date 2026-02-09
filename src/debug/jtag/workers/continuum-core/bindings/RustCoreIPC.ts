@@ -1639,6 +1639,83 @@ export class RustCoreIPCClient extends EventEmitter {
 		};
 	}
 
+	// ============================================================================
+	// Embedding Similarity Operations (Phase 7: Move Compute to Rust)
+	// ============================================================================
+
+	/**
+	 * Compute cosine similarity between two embeddings.
+	 * Much faster than TypeScript due to SIMD vectorization in release mode.
+	 */
+	async embeddingSimilarity(a: number[], b: number[]): Promise<number> {
+		const response = await this.request({
+			command: 'embedding/similarity',
+			a,
+			b,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compute similarity');
+		}
+
+		return response.result?.similarity as number;
+	}
+
+	/**
+	 * Compute pairwise cosine similarity matrix for a set of embeddings.
+	 * Parallelized with Rayon in Rust for O(n²) speedup.
+	 *
+	 * Returns flat lower-triangular matrix (n*(n-1)/2 values).
+	 * Use indexPairwiseSimilarity() to extract individual pairs.
+	 *
+	 * @param embeddings Array of embedding vectors (all same dimension)
+	 * @returns Object with flat similarity array and metadata
+	 */
+	async embeddingSimilarityMatrix(embeddings: number[][]): Promise<{
+		similarities: Float32Array;
+		count: number;
+		pairs: number;
+		dimensions: number;
+		durationMs: number;
+	}> {
+		const { response, binaryData } = await this.requestFull({
+			command: 'embedding/similarity-matrix',
+			embeddings,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compute similarity matrix');
+		}
+
+		// Binary response contains f32 array
+		const similarities = binaryData
+			? new Float32Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength / 4)
+			: new Float32Array(0);
+
+		return {
+			similarities,
+			count: response.result?.count as number,
+			pairs: response.result?.pairs as number,
+			dimensions: response.result?.dimensions as number,
+			durationMs: response.result?.durationMs as number,
+		};
+	}
+
+	/**
+	 * Helper: Get index into pairwise similarity flat array.
+	 * For n items, the flat array contains (0,1), (0,2), ..., (n-2, n-1).
+	 *
+	 * @param i First item index (must be < j)
+	 * @param j Second item index
+	 * @param n Total number of items
+	 */
+	static indexPairwiseSimilarity(i: number, j: number, n: number): number {
+		// Ensure i < j
+		if (i > j) [i, j] = [j, i];
+		// Index formula for lower-triangular without diagonal
+		return i * n - (i * (i + 1)) / 2 + (j - i - 1);
+	}
+
 	/**
 	 * Disconnect from server
 	 */

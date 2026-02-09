@@ -15,6 +15,7 @@ use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult,
 use async_trait::async_trait;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use once_cell::sync::OnceCell;
+use rayon::prelude::*;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::any::Any;
@@ -133,6 +134,65 @@ pub fn generate_embeddings_batch(texts: &[&str], model_name: &str) -> Result<Vec
     embedding_model
         .embed(texts.to_vec(), None)
         .map_err(|e| format!("Embedding generation failed: {e}"))
+}
+
+// ─── Similarity Functions ───────────────────────────────────────────────────
+
+/// Cosine similarity between two embedding vectors.
+/// Returns value in [-1, 1] where 1 = identical, 0 = orthogonal, -1 = opposite.
+/// SIMD-optimized in release mode via rustc auto-vectorization.
+#[inline]
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+        norm_a += a[i] * a[i];
+        norm_b += b[i] * b[i];
+    }
+
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom == 0.0 { 0.0 } else { dot / denom }
+}
+
+/// Compute pairwise cosine similarity matrix in parallel.
+/// Returns flattened lower-triangular matrix (excluding diagonal) as Vec<f32>.
+/// For n vectors, returns n*(n-1)/2 similarities.
+///
+/// Layout: [(0,1), (0,2), ..., (0,n-1), (1,2), (1,3), ..., (n-2,n-1)]
+///
+/// This is O(n²) but parallelized with Rayon for significant speedup.
+pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
+    let n = embeddings.len();
+    if n < 2 {
+        return vec![];
+    }
+
+    // Number of pairs: n choose 2 = n*(n-1)/2
+    let num_pairs = n * (n - 1) / 2;
+
+    // Pre-allocate result
+    let mut result = vec![0.0f32; num_pairs];
+
+    // Generate all (i,j) pairs where i < j
+    let pairs: Vec<(usize, usize)> = (0..n)
+        .flat_map(|i| (i+1..n).map(move |j| (i, j)))
+        .collect();
+
+    // Compute similarities in parallel with Rayon
+    pairs.par_iter()
+        .zip(result.par_iter_mut())
+        .for_each(|((i, j), sim)| {
+            *sim = cosine_similarity(&embeddings[*i], &embeddings[*j]);
+        });
+
+    result
 }
 
 #[derive(Serialize)]
@@ -329,6 +389,86 @@ impl EmbeddingModule {
             Err(format!("Model not loaded: {model}"))
         }
     }
+
+    /// Handle embedding/similarity - compute cosine similarity between two embeddings
+    fn handle_similarity(&self, params: &Value) -> Result<CommandResult, String> {
+        let a: Vec<f32> = params.get("a")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or("Missing or invalid 'a' vector")?;
+
+        let b: Vec<f32> = params.get("b")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or("Missing or invalid 'b' vector")?;
+
+        if a.len() != b.len() {
+            return Err(format!("Dimension mismatch: {} vs {}", a.len(), b.len()));
+        }
+
+        let similarity = cosine_similarity(&a, &b);
+
+        Ok(CommandResult::Json(json!({
+            "similarity": similarity,
+            "dimensions": a.len()
+        })))
+    }
+
+    /// Handle embedding/similarity-matrix - compute pairwise similarities in parallel
+    ///
+    /// Takes an array of embeddings, returns lower-triangular similarity matrix.
+    /// For n embeddings, returns n*(n-1)/2 similarity values.
+    fn handle_similarity_matrix(&self, params: &Value) -> Result<CommandResult, String> {
+        let embeddings: Vec<Vec<f32>> = params.get("embeddings")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or("Missing or invalid 'embeddings' array")?;
+
+        let n = embeddings.len();
+        if n < 2 {
+            return Ok(CommandResult::Json(json!({
+                "similarities": [],
+                "count": n,
+                "pairs": 0
+            })));
+        }
+
+        // Verify all embeddings have same dimensions
+        let dim = embeddings[0].len();
+        for (i, emb) in embeddings.iter().enumerate() {
+            if emb.len() != dim {
+                return Err(format!(
+                    "Dimension mismatch at index {}: expected {}, got {}",
+                    i, dim, emb.len()
+                ));
+            }
+        }
+
+        let start = Instant::now();
+        let similarities = pairwise_similarity_matrix(&embeddings);
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        let num_pairs = similarities.len();
+        info!(
+            "Computed {} pairwise similarities ({} embeddings, {}d) in {}ms",
+            num_pairs, n, dim, duration_ms
+        );
+
+        // Return as binary for efficiency (avoid JSON number serialization overhead)
+        let bytes: Vec<u8> = similarities.iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+
+        Ok(CommandResult::Binary {
+            metadata: json!({
+                "type": "binary",
+                "length": bytes.len(),
+                "dtype": "f32",
+                "count": n,
+                "pairs": num_pairs,
+                "dimensions": dim,
+                "durationMs": duration_ms
+            }),
+            data: bytes,
+        })
+    }
 }
 
 impl Default for EmbeddingModule {
@@ -365,6 +505,8 @@ impl ServiceModule for EmbeddingModule {
     ) -> Result<CommandResult, String> {
         match command {
             "embedding/generate" => self.handle_generate(&params),
+            "embedding/similarity" => self.handle_similarity(&params),
+            "embedding/similarity-matrix" => self.handle_similarity_matrix(&params),
             "embedding/model/load" => self.handle_model_load(&params),
             "embedding/model/list" => self.handle_model_list(),
             "embedding/model/info" => self.handle_model_info(&params),

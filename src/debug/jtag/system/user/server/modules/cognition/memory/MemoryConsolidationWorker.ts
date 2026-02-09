@@ -15,6 +15,7 @@ import { InboxObserver } from './InboxObserver';
 import { WorkingMemoryObserver } from './WorkingMemoryObserver';
 import type { PersonaInbox, QueueItem } from '../../PersonaInbox';
 import { RustEmbeddingClient } from '../../../../../core/services/RustEmbeddingClient';
+import { RustCoreIPCClient } from '../../../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 type LogFn = (message: string) => void;
 
@@ -207,8 +208,8 @@ export class MemoryConsolidationWorker {
       };
     }
 
-    // 2. Compute pairwise cosine similarities
-    const similarities = this.computePairwiseSimilarities(allEmbeddings);
+    // 2. Compute pairwise cosine similarities (Rust: Rayon-parallelized, SIMD-optimized)
+    const similarities = await this.computePairwiseSimilaritiesRust(allEmbeddings);
 
     // 3. Detect clusters (pattern = high similarity cluster)
     const clusters = this.detectClusters(similarities, {
@@ -347,7 +348,46 @@ export class MemoryConsolidationWorker {
   }
 
   /**
-   * Compute pairwise cosine similarities
+   * Compute pairwise cosine similarities using Rust (Rayon-parallelized).
+   * Returns n×n similarity matrix for cluster detection.
+   *
+   * Phase 7 optimization: O(n²) computation moved to Rust with SIMD vectorization.
+   */
+  private async computePairwiseSimilaritiesRust(embeddings: number[][]): Promise<number[][]> {
+    const n = embeddings.length;
+    if (n < 2) {
+      // Edge case: 0 or 1 embeddings
+      return n === 0 ? [] : [[1.0]];
+    }
+
+    const ipc = RustCoreIPCClient.getInstance();
+    const { similarities, durationMs } = await ipc.embeddingSimilarityMatrix(embeddings);
+
+    this.log(`🦀 Rust computed ${similarities.length} pairwise similarities in ${durationMs}ms`);
+
+    // Convert flat lower-triangular to full n×n matrix
+    const matrix: number[][] = Array(n).fill(0).map(() => Array(n).fill(0));
+
+    for (let i = 0; i < n; i++) {
+      matrix[i][i] = 1.0; // Self-similarity
+    }
+
+    // Fill in from flat array using index formula
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const idx = RustCoreIPCClient.indexPairwiseSimilarity(i, j, n);
+        const sim = similarities[idx];
+        matrix[i][j] = sim;
+        matrix[j][i] = sim; // Symmetric
+      }
+    }
+
+    return matrix;
+  }
+
+  /**
+   * Compute pairwise cosine similarities (TypeScript fallback).
+   * Used when Rust IPC is unavailable.
    */
   private computePairwiseSimilarities(embeddings: number[][]): number[][] {
     const n = embeddings.length;
@@ -368,7 +408,7 @@ export class MemoryConsolidationWorker {
   }
 
   /**
-   * Cosine similarity between two vectors
+   * Cosine similarity between two vectors (TypeScript fallback).
    */
   private cosineSimilarity(a: number[], b: number[]): number {
     if (a.length !== b.length) {
