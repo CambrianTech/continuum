@@ -18,7 +18,8 @@ console.log('🦀 Testing continuum-core FFI...\n');
 
 console.log('1. Testing initialization...');
 try {
-	RustCore.init('/tmp/jtag-logger-worker.sock');
+	// LoggerModule is now part of continuum-core (Phase 4a)
+	RustCore.init('/tmp/continuum-core.sock');
 	console.log('   ✅ Initialized\n');
 } catch (e) {
 	console.error('   ❌ Init failed:', e);

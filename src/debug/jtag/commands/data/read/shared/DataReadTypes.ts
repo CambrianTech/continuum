@@ -1,5 +1,10 @@
 /**
- * Data Read Command - Shared Types
+ * Data Read Command - Read a single entity by ID
+ *
+ * Common collections: users, rooms, chat_messages, memories, tasks, skills, wall_documents
+ *
+ * @example data/read --collection="users" --id="abc-123"
+ * @example data/read --collection="chat_messages" --id="msg-456"
  */
 
 import type { JTAGContext, JTAGEnvironment } from '../../../../system/core/types/JTAGTypes';

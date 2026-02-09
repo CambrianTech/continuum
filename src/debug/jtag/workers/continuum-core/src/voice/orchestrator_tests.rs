@@ -13,6 +13,7 @@ mod tests {
     const TEST_SPEAKER: &str = "00000000-0000-0000-0000-000000000010";
     const TEST_AI_1: &str = "00000000-0000-0000-0000-000000000020";
     const TEST_AI_2: &str = "00000000-0000-0000-0000-000000000021";
+    #[allow(dead_code)]
     const TEST_AI_3: &str = "00000000-0000-0000-0000-000000000022";
 
     fn create_test_ai(id: &str, name: &str) -> VoiceParticipant {
@@ -345,7 +346,7 @@ mod tests {
         let mut handles = vec![];
 
         // Register 10 sessions concurrently
-        for i in 0..10 {
+        for _ in 0..10 {
             let orch = Arc::clone(&orchestrator);
             let handle = thread::spawn(move || {
                 let session_id = Uuid::new_v4();
@@ -378,13 +379,13 @@ mod tests {
         let mut handles = vec![];
 
         // Concurrently register and unregister same session
-        for i in 0..5 {
+        for idx in 0..5 {
             let orch = Arc::clone(&orchestrator);
             let sid = session_id;
             let rid = room_id;
 
             let handle = thread::spawn(move || {
-                if i % 2 == 0 {
+                if idx % 2 == 0 {
                     orch.register_session(sid, rid, vec![create_test_ai(TEST_AI_1, "AI 1")]);
                 } else {
                     orch.unregister_session(sid);
@@ -404,7 +405,7 @@ mod tests {
         let orchestrator = Arc::new(VoiceOrchestrator::new());
 
         // Pre-register multiple sessions
-        for i in 0..5 {
+        for _ in 0..5 {
             let session_id = Uuid::new_v4();
             let room_id = Uuid::new_v4();
             orchestrator.register_session(

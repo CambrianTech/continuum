@@ -20,7 +20,8 @@ import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClien
 export class LoggerDaemonServer extends LoggerDaemon {
   protected log: ComponentLogger;
   private workerClient: LoggerWorkerClient | null = null;
-  private readonly SOCKET_PATH = '/tmp/jtag-logger-worker.sock';
+  // LoggerModule is now part of continuum-core (Phase 4a)
+  private readonly SOCKET_PATH = '/tmp/continuum-core.sock';
   private healthCheckInterval: NodeJS.Timeout | null = null;
 
   constructor(context: JTAGContext, router: JTAGRouter) {

@@ -7,16 +7,8 @@
 resolver = "2"
 members = [
     "archive",
-    "chat-drain",
     "continuum-core",
-    "data",
-    "data-daemon",
-    "embedding",
-    "inference",
     "inference-grpc",
-    "logger",
-    "search",
-    "training",
 ]
 
 # Shared dependencies - workers inherit these versions

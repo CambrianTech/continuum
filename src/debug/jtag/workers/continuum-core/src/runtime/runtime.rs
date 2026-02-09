@@ -1,10 +1,10 @@
-/// Runtime — lifecycle orchestration for the modular runtime.
-///
-/// Creates the registry, message bus, and shared compute cache.
-/// Modules register, initialize, then the runtime serves IPC requests.
-///
-/// This is the top-level coordinator — like CBAR's RenderingEngine
-/// that owns the CBP_Analyzer pipeline and orchestrates frame flow.
+//! Runtime — lifecycle orchestration for the modular runtime.
+//!
+//! Creates the registry, message bus, and shared compute cache.
+//! Modules register, initialize, then the runtime serves IPC requests.
+//!
+//! This is the top-level coordinator — like CBAR's RenderingEngine
+//! that owns the CBP_Analyzer pipeline and orchestrates frame flow.
 
 use super::registry::ModuleRegistry;
 use super::message_bus::MessageBus;
@@ -105,10 +105,15 @@ impl Runtime {
             let _ = tx.send(result);
         });
 
-        // Wait for result from the tokio task
+        // Wait for result from the tokio task - NO TIMEOUT.
+        // Voice/TTS commands can run indefinitely for streaming audio.
+        // If the task panics, recv() returns Err(RecvError).
         match rx.recv() {
             Ok(result) => Some(result),
-            Err(_) => Some(Err("Command handler task was dropped".to_string())),
+            Err(_) => {
+                error!("Command handler task panicked or was cancelled: {command}");
+                Some(Err(format!("Command handler failed: {command}")))
+            }
         }
     }
 

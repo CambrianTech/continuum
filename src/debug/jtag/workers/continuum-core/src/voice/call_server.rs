@@ -767,10 +767,10 @@ impl CallManager {
         let (handle, display_name) = {
             let calls = self.calls.read().await;
             let call = calls.get(call_id)
-                .ok_or_else(|| format!("Call '{}' not found", call_id))?;
+                .ok_or_else(|| format!("Call '{call_id}' not found"))?;
             let call = call.read().await;
             let handle = call.mixer.find_handle_by_user_id(user_id)
-                .ok_or_else(|| format!("User '{}' not in call '{}'", user_id, call_id))?;
+                .ok_or_else(|| format!("User '{user_id}' not in call '{call_id}'"))?;
             let display_name = call.mixer.get_participant(&handle)
                 .map(|p| p.display_name.clone())
                 .unwrap_or_else(|| user_id.to_string());
@@ -779,7 +779,7 @@ impl CallManager {
 
         // Step 2: Synthesize (blocking TTS, creates own runtime)
         let synthesis = tts_service::synthesize_speech_sync(text, voice, adapter)
-            .map_err(|e| format!("TTS failed: {}", e))?;
+            .map_err(|e| format!("TTS failed: {e}"))?;
 
         let num_samples = synthesis.samples.len();
         let duration_ms = synthesis.duration_ms;
@@ -810,10 +810,10 @@ impl CallManager {
         let (handle, display_name) = {
             let calls = self.calls.read().await;
             let call = calls.get(call_id)
-                .ok_or_else(|| format!("Call '{}' not found", call_id))?;
+                .ok_or_else(|| format!("Call '{call_id}' not found"))?;
             let call = call.read().await;
             let handle = call.mixer.find_handle_by_user_id(user_id)
-                .ok_or_else(|| format!("User '{}' not in call '{}'", user_id, call_id))?;
+                .ok_or_else(|| format!("User '{user_id}' not in call '{call_id}'"))?;
             let display_name = call.mixer.get_participant(&handle)
                 .map(|p| p.display_name.clone())
                 .unwrap_or_else(|| user_id.to_string());

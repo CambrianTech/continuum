@@ -11,7 +11,8 @@ import { createCanvasStrokeAddResult, CANVAS_STROKE_EVENTS } from '../shared/Can
 import { CanvasStrokeEntity } from '@system/data/entities/CanvasStrokeEntity';
 import { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '@system/data/entities/RoomEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { UserEntity } from '@system/data/entities/UserEntity';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { Events } from '@system/core/shared/Events';
 import { Commands } from '@system/core/shared/Commands';
 import { COLLECTIONS } from '@system/shared/Constants';
@@ -49,10 +50,30 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
     }
 
     try {
-      // Get creator info - use UserIdentityResolver to detect caller (Claude Code, Joel, etc.)
-      const identity = await UserIdentityResolver.resolve();
-      const creatorId = identity.userId || strokeParams.sessionId;
-      const creatorName = identity.displayName;
+      // Get creator info - priority: context.userId (PersonaUsers), then UserIdentityResolver (CLI)
+      let creatorId: string;
+      let creatorName: string;
+
+      if (strokeParams.context?.userId) {
+        // FIRST: Check context.userId (PersonaUsers set this)
+        creatorId = strokeParams.context.userId;
+        // We need to look up the name from the database
+        const userResult = await DataList.execute<UserEntity>({
+          collection: UserEntity.collection,
+          filter: { id: creatorId },
+          limit: 1,
+          context: strokeParams.context,
+          sessionId: strokeParams.sessionId
+        });
+        creatorName = userResult.success && userResult.items && userResult.items.length > 0
+          ? userResult.items[0].displayName
+          : 'Unknown';
+      } else {
+        // FALLBACK: Use UserIdentityResolver (CLI, Claude Code, Joel, etc.)
+        const identity = await UserIdentityResolver.resolve();
+        creatorId = identity.userId || strokeParams.sessionId;
+        creatorName = identity.displayName;
+      }
 
       // Create stroke entity
       const stroke = new CanvasStrokeEntity();
@@ -81,7 +102,7 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
       }
 
       // Save to database (throws on failure, returns entity on success)
-      await DataDaemon.store(COLLECTIONS.CANVAS_STROKES, stroke);
+      await ORM.store(COLLECTIONS.CANVAS_STROKES, stroke);
 
       // Emit real-time event for all clients to sync
       Events.emit(CANVAS_STROKE_EVENTS.STROKE_ADDED, {

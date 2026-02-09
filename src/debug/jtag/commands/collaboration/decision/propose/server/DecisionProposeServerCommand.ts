@@ -20,14 +20,7 @@ import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionProposeCommand } from '../shared/DecisionProposeCommand';
 import type { DecisionProposeParams, DecisionProposeResult } from '../shared/DecisionProposeTypes';
 
-/**
- * Extended params with optional callerId/personaId injected by PersonaToolExecutor
- * These fields are dynamically added for AI tool calls but not part of base schema
- */
-interface DecisionProposeParamsWithCaller extends DecisionProposeParams {
-  callerId?: UUID;
-  personaId?: UUID;
-}
+// Caller identity now comes from context.userId - no need for callerId/personaId injection
 import type { DecisionProposalEntity, DecisionOption } from '@system/data/entities/DecisionProposalEntity';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
@@ -299,43 +292,26 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
     }
 
     // Get proposer info - auto-detect caller identity
-    // Priority: 1) explicit proposerId, 2) injected callerId/personaId, 3) UserIdentityResolver
+    // Priority: 1) context.userId (PersonaUsers), 2) UserIdentityResolver (CLI)
     let proposerId: UUID;
     let proposerName: string;
 
-    // Check for injected callerId/personaId (from AI tool calls via PersonaToolExecutor)
-    const paramsWithCaller = params as DecisionProposeParamsWithCaller;
-    const injectedCallerId = paramsWithCaller.callerId || paramsWithCaller.personaId;
-
-    if (params.proposerId) {
-      // Explicit proposerId provided
+    if (params.context?.userId) {
+      // FIRST: Check context.userId (PersonaUsers set this)
       const proposerResult = await DataRead.execute<UserEntity>({
         collection: COLLECTIONS.USERS,
-        id: params.proposerId
+        id: params.context.userId
       });
 
       if (!proposerResult.success || !proposerResult.data) {
-        return transformPayload(params, { success: false, error: 'Could not find proposer user' });
+        return transformPayload(params, { success: false, error: 'Could not find proposer user from context' });
       }
 
-      proposerId = params.proposerId;
+      proposerId = params.context.userId;
       proposerName = proposerResult.data.displayName;
-    } else if (injectedCallerId) {
-      // Use injected callerId from AI tool execution
-      const proposerResult = await DataRead.execute<UserEntity>({
-        collection: COLLECTIONS.USERS,
-        id: injectedCallerId
-      });
-
-      if (!proposerResult.success || !proposerResult.data) {
-        return transformPayload(params, { success: false, error: 'Could not find caller user' });
-      }
-
-      proposerId = injectedCallerId;
-      proposerName = proposerResult.data.displayName;
-      this.log.debug('Using injected callerId for proposer', { proposerId, proposerName });
+      this.log.debug('Using context.userId for proposer', { proposerId, proposerName });
     } else {
-      // Fallback: Auto-detect caller identity using UserIdentityResolver (CLI calls)
+      // FALLBACK: Auto-detect caller identity using UserIdentityResolver (CLI calls)
       const identity = await UserIdentityResolver.resolve();
 
       this.log.debug('Auto-detected proposer identity', {
@@ -440,7 +416,8 @@ Proposal ID: ${proposalId}`;
 
     await ChatSend.execute({
       message: notificationMessage,
-      room: 'general'
+      room: 'general',
+      senderId: proposerId  // Use proposer's identity, not caller's context
     });
 
     return transformPayload(params, {

@@ -122,6 +122,7 @@ mod tests {
     #[derive(Debug, Clone)]
     struct TestMessage {
         priority: f32,
+        #[allow(dead_code)]
         content: String,
     }
 

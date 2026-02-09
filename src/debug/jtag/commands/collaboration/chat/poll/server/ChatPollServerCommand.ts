@@ -6,7 +6,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatPollCommand } from '../shared/ChatPollCommand';
 import type { ChatPollParams, ChatPollResult } from '../shared/ChatPollTypes';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { resolveRoomIdentifier } from '@system/routing/RoutingService';
@@ -30,7 +30,7 @@ export class ChatPollServerCommand extends ChatPollCommand {
       }
 
       // Get the original message to find its timestamp
-      const originalMessageResult = await DataDaemon.query<ChatMessageEntity>({
+      const originalMessageResult = await ORM.query<ChatMessageEntity>({
         collection: 'chat_messages',
         filter: { id: params.afterMessageId },
         limit: 1
@@ -67,7 +67,7 @@ export class ChatPollServerCommand extends ChatPollCommand {
       }
 
       // Query messages
-      const result = await DataDaemon.query<ChatMessageEntity>({
+      const result = await ORM.query<ChatMessageEntity>({
         collection: 'chat_messages',
         filter,
         sort: [{ field: 'timestamp', direction: 'asc' }],

@@ -1,10 +1,10 @@
-/// MessageBus — inter-module event pub/sub with glob pattern subscriptions.
-///
-/// Two-tier delivery (like CBAR's frame broadcasting):
-/// - Synchronous: real-time handlers called inline during publish
-/// - Asynchronous: deferred handlers receive via broadcast channel
-///
-/// Modules subscribe via their config().event_subscriptions.
+//! MessageBus — inter-module event pub/sub with glob pattern subscriptions.
+//!
+//! Two-tier delivery (like CBAR's frame broadcasting):
+//! - Synchronous: real-time handlers called inline during publish
+//! - Asynchronous: deferred handlers receive via broadcast channel
+//!
+//! Modules subscribe via their config().event_subscriptions.
 
 use dashmap::DashMap;
 use tokio::sync::broadcast;

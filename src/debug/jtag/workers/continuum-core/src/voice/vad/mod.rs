@@ -120,20 +120,19 @@ impl VADFactory {
             "silero" => Ok(Box::new(silero::SileroVAD::new())),
             "silero-raw" => Ok(Box::new(silero_raw::SileroRawVAD::new())),
             _ => Err(VADError::ModelNotLoaded(format!(
-                "Unknown VAD: '{}'. Supported: rms, webrtc, silero, silero-raw",
-                name
+                "Unknown VAD: '{name}'. Supported: rms, webrtc, silero, silero-raw"
             ))),
         }
     }
 
-    /// Get default VAD (best available)
+    /// Get best available VAD
     ///
     /// Priority:
     /// 1. Silero Raw (ML-based, most accurate)
     /// 2. Silero (ML-based with external crate)
     /// 3. WebRTC (fast, rule-based, good quality)
     /// 4. RMS (primitive fallback)
-    pub fn default() -> Box<dyn VoiceActivityDetection> {
+    pub fn best_available() -> Box<dyn VoiceActivityDetection> {
         // Try Silero raw ONNX first (best quality, fewest dependencies)
         if let Ok(silero) = Self::create("silero-raw") {
             return silero;

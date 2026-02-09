@@ -21,7 +21,7 @@ import type {
   PersonaMemory
 } from '../shared/RAGTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
 import type { CodeIndexEntry } from '../shared/CodebaseTypes';
 import { COLLECTIONS } from '../../shared/Constants';
@@ -101,7 +101,7 @@ export class CodebaseRAGBuilder extends RAGBuilder {
    */
   private async loadPersonaIdentity(personaId: UUID): Promise<PersonaIdentity> {
     try {
-      const user = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
+      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId);
 
       if (!user) {
         console.warn(`⚠️ CodebaseRAGBuilder: Could not load persona ${personaId}, using defaults`);
@@ -161,7 +161,7 @@ A: "Commands.execute() (Commands.ts:89-156) uses TypeScript inference to provide
   private async queryCodebase(query: string, maxResults: number): Promise<CodeIndexEntry[]> {
     try {
       // TODO: Query code_index collection with vector similarity search
-      const result = await DataDaemon.query<CodeIndexEntry>({
+      const result = await ORM.query<CodeIndexEntry>({
         collection: COLLECTIONS.CODE_INDEX,
         filter: {}, // TODO: Add vector similarity filter
         sort: [{ field: 'timestamp', direction: 'desc' }],

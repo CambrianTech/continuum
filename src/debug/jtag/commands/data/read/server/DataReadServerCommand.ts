@@ -8,10 +8,11 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { MediaItem, ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { DataReadCommand } from '../shared/DataReadCommand';
+import { isValidCollection, type CollectionName, COLLECTIONS } from '../../../../shared/generated-collection-constants';
 
 export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
 
@@ -37,9 +38,19 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
       });
     }
 
+    // Validate collection name at runtime (user input comes as string)
+    if (!isValidCollection(params.collection)) {
+      return createDataReadResultFromParams(params, {
+        success: false,
+        error: `Invalid collection name: ${params.collection}`,
+        found: false
+      });
+    }
+    const validCollection = params.collection as CollectionName;
+
     try {
       // Use DataDaemon for consistent storage access
-      const entity = await DataDaemon.read<BaseEntity>(params.collection, params.id);
+      const entity = await ORM.read<BaseEntity>(validCollection, params.id);
 
       if (entity) {
 
@@ -47,7 +58,7 @@ export class DataReadServerCommand extends DataReadCommand<BaseEntity> {
         let media: MediaItem[] = [];
         let cleanedData: BaseEntity = entity;
 
-        if (params.collection === 'chat_messages') {
+        if (validCollection === COLLECTIONS.CHAT_MESSAGES) {
           const messageData = entity as ChatMessageEntity;
           if (messageData.content?.media && Array.isArray(messageData.content.media)) {
             // Extract media to top level

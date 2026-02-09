@@ -9,7 +9,7 @@
 
 import type { JTAGContext, CallerType, CallerCapabilities } from '../core/types/JTAGTypes';
 import type { UUID } from '../core/types/CrossPlatformUUID';
-import { DataDaemon } from '../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../data/config/DatabaseConfig';
 import type { UserEntity } from '../data/entities/UserEntity';
 
@@ -37,7 +37,7 @@ export async function detectCallerType(context: JTAGContext, userId: UUID): Prom
 
   // 2. Look up user by userId
   try {
-    const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
 
     if (!user) {
       console.warn(`CallerDetector: User not found for userId=${userId}, defaulting to 'script'`);
@@ -77,7 +77,7 @@ export async function detectCallerType(context: JTAGContext, userId: UUID): Prom
  */
 export async function getCallerCapabilities(userId: UUID): Promise<CallerCapabilities> {
   try {
-    const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
 
     if (!user) {
       console.warn(`CallerDetector: User not found for userId=${userId}, returning default capabilities`);

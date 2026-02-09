@@ -15,7 +15,8 @@ import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClien
 import type { LogLevel as WorkerLogLevel } from '../../../shared/ipc/logger/LoggerMessageTypes';
 
 export class ConsoleDaemonServer extends ConsoleDaemon {
-  private readonly SOCKET_PATH = '/tmp/jtag-logger-worker.sock';
+  // LoggerModule is now part of continuum-core (Phase 4a)
+  private readonly SOCKET_PATH = '/tmp/continuum-core.sock';
   private loggerClient: LoggerWorkerClient | null = null;
   private connectionAttempted = false;
   private connectionFailed = false;

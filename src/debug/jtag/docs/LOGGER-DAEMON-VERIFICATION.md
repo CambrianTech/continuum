@@ -1,5 +1,9 @@
 # LoggerDaemon Verification - PROVEN WORKING PATTERN
 
+> **⚠️ HISTORICAL DOCUMENT**: This describes the standalone logger worker which has been absorbed into
+> `continuum-core` as `LoggerModule` (Phase 4a). The socket is now `/tmp/continuum-core.sock` and
+> commands use the `log/` prefix. See `workers/continuum-core/src/modules/logger.rs`.
+
 **Status**: ✅ **PROVEN** - Rust worker running, TypeScript connected, handling production logs
 
 ## Evidence of Working System

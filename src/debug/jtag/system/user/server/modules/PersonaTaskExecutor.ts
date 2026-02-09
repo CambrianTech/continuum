@@ -6,7 +6,7 @@
  */
 
 import { type UUID, generateUUID } from '../../../core/types/CrossPlatformUUID';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { InboxTask } from './PersonaInbox';
 import type { TaskEntity, TaskStatus } from '../../../data/entities/TaskEntity';
@@ -98,7 +98,7 @@ export class PersonaTaskExecutor {
 
     // Update task in database with completion status
     const duration = Date.now() - startTime;
-    await DataDaemon.update<TaskEntity>(
+    await ORM.update<TaskEntity>(
       COLLECTIONS.TASKS,
       task.taskId,
       {
@@ -134,7 +134,7 @@ export class PersonaTaskExecutor {
     this.log(`🧠 ${this.displayName}: Consolidating memories...`);
 
     // 1. Query recent messages from last hour
-    const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+    const recentMessages = await ORM.query<ChatMessageEntity>({
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: {
         timestamp: { $gte: new Date(Date.now() - 3600000) }
@@ -214,7 +214,7 @@ export class PersonaTaskExecutor {
 
       // 5. Store to memories collection
       try {
-        await DataDaemon.store(COLLECTIONS.MEMORIES, memory as MemoryEntity);
+        await ORM.store(COLLECTIONS.MEMORIES, memory as MemoryEntity);
         created++;
         this.log(`💾 ${this.displayName}: Stored memory (importance=${score.toFixed(2)}): "${text.slice(0, 50)}..."`);
       } catch (error) {
@@ -302,7 +302,7 @@ export class PersonaTaskExecutor {
     this.log(`🔍 ${this.displayName}: Auditing skills...`);
 
     // Query recent tasks to evaluate performance by domain
-    const recentTasks = await DataDaemon.query<TaskEntity>({
+    const recentTasks = await ORM.query<TaskEntity>({
       collection: COLLECTIONS.TASKS,
       filter: {
         assigneeId: this.personaId,
@@ -357,7 +357,7 @@ export class PersonaTaskExecutor {
             }
           };
 
-          await DataDaemon.store(COLLECTIONS.TASKS, improvementTask as TaskEntity);
+          await ORM.store(COLLECTIONS.TASKS, improvementTask as TaskEntity);
           improvementTasksCreated++;
           this.log(`📋 ${this.displayName}: Created improvement task for ${domain} domain`);
         } catch (error) {
@@ -396,7 +396,7 @@ export class PersonaTaskExecutor {
     // Query for stale in_progress tasks (started >30 min ago, not completed)
     const staleThreshold = new Date(Date.now() - 1800000); // 30 minutes ago
 
-    const staleTasks = await DataDaemon.query<TaskEntity>({
+    const staleTasks = await ORM.query<TaskEntity>({
       collection: COLLECTIONS.TASKS,
       filter: {
         assigneeId: this.personaId,
@@ -421,7 +421,7 @@ export class PersonaTaskExecutor {
       const bumpedPriority = Math.min(staleTask.priority + 0.1, 1.0);
 
       try {
-        await DataDaemon.update<TaskEntity>(COLLECTIONS.TASKS, record.id, {
+        await ORM.update<TaskEntity>(COLLECTIONS.TASKS, record.id, {
           status: 'pending',
           priority: bumpedPriority,
           startedAt: undefined, // Clear startedAt so it can be re-measured
@@ -608,7 +608,7 @@ export class PersonaTaskExecutor {
     // Query recent messages in the last 24 hours
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    const messagesResult = await DataDaemon.query<ChatMessageEntity>({
+    const messagesResult = await ORM.query<ChatMessageEntity>({
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: {
         senderId: this.personaId,
@@ -633,7 +633,7 @@ export class PersonaTaskExecutor {
       }
 
       // Find the message this was responding to
-      const precedingResult = await DataDaemon.query<ChatMessageEntity>({
+      const precedingResult = await ORM.query<ChatMessageEntity>({
         collection: COLLECTIONS.CHAT_MESSAGES,
         filter: {
           roomId: myResponse.roomId,

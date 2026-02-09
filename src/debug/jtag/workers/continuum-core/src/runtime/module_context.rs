@@ -1,10 +1,10 @@
-/// ModuleContext — the module's view of the runtime.
-///
-/// Provided to every module during initialize() and available throughout lifetime.
-/// Enables inter-module communication without tight coupling:
-/// - Query other modules via registry (like CBAR's getAnalyzerOfType<T>())
-/// - Publish/subscribe events via message bus
-/// - Share lazy-computed values via shared compute cache
+//! ModuleContext — the module's view of the runtime.
+//!
+//! Provided to every module during initialize() and available throughout lifetime.
+//! Enables inter-module communication without tight coupling:
+//! - Query other modules via registry (like CBAR's getAnalyzerOfType<T>())
+//! - Publish/subscribe events via message bus
+//! - Share lazy-computed values via shared compute cache
 
 use super::registry::ModuleRegistry;
 use super::message_bus::MessageBus;

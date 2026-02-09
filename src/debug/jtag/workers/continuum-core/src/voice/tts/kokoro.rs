@@ -118,7 +118,7 @@ impl KokoroTTS {
         }
 
         let content = std::fs::read_to_string(&vocab_path)
-            .map_err(|e| TTSError::IoError(e))?;
+            .map_err(TTSError::IoError)?;
 
         let raw: HashMap<String, i64> = serde_json::from_str(&content)
             .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab.json: {e}")))?;
@@ -137,7 +137,7 @@ impl KokoroTTS {
 
     /// Load voice embedding from .bin file
     fn load_voice_embedding(voices_dir: &PathBuf, voice_id: &str) -> Result<Vec<Vec<f32>>, TTSError> {
-        let voice_path = voices_dir.join(format!("{}.bin", voice_id));
+        let voice_path = voices_dir.join(format!("{voice_id}.bin"));
         if !voice_path.exists() {
             // Try default voice
             let default_path = voices_dir.join("af.bin");
@@ -152,7 +152,7 @@ impl KokoroTTS {
         }
 
         let bytes = std::fs::read(&voice_path)
-            .map_err(|e| TTSError::IoError(e))?;
+            .map_err(TTSError::IoError)?;
 
         // Parse as float32 array
         let num_floats = bytes.len() / 4;
@@ -192,7 +192,7 @@ impl KokoroTTS {
     /// Call espeak-ng to phonemize text (same as Piper, but returns raw IPA string)
     fn phonemize(text: &str) -> Result<String, TTSError> {
         let output = Command::new("/opt/homebrew/bin/espeak-ng")
-            .args(&["-v", "en-us", "-q", "--ipa=3"])
+            .args(["-v", "en-us", "-q", "--ipa=3"])
             .arg(text)
             .output()
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to run espeak-ng: {e}")))?;
@@ -207,11 +207,8 @@ impl KokoroTTS {
         let phonemes = String::from_utf8_lossy(&output.stdout)
             .trim()
             .to_string()
-            .replace('\u{200D}', "") // Zero-width joiner
-            .replace('\u{200C}', "") // Zero-width non-joiner
-            .replace('\u{FEFF}', "") // Zero-width no-break space
-            .replace('\n', " ")
-            .replace('\r', " ");
+            .replace(['\u{200D}', '\u{200C}', '\u{FEFF}'], "") // Zero-width characters
+            .replace(['\n', '\r'], " ");
 
         Ok(phonemes)
     }
@@ -280,7 +277,7 @@ impl KokoroTTS {
         }
 
         let voice_embeddings = model.voice_cache.get(voice_id)
-            .ok_or_else(|| TTSError::VoiceNotFound(format!("Voice '{}' missing from cache after load", voice_id)))?;
+            .ok_or_else(|| TTSError::VoiceNotFound(format!("Voice '{voice_id}' missing from cache after load")))?;
 
         // Select style vector based on token count (clamped to available range)
         let style_idx = token_count.min(voice_embeddings.len().saturating_sub(1));
@@ -338,7 +335,7 @@ impl KokoroTTS {
             "Kokoro synthesized {} samples ({}ms) for '{}...'",
             samples_resampled.len(),
             duration_ms,
-            super::truncate_str(&text, 30)
+            super::truncate_str(text, 30)
         );
 
         Ok(SynthesisResult {

@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type { RAGInspectParams, RAGInspectResult } from '../shared/RAGInspectTypes';
 import { ChatRAGBuilder } from '../../../../../system/rag/builders/ChatRAGBuilder';
-import { DataDaemon } from '../../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../../../../system/data/entities/ChatMessageEntity';
 import { getThoughtStreamCoordinator } from '../../../../../system/conversation/server/ThoughtStreamCoordinator';
 import type { Thought } from '../../../../../system/conversation/shared/ConversationCoordinationTypes';
@@ -101,7 +101,7 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
       if (params.triggerMessageId) {
         try {
           // Load the trigger message
-          const msg = await DataDaemon.read<ChatMessageEntity>(ChatMessageEntity.collection, params.triggerMessageId);
+          const msg = await ORM.read<ChatMessageEntity>(ChatMessageEntity.collection, params.triggerMessageId);
           if (msg) {
 
             // Get actual decision from ThoughtStream

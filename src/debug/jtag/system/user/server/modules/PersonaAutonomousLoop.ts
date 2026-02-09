@@ -15,7 +15,7 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
 import { RoomEntity } from '../../../data/entities/RoomEntity';
@@ -118,7 +118,7 @@ export class PersonaAutonomousLoop {
   private async pollTasks(): Promise<void> {
     try {
       // Query for pending tasks assigned to this persona
-      const queryResult = await DataDaemon.query<TaskEntity>({
+      const queryResult = await ORM.query<TaskEntity>({
         collection: COLLECTIONS.TASKS,
         filter: {
           assigneeId: this.personaUser.id,
@@ -177,7 +177,7 @@ export class PersonaAutonomousLoop {
 
         // Persist each task to database and enqueue in inbox
         for (const task of selfTasks) {
-          const storedTask = await DataDaemon.store(COLLECTIONS.TASKS, task);
+          const storedTask = await ORM.store(COLLECTIONS.TASKS, task);
           if (storedTask) {
             // Convert to InboxTask and enqueue (use storedTask which has database ID)
             const inboxTask = taskEntityToInboxTask(storedTask);
@@ -204,7 +204,7 @@ export class PersonaAutonomousLoop {
 
     // If this is a task, update status to 'in_progress' in database (prevents re-polling)
     if (item.type === 'task') {
-      await DataDaemon.update<TaskEntity>(
+      await ORM.update<TaskEntity>(
         COLLECTIONS.TASKS,
         item.taskId,
         { status: 'in_progress', startedAt: new Date() }
@@ -300,7 +300,7 @@ export class PersonaAutonomousLoop {
    */
   private async resolveRoomSlug(roomId: UUID): Promise<string> {
     try {
-      const room = await DataDaemon.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+      const room = await ORM.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
       if (room?.uniqueId) return room.uniqueId;
     } catch {
       // Room lookup failed — use truncated UUID

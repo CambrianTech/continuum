@@ -1,22 +1,28 @@
-/// ServiceModule — the ONE trait every module implements.
-///
-/// Inspired by CBAR's QueueThread<T>: implement handleItem(), register, done.
-/// Each module declares what commands it handles and what events it subscribes to.
-/// The runtime auto-wires routing from these declarations.
-///
-/// Adding a new module to the system:
-/// 1. Implement ServiceModule
-/// 2. runtime.register(Arc::new(MyModule::new()))
-/// 3. Done. Commands route automatically.
+//! ServiceModule — the ONE trait every module implements.
+//!
+//! Inspired by CBAR's QueueThread<T>: implement handleItem(), register, done.
+//! Each module declares what commands it handles and what events it subscribes to.
+//! The runtime auto-wires routing from these declarations.
+//!
+//! Adding a new module to the system:
+//! 1. Implement ServiceModule
+//! 2. runtime.register(Arc::new(MyModule::new()))
+//! 3. Done. Commands route automatically.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
+use ts_rs::TS;
 
 /// Priority class for module scheduling.
 /// Determines thread pool affinity and tick cadence.
 /// Like CBAR's adaptive timeout: 10 + 100 * priority milliseconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Exposed to TypeScript via ts-rs for Ares (RTOS controller persona) to adjust priorities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/runtime/ModulePriority.ts")]
+#[serde(rename_all = "lowercase")]
 pub enum ModulePriority {
     /// Voice, audio — must complete within frame budget (~10ms)
     Realtime = 0,
@@ -31,6 +37,7 @@ pub enum ModulePriority {
 /// Module configuration — declares capabilities and requirements.
 /// Called ONCE at registration. Like CBP_AnalyzerThread's config hooks
 /// (needsRealTime(), needsColorFrames(), etc.).
+#[derive(Clone)]
 pub struct ModuleConfig {
     /// Unique module name: "voice", "cognition", "code", "data", etc.
     pub name: &'static str,
@@ -58,6 +65,7 @@ pub struct ModuleConfig {
 
 /// Result of handling a command.
 /// Supports both JSON-only and binary responses (audio, embeddings).
+#[derive(Debug)]
 pub enum CommandResult {
     /// Standard JSON response
     Json(Value),

@@ -1,27 +1,23 @@
 /**
- * Database Handle Registry - Multi-Database Management System
+ * Database Handle Registry - Multi-Database Path Management
  *
- * Storage-adapter-agnostic handle system for managing multiple database connections.
- * A DbHandle is an opaque identifier that can point to ANY DataStorageAdapter implementation:
- * - SQLite database
- * - JSON file storage
- * - Vector database (Qdrant, Pinecone)
- * - Graph database (Neo4j)
- * - Any future DataStorageAdapter
+ * Lightweight handle system for managing database path mappings.
+ * A DbHandle is an opaque identifier that maps to a database file path.
+ *
+ * **Architecture Note (2026-02-09)**:
+ * This registry NO LONGER manages TypeScript SqliteStorageAdapter instances.
+ * All actual database I/O goes through ORM → ORMRustClient → Rust DataModule.
+ * This class is now purely a handle → path mapping service.
  *
  * **Design Principles**:
  * 1. Backward Compatible: No dbHandle parameter = uses 'default' handle
  * 2. Single Source of Truth: DATABASE_PATHS.SQLITE remains the default
  * 3. Explicit Handles: Must call data/open to get non-default handles
- * 4. Auto-cleanup: Handles close after inactivity or on explicit data/close
- * 5. Thread-safe: Registry acts as connection pool
+ * 4. Path Resolution: getDbPath() converts handle → database path for ORM
  *
  * See docs/MULTI-DATABASE-HANDLES.md for full architecture
  */
 
-import { DataStorageAdapter } from '../shared/DataStorageAdapter';
-import { SqliteStorageAdapter } from './SqliteStorageAdapter';
-import { RustWorkerStorageAdapter } from './RustWorkerStorageAdapter';
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { getDatabasePath, getServerConfig } from '../../../system/config/ServerConfig';
@@ -35,9 +31,31 @@ import { getDatabasePath, getServerConfig } from '../../../system/config/ServerC
 export type DbHandle = 'default' | UUID;
 
 /**
- * Default handle constant - uses DATABASE_PATHS.SQLITE
+ * Well-known handle constants - use these instead of magic strings
+ *
+ * NOTE: These are just identifiers. The actual paths come from:
+ * - DEFAULT: getDatabasePath() → config.env DATABASE_DIR
+ * - ARCHIVE: getArchiveDir() → config.env DATABASE_ARCHIVE_DIR
+ *
+ * Single source of truth: ServerConfig resolves all paths from config.env
  */
-export const DEFAULT_HANDLE: DbHandle = 'default';
+export const DB_HANDLES = {
+  /** Main database - uses getDatabasePath() */
+  DEFAULT: 'default' as const,
+  /** Archive database alias (must be registered via open() + registerAlias()) */
+  ARCHIVE: 'archive' as const,
+  /** Primary database alias (optional, same as DEFAULT) */
+  PRIMARY: 'primary' as const,
+} as const;
+
+/** Type for well-known handle names */
+export type DbHandleAlias = typeof DB_HANDLES[keyof typeof DB_HANDLES];
+
+/**
+ * Default handle constant - uses DATABASE_PATHS.SQLITE
+ * @deprecated Use DB_HANDLES.DEFAULT instead
+ */
+export const DEFAULT_HANDLE: DbHandle = DB_HANDLES.DEFAULT;
 
 /**
  * Adapter types supported by the system
@@ -119,19 +137,17 @@ export interface HandleMetadata {
 /**
  * Database Handle Registry
  *
- * Manages open storage adapters across ANY backend type.
- * Singleton pattern ensures single connection pool per process.
+ * Manages handle → path mappings for database operations.
+ * Singleton pattern ensures consistent path resolution across the system.
  *
- * **Key Design**: Storage-adapter-agnostic!
- * - Handles map to DataStorageAdapter interface
- * - Works with SQLite, JSON, Vector DB, Graph DB, or any future adapter
+ * **Key Design (2026-02-09)**: Path-only registry!
+ * - Handles map to database file paths (NOT to TypeScript adapters)
+ * - All database I/O goes through ORM → ORMRustClient → Rust DataModule
+ * - This class provides handle → path resolution via getDbPath()
  * - Default handle always points to main database (DATABASE_PATHS.SQLITE)
  */
 export class DatabaseHandleRegistry {
   private static instance: DatabaseHandleRegistry;
-
-  // Map handles to ANY DataStorageAdapter implementation
-  private handles: Map<DbHandle, DataStorageAdapter>;
 
   // Track metadata for each handle (adapter type, config, timestamps)
   private handleMetadata: Map<DbHandle, HandleMetadata>;
@@ -140,32 +156,15 @@ export class DatabaseHandleRegistry {
   private handleAliases: Map<string, DbHandle>;
 
   private constructor() {
-    this.handles = new Map();
     this.handleMetadata = new Map();
     this.handleAliases = new Map();
 
-    // Initialize default handle - always use TypeScript SQLite
+    // Initialize default handle metadata
     const expandedDbPath = getDatabasePath();
-    console.log(`📦 DatabaseHandleRegistry: Using TypeScript SQLite (db: ${expandedDbPath})`);
+    console.log(`📦 DatabaseHandleRegistry: Path registry initialized (default db: ${expandedDbPath})`);
 
-    const defaultAdapter: DataStorageAdapter = new SqliteStorageAdapter();
-    const adapterType: AdapterType = 'sqlite';
-
-    defaultAdapter.initialize({
-      type: 'sqlite',
-      namespace: 'default',
-      options: {
-        filename: expandedDbPath
-      }
-    }).then(() => {
-      console.log(`📦 DatabaseHandleRegistry: SQLite adapter initialized successfully`);
-    }).catch((error) => {
-      console.error('❌ DatabaseHandleRegistry: Failed to initialize SQLite adapter:', error);
-    });
-
-    this.handles.set(DEFAULT_HANDLE, defaultAdapter);
     this.handleMetadata.set(DEFAULT_HANDLE, {
-      adapter: adapterType,
+      adapter: 'rust' as AdapterType,  // All I/O goes through Rust
       config: { filename: expandedDbPath },
       openedAt: Date.now(),
       lastUsedAt: Date.now()
@@ -183,12 +182,15 @@ export class DatabaseHandleRegistry {
   }
 
   /**
-   * Open a new database connection and return handle
+   * Open a new database handle and return it
    *
-   * @param adapter - Adapter type ('sqlite', 'json', 'vector', 'graph')
+   * NOTE (2026-02-09): This no longer creates TypeScript adapters!
+   * It just registers the handle → path mapping. All I/O goes through Rust.
+   *
+   * @param adapter - Adapter type ('sqlite' only supported via Rust)
    * @param config - Adapter-specific configuration
    * @param options - Handle options (e.g., emitEvents)
-   * @returns DbHandle - Opaque identifier for this connection
+   * @returns DbHandle - Opaque identifier for this database
    *
    * @example
    * ```typescript
@@ -198,85 +200,45 @@ export class DatabaseHandleRegistry {
    *   mode: 'readonly'
    * });
    *
-   * // Open archive database without event emission
-   * const archiveHandle = await registry.open('sqlite', {
-   *   filename: '/path/to/archive.sqlite'
-   * }, { emitEvents: false });
-   *
-   * // Open vector database
-   * const vectorHandle = await registry.open('vector', {
-   *   endpoint: 'http://localhost:6333',
-   *   collection: 'code-embeddings',
-   *   apiKey: process.env.QDRANT_API_KEY
-   * });
+   * // Then use with ORM:
+   * const dbPath = registry.getDbPath(handle);
+   * const data = await ORM.query({ collection: 'items' }, dbPath);
    * ```
    */
   async open(adapter: AdapterType, config: AdapterConfig, options?: { emitEvents?: boolean }): Promise<DbHandle> {
     const handle = generateUUID();
 
-    // Create adapter based on type
-    // TODO: Add JSON, Vector, Graph adapters when implemented
-    let storageAdapter: DataStorageAdapter;
-
+    // Validate config has a path
     switch (adapter) {
-      case 'sqlite': {
+      case 'sqlite':
+      case 'rust': {
         const sqliteConfig = config as SqliteConfig;
         const dbPath = sqliteConfig.path || sqliteConfig.filename;
         if (!dbPath) {
           throw new Error('SQLite config requires either "path" or "filename" property');
         }
-        storageAdapter = new SqliteStorageAdapter();
-        await storageAdapter.initialize({
-          type: 'sqlite',
-          namespace: handle,
-          options: {
-            filename: dbPath
-          }
-        });
-        break;
-      }
-
-      case 'rust': {
-        const rustConfig = config as RustConfig;
-        if (!rustConfig.filename) {
-          throw new Error('Rust config requires "filename" property (database path)');
-        }
-        const socketPath = rustConfig.socketPath || '/tmp/jtag-data-daemon-worker.sock';
-        storageAdapter = new RustWorkerStorageAdapter({
-          socketPath,
-          dbPath: rustConfig.filename,
-          timeout: 30000
-        });
-        await storageAdapter.initialize({
-          type: 'rust' as any,
-          namespace: handle as string,
-          options: {
-            socketPath,
-            dbPath: rustConfig.filename
-          }
-        });
+        // Just register the path - Rust handles actual connections
+        console.log(`📦 DatabaseHandleRegistry: Registered handle ${handle.substring(0, 8)}... → ${dbPath}`);
         break;
       }
 
       case 'json':
       case 'vector':
       case 'graph':
-        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' and 'rust' are currently supported.`);
+        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' is currently supported.`);
 
       default:
         throw new Error(`Unknown adapter type: ${adapter}`);
     }
 
-    // Register handle
-    this.handles.set(handle, storageAdapter);
+    // Register handle metadata (path stored in config)
     this.handleMetadata.set(handle, {
-      adapter,
+      adapter: 'rust' as AdapterType,  // All I/O goes through Rust
       config,
       openedAt: Date.now(),
       lastUsedAt: Date.now(),
-      emitEvents: options?.emitEvents ?? true  // Default to emitting events
+      emitEvents: options?.emitEvents ?? true
     });
-
 
     return handle;
   }
@@ -292,64 +254,46 @@ export class DatabaseHandleRegistry {
    * const handle = await registry.open('sqlite', { path: '/path/to/db.sqlite' });
    * registry.registerAlias('primary', handle);
    * // Now can use 'primary' instead of UUID
-   * const adapter = registry.getAdapter('primary');
+   * const dbPath = registry.getDbPath('primary');
+   * const data = await ORM.query({ collection: 'items' }, dbPath);
    * ```
    */
   registerAlias(alias: string, handle: DbHandle): void {
-    if (!this.handles.has(handle)) {
+    if (!this.handleMetadata.has(handle)) {
       throw new Error(`Cannot register alias '${alias}': handle '${handle}' does not exist`);
     }
     this.handleAliases.set(alias, handle);
   }
 
   /**
-   * Get adapter for handle (returns default if handle not found or omitted)
+   * @deprecated Use getDbPath() instead - all I/O now goes through Rust DataModule
    *
-   * **Backward Compatibility**: If handle is undefined/null, returns default adapter.
-   * This ensures all existing code continues to work without modification.
+   * This method is preserved for backward compatibility but will be removed.
+   * Since 2026-02-09, no TypeScript adapters are created.
    *
-   * **Alias Resolution**: If handle is a string that exists in handleAliases, resolves to UUID first.
-   *
-   * @param handle - Database handle or alias name (optional, defaults to 'default')
-   * @returns DataStorageAdapter - The storage adapter for this handle
-   *
-   * @example
-   * ```typescript
-   * // Get default adapter (backward compatible)
-   * const adapter = registry.getAdapter();
-   *
-   * // Get specific adapter by handle UUID
-   * const trainingAdapter = registry.getAdapter(trainingHandle);
-   *
-   * // Get adapter by alias name
-   * const primaryAdapter = registry.getAdapter('primary');
-   * const archiveAdapter = registry.getAdapter('archive');
-   * ```
+   * @param handle - Database handle (ignored - returns null)
+   * @returns null - No adapters exist, use getDbPath() instead
    */
-  getAdapter(handle?: DbHandle): DataStorageAdapter {
+  getAdapter(handle?: DbHandle): null {
+    console.warn(`⚠️  DatabaseHandleRegistry.getAdapter() is DEPRECATED. Use getDbPath() instead.`);
+    console.warn(`    All database I/O now goes through ORM → ORMRustClient → Rust DataModule.`);
+
+    // Update last used timestamp
     const actualHandle = handle || DEFAULT_HANDLE;
-
-    // Resolve alias to UUID if applicable
     const resolvedHandle = this.handleAliases.get(actualHandle as string) || actualHandle;
-
-    const adapter = this.handles.get(resolvedHandle);
-
-    if (!adapter) {
-      console.warn(`⚠️  Database handle '${actualHandle}' not found, using default`);
-      return this.handles.get(DEFAULT_HANDLE)!;
-    }
-
-    // Update last used timestamp (for LRU eviction in future)
     const metadata = this.handleMetadata.get(resolvedHandle);
     if (metadata) {
       metadata.lastUsedAt = Date.now();
     }
 
-    return adapter;
+    return null;
   }
 
   /**
    * Close database handle
+   *
+   * NOTE (2026-02-09): This just removes the handle from the registry.
+   * Rust manages connection pooling - no TypeScript adapter cleanup needed.
    *
    * @param handle - Database handle to close
    * @throws Error if attempting to close default handle
@@ -364,12 +308,10 @@ export class DatabaseHandleRegistry {
       throw new Error('Cannot close default database handle');
     }
 
-    const adapter = this.handles.get(handle);
-    if (adapter) {
-      await adapter.close();
-      this.handles.delete(handle);
+    const metadata = this.handleMetadata.get(handle);
+    if (metadata) {
       this.handleMetadata.delete(handle);
-      console.log(`🔌 DatabaseHandleRegistry: Closed handle ${handle}`);
+      console.log(`🔌 DatabaseHandleRegistry: Closed handle ${handle.substring(0, 8)}...`);
     } else {
       console.warn(`⚠️  Database handle '${handle}' not found (already closed?)`);
     }
@@ -429,12 +371,42 @@ export class DatabaseHandleRegistry {
   }
 
   /**
-   * Check if handle exists and is open
+   * Check if handle exists and is registered
    *
    * @param handle - Database handle
-   * @returns true if handle exists and is open
+   * @returns true if handle exists in registry
    */
   isOpen(handle: DbHandle): boolean {
-    return this.handles.has(handle);
+    return this.handleMetadata.has(handle);
+  }
+
+  /**
+   * Get database path for a handle
+   *
+   * Returns the file path for the database associated with this handle.
+   * Used to route operations through ORM with the correct database.
+   *
+   * @param handle - Database handle ('default' or UUID)
+   * @returns Database file path, or null if handle not found or has no path
+   */
+  getDbPath(handle?: DbHandle): string | null {
+    // Default handle uses main database
+    if (!handle || handle === 'default') {
+      return getDatabasePath();
+    }
+
+    const metadata = this.handleMetadata.get(handle);
+    if (!metadata) return null;
+
+    // Extract path from config based on adapter type
+    const config = metadata.config;
+    if ('path' in config && config.path) {
+      return config.path;
+    }
+    if ('filename' in config && config.filename) {
+      return config.filename;
+    }
+
+    return null;
   }
 }

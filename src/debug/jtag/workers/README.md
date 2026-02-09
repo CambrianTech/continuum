@@ -10,15 +10,11 @@
 
 ```
 workers/
-├── archive/
-│   ├── worker.config.ts      ← Worker defines itself
-│   ├── Cargo.toml
-│   └── src/main.rs
-├── logger/
-│   ├── worker.config.ts      ← Worker defines itself
-│   ├── Cargo.toml
-│   └── src/main.rs
-└── ...
+├── archive/              ← Cold storage archival
+├── continuum-core/       ← Unified runtime (Voice, Data, Embedding, Search, Logger)
+├── inference-grpc/       ← LLM inference (gRPC, separate for memory isolation)
+├── models/               ← Model weights (piper, whisper, vad)
+└── shared/               ← Shared Rust code
 
 generator/generate-worker-registry.ts discovers all worker.config.ts files
     ↓
@@ -77,16 +73,16 @@ Provides type-safe worker names and socket paths:
 
 ```typescript
 // Auto-generated types
-export const WORKER_NAMES = ['archive', 'logger', 'training'] as const;
+export const WORKER_NAMES = ['archive', 'continuum-core', 'inference-grpc'] as const;
 export type WorkerName = typeof WORKER_NAMES[number];
 
 export const WORKER_SOCKETS: Record<WorkerName, string> = {
   'archive': '/tmp/jtag-archive-worker.sock',
-  'logger': '/tmp/jtag-logger-worker.sock',
-  'training': '/tmp/training-worker.sock'
+  'continuum-core': '/tmp/continuum-core.sock',
+  'inference-grpc': 'tcp://localhost:50051'
 } as const;
 
-export const ENABLED_WORKERS = ['archive', 'logger', 'training'] as const;
+export const ENABLED_WORKERS = ['archive', 'continuum-core', 'inference-grpc'] as const;
 ```
 
 ## Usage

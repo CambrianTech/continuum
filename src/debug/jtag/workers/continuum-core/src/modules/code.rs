@@ -1,12 +1,12 @@
-/// CodeModule — wraps file operations, git operations, and shell sessions.
-///
-/// Handles: code/create-workspace, code/read, code/write, code/edit, code/delete,
-///          code/diff, code/undo, code/history, code/search, code/tree,
-///          code/git-status, code/git-diff, code/git-log, code/git-add, code/git-commit, code/git-push,
-///          code/shell-create, code/shell-execute, code/shell-poll, code/shell-kill,
-///          code/shell-cd, code/shell-status, code/shell-watch, code/shell-sentinel, code/shell-destroy
-///
-/// Priority: Normal — code operations are important but not time-critical.
+//! CodeModule — wraps file operations, git operations, and shell sessions.
+//!
+//! Handles: code/create-workspace, code/read, code/write, code/edit, code/delete,
+//!          code/diff, code/undo, code/history, code/search, code/tree,
+//!          code/git-status, code/git-diff, code/git-log, code/git-add, code/git-commit, code/git-push,
+//!          code/shell-create, code/shell-execute, code/shell-poll, code/shell-kill,
+//!          code/shell-cd, code/shell-status, code/shell-watch, code/shell-sentinel, code/shell-destroy
+//!
+//! Priority: Normal — code operations are important but not time-critical.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::code::{self, FileEngine, PathSecurity, ShellSession};

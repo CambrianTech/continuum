@@ -6,7 +6,6 @@
 use super::budget::{BudgetManager, SourceConfig};
 use super::sources::RagSource;
 use super::types::{RagContext, RagOptions, RagSection, SourceTiming, LlmMessage};
-use rayon::prelude::*;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -63,10 +62,11 @@ impl RagEngine {
         let budget_manager = BudgetManager::new(options.max_tokens.max(self.default_budget));
         let allocations = budget_manager.allocate(&source_configs);
 
-        // 4. Load ALL sources in PARALLEL with rayon
+        // 4. Load ALL sources SEQUENTIALLY to avoid Rayon thread starvation
+        // (IPC dispatch uses Rayon threads that block waiting for these results)
         let sections: Vec<RagSection> = applicable
-            .par_iter()
-            .zip(allocations.par_iter())
+            .iter()
+            .zip(allocations.iter())
             .map(|(source, allocation)| {
                 let source_start = Instant::now();
 

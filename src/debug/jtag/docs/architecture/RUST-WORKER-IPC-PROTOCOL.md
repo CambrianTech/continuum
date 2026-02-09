@@ -1,5 +1,10 @@
 # Rust Worker IPC Protocol Specification
 
+> **⚠️ ARCHITECTURE EVOLUTION**: Individual Rust workers (logger, search, embedding, data-daemon)
+> have been consolidated into `continuum-core` as ServiceModules (Phase 4). The IPC protocol remains
+> the same but all modules now share `/tmp/continuum-core.sock`. Only archive and inference-grpc
+> remain as separate workers. See `workers/continuum-core/src/runtime/` for the modular framework.
+
 **Status**: Prototype Working (Standalone Demo at `/tmp/rust-worker-test/`)
 **Created**: 2025-12-09
 **Updated**: 2025-12-09 (Refactored to Generic Transport Pattern)

@@ -21,10 +21,8 @@ struct JTAGRequest<T> {
     r#type: String,
     timestamp: String,
     payload: T,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    session_id: Option<String>,
+        user_id: Option<String>,
+        session_id: Option<String>,
 }
 
 /// Logger client — fire-and-forget via bounded channel.

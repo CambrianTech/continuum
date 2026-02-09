@@ -42,14 +42,14 @@ export class AICostServerCommand extends AICostCommand {
       }
 
       // Query AIGenerationEntity from database using data/list - let SQL do the filtering
+      // Note: omitting 'limit' means no limit (Rust ORM Option<usize> defaults to None)
       const listParams = createDataListParams(
         params.context,
         params.sessionId,
         {
           collection: 'ai_generations',
           filter,
-          orderBy: [{ field: 'timestamp', direction: 'desc' }],
-          limit: -1  // Get ALL records (no pagination for aggregate queries)
+          orderBy: [{ field: 'timestamp', direction: 'desc' }]
         }
       );
 

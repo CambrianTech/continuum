@@ -133,7 +133,7 @@ export abstract class LoggerDaemon extends DaemonBase {
   
   /**
    * Lifecycle: Start
-   * Connect to Rust logger worker via Unix socket (/tmp/jtag-logger-worker.sock)
+   * Connect to continuum-core LoggerModule via Unix socket (/tmp/continuum-core.sock)
    */
   protected async onStart(): Promise<void> {
     // TODO: Implement onStart logic

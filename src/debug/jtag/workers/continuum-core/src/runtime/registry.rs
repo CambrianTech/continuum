@@ -1,13 +1,14 @@
-/// ModuleRegistry — DashMap-based command routing + typed module discovery.
-///
-/// Replaces the 55-arm match statement in ipc/mod.rs with dynamic routing.
-/// `register(module)` auto-wires commands from the module's config.
-/// Like CBAR's appendAnalyzer() — register once, everything routes automatically.
-///
-/// Thread-safe: uses DashMap and RwLock for interior mutability.
-/// Can be shared via Arc across threads.
+//! ModuleRegistry — DashMap-based command routing + typed module discovery.
+//!
+//! Replaces the 55-arm match statement in ipc/mod.rs with dynamic routing.
+//! `register(module)` auto-wires commands from the module's config.
+//! Like CBAR's appendAnalyzer() — register once, everything routes automatically.
+//!
+//! Thread-safe: uses DashMap and RwLock for interior mutability.
+//! Can be shared via Arc across threads.
 
-use super::service_module::ServiceModule;
+use super::service_module::{ModuleConfig, ModulePriority, ServiceModule};
+use super::module_metrics::ModuleMetrics;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::any::TypeId;
@@ -16,6 +17,12 @@ use std::sync::Arc;
 pub struct ModuleRegistry {
     /// Modules by name: "voice" -> Arc<dyn ServiceModule>
     modules: DashMap<&'static str, Arc<dyn ServiceModule>>,
+
+    /// Module configs cached for quick access
+    configs: DashMap<String, ModuleConfig>,
+
+    /// Metrics per module
+    metrics: DashMap<String, Arc<ModuleMetrics>>,
 
     /// Command prefix -> module name routing table.
     /// Sorted by prefix length descending for longest-match-first routing.
@@ -30,6 +37,8 @@ impl ModuleRegistry {
     pub fn new() -> Self {
         Self {
             modules: DashMap::new(),
+            configs: DashMap::new(),
+            metrics: DashMap::new(),
             command_routes: RwLock::new(Vec::new()),
             type_routes: DashMap::new(),
         }
@@ -40,15 +49,22 @@ impl ModuleRegistry {
     /// Thread-safe via interior mutability.
     pub fn register(&self, module: Arc<dyn ServiceModule>) {
         let config = module.config();
+        let name = config.name;
 
         // Register by name
-        self.modules.insert(config.name, module.clone());
+        self.modules.insert(name, module.clone());
+
+        // Cache config for quick access
+        self.configs.insert(name.to_string(), config.clone());
+
+        // Create metrics tracker for this module
+        self.metrics.insert(name.to_string(), Arc::new(ModuleMetrics::new(name)));
 
         // Build command routing table from declared prefixes
         {
             let mut routes = self.command_routes.write();
             for prefix in config.command_prefixes {
-                routes.push((prefix, config.name));
+                routes.push((prefix, name));
             }
             // Sort by prefix length descending (longest match first)
             routes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
@@ -56,7 +72,7 @@ impl ModuleRegistry {
 
         // Register type for downcast discovery
         let type_id = (*module).as_any().type_id();
-        self.type_routes.insert(type_id, config.name);
+        self.type_routes.insert(type_id, name);
     }
 
     /// Route a command to the correct module.
@@ -102,6 +118,33 @@ impl ModuleRegistry {
     /// List all registered command routes (for debugging/health-check).
     pub fn list_routes(&self) -> Vec<(&'static str, &'static str)> {
         self.command_routes.read().clone()
+    }
+
+    // ─── Helper methods for RuntimeControl ───────────────────────────────────────
+
+    /// Check if a module exists by name.
+    pub fn has_module(&self, name: &str) -> bool {
+        self.modules.contains_key(name)
+    }
+
+    /// Get module priority by name.
+    pub fn get_priority(&self, name: &str) -> Option<ModulePriority> {
+        self.configs.get(name).map(|c| c.priority)
+    }
+
+    /// Get module config by name.
+    pub fn get_config(&self, name: &str) -> Option<ModuleConfig> {
+        self.configs.get(name).map(|c| c.clone())
+    }
+
+    /// Get module metrics by name.
+    pub fn get_metrics(&self, name: &str) -> Option<Arc<ModuleMetrics>> {
+        self.metrics.get(name).map(|m| m.clone())
+    }
+
+    /// List all module names (owned strings for cross-thread safety).
+    pub fn module_names(&self) -> Vec<String> {
+        self.modules.iter().map(|e| e.key().to_string()).collect()
     }
 }
 

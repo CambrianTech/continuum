@@ -182,6 +182,11 @@ impl AudioBufferPool {
         buffers.values().filter(|b| !b.is_expired()).count()
     }
 
+    /// Returns true if there are no active buffers.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Evict all expired buffers. Returns count evicted.
     pub fn evict_expired(&self) -> usize {
         let mut buffers = self.buffers.write();

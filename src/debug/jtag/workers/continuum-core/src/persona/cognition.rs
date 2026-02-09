@@ -168,7 +168,7 @@ impl PersonaCognitionEngine {
         let name_lower = self.persona_name.to_lowercase();
 
         // Check @mention
-        content_lower.contains(&format!("@{}", name_lower))
+        content_lower.contains(&format!("@{name_lower}"))
             || content_lower.contains(&name_lower)
     }
 

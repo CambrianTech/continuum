@@ -31,8 +31,7 @@ pub struct WriteLogPayload {
     pub level: LogLevel,
     pub component: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub args: Option<serde_json::Value>,
+        pub args: Option<serde_json::Value>,
 }
 
 /// Global logger instance (lazy static)

@@ -60,6 +60,11 @@ impl PersonaInbox {
         }
     }
 
+    /// Check if inbox is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
     }

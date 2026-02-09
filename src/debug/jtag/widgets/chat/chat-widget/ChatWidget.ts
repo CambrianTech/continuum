@@ -30,8 +30,18 @@ import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
-import { AI_DECISION_EVENTS } from '../../../system/events/shared/AIDecisionEvents';
-import { AI_LEARNING_EVENTS } from '../../../system/events/shared/AILearningEvents';
+import {
+  AI_DECISION_EVENTS,
+  AIDecisionEventData,
+  AIEvaluatingEventData,
+  AIDecidedRespondEventData,
+  AIDecidedSilentEventData,
+  AIGeneratingEventData,
+  AICheckingRedundancyEventData,
+  AIPostedEventData,
+  AIErrorEventData
+} from '../../../system/events/shared/AIDecisionEvents';
+import { AI_LEARNING_EVENTS, AITrainingStartedEventData } from '../../../system/events/shared/AILearningEvents';
 import { PositronWidgetState } from '../../shared/services/state/PositronWidgetState';
 // Signals for React-like state management
 import { createWidgetSignals, watch, type WidgetSignalState, type Dispose } from '@system/signals';
@@ -721,8 +731,8 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Setup AI decision event subscriptions (thinking, generating, posted, etc.)
    */
   private setupAIEventSubscriptions(): void {
-    const aiEventHandler = (event: string, handler: (data: any) => void) => {
-      this.subscribeWithCleanup(event, (data: any) => {
+    const aiEventHandler = <T extends AIDecisionEventData>(event: string, handler: (data: T) => void) => {
+      this.subscribeWithCleanup(event, (data: T) => {
         // Only process events for current room
         if (data.roomId === this.currentRoomId) {
           handler(data);
@@ -731,18 +741,20 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       });
     };
 
-    aiEventHandler(AI_DECISION_EVENTS.EVALUATING, (data) => this.aiStatusIndicator.onEvaluating(data));
-    aiEventHandler(AI_DECISION_EVENTS.DECIDED_RESPOND, (data) => this.aiStatusIndicator.onDecidedRespond(data));
-    aiEventHandler(AI_DECISION_EVENTS.DECIDED_SILENT, (data) => this.aiStatusIndicator.onDecidedSilent(data));
-    aiEventHandler(AI_DECISION_EVENTS.GENERATING, (data) => this.aiStatusIndicator.onGenerating(data));
-    aiEventHandler(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data) => this.aiStatusIndicator.onCheckingRedundancy(data));
-    aiEventHandler(AI_DECISION_EVENTS.ERROR, (data) => this.aiStatusIndicator.onError(data));
+    aiEventHandler<AIEvaluatingEventData>(AI_DECISION_EVENTS.EVALUATING, (data) => this.aiStatusIndicator.onEvaluating(data));
+    aiEventHandler<AIDecidedRespondEventData>(AI_DECISION_EVENTS.DECIDED_RESPOND, (data) => this.aiStatusIndicator.onDecidedRespond(data));
+    aiEventHandler<AIDecidedSilentEventData>(AI_DECISION_EVENTS.DECIDED_SILENT, (data) => this.aiStatusIndicator.onDecidedSilent(data));
+    aiEventHandler<AIGeneratingEventData>(AI_DECISION_EVENTS.GENERATING, (data) => this.aiStatusIndicator.onGenerating(data));
+    aiEventHandler<AICheckingRedundancyEventData>(AI_DECISION_EVENTS.CHECKING_REDUNDANCY, (data) => this.aiStatusIndicator.onCheckingRedundancy(data));
+    aiEventHandler<AIErrorEventData>(AI_DECISION_EVENTS.ERROR, (data) => this.aiStatusIndicator.onError(data));
 
-    // POSTED event - AI finished responding
-    this.subscribeWithCleanup(AI_DECISION_EVENTS.POSTED, (data: any) => {
+    // POSTED event - AI finished responding, refresh to show new message
+    this.subscribeWithCleanup(AI_DECISION_EVENTS.POSTED, async (data: AIPostedEventData) => {
       if (data.roomId === this.currentRoomId) {
         this.aiStatusIndicator.onPosted(data);
         this.updateHeader();
+        // Refresh to show the new AI message in the chat
+        await this.scroller?.refresh();
       }
     });
   }
@@ -751,7 +763,7 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
    * Setup AI learning event subscriptions (training indicators)
    */
   private setupLearningEventSubscriptions(): void {
-    this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: any) => {
+    this.subscribeWithCleanup(AI_LEARNING_EVENTS.TRAINING_STARTED, (data: AITrainingStartedEventData) => {
       this.addLearningBorder(data.personaName);
     });
 

@@ -24,6 +24,7 @@ pub mod code;
 pub mod models;
 pub mod runtime;
 pub mod modules;
+pub mod orm;
 
 pub use audio_constants::*;
 

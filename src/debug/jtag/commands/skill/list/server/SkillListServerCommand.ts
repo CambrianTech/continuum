@@ -10,7 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { SkillListParams, SkillListResult } from '../shared/SkillListTypes';
 import { createSkillListResultFromParams } from '../shared/SkillListTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import type { UniversalFilter } from '@daemons/data-daemon/shared/DataStorageAdapter';
 import { COLLECTIONS } from '@system/shared/Constants';
 
@@ -36,7 +36,7 @@ export class SkillListServerCommand extends CommandBase<SkillListParams, SkillLi
 
     const limit = params.limit ?? 20;
 
-    const queryResult = await DataDaemon.query<SkillEntity>({
+    const queryResult = await ORM.query<SkillEntity>({
       collection: COLLECTIONS.SKILLS,
       filter,
       sort: [{ field: 'createdAt', direction: 'desc' }],

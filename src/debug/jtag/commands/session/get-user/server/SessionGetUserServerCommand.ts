@@ -12,7 +12,7 @@ import type { SessionGetUserParams, SessionGetUserResult } from '../shared/Sessi
 import type { GetSessionParams } from '../../../../daemons/session-daemon/shared/SessionTypes';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { type GetSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
@@ -29,7 +29,7 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
       // CRITICAL FIX: If userId is directly provided (e.g., PersonaUsers), use it directly
       // PersonaUsers have unregistered sessions but valid userIds
       if (getUserParams.userId) {
-        const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, getUserParams.userId);
+        const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, getUserParams.userId);
 
         if (!user) {
           return transformPayload(getUserParams, {
@@ -89,7 +89,7 @@ export class SessionGetUserServerCommand extends CommandBase<SessionGetUserParam
       const userId = sessionResponse.session.userId;
 
       // Look up user entity from database
-      const user = await DataDaemon.read<UserEntity>(COLLECTIONS.USERS, userId);
+      const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
 
       if (!user) {
         return transformPayload(getUserParams, {

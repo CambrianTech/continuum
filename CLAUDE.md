@@ -348,6 +348,14 @@ npm start                    # DEPLOYS code changes, takes 130s or so
 
 **IF YOU FORGET `npm start`, THE BROWSER SHOWS OLD CODE!**
 
+**NEVER CALL `cargo build` DIRECTLY!**
+- ALL Rust binaries MUST be built via `npm start`
+- If you run `cargo build --release` manually, that binary only exists on YOUR machine
+- When someone else clones the repo and runs `npm start`, that step doesn't happen
+- The repo is BROKEN for everyone except you
+- Manual build steps = broken repo for all other users
+- If a Rust binary needs to be built, it MUST be wired into the `npm start` build scripts
+
 Don't panic and stash changes first before anything drastic. Use the stash to your advantage and you will be safe from catastrophe. Remember we have git for a reason!
 
 ### Chat Commands

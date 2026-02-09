@@ -22,6 +22,10 @@ use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::voice::{VoiceModule, VoiceState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::rag::{RagModule, RagState};
+use crate::modules::data::DataModule;
+use crate::modules::logger::LoggerModule;
+use crate::modules::search::SearchModule;
+use crate::modules::embedding::EmbeddingModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -496,12 +500,9 @@ enum Request {
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
     success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "requestId")]
+        result: Option<serde_json::Value>,
+        error: Option<String>,
+        #[serde(rename = "requestId")]
     request_id: Option<u64>,
 }
 
@@ -574,6 +575,7 @@ struct ServerState {
 impl ServerState {
     /// Create with shared state (for module state sharing).
     /// Phase 3+: Modules and ServerState share all per-persona and service state.
+    #[allow(clippy::too_many_arguments)]
     fn new_with_shared_state(
         call_manager: Arc<crate::voice::call_server::CallManager>,
         rt_handle: tokio::runtime::Handle,
@@ -622,8 +624,7 @@ impl ServerState {
         );
 
         HandleResult::Json(Response::error(format!(
-            "Command not routed to module. This is likely a bug - all commands should be handled by ServiceModules. Request type: {}",
-            command_name
+            "Command not routed to module. This is likely a bug - all commands should be handled by ServiceModules. Request type: {command_name}"
         )))
     }
 }
@@ -1314,6 +1315,22 @@ pub fn start_server(
         rt_handle.clone(),
     ));
     runtime.register(Arc::new(CodeModule::new(code_state)));
+
+    // Phase 4: DataModule (database-agnostic storage via ORM adapters)
+    // DB path is passed per-request from TypeScript - NO defaults
+    runtime.register(Arc::new(DataModule::new()));
+
+    // Phase 4a: LoggerModule (absorbs standalone logger worker)
+    // Provides log/write, log/ping via main socket
+    runtime.register(Arc::new(LoggerModule::new()));
+
+    // Phase 4b: SearchModule (absorbs standalone search worker)
+    // Provides search/execute, search/vector, search/list, search/params
+    runtime.register(Arc::new(SearchModule::new()));
+
+    // Phase 4c: EmbeddingModule (absorbs standalone embedding worker)
+    // Provides embedding/generate, embedding/model/{load,list,info,unload}
+    runtime.register(Arc::new(EmbeddingModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

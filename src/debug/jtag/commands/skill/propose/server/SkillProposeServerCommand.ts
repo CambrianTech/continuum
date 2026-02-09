@@ -12,7 +12,7 @@ import type { SkillProposeParams, SkillProposeResult } from '../shared/SkillProp
 import { createSkillProposeResultFromParams } from '../shared/SkillProposeTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
 import type { SkillSpec, SkillParamSpec, SkillResultSpec, SkillScope } from '@system/data/entities/SkillEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionPropose } from '@commands/collaboration/decision/propose/shared/DecisionProposeTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -41,7 +41,7 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
     }
 
     // Check for duplicate active skill
-    const existingResult = await DataDaemon.query<SkillEntity>({
+    const existingResult = await ORM.query<SkillEntity>({
       collection: COLLECTIONS.SKILLS,
       filter: { name, status: 'active' },
       limit: 1,
@@ -82,12 +82,15 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
     }
 
     // Persist
-    const stored = await DataDaemon.store<SkillEntity>(COLLECTIONS.SKILLS, entity);
+    const stored = await ORM.store<SkillEntity>(COLLECTIONS.SKILLS, entity);
 
     // For team-scoped skills, create a governance proposal via the decision/propose command
     let proposalId = '';
     if (scope === 'team') {
       try {
+        // Inherit context from params but override userId so DecisionPropose knows who the proposer is
+        const proposeContext = params.context ? { ...params.context, userId: personaId as UUID } : undefined;
+
         const proposalResult = await DecisionPropose.execute({
           topic: `New Skill Proposal: ${name}`,
           rationale: `${description}\n\nImplementation: ${implementation}\n\nParams: ${JSON.stringify(spec.params)}\nResults: ${JSON.stringify(spec.results)}`,
@@ -98,11 +101,11 @@ export class SkillProposeServerCommand extends CommandBase<SkillProposeParams, S
           ],
           scope: 'all',
           significanceLevel: 'medium',
-          proposerId: personaId as UUID,
+          context: proposeContext,
         });
         proposalId = proposalResult.proposalId ?? '';
         if (proposalId) {
-          await DataDaemon.update<SkillEntity>(
+          await ORM.update<SkillEntity>(
             COLLECTIONS.SKILLS,
             stored.id,
             { proposalId: proposalId as UUID } as Partial<SkillEntity>,

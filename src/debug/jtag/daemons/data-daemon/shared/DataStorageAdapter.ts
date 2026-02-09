@@ -163,32 +163,40 @@ export interface StorageQuery {
  * }
  * ```
  */
-export interface JoinSpec {
-  /** Collection to join with */
+/**
+ * Include specification for loading related data
+ * Storage-agnostic term (like Prisma's "include" or GraphQL's "expand")
+ */
+export interface IncludeSpec {
+  /** Collection to include from */
   readonly collection: string;
-  /** Alias for the joined data in results (e.g., 'sender') */
+  /** Alias for the included data in results (e.g., 'sender') */
   readonly alias: string;
   /** Field in the primary collection */
   readonly localField: string;
-  /** Field in the joined collection (usually 'id') */
+  /** Field in the included collection (usually 'id') */
   readonly foreignField: string;
-  /** Join type - left returns nulls for non-matches, inner excludes them */
+  /** Include type - left returns nulls for non-matches, inner excludes them */
   readonly type: 'left' | 'inner';
-  /** Fields to select from joined collection (undefined = all fields) */
+  /** Fields to select from included collection (undefined = all fields) */
   readonly select?: readonly string[];
 }
 
+/** @deprecated Use IncludeSpec instead */
+export type JoinSpec = IncludeSpec;
+
 /**
- * Query with JOIN support for loading related data
+ * Query with include support for loading related data
  *
  * Eliminates N+1 query patterns by loading related data in a single query.
+ * Uses storage-agnostic terminology (include vs SQL-specific join).
  *
  * Example: Load messages with sender info
  * ```typescript
- * const result = await adapter.queryWithJoin({
+ * const result = await adapter.queryWithInclude({
  *   collection: 'chatMessages',
  *   filter: { roomId: 'room-123' },
- *   joins: [{
+ *   includes: [{
  *     collection: 'users',
  *     alias: 'sender',
  *     localField: 'senderId',
@@ -203,10 +211,15 @@ export interface JoinSpec {
  * // Result: { ...message, sender: { displayName: 'Joel', userType: 'human' } }
  * ```
  */
-export interface StorageQueryWithJoin extends StorageQuery {
+export interface StorageQueryWithInclude extends StorageQuery {
+  /** Include specifications for related collections (alias for joins) */
+  readonly includes?: readonly IncludeSpec[];
   /** Join specifications for related collections */
-  readonly joins: readonly JoinSpec[];
+  readonly joins: readonly IncludeSpec[];
 }
+
+/** Alias for backwards compatibility */
+export type StorageQueryWithJoin = StorageQueryWithInclude;
 
 /**
  * Storage Adapter Capabilities

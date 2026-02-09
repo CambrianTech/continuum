@@ -27,7 +27,7 @@ async function main() {
 	} catch (e) {
 		console.error('   ❌ Failed to connect:', e);
 		console.error('   Make sure continuum-core-server is running:');
-		console.error('   ./target/release/continuum-core-server /tmp/continuum-core.sock /tmp/jtag-logger-worker.sock');
+		console.error('   npm run worker:start (or: ./workers/start-workers.sh)');
 		process.exit(1);
 	}
 

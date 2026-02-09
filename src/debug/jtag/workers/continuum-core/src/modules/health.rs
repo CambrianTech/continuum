@@ -1,8 +1,8 @@
-/// HealthModule — the trivial outlier that validates the ServiceModule interface.
-///
-/// Handles: health-check, get-stats
-/// This is Phase 1: if this module routes correctly through the registry,
-/// the ServiceModule trait design is proven for the simplest case.
+//! HealthModule — the trivial outlier that validates the ServiceModule interface.
+//!
+//! Handles: health-check, get-stats
+//! This is Phase 1: if this module routes correctly through the registry,
+//! the ServiceModule trait design is proven for the simplest case.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use async_trait::async_trait;

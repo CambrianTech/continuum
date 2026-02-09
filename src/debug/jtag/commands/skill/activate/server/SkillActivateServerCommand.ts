@@ -11,7 +11,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { SkillActivateParams, SkillActivateResult } from '../shared/SkillActivateTypes';
 import { createSkillActivateResultFromParams } from '../shared/SkillActivateTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
-import { DataDaemon } from '@daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
@@ -29,7 +29,7 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     }
 
     // Load skill entity
-    const skill = await DataDaemon.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
+    const skill = await ORM.read<SkillEntity>(COLLECTIONS.SKILLS, skillId as UUID);
     if (!skill) {
       throw new ValidationError('skillId', `Skill not found: ${skillId}`);
     }
@@ -46,7 +46,7 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     // For team-scoped skills, verify governance approval
     if (skill.scope === 'team' && skill.proposalId) {
       try {
-        const proposal = await DataDaemon.read(COLLECTIONS.DECISION_PROPOSALS, skill.proposalId);
+        const proposal = await ORM.read(COLLECTIONS.DECISION_PROPOSALS, skill.proposalId);
         if (proposal) {
           if (proposal.status !== 'approved' && proposal.status !== 'concluded') {
             throw new ValidationError('skillId',
@@ -75,7 +75,7 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
       // Team skills: files are already in commands/ directory from generate step
       // They'll be available after the next npm start / registry rebuild
     } catch (e) {
-      await DataDaemon.update<SkillEntity>(
+      await ORM.update<SkillEntity>(
         COLLECTIONS.SKILLS,
         skill.id as UUID,
         {
@@ -89,7 +89,7 @@ export class SkillActivateServerCommand extends CommandBase<SkillActivateParams,
     }
 
     // Update entity
-    await DataDaemon.update<SkillEntity>(
+    await ORM.update<SkillEntity>(
       COLLECTIONS.SKILLS,
       skill.id as UUID,
       {

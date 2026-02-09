@@ -18,6 +18,9 @@ import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandl
  * Supports optional dbHandle for multi-database operations
  */
 export interface BaseDataParams extends CommandParams {
+  /**
+   * Collection name. Common: users, rooms, chat_messages, memories, tasks, skills, wall_documents
+   */
   readonly collection: string;
   readonly backend: JTAGEnvironment;
   /** Optional database handle for multi-database operations (defaults to 'default') */

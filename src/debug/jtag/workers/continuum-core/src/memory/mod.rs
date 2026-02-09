@@ -226,7 +226,6 @@ impl PersonaMemoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     /// Stub embedding provider for tests (avoids loading real model).
     struct StubEmbeddingProvider;

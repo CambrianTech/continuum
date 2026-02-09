@@ -49,7 +49,7 @@ import {
 } from '../shared/VectorSearchTypes';
 import { RustEmbeddingClient } from '../../../system/core/services/RustEmbeddingClient';
 import { RustVectorSearchClient } from '../../../system/core/services/RustVectorSearchClient';
-import { SqlNamingConverter } from '../shared/SqlNamingConverter';
+// NOTE: No SqlNamingConverter - Rust DataModule handles all naming conversions internally
 
 /**
  * Vector record stored in backend
@@ -97,8 +97,12 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
   constructor(
     private readonly storageAdapter: DataStorageAdapter,
     private readonly vectorOps: VectorStorageOperations,
-    private readonly dbPath?: string
-  ) {}
+    private readonly dbPath: string
+  ) {
+    if (!dbPath) {
+      throw new Error('VectorSearchAdapterBase requires explicit dbPath - no fallbacks allowed');
+    }
+  }
 
   // ============================================================================
   // GENERIC IMPLEMENTATIONS - Work for all backends
@@ -151,18 +155,18 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
       if (!await rustClient.isAvailable()) {
         return {
           success: false,
-          error: 'Rust data-daemon-worker not available. Start with: ./workers/start-workers.sh'
+          error: 'Rust continuum-core not available. Start with: npm start'
         };
       }
       console.debug(`🔍 VECTOR-SEARCH-TIMING: Rust availability check in ${Date.now() - rustAvailStart}ms`);
 
       // 3. Execute vector search via Rust (no fallback)
-      const tableName = SqlNamingConverter.toTableName(options.collection);
+      // Pass collection name directly - Rust DataModule handles naming conversions
       const queryArr = toNumberArray(queryVector);
 
       const rustSearchStart = Date.now();
       const rustResult = await rustClient.search(
-        tableName,
+        options.collection,
         queryArr,
         k,
         threshold,

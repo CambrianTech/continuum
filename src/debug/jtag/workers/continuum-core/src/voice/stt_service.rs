@@ -30,7 +30,7 @@ pub fn transcribe_speech_sync(
     let f32_samples = i16_to_f32(samples);
 
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| STTError::InferenceFailed(format!("Failed to create runtime: {}", e)))?;
+        .map_err(|e| STTError::InferenceFailed(format!("Failed to create runtime: {e}")))?;
     rt.block_on(async {
         transcribe_speech_impl(f32_samples, language).await
     })

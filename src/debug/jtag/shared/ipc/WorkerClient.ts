@@ -32,8 +32,8 @@ import {
 import { TimingHarness } from '../../system/core/shared/TimingHarness';
 
 // IPC types that should NOT be timed (breaks recursive timing loop)
-// write-log → timing → appendFile → blocks event loop
-const SKIP_TIMING_TYPES = new Set(['write-log', 'flush-logs']);
+// log/write → timing → appendFile → blocks event loop
+const SKIP_TIMING_TYPES = new Set(['log/write', 'log/flush']);
 
 // ============================================================================
 // Types and Interfaces

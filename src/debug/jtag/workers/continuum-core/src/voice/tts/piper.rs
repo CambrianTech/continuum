@@ -86,7 +86,7 @@ impl PiperTTS {
 
         // Speaker ID (for multi-speaker models like LibriTTS which has 247 speakers)
         // Parse voice as speaker ID, default to 0 if invalid
-        let speaker_id: i64 = voice.parse().unwrap_or(0).min(246).max(0);
+        let speaker_id: i64 = voice.parse().unwrap_or(0).clamp(0, 246);
         let sid_array = ndarray::Array1::from_vec(vec![speaker_id]);
 
         // Inference parameters from model config
@@ -137,7 +137,7 @@ impl PiperTTS {
             "Piper synthesized {} samples ({}ms) for '{}...'",
             samples_resampled.len(),
             duration_ms,
-            super::truncate_str(&text, 30)
+            super::truncate_str(text, 30)
         );
 
         Ok(SynthesisResult {
@@ -228,7 +228,7 @@ impl TextToSpeech for PiperTTS {
         let config_path = model_path.with_extension("onnx.json");
         let phonemizer = Phonemizer::load_from_config(
             config_path.to_str().unwrap_or("models/piper/en_US-libritts_r-medium.onnx.json")
-        ).map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {}", e)))?;
+        ).map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {e}")))?;
 
         let model = PiperModel {
             session,

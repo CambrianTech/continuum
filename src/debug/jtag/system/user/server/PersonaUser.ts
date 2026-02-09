@@ -32,7 +32,7 @@ import type { Thought, ThoughtType } from '../../conversation/shared/Conversatio
 import { getChatCoordinator, type ChatThought } from '../../coordination/server/ChatCoordinationStream';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { getDataEventName } from '../../core/shared/EventConstants';
 import { TaskEntity } from '../../data/entities/TaskEntity';
@@ -888,7 +888,7 @@ export class PersonaUser extends AIUser {
 
     // Also populate room name cache from all rooms
     try {
-      const roomsResult = await DataDaemon.query<RoomEntity>({
+      const roomsResult = await ORM.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: {}
       });
@@ -963,8 +963,8 @@ export class PersonaUser extends AIUser {
     }
 
     try {
-      // Query for general room using DataDaemon.query (server-side only)
-      const queryResult = await DataDaemon.query<RoomEntity>({
+      // Query for general room using ORM.query (server-side only)
+      const queryResult = await ORM.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: { uniqueId: ROOM_UNIQUE_IDS.GENERAL }
       });
@@ -998,8 +998,8 @@ export class PersonaUser extends AIUser {
         }
       ];
 
-      // Update room with new member using DataDaemon.update
-      await DataDaemon.update<RoomEntity>(
+      // Update room with new member using ORM.update
+      await ORM.update<RoomEntity>(
         COLLECTIONS.ROOMS,
         generalRoom.id,
         { members: updatedMembers }
@@ -1034,7 +1034,7 @@ export class PersonaUser extends AIUser {
         const roomState = this.state.roomReadState?.[roomId];
         const cutoffTime = roomState?.lastReadMessageTimestamp || new Date(0).toISOString();
 
-        const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+        const recentMessages = await ORM.query<ChatMessageEntity>({
           collection: COLLECTIONS.CHAT_MESSAGES,
           filter: {
             roomId,
@@ -1708,7 +1708,7 @@ export class PersonaUser extends AIUser {
     const containsQuestion = messageEntity.content?.text?.includes('?') || false;
 
     // 2. Get recent messages for context
-    const recentMessages = await DataDaemon.query<ChatMessageEntity>({
+    const recentMessages = await ORM.query<ChatMessageEntity>({
       collection: COLLECTIONS.CHAT_MESSAGES,
       filter: { roomId: messageEntity.roomId },
       sort: [{ field: 'timestamp', direction: 'desc' }],
@@ -1864,7 +1864,7 @@ export class PersonaUser extends AIUser {
     }
     // createdAt, updatedAt, version, id handled by constructor
 
-    const storedEntity = await DataDaemon.store<UserEntity>(
+    const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
       userEntity
     );
@@ -1873,7 +1873,7 @@ export class PersonaUser extends AIUser {
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('persona');
 
-    const storedState = await DataDaemon.store<UserStateEntity>(
+    const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
       userState
     );

@@ -1,8 +1,7 @@
 {
   "memoryLimits": {
     "default": "4G",
-    "inference": "8G",
-    "embedding": "2G"
+    "inference": "8G"
   },
   "workers": [
     {
@@ -14,86 +13,25 @@
         ".continuum/jtag/data/database.sqlite",
         ".continuum/jtag/data/archive/database-001.sqlite"
       ],
-      "description": "Archive worker for moving old data to cold storage using Commands.execute()",
+      "description": "Archive worker for moving old data to cold storage",
       "enabled": true
-    },
-    {
-      "name": "data-daemon",
-      "binary": "workers/target/release/data-daemon-worker",
-      "socket": "/tmp/jtag-data-daemon-worker.sock",
-      "args": [
-        "/tmp/jtag-data-daemon-worker.sock"
-      ],
-      "description": "Data daemon worker for WAL cleanup and fast SQLite operations",
-      "enabled": true
-    },
-    {
-      "name": "embedding",
-      "binary": "workers/target/release/embedding-worker",
-      "socket": "/tmp/jtag-embedding.sock",
-      "args": [
-        "/tmp/jtag-embedding.sock"
-      ],
-      "description": "Native embedding generation via fastembed (ONNX). ~5ms vs ~80ms Ollama HTTP.",
-      "enabled": true,
-      "memoryLimit": "2G"
-    },
-    {
-      "name": "inference",
-      "binary": "workers/target/release/inference-worker",
-      "socket": "/tmp/jtag-inference.sock",
-      "args": [
-        "/tmp/jtag-inference.sock"
-      ],
-      "description": "Candle-based LLM inference with multi-adapter LoRA composition. Metal-accelerated.",
-      "enabled": false,
-      "memoryLimit": "8G",
-      "preloadModels": [
-        "Qwen/Qwen2-1.5B-Instruct",
-        "Qwen/Qwen2-0.5B-Instruct"
-      ]
     },
     {
       "name": "inference-grpc",
       "binary": "workers/target/release/inference-grpc",
       "type": "tcp",
       "port": 50051,
-      "description": "gRPC inference server with Candle LLM backend. Replaces Unix socket worker.",
+      "description": "gRPC inference server with Candle LLM backend. Metal-accelerated.",
       "enabled": true,
       "memoryLimit": "8G"
-    },
-    {
-      "name": "logger",
-      "binary": "workers/target/release/logger-worker",
-      "socket": "/tmp/jtag-logger-worker.sock",
-      "description": "High-performance logging worker for file I/O",
-      "enabled": true
     },
     {
       "name": "continuum-core",
       "binary": "workers/target/release/continuum-core-server",
       "socket": "/tmp/continuum-core.sock",
-      "args": [
-        "/tmp/jtag-logger-worker.sock"
-      ],
-      "description": "Rust core: IPC (VoiceOrchestrator, PersonaInbox) + WebSocket voice calls on port 50053 (replaces streaming-core)",
-      "enabled": true
-    },
-    {
-      "name": "search",
-      "binary": "workers/target/release/search-worker",
-      "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
-      "description": "Search algorithms (BoW, BM25) off main thread via Unix socket",
+      "description": "Unified Rust runtime: Voice, Data, Embedding, Search, Logger modules",
       "enabled": true
-    },
-    {
-      "name": "streaming-core",
-      "binary": "workers/target/release/streaming-core",
-      "type": "tcp",
-      "port": 50053,
-      "description": "DEPRECATED - Voice processing moved to continuum-core",
-      "enabled": false
     }
   ],
   "sharedSockets": [

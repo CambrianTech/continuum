@@ -22,7 +22,7 @@ import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { UserCapabilities } from '../../data/entities/UserEntity';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
@@ -138,7 +138,7 @@ export abstract class BaseUser {
       this.log.debug(`🔧 LOAD-ROOMS-START: ${this.constructor.name} ${this.displayName} (id=${this.id.slice(0,8)}), current myRoomIds.size=${this.myRoomIds.size}`);
 
       // Query all rooms
-      const roomsResult = await DataDaemon.query<RoomEntity>({
+      const roomsResult = await ORM.query<RoomEntity>({
         collection: COLLECTIONS.ROOMS,
         filter: {}
       });
@@ -355,7 +355,7 @@ export abstract class BaseUser {
    */
   protected static async addToRoomByUniqueId(userId: UUID, roomUniqueId: string, displayName: string): Promise<void> {
     // Query room by uniqueId (stable identifier)
-    const roomsResult = await DataDaemon.query<RoomEntity>({
+    const roomsResult = await ORM.query<RoomEntity>({
       collection: COLLECTIONS.ROOMS,
       filter: { uniqueId: roomUniqueId }
     });
@@ -367,7 +367,7 @@ export abstract class BaseUser {
       return;
     }
 
-    // DataDaemon.query returns records, access .data property for entity
+    // ORM.query returns records, access .data property for entity
     const roomRecord = roomsResult.data[0];
     const room = roomRecord.data || roomRecord;
     console.log(`🔍 ${this.name}: First room:`, JSON.stringify(room, null, 2).slice(0, 400));
@@ -391,7 +391,7 @@ export abstract class BaseUser {
     displayName: string
   ): Promise<void> {
     // Read current room
-    const room = await DataDaemon.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
+    const room = await ORM.read<RoomEntity>(COLLECTIONS.ROOMS, roomId);
     if (!room) {
       console.warn(`⚠️ ${this.name}.create: Room ${roomId} not found`);
       return;
@@ -414,7 +414,7 @@ export abstract class BaseUser {
     ];
 
     // Update room
-    await DataDaemon.update<RoomEntity>(
+    await ORM.update<RoomEntity>(
       COLLECTIONS.ROOMS,
       roomId,
       { members: updatedMembers }

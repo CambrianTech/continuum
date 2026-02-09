@@ -50,102 +50,15 @@ export const ENV_VARS = {
 
 /**
  * Collection Names - Browser-safe, used for API calls
- * Both browser and server need to know collection names
+ *
+ * ⚠️ AUTO-GENERATED via generator/generate-collection-constants.ts
+ * ⚠️ Re-exported from shared/generated-collection-constants.ts
+ * ⚠️ NEVER hardcode collection strings - use COLLECTIONS.* constants
+ *
+ * Source of truth: Entity files with `static readonly collection`
+ * Run: npx tsx generator/generate-collection-constants.ts
  */
-export const COLLECTIONS = {
-  USERS: 'users',
-  USER_STATES: 'user_states',
-  ROOMS: 'rooms',
-  CHAT_MESSAGES: 'chat_messages',
-  ARTIFACTS: 'artifacts',
-  SESSIONS: 'sessions',
-  TASKS: 'tasks',
-  PINNED_ITEMS: 'pinned_items',
-  COORDINATION_DECISIONS: 'coordination_decisions',
-  TRAINING_EXAMPLES: 'training_examples',
-  TRAINING_SESSIONS: 'training_sessions',
-  FINE_TUNING_JOBS: 'fine_tuning_jobs',
-  FINE_TUNING_DATASETS: 'fine_tuning_datasets',
-  FINE_TUNED_MODELS: 'fine_tuned_models',
-  TRAINING_CHECKPOINTS: 'training_checkpoints',
-  TRAINING_DATASETS: 'training_datasets',
-  CODE_INDEX: 'code_index',
-
-  // Room Wall System
-  WALL_DOCUMENTS: 'wall_documents',
-
-  // Memory System (Phase 2)
-  MEMORIES: 'memories',
-
-  // Cognition System Collections (Phase 1: Agent Architecture)
-  PERSONA_SELF_STATE: 'persona_self_state',
-  PERSONA_WORKING_MEMORY: 'persona_working_memory',
-  PERSONA_EXPERIENCES: 'persona_experiences',
-  PERSONA_PROCEDURES: 'persona_procedures',
-  PERSONA_PLANS: 'persona_plans',
-  PERSONA_LEARNINGS: 'persona_learnings',
-  USER_PROFILES: 'user_profiles',
-
-  // Cognition Observability Collections (Phase 1B: Monitoring)
-  COGNITION_STATE_SNAPSHOTS: 'cognition_state_snapshots',
-  COGNITION_PLAN_RECORDS: 'cognition_plan_records',
-
-  // Detailed Activity Logs (Phase 2: Complete Observability)
-  TOOL_EXECUTION_LOGS: 'tool_execution_logs',
-  ADAPTER_DECISION_LOGS: 'adapter_decision_logs',
-  RESPONSE_GENERATION_LOGS: 'response_generation_logs',
-
-  // Granular Cognitive Logs (Phase 3: Deep Observability)
-  COGNITION_PLAN_STEP_EXECUTIONS: 'cognition_plan_step_executions',
-  COGNITION_SELF_STATE_UPDATES: 'cognition_self_state_updates',
-  COGNITION_MEMORY_OPERATIONS: 'cognition_memory_operations',
-  ADAPTER_REASONING_LOGS: 'adapter_reasoning_logs',
-  COGNITION_PLAN_REPLANS: 'cognition_plan_replans',
-
-  // Universal Democratic Voting System
-  VOTING_PROPOSALS: 'voting_proposals',              // All votable proposals (universal)
-  PERMISSION_ELEVATION_PROPOSALS: 'permission_elevation_proposals',
-  PERMISSION_DEMOTION_PROPOSALS: 'permission_demotion_proposals',
-
-  // Legacy voting collections (for backward compatibility - migrate to VOTING_PROPOSALS)
-  FILE_VOTE_PROPOSALS: 'file_vote_proposals',
-  DECISION_PROPOSALS: 'decision_proposals',
-
-  // AI Governance and Permission System
-  MUTE_STATUS: 'mute_status',                        // Active mutes
-  PERMISSION_HISTORY: 'permission_history',          // Track AI progression/demotion
-  USER_METRICS: 'user_metrics',                      // Performance tracking for governance
-  ROOM_PERMISSIONS: 'room_permissions',              // Per-room access control
-  EXPERTISE_TOKENS: 'expertise_tokens',              // Domain expertise recognition (AI-suggested)
-  POST_VOTE_DEBRIEFS: 'post_vote_debriefs',         // Learning from votes (AI-suggested)
-  MENTORSHIP_RELATIONSHIPS: 'mentorship_relationships', // AI mentorship system (AI-suggested)
-
-  // Collaborative Editing System (Lease Daemon)
-  FILE_LEASES: 'file_leases',
-  LEASE_QUEUES: 'lease_queues',
-  APPROVAL_REQUESTS: 'approval_requests',
-  RELEASE_REQUESTS: 'release_requests',
-  KICK_VOTES: 'kick_votes',
-  KICK_APPEALS: 'kick_appeals',
-
-  // Collaborative Canvas System
-  CANVAS_STROKES: 'canvas_strokes',
-
-  // Activity System - collaborative content instances (canvas, browser, games, etc.)
-  ACTIVITIES: 'activities',
-
-  // Universal Handle System — persistent async operation references
-  HANDLES: 'handles',
-
-  // Coding Agent System (Phase 4: Multi-Agent Coordination)
-  CODING_PLANS: 'coding_plans',
-
-  // Self-Modifying Skills (Phase 4B: AI-Created Commands)
-  SKILLS: 'skills',
-
-  // Coding Challenges & Learning (Phase 4D: Progressive Training)
-  CODING_CHALLENGES: 'coding_challenges',
-} as const;
+export { COLLECTIONS, type CollectionName } from '../../shared/generated-collection-constants';
 
 
 /**
@@ -359,4 +272,3 @@ export { COMMANDS, CommandName } from '../../shared/generated-command-constants'
 
 // Re-export for backward compatibility (will be deprecated)
 export { PATHS as DATABASE_PATHS };
-export type CollectionName = typeof COLLECTIONS[keyof typeof COLLECTIONS];

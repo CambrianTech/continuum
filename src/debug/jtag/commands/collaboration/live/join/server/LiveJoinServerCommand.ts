@@ -137,38 +137,58 @@ export class LiveJoinServerCommand extends LiveJoinCommand {
   }
 
   /**
-   * Resolve current user
+   * Resolve current user - prefers context.userId (for PersonaUsers)
+   *
+   * Priority:
+   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
+   * 2. Legacy callerId/personaId - Deprecated, for backwards compatibility
+   * 3. UserIdentityResolver - Fallback for CLI calls
    */
   private async resolveCurrentUser(params: LiveJoinParams): Promise<UserEntity | null> {
+    // FIRST: Check context.userId (PersonaUsers set this)
+    if (params.context?.userId) {
+      const result = await DataList.execute<UserEntity>({
+        collection: UserEntity.collection,
+        filter: { id: params.context.userId },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
+
+      if (result.success && result.items && result.items.length > 0) {
+        console.log('🔧 LiveJoinServerCommand.resolveCurrentUser USING CONTEXT userId', { userId: params.context.userId });
+        return result.items[0];
+      }
+    }
+
+    // SECOND: Check legacy callerId/personaId (deprecated)
     const callerIdFromParams = (params as any).callerId || (params as any).personaId;
 
     if (callerIdFromParams) {
       const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: callerIdFromParams },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
+        collection: UserEntity.collection,
+        filter: { id: callerIdFromParams },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
 
       if (result.success && result.items && result.items.length > 0) {
         return result.items[0];
       }
     }
 
-    // Fall back to UserIdentityResolver
+    // FALLBACK: Use UserIdentityResolver (CLI calls)
     const identity = await UserIdentityResolver.resolve();
 
     if (identity.exists && identity.userId) {
       const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: identity.userId },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
+        collection: UserEntity.collection,
+        filter: { id: identity.userId },
+        limit: 1,
+        context: params.context,
+        sessionId: params.sessionId
+      });
 
       if (result.success && result.items && result.items.length > 0) {
         return result.items[0];

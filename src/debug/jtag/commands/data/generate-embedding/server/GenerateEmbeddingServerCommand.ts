@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { GenerateEmbeddingParams, GenerateEmbeddingResult } from '../shared/GenerateEmbeddingCommandTypes';
 import { createGenerateEmbeddingResultFromParams } from '../shared/GenerateEmbeddingCommandTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
 
 const DEFAULT_CONFIG = {
@@ -51,7 +51,7 @@ export class GenerateEmbeddingServerCommand extends CommandBase<GenerateEmbeddin
       console.debug(`🧬 GENERATE-EMBEDDING: Using model ${embeddingModel.name} (${embeddingModel.provider})`);
 
       // Generate embedding via DataDaemon
-      const embeddingResult = await DataDaemon.generateEmbedding({
+      const embeddingResult = await ORM.generateEmbedding({
         text: params.text,
         model: embeddingModel
       });

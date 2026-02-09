@@ -13,6 +13,15 @@ use crate::voice::tts::{self, SynthesisResult, TTSError};
 /// If `adapter` is specified, uses that adapter directly.
 /// Otherwise, uses the active adapter from the registry.
 ///
+/// Async version - use this when already in an async context (e.g., ServiceModule::handle_command)
+pub async fn synthesize_speech_async(
+    text: &str,
+    voice: Option<&str>,
+    adapter: Option<&str>,
+) -> Result<SynthesisResult, TTSError> {
+    synthesize_speech_impl(text, voice, adapter).await
+}
+
 /// This is a synchronous wrapper that creates its own tokio runtime.
 ///
 /// IMPORTANT: Always creates a NEW runtime. IPC handler threads are spawned
@@ -20,13 +29,16 @@ use crate::voice::tts::{self, SynthesisResult, TTSError};
 /// global runtime handle. Calling handle.block_on() from such threads panics
 /// with "Cannot block the current thread from within a runtime". Creating a
 /// fresh runtime avoids this entirely.
+///
+/// WARNING: Do NOT call this from within an async context (e.g., inside a tokio task).
+/// Use synthesize_speech_async instead.
 pub fn synthesize_speech_sync(
     text: &str,
     voice: Option<&str>,
     adapter: Option<&str>,
 ) -> Result<SynthesisResult, TTSError> {
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create runtime: {}", e)))?;
+        .map_err(|e| TTSError::SynthesisFailed(format!("Failed to create runtime: {e}")))?;
     rt.block_on(async {
         synthesize_speech_impl(text, voice, adapter).await
     })

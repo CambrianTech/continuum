@@ -346,7 +346,7 @@ pub async fn synthesize_with(text: &str, voice: &str, adapter_name: &str) -> Res
     let adapter = get_registry()
         .read()
         .get(adapter_name)
-        .ok_or_else(|| TTSError::AdapterNotFound(format!("Adapter '{}' not found", adapter_name)))?;
+        .ok_or_else(|| TTSError::AdapterNotFound(format!("Adapter '{adapter_name}' not found")))?;
 
     if !adapter.is_initialized() {
         adapter.initialize().await?;

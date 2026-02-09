@@ -1,11 +1,11 @@
-/// ChannelModule — wraps per-persona ChannelRegistry + PersonaState DashMap state.
-///
-/// Validates the ServiceModule trait handles stateful per-persona DashMap isolation —
-/// together with CognitionModule, these two prove the most different pattern from
-/// stateless HealthModule.
-///
-/// Handles: channel/enqueue, channel/dequeue, channel/status,
-///          channel/service-cycle, channel/service-cycle-full, channel/clear
+//! ChannelModule — wraps per-persona ChannelRegistry + PersonaState DashMap state.
+//!
+//! Validates the ServiceModule trait handles stateful per-persona DashMap isolation —
+//! together with CognitionModule, these two prove the most different pattern from
+//! stateless HealthModule.
+//!
+//! Handles: channel/enqueue, channel/dequeue, channel/status,
+//!          channel/service-cycle, channel/service-cycle-full, channel/clear
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{

@@ -24,6 +24,7 @@ import type {
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { RoomEntity } from '../../data/entities/RoomEntity';
@@ -98,7 +99,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     if (inflight) return inflight;
 
     const promise = (async () => {
-      const room = await DataDaemon.read<RoomEntity>(RoomEntity.collection, roomId);
+      const room = await ORM.read<RoomEntity>(RoomEntity.collection, roomId);
       if (room) {
         ChatRAGBuilder._roomCache.set(roomId, { entity: room, cachedAt: Date.now() });
       }
@@ -558,7 +559,7 @@ export class ChatRAGBuilder extends RAGBuilder {
    */
   private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options?: RAGBuildOptions): Promise<PersonaIdentity> {
     try {
-      const user = await DataDaemon.read<UserEntity>(UserEntity.collection, personaId);
+      const user = await ORM.read<UserEntity>(UserEntity.collection, personaId);
 
       if (!user) {
         this.log(`⚠️ ChatRAGBuilder: Could not load persona ${personaId}, using defaults`);
@@ -692,7 +693,7 @@ LIMITS:
   ): Promise<LLMMessage[]> {
     try {
       // Query last N messages from this room, ordered by timestamp DESC
-      const result = await DataDaemon.query<ChatMessageEntity>({
+      const result = await ORM.query<ChatMessageEntity>({
         collection: ChatMessageEntity.collection,
         filter: { roomId },
         sort: [{ field: 'timestamp', direction: 'desc' }],
@@ -703,7 +704,7 @@ LIMITS:
         return [];
       }
 
-      // DataDaemon.query returns DataRecord<T>[], access .data for entities
+      // ORM.query returns DataRecord<T>[], access .data for entities
       const messageRecords = result.data;
       const messages = messageRecords.map(record => record.data);
 
@@ -783,7 +784,7 @@ LIMITS:
 
       // Priority 3: DB query (cold start only — should be rare after caches warm)
       if (!messages) {
-        const result = await DataDaemon.query<ChatMessageEntity>({
+        const result = await ORM.query<ChatMessageEntity>({
           collection: ChatMessageEntity.collection,
           filter: { roomId },
           sort: [{ field: 'timestamp', direction: 'desc' }],
@@ -1130,7 +1131,7 @@ LIMITS:
           const cached = ChatRAGBuilder._userNameCache.get(member.userId);
           if (cached) return cached;
 
-          const user = await DataDaemon.read<UserEntity>(UserEntity.collection, member.userId);
+          const user = await ORM.read<UserEntity>(UserEntity.collection, member.userId);
           if (user) {
             ChatRAGBuilder._userNameCache.set(member.userId, user.displayName);
             return user.displayName;

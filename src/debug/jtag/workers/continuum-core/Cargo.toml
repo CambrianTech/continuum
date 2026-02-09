@@ -58,6 +58,9 @@ similar = "2.6"                  # Unified diff computation
 ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
 regex = "1"                      # Regex search for code search
 
+# ORM module — database-agnostic storage with adapter traits
+rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests

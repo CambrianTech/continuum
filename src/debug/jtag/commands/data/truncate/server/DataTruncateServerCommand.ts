@@ -9,9 +9,10 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataTruncateParams, DataTruncateResult } from '../shared/DataTruncateTypes';
 import { createDataTruncateResultFromParams } from '../shared/DataTruncateTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { Events } from '../../../../system/core/shared/Events';
 import { getDataEventName } from '../../shared/DataEventConstants';
+import { isValidCollection, type CollectionName } from '../../../../shared/generated-collection-constants';
 
 export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, DataTruncateResult> {
 
@@ -22,19 +23,28 @@ export class DataTruncateServerCommand extends CommandBase<DataTruncateParams, D
   async execute(params: DataTruncateParams): Promise<DataTruncateResult> {
     const { collection } = params;
 
+    // Validate collection name at runtime (user input comes as string)
+    if (!isValidCollection(collection)) {
+      return createDataTruncateResultFromParams(params, {
+        success: false,
+        error: `Invalid collection name: ${collection}`
+      });
+    }
+    const validCollection = collection as CollectionName;
+
     try {
       // Get record count before truncating for reporting
-      const statsResult = await DataDaemon.listCollections();
+      const statsResult = await ORM.listCollections();
       let recordCount = 0;
 
-      if (statsResult.success && statsResult.data?.includes(collection)) {
+      if (statsResult.success && statsResult.data?.includes(validCollection)) {
         // Collection exists, we can get stats
         // Note: We can't easily get record count without implementing a count method
         // For now, we'll just indicate that truncation was attempted
       }
 
       // Use adapter truncate() method - proper abstraction layer
-      const result = await DataDaemon.truncate(collection);
+      const result = await ORM.truncate(validCollection);
 
       if (result.success) {
 

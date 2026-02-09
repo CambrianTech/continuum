@@ -1,6 +1,11 @@
 # Rust Worker Architecture
 ## Universal IPC Framework for JTAG System
 
+> **⚠️ ARCHITECTURE EVOLUTION**: This design has been largely implemented but evolved significantly.
+> Individual workers (logger, search, embedding, data-daemon) are now consolidated as ServiceModules
+> within `continuum-core`. Only archive (cold storage) and inference-grpc (GPU/memory isolation)
+> remain as separate workers. See the plan at `.claude/plans/cozy-knitting-blossom.md`.
+
 **Version**: 1.0
 **Date**: 2025-12-11
 **Status**: Design Complete, Implementation Starting

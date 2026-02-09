@@ -15,7 +15,7 @@
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import type { TrainingSignal } from './SignalDetector';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { TaskEntity } from '../../../data/entities/TaskEntity';
 
 /**
@@ -318,7 +318,7 @@ export class TrainingBuffer {
         trainingData: trainingExamples as unknown[],
       };
 
-      await DataDaemon.store(TaskEntity.collection, task);
+      await ORM.store(TaskEntity.collection, task);
       this.logger(`✅ Created fine-tune-lora task for ${trait}`);
     } catch (error) {
       this.logger(`❌ Failed to create training task: ${error}`);

@@ -1,5 +1,10 @@
 /**
- * Data List Command - Shared Types
+ * Data List Command - Query entities from collections
+ *
+ * Common collections: users, rooms, chat_messages, memories, tasks, skills, wall_documents
+ *
+ * @example data/list --collection="users" --limit=10
+ * @example data/list --collection="chat_messages" --filter='{"roomId":"abc"}' --orderBy='[{"field":"timestamp","direction":"desc"}]'
  */
 
 import type { JTAGPayload, JTAGContext, CommandParams, CommandInput } from '../../../../system/core/types/JTAGTypes';
@@ -11,7 +16,10 @@ import type { DbHandle } from '../../../../daemons/data-daemon/server/DatabaseHa
 
 /** Data list command parameters */
 export interface DataListParams extends CommandParams {
-  /** Collection name to list */
+  /**
+   * Collection name to list.
+   * Common: users, rooms, chat_messages, memories, tasks, skills, wall_documents
+   */
   readonly collection: string;
   /** Maximum items to return */
   readonly limit?: number;

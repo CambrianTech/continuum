@@ -1374,6 +1374,99 @@ export class RustCoreIPCClient extends EventEmitter {
 		return response.result as RagComposeResult;
 	}
 
+	// ========================================================================
+	// Search Module Methods (absorbs standalone search worker)
+	// ========================================================================
+
+	/**
+	 * List available search algorithms
+	 */
+	async searchList(): Promise<string[]> {
+		const response = await this.request({
+			command: 'search/list',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to list search algorithms');
+		}
+
+		return response.result?.algorithms || [];
+	}
+
+	/**
+	 * Execute text search using specified algorithm
+	 */
+	async searchExecute(
+		query: string,
+		corpus: string[],
+		algorithm: string = 'bm25',
+		params?: Record<string, unknown>
+	): Promise<{ algorithm: string; scores: number[]; rankedIndices: number[] }> {
+		const response = await this.request({
+			command: 'search/execute',
+			algorithm,
+			query,
+			corpus,
+			params: params ?? null,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Search execution failed');
+		}
+
+		return {
+			algorithm: response.result?.algorithm || algorithm,
+			scores: response.result?.scores || [],
+			rankedIndices: response.result?.rankedIndices || [],
+		};
+	}
+
+	/**
+	 * Vector similarity search using cosine similarity
+	 */
+	async searchVector(
+		queryVector: number[],
+		corpusVectors: number[][],
+		normalize: boolean = true,
+		threshold: number = 0.0
+	): Promise<{ scores: number[]; rankedIndices: number[] }> {
+		const response = await this.request({
+			command: 'search/vector',
+			queryVector,
+			corpusVectors,
+			normalize,
+			threshold,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Vector search failed');
+		}
+
+		return {
+			scores: response.result?.scores || [],
+			rankedIndices: response.result?.rankedIndices || [],
+		};
+	}
+
+	/**
+	 * Get algorithm parameters and current values
+	 */
+	async searchParams(algorithm: string): Promise<{ params: string[]; values: Record<string, unknown> }> {
+		const response = await this.request({
+			command: 'search/params',
+			algorithm,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get search params');
+		}
+
+		return {
+			params: response.result?.params || [],
+			values: response.result?.values || {},
+		};
+	}
+
 	/**
 	 * Disconnect from server
 	 */

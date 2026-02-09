@@ -13,14 +13,14 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-// DATA_COMMANDS import removed — response posting now uses DataDaemon.store() directly
+// DATA_COMMANDS import removed — response posting now uses ORM.store() directly
 import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
 import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
-// DataCreateParams/DataCreateResult imports removed — response posting now uses DataDaemon.store() directly
+// DataCreateParams/DataCreateResult imports removed — response posting now uses ORM.store() directly
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
@@ -41,6 +41,7 @@ import {
   type AIErrorEventData
 } from '../../../events/shared/AIDecisionEvents';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
@@ -58,7 +59,7 @@ import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
-// DataCreate import removed — response posting now uses DataDaemon.store() directly
+// DataCreate import removed — response posting now uses ORM.store() directly
 /**
  * Response generation result
  */
@@ -1345,12 +1346,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         if (!sessionId) {
           throw new Error(`${this.personaName}: Cannot execute tools without sessionId`);
         }
+        // Enrich context with userId so commands know the caller's identity
+        const enrichedContext = { ...this.client!.context, userId: this.personaId };
         const toolExecutionContext = {
           personaId: this.personaId,
           personaName: this.personaName,
           sessionId,
           contextId: originalMessage.roomId,
-          context: this.client!.context,
+          context: enrichedContext,
           personaConfig: this.mediaConfig,
         };
 
@@ -1659,10 +1662,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         ).catch(err => this.log(`⚠️ Voice event emit failed: ${err}`));
       }
 
-      // ✅ Post response via DataDaemon.store() — direct path, no command routing overhead.
-      // Previously went through JTAGClient → CommandDaemon → DataCreateServerCommand → DataDaemon.store().
+      // ✅ Post response via ORM.store() — direct path, no command routing overhead.
+      // Previously went through JTAGClient → CommandDaemon → DataCreateServerCommand → ORM.store().
       const postStartTime = Date.now();
-      const postedEntity = await DataDaemon.store(ChatMessageEntity.collection, responseMessage);
+      const postedEntity = await ORM.store(ChatMessageEntity.collection, responseMessage);
       pipelineTiming['3.5_post'] = Date.now() - postStartTime;
       const postDuration = pipelineTiming['3.5_post'];
       this.log(`✅ ${this.personaName}: [PHASE 3.5] Message posted (${postDuration}ms, ID: ${postedEntity.id})`);

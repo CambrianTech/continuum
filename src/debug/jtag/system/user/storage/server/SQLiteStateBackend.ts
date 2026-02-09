@@ -17,7 +17,7 @@
 import type { IUserStateStorage } from '../IUserStateStorage';
 import { UserStateEntity } from '../../../data/entities/UserStateEntity';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { DataRecord } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 
 /**
@@ -44,14 +44,14 @@ export class SQLiteStateBackend implements IUserStateStorage {
   async save(state: UserStateEntity): Promise<{ success: boolean; error?: string }> {
     try {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
-      const existing = await DataDaemon.read<UserStateEntity>(UserStateEntity.collection, state.id);
+      const existing = await ORM.read<UserStateEntity>(UserStateEntity.collection, state.id);
 
       if (existing) {
         // Update existing state
-        await DataDaemon.update<UserStateEntity>(UserStateEntity.collection, state.id, state);
+        await ORM.update<UserStateEntity>(UserStateEntity.collection, state.id, state);
       } else {
         // Create new state
-        await DataDaemon.store<UserStateEntity>(UserStateEntity.collection, state);
+        await ORM.store<UserStateEntity>(UserStateEntity.collection, state);
       }
 
       return { success: true };
@@ -70,7 +70,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
   async load(userId: UUID, deviceId: string): Promise<UserStateEntity | null> {
     try {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
-      const result = await DataDaemon.query<UserStateEntity>({
+      const result = await ORM.query<UserStateEntity>({
         collection: UserStateEntity.collection,
         filter: { userId, deviceId },
         limit: 1
@@ -94,7 +94,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
   async delete(userId: UUID, deviceId: string): Promise<{ success: boolean; error?: string }> {
     try {
       // Use DataDaemon static interface (avoids JTAGClient recursion during initialization)
-      const result = await DataDaemon.query<UserStateEntity>({
+      const result = await ORM.query<UserStateEntity>({
         collection: UserStateEntity.collection,
         filter: { userId, deviceId },
         limit: 1
@@ -102,7 +102,7 @@ export class SQLiteStateBackend implements IUserStateStorage {
 
       if (result.success && result.data && result.data.length > 0) {
         const stateId = result.data[0].id;
-        await DataDaemon.remove(UserStateEntity.collection, stateId);
+        await ORM.remove(UserStateEntity.collection, stateId);
       }
 
       return { success: true };

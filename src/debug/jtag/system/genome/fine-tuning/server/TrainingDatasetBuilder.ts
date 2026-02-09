@@ -20,7 +20,7 @@ import type {
   TrainingExample,
   TrainingMessage
 } from '../shared/FineTuningTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { ChatMessageEntity, MessageContent } from '../../../data/entities/ChatMessageEntity';
 
 /**
@@ -170,7 +170,7 @@ export class TrainingDatasetBuilder {
   private async loadMessages(roomId: UUID): Promise<ChatMessageEntity[]> {
     // Note: DataListParams doesn't support orderBy, messages returned in insertion order
     // We'll reverse them after loading to get chronological order
-    const result = await DataDaemon.query<ChatMessageEntity>({
+    const result = await ORM.query<ChatMessageEntity>({
       collection: 'chat_messages',
       filter: { roomId },
       limit: this.config.maxMessages

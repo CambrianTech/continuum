@@ -19,7 +19,7 @@ import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
@@ -74,7 +74,7 @@ export class AgentUser extends AIUser {
     }
     // createdAt, updatedAt, version, id handled by constructor
 
-    const storedEntity = await DataDaemon.store<UserEntity>(
+    const storedEntity = await ORM.store<UserEntity>(
       COLLECTIONS.USERS,
       userEntity
     );
@@ -83,7 +83,7 @@ export class AgentUser extends AIUser {
     const userState = this.getDefaultState(storedEntity.id);
     userState.preferences = getDefaultPreferencesForType('agent');
 
-    const storedState = await DataDaemon.store<UserStateEntity>(
+    const storedState = await ORM.store<UserStateEntity>(
       COLLECTIONS.USER_STATES,
       userState
     );

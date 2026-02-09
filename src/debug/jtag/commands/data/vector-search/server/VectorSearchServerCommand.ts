@@ -10,8 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '../shared/VectorSearchCommandTypes';
 import { createVectorSearchResultFromParams } from '../shared/VectorSearchCommandTypes';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
 
@@ -59,47 +58,19 @@ export class VectorSearchServerCommand extends CommandBase<VectorSearchParams, V
 
       console.debug(`🔍 VECTOR-SEARCH: k=${k}, threshold=${similarityThreshold}, model=${embeddingModel.name}, dbHandle=${params.dbHandle || 'default'}`);
 
-      // Execute vector search via DataDaemon (or specific adapter if dbHandle provided)
-      let searchResult;
-
-      if (params.dbHandle) {
-        // Per-persona database: get adapter from registry and use its vectorSearch
-        const registry = DatabaseHandleRegistry.getInstance();
-        const adapter = registry.getAdapter(params.dbHandle) as any;
-
-        // Ensure schema is cached on the per-persona adapter
-        await DataDaemon.ensureAdapterSchema(adapter, params.collection);
-
-        if (!adapter.vectorSearch) {
-          return createVectorSearchResultFromParams(params, {
-            success: false,
-            error: `Adapter for handle '${params.dbHandle}' does not support vector search`
-          });
-        }
-
-        searchResult = await adapter.vectorSearch({
-          collection: params.collection,
-          queryText: params.queryText,
-          queryVector: params.queryVector,
-          k,
-          similarityThreshold,
-          hybridMode: params.hybridMode || 'semantic',
-          filter: params.filter,
-          embeddingModel
-        });
-      } else {
-        // Main database: use DataDaemon
-        searchResult = await DataDaemon.vectorSearch<RecordData>({
-          collection: params.collection,
-          queryText: params.queryText,
-          queryVector: params.queryVector,
-          k,
-          similarityThreshold,
-          hybridMode: params.hybridMode || 'semantic',
-          filter: params.filter,
-          embeddingModel
-        });
-      }
+      // Use ORM for all operations (routes to Rust with correct dbPath)
+      // ORM.vectorSearch resolves dbHandle to dbPath internally
+      const searchResult = await ORM.vectorSearch<RecordData>({
+        collection: params.collection,
+        dbHandle: params.dbHandle,  // ORM resolves this to dbPath
+        queryText: params.queryText,
+        queryVector: params.queryVector,
+        k,
+        similarityThreshold,
+        hybridMode: params.hybridMode || 'semantic',
+        filter: params.filter,
+        embeddingModel
+      });
 
       if (!searchResult.success || !searchResult.data) {
         console.error(`❌ VECTOR-SEARCH: Failed for collection "${params.collection}":`, searchResult.error);

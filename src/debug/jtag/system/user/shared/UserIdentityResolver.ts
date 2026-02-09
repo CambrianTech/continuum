@@ -10,7 +10,7 @@
 
 import { AgentDetector, type AgentInfo } from '../../core/detection/AgentDetector';
 import { agentDetection } from '../../core/detection/AgentDetectionRegistry';
-import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import type { UserEntity } from '../../data/entities/UserEntity';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
@@ -178,7 +178,7 @@ export class UserIdentityResolver {
    */
   private static async lookupUserByUniqueId(uniqueId: string): Promise<UserEntity | null> {
     try {
-      const result = await DataDaemon.query<UserEntity>({
+      const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { uniqueId },
         limit: 1

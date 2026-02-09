@@ -1219,7 +1219,7 @@ export class DataDaemon {
    */
   static getDescriptionFieldForCollection(collection: string): string | null {
     // Import locally to avoid circular dependencies
-    const { getRegisteredEntity } = require('../server/SqliteStorageAdapter');
+    const { getRegisteredEntity } = require('../server/EntityRegistry');
     const { getDescriptionField } = require('../../../system/data/decorators/FieldDecorators');
 
     const EntityClass = getRegisteredEntity(collection);

@@ -110,7 +110,7 @@ impl VoiceActivityDetection for WebRtcVAD {
             let mut detector = self.detector.lock();
             detector
                 .predict_16khz(samples)
-                .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {:?}", e)))?
+                .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}")))?
         } else {
             // Chunk into 240-sample pieces and use majority voting
             let mut speech_chunks = 0;
@@ -125,7 +125,7 @@ impl VoiceActivityDetection for WebRtcVAD {
                 let mut detector = self.detector.lock();
                 let chunk_is_speech = detector
                     .predict_16khz(chunk)
-                    .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {:?}", e)))?;
+                    .map_err(|e| VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}")))?;
 
                 if chunk_is_speech {
                     speech_chunks += 1;

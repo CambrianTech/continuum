@@ -1,11 +1,11 @@
-/// CognitionModule — wraps PersonaCognitionEngine per-persona DashMap state.
-///
-/// Validates the ServiceModule trait handles stateful per-persona DashMap isolation —
-/// the MOST DIFFERENT pattern from stateless HealthModule.
-///
-/// Handles: cognition/create-engine, cognition/calculate-priority,
-///          cognition/fast-path-decision, cognition/enqueue-message, cognition/get-state,
-///          inbox/create
+//! CognitionModule — wraps PersonaCognitionEngine per-persona DashMap state.
+//!
+//! Validates the ServiceModule trait handles stateful per-persona DashMap isolation —
+//! the MOST DIFFERENT pattern from stateless HealthModule.
+//!
+//! Handles: cognition/create-engine, cognition/calculate-priority,
+//!          cognition/fast-path-decision, cognition/enqueue-message, cognition/get-state,
+//!          inbox/create
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};

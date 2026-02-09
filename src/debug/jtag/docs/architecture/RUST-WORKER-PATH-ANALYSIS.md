@@ -1,6 +1,10 @@
 # Rust Logger Worker - Complete Path Analysis
 
-## Current Situation
+> **⚠️ HISTORICAL DOCUMENT**: This analysis was created before the logger worker was absorbed into
+> `continuum-core` as `LoggerModule`. The standalone logger worker no longer exists. Logger commands
+> now go to `/tmp/continuum-core.sock` with the `log/` prefix.
+
+## Current Situation (OUTDATED)
 - Server is running
 - Workers directory exists but is EMPTY
 - No socket file created

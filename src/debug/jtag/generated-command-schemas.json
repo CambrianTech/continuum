@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-06T18:30:20.331Z",
+  "generated": "2026-02-09T19:58:28.752Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1515,6 +1515,74 @@
           "type": "string",
           "required": false,
           "description": "component parameter"
+        }
+      }
+    },
+    {
+      "name": "search/vector",
+      "description": "Search Vector Command Types\n * Vector similarity search via Rust SearchModule",
+      "params": {
+        "queryVector": {
+          "type": "array",
+          "required": true,
+          "description": "queryVector parameter"
+        },
+        "corpusVectors": {
+          "type": "array",
+          "required": true,
+          "description": "corpusVectors parameter"
+        },
+        "normalize": {
+          "type": "boolean",
+          "required": false,
+          "description": "normalize parameter"
+        },
+        "threshold": {
+          "type": "number",
+          "required": false,
+          "description": "threshold parameter"
+        }
+      }
+    },
+    {
+      "name": "search/params",
+      "description": "Search Params Command Types\n * Get algorithm parameters from Rust SearchModule",
+      "params": {
+        "algorithm": {
+          "type": "string",
+          "required": true,
+          "description": "algorithm parameter"
+        }
+      }
+    },
+    {
+      "name": "search/list",
+      "description": "Search List Command Types\n * Lists available search algorithms from Rust SearchModule",
+      "params": {}
+    },
+    {
+      "name": "search/execute",
+      "description": "Search Execute Command Types\n * Executes text search via Rust SearchModule",
+      "params": {
+        "algorithm": {
+          "type": "string",
+          "required": false,
+          "description": "algorithm parameter"
+        },
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "query parameter"
+        },
+        "corpus": {
+          "type": "array",
+          "required": true,
+          "description": "corpus parameter"
+        },
+        "params": {
+          "type": "object",
+          "required": false,
+          "description": "params parameter"
         }
       }
     },
@@ -3202,7 +3270,7 @@
     },
     {
       "name": "development/timing",
-      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl\n * Provides percentile analysis (P50/P95/P99) for performance monitoring.",
+      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * NOTE: The data-daemon worker has been absorbed into continuum-core DataModule.\n * The timing file /tmp/jtag-data-daemon-timing.jsonl may no longer be written.\n * See TimingServerCommand.ts for details.",
       "params": {
         "windowMinutes": {
           "type": "number",
@@ -4100,7 +4168,7 @@
     },
     {
       "name": "data/open",
-      "description": "Data Open Command - Shared Types\n *\n * Opens a new database handle for multi-database operations.\n * Storage-adapter-agnostic: works with SQLite, JSON, Vector DB, Graph DB, etc.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
+      "description": "Data Open Command - ADVANCED: Opens secondary database handles\n *\n * WARNING: Most commands use the default database automatically.\n * You probably want data/list or data/read instead of this command.\n *\n * Only use data/open when you need to access a DIFFERENT database file.\n *\n * Required params:\n * - adapter: MUST be 'sqlite', 'json', 'vector', 'graph', or 'rust'\n * - config: { path: \"/path/to/database\" } for sqlite/json\n *\n * @example data/open --adapter=\"sqlite\" --config='{\"path\":\"/tmp/other.db\"}'",
       "params": {
         "adapter": {
           "type": "string",
@@ -4121,7 +4189,7 @@
     },
     {
       "name": "data/list",
-      "description": "Data List Command - Shared Types",
+      "description": "Data List Command - Query entities from collections\n *\n * Common collections: users, rooms, chat_messages, memories, tasks, skills, wall_documents\n *\n * @example data/list --collection=\"users\" --limit=10\n * @example data/list --collection=\"chat_messages\" --filter='{\"roomId\":\"abc\"}' --orderBy='[{\"field\":\"timestamp\",\"direction\":\"desc\"}]'",
       "params": {
         "collection": {
           "type": "string",
@@ -4348,37 +4416,6 @@
           "type": "number",
           "required": false,
           "description": "duration parameter"
-        }
-      }
-    },
-    {
-      "name": "comms-test",
-      "description": "Comms Test Command Types - Database Testing Edition",
-      "params": {
-        "mode": {
-          "type": "string",
-          "required": true,
-          "description": "mode parameter"
-        },
-        "message": {
-          "type": "string",
-          "required": false,
-          "description": "message parameter"
-        },
-        "dbCount": {
-          "type": "number",
-          "required": false,
-          "description": "dbCount parameter"
-        },
-        "testDir": {
-          "type": "string",
-          "required": false,
-          "description": "testDir parameter"
-        },
-        "operations": {
-          "type": "number",
-          "required": false,
-          "description": "operations parameter"
         }
       }
     },
@@ -4666,11 +4703,6 @@
           "type": "array",
           "required": true,
           "description": "rankedChoices parameter"
-        },
-        "voterId": {
-          "type": "string",
-          "required": false,
-          "description": "voterId parameter"
         }
       }
     },
@@ -4717,11 +4749,6 @@
           "type": "string",
           "required": false,
           "description": "significanceLevel parameter"
-        },
-        "proposerId": {
-          "type": "string",
-          "required": false,
-          "description": "proposerId parameter"
         }
       }
     },

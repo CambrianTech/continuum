@@ -91,6 +91,7 @@ mod tests {
     #[derive(thiserror::Error, Debug)]
     enum TestError {
         #[error("test error")]
+        #[allow(dead_code)]
         Test,
     }
 

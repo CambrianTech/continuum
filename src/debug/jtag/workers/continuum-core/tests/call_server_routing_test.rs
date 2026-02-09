@@ -10,7 +10,6 @@
 //! - Claude responds via TTS → GPT-4o should hear it
 
 use continuum_core::voice::call_server::CallManager;
-use continuum_core::voice::{AudioRouter, ModelCapabilityRegistry, RoutedParticipant};
 
 /// Test: Join participants with model info, verify routing setup
 #[tokio::test]
@@ -49,17 +48,17 @@ async fn test_audio_routes_to_capable_participants() {
     let call_id = "test-call-2";
 
     // Human joins
-    let (human_handle, mut human_audio_rx, _) = manager
+    let (human_handle, _human_audio_rx, _) = manager
         .join_call(call_id, "user-1", "Joel", false)
         .await;
 
     // GPT-4o joins (should receive audio)
-    let (gpt_handle, mut gpt_audio_rx, _) = manager
+    let (gpt_handle, _gpt_audio_rx, _) = manager
         .join_call_with_model(call_id, "ai-gpt", "GPT-4o", "gpt-4o-realtime")
         .await;
 
     // Claude joins (should NOT receive raw audio, only transcription)
-    let (claude_handle, mut claude_audio_rx, mut claude_trans_rx) = manager
+    let (claude_handle, _claude_audio_rx, _claude_trans_rx) = manager
         .join_call_with_model(call_id, "ai-claude", "Claude", "claude-3-sonnet")
         .await;
 
@@ -87,7 +86,7 @@ async fn test_tts_routes_to_audio_native_models() {
     let call_id = "test-call-3";
 
     // GPT-4o joins (should hear Claude's TTS)
-    let (gpt_handle, mut gpt_audio_rx, _) = manager
+    let (gpt_handle, _gpt_audio_rx, _) = manager
         .join_call_with_model(call_id, "ai-gpt", "GPT-4o", "gpt-4o-realtime")
         .await;
 
