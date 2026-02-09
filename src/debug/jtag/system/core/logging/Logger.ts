@@ -118,7 +118,6 @@ class LoggerClass implements ParentLogger {
       'RoomMembershipDaemonServer': LogLevel.WARN,
       'ArchiveDaemonServer': LogLevel.WARN,
       'SessionDaemonServer': LogLevel.WARN,
-      'CommsTestDaemonServer': LogLevel.WARN,
       // PersonaUser autonomous loop (46+ logging calls in hot paths)
       'PersonaUser': LogLevel.WARN,
       'PersonaResponseGenerator': LogLevel.WARN,
@@ -134,8 +133,9 @@ class LoggerClass implements ParentLogger {
     this.logDir = SystemPaths.logs.system;
 
     // Initialize Rust worker connection (if enabled)
+    // LoggerModule is now part of continuum-core (Phase 4a)
     if (this.useRustLogger) {
-      const socketPath = '/tmp/jtag-logger-worker.sock';
+      const socketPath = '/tmp/continuum-core.sock';
       this.workerClient = new LoggerWorkerClient({
         socketPath,
         timeout: 10000,
@@ -146,14 +146,14 @@ class LoggerClass implements ParentLogger {
       this.workerClient.connect()
         .then(() => {
           if (this.config.enableConsoleLogging) {
-            console.log('🦀 [Logger] Connected to Rust logger worker');
+            console.log('🦀 [Logger] Connected to continuum-core LoggerModule');
           }
         })
         .catch((err) => {
-          console.error('⚠️⚠️⚠️  [Logger] RUST WORKER CONNECTION FAILED - FALLING BACK TO TYPESCRIPT LOGGING ⚠️⚠️⚠️');
-          console.error('⚠️  [Logger] Socket: /tmp/jtag-logger-worker.sock');
+          console.error('⚠️⚠️⚠️  [Logger] CONTINUUM-CORE CONNECTION FAILED - FALLING BACK TO TYPESCRIPT LOGGING ⚠️⚠️⚠️');
+          console.error('⚠️  [Logger] Socket: /tmp/continuum-core.sock');
           console.error('⚠️  [Logger] Error:', err.message);
-          console.error('⚠️  [Logger] To start Rust worker: npm run worker:start');
+          console.error('⚠️  [Logger] To start workers: npm run worker:start');
           this.workerClient = null;
         });
     }

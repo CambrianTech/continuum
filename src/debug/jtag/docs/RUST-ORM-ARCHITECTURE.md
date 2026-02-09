@@ -1,5 +1,10 @@
 # Rust ORM Architecture
 
+> **⚠️ ARCHITECTURE UPDATE**: The data-daemon worker has been absorbed into `continuum-core` as
+> `DataModule` (Phase 4e). The socket is now `/tmp/continuum-core.sock`. TypeScript uses
+> `ORM.ts` → `ORMRustClient.ts` → `DataModule` for all database operations.
+> See `workers/continuum-core/src/modules/data.rs`.
+
 ## Overview
 
 Unified data access layer where Rust handles all database operations. TypeScript becomes a thin IPC wrapper.

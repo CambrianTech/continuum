@@ -1,5 +1,9 @@
 # Data Adapter Architecture
 
+> **⚠️ ARCHITECTURE UPDATE**: RustWorkerStorageAdapter has been removed. The data path is now:
+> `ORM.ts` → `ORMRustClient.ts` → `/tmp/continuum-core.sock` → `DataModule` (Rust).
+> See `workers/continuum-core/src/modules/data.rs` for the current implementation.
+
 ## Layer Overview
 
 ```

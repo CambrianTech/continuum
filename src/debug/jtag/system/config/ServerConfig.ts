@@ -209,13 +209,6 @@ export class ServerConfig {
     if (value === 'rust') return 'rust';
     return 'sqlite';  // Default to TypeScript SQLite adapter
   }
-
-  /**
-   * Get Rust data daemon socket path
-   */
-  getRustDataDaemonSocket(): string {
-    return this.secrets.get('RUST_DATA_DAEMON_SOCKET', 'ServerConfig') || '/tmp/jtag-data-daemon-worker.sock';
-  }
 }
 
 // ===================================

@@ -98,7 +98,6 @@ export const COMMANDS = {
   COLLABORATION_LIVE_START: 'collaboration/live/start',
   COLLABORATION_LIVE_TRANSCRIPTION: 'collaboration/live/transcription',
   COLLABORATION_WALL: 'collaboration/wall',
-  COMMS_TEST: 'comms-test',
   CONTINUUM_EMOTION: 'continuum/emotion',
   CONTINUUM_SET: 'continuum/set',
   DATA: 'data',

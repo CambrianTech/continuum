@@ -1,5 +1,9 @@
 # LoggerDaemon - Rust-Backed High-Performance Logging
 
+> **⚠️ ARCHITECTURE UPDATE (Phase 4a)**: The standalone Rust logger worker has been absorbed into
+> `continuum-core` as `LoggerModule`. The socket path is now `/tmp/continuum-core.sock` and commands
+> use the `log/` prefix (e.g., `log/write`, `log/ping`). See `workers/continuum-core/src/modules/logger.rs`.
+
 ## **🎯 Mission**
 Establish the **Rust-backed daemon pattern** for offloading performance-critical operations from Node.js main thread to multi-threaded Rust workers.
 
@@ -22,8 +26,8 @@ daemons/logger-daemon/
 **Communication flow:**
 ```
 TypeScript (Node.js main thread)
-    ↓ Unix socket (/tmp/jtag-logger-worker.sock)
-Rust Worker (separate process, multi-threaded)
+    ↓ Unix socket (/tmp/continuum-core.sock)
+continuum-core LoggerModule (unified runtime)
     ↓ File I/O, batching, threading
 Log Files (.continuum/jtag/logs/system/*.log)
 ```
@@ -70,9 +74,9 @@ export class LoggerDaemonServer extends LoggerDaemon {
   private workerClient: LoggerWorkerClient;
 
   protected async onStart(): Promise<void> {
-    // Connect to Rust worker via Unix socket
+    // Connect to continuum-core via Unix socket
     this.workerClient = new LoggerWorkerClient({
-      socketPath: '/tmp/jtag-logger-worker.sock',
+      socketPath: '/tmp/continuum-core.sock',  // LoggerModule in unified runtime
       timeout: 10000
     });
     await this.workerClient.connect();
@@ -82,8 +86,8 @@ export class LoggerDaemonServer extends LoggerDaemon {
   }
 
   protected async flush(): Promise<void> {
-    // Forward to Rust worker
-    await this.workerClient.send({ command: 'flush' });
+    // Forward to LoggerModule
+    await this.workerClient.send({ command: 'log/flush' });
   }
 }
 ```

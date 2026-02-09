@@ -1,13 +1,13 @@
 /**
- * LoggerWorkerClient - Type-Safe Client for Logger Rust Worker
+ * LoggerWorkerClient - Type-Safe Client for Logger Module in continuum-core
  *
  * This provides a production-ready interface for sending log messages to the
- * Rust logger worker. It extends the generic WorkerClient with logger-specific
- * methods and types.
+ * LoggerModule (part of continuum-core since Phase 4a). It extends the generic
+ * WorkerClient with logger-specific methods and types.
  *
  * USAGE:
  * ```typescript
- * const logger = new LoggerWorkerClient('/tmp/logger-worker.sock');
+ * const logger = new LoggerWorkerClient('/tmp/continuum-core.sock');
  * await logger.connect();
  *
  * // Write a log message (type-safe)
@@ -19,11 +19,11 @@
  *   args: [userId, timestamp]
  * });
  *
- * // Flush logs
- * await logger.flushLogs('daemons/UserDaemonServer');
+ * // Ping the logger module
+ * const stats = await logger.ping();
  * ```
  *
- * NOTE: This will eventually replace Logger.ts for performance-critical logging.
+ * NOTE: LoggerModule uses command prefix 'log/' (e.g., log/write, log/ping).
  */
 
 import { WorkerClient, WorkerClientConfig } from '../WorkerClient.js';
@@ -74,7 +74,8 @@ export class LoggerWorkerClient extends WorkerClient<
     payload: WriteLogPayload,
     userId?: string
   ): Promise<WriteLogResult> {
-    const response = await this.send('write-log', payload, userId);
+    // LoggerModule uses 'log/write' command (Phase 4a unified runtime)
+    const response = await this.send('log/write', payload, userId);
     return response.payload as WriteLogResult;
   }
 
@@ -166,8 +167,9 @@ export class LoggerWorkerClient extends WorkerClient<
     category?: string,
     userId?: string
   ): Promise<FlushLogsResult> {
+    // NOTE: log/flush not yet implemented in LoggerModule - will return error
     const payload: FlushLogsPayload = category ? { category } : {};
-    const response = await this.send('flush-logs', payload, userId);
+    const response = await this.send('log/flush', payload, userId);
     return response.payload as FlushLogsResult;
   }
 
@@ -192,7 +194,8 @@ export class LoggerWorkerClient extends WorkerClient<
    * @throws {WorkerError} if worker is frozen or unresponsive
    */
   async ping(): Promise<PingResult> {
-    const response = await this.send('ping', {});
+    // LoggerModule uses 'log/ping' command (Phase 4a unified runtime)
+    const response = await this.send('log/ping', {});
     return response.payload as PingResult;
   }
 
