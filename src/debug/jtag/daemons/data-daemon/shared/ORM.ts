@@ -405,8 +405,16 @@ export class ORM {
   // ─── Vector Search Operations ───────────────────────────────────────────────
 
   /**
-   * Perform vector similarity search
-   * NOTE: Vector search stays in TypeScript for now - not yet in Rust DataModule
+   * Perform vector similarity search via Rust DataModule
+   *
+   * ✅ NOW ROUTED TO RUST (Phase 4e completion)
+   *
+   * Rust advantages:
+   * - In-memory vector caching (no re-query on repeated searches)
+   * - Rayon parallel cosine similarity (multi-threaded)
+   * - SIMD-like loop unrolling for fast distance computation
+   *
+   * If queryText is provided (no queryVector), generates embedding via Rust EmbeddingModule first.
    */
   static async vectorSearch<T extends RecordData>(
     options: VectorSearchOptions
@@ -414,10 +422,63 @@ export class ORM {
     const done = logOperationStart('vectorSearch', options.collection, { k: options.k });
 
     try {
-      // Vector search not yet in Rust DataModule - use TypeScript
-      const result = await DataDaemon.vectorSearch<T>(options);
+      const client = await getRustClient();
+
+      // Get query vector - either provided or generate from text
+      let queryVector: number[];
+
+      if (options.queryVector) {
+        // Use provided vector (convert Float32Array if needed)
+        queryVector = Array.isArray(options.queryVector)
+          ? options.queryVector
+          : Array.from(options.queryVector);
+      } else if (options.queryText) {
+        // Generate embedding via Rust EmbeddingModule
+        const embeddingResult = await ORM.generateEmbedding({ text: options.queryText });
+        if (!embeddingResult.success || !embeddingResult.data) {
+          done();
+          return { success: false, error: embeddingResult.error || 'Failed to generate embedding' };
+        }
+        queryVector = Array.isArray(embeddingResult.data.embedding)
+          ? embeddingResult.data.embedding
+          : Array.from(embeddingResult.data.embedding);
+      } else {
+        done();
+        return { success: false, error: 'vectorSearch requires queryText or queryVector' };
+      }
+
+      // Call Rust vector/search
+      const result = await client.vectorSearch<T>(
+        options.collection,
+        queryVector,
+        {
+          k: options.k ?? 10,
+          threshold: options.similarityThreshold ?? 0.0,
+          includeData: true,
+        }
+      );
+
       done();
-      return result;
+
+      if (!result.success || !result.data) {
+        return { success: false, error: result.error };
+      }
+
+      // Wrap in VectorSearchResponse format for compatibility
+      return {
+        success: true,
+        data: {
+          results: result.data,
+          totalResults: result.data.length,
+          queryVector,
+          metadata: {
+            collection: options.collection,
+            searchMode: 'semantic',
+            embeddingModel: 'all-minilm',  // Rust EmbeddingModule default
+            queryTime: 0,  // Rust logs this internally
+          },
+        },
+      };
     } catch (error) {
       logOperationError('vectorSearch', options.collection, error);
       throw error;

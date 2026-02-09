@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-09T01:59:53.041Z",
+  "generated": "2026-02-09T15:55:11.515Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3270,7 +3270,7 @@
     },
     {
       "name": "development/timing",
-      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl\n * Provides percentile analysis (P50/P95/P99) for performance monitoring.",
+      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * NOTE: The data-daemon worker has been absorbed into continuum-core DataModule.\n * The timing file /tmp/jtag-data-daemon-timing.jsonl may no longer be written.\n * See TimingServerCommand.ts for details.",
       "params": {
         "windowMinutes": {
           "type": "number",
@@ -4416,37 +4416,6 @@
           "type": "number",
           "required": false,
           "description": "duration parameter"
-        }
-      }
-    },
-    {
-      "name": "comms-test",
-      "description": "Comms Test Command Types - Database Testing Edition",
-      "params": {
-        "mode": {
-          "type": "string",
-          "required": true,
-          "description": "mode parameter"
-        },
-        "message": {
-          "type": "string",
-          "required": false,
-          "description": "message parameter"
-        },
-        "dbCount": {
-          "type": "number",
-          "required": false,
-          "description": "dbCount parameter"
-        },
-        "testDir": {
-          "type": "string",
-          "required": false,
-          "description": "testDir parameter"
-        },
-        "operations": {
-          "type": "number",
-          "required": false,
-          "description": "operations parameter"
         }
       }
     },

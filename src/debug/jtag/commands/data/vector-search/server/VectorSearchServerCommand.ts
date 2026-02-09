@@ -10,6 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { VectorSearchParams, VectorSearchResult_CLI } from '../shared/VectorSearchCommandTypes';
 import { createVectorSearchResultFromParams } from '../shared/VectorSearchCommandTypes';
+import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
 import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import type { RecordData } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
@@ -88,8 +89,8 @@ export class VectorSearchServerCommand extends CommandBase<VectorSearchParams, V
           embeddingModel
         });
       } else {
-        // Main database: use DataDaemon
-        searchResult = await DataDaemon.vectorSearch<RecordData>({
+        // Main database: use ORM (routes to Rust DataModule vector/search)
+        searchResult = await ORM.vectorSearch<RecordData>({
           collection: params.collection,
           queryText: params.queryText,
           queryVector: params.queryVector,

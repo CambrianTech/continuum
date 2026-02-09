@@ -24,6 +24,7 @@ import type {
   RecordData,
   JoinSpec,
 } from '../shared/DataStorageAdapter';
+import type { VectorSearchResult } from '../shared/VectorSearchTypes';
 
 // Input type for joins (allows optional properties)
 type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;
@@ -642,6 +643,69 @@ export class ORMRustClient {
     }
 
     return { success: true, data: true };
+  }
+
+  // ─── Vector Search ─────────────────────────────────────────────────────────
+
+  /**
+   * Vector similarity search via Rust DataModule
+   *
+   * NOTE: Requires pre-computed query vector. Rust does NOT generate embeddings.
+   * Use EmbeddingModule (embedding/generate) to get the query vector first.
+   *
+   * Rust advantages over TypeScript:
+   * - In-memory vector caching (no re-query on repeated searches)
+   * - Rayon parallel cosine similarity (multi-threaded)
+   * - SIMD-like loop unrolling for fast distance computation
+   */
+  async vectorSearch<T extends RecordData>(
+    collection: string,
+    queryVector: number[],
+    options?: {
+      k?: number;
+      threshold?: number;
+      includeData?: boolean;
+    }
+  ): Promise<StorageResult<VectorSearchResult<T>[]>> {
+    interface RustVectorResult {
+      results: Array<{
+        id: string;
+        score: number;
+        distance: number;
+        data?: Record<string, unknown>;
+      }>;
+      count: number;
+      corpusSize: number;
+    }
+
+    const response = await this.request<RustVectorResult>({
+      command: 'vector/search',
+      dbPath: this.dbPath,
+      collection,
+      queryVector,
+      k: options?.k ?? 10,
+      threshold: options?.threshold ?? 0.0,
+      includeData: options?.includeData ?? true,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Vector search failed' };
+    }
+
+    const rustResult = response.result?.data;
+    if (!rustResult) {
+      return { success: true, data: [] };
+    }
+
+    // Convert Rust results to TypeScript VectorSearchResult format
+    const results: VectorSearchResult<T>[] = rustResult.results.map((r) => ({
+      id: r.id as UUID,
+      data: (r.data ? this.toCamelCaseObject(r.data) : {}) as T,
+      score: r.score,
+      distance: r.distance,
+    }));
+
+    return { success: true, data: results };
   }
 
   // ─── Case Conversion Helpers ────────────────────────────────────────────────
