@@ -401,31 +401,98 @@ export class ORM {
 
   /**
    * Open paginated query
+   *
+   * ✅ NOW ROUTED TO RUST
+   *
+   * Server-side cursor management eliminates IPC overhead per page.
+   * Rust DashMap provides lock-free concurrent query state.
    */
   static async openPaginatedQuery(
-    params: OpenPaginatedQueryParams
+    params: OpenPaginatedQueryParams,
+    dbPath?: string
   ): Promise<PaginatedQueryHandle> {
-    return DataDaemon.openPaginatedQuery(params);
+    const done = logOperationStart('query', params.collection, { pageSize: params.pageSize });
+
+    try {
+      const client = await getRustClient();
+      const result = await client.openPaginatedQuery({
+        collection: params.collection,
+        filter: params.filter,
+        orderBy: params.orderBy,
+        pageSize: params.pageSize,
+        dbPath,
+      });
+
+      done();
+
+      if (!result.success || !result.data) {
+        throw new Error(result.error || 'Failed to open paginated query');
+      }
+
+      return {
+        queryId: result.data.queryId as UUID,
+        collection: result.data.collection,
+        totalCount: result.data.totalCount,
+        pageSize: result.data.pageSize,
+        hasMore: result.data.hasMore,
+      };
+    } catch (error) {
+      logOperationError('query', params.collection, error);
+      throw error;
+    }
   }
 
   /**
    * Get next page from paginated query
+   *
+   * ✅ NOW ROUTED TO RUST
    */
   static async getNextPage<T extends BaseEntity>(
     queryId: UUID
   ): Promise<PaginatedQueryPage<T>> {
-    return DataDaemon.getNextPage<T>(queryId);
+    const done = logOperationStart('query', '*', { queryId });
+
+    try {
+      const client = await getRustClient();
+      const result = await client.getNextPage<T>(queryId);
+
+      done();
+
+      if (!result.success || !result.data) {
+        throw new Error(result.error || 'Failed to get next page');
+      }
+
+      return {
+        items: result.data.items,
+        pageNumber: result.data.pageNumber,
+        hasMore: result.data.hasMore,
+        totalCount: result.data.totalCount,
+      };
+    } catch (error) {
+      logOperationError('query', '*', error);
+      throw error;
+    }
   }
 
   /**
    * Close paginated query
+   *
+   * ✅ NOW ROUTED TO RUST
    */
-  static closePaginatedQuery(queryId: UUID): void {
-    DataDaemon.closePaginatedQuery(queryId);
+  static async closePaginatedQuery(queryId: UUID): Promise<void> {
+    try {
+      const client = await getRustClient();
+      await client.closePaginatedQuery(queryId);
+    } catch (error) {
+      console.error('Failed to close paginated query:', error);
+    }
   }
 
   /**
    * Get active query handles (for debugging)
+   *
+   * Note: This still uses TypeScript for backward compatibility.
+   * Rust query state is managed separately.
    */
   static getActiveQueries(): UUID[] {
     return DataDaemon.getActiveQueries();

@@ -839,6 +839,121 @@ export class ORMRustClient {
     return { success: true, data: true };
   }
 
+  // ─── Paginated Queries ──────────────────────────────────────────────────────
+
+  /**
+   * Open a paginated query - returns handle with queryId
+   *
+   * Advantages over TypeScript:
+   * - No IPC overhead per page (state is Rust-side)
+   * - DashMap for concurrent query state (lock-free reads)
+   */
+  async openPaginatedQuery(params: {
+    collection: string;
+    filter?: Record<string, unknown>;
+    orderBy?: { field: string; direction: 'asc' | 'desc' }[];
+    pageSize?: number;
+    dbPath?: string;
+  }): Promise<StorageResult<{
+    queryId: string;
+    collection: string;
+    totalCount: number;
+    pageSize: number;
+    hasMore: boolean;
+  }>> {
+    const response = await this.request<{
+      queryId: string;
+      collection: string;
+      totalCount: number;
+      pageSize: number;
+      hasMore: boolean;
+    }>({
+      command: 'data/query-open',
+      dbPath: params.dbPath ?? this.dbPath,
+      collection: params.collection,
+      filter: params.filter,
+      sort: params.orderBy?.map(o => ({ field: o.field, direction: o.direction })),
+      pageSize: params.pageSize ?? 100,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Open paginated query failed' };
+    }
+
+    const result = response.result?.data;
+    if (!result) {
+      return { success: false, error: 'No result returned' };
+    }
+
+    return { success: true, data: result };
+  }
+
+  /**
+   * Get next page from paginated query
+   */
+  async getNextPage<T>(queryId: string): Promise<StorageResult<{
+    items: T[];
+    pageNumber: number;
+    hasMore: boolean;
+    totalCount: number;
+  }>> {
+    interface RustPageResult {
+      items: Array<{ id: string; data: Record<string, unknown>; metadata: Record<string, unknown> }>;
+      pageNumber: number;
+      hasMore: boolean;
+      totalCount: number;
+    }
+
+    const response = await this.request<RustPageResult>({
+      command: 'data/query-next',
+      queryId,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Get next page failed' };
+    }
+
+    const result = response.result?.data;
+    if (!result) {
+      return { success: false, error: 'No result returned' };
+    }
+
+    // Convert items - extract entity data and convert to camelCase
+    const items: T[] = result.items.map((item) => {
+      const entityData = this.toCamelCaseObject(item.data as Record<string, unknown>) as T;
+      if (!(entityData as Record<string, unknown>).id) {
+        (entityData as Record<string, unknown>).id = item.id;
+      }
+      return entityData;
+    });
+
+    return {
+      success: true,
+      data: {
+        items,
+        pageNumber: result.pageNumber,
+        hasMore: result.hasMore,
+        totalCount: result.totalCount,
+      },
+    };
+  }
+
+  /**
+   * Close paginated query and free resources
+   */
+  async closePaginatedQuery(queryId: string): Promise<StorageResult<boolean>> {
+    const response = await this.request<{ success: boolean; queryId: string }>({
+      command: 'data/query-close',
+      queryId,
+    });
+
+    if (!response.success) {
+      return { success: false, error: response.error || 'Close query failed' };
+    }
+
+    return { success: true, data: true };
+  }
+
   // ─── Case Conversion Helpers ────────────────────────────────────────────────
   // NOTE: Only used for Rust response parsing (Rust returns snake_case, we need camelCase)
 

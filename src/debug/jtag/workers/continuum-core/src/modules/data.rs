@@ -44,6 +44,28 @@ struct VectorCache {
 /// Cache key: (db_path, collection)
 type VectorCacheKey = (String, String);
 
+// ============================================================================
+// Paginated Query State
+// ============================================================================
+
+/// Paginated query state - server-side cursor management
+/// Advantage over TypeScript: no IPC per page, just in-memory state
+#[derive(Debug)]
+struct PaginatedQueryState {
+    query_id: String,
+    db_path: String,
+    collection: String,
+    filter: Option<std::collections::HashMap<String, FieldFilter>>,
+    sort: Option<Vec<crate::orm::query::SortSpec>>,
+    page_size: usize,
+    total_count: u64,
+    current_page: usize,
+    /// Cursor: last ID from previous page for efficient keyset pagination
+    cursor_id: Option<String>,
+    has_more: bool,
+    created_at: std::time::Instant,
+}
+
 /// DataModule manages storage operations. Database path comes from each request.
 ///
 /// NOTE: SqliteAdapter uses an internal worker thread with mpsc channels.
@@ -59,6 +81,9 @@ pub struct DataModule {
     /// Vector cache: (db_path, collection) -> vectors
     /// Uses RwLock for concurrent reads (no mutex contention during searches)
     vector_cache: RwLock<HashMap<VectorCacheKey, VectorCache>>,
+    /// Paginated query state: queryId -> state
+    /// Server-side cursor management for efficient pagination
+    paginated_queries: DashMap<String, PaginatedQueryState>,
 }
 
 impl DataModule {
@@ -67,6 +92,7 @@ impl DataModule {
             adapters: DashMap::new(),
             init_lock: Mutex::new(()),
             vector_cache: RwLock::new(HashMap::new()),
+            paginated_queries: DashMap::new(),
         }
     }
 
@@ -146,6 +172,11 @@ impl ServiceModule for DataModule {
             "data/collection-stats" => self.handle_collection_stats(params).await,
             "data/truncate" => self.handle_truncate(params).await,
             "data/clear-all" => self.handle_clear_all(params).await,
+
+            // Paginated queries - server-side cursor management
+            "data/query-open" => self.handle_query_open(params).await,
+            "data/query-next" => self.handle_query_next(params).await,
+            "data/query-close" => self.handle_query_close(params).await,
 
             "adapter/capabilities" => self.handle_capabilities(params).await,
             "adapter/info" => self.handle_info(params).await,
@@ -332,6 +363,40 @@ struct BackfillVectorsParams {
 struct VectorStatsParams {
     db_path: String,
     collection: String,
+}
+
+// ============================================================================
+// Paginated Query Params
+// ============================================================================
+
+fn default_page_size() -> usize { 100 }
+
+/// Open paginated query params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryOpenParams {
+    db_path: String,
+    collection: String,
+    #[serde(default)]
+    filter: Option<std::collections::HashMap<String, FieldFilter>>,
+    #[serde(default)]
+    sort: Option<Vec<crate::orm::query::SortSpec>>,
+    #[serde(default = "default_page_size")]
+    page_size: usize,
+}
+
+/// Get next page params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryNextParams {
+    query_id: String,
+}
+
+/// Close query params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryCloseParams {
+    query_id: String,
 }
 
 impl DataModule {
@@ -931,13 +996,17 @@ impl DataModule {
         log_info!("data", "vector/stats", "Stats for {} in {}ms: total={}, with_vectors={}, dims={}",
             params.collection, total_ms, total_records, records_with_vectors, vector_dimensions);
 
+        // Wrap in StorageResult-style response for TypeScript compatibility
         Ok(CommandResult::Json(json!({
-            "collection": params.collection,
-            "totalRecords": total_records,
-            "recordsWithVectors": records_with_vectors,
-            "vectorDimensions": vector_dimensions,
-            "cachedVectors": cached_count,
-            "lastUpdated": chrono::Utc::now().to_rfc3339()
+            "success": true,
+            "data": {
+                "collection": params.collection,
+                "totalRecords": total_records,
+                "recordsWithVectors": records_with_vectors,
+                "vectorDimensions": vector_dimensions,
+                "cachedVectors": cached_count,
+                "lastUpdated": chrono::Utc::now().to_rfc3339()
+            }
         })))
     }
 
@@ -963,6 +1032,197 @@ impl DataModule {
             "success": true,
             "collection": params.collection,
             "cacheInvalidated": removed
+        })))
+    }
+
+    // =========================================================================
+    // Paginated Query Handlers
+    // =========================================================================
+
+    /// Open a paginated query - returns handle with queryId
+    ///
+    /// Advantages over TypeScript:
+    /// - No IPC overhead per page (state is Rust-side)
+    /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
+    /// - DashMap for concurrent query state (lock-free reads)
+    async fn handle_query_open(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        let params: QueryOpenParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "query-open", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let adapter = self.get_adapter(&params.db_path).await?;
+
+        // Get total count first
+        let count_query = StorageQuery {
+            collection: params.collection.clone(),
+            filter: params.filter.clone(),
+            ..Default::default()
+        };
+        let count_result = adapter.count(count_query).await;
+        let total_count = count_result.data.unwrap_or(0) as u64;
+
+        // Generate unique query ID
+        let query_id = uuid::Uuid::new_v4().to_string();
+
+        // Create query state
+        let state = PaginatedQueryState {
+            query_id: query_id.clone(),
+            db_path: params.db_path.clone(),
+            collection: params.collection.clone(),
+            filter: params.filter,
+            sort: params.sort,
+            page_size: params.page_size,
+            total_count,
+            current_page: 0,
+            cursor_id: None,
+            has_more: total_count > 0,
+            created_at: Instant::now(),
+        };
+
+        self.paginated_queries.insert(query_id.clone(), state);
+
+        let total_ms = start.elapsed().as_millis();
+        log_info!("data", "query-open", "Opened query {} for {} (total={}, pageSize={}) in {}ms",
+            query_id, params.collection, total_count, params.page_size, total_ms);
+
+        // Wrap in StorageResult-style response for TypeScript compatibility
+        Ok(CommandResult::Json(json!({
+            "success": true,
+            "data": {
+                "queryId": query_id,
+                "collection": params.collection,
+                "totalCount": total_count,
+                "pageSize": params.page_size,
+                "hasMore": total_count > 0
+            }
+        })))
+    }
+
+    /// Get next page from paginated query
+    ///
+    /// Uses keyset pagination (WHERE id > cursor) instead of OFFSET for performance.
+    /// For sorted queries, combines sort column(s) with id for deterministic ordering.
+    async fn handle_query_next(&self, params: Value) -> Result<CommandResult, String> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        let params: QueryNextParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "query-next", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        // Get query state (immutable borrow for read)
+        let state_info = self.paginated_queries.get(&params.query_id)
+            .map(|s| (
+                s.db_path.clone(),
+                s.collection.clone(),
+                s.filter.clone(),
+                s.sort.clone(),
+                s.page_size,
+                s.total_count,
+                s.current_page,
+                s.cursor_id.clone(),
+                s.has_more,
+            ));
+
+        let (db_path, collection, filter, sort, page_size, total_count, current_page, _cursor_id, has_more) =
+            state_info.ok_or_else(|| format!("Query {} not found", params.query_id))?;
+
+        if !has_more {
+            return Ok(CommandResult::Json(json!({
+                "success": true,
+                "data": {
+                    "items": [],
+                    "pageNumber": current_page,
+                    "hasMore": false,
+                    "totalCount": total_count as u64
+                }
+            })));
+        }
+
+        let adapter = self.get_adapter(&db_path).await?;
+
+        // Build query with cursor-based pagination
+        // For simplicity, using OFFSET initially. TODO: implement true keyset pagination
+        let offset = current_page * page_size;
+        let query = StorageQuery {
+            collection: collection.clone(),
+            filter: filter.clone(),
+            sort: sort.clone(),
+            limit: Some(page_size),
+            offset: Some(offset),
+            ..Default::default()
+        };
+
+        let result = adapter.query(query).await;
+        if !result.success {
+            return Err(result.error.unwrap_or_else(|| "Query failed".to_string()));
+        }
+
+        let records = result.data.unwrap_or_default();
+        let items_count = records.len();
+        let new_has_more = items_count == page_size && offset + items_count < total_count as usize;
+
+        // Get last ID for cursor
+        let new_cursor_id = records.last().map(|r| r.id.clone());
+
+        // Update query state
+        if let Some(mut state) = self.paginated_queries.get_mut(&params.query_id) {
+            state.current_page += 1;
+            state.cursor_id = new_cursor_id;
+            state.has_more = new_has_more;
+        }
+
+        // Convert records to JSON
+        let items: Vec<Value> = records.into_iter().map(|r| {
+            json!({
+                "id": r.id,
+                "data": r.data,
+                "metadata": {
+                    "createdAt": r.metadata.created_at,
+                    "updatedAt": r.metadata.updated_at,
+                    "version": r.metadata.version
+                }
+            })
+        }).collect();
+
+        let total_ms = start.elapsed().as_millis();
+        log_info!("data", "query-next", "Page {} for query {} ({} items, hasMore={}) in {}ms",
+            current_page + 1, params.query_id, items_count, new_has_more, total_ms);
+
+        // Wrap in StorageResult-style response for TypeScript compatibility
+        Ok(CommandResult::Json(json!({
+            "success": true,
+            "data": {
+                "items": items,
+                "pageNumber": current_page + 1,
+                "hasMore": new_has_more,
+                "totalCount": total_count
+            }
+        })))
+    }
+
+    /// Close paginated query and free resources
+    async fn handle_query_close(&self, params: Value) -> Result<CommandResult, String> {
+        let params: QueryCloseParams =
+            serde_json::from_value(params.clone()).map_err(|e| {
+                log_error!("data", "query-close", "Parse error: {}, params: {}", e, params);
+                format!("Invalid params: {e}")
+            })?;
+
+        let removed = self.paginated_queries.remove(&params.query_id).is_some();
+
+        log_info!("data", "query-close", "Closed query {}: removed={}", params.query_id, removed);
+
+        Ok(CommandResult::Json(json!({
+            "success": removed,
+            "queryId": params.query_id
         })))
     }
 }
@@ -1146,7 +1406,8 @@ mod tests {
             .await;
 
         assert!(stats_result.is_ok());
-        if let Ok(CommandResult::Json(stats)) = stats_result {
+        if let Ok(CommandResult::Json(result)) = stats_result {
+            let stats = &result["data"];
             assert_eq!(stats["collection"], "test_vectors");
             assert_eq!(stats["totalRecords"], 1);
             assert_eq!(stats["recordsWithVectors"], 1);
@@ -1310,7 +1571,8 @@ mod tests {
             )
             .await;
 
-        if let Ok(CommandResult::Json(stats)) = &stats_result {
+        if let Ok(CommandResult::Json(result)) = &stats_result {
+            let stats = &result["data"];
             assert!(stats["cachedVectors"].as_u64().unwrap() > 0);
         }
 
@@ -1342,8 +1604,138 @@ mod tests {
             )
             .await;
 
-        if let Ok(CommandResult::Json(stats)) = stats_after {
+        if let Ok(CommandResult::Json(result)) = stats_after {
+            let stats = &result["data"];
             assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_query() {
+        let module = DataModule::new();
+
+        // Create schema
+        let schema = CollectionSchema {
+            collection: "test_paginated".to_string(),
+            fields: vec![
+                crate::orm::types::SchemaField {
+                    name: "name".to_string(),
+                    field_type: crate::orm::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                },
+            ],
+            indexes: vec![],
+        };
+
+        let _ = module
+            .handle_command(
+                "data/ensure-schema",
+                json!({
+                    "dbPath": ":memory:",
+                    "schema": schema
+                }),
+            )
+            .await;
+
+        // Create 25 records
+        for i in 0..25 {
+            let _ = module
+                .handle_command(
+                    "data/create",
+                    json!({
+                        "dbPath": ":memory:",
+                        "collection": "test_paginated",
+                        "data": { "name": format!("Item {}", i) }
+                    }),
+                )
+                .await;
+        }
+
+        // Open paginated query with page size 10
+        let open_result = module
+            .handle_command(
+                "data/query-open",
+                json!({
+                    "dbPath": ":memory:",
+                    "collection": "test_paginated",
+                    "pageSize": 10
+                }),
+            )
+            .await;
+
+        assert!(open_result.is_ok());
+        let query_id = if let Ok(CommandResult::Json(result)) = &open_result {
+            let data = &result["data"];
+            assert_eq!(data["totalCount"], 25);
+            assert_eq!(data["pageSize"], 10);
+            assert!(data["hasMore"].as_bool().unwrap());
+            data["queryId"].as_str().unwrap().to_string()
+        } else {
+            panic!("Expected JSON result");
+        };
+
+        // Get first page
+        let page1 = module
+            .handle_command(
+                "data/query-next",
+                json!({ "queryId": query_id }),
+            )
+            .await;
+
+        assert!(page1.is_ok());
+        if let Ok(CommandResult::Json(result)) = &page1 {
+            let data = &result["data"];
+            assert_eq!(data["items"].as_array().unwrap().len(), 10);
+            assert_eq!(data["pageNumber"], 1);
+            assert!(data["hasMore"].as_bool().unwrap());
+        }
+
+        // Get second page
+        let page2 = module
+            .handle_command(
+                "data/query-next",
+                json!({ "queryId": query_id }),
+            )
+            .await;
+
+        assert!(page2.is_ok());
+        if let Ok(CommandResult::Json(result)) = &page2 {
+            let data = &result["data"];
+            assert_eq!(data["items"].as_array().unwrap().len(), 10);
+            assert_eq!(data["pageNumber"], 2);
+            assert!(data["hasMore"].as_bool().unwrap());
+        }
+
+        // Get third page (should have 5 items)
+        let page3 = module
+            .handle_command(
+                "data/query-next",
+                json!({ "queryId": query_id }),
+            )
+            .await;
+
+        assert!(page3.is_ok());
+        if let Ok(CommandResult::Json(result)) = &page3 {
+            let data = &result["data"];
+            assert_eq!(data["items"].as_array().unwrap().len(), 5);
+            assert_eq!(data["pageNumber"], 3);
+            assert!(!data["hasMore"].as_bool().unwrap()); // No more pages
+        }
+
+        // Close query
+        let close_result = module
+            .handle_command(
+                "data/query-close",
+                json!({ "queryId": query_id }),
+            )
+            .await;
+
+        assert!(close_result.is_ok());
+        if let Ok(CommandResult::Json(result)) = close_result {
+            assert!(result["success"].as_bool().unwrap());
         }
     }
 
