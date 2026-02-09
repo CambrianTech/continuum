@@ -274,10 +274,9 @@ export class ArchiveDaemonServer extends ArchiveDaemon {
 
     this.log.info(`🗄️  Creating new archive file: ${nextPath}`);
 
-    // Close old archive handle
-    const oldHandle = registry.getAdapter(archiveConfig.destHandle);
-    // Note: We don't close it because 'archive' is an alias, not the actual handle UUID
+    // Note: We don't close the old handle because 'archive' is an alias, not the actual handle UUID
     // The alias will be re-pointed to the new handle
+    // (Previous code called getAdapter() but didn't use the result - just checking existence)
 
     // Open new archive file handle
     const newHandle = await registry.open('sqlite', {
