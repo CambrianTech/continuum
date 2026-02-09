@@ -14,7 +14,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
 import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';

@@ -12,7 +12,7 @@ import type { SkillProposeParams, SkillProposeResult } from '../shared/SkillProp
 import { createSkillProposeResultFromParams } from '../shared/SkillProposeTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
 import type { SkillSpec, SkillParamSpec, SkillResultSpec, SkillScope } from '@system/data/entities/SkillEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionPropose } from '@commands/collaboration/decision/propose/shared/DecisionProposeTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';

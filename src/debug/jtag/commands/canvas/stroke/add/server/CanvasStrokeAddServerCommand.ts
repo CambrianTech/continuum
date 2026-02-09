@@ -12,7 +12,7 @@ import { CanvasStrokeEntity } from '@system/data/entities/CanvasStrokeEntity';
 import { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import { RoomEntity } from '@system/data/entities/RoomEntity';
 import { UserEntity } from '@system/data/entities/UserEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { Events } from '@system/core/shared/Events';
 import { Commands } from '@system/core/shared/Commands';
 import { COLLECTIONS } from '@system/shared/Constants';

@@ -22,7 +22,7 @@ import type { JTAGContext } from '../../core/types/JTAGTypes';
 import type { JTAGRouter } from '../../core/router/shared/JTAGRouter';
 import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
 import type { UserCapabilities } from '../../data/entities/UserEntity';
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
 import type { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';

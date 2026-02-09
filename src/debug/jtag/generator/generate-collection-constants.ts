@@ -200,7 +200,7 @@ class CollectionConstantsGenerator {
    * Check for collections in ORMConfig that don't have entities
    */
   private validateNoOrphans(): void {
-    const ormConfigPath = join(this.rootPath, 'daemons/data-daemon/shared/ORMConfig.ts');
+    const ormConfigPath = join(this.rootPath, 'daemons/data-daemon/server/ORMConfig.ts');
     if (!existsSync(ormConfigPath)) return;
 
     const content = readFileSync(ormConfigPath, 'utf-8');

@@ -13,7 +13,7 @@
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { ContentItem } from '@system/data/entities/UserStateEntity';
 import { UserStateEntity } from '@system/data/entities/UserStateEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import { Logger, type ComponentLogger } from '@system/core/logging/Logger';
 

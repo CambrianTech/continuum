@@ -14,7 +14,7 @@ import { paramsToRequest, responseToResult, createErrorResult, createAIGenerateR
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import { RAGBuilderFactory } from '../../../../system/rag/shared/RAGBuilder';
 import { ChatRAGBuilder } from '../../../../system/rag/builders/ChatRAGBuilder';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { SystemPaths } from '../../../../system/core/config/SystemPaths';

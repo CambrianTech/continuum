@@ -22,7 +22,7 @@
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import { Events } from '../../../system/core/shared/Events';
-import { ORM } from '../../data-daemon/shared/ORM';
+import { ORM } from '../../data-daemon/server/ORM';
 import { SystemConfigEntity, FACTORY_DEFAULTS, type SettingValue } from '../../../system/data/entities/SystemConfigEntity';
 import type { StorageQuery, StorageResult } from '../../data-daemon/shared/DataStorageAdapter';
 import { Logger } from '../../../system/core/logging/Logger';

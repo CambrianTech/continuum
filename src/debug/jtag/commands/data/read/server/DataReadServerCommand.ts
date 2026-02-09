@@ -8,7 +8,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataReadParams, DataReadResult } from '../shared/DataReadTypes';
 import { createDataReadResultFromParams } from '../shared/DataReadTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import type { MediaItem, ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { DataReadCommand } from '../shared/DataReadCommand';

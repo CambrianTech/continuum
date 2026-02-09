@@ -17,7 +17,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { RoomMembershipDaemon } from '../shared/RoomMembershipDaemon';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS } from '../../../system/core/shared/EventConstants';
-import { ORM } from '../../data-daemon/shared/ORM';
+import { ORM } from '../../data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';
 import { ACTIVITY_UNIQUE_IDS } from '../../../system/data/constants/ActivityConstants';

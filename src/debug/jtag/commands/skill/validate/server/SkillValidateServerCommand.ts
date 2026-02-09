@@ -12,7 +12,7 @@ import type { SkillValidateParams, SkillValidateResult } from '../shared/SkillVa
 import { createSkillValidateResultFromParams } from '../shared/SkillValidateTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
 import type { SkillValidationResults } from '@system/data/entities/SkillEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { ExecutionSandbox } from '@system/code/server/ExecutionSandbox';
 import type { SandboxConfig } from '@system/code/server/ExecutionSandbox';

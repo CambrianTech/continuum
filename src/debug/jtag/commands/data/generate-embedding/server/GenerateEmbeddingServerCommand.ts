@@ -10,7 +10,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { GenerateEmbeddingParams, GenerateEmbeddingResult } from '../shared/GenerateEmbeddingCommandTypes';
 import { createGenerateEmbeddingResultFromParams } from '../shared/GenerateEmbeddingCommandTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
 
 const DEFAULT_CONFIG = {

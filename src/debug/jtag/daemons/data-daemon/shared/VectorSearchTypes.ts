@@ -41,7 +41,9 @@ export interface EmbeddingModel {
 export interface VectorSearchOptions {
   readonly collection: string;
 
-  // Database handle for per-persona databases (optional - uses main db if not provided)
+  // Database path for per-persona databases (preferred - resolved from dbHandle by caller)
+  readonly dbPath?: string;
+  // Legacy: dbHandle (deprecated - use dbPath instead, resolved by caller using DatabaseHandleRegistry.getDbPath())
   readonly dbHandle?: string;
 
   // Query can be text (will generate embedding) OR pre-computed vector

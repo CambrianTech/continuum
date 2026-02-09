@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { QueryNextCommand } from '../shared/QueryNextCommand';
 import type { DataQueryNextParams, DataQueryNextResult } from '../shared/QueryNextTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 
 export class QueryNextServerCommand extends QueryNextCommand {
 

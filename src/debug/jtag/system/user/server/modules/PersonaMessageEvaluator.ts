@@ -13,7 +13,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { inspect } from 'util';
 import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';

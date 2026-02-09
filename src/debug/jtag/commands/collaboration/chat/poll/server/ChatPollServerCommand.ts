@@ -6,7 +6,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatPollCommand } from '../shared/ChatPollCommand';
 import type { ChatPollParams, ChatPollResult } from '../shared/ChatPollTypes';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import type { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { resolveRoomIdentifier } from '@system/routing/RoutingService';

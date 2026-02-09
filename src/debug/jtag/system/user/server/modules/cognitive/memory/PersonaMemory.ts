@@ -17,7 +17,7 @@ import type { JTAGClient } from '../../../../../core/client/shared/JTAGClient';
 import type { ChatMessageEntity } from '../../../../../data/entities/ChatMessageEntity';
 import type { ProcessableMessage } from '../../QueueItemTypes';
 import { PersonaGenome, type PersonaGenomeConfig } from '../../PersonaGenome';
-import { ORM } from '../../../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../../../../shared/generated-collection-constants';
 
 /**

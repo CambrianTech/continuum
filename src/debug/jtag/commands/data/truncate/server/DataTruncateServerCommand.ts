@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataTruncateParams, DataTruncateResult } from '../shared/DataTruncateTypes';
 import { createDataTruncateResultFromParams } from '../shared/DataTruncateTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { Events } from '../../../../system/core/shared/Events';
 import { getDataEventName } from '../../shared/DataEventConstants';
 import { isValidCollection, type CollectionName } from '../../../../shared/generated-collection-constants';

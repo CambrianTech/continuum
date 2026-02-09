@@ -24,7 +24,7 @@ import type {
 import type { RecipeToolDeclaration } from '../../recipes/shared/RecipeTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { RoomEntity } from '../../data/entities/RoomEntity';

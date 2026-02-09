@@ -11,7 +11,7 @@ import type {
   BackfillVectorsResult
 } from '../shared/BackfillVectorsCommandTypes';
 import { createBackfillVectorsResultFromParams } from '../shared/BackfillVectorsCommandTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { DEFAULT_EMBEDDING_MODELS } from '../../../../daemons/data-daemon/shared/VectorSearchTypes';
 
 const DEFAULT_CONFIG = {

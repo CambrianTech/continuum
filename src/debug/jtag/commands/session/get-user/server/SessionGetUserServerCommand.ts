@@ -12,7 +12,7 @@ import type { SessionGetUserParams, SessionGetUserResult } from '../shared/Sessi
 import type { GetSessionParams } from '../../../../daemons/session-daemon/shared/SessionTypes';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { type GetSessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 

@@ -32,7 +32,7 @@ import type { Thought, ThoughtType } from '../../conversation/shared/Conversatio
 import { getChatCoordinator, type ChatThought } from '../../coordination/server/ChatCoordinationStream';
 import { MemoryStateBackend } from '../storage/MemoryStateBackend';
 import { getDefaultCapabilitiesForType, getDefaultPreferencesForType } from '../config/UserCapabilitiesDefaults';
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../data/config/DatabaseConfig';
 import { getDataEventName } from '../../core/shared/EventConstants';
 import { TaskEntity } from '../../data/entities/TaskEntity';

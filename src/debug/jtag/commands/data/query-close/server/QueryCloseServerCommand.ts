@@ -8,7 +8,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import { QueryCloseCommand } from '../shared/QueryCloseCommand';
 import type { DataQueryCloseParams, DataQueryCloseResult } from '../shared/QueryCloseTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 
 export class QueryCloseServerCommand extends QueryCloseCommand {
 

@@ -13,7 +13,7 @@ import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteSt
 import { UserEntity } from '../../../system/data/entities/UserEntity';
 import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { ORM } from '../../data-daemon/shared/ORM';
+import { ORM } from '../../data-daemon/server/ORM';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS, getDataEventName } from '../../../system/core/shared/EventConstants';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';

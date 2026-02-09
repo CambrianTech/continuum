@@ -41,7 +41,7 @@ import {
   type AIErrorEventData
 } from '../../../events/shared/AIDecisionEvents';
 import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';

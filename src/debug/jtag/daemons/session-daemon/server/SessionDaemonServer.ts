@@ -16,7 +16,7 @@ import { AgentUser } from '../../../system/user/shared/AgentUser';
 import { PersonaUser } from '../../../system/user/server/PersonaUser';
 import { MemoryStateBackend } from '../../../system/user/storage/MemoryStateBackend';
 import { SQLiteStateBackend } from '../../../system/user/storage/server/SQLiteStateBackend';
-import { ORM } from '../../data-daemon/shared/ORM';
+import { ORM } from '../../data-daemon/server/ORM';
 import { Events } from '../../../system/core/shared/Events';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { UserEntity } from '../../../system/data/entities/UserEntity';

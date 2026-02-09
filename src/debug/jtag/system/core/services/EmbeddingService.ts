@@ -13,7 +13,7 @@
  *   const embeddedBatch = await EmbeddingService.embedBatch(memories);
  */
 
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import type { EmbeddingModel } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
 import { DEFAULT_EMBEDDING_MODELS, toNumberArray } from '../../../daemons/data-daemon/shared/VectorSearchTypes';
 import type { IEmbeddable } from '../../data/interfaces/IEmbeddable';

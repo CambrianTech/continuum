@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataDeleteParams, DataDeleteResult } from '../shared/DataDeleteTypes';
 import { createDataDeleteResultFromParams } from '../shared/DataDeleteTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { BaseEntity } from '@system/data/entities/BaseEntity';
 import { isValidCollection, type CollectionName } from '../../../../shared/generated-collection-constants';
 

@@ -11,7 +11,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { LLMMessage } from '../shared/RAGTypes';
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import { Events } from '../../core/shared/Events';
 import { Logger } from '../../core/logging/Logger';

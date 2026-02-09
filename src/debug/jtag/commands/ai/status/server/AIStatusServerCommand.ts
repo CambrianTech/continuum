@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { AIStatusParams, AIStatusResult, PersonaHealth } from '../shared/AIStatusTypes';
 import { UserDaemonServer } from '../../../../daemons/user-daemon/server/UserDaemonServer';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { PersonaUser } from '../../../../system/user/server/PersonaUser';

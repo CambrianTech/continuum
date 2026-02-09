@@ -15,7 +15,7 @@
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { TaskEntity } from '../../../data/entities/TaskEntity';
 import { RoomEntity } from '../../../data/entities/RoomEntity';

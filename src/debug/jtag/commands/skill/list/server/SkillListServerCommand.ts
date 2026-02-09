@@ -10,7 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { SkillListParams, SkillListResult } from '../shared/SkillListTypes';
 import { createSkillListResultFromParams } from '../shared/SkillListTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import type { UniversalFilter } from '@daemons/data-daemon/shared/DataStorageAdapter';
 import { COLLECTIONS } from '@system/shared/Constants';
 

@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type { RAGInspectParams, RAGInspectResult } from '../shared/RAGInspectTypes';
 import { ChatRAGBuilder } from '../../../../../system/rag/builders/ChatRAGBuilder';
-import { ORM } from '../../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../../../../system/data/entities/ChatMessageEntity';
 import { getThoughtStreamCoordinator } from '../../../../../system/conversation/server/ThoughtStreamCoordinator';
 import type { Thought } from '../../../../../system/conversation/shared/ConversationCoordinationTypes';

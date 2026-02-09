@@ -9,7 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataClearParams, DataClearResult } from '../shared/DataClearTypes';
 import { createDataClearResultFromParams } from '../shared/DataClearTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 
 export class DataClearServerCommand extends CommandBase<DataClearParams, DataClearResult> {
 

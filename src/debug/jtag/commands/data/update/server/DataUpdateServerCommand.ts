@@ -9,8 +9,7 @@ import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { DataUpdateParams, DataUpdateResult } from '../shared/DataUpdateTypes';
 import { createDataUpdateResultFromParams } from '../shared/DataUpdateTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 import { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { DataUpdateCommand } from '../shared/DataUpdateCommand';
@@ -25,23 +24,21 @@ export class DataUpdateServerCommand extends DataUpdateCommand<BaseEntity> {
   protected async executeDataCommand(params: DataUpdateParams): Promise<DataUpdateResult<BaseEntity>> {
     const collection = params.collection;
 
-    let entity: BaseEntity | null;
-
+    // Resolve dbHandle to dbPath for per-persona databases
+    let dbPath: string | undefined;
     if (params.dbHandle) {
-      // Per-persona database: get adapter from registry
       const registry = DatabaseHandleRegistry.getInstance();
-      const adapter = registry.getAdapter(params.dbHandle);
-
-      // Ensure schema is cached on the per-persona adapter before updating
-      await DataDaemon.ensureAdapterSchema(adapter, collection);
-
-      // Use adapter's update method directly (per-persona databases don't emit global events)
-      const result = await adapter.update<BaseEntity>(collection, params.id, params.data as Partial<BaseEntity>, true);
-      entity = result.success && result.data ? result.data.data : null;
-    } else {
-      // Default operation: use ORM (Rust-backed unified path)
-      entity = await ORM.update(collection as CollectionName, params.id, params.data as Partial<BaseEntity>, true);
+      dbPath = registry.getDbPath(params.dbHandle) ?? undefined;
     }
+
+    // Use ORM for all operations (routes to Rust with correct dbPath)
+    const entity = await ORM.update(
+      collection as CollectionName,
+      params.id,
+      params.data as Partial<BaseEntity>,
+      true,
+      dbPath
+    );
 
     return createDataUpdateResultFromParams(params, {
       success: Boolean(entity),

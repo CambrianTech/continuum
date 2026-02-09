@@ -21,7 +21,7 @@ import type {
   PersonaMemory
 } from '../shared/RAGTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
 import type { CodeIndexEntry } from '../shared/CodebaseTypes';
 import { COLLECTIONS } from '../../shared/Constants';

@@ -13,7 +13,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { TaskEntity } from '../../../data/entities/TaskEntity';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 
 export interface SelfTaskGeneratorConfig {

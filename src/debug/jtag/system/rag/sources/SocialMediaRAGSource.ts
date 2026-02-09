@@ -30,7 +30,7 @@ import type { ISocialMediaProvider } from '@system/social/shared/ISocialMediaPro
 import { SocialCredentialEntity } from '@system/social/shared/SocialCredentialEntity';
 import { SocialMediaProviderRegistry } from '@system/social/server/SocialMediaProviderRegistry';
 import { loadSharedCredential } from '@system/social/server/SocialCommandHelper';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { DataOpen } from '@commands/data/open/shared/DataOpenTypes';
 import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { SystemPaths } from '@system/core/config/SystemPaths';

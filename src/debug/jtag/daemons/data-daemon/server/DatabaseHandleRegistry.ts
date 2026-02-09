@@ -419,4 +419,34 @@ export class DatabaseHandleRegistry {
   isOpen(handle: DbHandle): boolean {
     return this.handles.has(handle);
   }
+
+  /**
+   * Get database path for a handle
+   *
+   * Returns the file path for the database associated with this handle.
+   * Used to route operations through ORM with the correct database.
+   *
+   * @param handle - Database handle ('default' or UUID)
+   * @returns Database file path, or null if handle not found or has no path
+   */
+  getDbPath(handle?: DbHandle): string | null {
+    // Default handle uses main database
+    if (!handle || handle === 'default') {
+      return getDatabasePath();
+    }
+
+    const metadata = this.handleMetadata.get(handle);
+    if (!metadata) return null;
+
+    // Extract path from config based on adapter type
+    const config = metadata.config;
+    if ('path' in config && config.path) {
+      return config.path;
+    }
+    if ('filename' in config && config.filename) {
+      return config.filename;
+    }
+
+    return null;
+  }
 }

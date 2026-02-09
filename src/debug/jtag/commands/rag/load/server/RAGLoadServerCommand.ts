@@ -1,7 +1,7 @@
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import type { RAGLoadParams, RAGLoadResult, LoadedMessage } from '../shared/RAGLoadTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { getContextWindow } from '../../../../system/shared/ModelContextWindows';
 import { contentPreview, getTextSafe } from '../../../../shared/utils/StringUtils';

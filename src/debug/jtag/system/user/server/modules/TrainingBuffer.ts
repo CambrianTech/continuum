@@ -15,7 +15,7 @@
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import type { TrainingSignal } from './SignalDetector';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { TaskEntity } from '../../../data/entities/TaskEntity';
 
 /**

@@ -11,7 +11,7 @@
 
 import type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';
 import type { PersonaIdentity } from '../shared/RAGTypes';
-import { ORM } from '../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../data/entities/UserEntity';
 import { Logger } from '../../core/logging/Logger';
 

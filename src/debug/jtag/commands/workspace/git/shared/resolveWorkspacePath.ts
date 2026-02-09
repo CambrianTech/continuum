@@ -8,7 +8,7 @@
  * Path convention: .continuum/sessions/user/shared/{uniqueId}/workspace
  */
 
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import * as path from 'path';

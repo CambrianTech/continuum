@@ -11,7 +11,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { SkillActivateParams, SkillActivateResult } from '../shared/SkillActivateTypes';
 import { createSkillActivateResultFromParams } from '../shared/SkillActivateTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 

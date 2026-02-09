@@ -28,7 +28,7 @@ import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { TrainingDaemon } from '../shared/TrainingDaemon';
 import { Events } from '../../../system/core/shared/Events';
 import { DATA_EVENTS } from '../../../system/core/shared/EventConstants';
-import { ORM } from '../../data-daemon/shared/ORM';
+import { ORM } from '../../data-daemon/server/ORM';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { COLLECTIONS } from '../../../system/data/config/DatabaseConfig';
 import { ROOM_UNIQUE_IDS } from '../../../system/data/constants/RoomConstants';

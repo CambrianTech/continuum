@@ -13,7 +13,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { SkillGenerateParams, SkillGenerateResult } from '../shared/SkillGenerateTypes';
 import { createSkillGenerateResultFromParams } from '../shared/SkillGenerateTypes';
 import { SkillEntity } from '@system/data/entities/SkillEntity';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/shared/Constants';
 import { CommandGenerator } from '@generator/CommandGenerator';
 import type { CommandSpec } from '@generator/CommandNaming';

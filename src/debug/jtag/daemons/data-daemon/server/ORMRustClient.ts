@@ -300,15 +300,17 @@ export class ORMRustClient {
   /**
    * Store entity
    * NOTE: Passes camelCase data and collection names - Rust SqliteAdapter handles conversion
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async store<T extends BaseEntity>(
     collection: string,
-    data: T
+    data: T,
+    dbPath?: string
   ): Promise<StorageResult<T>> {
     // Pass data as-is - Rust SqliteAdapter converts camelCase to snake_case
     const response = await this.request<RustDataRecord>({
       command: 'data/create',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection,  // Rust converts to snake_case table name
       id: data.id,  // BaseEntity guarantees id field
       data,         // Rust converts field names to snake_case
@@ -326,13 +328,15 @@ export class ORMRustClient {
    * Query entities
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
    * NOTE: Filter passed directly - Rust now accepts $eq/$gt format (MongoDB-style)
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async query<T extends BaseEntity>(
-    query: StorageQuery
+    query: StorageQuery,
+    dbPath?: string
   ): Promise<StorageResult<DataRecord<T>[]>> {
     const response = await this.request<RustDataRecord[]>({
       command: 'data/query',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection: query.collection,  // Rust converts to snake_case table name
       filter: query.filter,          // Rust accepts $eq/$gt format directly
       sort: query.sort,              // Rust converts sort field names
@@ -389,13 +393,15 @@ export class ORMRustClient {
    * Query entities with JOINs
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
    * NOTE: Filter passed directly - Rust now accepts $eq/$gt format (MongoDB-style)
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async queryWithJoin<T extends BaseEntity>(
-    query: StorageQuery & { joins?: readonly JoinSpecInput[] }
+    query: StorageQuery & { joins?: readonly JoinSpecInput[] },
+    dbPath?: string
   ): Promise<StorageResult<DataRecord<T>[]>> {
     const response = await this.request<RustDataRecord[]>({
       command: 'data/queryWithJoin',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection: query.collection,
       filter: query.filter,
       sort: query.sort,
@@ -451,11 +457,12 @@ export class ORMRustClient {
    * Count entities
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
    * NOTE: Filter passed directly - Rust now accepts $eq/$gt format (MongoDB-style)
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  async count(query: StorageQuery): Promise<StorageResult<number>> {
+  async count(query: StorageQuery, dbPath?: string): Promise<StorageResult<number>> {
     const response = await this.request<number>({
       command: 'data/count',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection: query.collection,  // Rust converts to snake_case
       filter: query.filter,          // Rust accepts $eq/$gt format directly
     });
@@ -472,14 +479,16 @@ export class ORMRustClient {
   /**
    * Read single entity
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async read<T extends BaseEntity>(
     collection: string,
-    id: UUID
+    id: UUID,
+    dbPath?: string
   ): Promise<T | null> {
     const response = await this.request<RustDataRecord>({
       command: 'data/read',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection,  // Rust converts to snake_case table name
       id,
     });
@@ -512,16 +521,18 @@ export class ORMRustClient {
   /**
    * Update entity
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async update<T extends BaseEntity>(
     collection: string,
     id: UUID,
     data: Partial<T>,
-    incrementVersion: boolean = true
+    incrementVersion: boolean = true,
+    dbPath?: string
   ): Promise<T> {
     const response = await this.request<RustDataRecord>({
       command: 'data/update',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection,  // Rust converts to snake_case table name
       id,
       data,        // Rust converts field names to snake_case
@@ -538,14 +549,16 @@ export class ORMRustClient {
   /**
    * Remove entity
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async remove(
     collection: string,
-    id: UUID
+    id: UUID,
+    dbPath?: string
   ): Promise<StorageResult<boolean>> {
     const response = await this.request<boolean>({
       command: 'data/delete',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection,  // Rust converts to snake_case table name
       id,
     });
@@ -560,8 +573,9 @@ export class ORMRustClient {
   /**
    * Batch operations
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  async batch(operations: StorageOperation[]): Promise<StorageResult<unknown[]>> {
+  async batch(operations: StorageOperation[], dbPath?: string): Promise<StorageResult<unknown[]>> {
     // Pass operations as-is - Rust converts collection and field names
     const rustOps = operations.map(op => ({
       type: op.type,
@@ -572,7 +586,7 @@ export class ORMRustClient {
 
     const response = await this.request<unknown[]>({
       command: 'data/batch',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       operations: rustOps,
     });
 
@@ -585,11 +599,12 @@ export class ORMRustClient {
 
   /**
    * List collections
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  async listCollections(): Promise<StorageResult<string[]>> {
+  async listCollections(dbPath?: string): Promise<StorageResult<string[]>> {
     const response = await this.request<string[]>({
       command: 'data/list-collections',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
     });
 
     if (!response.success) {
@@ -601,8 +616,9 @@ export class ORMRustClient {
 
   /**
    * Clear all data
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  async clearAll(): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
+  async clearAll(dbPath?: string): Promise<StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>> {
     interface ClearAllResult {
       tables_cleared: string[];
       records_deleted: number;
@@ -610,7 +626,7 @@ export class ORMRustClient {
 
     const response = await this.request<ClearAllResult>({
       command: 'data/clear-all',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
     });
 
     if (!response.success) {
@@ -630,11 +646,12 @@ export class ORMRustClient {
   /**
    * Truncate collection
    * NOTE: Passes camelCase - Rust SqliteAdapter handles all naming conversion
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  async truncate(collection: string): Promise<StorageResult<boolean>> {
+  async truncate(collection: string, dbPath?: string): Promise<StorageResult<boolean>> {
     const response = await this.request<boolean>({
       command: 'data/truncate',
-      dbPath: this.dbPath,
+      dbPath: dbPath ?? this.dbPath,
       collection,  // Rust converts to snake_case table name
     });
 
@@ -657,6 +674,8 @@ export class ORMRustClient {
    * - In-memory vector caching (no re-query on repeated searches)
    * - Rayon parallel cosine similarity (multi-threaded)
    * - SIMD-like loop unrolling for fast distance computation
+   *
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   async vectorSearch<T extends RecordData>(
     collection: string,
@@ -665,6 +684,7 @@ export class ORMRustClient {
       k?: number;
       threshold?: number;
       includeData?: boolean;
+      dbPath?: string;
     }
   ): Promise<StorageResult<VectorSearchResult<T>[]>> {
     interface RustVectorResult {
@@ -680,7 +700,7 @@ export class ORMRustClient {
 
     const response = await this.request<RustVectorResult>({
       command: 'vector/search',
-      dbPath: this.dbPath,
+      dbPath: options?.dbPath ?? this.dbPath,
       collection,
       queryVector,
       k: options?.k ?? 10,

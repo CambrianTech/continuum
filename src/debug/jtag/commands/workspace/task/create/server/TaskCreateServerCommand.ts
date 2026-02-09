@@ -10,7 +10,7 @@ import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { TaskCreateParams, TaskCreateResult } from '../shared/TaskCreateTypes';
-import { ORM } from '@daemons/data-daemon/shared/ORM';
+import { ORM } from '@daemons/data-daemon/server/ORM';
 import { COLLECTIONS } from '@system/data/config/DatabaseConfig';
 import type { TaskEntity } from '@system/data/entities/TaskEntity';
 import { v4 as uuidv4 } from 'uuid';

@@ -17,7 +17,7 @@
 import type { IUserStateStorage } from '../IUserStateStorage';
 import { UserStateEntity } from '../../../data/entities/UserStateEntity';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { DataRecord } from '../../../../daemons/data-daemon/shared/DataStorageAdapter';
 
 /**

@@ -20,7 +20,7 @@ import type {
   TrainingExample,
   TrainingMessage
 } from '../shared/FineTuningTypes';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import type { ChatMessageEntity, MessageContent } from '../../../data/entities/ChatMessageEntity';
 
 /**

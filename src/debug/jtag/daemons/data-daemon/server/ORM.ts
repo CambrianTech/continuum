@@ -1,21 +1,21 @@
 /**
  * ORM - Unified Data Access Layer
  *
- * Single entry point for ALL data operations. Replaces scattered DataDaemon.* calls.
+ * Single entry point for ALL data operations. Routes to Rust DataModule.
  *
- * CURRENT STATE (2026-02-07):
- * ✅ Core CRUD operations are FORCED to Rust (no fallback):
+ * CURRENT STATE (2026-02-09):
+ * ✅ ALL operations route to Rust DataModule via ORMRustClient:
  *    - store, query, count, queryWithJoin, read, update, remove
- * 📝 Specialized operations remain on TypeScript DataDaemon:
- *    - batch (multi-collection)
- *    - listCollections, clear, clearAll, truncate (maintenance)
- *    - paginated queries (stateful)
- *    - vector search (not yet in Rust DataModule)
+ *    - batch, listCollections, clear, clearAll, truncate
+ *    - vectorSearch (embedding + similarity search)
+ *
+ * 📝 Only remaining TypeScript code:
+ *    - Paginated queries (stateful, requires TypeScript cursor management)
+ *    - Event emission context (DataDaemon.jtagContext for browser routing)
  *
  * ⚠️  NO FALLBACKS POLICY ⚠️
- * Core CRUD has ZERO fallback logic. If Rust fails, it FAILS LOUDLY.
- * There is NO "try Rust, catch, use TypeScript" pattern for CRUD.
- * If you see fallback logic in CRUD methods, DELETE IT IMMEDIATELY.
+ * ALL operations go to Rust. If Rust fails, it FAILS LOUDLY.
+ * There is NO "try Rust, catch, use TypeScript" pattern.
  */
 
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
@@ -27,8 +27,8 @@ import type {
   StorageResult,
   StorageOperation,
   RecordData,
-} from './DataStorageAdapter';
-import type { OpenPaginatedQueryParams, PaginatedQueryHandle, PaginatedQueryPage } from './PaginatedQuery';
+} from '../shared/DataStorageAdapter';
+import type { OpenPaginatedQueryParams, PaginatedQueryHandle, PaginatedQueryPage } from '../shared/PaginatedQuery';
 import type {
   VectorSearchOptions,
   VectorSearchResponse,
@@ -39,10 +39,10 @@ import type {
   BackfillVectorsProgress,
   VectorIndexStats,
   VectorSearchCapabilities,
-} from './VectorSearchTypes';
+} from '../shared/VectorSearchTypes';
 
 // Import DataDaemon for delegation (TypeScript backend)
-import { DataDaemon } from './DataDaemon';
+import { DataDaemon } from '../shared/DataDaemon';
 
 // Import Events for CRUD event emission
 import { Events } from '../../../system/core/shared/Events';
@@ -54,16 +54,16 @@ import {
   shouldUseRust,
   shouldShadow,
   getBackendStatus,
-} from './ORMConfig';
+} from '../shared/ORMConfig';
 
 // Import type-safe collection names
 import type { CollectionName } from '../../../shared/generated-collection-constants';
 
-// Lazy import for Rust client (server-only, avoid circular deps)
-let _rustClient: import('../server/ORMRustClient').ORMRustClient | null = null;
-async function getRustClient(): Promise<import('../server/ORMRustClient').ORMRustClient> {
+// Lazy import for Rust client (avoid circular deps)
+let _rustClient: import('./ORMRustClient').ORMRustClient | null = null;
+async function getRustClient(): Promise<import('./ORMRustClient').ORMRustClient> {
   if (!_rustClient) {
-    const { ORMRustClient } = await import('../server/ORMRustClient');
+    const { ORMRustClient } = await import('./ORMRustClient');
     _rustClient = ORMRustClient.getInstance();
   }
   return _rustClient;
@@ -73,14 +73,14 @@ import {
   logOperationError,
   getMetricsSummary,
   printMetricsSummary,
-} from './ORMLogger';
+} from '../shared/ORMLogger';
 
 /**
  * ORM - Universal Data Access Layer
  *
  * USAGE:
  * ```typescript
- * import { ORM } from '@daemons/data-daemon/shared/ORM';
+ * import { ORM } from '@daemons/data-daemon/server/ORM';
  *
  * // Store entity
  * const user = await ORM.store<UserEntity>('users', userData);
@@ -99,17 +99,19 @@ export class ORM {
   /**
    * Store entity in collection
    * Emits data:{collection}:created event via DataDaemon's jtagContext for browser routing
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async store<T extends BaseEntity>(
     collection: CollectionName,
     data: T,
-    suppressEvents: boolean = false
+    suppressEvents: boolean = false,
+    dbPath?: string
   ): Promise<T> {
     const done = logOperationStart('store', collection, { id: (data as any).id });
 
     try {
       const client = await getRustClient();
-      const result = await client.store<T>(collection, data);
+      const result = await client.store<T>(collection, data, dbPath);
       if (!result.success) {
         throw new Error(result.error || 'Rust store failed');
       }
@@ -131,9 +133,11 @@ export class ORM {
 
   /**
    * Query entities from collection
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async query<T extends BaseEntity>(
-    query: StorageQuery
+    query: StorageQuery,
+    dbPath?: string
   ): Promise<StorageResult<DataRecord<T>[]>> {
     const done = logOperationStart('query', query.collection, {
       filter: query.filter,
@@ -142,7 +146,7 @@ export class ORM {
 
     try {
       const client = await getRustClient();
-      const result = await client.query<T>(query);
+      const result = await client.query<T>(query, dbPath);
       done();
       return result;
     } catch (error) {
@@ -153,14 +157,15 @@ export class ORM {
 
   /**
    * Count entities matching query (uses SQL COUNT, not fetch-all)
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  static async count(query: StorageQuery): Promise<StorageResult<number>> {
+  static async count(query: StorageQuery, dbPath?: string): Promise<StorageResult<number>> {
     const done = logOperationStart('count', query.collection, { filter: query.filter });
 
     // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
-      const result = await client.count(query);
+      const result = await client.count(query, dbPath);
       done();
       return result;
     } catch (error) {
@@ -171,16 +176,18 @@ export class ORM {
 
   /**
    * Query with JOINs for optimal loading
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async queryWithJoin<T extends RecordData>(
-    query: StorageQueryWithJoin
+    query: StorageQueryWithJoin,
+    dbPath?: string
   ): Promise<StorageResult<DataRecord<T>[]>> {
     const done = logOperationStart('query', query.collection, { joins: query.joins?.length });
 
     // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
-      const result = await client.queryWithJoin<T & BaseEntity>(query);
+      const result = await client.queryWithJoin<T & BaseEntity>(query, dbPath);
       done();
       return result;
     } catch (error) {
@@ -191,17 +198,19 @@ export class ORM {
 
   /**
    * Read single entity by ID
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async read<T extends BaseEntity>(
     collection: CollectionName,
-    id: UUID
+    id: UUID,
+    dbPath?: string
   ): Promise<T | null> {
     const done = logOperationStart('read', collection, { id });
 
     // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
-      const result = await client.read<T>(collection, id);
+      const result = await client.read<T>(collection, id, dbPath);
       done();
       return result;
     } catch (error) {
@@ -212,19 +221,21 @@ export class ORM {
 
   /**
    * Update entity
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async update<T extends BaseEntity>(
     collection: CollectionName,
     id: UUID,
     data: Partial<T>,
-    incrementVersion: boolean = true
+    incrementVersion: boolean = true,
+    dbPath?: string
   ): Promise<T> {
     const done = logOperationStart('update', collection, { id, fields: Object.keys(data) });
 
     // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
-      const result = await client.update<T>(collection, id, data, incrementVersion);
+      const result = await client.update<T>(collection, id, data, incrementVersion, dbPath);
       done();
 
       // Emit event using DataDaemon's jtagContext for proper browser routing
@@ -243,18 +254,20 @@ export class ORM {
 
   /**
    * Remove entity
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async remove(
     collection: CollectionName,
     id: UUID,
-    suppressEvents: boolean = false
+    suppressEvents: boolean = false,
+    dbPath?: string
   ): Promise<StorageResult<boolean>> {
     const done = logOperationStart('remove', collection, { id });
 
     // FORCED RUST PATH - no fallback
     try {
       const client = await getRustClient();
-      const result = await client.remove(collection, id);
+      const result = await client.remove(collection, id, dbPath);
       done();
 
       // Emit event using DataDaemon's jtagContext for proper browser routing
@@ -276,16 +289,18 @@ export class ORM {
   /**
    * Execute batch operations
    * FORCED RUST PATH - no fallback
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
   static async batch(
-    operations: StorageOperation[]
+    operations: StorageOperation[],
+    dbPath?: string
   ): Promise<StorageResult<any[]>> {
     const collections = [...new Set(operations.map(op => op.collection))];
     const done = logOperationStart('batch', collections.join(','), { count: operations.length });
 
     try {
       const client = await getRustClient();
-      const result = await client.batch(operations);
+      const result = await client.batch(operations, dbPath);
       done();
       return result;
     } catch (error) {
@@ -299,12 +314,13 @@ export class ORM {
   /**
    * List all collections
    * FORCED RUST PATH - no fallback
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  static async listCollections(): Promise<StorageResult<string[]>> {
+  static async listCollections(dbPath?: string): Promise<StorageResult<string[]>> {
     const done = logOperationStart('listCollections', '*', {});
     try {
       const client = await getRustClient();
-      const result = await client.listCollections();
+      const result = await client.listCollections(dbPath);
       done();
       return result;
     } catch (error) {
@@ -318,12 +334,13 @@ export class ORM {
   /**
    * Clear all data from all collections
    * FORCED RUST PATH - no fallback
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  static async clear(): Promise<StorageResult<boolean>> {
+  static async clear(dbPath?: string): Promise<StorageResult<boolean>> {
     const done = logOperationStart('clear', '*', {});
     try {
       const client = await getRustClient();
-      const result = await client.clearAll();
+      const result = await client.clearAll(dbPath);
       done();
       return { success: result.success, data: result.success };
     } catch (error) {
@@ -335,14 +352,15 @@ export class ORM {
   /**
    * Clear all data with detailed reporting
    * FORCED RUST PATH - no fallback
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  static async clearAll(): Promise<
+  static async clearAll(dbPath?: string): Promise<
     StorageResult<{ tablesCleared: string[]; recordsDeleted: number }>
   > {
     const done = logOperationStart('clearAll', '*', {});
     try {
       const client = await getRustClient();
-      const result = await client.clearAll();
+      const result = await client.clearAll(dbPath);
       done();
       return result;
     } catch (error) {
@@ -354,12 +372,13 @@ export class ORM {
   /**
    * Truncate specific collection
    * FORCED RUST PATH - no fallback
+   * @param dbPath - Optional database path for per-persona databases (defaults to main DB)
    */
-  static async truncate(collection: CollectionName): Promise<StorageResult<boolean>> {
+  static async truncate(collection: CollectionName, dbPath?: string): Promise<StorageResult<boolean>> {
     const done = logOperationStart('truncate', collection, {});
     try {
       const client = await getRustClient();
-      const result = await client.truncate(collection);
+      const result = await client.truncate(collection, dbPath);
       done();
       return result;
     } catch (error) {
@@ -447,7 +466,7 @@ export class ORM {
         return { success: false, error: 'vectorSearch requires queryText or queryVector' };
       }
 
-      // Call Rust vector/search
+      // Call Rust vector/search (dbPath resolved by caller)
       const result = await client.vectorSearch<T>(
         options.collection,
         queryVector,
@@ -455,6 +474,7 @@ export class ORM {
           k: options.k ?? 10,
           threshold: options.similarityThreshold ?? 0.0,
           includeData: true,
+          dbPath: options.dbPath,
         }
       );
 

@@ -11,9 +11,9 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { DataListParams, DataListResult } from '../shared/DataListTypes';
 import { createDataListResultFromParams } from '../shared/DataListTypes';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
-import { ORM } from '../../../../daemons/data-daemon/shared/ORM';
-import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';
-import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';
+import { ORM } from '../../../../daemons/data-daemon/server/ORM';
+import { DataDaemon } from '../../../../daemons/data-daemon/shared/DataDaemon';  // Only for getDescriptionFieldForCollection
+import { DatabaseHandleRegistry } from '../../../../daemons/data-daemon/server/DatabaseHandleRegistry';  // Only for getDbPath
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 
 // Rust-style config defaults for generic data access
@@ -82,22 +82,17 @@ export class DataListServerCommand<T extends BaseEntity> extends CommandBase<Dat
         limit
       };
 
+      // Resolve dbHandle to dbPath for per-persona databases
+      // All operations now route through ORM → Rust with the correct dbPath
+      let dbPath: string | undefined;
       if (params.dbHandle) {
-        // Per-persona database: get adapter from registry
         const registry = DatabaseHandleRegistry.getInstance();
-        const adapter = registry.getAdapter(params.dbHandle);
-
-        // Ensure schema is cached on the per-persona adapter before querying
-        await DataDaemon.ensureAdapterSchema(adapter, collection);
-
-        // Use adapter directly for count and query
-        countResult = await adapter.count(countQuery);
-        result = await adapter.query<BaseEntity>(storageQuery);
-      } else {
-        // Main database: use ORM (Rust-backed unified path)
-        countResult = await ORM.count(countQuery);
-        result = await ORM.query<BaseEntity>(storageQuery);
+        dbPath = registry.getDbPath(params.dbHandle) ?? undefined;
       }
+
+      // Use ORM for all operations (routes to Rust with correct dbPath)
+      countResult = await ORM.count(countQuery, dbPath);
+      result = await ORM.query<BaseEntity>(storageQuery, dbPath);
 
       const totalCount = countResult.success ? (countResult.data ?? 0) : 0;
 
