@@ -15,7 +15,7 @@
 /// NOTE: LoggerModule is now internal (Phase 4a). External logger socket no longer required.
 
 use continuum_core::{start_server, CallManager};
-use continuum_core::memory::{EmbeddingProvider, FastEmbedProvider, PersonaMemoryManager};
+use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
 use std::env;
 use std::sync::Arc;
 use tracing::{info, Level};
@@ -60,22 +60,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Audio never leaves the Rust process.
     let call_manager = Arc::new(CallManager::new());
 
-    // Initialize Hippocampus memory subsystem — inline embedding for query vectors.
-    // Rust is a pure compute engine. Memory data comes from the TS ORM via IPC.
-    // Embedding model loads once (~100ms), then ~5ms per embed (no IPC hop).
-    info!("🧠 Initializing Hippocampus embedding provider...");
-    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> = match FastEmbedProvider::new() {
-        Ok(provider) => {
-            info!("✅ Hippocampus embedding ready: {} ({}D)", provider.name(), provider.dimensions());
-            Arc::new(provider)
-        }
-        Err(e) => {
-            tracing::error!("❌ Failed to load embedding model: {}", e);
-            tracing::error!("   Memory operations will not have semantic search.");
-            tracing::error!("   Ensure fastembed model cache is available.");
-            std::process::exit(1);
-        }
-    };
+    // Initialize Hippocampus memory subsystem with shared embedding provider.
+    // Uses EmbeddingModule's MODEL_CACHE for ONE fastembed model across entire runtime.
+    // Model loads lazily on first embed call (~100ms), then ~5ms per embed.
+    info!("🧠 Initializing Hippocampus with shared embedding provider...");
+    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
+        Arc::new(ModuleBackedEmbeddingProvider::default_model());
+    info!("✅ Hippocampus ready: {} ({}D, shared with EmbeddingModule)",
+        embedding_provider.name(), embedding_provider.dimensions());
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Capture tokio runtime handle for IPC thread to call async CallManager methods

@@ -30,7 +30,7 @@ pub mod types;
 pub use cache::MemoryCache;
 pub use consciousness::build_consciousness_context;
 pub use corpus::MemoryCorpus;
-pub use embedding::{cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider};
+pub use embedding::{cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider, ModuleBackedEmbeddingProvider};
 pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;
 
