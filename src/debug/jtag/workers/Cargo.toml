@@ -10,12 +10,7 @@ members = [
     "chat-drain",
     "continuum-core",
     "data",
-    "embedding",
-    "inference",
     "inference-grpc",
-    "logger",
-    "search",
-    "training",
 ]
 
 # Shared dependencies - workers inherit these versions

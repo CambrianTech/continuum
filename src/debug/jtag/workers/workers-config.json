@@ -1,8 +1,7 @@
 {
   "memoryLimits": {
     "default": "4G",
-    "inference": "8G",
-    "embedding": "2G"
+    "inference": "8G"
   },
   "workers": [
     {
@@ -14,68 +13,25 @@
         ".continuum/jtag/data/database.sqlite",
         ".continuum/jtag/data/archive/database-001.sqlite"
       ],
-      "description": "Archive worker for moving old data to cold storage using Commands.execute()",
+      "description": "Archive worker for moving old data to cold storage",
       "enabled": true
-    },
-    {
-      "name": "embedding",
-      "binary": "workers/target/release/embedding-worker",
-      "socket": "/tmp/jtag-embedding.sock",
-      "args": [
-        "/tmp/jtag-embedding.sock"
-      ],
-      "description": "DEPRECATED - Migrated to EmbeddingModule in continuum-core",
-      "enabled": false,
-      "memoryLimit": "2G"
-    },
-    {
-      "name": "inference",
-      "binary": "workers/target/release/inference-worker",
-      "socket": "/tmp/jtag-inference.sock",
-      "args": [
-        "/tmp/jtag-inference.sock"
-      ],
-      "description": "DEPRECATED - Use inference-grpc instead",
-      "enabled": false,
-      "memoryLimit": "8G",
-      "preloadModels": [
-        "Qwen/Qwen2-1.5B-Instruct",
-        "Qwen/Qwen2-0.5B-Instruct"
-      ]
     },
     {
       "name": "inference-grpc",
       "binary": "workers/target/release/inference-grpc",
       "type": "tcp",
       "port": 50051,
-      "description": "gRPC inference server with Candle LLM backend. Replaces Unix socket worker.",
+      "description": "gRPC inference server with Candle LLM backend. Metal-accelerated.",
       "enabled": true,
       "memoryLimit": "8G"
-    },
-    {
-      "name": "logger",
-      "binary": "workers/target/release/logger-worker",
-      "socket": "/tmp/jtag-logger-worker.sock",
-      "description": "DEPRECATED - Migrated to LoggerModule in continuum-core",
-      "enabled": false
     },
     {
       "name": "continuum-core",
       "binary": "workers/target/release/continuum-core-server",
       "socket": "/tmp/continuum-core.sock",
-      "args": [
-        "/tmp/jtag-logger-worker.sock"
-      ],
-      "description": "Rust core: IPC (VoiceOrchestrator, PersonaInbox) + WebSocket voice calls on port 50053 + DataModule + EmbeddingModule + SearchModule + LoggerModule",
-      "enabled": true
-    },
-    {
-      "name": "search",
-      "binary": "workers/target/release/search-worker",
-      "socket": "/tmp/jtag-search-worker.sock",
       "args": [],
-      "description": "DEPRECATED - Migrated to SearchModule in continuum-core",
-      "enabled": false
+      "description": "Unified Rust runtime: Voice, Data, Embedding, Search, Logger modules",
+      "enabled": true
     }
   ],
   "sharedSockets": [
