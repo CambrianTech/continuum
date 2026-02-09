@@ -21,7 +21,7 @@
 
 import { DataStorageAdapter } from '../shared/DataStorageAdapter';
 import { SqliteStorageAdapter } from './SqliteStorageAdapter';
-import { RustWorkerStorageAdapter } from './RustWorkerStorageAdapter';
+// NOTE: RustWorkerStorageAdapter removed - ORM uses ORMRustClient → continuum-core directly
 import { DATABASE_PATHS } from '../../../system/data/config/DatabaseConfig';
 import { generateUUID, type UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { getDatabasePath, getServerConfig } from '../../../system/config/ServerConfig';
@@ -236,32 +236,14 @@ export class DatabaseHandleRegistry {
         break;
       }
 
-      case 'rust': {
-        const rustConfig = config as RustConfig;
-        if (!rustConfig.filename) {
-          throw new Error('Rust config requires "filename" property (database path)');
-        }
-        const socketPath = rustConfig.socketPath || '/tmp/jtag-data-daemon-worker.sock';
-        storageAdapter = new RustWorkerStorageAdapter({
-          socketPath,
-          dbPath: rustConfig.filename,
-          timeout: 30000
-        });
-        await storageAdapter.initialize({
-          type: 'rust' as any,
-          namespace: handle as string,
-          options: {
-            socketPath,
-            dbPath: rustConfig.filename
-          }
-        });
-        break;
-      }
+      case 'rust':
+        // DEPRECATED: rust adapter removed - ORM uses ORMRustClient → continuum-core directly
+        throw new Error(`Adapter type 'rust' deprecated - use ORM with ORMRustClient instead`);
 
       case 'json':
       case 'vector':
       case 'graph':
-        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' and 'rust' are currently supported.`);
+        throw new Error(`Adapter type '${adapter}' not yet implemented. Only 'sqlite' is currently supported.`);
 
       default:
         throw new Error(`Unknown adapter type: ${adapter}`);
