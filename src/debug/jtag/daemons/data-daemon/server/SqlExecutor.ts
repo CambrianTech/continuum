@@ -1,9 +1,11 @@
 /**
  * SqlExecutor - Common interface for SQL execution
  *
- * This interface defines the contract that both SqliteRawExecutor
- * and RustSqliteExecutor must implement, allowing them to be used
- * interchangeably by the storage adapter and managers.
+ * This interface defines the contract that SQL executors must implement,
+ * allowing them to be used interchangeably by the storage adapter and managers.
+ *
+ * NOTE: RustSqliteExecutor was removed - all Rust SQL execution now goes through
+ * ORMRustClient → continuum-core DataModule (see workers/continuum-core/src/modules/data.rs)
  */
 
 export interface SqlExecutor {

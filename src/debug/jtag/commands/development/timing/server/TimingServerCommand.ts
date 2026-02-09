@@ -1,8 +1,13 @@
 /**
  * TimingServerCommand - Analyze Rust worker timing metrics
  *
- * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl
- * Provides percentile analysis for performance monitoring.
+ * NOTE: This command was designed for the old data-daemon worker which wrote
+ * timing data to /tmp/jtag-data-daemon-timing.jsonl. The data-daemon has been
+ * absorbed into continuum-core as DataModule (Phase 4e), which does not write
+ * this timing file. This command may need adaptation for the new architecture.
+ *
+ * For DataModule timing, see workers/continuum-core/src/modules/data.rs which
+ * logs slow queries (>50ms) to the standard log output.
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';

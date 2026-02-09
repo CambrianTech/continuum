@@ -1,8 +1,9 @@
 /**
  * TimingTypes - Types for analyzing Rust worker timing metrics
  *
- * Reads timing data from /tmp/jtag-data-daemon-timing.jsonl
- * Provides percentile analysis (P50/P95/P99) for performance monitoring.
+ * NOTE: The data-daemon worker has been absorbed into continuum-core DataModule.
+ * The timing file /tmp/jtag-data-daemon-timing.jsonl may no longer be written.
+ * See TimingServerCommand.ts for details.
  */
 
 import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
