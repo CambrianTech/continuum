@@ -483,6 +483,88 @@ export class FunctionStyleToolAdapter extends ToolFormatAdapter {
 }
 
 /**
+ * Adapter for bare tool call format (no wrapping tags)
+ * Format: tool_name {"param": "value"} or tool_name {json}
+ *
+ * This is what models often produce naturally:
+ * - code/search {"query": "memory clustering", "path": "./src/"}
+ * - code/tree {"path": "./workers/"}
+ */
+export class BareToolCallAdapter extends ToolFormatAdapter {
+  readonly formatName = 'bare-tool-call';
+
+  // Known tool prefixes to identify tool calls
+  private static TOOL_PREFIXES = [
+    'code/', 'data/', 'collaboration/', 'ai/', 'voice/', 'search/',
+    'workspace/', 'file/', 'interface/', 'genome/', 'adapter/',
+    'persona/', 'runtime/', 'session/', 'user/', 'logs/', 'media/'
+  ];
+
+  formatToolsForPrompt(tools: ToolDefinition[]): string {
+    return ''; // Parsing only
+  }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => {
+      if (r.success && r.content) {
+        return `Tool ${r.toolName} succeeded:\n${r.content}`;
+      } else {
+        return `Tool ${r.toolName} failed: ${r.error || 'Unknown error'}`;
+      }
+    }).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+
+    // Pattern: tool/name {json} or tool/name {"key": "value"}
+    // Must start with known prefix to avoid false positives
+    const prefixPattern = BareToolCallAdapter.TOOL_PREFIXES.map(p => p.replace('/', '\\/')).join('|');
+    const regex = new RegExp(`((?:${prefixPattern})[a-zA-Z0-9/_-]+)\\s*(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})`, 'g');
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({
+        fullMatch: match[0],
+        startIndex: match.index,
+        endIndex: regex.lastIndex
+      });
+    }
+
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    // Extract tool name and JSON
+    const prefixPattern = BareToolCallAdapter.TOOL_PREFIXES.map(p => p.replace('/', '\\/')).join('|');
+    const parseRegex = new RegExp(`((?:${prefixPattern})[a-zA-Z0-9/_-]+)\\s*(\\{.+\\})`, 's');
+    const parsed = match.fullMatch.match(parseRegex);
+
+    if (!parsed) return null;
+
+    const toolName = parsed[1].trim();
+    const jsonStr = parsed[2].trim();
+    const parameters: Record<string, string> = {};
+
+    try {
+      const parsedJson = JSON.parse(jsonStr);
+      for (const [key, value] of Object.entries(parsedJson)) {
+        parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+      }
+    } catch {
+      // Fallback: try to extract key-value pairs
+      const kvRegex = /"([^"]+)":\s*"([^"]*)"/g;
+      let kvMatch;
+      while ((kvMatch = kvRegex.exec(jsonStr)) !== null) {
+        parameters[kvMatch[1]] = kvMatch[2];
+      }
+    }
+
+    return { toolName, parameters };
+  }
+}
+
+/**
  * Registry of all supported tool format adapters
  * Add new adapters here to support additional formats
  *
@@ -492,6 +574,7 @@ export function getToolFormatAdapters(): ToolFormatAdapter[] {
   return [
     new AnthropicStyleToolAdapter(),  // Primary/default format
     new FunctionStyleToolAdapter(),   // OpenAI/Groq/Together function style
+    new BareToolCallAdapter(),        // Bare tool_name {json} format
     new MarkdownToolAdapter(),         // Local model backtick format
     new OldStyleToolAdapter()          // Legacy XML support
   ];
