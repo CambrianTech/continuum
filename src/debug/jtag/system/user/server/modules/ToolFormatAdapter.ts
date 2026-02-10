@@ -484,11 +484,12 @@ export class FunctionStyleToolAdapter extends ToolFormatAdapter {
 
 /**
  * Adapter for bare tool call format (no wrapping tags)
- * Format: tool_name {"param": "value"} or tool_name {json}
+ * Format: tool_name {"param": "value"} or `tool_name` {json}
  *
  * This is what models often produce naturally:
  * - code/search {"query": "memory clustering", "path": "./src/"}
  * - code/tree {"path": "./workers/"}
+ * - `code/tree` {"path": "."} (backtick-wrapped variant)
  */
 export class BareToolCallAdapter extends ToolFormatAdapter {
   readonly formatName = 'bare-tool-call';
@@ -517,10 +518,13 @@ export class BareToolCallAdapter extends ToolFormatAdapter {
   matches(text: string): ToolCallMatch[] {
     const matches: ToolCallMatch[] = [];
 
-    // Pattern: tool/name {json} or tool/name {"key": "value"}
+    // Pattern: tool/name {json} or `tool/name` {json} (with optional backticks)
     // Must start with known prefix to avoid false positives
+    // Supports both: code/tree {"path": "."} and `code/tree` {"path": "."}
     const prefixPattern = BareToolCallAdapter.TOOL_PREFIXES.map(p => p.replace('/', '\\/')).join('|');
-    const regex = new RegExp(`((?:${prefixPattern})[a-zA-Z0-9/_-]+)\\s*(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})`, 'g');
+
+    // Allow optional backticks around the tool name
+    const regex = new RegExp(`\`?((?:${prefixPattern})[a-zA-Z0-9/_-]+)\`?\\s*(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})`, 'g');
 
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text)) !== null) {
@@ -535,9 +539,9 @@ export class BareToolCallAdapter extends ToolFormatAdapter {
   }
 
   parse(match: ToolCallMatch): ToolCall | null {
-    // Extract tool name and JSON
+    // Extract tool name and JSON (strip backticks if present)
     const prefixPattern = BareToolCallAdapter.TOOL_PREFIXES.map(p => p.replace('/', '\\/')).join('|');
-    const parseRegex = new RegExp(`((?:${prefixPattern})[a-zA-Z0-9/_-]+)\\s*(\\{.+\\})`, 's');
+    const parseRegex = new RegExp(`\`?((?:${prefixPattern})[a-zA-Z0-9/_-]+)\`?\\s*(\\{.+\\})`, 's');
     const parsed = match.fullMatch.match(parseRegex);
 
     if (!parsed) return null;

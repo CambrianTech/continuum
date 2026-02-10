@@ -77,6 +77,13 @@ export interface InboxTask extends BaseQueueItem {
     targetDomain?: TaskDomain;
     failureCount?: number;
     failedTaskIds?: UUID[];
+    // Shell execution metadata (from CodeModule events)
+    command?: string;        // Shell command that was executed
+    exitCode?: number;       // Exit code from shell
+    success?: boolean;       // Whether command succeeded
+    stdoutLines?: number;    // Lines of stdout output
+    stderrLines?: number;    // Lines of stderr output
+    errorPreview?: string;   // Preview of error message (first ~100 chars)
   };
 }
 
@@ -267,9 +274,13 @@ export function taskEntityToInboxTask(task: {
   };
 }): InboxTask {
   // Helper to safely convert Date | string | undefined to timestamp
+  // NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z")
   const toTimestamp = (value: Date | string | undefined): number => {
     if (!value) return Date.now(); // Fallback to now if missing
-    if (typeof value === 'string') return new Date(value).getTime();
+    if (typeof value === 'string') {
+      const parsed = new Date(value).getTime();
+      return isNaN(parsed) ? Date.now() : parsed;
+    }
     return value.getTime();
   };
 

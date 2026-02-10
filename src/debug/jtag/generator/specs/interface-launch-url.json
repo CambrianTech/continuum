@@ -1,0 +1,54 @@
+{
+  "name": "interface/launch/url",
+  "description": "Opens a URL in the default browser. Enables personas to view what they build.",
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "optional": false,
+      "description": "URL to open in the browser"
+    },
+    {
+      "name": "waitForLoad",
+      "type": "boolean",
+      "optional": true,
+      "description": "Wait for page to load before returning (default: false)"
+    },
+    {
+      "name": "screenshot",
+      "type": "boolean",
+      "optional": true,
+      "description": "Take screenshot after loading (default: false)"
+    }
+  ],
+  "results": [
+    {
+      "name": "url",
+      "type": "string",
+      "description": "The URL that was opened"
+    },
+    {
+      "name": "launched",
+      "type": "boolean",
+      "description": "Whether the browser was launched successfully"
+    },
+    {
+      "name": "screenshotPath",
+      "type": "string",
+      "description": "Path to screenshot if requested"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Open localhost development server",
+      "command": "./jtag interface/launch/url --url=\"http://localhost:3000\"",
+      "expectedResult": "{ url: \"http://localhost:3000\", launched: true }"
+    },
+    {
+      "description": "Open and screenshot",
+      "command": "./jtag interface/launch/url --url=\"http://localhost:3000\" --screenshot=true",
+      "expectedResult": "{ url: \"http://localhost:3000\", launched: true, screenshotPath: \"/tmp/screenshot.png\" }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

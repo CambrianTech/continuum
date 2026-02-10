@@ -14,7 +14,7 @@ import { Commands } from '../../core/shared/Commands';
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
 import { Logger } from '../../core/logging/Logger';
 import { SystemPaths } from '../../core/config/SystemPaths';
-import { stringToUUID } from '../../core/types/CrossPlatformUUID';
+import { stringToUUID, type UUID } from '../../core/types/CrossPlatformUUID';
 import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -29,7 +29,7 @@ export type WorkspaceMode = 'sandbox' | 'worktree' | 'project';
 
 export interface WorkspaceConfig {
   /** Persona UUID (for handle generation + Rust backend registration) */
-  readonly personaId: string;
+  readonly personaId: UUID;
 
   /** Human-readable persona identifier (e.g., 'together', 'deepseek') — used for ALL filesystem paths */
   readonly personaUniqueId: string;
@@ -130,10 +130,11 @@ export class WorkspaceStrategy {
     }
 
     // Register with Rust backend — writable workspace + read-only codebase access
+    // CRITICAL: Must register with personaId (UUID), not handle — Rust looks up by personaId
     const jtagRoot = process.cwd();
-    await CodeDaemon.createWorkspace(handle, workspaceDir, [jtagRoot]);
+    await CodeDaemon.createWorkspace(config.personaId, workspaceDir, [jtagRoot]);
     initializedWorkspaces.add(handle);
-    log.info(`Sandbox workspace initialized for persona ${config.personaUniqueId}`);
+    log.info(`Sandbox workspace initialized for persona ${config.personaUniqueId} (id=${config.personaId})`);
 
     return { handle, workspaceDir, mode: 'sandbox' };
   }
@@ -176,12 +177,15 @@ export class WorkspaceStrategy {
     const workspaceDir = initResult.workspacePath as string;
     const branch = initResult.branch as string;
 
-    // Register with Rust backend — worktree IS the repo, no separate read roots needed
-    // (the worktree contains the checked-out source files directly)
-    await CodeDaemon.createWorkspace(handle, workspaceDir, []);
+    // Register with Rust backend — worktree is write location, main repo is read-only.
+    // Worktrees with sparse checkout only contain the specified paths, not the full codebase.
+    // Add main repo as read root so personas can explore the full codebase while writing to their worktree.
+    // CRITICAL: Must register with personaId (UUID), not handle — Rust looks up by personaId
+    const jtagRoot = process.cwd();
+    await CodeDaemon.createWorkspace(config.personaId, workspaceDir, [jtagRoot]);
     initializedWorkspaces.add(handle);
 
-    log.info(`Worktree workspace created: ${workspaceDir} (branch: ${branch})`);
+    log.info(`Worktree workspace created: ${workspaceDir} (branch: ${branch}, personaId=${config.personaId})`);
 
     return { handle, workspaceDir, branch, mode: 'worktree' };
   }
@@ -289,15 +293,32 @@ export class WorkspaceStrategy {
       }
     }
 
-    // Set local git identity in the worktree (not global)
+    // Set worktree-specific git identity (NOT main repo config!)
+    // CRITICAL: Must use --worktree flag because worktrees share main repo's config.
+    // Without --worktree, git config writes to the main repo's .git/config which pollutes
+    // the human user's identity with AI persona info.
     const userName = config.personaName ?? 'AI Persona';
     const userEmail = `${config.personaUniqueId}@continuum.local`;
     const wtOpts = { cwd: worktreeDir, stdio: 'pipe' as const };
-    execSync(`git config user.name "${userName}"`, wtOpts);
-    execSync(`git config user.email "${userEmail}"`, wtOpts);
 
-    // Register with Rust CodeDaemon — worktree IS the repo checkout, no extra read roots
-    await CodeDaemon.createWorkspace(handle, worktreeDir, []);
+    // First enable worktree-specific config, then set the identity
+    try {
+      execSync('git config --worktree extensions.worktreeConfig true', wtOpts);
+      execSync(`git config --worktree user.name "${userName}"`, wtOpts);
+      execSync(`git config --worktree user.email "${userEmail}"`, wtOpts);
+    } catch (configErr: any) {
+      // Older git may not support --worktree; fall back to environment-based identity
+      // which is safer than polluting the main repo's config
+      log.warn(`Could not set worktree-specific config: ${configErr.message}. Commits will use GIT_AUTHOR_* env vars.`);
+    }
+
+    // Register with Rust CodeDaemon — worktree is the write location, JTAG root is read-only.
+    // CRITICAL: Must register with personaId (UUID), not handle — Rust looks up by personaId
+    // Use JTAG root (process.cwd()) as read root, NOT git root — code files are under src/debug/jtag/
+    const jtagRoot = process.cwd();
+    log.info(`🔧 Registering workspace with Rust: personaId=${config.personaId}, workspaceRoot=${worktreeDir}, readRoots=[${jtagRoot}]`);
+    await CodeDaemon.createWorkspace(config.personaId, worktreeDir, [jtagRoot]);
+    log.info(`✅ Workspace registered with Rust for persona ${config.personaUniqueId}`);
     initializedWorkspaces.add(handle);
     projectWorkspacePaths.set(handle, { worktreeDir, branch: branchName, repoPath: resolvedRepoPath, personaId: config.personaId });
     personaToProjectHandle.set(config.personaId, handle);

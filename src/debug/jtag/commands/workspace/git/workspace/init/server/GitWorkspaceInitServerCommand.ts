@@ -131,16 +131,19 @@ export class GitWorkspaceInitServerCommand extends CommandBase<GitWorkspaceInitP
         { cwd: workspacePath }
       );
 
-      // 12. Set local git config with persona identity
+      // 12. Set worktree-specific git config with persona identity
+      // CRITICAL: Must use --worktree flag (not --local) because worktrees share main repo's config.
+      // Without --worktree, git config --local writes to the main repo's .git/config which pollutes
+      // the human user's identity with AI persona info.
       console.log(`Setting git identity: ${persona.displayName} <${persona.email}>`);
-      await execAsync(
-        `git config --local user.name "${persona.displayName}"`,
-        { cwd: workspacePath }
-      );
-      await execAsync(
-        `git config --local user.email "${persona.email}"`,
-        { cwd: workspacePath }
-      );
+      try {
+        await execAsync('git config --worktree extensions.worktreeConfig true', { cwd: workspacePath });
+        await execAsync(`git config --worktree user.name "${persona.displayName}"`, { cwd: workspacePath });
+        await execAsync(`git config --worktree user.email "${persona.email}"`, { cwd: workspacePath });
+      } catch (configErr: any) {
+        // Older git may not support --worktree; log warning but continue
+        console.warn(`Could not set worktree-specific config: ${configErr.message}. Using repo default identity.`);
+      }
 
       // 13. Generate workspace ID and short ID
       const workspaceId = generateUUID();

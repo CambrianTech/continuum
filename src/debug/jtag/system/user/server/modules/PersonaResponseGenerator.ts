@@ -1793,13 +1793,24 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
   }
 
   /**
-   * Convert timestamp to number (handles Date, number, or undefined from JSON serialization)
+   * Convert timestamp to number (handles Date, number, string, or undefined from JSON serialization)
+   *
+   * NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z").
+   * Must handle all formats to prevent type mismatch errors when passing to Rust IPC.
    */
-  private timestampToNumber(timestamp: Date | number | undefined): number {
+  private timestampToNumber(timestamp: Date | number | string | undefined): number {
     if (timestamp === undefined) {
       return Date.now(); // Use current time if timestamp missing
     }
-    return timestamp instanceof Date ? timestamp.getTime() : timestamp;
+    if (timestamp instanceof Date) {
+      return timestamp.getTime();
+    }
+    if (typeof timestamp === 'string') {
+      // Parse ISO string from Rust ORM (e.g., "2026-02-07T18:17:56.886Z")
+      const parsed = new Date(timestamp).getTime();
+      return isNaN(parsed) ? Date.now() : parsed;
+    }
+    return timestamp; // Already a number
   }
 
   async checkResponseRedundancy(

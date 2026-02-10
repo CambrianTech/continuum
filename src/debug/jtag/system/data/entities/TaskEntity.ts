@@ -54,6 +54,9 @@ export type TaskType =
   | 'review-code'
   | 'debug-issue'
   | 'write-feature'
+  | 'fix-error'          // Fix a build/compilation error
+  | 'shell-complete'     // Review shell command output
+  | 'shell-started'      // Track started async shell execution
 
   // Game domain
   | 'make-move'

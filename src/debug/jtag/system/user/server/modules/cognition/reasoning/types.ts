@@ -12,6 +12,7 @@ import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 export interface Task {
   id: UUID;
   domain: string;
+  taskType?: string;  // Specific type within domain (e.g., 'fix-error', 'shell-complete')
   contextId: UUID;
   description: string;
   priority: number;
@@ -29,6 +30,7 @@ export interface PlanStep {
   completed: boolean;
   completedAt?: number;
   result?: any;
+  tools?: string[];  // Suggested tools for this step (e.g., ['code/read', 'code/edit'])
 }
 
 /**

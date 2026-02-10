@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/interface/launch/url",
+  "version": "1.0.0",
+  "description": "Opens a URL in the default browser. Enables personas to view what they build.",
+  "main": "server/InterfaceLaunchUrlServerCommand.ts",
+  "types": "shared/InterfaceLaunchUrlTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/InterfaceLaunchUrlIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "interface/launch/url"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
