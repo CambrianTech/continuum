@@ -87,6 +87,9 @@ pub struct DataModule {
     /// Paginated query state: queryId -> state
     /// Server-side cursor management for efficient pagination
     paginated_queries: DashMap<String, PaginatedQueryState>,
+    /// Module context for inter-module communication (event bus, shared compute)
+    /// Set during initialize(), used to publish data change events
+    context: RwLock<Option<Arc<ModuleContext>>>,
 }
 
 impl DataModule {
@@ -96,6 +99,35 @@ impl DataModule {
             init_lock: Mutex::new(()),
             vector_cache: RwLock::new(HashMap::new()),
             paginated_queries: DashMap::new(),
+            context: RwLock::new(None),
+        }
+    }
+
+    /// Publish a data change event to the message bus.
+    /// Events follow pattern: data:{collection}:{action}
+    /// Actions: created, updated, deleted, batch
+    fn publish_event(&self, collection: &str, action: &str, payload: serde_json::Value) {
+        let ctx_guard = self.context.read().unwrap();
+        if let Some(ctx) = ctx_guard.as_ref() {
+            let event_name = format!("data:{}:{}", collection, action);
+            ctx.bus.publish_async_only(&event_name, payload);
+        }
+    }
+
+    /// Log a slow query to the module's dedicated log file.
+    /// Only logs if duration exceeds threshold (50ms).
+    fn log_slow_query(&self, operation: &str, collection: &str, duration_ms: u128) {
+        if duration_ms < 50 {
+            return;
+        }
+        let ctx_guard = self.context.read().unwrap();
+        if let Some(ctx) = ctx_guard.as_ref() {
+            let logger = ctx.logger("data");
+            logger.timing_with_meta(
+                operation,
+                duration_ms as u64,
+                &format!("collection={}", collection),
+            );
         }
     }
 
@@ -151,7 +183,16 @@ impl ServiceModule for DataModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Store context for event publishing
+        let ctx_arc = Arc::new(ModuleContext::new(
+            ctx.registry.clone(),
+            ctx.bus.clone(),
+            ctx.compute.clone(),
+            ctx.runtime.clone(),
+        ));
+        *self.context.write().unwrap() = Some(ctx_arc);
+        log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
 
@@ -428,18 +469,19 @@ impl DataModule {
             metadata: RecordMetadata::default(),
         };
 
-        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter_ms = adapter_start.elapsed().as_millis();
-
-        let create_start = Instant::now();
         let result = adapter.create(record).await;
-        let create_ms = create_start.elapsed().as_millis();
-
         let total_ms = start.elapsed().as_millis();
-        if total_ms > 50 {
-            log_info!("data", "create", "TIMING: collection={}, total={}ms (adapter={}ms, create={}ms), success={}",
-                collection, total_ms, adapter_ms, create_ms, result.success);
+
+        // Log slow creates to module log file
+        self.log_slow_query("create", &collection, total_ms);
+
+        // Publish event on success
+        if result.success {
+            self.publish_event(&collection, "created", json!({
+                "id": id,
+                "collection": collection
+            }));
         }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
@@ -452,19 +494,12 @@ impl DataModule {
         let params: ReadParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
-        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter_ms = adapter_start.elapsed().as_millis();
-
-        let read_start = Instant::now();
         let result = adapter.read(&params.collection, &params.id).await;
-        let read_ms = read_start.elapsed().as_millis();
-
         let total_ms = start.elapsed().as_millis();
-        if total_ms > 50 {
-            log_info!("data", "read", "TIMING: collection={}, total={}ms (adapter={}ms, read={}ms), success={}",
-                params.collection, total_ms, adapter_ms, read_ms, result.success);
-        }
+
+        // Log slow reads to module log file
+        self.log_slow_query("read", &params.collection, total_ms);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -476,8 +511,11 @@ impl DataModule {
                 format!("Invalid params: {e}")
             })?;
 
+        let collection = params.collection.clone();
+        let id = params.id.clone();
+
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter
+        let result = adapter
             .update(
                 &params.collection,
                 &params.id,
@@ -486,6 +524,14 @@ impl DataModule {
             )
             .await;
 
+        // Publish event on success
+        if result.success {
+            self.publish_event(&collection, "updated", json!({
+                "id": id,
+                "collection": collection
+            }));
+        }
+
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
 
@@ -493,8 +539,19 @@ impl DataModule {
         let params: DeleteParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
+        let collection = params.collection.clone();
+        let id = params.id.clone();
+
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.delete(&params.collection, &params.id).await;
+        let result = adapter.delete(&params.collection, &params.id).await;
+
+        // Publish event on success
+        if result.success {
+            self.publish_event(&collection, "deleted", json!({
+                "id": id,
+                "collection": collection
+            }));
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -503,16 +560,11 @@ impl DataModule {
         use std::time::Instant;
         let start = Instant::now();
 
-        log_info!("data", "query", "Starting query handler");
         let params: QueryParams =
             serde_json::from_value(params.clone()).map_err(|e| {
                 log_error!("data", "query", "Parse error: {}, params: {}", e, params);
                 format!("Invalid params: {e}")
             })?;
-        let parse_ms = start.elapsed().as_millis();
-
-        log_info!("data", "query", "Parsed params: collection={}, db_path={} (parse: {}ms)",
-            params.collection, params.db_path, parse_ms);
 
         let query = StorageQuery {
             collection: params.collection.clone(),
@@ -523,21 +575,12 @@ impl DataModule {
             ..Default::default()
         };
 
-        let adapter_start = Instant::now();
         let adapter = self.get_adapter(&params.db_path).await?;
-        let adapter_ms = adapter_start.elapsed().as_millis();
-
-        let query_start = Instant::now();
         let result = adapter.query(query).await;
-        let query_ms = query_start.elapsed().as_millis();
-
         let total_ms = start.elapsed().as_millis();
 
-        // Log timing breakdown for slow queries (>50ms)
-        if total_ms > 50 {
-            log_info!("data", "query", "TIMING: collection={}, total={}ms (parse={}ms, adapter={}ms, query={}ms), success={}",
-                params.collection, total_ms, parse_ms, adapter_ms, query_ms, result.success);
-        }
+        // Log slow queries to module log file
+        self.log_slow_query("query", &params.collection, total_ms);
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -600,8 +643,18 @@ impl DataModule {
         let params: BatchParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
+        let op_count = params.operations.len();
+
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.batch(params.operations).await;
+        let result = adapter.batch(params.operations).await;
+
+        // Publish batch event on success
+        if result.success {
+            self.publish_event("batch", "completed", json!({
+                "operationCount": op_count,
+                "successCount": result.data.as_ref().map(|d| d.len()).unwrap_or(0)
+            }));
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }

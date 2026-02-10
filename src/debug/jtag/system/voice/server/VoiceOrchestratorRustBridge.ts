@@ -9,7 +9,7 @@
  * Performance target: <1ms overhead vs TypeScript implementation
  */
 
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { UtteranceEvent } from './VoiceOrchestrator';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 
@@ -38,7 +38,7 @@ export class VoiceOrchestratorRustBridge {
 	private ttsCallback: ((sessionId: UUID, personaId: UUID, text: string) => Promise<void>) | null = null;
 
 	private constructor() {
-		this.client = new RustCoreIPCClient('/tmp/continuum-core.sock');
+		this.client = new RustCoreIPCClient(getContinuumCoreSocketPath());
 		this.initializeConnection();
 	}
 

@@ -46,6 +46,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '../config/SystemPaths';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
+import { SOCKETS } from '../../../shared/config';
 
 // Import from modular files
 import { LogLevel, FileMode, createLoggerConfig, parseFileMode } from './LoggerTypes';
@@ -135,7 +136,10 @@ class LoggerClass implements ParentLogger {
     // Initialize Rust worker connection (if enabled)
     // LoggerModule is now part of continuum-core (Phase 4a)
     if (this.useRustLogger) {
-      const socketPath = '/tmp/continuum-core.sock';
+      // Use socket path from shared config - resolve relative to cwd
+      const socketPath = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
+        ? SOCKETS.CONTINUUM_CORE
+        : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
       this.workerClient = new LoggerWorkerClient({
         socketPath,
         timeout: 10000,
@@ -151,7 +155,7 @@ class LoggerClass implements ParentLogger {
         })
         .catch((err) => {
           console.error('⚠️⚠️⚠️  [Logger] CONTINUUM-CORE CONNECTION FAILED - FALLING BACK TO TYPESCRIPT LOGGING ⚠️⚠️⚠️');
-          console.error('⚠️  [Logger] Socket: /tmp/continuum-core.sock');
+          console.error('⚠️  [Logger] Socket:', socketPath);
           console.error('⚠️  [Logger] Error:', err.message);
           console.error('⚠️  [Logger] To start workers: npm run worker:start');
           this.workerClient = null;

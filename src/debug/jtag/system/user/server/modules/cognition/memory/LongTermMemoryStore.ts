@@ -4,12 +4,15 @@
  * Per-persona SQLite database: .continuum/personas/{id}/memory.sqlite
  * Stores embeddings for cosine similarity search
  * Append-only, no complex graph (simple and fast)
+ *
+ * Phase 7 optimization: findSimilar() uses Rust for parallel cosine similarity
  */
 
 import type { UUID } from '../../../../../core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import { RustCoreIPCClient } from '../../../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 type LogFn = (message: string) => void;
 
@@ -86,7 +89,8 @@ export class LongTermMemoryStore {
   }
 
   /**
-   * Find similar memories using cosine similarity
+   * Find similar memories using cosine similarity.
+   * Phase 7: Uses Rust for parallel similarity computation when available.
    */
   async findSimilar(
     queryEmbedding: number[],
@@ -98,6 +102,50 @@ export class LongTermMemoryStore {
       return [];
     }
 
+    // Try Rust-accelerated search first
+    try {
+      return await this.findSimilarRust(queryEmbedding, options);
+    } catch (error) {
+      this.log(`⚠️ Rust similarity unavailable, using TypeScript: ${error}`);
+      return this.findSimilarTypeScript(queryEmbedding, options);
+    }
+  }
+
+  /**
+   * Rust-accelerated similarity search using embedding/top-k command.
+   * Parallelized with Rayon for O(n) speedup on multi-core systems.
+   */
+  private async findSimilarRust(
+    queryEmbedding: number[],
+    options: SimilarityQuery
+  ): Promise<LongTermMemoryEntry[]> {
+    const ipc = RustCoreIPCClient.getInstance();
+
+    // Extract embeddings from memories for batch processing
+    const targetEmbeddings = this.memories.map(m => m.embedding);
+
+    const { results, durationMs } = await ipc.embeddingTopK(
+      queryEmbedding,
+      targetEmbeddings,
+      options.limit,
+      options.threshold
+    );
+
+    this.log(
+      `🦀 Rust found ${results.length} similar memories in ${durationMs}ms (threshold: ${options.threshold})`
+    );
+
+    // Map indices back to memory entries
+    return results.map(r => this.memories[r.index]);
+  }
+
+  /**
+   * TypeScript fallback for similarity search (original implementation).
+   */
+  private findSimilarTypeScript(
+    queryEmbedding: number[],
+    options: SimilarityQuery
+  ): LongTermMemoryEntry[] {
     // Compute similarities
     const withScores = this.memories.map(memory => ({
       memory,

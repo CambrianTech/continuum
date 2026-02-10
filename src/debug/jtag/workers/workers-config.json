@@ -3,13 +3,14 @@
     "default": "4G",
     "inference": "8G"
   },
+  "socketDir": ".continuum/sockets",
   "workers": [
     {
       "name": "archive",
       "binary": "workers/target/release/archive-worker",
-      "socket": "/tmp/jtag-archive-worker.sock",
+      "socket": ".continuum/sockets/archive-worker.sock",
       "args": [
-        "/tmp/jtag-command-router.sock",
+        ".continuum/sockets/command-router.sock",
         ".continuum/jtag/data/database.sqlite",
         ".continuum/jtag/data/archive/database-001.sqlite"
       ],
@@ -28,13 +29,13 @@
     {
       "name": "continuum-core",
       "binary": "workers/target/release/continuum-core-server",
-      "socket": "/tmp/continuum-core.sock",
+      "socket": ".continuum/sockets/continuum-core.sock",
       "args": [],
       "description": "Unified Rust runtime: Voice, Data, Embedding, Search, Logger modules",
       "enabled": true
     }
   ],
   "sharedSockets": [
-    "/tmp/jtag-command-router.sock"
+    ".continuum/sockets/command-router.sock"
   ]
 }

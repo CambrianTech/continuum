@@ -14,7 +14,31 @@
  */
 
 import net from 'net';
+import path from 'path';
 import { EventEmitter } from 'events';
+import { SOCKETS } from '../../../shared/config';
+
+/**
+ * Resolve socket path to absolute path.
+ * Socket config uses relative paths from project root.
+ * This helper resolves them to absolute paths for Unix socket connections.
+ */
+export function resolveSocketPath(socketPath: string): string {
+	// If already absolute, return as-is
+	if (path.isAbsolute(socketPath)) {
+		return socketPath;
+	}
+	// Resolve relative to current working directory (project root)
+	return path.resolve(process.cwd(), socketPath);
+}
+
+/**
+ * Get the default continuum-core socket path (resolved to absolute).
+ * Use this instead of hardcoding paths.
+ */
+export function getContinuumCoreSocketPath(): string {
+	return resolveSocketPath(SOCKETS.CONTINUUM_CORE);
+}
 
 // Import generated types from Rust (single source of truth)
 import type {
@@ -115,8 +139,39 @@ export class RustCoreIPCClient extends EventEmitter {
 	private static readonly SLOW_IPC_THRESHOLD_MS = 500;
 	private static readonly SLOW_WARNING_COOLDOWN_MS = 10_000;
 
+	/** Singleton instance for shared use across modules */
+	private static _instance: RustCoreIPCClient | null = null;
+	private static _instancePromise: Promise<RustCoreIPCClient> | null = null;
+
 	constructor(private socketPath: string) {
 		super();
+	}
+
+	/**
+	 * Get shared singleton instance (auto-connects on first call).
+	 * Use this for simple one-off calls where managing connection lifecycle isn't needed.
+	 * For long-running services, prefer creating a dedicated instance.
+	 */
+	static getInstance(): RustCoreIPCClient {
+		if (!RustCoreIPCClient._instance) {
+			RustCoreIPCClient._instance = new RustCoreIPCClient(getContinuumCoreSocketPath());
+			// Connect asynchronously - methods will wait for connection
+			RustCoreIPCClient._instancePromise = RustCoreIPCClient._instance.connect()
+				.then(() => RustCoreIPCClient._instance!);
+		}
+		return RustCoreIPCClient._instance;
+	}
+
+	/**
+	 * Get shared singleton instance, waiting for connection to be established.
+	 * Use this when you need to ensure the connection is ready before proceeding.
+	 */
+	static async getInstanceAsync(): Promise<RustCoreIPCClient> {
+		if (!RustCoreIPCClient._instance) {
+			RustCoreIPCClient.getInstance(); // Initialize
+		}
+		await RustCoreIPCClient._instancePromise;
+		return RustCoreIPCClient._instance!;
 	}
 
 	/**
@@ -211,13 +266,26 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
+	 * Ensure connected before making request.
+	 * If this is the singleton instance, waits for connection to complete.
+	 */
+	private async ensureConnected(): Promise<void> {
+		// If we're the singleton and have a pending connection, wait for it
+		if (this === RustCoreIPCClient._instance && RustCoreIPCClient._instancePromise) {
+			await RustCoreIPCClient._instancePromise;
+		}
+
+		if (!this.connected || !this.socket) {
+			throw new Error('Not connected to continuum-core server');
+		}
+	}
+
+	/**
 	 * Send a request and wait for full response (including optional binary data).
 	 * Used internally by request() and by methods that need binary payloads.
 	 */
 	private async requestFull(command: any): Promise<IPCResponse> {
-		if (!this.connected || !this.socket) {
-			throw new Error('Not connected to continuum-core server');
-		}
+		await this.ensureConnected();
 
 		const requestId = this.nextRequestId++;
 		const requestWithId = { ...command, requestId };
@@ -1465,6 +1533,317 @@ export class RustCoreIPCClient extends EventEmitter {
 			params: response.result?.params || [],
 			values: response.result?.values || {},
 		};
+	}
+
+	// ========================================================================
+	// Runtime Module Methods (system monitoring & observability)
+	// ========================================================================
+
+	/**
+	 * List all registered modules with their configurations.
+	 * Returns module names, priorities, command prefixes, and thread settings.
+	 */
+	async runtimeList(): Promise<{
+		modules: Array<{
+			name: string;
+			priority: string;
+			command_prefixes: string[];
+			needs_dedicated_thread: boolean;
+			max_concurrency: number;
+		}>;
+		count: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/list',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to list runtime modules');
+		}
+
+		return response.result as {
+			modules: Array<{
+				name: string;
+				priority: string;
+				command_prefixes: string[];
+				needs_dedicated_thread: boolean;
+				max_concurrency: number;
+			}>;
+			count: number;
+		};
+	}
+
+	/**
+	 * Get performance metrics for all modules.
+	 * Returns aggregate stats including command counts, avg latency, percentiles.
+	 */
+	async runtimeMetricsAll(): Promise<{
+		modules: Array<{
+			moduleName: string;
+			totalCommands: number;
+			avgTimeMs: number;
+			slowCommandCount: number;
+			p50Ms: number;
+			p95Ms: number;
+			p99Ms: number;
+		}>;
+		count: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/metrics/all',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get runtime metrics');
+		}
+
+		// Convert bigint fields to number (ts-rs exports u64 as bigint)
+		const result = response.result as { modules: any[]; count: number };
+		return {
+			modules: result.modules.map((m: any) => ({
+				moduleName: m.moduleName,
+				totalCommands: Number(m.totalCommands),
+				avgTimeMs: Number(m.avgTimeMs),
+				slowCommandCount: Number(m.slowCommandCount),
+				p50Ms: Number(m.p50Ms),
+				p95Ms: Number(m.p95Ms),
+				p99Ms: Number(m.p99Ms),
+			})),
+			count: result.count,
+		};
+	}
+
+	/**
+	 * Get performance metrics for a specific module.
+	 */
+	async runtimeMetricsModule(moduleName: string): Promise<{
+		moduleName: string;
+		totalCommands: number;
+		avgTimeMs: number;
+		slowCommandCount: number;
+		p50Ms: number;
+		p95Ms: number;
+		p99Ms: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/metrics/module',
+			module: moduleName,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || `Failed to get metrics for module: ${moduleName}`);
+		}
+
+		// Convert bigint fields to number
+		const m = response.result as any;
+		return {
+			moduleName: m.moduleName,
+			totalCommands: Number(m.totalCommands),
+			avgTimeMs: Number(m.avgTimeMs),
+			slowCommandCount: Number(m.slowCommandCount),
+			p50Ms: Number(m.p50Ms),
+			p95Ms: Number(m.p95Ms),
+			p99Ms: Number(m.p99Ms),
+		};
+	}
+
+	/**
+	 * Get list of recent slow commands (>50ms) across all modules.
+	 * Sorted by total_ms descending.
+	 */
+	async runtimeMetricsSlow(): Promise<{
+		slow_commands: Array<{
+			module: string;
+			command: string;
+			total_ms: number;
+			execute_ms: number;
+			queue_ms: number;
+		}>;
+		count: number;
+		threshold_ms: number;
+	}> {
+		const response = await this.request({
+			command: 'runtime/metrics/slow',
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to get slow commands');
+		}
+
+		return response.result as {
+			slow_commands: Array<{
+				module: string;
+				command: string;
+				total_ms: number;
+				execute_ms: number;
+				queue_ms: number;
+			}>;
+			count: number;
+			threshold_ms: number;
+		};
+	}
+
+	// ============================================================================
+	// Embedding Similarity Operations (Phase 7: Move Compute to Rust)
+	// ============================================================================
+
+	/**
+	 * Compute cosine similarity between two embeddings.
+	 * Much faster than TypeScript due to SIMD vectorization in release mode.
+	 */
+	async embeddingSimilarity(a: number[], b: number[]): Promise<number> {
+		const response = await this.request({
+			command: 'embedding/similarity',
+			a,
+			b,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compute similarity');
+		}
+
+		return response.result?.similarity as number;
+	}
+
+	/**
+	 * Compute pairwise cosine similarity matrix for a set of embeddings.
+	 * Parallelized with Rayon in Rust for O(n²) speedup.
+	 *
+	 * Returns flat lower-triangular matrix (n*(n-1)/2 values).
+	 * Use indexPairwiseSimilarity() to extract individual pairs.
+	 *
+	 * @param embeddings Array of embedding vectors (all same dimension)
+	 * @returns Object with flat similarity array and metadata
+	 */
+	async embeddingSimilarityMatrix(embeddings: number[][]): Promise<{
+		similarities: Float32Array;
+		count: number;
+		pairs: number;
+		dimensions: number;
+		durationMs: number;
+	}> {
+		const { response, binaryData } = await this.requestFull({
+			command: 'embedding/similarity-matrix',
+			embeddings,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to compute similarity matrix');
+		}
+
+		// Binary response contains f32 array
+		const similarities = binaryData
+			? new Float32Array(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength / 4)
+			: new Float32Array(0);
+
+		return {
+			similarities,
+			count: response.result?.count as number,
+			pairs: response.result?.pairs as number,
+			dimensions: response.result?.dimensions as number,
+			durationMs: response.result?.durationMs as number,
+		};
+	}
+
+	/**
+	 * Cluster embeddings using connected components algorithm.
+	 * Full clustering in Rust (similarity matrix + graph traversal).
+	 *
+	 * @param embeddings Array of embedding vectors (all same dimension)
+	 * @param minSimilarity Minimum similarity threshold (0-1, default 0.7)
+	 * @param minClusterSize Minimum cluster size (default 2)
+	 * @returns Array of clusters with indices, strength, and representative
+	 */
+	async embeddingCluster(
+		embeddings: number[][],
+		minSimilarity = 0.7,
+		minClusterSize = 2
+	): Promise<{
+		clusters: Array<{
+			indices: number[];
+			strength: number;
+			representative: number;
+		}>;
+		count: number;
+		clusterCount: number;
+		durationMs: number;
+	}> {
+		const response = await this.request({
+			command: 'embedding/cluster',
+			embeddings,
+			minSimilarity,
+			minClusterSize,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to cluster embeddings');
+		}
+
+		return {
+			clusters: response.result?.clusters || [],
+			count: response.result?.count as number,
+			clusterCount: response.result?.clusterCount as number,
+			durationMs: response.result?.durationMs as number,
+		};
+	}
+
+	/**
+	 * Find top-k most similar embeddings to a query.
+	 * Parallelized with Rayon in Rust.
+	 *
+	 * Use this for semantic search - finding most similar items to a query.
+	 * This replaces TypeScript loops with Rust parallel computation.
+	 *
+	 * @param query The query embedding vector
+	 * @param targets Array of target embedding vectors to search
+	 * @param k Maximum number of results to return (default 10)
+	 * @param threshold Minimum similarity threshold (default 0.0)
+	 * @returns Array of { index, similarity } sorted by similarity descending
+	 */
+	async embeddingTopK(
+		query: number[],
+		targets: number[][],
+		k = 10,
+		threshold = 0.0
+	): Promise<{
+		results: Array<{ index: number; similarity: number }>;
+		count: number;
+		totalTargets: number;
+		durationMs: number;
+	}> {
+		const response = await this.request({
+			command: 'embedding/top-k',
+			query,
+			targets,
+			k,
+			threshold,
+		});
+
+		if (!response.success) {
+			throw new Error(response.error || 'Failed to find top-k similar');
+		}
+
+		return {
+			results: response.result?.results || [],
+			count: response.result?.count as number,
+			totalTargets: response.result?.totalTargets as number,
+			durationMs: response.result?.durationMs as number,
+		};
+	}
+
+	/**
+	 * Helper: Get index into pairwise similarity flat array.
+	 * For n items, the flat array contains (0,1), (0,2), ..., (n-2, n-1).
+	 *
+	 * @param i First item index (must be < j)
+	 * @param j Second item index
+	 * @param n Total number of items
+	 */
+	static indexPairwiseSimilarity(i: number, j: number, n: number): number {
+		// Ensure i < j
+		if (i > j) [i, j] = [j, i];
+		// Index formula for lower-triangular without diagonal
+		return i * n - (i * (i + 1)) / 2 + (j - i - 1);
 	}
 
 	/**

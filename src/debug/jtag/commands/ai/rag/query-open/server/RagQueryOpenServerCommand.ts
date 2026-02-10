@@ -17,6 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { CodeIndexEntity } from '../../../../../system/data/entities/CodeIndexEntity';
 import type { DataListParams, DataListResult } from '../../../../data/list/shared/DataListTypes';
 import type { BaseEntity } from '../../../../../system/data/entities/BaseEntity';
+import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 import { EmbeddingGenerate } from '../../../embedding/generate/shared/EmbeddingGenerateTypes';
 import { DataList } from '../../../../data/list/shared/DataListTypes';
@@ -125,8 +126,9 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
 
       console.log(`🔎 Fetched ${listResult.items.length} indexed entries`);
 
-      // Step 3: Calculate cosine similarity for each entry
-      const scoredResults: CodeSearchResult[] = [];
+      // Step 3: Filter entries and prepare for Rust similarity computation
+      const filteredEntries: CodeIndexEntity[] = [];
+      const targetEmbeddings: number[][] = [];
 
       for (const entry of listResult.items as readonly CodeIndexEntity[]) {
         // Skip entries without embeddings
@@ -142,20 +144,46 @@ export class RagQueryOpenServerCommand extends RagQueryOpenCommand {
           continue;
         }
 
-        // Calculate cosine similarity
-        const similarity = this.cosineSimilarity(queryEmbedding, entry.embedding);
-
-        // Only include results above relevance threshold
-        if (similarity >= minRelevance) {
-          scoredResults.push({
-            entry,
-            relevanceScore: similarity
-          });
-        }
+        filteredEntries.push(entry);
+        targetEmbeddings.push(entry.embedding);
       }
 
-      // Step 4: Sort by relevance (highest first)
-      scoredResults.sort((a, b) => b.relevanceScore - a.relevanceScore);
+      // Step 4: Use Rust for parallel similarity computation (Rayon-accelerated)
+      let scoredResults: CodeSearchResult[] = [];
+
+      if (targetEmbeddings.length > 0) {
+        try {
+          const ipc = RustCoreIPCClient.getInstance();
+          const { results: topKResults, durationMs } = await ipc.embeddingTopK(
+            queryEmbedding,
+            targetEmbeddings,
+            targetEmbeddings.length, // Get all results, filter by threshold
+            minRelevance
+          );
+
+          console.log(`🦀 Rust computed ${topKResults.length} similarities in ${durationMs}ms`);
+
+          // Map indices back to entries
+          scoredResults = topKResults.map(r => ({
+            entry: filteredEntries[r.index],
+            relevanceScore: r.similarity
+          }));
+        } catch (error) {
+          // Fallback to TypeScript if Rust unavailable
+          console.log(`⚠️ Rust similarity unavailable, using TypeScript fallback: ${error}`);
+          for (let i = 0; i < filteredEntries.length; i++) {
+            const similarity = this.cosineSimilarity(queryEmbedding, targetEmbeddings[i]);
+            if (similarity >= minRelevance) {
+              scoredResults.push({
+                entry: filteredEntries[i],
+                relevanceScore: similarity
+              });
+            }
+          }
+          // Sort by relevance (highest first) - Rust already returns sorted
+          scoredResults.sort((a, b) => b.relevanceScore - a.relevanceScore);
+        }
+      }
 
       console.log(`🔎 Found ${scoredResults.length} matches above threshold ${minRelevance}`);
 

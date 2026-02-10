@@ -15,7 +15,9 @@
  */
 
 import * as net from 'net';
+import * as path from 'path';
 import { Logger } from '../logging/Logger';
+import { SOCKETS } from '../../../shared/config';
 
 const log = Logger.create('RustEmbeddingClient', 'embedding');
 
@@ -30,8 +32,10 @@ interface BinaryHeader {
   model?: string;
 }
 
-/** Default socket path - now uses continuum-core (EmbeddingModule absorbed embedding worker) */
-const DEFAULT_SOCKET_PATH = '/tmp/continuum-core.sock';
+/** Default socket path - resolved from shared config */
+const DEFAULT_SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
+  ? SOCKETS.CONTINUUM_CORE
+  : path.resolve(process.cwd(), SOCKETS.CONTINUUM_CORE);
 
 /** Available embedding models in Rust worker */
 export type RustEmbeddingModel =

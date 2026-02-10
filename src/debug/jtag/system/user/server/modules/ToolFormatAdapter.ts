@@ -401,6 +401,170 @@ export class MarkdownToolAdapter extends ToolFormatAdapter {
 }
 
 /**
+ * Adapter for OpenAI/Generic function-call style format
+ * Format: <function=tool_name>{"param": "value"}</function>
+ *
+ * This is what Groq, Together, and some other models naturally produce.
+ * Examples from chat:
+ * - <function=adapter_search> {"query": "embedding module"} </function>
+ * - <function=code/search>{"query": "memory clustering"}</function>
+ */
+export class FunctionStyleToolAdapter extends ToolFormatAdapter {
+  readonly formatName = 'function-style';
+
+  formatToolsForPrompt(tools: ToolDefinition[]): string {
+    // Use Anthropic format for prompting, this is just for parsing
+    return '';
+  }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => {
+      if (r.success && r.content) {
+        return `<function_result name="${r.toolName}" status="success">\n${r.content}\n</function_result>`;
+      } else {
+        return `<function_result name="${r.toolName}" status="error">\n${r.error || 'Unknown error'}\n</function_result>`;
+      }
+    }).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+    // Match <function=name>...</function> or <function=name> {...} </function>
+    const regex = /<function=([^>\s]+)>\s*([\s\S]*?)\s*<\/function>/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({
+        fullMatch: match[0],
+        startIndex: match.index,
+        endIndex: regex.lastIndex
+      });
+    }
+
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    // Extract tool name from <function=NAME>
+    const nameMatch = match.fullMatch.match(/<function=([^>\s]+)>/i);
+    if (!nameMatch) {
+      return null;
+    }
+
+    const toolName = nameMatch[1].trim();
+    const parameters: Record<string, string> = {};
+
+    // Extract JSON body between the tags
+    const bodyMatch = match.fullMatch.match(/<function=[^>]+>\s*([\s\S]*?)\s*<\/function>/i);
+    if (bodyMatch && bodyMatch[1]) {
+      const jsonStr = bodyMatch[1].trim();
+      if (jsonStr) {
+        try {
+          const parsed = JSON.parse(jsonStr);
+          // Flatten to string values for consistency with other adapters
+          for (const [key, value] of Object.entries(parsed)) {
+            parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+          }
+        } catch {
+          // If not valid JSON, try key=value parsing
+          const kvMatch = jsonStr.match(/["']?(\w+)["']?\s*[:=]\s*["']?([^"',}]+)["']?/g);
+          if (kvMatch) {
+            for (const kv of kvMatch) {
+              const [k, v] = kv.split(/[:=]/).map(s => s.trim().replace(/["']/g, ''));
+              if (k && v) parameters[k] = v;
+            }
+          }
+        }
+      }
+    }
+
+    return { toolName, parameters };
+  }
+}
+
+/**
+ * Adapter for bare tool call format (no wrapping tags)
+ * Format: tool_name {"param": "value"} or tool_name {json}
+ *
+ * This is what models often produce naturally:
+ * - code/search {"query": "memory clustering", "path": "./src/"}
+ * - code/tree {"path": "./workers/"}
+ */
+export class BareToolCallAdapter extends ToolFormatAdapter {
+  readonly formatName = 'bare-tool-call';
+
+  // Known tool prefixes to identify tool calls
+  private static TOOL_PREFIXES = [
+    'code/', 'data/', 'collaboration/', 'ai/', 'voice/', 'search/',
+    'workspace/', 'file/', 'interface/', 'genome/', 'adapter/',
+    'persona/', 'runtime/', 'session/', 'user/', 'logs/', 'media/'
+  ];
+
+  formatToolsForPrompt(tools: ToolDefinition[]): string {
+    return ''; // Parsing only
+  }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => {
+      if (r.success && r.content) {
+        return `Tool ${r.toolName} succeeded:\n${r.content}`;
+      } else {
+        return `Tool ${r.toolName} failed: ${r.error || 'Unknown error'}`;
+      }
+    }).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+
+    // Pattern: tool/name {json} or tool/name {"key": "value"}
+    // Must start with known prefix to avoid false positives
+    const prefixPattern = BareToolCallAdapter.TOOL_PREFIXES.map(p => p.replace('/', '\\/')).join('|');
+    const regex = new RegExp(`((?:${prefixPattern})[a-zA-Z0-9/_-]+)\\s*(\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\})`, 'g');
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({
+        fullMatch: match[0],
+        startIndex: match.index,
+        endIndex: regex.lastIndex
+      });
+    }
+
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    // Extract tool name and JSON
+    const prefixPattern = BareToolCallAdapter.TOOL_PREFIXES.map(p => p.replace('/', '\\/')).join('|');
+    const parseRegex = new RegExp(`((?:${prefixPattern})[a-zA-Z0-9/_-]+)\\s*(\\{.+\\})`, 's');
+    const parsed = match.fullMatch.match(parseRegex);
+
+    if (!parsed) return null;
+
+    const toolName = parsed[1].trim();
+    const jsonStr = parsed[2].trim();
+    const parameters: Record<string, string> = {};
+
+    try {
+      const parsedJson = JSON.parse(jsonStr);
+      for (const [key, value] of Object.entries(parsedJson)) {
+        parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+      }
+    } catch {
+      // Fallback: try to extract key-value pairs
+      const kvRegex = /"([^"]+)":\s*"([^"]*)"/g;
+      let kvMatch;
+      while ((kvMatch = kvRegex.exec(jsonStr)) !== null) {
+        parameters[kvMatch[1]] = kvMatch[2];
+      }
+    }
+
+    return { toolName, parameters };
+  }
+}
+
+/**
  * Registry of all supported tool format adapters
  * Add new adapters here to support additional formats
  *
@@ -409,6 +573,8 @@ export class MarkdownToolAdapter extends ToolFormatAdapter {
 export function getToolFormatAdapters(): ToolFormatAdapter[] {
   return [
     new AnthropicStyleToolAdapter(),  // Primary/default format
+    new FunctionStyleToolAdapter(),   // OpenAI/Groq/Together function style
+    new BareToolCallAdapter(),        // Bare tool_name {json} format
     new MarkdownToolAdapter(),         // Local model backtick format
     new OldStyleToolAdapter()          // Legacy XML support
   ];

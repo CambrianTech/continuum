@@ -7,7 +7,7 @@
  *
  * USAGE:
  * ```typescript
- * const logger = new LoggerWorkerClient('/tmp/continuum-core.sock');
+ * const logger = new LoggerWorkerClient('.continuum/sockets/continuum-core.sock');
  * await logger.connect();
  *
  * // Write a log message (type-safe)

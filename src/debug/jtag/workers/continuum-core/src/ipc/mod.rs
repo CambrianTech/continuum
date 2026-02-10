@@ -9,10 +9,9 @@
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
-use crate::voice::{UtteranceEvent, VoiceParticipant};
-use crate::persona::{PersonaInbox, PersonaCognitionEngine, ChannelRegistry, ChannelEnqueueRequest, PersonaState};
+use crate::persona::{PersonaInbox, PersonaCognitionEngine, ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
-use crate::code::{self, FileEngine, ShellSession};
+use crate::code::{FileEngine, ShellSession};
 use crate::runtime::{Runtime, CommandResult};
 use crate::modules::health::HealthModule;
 use crate::modules::cognition::{CognitionModule, CognitionState};
@@ -64,445 +63,16 @@ pub struct InboxMessageRequest {
 // The to_inbox_message() method was removed when migrating to CognitionModule.
 // See modules/cognition.rs for the parsing logic.
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "command")]
-enum Request {
-    #[serde(rename = "voice/register-session")]
-    VoiceRegisterSession {
-        session_id: String,
-        room_id: String,
-        participants: Vec<VoiceParticipant>,
-    },
-
-    #[serde(rename = "voice/on-utterance")]
-    VoiceOnUtterance { event: UtteranceEvent },
-
-    #[serde(rename = "voice/should-route-tts")]
-    VoiceShouldRouteTts {
-        session_id: String,
-        persona_id: String,
-    },
-
-    #[serde(rename = "voice/synthesize")]
-    VoiceSynthesize {
-        text: String,
-        voice: Option<String>,
-        adapter: Option<String>,
-    },
-
-    /// Synthesize and inject audio directly into a call's mixer.
-    /// Audio never leaves the Rust process — TypeScript gets back metadata only.
-    #[serde(rename = "voice/speak-in-call")]
-    VoiceSpeakInCall {
-        call_id: String,
-        user_id: String,
-        text: String,
-        voice: Option<String>,
-        adapter: Option<String>,
-    },
-
-    /// Synthesize audio and store in server-side buffer pool.
-    /// Returns a Handle (UUID) + metadata. Audio stays in Rust memory.
-    /// Use voice/play-handle to inject into a call, or voice/discard-handle to free.
-    #[serde(rename = "voice/synthesize-handle")]
-    VoiceSynthesizeHandle {
-        text: String,
-        voice: Option<String>,
-        adapter: Option<String>,
-    },
-
-    /// Inject previously synthesized audio (by handle) into a call's mixer.
-    /// Audio never crosses IPC — Rust reads from buffer pool and injects directly.
-    #[serde(rename = "voice/play-handle")]
-    VoicePlayHandle {
-        handle: String,
-        call_id: String,
-        user_id: String,
-    },
-
-    /// Explicitly free a synthesized audio buffer.
-    /// Buffers also auto-expire after 5 minutes.
-    #[serde(rename = "voice/discard-handle")]
-    VoiceDiscardHandle {
-        handle: String,
-    },
-
-    #[serde(rename = "voice/transcribe")]
-    VoiceTranscribe {
-        /// Base64-encoded i16 PCM samples, 16kHz mono
-        audio: String,
-        /// Language code (e.g., "en") or None for auto-detection
-        language: Option<String>,
-    },
-
-    #[serde(rename = "inbox/create")]
-    InboxCreate { persona_id: String },
-
-    // ========================================================================
-    // Cognition Commands
-    // ========================================================================
-
-    #[serde(rename = "cognition/create-engine")]
-    CognitionCreateEngine {
-        persona_id: String,
-        persona_name: String,
-    },
-
-    #[serde(rename = "cognition/calculate-priority")]
-    CognitionCalculatePriority {
-        persona_id: String,
-        content: String,
-        sender_type: String,  // "human", "persona", "agent", "system"
-        is_voice: bool,
-        room_id: String,
-        timestamp: u64,
-    },
-
-    #[serde(rename = "cognition/fast-path-decision")]
-    CognitionFastPathDecision {
-        persona_id: String,
-        message: InboxMessageRequest,
-    },
-
-    #[serde(rename = "cognition/enqueue-message")]
-    CognitionEnqueueMessage {
-        persona_id: String,
-        message: InboxMessageRequest,
-    },
-
-    #[serde(rename = "cognition/get-state")]
-    CognitionGetState { persona_id: String },
-
-    // ========================================================================
-    // Channel Commands
-    // ========================================================================
-
-    /// Route an item to its domain channel queue
-    #[serde(rename = "channel/enqueue")]
-    ChannelEnqueue {
-        persona_id: String,
-        item: ChannelEnqueueRequest,
-    },
-
-    /// Pop the highest-priority item from a specific domain channel
-    #[serde(rename = "channel/dequeue")]
-    ChannelDequeue {
-        persona_id: String,
-        domain: Option<String>,  // "AUDIO", "CHAT", "BACKGROUND" or null for any
-    },
-
-    /// Get per-channel status snapshot
-    #[serde(rename = "channel/status")]
-    ChannelStatus {
-        persona_id: String,
-    },
-
-    /// Run one service cycle: consolidate + return next item to process
-    #[serde(rename = "channel/service-cycle")]
-    ChannelServiceCycle {
-        persona_id: String,
-    },
-
-    /// Service cycle + fast-path decision in ONE call.
-    /// Eliminates a separate IPC round-trip for fastPathDecision.
-    /// Returns: service_cycle result + optional cognition decision.
-    #[serde(rename = "channel/service-cycle-full")]
-    ChannelServiceCycleFull {
-        persona_id: String,
-    },
-
-    /// Clear all channel queues
-    #[serde(rename = "channel/clear")]
-    ChannelClear {
-        persona_id: String,
-    },
-
-    // ========================================================================
-    // Memory / Hippocampus Commands
-    // ========================================================================
-
-    /// Load a persona's memory corpus from the TS ORM.
-    /// Rust is a pure compute engine — data comes from the ORM via IPC.
-    #[serde(rename = "memory/load-corpus")]
-    MemoryLoadCorpus {
-        persona_id: String,
-        memories: Vec<crate::memory::CorpusMemory>,
-        events: Vec<crate::memory::CorpusTimelineEvent>,
-    },
-
-    /// 6-layer parallel multi-recall — the improved recall algorithm.
-    /// Operates on in-memory MemoryCorpus data. Zero SQL.
-    #[serde(rename = "memory/multi-layer-recall")]
-    MemoryMultiLayerRecall {
-        persona_id: String,
-        query_text: Option<String>,
-        room_id: String,
-        max_results: usize,
-        layers: Option<Vec<String>>,
-    },
-
-    /// Build consciousness context (temporal + cross-context + intentions).
-    /// Operates on in-memory MemoryCorpus data. Zero SQL.
-    #[serde(rename = "memory/consciousness-context")]
-    MemoryConsciousnessContext {
-        persona_id: String,
-        room_id: String,
-        current_message: Option<String>,
-        skip_semantic_search: bool,
-    },
-
-    /// Append a single memory to a persona's cached corpus.
-    /// Copy-on-write: O(n) clone, but appends are rare (~1/min/persona).
-    /// Keeps Rust cache coherent with the TS ORM without full reload.
-    #[serde(rename = "memory/append-memory")]
-    MemoryAppendMemory {
-        persona_id: String,
-        memory: crate::memory::CorpusMemory,
-    },
-
-    /// Append a single timeline event to a persona's cached corpus.
-    #[serde(rename = "memory/append-event")]
-    MemoryAppendEvent {
-        persona_id: String,
-        event: crate::memory::CorpusTimelineEvent,
-    },
-
-    // ========================================================================
-    // Code Module Commands
-    // ========================================================================
-
-    /// Create a per-persona file engine (workspace).
-    #[serde(rename = "code/create-workspace")]
-    CodeCreateWorkspace {
-        persona_id: String,
-        workspace_root: String,
-        #[serde(default)]
-        read_roots: Vec<String>,
-    },
-
-    /// Read a file (or line range).
-    #[serde(rename = "code/read")]
-    CodeRead {
-        persona_id: String,
-        file_path: String,
-        start_line: Option<u32>,
-        end_line: Option<u32>,
-    },
-
-    /// Write/create a file.
-    #[serde(rename = "code/write")]
-    CodeWrite {
-        persona_id: String,
-        file_path: String,
-        content: String,
-        description: Option<String>,
-    },
-
-    /// Edit a file using an EditMode.
-    #[serde(rename = "code/edit")]
-    CodeEdit {
-        persona_id: String,
-        file_path: String,
-        edit_mode: code::EditMode,
-        description: Option<String>,
-    },
-
-    /// Delete a file.
-    #[serde(rename = "code/delete")]
-    CodeDelete {
-        persona_id: String,
-        file_path: String,
-        description: Option<String>,
-    },
-
-    /// Preview an edit as a unified diff (read-only).
-    #[serde(rename = "code/diff")]
-    CodeDiff {
-        persona_id: String,
-        file_path: String,
-        edit_mode: code::EditMode,
-    },
-
-    /// Undo a specific change or the last N changes.
-    #[serde(rename = "code/undo")]
-    CodeUndo {
-        persona_id: String,
-        change_id: Option<String>,
-        count: Option<usize>,
-    },
-
-    /// Get change history for a file or workspace.
-    #[serde(rename = "code/history")]
-    CodeHistory {
-        persona_id: String,
-        file_path: Option<String>,
-        limit: Option<usize>,
-    },
-
-    /// Search files with regex + optional glob filter.
-    #[serde(rename = "code/search")]
-    CodeSearch {
-        persona_id: String,
-        pattern: String,
-        file_glob: Option<String>,
-        max_results: Option<u32>,
-    },
-
-    /// Generate a directory tree.
-    #[serde(rename = "code/tree")]
-    CodeTree {
-        persona_id: String,
-        path: Option<String>,
-        max_depth: Option<u32>,
-        #[serde(default)]
-        include_hidden: bool,
-    },
-
-    /// Get git status for the workspace.
-    #[serde(rename = "code/git-status")]
-    CodeGitStatus {
-        persona_id: String,
-    },
-
-    /// Get git diff (staged or unstaged).
-    #[serde(rename = "code/git-diff")]
-    CodeGitDiff {
-        persona_id: String,
-        #[serde(default)]
-        staged: bool,
-    },
-
-    /// Get git log (last N commits).
-    #[serde(rename = "code/git-log")]
-    CodeGitLog {
-        persona_id: String,
-        count: Option<u32>,
-    },
-
-    /// Stage files for commit.
-    #[serde(rename = "code/git-add")]
-    CodeGitAdd {
-        persona_id: String,
-        paths: Vec<String>,
-    },
-
-    /// Create a git commit.
-    #[serde(rename = "code/git-commit")]
-    CodeGitCommit {
-        persona_id: String,
-        message: String,
-    },
-
-    /// Push to remote.
-    #[serde(rename = "code/git-push")]
-    CodeGitPush {
-        persona_id: String,
-        #[serde(default)]
-        remote: String,
-        #[serde(default)]
-        branch: String,
-    },
-
-    // ── Shell Session Commands ──────────────────────────────────────
-
-    /// Create a shell session for a workspace.
-    #[serde(rename = "code/shell-create")]
-    CodeShellCreate {
-        persona_id: String,
-        /// Workspace root directory (must match file engine workspace).
-        workspace_root: String,
-    },
-
-    /// Execute a command in a shell session.
-    /// Returns immediately with execution_id (handle).
-    /// If `wait` is true, blocks until completion and returns full result.
-    #[serde(rename = "code/shell-execute")]
-    CodeShellExecute {
-        persona_id: String,
-        /// The shell command to execute (named `cmd` to avoid serde tag conflict with `command`).
-        cmd: String,
-        #[serde(default)]
-        timeout_ms: Option<u64>,
-        /// If true, block until completion and return full result.
-        #[serde(default)]
-        wait: bool,
-    },
-
-    /// Poll an execution for new output since last poll.
-    #[serde(rename = "code/shell-poll")]
-    CodeShellPoll {
-        persona_id: String,
-        execution_id: String,
-    },
-
-    /// Kill a running execution.
-    #[serde(rename = "code/shell-kill")]
-    CodeShellKill {
-        persona_id: String,
-        execution_id: String,
-    },
-
-    /// Change the shell session's working directory.
-    #[serde(rename = "code/shell-cd")]
-    CodeShellCd {
-        persona_id: String,
-        path: String,
-    },
-
-    /// Get shell session status/info.
-    #[serde(rename = "code/shell-status")]
-    CodeShellStatus {
-        persona_id: String,
-    },
-
-    /// Watch an execution for new output. Blocks until output is available
-    /// (no timeout, no polling). Returns classified lines via sentinel rules.
-    #[serde(rename = "code/shell-watch")]
-    CodeShellWatch {
-        persona_id: String,
-        execution_id: String,
-    },
-
-    /// Configure sentinel filter rules on an execution.
-    /// Rules classify output lines and control which are emitted or suppressed.
-    #[serde(rename = "code/shell-sentinel")]
-    CodeShellSentinel {
-        persona_id: String,
-        execution_id: String,
-        rules: Vec<crate::code::shell_types::SentinelRule>,
-    },
-
-    /// Destroy a shell session (kills all running executions).
-    #[serde(rename = "code/shell-destroy")]
-    CodeShellDestroy {
-        persona_id: String,
-    },
-
-    // ========================================================================
-    // Model Discovery Commands
-    // ========================================================================
-
-    /// Discover model metadata from provider APIs.
-    /// ALL HTTP I/O runs here in Rust (off Node.js main thread).
-    /// Returns discovered models for TypeScript to populate ModelRegistry.
-    #[serde(rename = "models/discover")]
-    ModelsDiscover {
-        providers: Vec<crate::models::ProviderConfig>,
-    },
-
-    #[serde(rename = "health-check")]
-    HealthCheck,
-
-    #[serde(rename = "get-stats")]
-    GetStats { category: Option<String> },
-}
+// All commands route through ServiceModule implementations in src/modules/.
+// See modules/health.rs, cognition.rs, channel.rs, voice.rs, code.rs, memory.rs,
+// models.rs, data.rs, logger.rs, search.rs, embedding.rs, rag.rs for command handlers.
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Response {
     success: bool,
-        result: Option<serde_json::Value>,
-        error: Option<String>,
-        #[serde(rename = "requestId")]
+    result: Option<serde_json::Value>,
+    error: Option<String>,
+    #[serde(rename = "requestId")]
     request_id: Option<u64>,
 }
 
@@ -606,78 +176,7 @@ impl ServerState {
         }
     }
 
-    /// Legacy request handler — DEPRECATED.
-    ///
-    /// All commands should now be routed through the modular runtime.
-    /// This function exists only as a fallback during migration.
-    /// If this code is reached, it means a command's prefix wasn't registered with any module.
-    #[allow(unused_variables)]
-    fn handle_request(&self, request: Request) -> HandleResult {
-        // Extract command name for error message
-        let command_name = std::any::type_name_of_val(&request);
-
-        log_error!(
-            "ipc",
-            "server",
-            "Legacy handle_request reached for {} - all commands should route through modular runtime",
-            command_name
-        );
-
-        HandleResult::Json(Response::error(format!(
-            "Command not routed to module. This is likely a bug - all commands should be handled by ServiceModules. Request type: {command_name}"
-        )))
-    }
 }
-
-// The entire legacy match statement has been removed.
-// All commands are now handled by ServiceModule implementations in src/modules/:
-// - HealthModule: health-check, get-stats
-// - CognitionModule: cognition/*, inbox/*
-// - ChannelModule: channel/*
-// - ModelsModule: models/*
-// - MemoryModule: memory/*
-// - VoiceModule: voice/*
-// - CodeModule: code/*
-//
-// If a command reaches the legacy handle_request, it means the runtime didn't
-// match any module's prefix. Fix by adding the prefix to the correct module's
-// config().command_prefixes.
-
-// Legacy match arms removed (was ~1400 lines):
-// - Voice commands: register-session, on-utterance, should-route-tts, synthesize,
-//   speak-in-call, synthesize-handle, play-handle, discard-handle, transcribe
-// - Cognition commands: create-engine, calculate-priority, fast-path-decision,
-//   enqueue-message, get-state
-// - Channel commands: enqueue, dequeue, status, service-cycle, service-cycle-full, clear
-// - Memory commands: load-corpus, multi-layer-recall, consciousness-context,
-//   append-memory, append-event
-// - Code commands: create-workspace, read, write, edit, delete, diff, undo, history,
-//   search, tree, git-status, git-diff, git-log, git-add, git-commit, git-push,
-//   shell-create, shell-execute, shell-poll, shell-kill, shell-cd, shell-status,
-//   shell-watch, shell-sentinel, shell-destroy
-// - Models commands: discover
-// - Health commands: health-check, get-stats
-
-#[allow(dead_code)]
-struct LegacyServerState { _removed: () } // Placeholder - ServerState now only needs runtime
-
-impl ServerState {
-    // Original handle_request replaced with deprecation notice above.
-    // All command handling logic is now in modules/*.rs files.
-    #[allow(dead_code)]
-    fn legacy_removed(&self) {
-        // This function exists only as a marker that legacy code was removed.
-        // The actual commands are handled in:
-        // - modules/health.rs
-        // - modules/cognition.rs
-        // - modules/channel.rs
-        // - modules/models.rs
-        // - modules/memory.rs
-        // - modules/voice.rs
-        // - modules/code.rs
-    }
-}
-
 
 // ============================================================================
 // Handle Result - supports JSON and binary responses
@@ -806,33 +305,24 @@ fn handle_client(stream: UnixStream, state: Arc<ServerState>) -> std::io::Result
         let state = state.clone();
         let tx = tx.clone();
         rayon::spawn(move || {
-            // Try modular runtime first (Phase 1+: routes health-check, get-stats, etc.)
-            if let Some(ref cmd) = command {
-                if let Some(result) = state.runtime.route_command_sync(cmd, json_value.clone(), &state.rt_handle) {
-                    let handle_result = match result {
-                        Ok(CommandResult::Json(value)) => HandleResult::Json(Response::success(value)),
-                        Ok(CommandResult::Binary { metadata, data }) => HandleResult::Binary {
-                            json_header: Response::success(metadata),
-                            binary_data: data,
-                        },
-                        Err(e) => HandleResult::Json(Response::error(e)),
-                    };
-                    let _ = tx.send((request_id, handle_result));
-                    return;
+            // Route through modular runtime (all commands handled by ServiceModules)
+            let handle_result = if let Some(ref cmd) = command {
+                match state.runtime.route_command_sync(cmd, json_value.clone(), &state.rt_handle) {
+                    Some(Ok(CommandResult::Json(value))) => HandleResult::Json(Response::success(value)),
+                    Some(Ok(CommandResult::Binary { metadata, data })) => HandleResult::Binary {
+                        json_header: Response::success(metadata),
+                        binary_data: data,
+                    },
+                    Some(Err(e)) => HandleResult::Json(Response::error(e)),
+                    None => HandleResult::Json(Response::error(format!(
+                        "Unknown command: '{}'. No module registered for this command prefix.",
+                        cmd
+                    ))),
                 }
-            }
-
-            // Fall through to legacy Request enum dispatch
-            let request: Request = match serde_json::from_value(json_value) {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = tx.send((request_id, HandleResult::Json(Response::error(format!("Invalid request: {e}")))));
-                    return;
-                }
+            } else {
+                HandleResult::Json(Response::error("Missing 'command' field in request".to_string()))
             };
-
-            let result = state.handle_request(request);
-            let _ = tx.send((request_id, result));
+            let _ = tx.send((request_id, handle_result));
         });
     }
 
@@ -944,67 +434,11 @@ mod tests {
     }
 
     // ========================================================================
-    // Request/Response Serialization Tests
+    // Response Serialization Tests
     // ========================================================================
-
-    #[test]
-    fn test_request_deserialization_health_check() {
-        let json = r#"{"command":"health-check"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse health-check");
-        match request {
-            Request::HealthCheck => {} // correct
-            _ => panic!("Expected HealthCheck variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_voice_synthesize() {
-        let json = r#"{"command":"voice/synthesize","text":"Hello","voice":"af","adapter":"kokoro"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse voice/synthesize");
-        match request {
-            Request::VoiceSynthesize { text, voice, adapter } => {
-                assert_eq!(text, "Hello");
-                assert_eq!(voice, Some("af".to_string()));
-                assert_eq!(adapter, Some("kokoro".to_string()));
-            }
-            _ => panic!("Expected VoiceSynthesize variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_voice_synthesize_minimal() {
-        let json = r#"{"command":"voice/synthesize","text":"Hello"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse minimal synthesize");
-        match request {
-            Request::VoiceSynthesize { text, voice, adapter } => {
-                assert_eq!(text, "Hello");
-                assert!(voice.is_none());
-                assert!(adapter.is_none());
-            }
-            _ => panic!("Expected VoiceSynthesize variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_speak_in_call() {
-        let json = r#"{
-            "command": "voice/speak-in-call",
-            "call_id": "call-123",
-            "user_id": "user-456",
-            "text": "Hello there"
-        }"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse speak-in-call");
-        match request {
-            Request::VoiceSpeakInCall { call_id, user_id, text, voice, adapter } => {
-                assert_eq!(call_id, "call-123");
-                assert_eq!(user_id, "user-456");
-                assert_eq!(text, "Hello there");
-                assert!(voice.is_none());
-                assert!(adapter.is_none());
-            }
-            _ => panic!("Expected VoiceSpeakInCall variant"),
-        }
-    }
+    // NOTE: Request deserialization tests removed - legacy Request enum deleted.
+    // Commands now route through ServiceModule implementations (modules/*.rs).
+    // Each module has its own tests for command handling.
 
     #[test]
     fn test_response_success_serialization() {
@@ -1031,112 +465,6 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["requestId"], 42);
-    }
-
-    // NOTE: test_inbox_message_request_to_inbox_message and test_inbox_message_request_invalid_uuid
-    // were removed when to_inbox_message() was moved to CognitionModule.
-    // See modules/cognition.rs for the parsing logic and tests.
-
-    // ========================================================================
-    // Handle-Based Audio IPC Request Deserialization
-    // ========================================================================
-
-    #[test]
-    fn test_request_deserialization_synthesize_handle() {
-        let json = r#"{"command":"voice/synthesize-handle","text":"Hello world","voice":"af","adapter":"kokoro"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse synthesize-handle");
-        match request {
-            Request::VoiceSynthesizeHandle { text, voice, adapter } => {
-                assert_eq!(text, "Hello world");
-                assert_eq!(voice, Some("af".to_string()));
-                assert_eq!(adapter, Some("kokoro".to_string()));
-            }
-            _ => panic!("Expected VoiceSynthesizeHandle variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_play_handle() {
-        let json = r#"{"command":"voice/play-handle","handle":"550e8400-e29b-41d4-a716-446655440000","call_id":"call-1","user_id":"user-1"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse play-handle");
-        match request {
-            Request::VoicePlayHandle { handle, call_id, user_id } => {
-                assert_eq!(handle, "550e8400-e29b-41d4-a716-446655440000");
-                assert_eq!(call_id, "call-1");
-                assert_eq!(user_id, "user-1");
-            }
-            _ => panic!("Expected VoicePlayHandle variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_discard_handle() {
-        let json = r#"{"command":"voice/discard-handle","handle":"550e8400-e29b-41d4-a716-446655440000"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse discard-handle");
-        match request {
-            Request::VoiceDiscardHandle { handle } => {
-                assert_eq!(handle, "550e8400-e29b-41d4-a716-446655440000");
-            }
-            _ => panic!("Expected VoiceDiscardHandle variant"),
-        }
-    }
-
-    // ========================================================================
-    // Channel Command Deserialization Tests
-    // ========================================================================
-
-    #[test]
-    fn test_request_deserialization_channel_enqueue_chat() {
-        let json = r#"{
-            "command": "channel/enqueue",
-            "persona_id": "550e8400-e29b-41d4-a716-446655440000",
-            "item": {
-                "item_type": "chat",
-                "id": "660e8400-e29b-41d4-a716-446655440000",
-                "room_id": "770e8400-e29b-41d4-a716-446655440000",
-                "content": "Hello team",
-                "sender_id": "880e8400-e29b-41d4-a716-446655440000",
-                "sender_name": "Joel",
-                "sender_type": "human",
-                "mentions": true,
-                "timestamp": 1234567890,
-                "priority": 0.7
-            }
-        }"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse channel/enqueue");
-        match request {
-            Request::ChannelEnqueue { persona_id, item } => {
-                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
-                let queue_item = item.to_queue_item().expect("Should convert to queue item");
-                assert_eq!(queue_item.item_type(), "chat");
-                assert!(queue_item.is_urgent()); // mentions = true
-            }
-            _ => panic!("Expected ChannelEnqueue variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_channel_service_cycle() {
-        let json = r#"{"command":"channel/service-cycle","persona_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse channel/service-cycle");
-        match request {
-            Request::ChannelServiceCycle { persona_id } => {
-                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
-            }
-            _ => panic!("Expected ChannelServiceCycle variant"),
-        }
-    }
-
-    #[test]
-    fn test_request_deserialization_channel_status() {
-        let json = r#"{"command":"channel/status","persona_id":"550e8400-e29b-41d4-a716-446655440000"}"#;
-        let request: Request = serde_json::from_str(json).expect("Should parse channel/status");
-        match request {
-            Request::ChannelStatus { persona_id } => {
-                assert_eq!(persona_id, "550e8400-e29b-41d4-a716-446655440000");
-            }
-            _ => panic!("Expected ChannelStatus variant"),
-        }
     }
 
     // ========================================================================
@@ -1332,12 +660,22 @@ pub fn start_server(
     // Provides embedding/generate, embedding/model/{load,list,info,unload}
     runtime.register(Arc::new(EmbeddingModule::new()));
 
+    // RuntimeModule: Exposes metrics and control for AI-driven system management (Ares)
+    // Provides runtime/metrics/{all,module,slow}, runtime/list
+    runtime.register(Arc::new(crate::modules::runtime_control::RuntimeModule::new()));
+
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {
         if let Err(e) = runtime.initialize().await {
             log_error!("ipc", "server", "Runtime initialization failed: {}", e);
         }
     });
+
+    // Verify all expected modules are registered (fails server if any missing)
+    if let Err(e) = runtime.verify_registration() {
+        log_error!("ipc", "server", "{}", e);
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, e));
+    }
 
     log_info!("ipc", "server", "Modular runtime ready with {} modules: {:?}",
         runtime.registry().list_modules().len(),

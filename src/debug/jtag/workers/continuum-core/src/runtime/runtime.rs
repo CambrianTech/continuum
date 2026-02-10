@@ -14,6 +14,25 @@ use super::service_module::{ServiceModule, CommandResult};
 use std::sync::Arc;
 use tracing::{info, warn, error};
 
+/// Expected modules that MUST be registered for a complete runtime.
+/// Adding a module here ensures it cannot be forgotten during registration.
+/// The server will fail to start if any expected module is missing.
+pub const EXPECTED_MODULES: &[&str] = &[
+    "health",     // Phase 1: stateless health checks
+    "cognition",  // Phase 2: persona cognition engines
+    "channel",    // Phase 2: persona channel registries
+    "models",     // Phase 3: async model discovery
+    "memory",     // Phase 3: persona memory manager
+    "rag",        // Phase 3: batched RAG composition
+    "voice",      // Phase 3: voice service, call manager
+    "code",       // Phase 3: file engines, shell sessions
+    "data",       // Phase 4: database ORM operations
+    "logger",     // Phase 4a: structured logging
+    "search",     // Phase 4b: BM25, TF-IDF, vector search
+    "embedding",  // Phase 4c: fastembed vector generation
+    "runtime",    // RuntimeModule: metrics and control
+];
+
 pub struct Runtime {
     /// Registry uses interior mutability (DashMap + RwLock).
     /// Safe to share via Arc — register() takes &self.
@@ -75,20 +94,41 @@ impl Runtime {
         Ok(())
     }
 
-    /// Route a command through the registry.
+    /// Route a command through the registry (async version).
     /// Returns None if no module handles this command.
+    ///
+    /// AUTOMATIC METRICS: Every command is timed and recorded.
     pub async fn route_command(
         &self,
         command: &str,
         params: serde_json::Value,
     ) -> Option<Result<CommandResult, String>> {
         let (module, full_cmd) = self.registry.route_command(command)?;
-        Some(module.handle_command(&full_cmd, params).await)
+        let module_name = module.config().name;
+
+        // Get metrics tracker for this module
+        let metrics = self.registry.get_metrics(module_name);
+        let queued_at = std::time::Instant::now();
+
+        // Execute command
+        let result = module.handle_command(&full_cmd, params).await;
+
+        // Record timing (automatic for ALL commands)
+        if let Some(metrics) = metrics {
+            let tracker = metrics.start_command(command, queued_at);
+            let timing = tracker.finish(result.is_ok());
+            metrics.record(timing);
+        }
+
+        Some(result)
     }
 
     /// Route a command synchronously (for use from rayon threads).
     /// Spawns async work on tokio and bridges via sync channel.
     /// This avoids "Cannot start a runtime from within a runtime" panics.
+    ///
+    /// AUTOMATIC METRICS: Every command is timed and recorded.
+    /// Module authors don't need to add timing code — the runtime handles it.
     pub fn route_command_sync(
         &self,
         command: &str,
@@ -96,6 +136,11 @@ impl Runtime {
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
         let (module, full_cmd) = self.registry.route_command(command)?;
+        let module_name = module.config().name;
+
+        // Get metrics tracker for this module (created at registration)
+        let metrics = self.registry.get_metrics(module_name);
+        let queued_at = std::time::Instant::now();
 
         // Use sync channel to bridge async -> sync safely
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -108,13 +153,22 @@ impl Runtime {
         // Wait for result from the tokio task - NO TIMEOUT.
         // Voice/TTS commands can run indefinitely for streaming audio.
         // If the task panics, recv() returns Err(RecvError).
-        match rx.recv() {
-            Ok(result) => Some(result),
+        let result = match rx.recv() {
+            Ok(result) => result,
             Err(_) => {
                 error!("Command handler task panicked or was cancelled: {command}");
-                Some(Err(format!("Command handler failed: {command}")))
+                Err(format!("Command handler failed: {command}"))
             }
+        };
+
+        // Record timing (automatic for ALL commands)
+        if let Some(metrics) = metrics {
+            let tracker = metrics.start_command(command, queued_at);
+            let timing = tracker.finish(result.is_ok());
+            metrics.record(timing);
         }
+
+        Some(result)
     }
 
     /// Get a reference to the registry for direct module lookup.
@@ -152,5 +206,48 @@ impl Runtime {
         }
 
         info!("All modules shut down");
+    }
+
+    /// Verify all expected modules are registered.
+    /// Fails with a clear error if any module is missing.
+    /// Call after all registrations to ensure nothing was forgotten.
+    pub fn verify_registration(&self) -> Result<(), String> {
+        let registered: Vec<String> = self.registry.module_names();
+        let mut missing: Vec<&str> = Vec::new();
+        let mut unexpected: Vec<String> = Vec::new();
+
+        // Check for missing expected modules
+        for expected in EXPECTED_MODULES {
+            if !registered.iter().any(|r| r == *expected) {
+                missing.push(expected);
+            }
+        }
+
+        // Check for unexpected registered modules (not necessarily an error, just a warning)
+        for registered_name in &registered {
+            if !EXPECTED_MODULES.contains(&registered_name.as_str()) {
+                unexpected.push(registered_name.clone());
+            }
+        }
+
+        // Log warnings for unexpected modules
+        for name in &unexpected {
+            warn!("Unexpected module registered (not in EXPECTED_MODULES): {}", name);
+        }
+
+        // Fail if any expected modules are missing
+        if !missing.is_empty() {
+            let missing_list = missing.join(", ");
+            error!("Missing required modules: {}", missing_list);
+            error!("Expected {} modules, found {}", EXPECTED_MODULES.len(), registered.len());
+            error!("Add missing module registrations in ipc/mod.rs or update EXPECTED_MODULES in runtime.rs");
+            return Err(format!(
+                "Module registration incomplete: missing [{}]. Server cannot start.",
+                missing_list
+            ));
+        }
+
+        info!("✅ All {} expected modules registered", EXPECTED_MODULES.len());
+        Ok(())
     }
 }

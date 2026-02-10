@@ -63,6 +63,10 @@ function generateConfig() {
   // Determine HTML file based on example
   const htmlFile = activeExample === 'widget-ui' ? 'index.html' : 'public/demo.html';
 
+  // Socket configuration - single source of truth
+  // Use .continuum/sockets/ for proper isolation from system /tmp
+  const socketDir = '.continuum/sockets';
+
   // Generate TypeScript content
   const content = `/**
  * Configuration Constants - Auto-generated at Build Time
@@ -79,6 +83,18 @@ function generateConfig() {
 // Network Configuration (from config.env)
 export const HTTP_PORT = ${httpPort};
 export const WS_PORT = ${wsPort};
+
+// Socket Configuration - Single Source of Truth
+// All Rust workers and TypeScript clients use these paths
+export const SOCKET_DIR = '${socketDir}';
+export const SOCKETS = {
+  /** Main continuum-core runtime socket */
+  CONTINUUM_CORE: '${socketDir}/continuum-core.sock',
+  /** Archive worker socket */
+  ARCHIVE: '${socketDir}/archive-worker.sock',
+  /** Inference/GPU worker socket (gRPC) */
+  INFERENCE: '${socketDir}/inference.sock',
+} as const;
 
 // Active Example Configuration (from package.json)
 export const ACTIVE_EXAMPLE = '${activeExample}';

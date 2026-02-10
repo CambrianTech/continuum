@@ -13,7 +13,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { VoiceSynthesizeParams, VoiceSynthesizeResult } from '../shared/VoiceSynthesizeTypes';
 import { AUDIO_SAMPLE_RATE } from '../../../../shared/AudioConstants';
 import { createVoiceSynthesizeResultFromParams } from '../shared/VoiceSynthesizeTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import { Events } from '@system/core/shared/Events';
 
@@ -43,7 +43,7 @@ export class VoiceSynthesizeServerCommand extends CommandBase<VoiceSynthesizePar
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('voice/synthesize', context, subpath, commander);
-    this.voiceClient = new RustCoreIPCClient('/tmp/continuum-core.sock');
+    this.voiceClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
     this.voiceClient.connect().catch(err => {
       console.error('Failed to connect to continuum-core:', err);
     });

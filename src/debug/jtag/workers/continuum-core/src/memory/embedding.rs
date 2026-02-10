@@ -92,6 +92,55 @@ impl EmbeddingProvider for FastEmbedProvider {
     }
 }
 
+// ─── Module-Backed Provider (shares EmbeddingModule's model cache) ──────────────
+
+/// EmbeddingProvider that delegates to EmbeddingModule's shared MODEL_CACHE.
+/// Eliminates duplicate model loading - ONE fastembed model for the entire runtime.
+///
+/// Use this instead of FastEmbedProvider to share models with EmbeddingModule.
+pub struct ModuleBackedEmbeddingProvider {
+    model_name: String,
+}
+
+impl ModuleBackedEmbeddingProvider {
+    /// Create a new provider using the EmbeddingModule's shared model.
+    /// Does NOT load the model - that happens on first embed call.
+    pub fn new(model_name: &str) -> Self {
+        Self {
+            model_name: model_name.to_string(),
+        }
+    }
+
+    /// Create provider for default AllMiniLML6V2 model.
+    pub fn default_model() -> Self {
+        Self::new("allminilml6v2")
+    }
+}
+
+impl EmbeddingProvider for ModuleBackedEmbeddingProvider {
+    fn name(&self) -> &str {
+        "module-backed-embedding"
+    }
+
+    fn dimensions(&self) -> usize {
+        384 // AllMiniLML6V2 dimensions
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        crate::modules::embedding::generate_embedding(text, &self.model_name)
+            .map_err(|e| EmbeddingError(e))
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        crate::modules::embedding::generate_embeddings_batch(&refs, &self.model_name)
+            .map_err(|e| EmbeddingError(e))
+    }
+}
+
 // ─── Vector Math ───────────────────────────────────────────────────────────────
 
 /// Cosine similarity between two embedding vectors.

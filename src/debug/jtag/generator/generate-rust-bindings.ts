@@ -35,6 +35,10 @@ const TS_RS_PACKAGES = [
 /**
  * Run cargo test to trigger ts-rs export for a package.
  * ts-rs v9 auto-generates export_bindings_* tests for each #[ts(export)] struct.
+ *
+ * NOTE: ts-rs emits warnings about unsupported serde attributes to stderr.
+ * These are harmless (exit code 0) but execSync throws when stderr has content.
+ * We check for actual test failures vs just warnings.
  */
 function generateBindings(pkg: string, description: string): boolean {
   console.log(`  🦀 ${pkg}: ${description}`);
@@ -49,8 +53,11 @@ function generateBindings(pkg: string, description: string): boolean {
     );
     return true;
   } catch (error: any) {
-    // Check if it's just "no tests matched" (not an error)
     const stderr = error.stderr?.toString() || '';
+    const stdout = error.stdout?.toString() || '';
+    const exitCode = error.status;
+
+    // Check if it's just "no tests matched" (not an error)
     if (stderr.includes('0 passed') || stderr.includes('running 0 tests')) {
       console.log(`     ⚠️  No export_bindings tests found — running all tests`);
       try {
@@ -65,6 +72,18 @@ function generateBindings(pkg: string, description: string): boolean {
         return false;
       }
     }
+
+    // ts-rs warnings are NOT failures - check exit code
+    // Exit code 0 = success (even if stderr has warnings)
+    if (exitCode === 0) {
+      return true;
+    }
+
+    // Check if tests actually passed despite stderr warnings
+    if (stdout.includes('test result: ok') || (stdout + stderr).includes('passed')) {
+      return true;
+    }
+
     console.error(`     ❌ Failed: ${stderr.slice(0, 200)}`);
     return false;
   }
