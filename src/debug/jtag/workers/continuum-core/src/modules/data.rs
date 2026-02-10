@@ -87,6 +87,9 @@ pub struct DataModule {
     /// Paginated query state: queryId -> state
     /// Server-side cursor management for efficient pagination
     paginated_queries: DashMap<String, PaginatedQueryState>,
+    /// Module context for inter-module communication (event bus, shared compute)
+    /// Set during initialize(), used to publish data change events
+    context: RwLock<Option<Arc<ModuleContext>>>,
 }
 
 impl DataModule {
@@ -96,6 +99,19 @@ impl DataModule {
             init_lock: Mutex::new(()),
             vector_cache: RwLock::new(HashMap::new()),
             paginated_queries: DashMap::new(),
+            context: RwLock::new(None),
+        }
+    }
+
+    /// Publish a data change event to the message bus.
+    /// Events follow pattern: data:{collection}:{action}
+    /// Actions: created, updated, deleted, batch
+    fn publish_event(&self, collection: &str, action: &str, payload: serde_json::Value) {
+        let ctx_guard = self.context.read().unwrap();
+        if let Some(ctx) = ctx_guard.as_ref() {
+            let event_name = format!("data:{}:{}", collection, action);
+            ctx.bus.publish_async_only(&event_name, payload);
+            log_info!("data", "event", "Published event: {}", event_name);
         }
     }
 
@@ -151,7 +167,16 @@ impl ServiceModule for DataModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Store context for event publishing
+        let ctx_arc = Arc::new(ModuleContext::new(
+            ctx.registry.clone(),
+            ctx.bus.clone(),
+            ctx.compute.clone(),
+            ctx.runtime.clone(),
+        ));
+        *self.context.write().unwrap() = Some(ctx_arc);
+        log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
 
@@ -442,6 +467,14 @@ impl DataModule {
                 collection, total_ms, adapter_ms, create_ms, result.success);
         }
 
+        // Publish event on success
+        if result.success {
+            self.publish_event(&collection, "created", json!({
+                "id": id,
+                "collection": collection
+            }));
+        }
+
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
 
@@ -476,8 +509,11 @@ impl DataModule {
                 format!("Invalid params: {e}")
             })?;
 
+        let collection = params.collection.clone();
+        let id = params.id.clone();
+
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter
+        let result = adapter
             .update(
                 &params.collection,
                 &params.id,
@@ -486,6 +522,14 @@ impl DataModule {
             )
             .await;
 
+        // Publish event on success
+        if result.success {
+            self.publish_event(&collection, "updated", json!({
+                "id": id,
+                "collection": collection
+            }));
+        }
+
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
 
@@ -493,8 +537,19 @@ impl DataModule {
         let params: DeleteParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
+        let collection = params.collection.clone();
+        let id = params.id.clone();
+
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.delete(&params.collection, &params.id).await;
+        let result = adapter.delete(&params.collection, &params.id).await;
+
+        // Publish event on success
+        if result.success {
+            self.publish_event(&collection, "deleted", json!({
+                "id": id,
+                "collection": collection
+            }));
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }
@@ -600,8 +655,18 @@ impl DataModule {
         let params: BatchParams =
             serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
 
+        let op_count = params.operations.len();
+
         let adapter = self.get_adapter(&params.db_path).await?;
-                let result = adapter.batch(params.operations).await;
+        let result = adapter.batch(params.operations).await;
+
+        // Publish batch event on success
+        if result.success {
+            self.publish_event("batch", "completed", json!({
+                "operationCount": op_count,
+                "successCount": result.data.as_ref().map(|d| d.len()).unwrap_or(0)
+            }));
+        }
 
         Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
     }

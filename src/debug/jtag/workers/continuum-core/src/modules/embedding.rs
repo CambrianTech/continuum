@@ -32,6 +32,89 @@ fn get_model_cache() -> &'static Arc<Mutex<HashMap<String, TextEmbedding>>> {
     MODEL_CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
+/// Global embedding result cache - avoids recomputing same text embeddings
+/// Key: (model_name, text_hash) -> embedding vector
+/// TTL: Entries older than 5 minutes are evicted on access
+static EMBEDDING_CACHE: OnceCell<Arc<Mutex<EmbeddingResultCache>>> = OnceCell::new();
+
+struct CachedEmbedding {
+    embedding: Vec<f32>,
+    created_at: Instant,
+}
+
+struct EmbeddingResultCache {
+    entries: HashMap<(String, u64), CachedEmbedding>,
+    ttl: std::time::Duration,
+    max_entries: usize,
+    hits: u64,
+    misses: u64,
+}
+
+impl EmbeddingResultCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            ttl: std::time::Duration::from_secs(300), // 5 minutes
+            max_entries: 10_000,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    fn get(&mut self, model: &str, text_hash: u64) -> Option<Vec<f32>> {
+        let key = (model.to_string(), text_hash);
+        if let Some(entry) = self.entries.get(&key) {
+            if entry.created_at.elapsed() < self.ttl {
+                self.hits += 1;
+                return Some(entry.embedding.clone());
+            }
+            // Expired - remove it
+            self.entries.remove(&key);
+        }
+        self.misses += 1;
+        None
+    }
+
+    fn insert(&mut self, model: &str, text_hash: u64, embedding: Vec<f32>) {
+        // Evict oldest if at capacity
+        if self.entries.len() >= self.max_entries {
+            // Find oldest entry
+            if let Some(oldest_key) = self.entries
+                .iter()
+                .min_by_key(|(_, v)| v.created_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&oldest_key);
+            }
+        }
+
+        self.entries.insert(
+            (model.to_string(), text_hash),
+            CachedEmbedding {
+                embedding,
+                created_at: Instant::now(),
+            },
+        );
+    }
+
+    fn stats(&self) -> (u64, u64, usize) {
+        (self.hits, self.misses, self.entries.len())
+    }
+}
+
+fn get_embedding_cache() -> &'static Arc<Mutex<EmbeddingResultCache>> {
+    EMBEDDING_CACHE.get_or_init(|| Arc::new(Mutex::new(EmbeddingResultCache::new())))
+}
+
+/// Fast hash for text (djb2 algorithm)
+fn hash_text(text: &str) -> u64 {
+    let mut hash: u64 = 5381;
+    for byte in text.bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(byte as u64);
+    }
+    hash
+}
+
 /// Get cache directory for fastembed models
 fn get_cache_dir() -> PathBuf {
     if let Ok(path) = std::env::var("FASTEMBED_CACHE_PATH") {
@@ -416,30 +499,61 @@ impl EmbeddingModule {
         }
 
         let start = Instant::now();
+        let batch_size = texts.len();
 
-        // Load model if needed
-        get_or_load_model(model_name)?;
+        // Check embedding cache for each text
+        let embed_cache = get_embedding_cache();
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(batch_size);
+        let mut texts_to_generate: Vec<(usize, String)> = Vec::new(); // (index, text)
 
-        // Get model from cache
-        let cache = get_model_cache();
-        let models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
-        let embedding_model = models
-            .get(model_name)
-            .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
+        {
+            let mut cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+            for (i, text) in texts.iter().enumerate() {
+                let text_hash = hash_text(text);
+                if let Some(cached) = cache.get(model_name, text_hash) {
+                    embeddings.push(cached);
+                } else {
+                    embeddings.push(vec![]); // Placeholder
+                    texts_to_generate.push((i, text.clone()));
+                }
+            }
+        }
 
-        // Generate embeddings
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let embeddings = embedding_model
-            .embed(text_refs, None)
-            .map_err(|e| format!("Embedding generation failed: {e}"))?;
+        let cache_hits = batch_size - texts_to_generate.len();
+
+        // Generate embeddings only for texts not in cache
+        if !texts_to_generate.is_empty() {
+            // Load model if needed
+            get_or_load_model(model_name)?;
+
+            // Get model from cache
+            let model_cache = get_model_cache();
+            let models = model_cache.lock().map_err(|e| format!("Lock error: {e}"))?;
+            let embedding_model = models
+                .get(model_name)
+                .ok_or_else(|| format!("Model not loaded: {model_name}"))?;
+
+            // Generate embeddings for uncached texts
+            let text_refs: Vec<&str> = texts_to_generate.iter().map(|(_, t)| t.as_str()).collect();
+            let new_embeddings = embedding_model
+                .embed(text_refs, None)
+                .map_err(|e| format!("Embedding generation failed: {e}"))?;
+
+            // Store in cache and update result vector
+            let mut cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+            for ((idx, text), emb) in texts_to_generate.iter().zip(new_embeddings.into_iter()) {
+                let text_hash = hash_text(text);
+                cache.insert(model_name, text_hash, emb.clone());
+                embeddings[*idx] = emb;
+            }
+        }
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let dimensions = embeddings.first().map(|e| e.len()).unwrap_or(0);
-        let batch_size = embeddings.len();
 
         info!(
-            "Generated {} embeddings ({}d) in {}ms",
-            batch_size, dimensions, duration_ms
+            "Generated {} embeddings ({}d) in {}ms (cache: {}/{} hits)",
+            batch_size, dimensions, duration_ms, cache_hits, batch_size
         );
 
         // Convert to binary: flatten f32 vectors to bytes
@@ -670,6 +784,44 @@ impl EmbeddingModule {
         })))
     }
 
+    /// Handle embedding/cache/stats - get cache hit/miss statistics
+    fn handle_cache_stats(&self) -> Result<CommandResult, String> {
+        let embed_cache = get_embedding_cache();
+        let cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+        let (hits, misses, size) = cache.stats();
+        let hit_rate = if hits + misses > 0 {
+            (hits as f64) / ((hits + misses) as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        Ok(CommandResult::Json(json!({
+            "hits": hits,
+            "misses": misses,
+            "size": size,
+            "maxSize": 10_000,
+            "hitRatePercent": format!("{:.1}", hit_rate),
+            "ttlSeconds": 300
+        })))
+    }
+
+    /// Handle embedding/cache/clear - clear the embedding cache
+    fn handle_cache_clear(&self) -> Result<CommandResult, String> {
+        let embed_cache = get_embedding_cache();
+        let mut cache = embed_cache.lock().map_err(|e| format!("Cache lock error: {e}"))?;
+        let cleared = cache.entries.len();
+        cache.entries.clear();
+        cache.hits = 0;
+        cache.misses = 0;
+
+        info!("Cleared {} cached embeddings", cleared);
+
+        Ok(CommandResult::Json(json!({
+            "cleared": cleared,
+            "success": true
+        })))
+    }
+
     /// Handle embedding/cluster - detect clusters via connected components
     ///
     /// Takes embeddings and clustering parameters, returns cluster assignments.
@@ -767,6 +919,8 @@ impl ServiceModule for EmbeddingModule {
             "embedding/similarity-matrix" => self.handle_similarity_matrix(&params),
             "embedding/top-k" => self.handle_top_k(&params),
             "embedding/cluster" => self.handle_cluster(&params),
+            "embedding/cache/stats" => self.handle_cache_stats(),
+            "embedding/cache/clear" => self.handle_cache_clear(),
             "embedding/model/load" => self.handle_model_load(&params),
             "embedding/model/list" => self.handle_model_list(),
             "embedding/model/info" => self.handle_model_info(&params),
