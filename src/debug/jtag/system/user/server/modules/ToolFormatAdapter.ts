@@ -401,6 +401,88 @@ export class MarkdownToolAdapter extends ToolFormatAdapter {
 }
 
 /**
+ * Adapter for OpenAI/Generic function-call style format
+ * Format: <function=tool_name>{"param": "value"}</function>
+ *
+ * This is what Groq, Together, and some other models naturally produce.
+ * Examples from chat:
+ * - <function=adapter_search> {"query": "embedding module"} </function>
+ * - <function=code/search>{"query": "memory clustering"}</function>
+ */
+export class FunctionStyleToolAdapter extends ToolFormatAdapter {
+  readonly formatName = 'function-style';
+
+  formatToolsForPrompt(tools: ToolDefinition[]): string {
+    // Use Anthropic format for prompting, this is just for parsing
+    return '';
+  }
+
+  formatResultsForContext(results: Array<{ toolName: string; success: boolean; content?: string; error?: string }>): string {
+    return results.map(r => {
+      if (r.success && r.content) {
+        return `<function_result name="${r.toolName}" status="success">\n${r.content}\n</function_result>`;
+      } else {
+        return `<function_result name="${r.toolName}" status="error">\n${r.error || 'Unknown error'}\n</function_result>`;
+      }
+    }).join('\n\n');
+  }
+
+  matches(text: string): ToolCallMatch[] {
+    const matches: ToolCallMatch[] = [];
+    // Match <function=name>...</function> or <function=name> {...} </function>
+    const regex = /<function=([^>\s]+)>\s*([\s\S]*?)\s*<\/function>/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      matches.push({
+        fullMatch: match[0],
+        startIndex: match.index,
+        endIndex: regex.lastIndex
+      });
+    }
+
+    return matches;
+  }
+
+  parse(match: ToolCallMatch): ToolCall | null {
+    // Extract tool name from <function=NAME>
+    const nameMatch = match.fullMatch.match(/<function=([^>\s]+)>/i);
+    if (!nameMatch) {
+      return null;
+    }
+
+    const toolName = nameMatch[1].trim();
+    const parameters: Record<string, string> = {};
+
+    // Extract JSON body between the tags
+    const bodyMatch = match.fullMatch.match(/<function=[^>]+>\s*([\s\S]*?)\s*<\/function>/i);
+    if (bodyMatch && bodyMatch[1]) {
+      const jsonStr = bodyMatch[1].trim();
+      if (jsonStr) {
+        try {
+          const parsed = JSON.parse(jsonStr);
+          // Flatten to string values for consistency with other adapters
+          for (const [key, value] of Object.entries(parsed)) {
+            parameters[key] = typeof value === 'string' ? value : JSON.stringify(value);
+          }
+        } catch {
+          // If not valid JSON, try key=value parsing
+          const kvMatch = jsonStr.match(/["']?(\w+)["']?\s*[:=]\s*["']?([^"',}]+)["']?/g);
+          if (kvMatch) {
+            for (const kv of kvMatch) {
+              const [k, v] = kv.split(/[:=]/).map(s => s.trim().replace(/["']/g, ''));
+              if (k && v) parameters[k] = v;
+            }
+          }
+        }
+      }
+    }
+
+    return { toolName, parameters };
+  }
+}
+
+/**
  * Registry of all supported tool format adapters
  * Add new adapters here to support additional formats
  *
@@ -409,6 +491,7 @@ export class MarkdownToolAdapter extends ToolFormatAdapter {
 export function getToolFormatAdapters(): ToolFormatAdapter[] {
   return [
     new AnthropicStyleToolAdapter(),  // Primary/default format
+    new FunctionStyleToolAdapter(),   // OpenAI/Groq/Together function style
     new MarkdownToolAdapter(),         // Local model backtick format
     new OldStyleToolAdapter()          // Legacy XML support
   ];
