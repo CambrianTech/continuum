@@ -631,22 +631,8 @@ export class AIProviderDaemon extends DaemonBase {
       );
     }
 
-    // 2. LOCAL MODEL DETECTION: Route local models to Candle when NO preferredProvider
-    // This catches cases like SignalDetector using 'llama3.2:1b' without specifying provider
-    // ONLY runs when preferredProvider is NOT specified to avoid misrouting API models
-    if (!preferredProvider && model && this.isLocalModel(model)) {
-      const candleReg = this.adapters.get('candle');
-      if (candleReg && candleReg.enabled) {
-        this.log.info(`🔄 AIProviderDaemon: Routing model '${model}' → 'candle' (model_detection, no preferredProvider)`);
-        return {
-          adapter: candleReg.adapter,
-          routingReason: 'model_detection',
-          isLocal: true,
-        };
-      }
-    }
-
-    // 3. DEFAULT: Select highest priority enabled adapter EXCLUDING Candle
+    // 2. DEFAULT: Select highest priority enabled adapter EXCLUDING Candle
+    // Note: Local model detection now happens in Rust via supported_model_prefixes()
     // Candle is only for local inference - don't use as catch-all default
     // This prevents queue bottlenecks when many personas share one local model
     const registrations = Array.from(this.adapters.values())
@@ -664,32 +650,6 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     return null;
-  }
-
-  /**
-   * Check if a model name indicates a local model that should use Candle
-   * Examples: llama3.2:1b, qwen2:1.5b, phi3:mini, mistral:7b
-   */
-  private isLocalModel(model: string): boolean {
-    const localModelPrefixes = [
-      'llama',      // Meta's LLaMA models
-      'qwen',       // Alibaba's Qwen models
-      'phi',        // Microsoft's Phi models
-      'mistral',    // Mistral AI models
-      'codellama',  // Code-focused LLaMA
-      'gemma',      // Google's Gemma models
-      'tinyllama',  // TinyLlama
-      'orca',       // Orca models
-      'vicuna',     // Vicuna models
-      'wizardlm',   // WizardLM
-      'neural-chat',// Intel Neural Chat
-      'stablelm',   // Stability AI LM
-      'yi',         // 01.AI Yi models
-      'deepseek-coder', // DeepSeek local coder (not the API)
-    ];
-
-    const modelLower = model.toLowerCase();
-    return localModelPrefixes.some(prefix => modelLower.startsWith(prefix));
   }
 
   /**
@@ -823,37 +783,31 @@ export class AIProviderDaemon extends DaemonBase {
       throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
     }
 
-    // Route cloud providers through Rust adapter system for efficiency
-    // Rust handles HTTP calls (reqwest) with better connection pooling
-    // Local providers (candle) stay in TypeScript → gRPC path
-    const cloudProviders = ['deepseek', 'anthropic', 'openai', 'groq', 'together', 'fireworks', 'xai', 'google'];
-    const preferredProvider = request.preferredProvider?.toLowerCase();
+    // Route ALL requests through Rust adapter system
+    // Rust handles routing via AdapterRegistry.select():
+    // - Explicit provider selection
+    // - Model-based routing (adapter.supported_model_prefixes())
+    // - Priority-based fallback
+    // This removes need for TypeScript model/provider detection
+    const { AIProviderRustClient } = await import('../server/AIProviderRustClient');
+    const rustClient = AIProviderRustClient.getInstance();
 
-    if (preferredProvider && cloudProviders.includes(preferredProvider)) {
-      // Lazy import to avoid circular dependency and only load when needed
-      const { AIProviderRustClient } = await import('../server/AIProviderRustClient');
-      const rustClient = AIProviderRustClient.getInstance();
-
-      try {
-        const response = await rustClient.generateText(request);
-        // Log generation via TypeScript (Rust only handles HTTP, not DB logging)
-        AIProviderDaemon.sharedInstance['logGeneration'](response, request).catch(() => {});
-        return response;
-      } catch (error) {
-        // Log failed generation
-        AIProviderDaemon.sharedInstance['logFailedGeneration'](
-          request.requestId || `req-${Date.now()}`,
-          request.model || 'unknown',
-          error,
-          request,
-          preferredProvider
-        ).catch(() => {});
-        throw error;
-      }
+    try {
+      const response = await rustClient.generateText(request);
+      // Log generation via TypeScript (Rust only handles inference, not DB logging)
+      AIProviderDaemon.sharedInstance['logGeneration'](response, request).catch(() => {});
+      return response;
+    } catch (error) {
+      // Log failed generation
+      AIProviderDaemon.sharedInstance['logFailedGeneration'](
+        request.requestId || `req-${Date.now()}`,
+        request.model || 'unknown',
+        error,
+        request,
+        request.preferredProvider || 'unknown'
+      ).catch(() => {});
+      throw error;
     }
-
-    // Local inference (candle) and unspecified providers use TypeScript path
-    return await AIProviderDaemon.sharedInstance.generateText(request);
   }
 
   /**

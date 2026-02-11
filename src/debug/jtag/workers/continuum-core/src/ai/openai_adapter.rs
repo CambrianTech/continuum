@@ -746,4 +746,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     async fn get_available_models(&self) -> Vec<ModelInfo> {
         self.config.models.clone()
     }
+
+    fn supported_model_prefixes(&self) -> Vec<&'static str> {
+        // Return prefixes based on provider
+        match self.config.provider_id.as_ref() {
+            "openai" => vec!["gpt", "o1", "o3"],
+            "deepseek" => vec!["deepseek"],
+            "groq" => vec!["llama-3", "mixtral", "gemma2"], // Groq's hosted models
+            "together" => vec!["togethercomputer/"], // Together's namespace
+            "fireworks" => vec!["accounts/fireworks/"], // Fireworks namespace
+            "xai" => vec!["grok"],
+            "google" => vec!["gemini"],
+            _ => vec![], // No auto-routing for unknown providers
+        }
+    }
 }

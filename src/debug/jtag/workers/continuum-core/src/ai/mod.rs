@@ -26,7 +26,10 @@ pub mod openai_adapter;
 pub mod types;
 
 // Re-export commonly used types
-pub use adapter::{AdapterCapabilities, AdapterConfig, AdapterRegistry, AIProviderAdapter, ApiStyle};
+pub use adapter::{
+    AdapterCapabilities, AdapterConfig, AdapterRegistry, AIProviderAdapter, ApiStyle,
+    LoRACapabilities, LoRAAdapterInfo,
+};
 pub use anthropic_adapter::AnthropicAdapter;
 pub use openai_adapter::OpenAICompatibleAdapter;
 pub use types::{
@@ -35,3 +38,6 @@ pub use types::{
     RoutingInfo, TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice,
     ToolInputSchema, ToolResult, UsageMetrics,
 };
+
+// Re-export CandleAdapter from inference module
+pub use crate::inference::CandleAdapter;

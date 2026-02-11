@@ -527,6 +527,10 @@ impl AIProviderAdapter for AnthropicAdapter {
             },
         ]
     }
+
+    fn supported_model_prefixes(&self) -> Vec<&'static str> {
+        vec!["claude"]
+    }
 }
 
 impl AnthropicAdapter {

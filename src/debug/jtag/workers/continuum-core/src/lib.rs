@@ -27,6 +27,7 @@ pub mod runtime;
 pub mod modules;
 pub mod orm;
 pub mod secrets;
+pub mod inference;
 
 pub use audio_constants::*;
 

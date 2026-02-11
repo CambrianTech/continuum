@@ -72,6 +72,36 @@ pub struct AdapterCapabilities {
     pub max_context_window: u32,
 }
 
+/// LoRA capabilities reported by adapters
+#[derive(Debug, Clone)]
+pub enum LoRACapabilities {
+    /// No LoRA support (most cloud APIs)
+    None,
+    /// Single adapter at a time (cloud fine-tuning APIs like Together, Fireworks)
+    SingleAdapter,
+    /// Full local control with multi-adapter paging
+    MultiLayerPaging {
+        max_loaded: usize,
+        supports_hot_swap: bool,
+    },
+}
+
+impl Default for LoRACapabilities {
+    fn default() -> Self {
+        LoRACapabilities::None
+    }
+}
+
+/// Information about a loaded LoRA adapter
+#[derive(Debug, Clone)]
+pub struct LoRAAdapterInfo {
+    pub adapter_id: String,
+    pub path: String,
+    pub scale: f64,
+    pub loaded: bool,
+    pub active: bool,
+}
+
 /// API style for the provider
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApiStyle {
@@ -157,6 +187,54 @@ pub trait AIProviderAdapter: Send + Sync {
             ModelCapability::ImageGeneration => caps.supports_image_generation,
             _ => false,
         }
+    }
+
+    // ─── LoRA Capabilities ─────────────────────────────────────────────────────
+    // These methods enable fine-tuning/adapter support across providers.
+    // Cloud providers may support single adapters (Together, Fireworks).
+    // Local Candle supports full multi-layer paging.
+
+    /// Get LoRA capabilities for this adapter
+    fn lora_capabilities(&self) -> LoRACapabilities {
+        LoRACapabilities::None
+    }
+
+    /// Apply a LoRA adapter (for adapters that support it)
+    /// Cloud providers: Sets the active fine-tuned model
+    /// Local Candle: Activates the adapter (may require model rebuild)
+    async fn apply_lora(&self, _adapter_id: &str) -> Result<(), String> {
+        Err(format!("{} does not support LoRA", self.name()))
+    }
+
+    /// Remove/deactivate a LoRA adapter
+    async fn remove_lora(&self, _adapter_id: &str) -> Result<(), String> {
+        Err(format!("{} does not support LoRA", self.name()))
+    }
+
+    /// List available LoRA adapters
+    fn list_lora_adapters(&self) -> Vec<LoRAAdapterInfo> {
+        vec![]
+    }
+
+    // ─── Model Routing ────────────────────────────────────────────────────────
+    // Adapters define what model prefixes they support for automatic routing.
+    // This replaces hardcoded string matching in routing logic.
+
+    /// Get model name prefixes this adapter supports.
+    /// Used by AdapterRegistry to auto-route requests based on model name.
+    /// Example: Anthropic returns ["claude"], OpenAI returns ["gpt"],
+    /// Candle returns ["llama", "qwen", "phi", "mistral", ...].
+    fn supported_model_prefixes(&self) -> Vec<&'static str> {
+        vec![]  // Default: no auto-routing by model name
+    }
+
+    /// Check if this adapter can handle a specific model by name.
+    /// Default implementation checks supported_model_prefixes().
+    fn supports_model(&self, model_name: &str) -> bool {
+        let model_lower = model_name.to_lowercase();
+        self.supported_model_prefixes()
+            .iter()
+            .any(|prefix| model_lower.starts_with(prefix))
     }
 }
 
@@ -260,6 +338,17 @@ impl AdapterRegistry {
             if model_lower.starts_with("gemini") {
                 if let Some(adapter) = self.adapters.get("google") {
                     return Some(("google", adapter.as_ref()));
+                }
+            }
+
+            // 2.5. Check if any adapter explicitly supports this model
+            // Adapters define their supported prefixes via supported_model_prefixes()
+            // This is the authoritative routing - adapter knows what it supports
+            for id in &self.priority_order {
+                if let Some(adapter) = self.adapters.get(id) {
+                    if adapter.supports_model(model_name) {
+                        return Some((id.as_str(), adapter.as_ref()));
+                    }
                 }
             }
         }

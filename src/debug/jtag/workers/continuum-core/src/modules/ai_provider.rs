@@ -19,7 +19,7 @@
 //! - ai/providers/health: Check provider health
 
 use crate::ai::{
-    AdapterRegistry, AnthropicAdapter, OpenAICompatibleAdapter,
+    AdapterRegistry, AnthropicAdapter, CandleAdapter, OpenAICompatibleAdapter,
     TextGenerationRequest, TextGenerationResponse, RoutingInfo, ChatMessage, MessageContent,
     NativeToolSpec, ToolChoice,
 };
@@ -98,6 +98,20 @@ impl AIProviderModule {
         if get_secret("GOOGLE_API_KEY").is_some() {
             log_info!("module", "ai_provider", "Registering Google adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
+        }
+
+        // Check if local inference is enabled (INFERENCE_MODE=local or candle)
+        let inference_mode = get_secret("INFERENCE_MODE").unwrap_or_default();
+        let enable_local = inference_mode.eq_ignore_ascii_case("local")
+            || inference_mode.eq_ignore_ascii_case("candle")
+            || inference_mode.eq_ignore_ascii_case("hybrid");
+
+        if enable_local {
+            log_info!("module", "ai_provider", "Registering Candle adapter (local inference)");
+            // Priority 8: Local inference is fallback when cloud fails or for LoRA
+            // If INFERENCE_MODE=local, make it priority 0 (highest)
+            let priority = if inference_mode.eq_ignore_ascii_case("local") { 0 } else { 8 };
+            registry.register(Box::new(CandleAdapter::quantized()), priority);
         }
 
         // Initialize all registered adapters
@@ -376,6 +390,55 @@ impl ServiceModule for AIProviderModule {
                     "success": true,
                     "models": all_models,
                     "count": all_models.len()
+                })))
+            }
+
+            "ai/lora/list" => {
+                let registry = self.registry.read().await;
+                let available = registry.available();
+
+                let mut all_adapters = Vec::new();
+                for id in &available {
+                    if let Some(adapter) = registry.get(id) {
+                        let lora_adapters = adapter.list_lora_adapters();
+                        for lora in lora_adapters {
+                            all_adapters.push(json!({
+                                "provider": id,
+                                "adapterId": lora.adapter_id,
+                                "path": lora.path,
+                                "scale": lora.scale,
+                                "loaded": lora.loaded,
+                                "active": lora.active
+                            }));
+                        }
+                    }
+                }
+
+                Ok(CommandResult::Json(json!({
+                    "success": true,
+                    "adapters": all_adapters,
+                    "count": all_adapters.len()
+                })))
+            }
+
+            "ai/lora/capabilities" => {
+                let registry = self.registry.read().await;
+                let available = registry.available();
+
+                let mut capabilities = Vec::new();
+                for id in &available {
+                    if let Some(adapter) = registry.get(id) {
+                        let caps = adapter.lora_capabilities();
+                        capabilities.push(json!({
+                            "provider": id,
+                            "capabilities": format!("{:?}", caps)
+                        }));
+                    }
+                }
+
+                Ok(CommandResult::Json(json!({
+                    "success": true,
+                    "providers": capabilities
                 })))
             }
 
