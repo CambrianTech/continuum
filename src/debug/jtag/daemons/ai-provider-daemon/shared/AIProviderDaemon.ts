@@ -823,6 +823,36 @@ export class AIProviderDaemon extends DaemonBase {
       throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
     }
 
+    // Route cloud providers through Rust adapter system for efficiency
+    // Rust handles HTTP calls (reqwest) with better connection pooling
+    // Local providers (candle) stay in TypeScript → gRPC path
+    const cloudProviders = ['deepseek', 'anthropic', 'openai', 'groq', 'together', 'fireworks', 'xai', 'google'];
+    const preferredProvider = request.preferredProvider?.toLowerCase();
+
+    if (preferredProvider && cloudProviders.includes(preferredProvider)) {
+      // Lazy import to avoid circular dependency and only load when needed
+      const { AIProviderRustClient } = await import('../server/AIProviderRustClient');
+      const rustClient = AIProviderRustClient.getInstance();
+
+      try {
+        const response = await rustClient.generateText(request);
+        // Log generation via TypeScript (Rust only handles HTTP, not DB logging)
+        AIProviderDaemon.sharedInstance['logGeneration'](response, request).catch(() => {});
+        return response;
+      } catch (error) {
+        // Log failed generation
+        AIProviderDaemon.sharedInstance['logFailedGeneration'](
+          request.requestId || `req-${Date.now()}`,
+          request.model || 'unknown',
+          error,
+          request,
+          preferredProvider
+        ).catch(() => {});
+        throw error;
+      }
+    }
+
+    // Local inference (candle) and unspecified providers use TypeScript path
     return await AIProviderDaemon.sharedInstance.generateText(request);
   }
 

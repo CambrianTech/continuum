@@ -326,6 +326,33 @@ export class RustCoreIPCClient extends EventEmitter {
 	}
 
 	/**
+	 * Execute any Rust command by name.
+	 * Generic method for commands that don't have dedicated TypeScript wrappers.
+	 *
+	 * @param commandName - The Rust command name (e.g., 'agent/start', 'agent/list')
+	 * @param params - Command parameters (will be spread into the request)
+	 * @returns Response with success, data, and error fields
+	 */
+	async execute<T = any>(commandName: string, params: Record<string, any> = {}): Promise<{ success: boolean; data?: T; error?: string }> {
+		const response = await this.request({
+			command: commandName,
+			...params,
+		});
+
+		if (!response.success) {
+			return {
+				success: false,
+				error: response.error || `Command '${commandName}' failed`,
+			};
+		}
+
+		return {
+			success: true,
+			data: response.result as T,
+		};
+	}
+
+	/**
 	 * Health check
 	 */
 	async healthCheck(): Promise<boolean> {

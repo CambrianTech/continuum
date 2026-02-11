@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-11T17:47:35.613Z",
+  "generated": "2026-02-11T22:42:37.389Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -7471,6 +7471,59 @@
           "description": "all parameter"
         }
       }
+    },
+    {
+      "name": "agent/stop",
+      "description": "Agent Stop Command - Shared Types\n *\n * Stops a running agent.\n *\n * Usage:\n *   ./jtag agent/stop --handle=\"abc12345\"",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "agent/status",
+      "description": "Agent Status Command - Shared Types\n *\n * Gets the status of an agent by handle.\n *\n * Usage:\n *   ./jtag agent/status --handle=\"abc12345\"",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "agent/start",
+      "description": "Agent Start Command - Shared Types\n *\n * Starts an autonomous coding agent.\n *\n * Usage:\n *   ./jtag agent/start --task=\"List files in current directory\" --working_dir=\".\"\n *   ./jtag agent/start --task=\"Fix the bug in main.ts\" --working_dir=\"/path/to/project\" --model=\"qwen2.5:7b\"",
+      "params": {
+        "task": {
+          "type": "string",
+          "required": true,
+          "description": "task parameter"
+        },
+        "working_dir": {
+          "type": "string",
+          "required": true,
+          "description": "working_dir parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": true,
+          "description": "model parameter"
+        },
+        "max_iterations": {
+          "type": "number",
+          "required": false,
+          "description": "max_iterations parameter"
+        }
+      }
+    },
+    {
+      "name": "agent/list",
+      "description": "Agent List Command - Shared Types\n *\n * Lists all running agents.",
+      "params": {}
     },
     {
       "name": "adapter/try",
