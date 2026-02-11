@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-11T01:08:11.486Z",
+  "generated": "2026-02-11T17:47:35.613Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1499,6 +1499,392 @@
           "type": "string",
           "required": true,
           "description": "connectionContext parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/status",
+      "description": "Sentinel Status Command - Types",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/save",
+      "description": "Sentinel Save Command - Types\n *\n * Save sentinel definitions to database for persistence and sharing.\n * Sentinels are stored in the 'sentinels' collection.",
+      "params": {
+        "definition": {
+          "type": "string",
+          "required": false,
+          "description": "definition parameter"
+        },
+        "handle": {
+          "type": "string",
+          "required": false,
+          "description": "handle parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "isTemplate": {
+          "type": "boolean",
+          "required": false,
+          "description": "isTemplate parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "command": {
+          "type": "string",
+          "required": true,
+          "description": "command parameter"
+        },
+        "maxAttempts": {
+          "type": "number",
+          "required": false,
+          "description": "maxAttempts parameter"
+        },
+        "canAutoFix": {
+          "type": "boolean",
+          "required": false,
+          "description": "canAutoFix parameter"
+        },
+        "useLLM": {
+          "type": "boolean",
+          "required": false,
+          "description": "useLLM parameter"
+        },
+        "capacity": {
+          "type": "string",
+          "required": false,
+          "description": "capacity parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "goal": {
+          "type": "string",
+          "required": true,
+          "description": "goal parameter"
+        },
+        "maxIterations": {
+          "type": "number",
+          "required": false,
+          "description": "maxIterations parameter"
+        },
+        "capacity": {
+          "type": "string",
+          "required": false,
+          "description": "capacity parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "modelName": {
+          "type": "string",
+          "required": false,
+          "description": "modelName parameter"
+        },
+        "screenshotDir": {
+          "type": "string",
+          "required": false,
+          "description": "screenshotDir parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": true,
+          "description": "target parameter"
+        },
+        "filename": {
+          "type": "string",
+          "required": false,
+          "description": "filename parameter"
+        },
+        "outputDir": {
+          "type": "string",
+          "required": false,
+          "description": "outputDir parameter"
+        },
+        "viewport": {
+          "type": "object",
+          "required": false,
+          "description": "viewport parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "tasks": {
+          "type": "array",
+          "required": true,
+          "description": "tasks parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "file": {
+          "type": "string",
+          "required": false,
+          "description": "file parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
+        },
+        "command": {
+          "type": "string",
+          "required": false,
+          "description": "command parameter"
+        },
+        "maxDepth": {
+          "type": "number",
+          "required": false,
+          "description": "maxDepth parameter"
+        },
+        "maxTotalTasks": {
+          "type": "number",
+          "required": false,
+          "description": "maxTotalTasks parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/load",
+      "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "id parameter"
+        },
+        "run": {
+          "type": "boolean",
+          "required": false,
+          "description": "run parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/load",
+      "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "templatesOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "templatesOnly parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/list",
+      "description": "Sentinel List Command - Types\n *\n * List saved sentinel definitions from database.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "templatesOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "templatesOnly parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
         }
       }
     },

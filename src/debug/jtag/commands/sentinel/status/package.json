@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-status",
+  "version": "1.0.0",
+  "description": "Check status of a running sentinel by handle"
+}

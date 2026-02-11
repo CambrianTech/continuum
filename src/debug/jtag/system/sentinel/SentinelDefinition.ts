@@ -1,0 +1,486 @@
+/**
+ * SentinelDefinition - Portable JSON Schema for Sentinels
+ *
+ * Every sentinel, whether created from CLI args, fluent builder, or JSON,
+ * can export to this canonical format. Definitions can be:
+ * - Saved to database as entities
+ * - Loaded and re-run
+ * - Shared between systems
+ * - Versioned and tracked
+ */
+
+import type { ModelCapacity, ModelProvider } from './ModelProvider';
+
+/**
+ * Base definition shared by all sentinel types
+ */
+export interface SentinelDefinitionBase {
+  /** Unique identifier (generated on save) */
+  id?: string;
+
+  /** Sentinel type discriminator */
+  type: 'build' | 'orchestrate' | 'screenshot' | 'task' | 'script';
+
+  /** Human-readable name */
+  name: string;
+
+  /** Description of what this sentinel does */
+  description?: string;
+
+  /** Working directory (defaults to cwd) */
+  workingDir?: string;
+
+  /** Timeout in milliseconds */
+  timeout?: number;
+
+  /** Tags for organization/search */
+  tags?: string[];
+
+  /** Schema version for forward compatibility */
+  version: '1.0';
+
+  /** When this definition was created */
+  createdAt?: string;
+
+  /** When this definition was last modified */
+  updatedAt?: string;
+
+  /** Who created this definition */
+  createdBy?: string;
+}
+
+/**
+ * BuildSentinel definition
+ */
+export interface BuildSentinelDefinition extends SentinelDefinitionBase {
+  type: 'build';
+
+  /** Build command to execute */
+  command: string;
+
+  /** Maximum fix attempts before escalation */
+  maxAttempts?: number;
+
+  /** Whether to attempt auto-fixes */
+  canAutoFix?: boolean;
+
+  /** Enable LLM-assisted error fixing when pattern matching fails */
+  useLLM?: boolean;
+
+  /** LLM model capacity for error analysis */
+  llmCapacity?: ModelCapacity;
+
+  /** LLM model provider */
+  llmProvider?: ModelProvider;
+}
+
+/**
+ * OrchestratorSentinel definition
+ */
+export interface OrchestrateSentinelDefinition extends SentinelDefinitionBase {
+  type: 'orchestrate';
+
+  /** The goal to accomplish */
+  goal: string;
+
+  /** Maximum iterations */
+  maxIterations?: number;
+
+  /** Model capacity level */
+  capacity?: ModelCapacity;
+
+  /** Model provider */
+  provider?: ModelProvider;
+
+  /** Specific model name (overrides capacity) */
+  modelName?: string;
+
+  /** Where to save screenshots */
+  screenshotDir?: string;
+
+  /** Available tools for the orchestrator */
+  tools?: string[];
+}
+
+/**
+ * ScreenshotSentinel definition
+ */
+export interface ScreenshotSentinelDefinition extends SentinelDefinitionBase {
+  type: 'screenshot';
+
+  /** URL or file path to screenshot */
+  target: string;
+
+  /** Output filename */
+  filename?: string;
+
+  /** Output directory */
+  outputDir?: string;
+
+  /** Viewport dimensions */
+  viewport?: {
+    width: number;
+    height: number;
+  };
+}
+
+/**
+ * Task action within a TaskSentinel
+ */
+export interface TaskAction {
+  /** Task name for progress tracking */
+  name: string;
+
+  /** Action type */
+  action: 'write' | 'read' | 'run' | 'build' | 'sentinel';
+
+  /** File path (for write/read) */
+  file?: string;
+
+  /** Content to write */
+  content?: string;
+
+  /** Command to run */
+  command?: string;
+
+  /** Nested sentinel definition (for action: 'sentinel') */
+  sentinel?: SentinelDefinition;
+
+  /** Condition to check before running (JavaScript expression) */
+  condition?: string;
+
+  /** Whether to continue on failure */
+  continueOnError?: boolean;
+}
+
+/**
+ * TaskSentinel definition - executes a sequence of actions
+ */
+export interface TaskSentinelDefinition extends SentinelDefinitionBase {
+  type: 'task';
+
+  /** Ordered list of tasks to execute */
+  tasks: TaskAction[];
+
+  /** Stop on first error (default: true) */
+  stopOnError?: boolean;
+
+  /** Maximum parallel tasks (default: 1 = sequential) */
+  parallelism?: number;
+}
+
+/**
+ * ScriptSentinel definition - pure script, no AI
+ */
+export interface ScriptSentinelDefinition extends SentinelDefinitionBase {
+  type: 'script';
+
+  /** Shell command or script path */
+  script: string;
+
+  /** Environment variables */
+  env?: Record<string, string>;
+
+  /** Script interpreter (default: /bin/sh) */
+  interpreter?: string;
+}
+
+/**
+ * Union of all sentinel definitions
+ */
+export type SentinelDefinition =
+  | BuildSentinelDefinition
+  | OrchestrateSentinelDefinition
+  | ScreenshotSentinelDefinition
+  | TaskSentinelDefinition
+  | ScriptSentinelDefinition;
+
+/**
+ * Sentinel execution result (saved alongside definition)
+ */
+export interface SentinelExecutionResult {
+  /** Handle ID from execution */
+  handle: string;
+
+  /** Whether execution succeeded */
+  success: boolean;
+
+  /** When execution started */
+  startedAt: string;
+
+  /** When execution completed */
+  completedAt?: string;
+
+  /** Duration in milliseconds */
+  durationMs?: number;
+
+  /** Execution-specific data */
+  data?: {
+    summary?: string;
+    filesCreated?: string[];
+    filesModified?: string[];
+    errors?: string[];
+    screenshot?: string;
+    attempts?: number;
+    iterations?: number;
+    output?: string;
+  };
+
+  /** Error message if failed */
+  error?: string;
+}
+
+/**
+ * SentinelEntity - Database-persisted sentinel with execution history
+ */
+export interface SentinelEntity {
+  /** Entity ID (UUID) */
+  id: string;
+
+  /** The sentinel definition */
+  definition: SentinelDefinition;
+
+  /** Execution history (most recent first) */
+  executions: SentinelExecutionResult[];
+
+  /** Entity metadata */
+  createdAt: string;
+  updatedAt: string;
+  createdBy?: string;
+
+  /** Whether this sentinel is a template (can be cloned) */
+  isTemplate?: boolean;
+
+  /** Parent template ID if cloned */
+  parentId?: string;
+}
+
+/**
+ * Validate a sentinel definition
+ */
+export function validateDefinition(def: SentinelDefinition): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+
+  if (!def.type) {
+    errors.push('Missing required field: type');
+  }
+
+  if (!def.name) {
+    errors.push('Missing required field: name');
+  }
+
+  if (def.version !== '1.0') {
+    errors.push(`Unsupported version: ${def.version}`);
+  }
+
+  switch (def.type) {
+    case 'build':
+      if (!def.command) {
+        errors.push('BuildSentinel requires command');
+      }
+      break;
+
+    case 'orchestrate':
+      if (!def.goal) {
+        errors.push('OrchestrateSentinel requires goal');
+      }
+      break;
+
+    case 'screenshot':
+      if (!def.target) {
+        errors.push('ScreenshotSentinel requires target');
+      }
+      break;
+
+    case 'task':
+      if (!def.tasks || def.tasks.length === 0) {
+        errors.push('TaskSentinel requires at least one task');
+      }
+      break;
+
+    case 'script':
+      if (!def.script) {
+        errors.push('ScriptSentinel requires script');
+      }
+      break;
+
+    default:
+      errors.push(`Unknown sentinel type: ${(def as any).type}`);
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
+/**
+ * Create a definition from CLI-style params
+ */
+export function createDefinitionFromParams(params: Record<string, any>): SentinelDefinition {
+  const base: Partial<SentinelDefinitionBase> = {
+    name: params.name || `${params.type}-sentinel-${Date.now()}`,
+    description: params.description,
+    workingDir: params.workingDir,
+    timeout: params.timeout,
+    tags: params.tags,
+    version: '1.0',
+    createdAt: new Date().toISOString(),
+  };
+
+  switch (params.type) {
+    case 'build':
+      return {
+        ...base,
+        type: 'build',
+        command: params.command,
+        maxAttempts: params.maxAttempts,
+        canAutoFix: params.canAutoFix,
+        useLLM: params.useLLM,
+        llmCapacity: params.llmCapacity || params.capacity,
+        llmProvider: params.llmProvider || params.provider,
+      } as BuildSentinelDefinition;
+
+    case 'orchestrate':
+      return {
+        ...base,
+        type: 'orchestrate',
+        goal: params.goal,
+        maxIterations: params.maxIterations,
+        capacity: params.capacity,
+        provider: params.provider,
+        modelName: params.modelName,
+        screenshotDir: params.screenshotDir,
+      } as OrchestrateSentinelDefinition;
+
+    case 'screenshot':
+      return {
+        ...base,
+        type: 'screenshot',
+        target: params.target,
+        filename: params.filename,
+        outputDir: params.outputDir,
+        viewport: params.viewport,
+      } as ScreenshotSentinelDefinition;
+
+    case 'task':
+      return {
+        ...base,
+        type: 'task',
+        tasks: params.tasks,
+        stopOnError: params.stopOnError,
+        parallelism: params.parallelism,
+      } as TaskSentinelDefinition;
+
+    case 'script':
+      return {
+        ...base,
+        type: 'script',
+        script: params.script,
+        env: params.env,
+        interpreter: params.interpreter,
+      } as ScriptSentinelDefinition;
+
+    default:
+      throw new Error(`Unknown sentinel type: ${params.type}`);
+  }
+}
+
+/**
+ * Fluent builder for creating sentinel definitions
+ */
+export class SentinelBuilder {
+  private def: Partial<SentinelDefinition> = { version: '1.0' };
+
+  static build(command: string): SentinelBuilder {
+    return new SentinelBuilder().type('build').set('command', command);
+  }
+
+  static orchestrate(goal: string): SentinelBuilder {
+    return new SentinelBuilder().type('orchestrate').set('goal', goal);
+  }
+
+  static screenshot(target: string): SentinelBuilder {
+    return new SentinelBuilder().type('screenshot').set('target', target);
+  }
+
+  static task(): SentinelBuilder {
+    return new SentinelBuilder().type('task').set('tasks', []);
+  }
+
+  static script(script: string): SentinelBuilder {
+    return new SentinelBuilder().type('script').set('script', script);
+  }
+
+  type(t: SentinelDefinition['type']): this {
+    this.def.type = t;
+    return this;
+  }
+
+  name(n: string): this {
+    this.def.name = n;
+    return this;
+  }
+
+  description(d: string): this {
+    this.def.description = d;
+    return this;
+  }
+
+  workingDir(dir: string): this {
+    this.def.workingDir = dir;
+    return this;
+  }
+
+  timeout(ms: number): this {
+    this.def.timeout = ms;
+    return this;
+  }
+
+  tags(...t: string[]): this {
+    this.def.tags = t;
+    return this;
+  }
+
+  set(key: string, value: any): this {
+    (this.def as any)[key] = value;
+    return this;
+  }
+
+  // Task-specific methods
+  addTask(task: TaskAction): this {
+    if (this.def.type !== 'task') {
+      throw new Error('addTask only valid for task sentinels');
+    }
+    (this.def as TaskSentinelDefinition).tasks.push(task);
+    return this;
+  }
+
+  write(name: string, file: string, content: string): this {
+    return this.addTask({ name, action: 'write', file, content });
+  }
+
+  read(name: string, file: string): this {
+    return this.addTask({ name, action: 'read', file });
+  }
+
+  run(name: string, command: string): this {
+    return this.addTask({ name, action: 'run', command });
+  }
+
+  // Build to final definition
+  toDefinition(): SentinelDefinition {
+    if (!this.def.name) {
+      this.def.name = `${this.def.type}-${Date.now()}`;
+    }
+    this.def.createdAt = new Date().toISOString();
+
+    const validation = validateDefinition(this.def as SentinelDefinition);
+    if (!validation.valid) {
+      throw new Error(`Invalid sentinel definition: ${validation.errors.join(', ')}`);
+    }
+
+    return this.def as SentinelDefinition;
+  }
+
+  toJSON(): string {
+    return JSON.stringify(this.toDefinition(), null, 2);
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-save",
+  "version": "1.0.0",
+  "description": "Save sentinel definitions to database for persistence and sharing"
+}

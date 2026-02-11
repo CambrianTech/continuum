@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-list",
+  "version": "1.0.0",
+  "description": "List saved sentinel definitions from database"
+}
