@@ -1,0 +1,76 @@
+{
+  "name": "interface/page/forms",
+  "description": "Discover all forms on a web page. Returns structured form definitions with field names, types, labels, and submit buttons. Works on ANY page with HTML forms - no WebMCP required. Use this first to understand what you can interact with, then use interface/page/fill and interface/page/submit.",
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "required": true,
+      "description": "The URL of the page to analyze"
+    },
+    {
+      "name": "waitForSelector",
+      "type": "string",
+      "required": false,
+      "description": "CSS selector to wait for before analyzing (useful for dynamic pages)"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether form discovery succeeded"
+    },
+    {
+      "name": "pageUrl",
+      "type": "string",
+      "description": "The final URL after any redirects"
+    },
+    {
+      "name": "pageTitle",
+      "type": "string",
+      "description": "The page title"
+    },
+    {
+      "name": "forms",
+      "type": "FormDefinition[]",
+      "description": "Array of discovered forms with their fields"
+    },
+    {
+      "name": "hint",
+      "type": "string",
+      "description": "Guidance on what to do next based on discovered forms"
+    },
+    {
+      "name": "error",
+      "type": "string",
+      "required": false,
+      "description": "Error message if discovery failed"
+    }
+  ],
+  "customTypes": {
+    "FormDefinition": {
+      "formId": { "type": "string", "description": "Unique identifier for this form (use in fill/submit commands)" },
+      "name": { "type": "string", "description": "Human-readable form name from aria-label, title, or inferred from content" },
+      "action": { "type": "string", "description": "Form action URL" },
+      "method": { "type": "string", "description": "HTTP method (GET/POST)" },
+      "fields": { "type": "FormField[]", "description": "Input fields in this form" },
+      "submitButton": { "type": "SubmitButton", "required": false, "description": "Submit button if found" }
+    },
+    "FormField": {
+      "name": { "type": "string", "description": "Field name attribute" },
+      "type": { "type": "string", "description": "Input type (text, email, number, select, textarea, etc.)" },
+      "label": { "type": "string", "description": "Human-readable label" },
+      "required": { "type": "boolean", "description": "Whether field is required" },
+      "placeholder": { "type": "string", "required": false, "description": "Placeholder text hint" },
+      "value": { "type": "string", "required": false, "description": "Current value if pre-filled" },
+      "options": { "type": "string[]", "required": false, "description": "For select fields, the available options" }
+    },
+    "SubmitButton": {
+      "text": { "type": "string", "description": "Button text" },
+      "selector": { "type": "string", "description": "CSS selector to target this button" }
+    }
+  },
+  "environments": ["server"],
+  "example": "./jtag interface/page/forms --url=\"https://example.com/search\""
+}

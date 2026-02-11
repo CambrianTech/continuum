@@ -9,6 +9,7 @@ members = [
     "archive",
     "continuum-core",
     "inference-grpc",
+    "jtag-mcp",
 ]
 
 # Shared dependencies - workers inherit these versions

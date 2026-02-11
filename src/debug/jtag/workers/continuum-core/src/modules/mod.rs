@@ -21,3 +21,4 @@ pub mod logger;
 pub mod search;
 pub mod embedding;
 pub mod runtime_control;
+pub mod mcp;

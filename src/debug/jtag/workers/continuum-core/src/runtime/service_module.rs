@@ -15,6 +15,35 @@ use serde_json::Value;
 use std::any::Any;
 use ts_rs::TS;
 
+// ============================================================================
+// Command Schema Types (for MCP tool discovery)
+// ============================================================================
+
+/// Schema for a command parameter (for MCP tool discovery).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamSchema {
+    /// Parameter name
+    pub name: &'static str,
+    /// JSON Schema type: "string", "number", "boolean", "object", "array"
+    pub param_type: &'static str,
+    /// Whether this parameter is required
+    pub required: bool,
+    /// Description for documentation
+    pub description: &'static str,
+}
+
+/// Schema for a command (for MCP tool discovery).
+/// Used to dynamically generate MCP tool definitions at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandSchema {
+    /// Full command name: "data/list", "voice/synthesize"
+    pub name: &'static str,
+    /// Human-readable description
+    pub description: &'static str,
+    /// Parameter definitions
+    pub params: Vec<ParamSchema>,
+}
+
 /// Priority class for module scheduling.
 /// Determines thread pool affinity and tick cadence.
 /// Like CBAR's adaptive timeout: 10 + 100 * priority milliseconds.
@@ -133,6 +162,13 @@ pub trait ServiceModule: Send + Sync + Any {
     /// Graceful shutdown. Release resources, flush buffers.
     async fn shutdown(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Return command schemas for all commands this module handles.
+    /// Used by MCPModule to dynamically generate MCP tool definitions.
+    /// Default: empty (module doesn't expose structured schemas).
+    fn command_schemas(&self) -> Vec<CommandSchema> {
+        vec![]
     }
 
     /// Downcast support for typed discovery.

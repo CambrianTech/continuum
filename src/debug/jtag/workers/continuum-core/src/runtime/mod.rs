@@ -25,7 +25,7 @@ pub mod module_metrics;
 pub mod control;
 pub mod runtime;
 
-pub use service_module::{ServiceModule, ModuleConfig, ModulePriority, CommandResult};
+pub use service_module::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, CommandSchema, ParamSchema};
 pub use registry::ModuleRegistry;
 pub use message_bus::MessageBus;
 pub use shared_compute::SharedCompute;

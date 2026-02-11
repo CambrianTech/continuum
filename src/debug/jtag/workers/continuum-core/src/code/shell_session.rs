@@ -324,7 +324,55 @@ impl ShellSession {
         Ok(execution_id)
     }
 
+    /// Execute a command and wait asynchronously until completion.
+    ///
+    /// For quick commands (git status, ls, etc.) where you want the result
+    /// immediately rather than polling. This version is async-safe and won't
+    /// block the tokio runtime.
+    pub async fn execute_and_wait_async(
+        &mut self,
+        command: &str,
+        timeout_ms: Option<u64>,
+        rt_handle: &tokio::runtime::Handle,
+    ) -> Result<ShellExecuteResponse, String> {
+        let execution_id = self.execute(command, timeout_ms, rt_handle)?;
+
+        // Get execution state and notify handle
+        let state_arc = self
+            .executions
+            .get(&execution_id)
+            .ok_or_else(|| "Execution vanished".to_string())?
+            .clone();
+
+        // Await completion using the notify mechanism
+        loop {
+            let (is_done, notify) = {
+                let s = state_arc
+                    .lock()
+                    .map_err(|e| format!("Lock poisoned: {e}"))?;
+                if s.status != ShellExecutionStatus::Running {
+                    return Ok(ShellExecuteResponse {
+                        execution_id: s.id.clone(),
+                        status: s.status.clone(),
+                        stdout: Some(s.stdout_lines.join("\n")),
+                        stderr: Some(s.stderr_lines.join("\n")),
+                        exit_code: s.exit_code,
+                    });
+                }
+                (false, s.output_notify.clone())
+            };
+
+            if !is_done {
+                // Wait for notification (non-blocking async wait)
+                notify.notified().await;
+            }
+        }
+    }
+
     /// Execute a command and block until completion. Returns the full result.
+    ///
+    /// DEPRECATED: Use execute_and_wait_async instead. This version uses
+    /// blocking sleep which can deadlock the tokio runtime.
     ///
     /// For quick commands (git status, ls, etc.) where you want the result
     /// immediately rather than polling.
@@ -362,6 +410,12 @@ impl ShellSession {
             // Yield briefly to let the tokio task progress
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Get the execution state arc for a given execution ID.
+    /// Used to await completion without holding the DashMap lock.
+    pub fn get_execution_state(&self, execution_id: &str) -> Option<Arc<Mutex<ExecutionState>>> {
+        self.executions.get(execution_id).cloned()
     }
 
     /// Poll an execution for new output since the last poll.

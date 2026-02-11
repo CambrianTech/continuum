@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/interface/page/fill",
+  "version": "1.0.0",
+  "description": "Fill form fields on a web page. Use interface/page/forms first to discover available forms and their fields. This command fills fields but does NOT submit - use interface/page/submit after filling.",
+  "main": "server/InterfacePageFillServerCommand.ts",
+  "types": "shared/InterfacePageFillTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/InterfacePageFillIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "interface/page/fill"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

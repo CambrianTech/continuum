@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-10T06:01:11.077Z",
+  "generated": "2026-02-11T01:08:11.486Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -2484,6 +2484,38 @@
       }
     },
     {
+      "name": "interface/webmcp/discover",
+      "description": "Interface Webmcp Discover Command - Shared Types\n *\n * Discover WebMCP tools available on the current page. Returns structured tool definitions with schemas. Fails explicitly if WebMCP is not available.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": false,
+          "description": "url parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/webmcp/call",
+      "description": "Interface Webmcp Call Command - Shared Types\n *\n * Call a WebMCP tool on the current page. Returns structured result from the tool. Fails explicitly if WebMCP is not available or tool not found.",
+      "params": {
+        "toolName": {
+          "type": "string",
+          "required": true,
+          "description": "toolName parameter"
+        },
+        "params": {
+          "type": "string",
+          "required": true,
+          "description": "params parameter"
+        },
+        "url": {
+          "type": "string",
+          "required": false,
+          "description": "url parameter"
+        }
+      }
+    },
+    {
       "name": "interface/web/search",
       "description": "Web Search Command Types\n *\n * Allows AIs to search the web and get results.\n * Uses search APIs to find relevant information.",
       "params": {
@@ -2751,6 +2783,79 @@
       }
     },
     {
+      "name": "interface/page/submit",
+      "description": "Interface Page Submit Command - Shared Types\n *\n * Submit a form on a web page. Use interface/page/forms to discover forms,\n * interface/page/fill to populate fields, then this command to submit.\n * Returns the resulting page state after submission.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "formId": {
+          "type": "string",
+          "required": true,
+          "description": "formId parameter"
+        },
+        "values": {
+          "type": "object",
+          "required": false,
+          "description": "values parameter"
+        },
+        "waitForNavigation": {
+          "type": "boolean",
+          "required": false,
+          "description": "waitForNavigation parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/page/forms",
+      "description": "Interface Page Forms Command - Shared Types\n *\n * Discover all forms on a web page. Returns structured form definitions with field names,\n * types, labels, and submit buttons. Works on ANY page with HTML forms - no WebMCP required.\n * Use this first to understand what you can interact with, then use interface/page/fill\n * and interface/page/submit.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/page/fill",
+      "description": "Interface Page Fill Command - Shared Types\n *\n * Fill form fields on a web page. Use interface/page/forms first to discover available forms\n * and their fields. This command fills fields but does NOT submit - use interface/page/submit\n * after filling.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "formId": {
+          "type": "string",
+          "required": true,
+          "description": "formId parameter"
+        },
+        "values": {
+          "type": "object",
+          "required": true,
+          "description": "values parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        }
+      }
+    },
+    {
       "name": "interface/navigate",
       "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
       "params": {
@@ -2773,6 +2878,27 @@
           "type": "string",
           "required": false,
           "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/launch/url",
+      "description": "Interface Launch Url Command - Shared Types\n *\n * Opens a URL in the default browser. Enables personas to view what they build.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "waitForLoad": {
+          "type": "boolean",
+          "required": false,
+          "description": "waitForLoad parameter"
+        },
+        "screenshot": {
+          "type": "boolean",
+          "required": false,
+          "description": "screenshot parameter"
         }
       }
     },
@@ -2830,6 +2956,17 @@
           "type": "string",
           "required": false,
           "description": "text parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/browser/capabilities",
+      "description": "Interface Browser Capabilities Command - Shared Types\n *\n * Check available browser automation capabilities. Returns explicit status for each capability (webmcp, puppeteer, etc). No fallbacks - AIs see exactly what is/isn't available.",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
         }
       }
     },

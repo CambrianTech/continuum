@@ -1,0 +1,47 @@
+{
+  "name": "interface/webmcp/discover",
+  "description": "Discover WebMCP tools available on the current page. Returns structured tool definitions with schemas. Fails explicitly if WebMCP is not available.",
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "optional": true,
+      "description": "URL to navigate to before discovering tools. If not provided, uses current page."
+    }
+  ],
+  "results": [
+    {
+      "name": "available",
+      "type": "boolean",
+      "description": "Whether WebMCP is available on this page"
+    },
+    {
+      "name": "reason",
+      "type": "string",
+      "description": "Why WebMCP is unavailable (empty if available)"
+    },
+    {
+      "name": "tools",
+      "type": "WebMCPTool[]",
+      "description": "Array of available tools with name, description, and inputSchema"
+    },
+    {
+      "name": "pageUrl",
+      "type": "string",
+      "description": "URL of the page where tools were discovered"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Discover tools on travel demo",
+      "command": "./jtag interface/webmcp/discover --url=\"https://travel-demo.bandarra.me/\"",
+      "expectedResult": "{ available: true, tools: [{ name: \"searchFlights\", description: \"Search for flights\", inputSchema: {...} }], pageUrl: \"https://travel-demo.bandarra.me/\" }"
+    },
+    {
+      "description": "Discover tools when WebMCP unavailable",
+      "command": "./jtag interface/webmcp/discover --url=\"https://example.com\"",
+      "expectedResult": "{ available: false, reason: \"Chrome Canary 146+ with WebMCP flag required\", tools: [], pageUrl: \"\" }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

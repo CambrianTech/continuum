@@ -1,0 +1,76 @@
+{
+  "name": "interface/page/fill",
+  "description": "Fill form fields on a web page. Use interface/page/forms first to discover available forms and their fields. This command fills fields but does NOT submit - use interface/page/submit after filling.",
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "required": true,
+      "description": "The URL of the page containing the form"
+    },
+    {
+      "name": "formId",
+      "type": "string",
+      "required": true,
+      "description": "The formId from interface/page/forms response"
+    },
+    {
+      "name": "values",
+      "type": "object",
+      "required": true,
+      "description": "Object mapping field names to values, e.g. {\"from\": \"NYC\", \"to\": \"LAX\"}"
+    },
+    {
+      "name": "waitForSelector",
+      "type": "string",
+      "required": false,
+      "description": "CSS selector to wait for before filling"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether all fields were filled successfully"
+    },
+    {
+      "name": "formId",
+      "type": "string",
+      "description": "The form that was filled"
+    },
+    {
+      "name": "filledFields",
+      "type": "string[]",
+      "description": "List of field names that were successfully filled"
+    },
+    {
+      "name": "failedFields",
+      "type": "FieldError[]",
+      "description": "Fields that could not be filled, with reasons"
+    },
+    {
+      "name": "remainingRequired",
+      "type": "string[]",
+      "description": "Required fields that still need values"
+    },
+    {
+      "name": "hint",
+      "type": "string",
+      "description": "Guidance on next steps (submit if ready, or fill remaining required fields)"
+    },
+    {
+      "name": "error",
+      "type": "string",
+      "required": false,
+      "description": "Error message if operation failed entirely"
+    }
+  ],
+  "customTypes": {
+    "FieldError": {
+      "name": { "type": "string", "description": "Field name" },
+      "reason": { "type": "string", "description": "Why the field could not be filled" }
+    }
+  },
+  "environments": ["server"],
+  "example": "./jtag interface/page/fill --url=\"https://example.com/search\" --formId=\"search-form\" --values='{\"query\": \"flights to paris\"}'"
+}

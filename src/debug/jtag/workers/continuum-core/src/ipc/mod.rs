@@ -664,6 +664,10 @@ pub fn start_server(
     // Provides runtime/metrics/{all,module,slow}, runtime/list
     runtime.register(Arc::new(crate::modules::runtime_control::RuntimeModule::new()));
 
+    // MCPModule: Dynamic tool discovery for MCP servers
+    // Provides mcp/list-tools, mcp/search-tools, mcp/tool-help
+    runtime.register(Arc::new(crate::modules::mcp::MCPModule::new()));
+
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {
         if let Err(e) = runtime.initialize().await {

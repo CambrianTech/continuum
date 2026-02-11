@@ -516,21 +516,59 @@ impl ServiceModule for CodeModule {
                 let persona_id = params.get("persona_id")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing persona_id")?;
-                let command = params.get("command")
+                let command = params.get("cmd")
                     .and_then(|v| v.as_str())
-                    .ok_or("Missing command")?;
+                    .ok_or("Missing cmd")?;
                 let timeout_ms = params.get("timeout_ms")
                     .and_then(|v| v.as_u64());
                 let wait = params.get("wait")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let mut shell = self.state.shell_sessions.get_mut(persona_id)
-                    .ok_or_else(|| format!("No shell session for {}", persona_id))?;
+                // Start execution (get execution_id and state_arc immediately)
+                let (execution_id, state_arc) = {
+                    let mut shell = self.state.shell_sessions.get_mut(persona_id)
+                        .ok_or_else(|| format!("No shell session for {}", persona_id))?;
+
+                    let exec_id = shell.execute(command, timeout_ms, &self.state.rt_handle)
+                        .map_err(|e| format!("{}", e))?;
+
+                    let state = shell.get_execution_state(&exec_id)
+                        .ok_or_else(|| "Execution vanished".to_string())?;
+
+                    (exec_id, state)
+                };
+                // DashMap lock is now released
 
                 if wait {
-                    let result = shell.execute_and_wait(command, timeout_ms, &self.state.rt_handle)
-                        .map_err(|e| format!("{}", e))?;
+                    // Await completion using the notify mechanism (async-safe)
+                    let result = loop {
+                        let (is_done, response, notify) = {
+                            let s = state_arc.lock()
+                                .map_err(|e| format!("Lock poisoned: {e}"))?;
+                            if s.status != crate::code::shell_types::ShellExecutionStatus::Running {
+                                let resp = crate::code::shell_types::ShellExecuteResponse {
+                                    execution_id: s.id.clone(),
+                                    status: s.status.clone(),
+                                    stdout: Some(s.stdout_lines.join("\n")),
+                                    stderr: Some(s.stderr_lines.join("\n")),
+                                    exit_code: s.exit_code,
+                                };
+                                (true, Some(resp), None)
+                            } else {
+                                (false, None, Some(s.output_notify.clone()))
+                            }
+                        };
+
+                        if is_done {
+                            break response.unwrap();
+                        }
+
+                        // Wait for notification (non-blocking async wait)
+                        if let Some(n) = notify {
+                            n.notified().await;
+                        }
+                    };
 
                     // Emit shell:complete event with execution result
                     let exit_code = result.exit_code.unwrap_or(-1);
@@ -560,9 +598,6 @@ impl ServiceModule for CodeModule {
 
                     Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
                 } else {
-                    let execution_id = shell.execute(command, timeout_ms, &self.state.rt_handle)
-                        .map_err(|e| format!("{}", e))?;
-
                     // Emit shell:started event for async execution
                     self.publish_shell_event(persona_id, "started", serde_json::json!({
                         "execution_id": execution_id,
