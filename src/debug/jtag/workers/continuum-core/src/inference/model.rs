@@ -16,13 +16,13 @@ use candle_transformers::models::llama::{
     Cache, Config as LlamaModelConfig, Llama, LlamaConfig, LlamaEosToks,
 };
 use hf_hub::{api::sync::Api, Repo, RepoType};
-use tracing::{debug, info, warn};
 use rand::Rng;
 use std::collections::HashMap;
 use std::time::Instant;
 use tokenizers::Tokenizer;
 
 use super::lora::{map_lora_name_to_model_name, merge_lora_weight, LoRAWeights};
+use crate::runtime;
 
 /// Model state containing loaded model, tokenizer, and cache
 pub struct ModelState {
@@ -57,7 +57,7 @@ fn sanitize_logits(logits: &Tensor, device: &Device) -> Result<Tensor, String> {
     let has_bad_values = logits_vec.iter().any(|&x| x.is_nan() || x.is_infinite());
 
     if has_bad_values {
-        warn!("Detected NaN/Inf in logits, applying sanitization");
+        runtime::logger("candle").warn("Detected NaN/Inf in logits, applying sanitization");
 
         // Replace NaN with -100 (effectively zero probability), Inf with large finite value
         let sanitized: Vec<f32> = logits_vec
@@ -134,7 +134,7 @@ pub fn generate_text(
             .map_err(|e| format!("GPU sync failed: {e}"))?;
 
         if i == 0 {
-            debug!("Raw logits shape: {:?}", logits.dims());
+            runtime::logger("candle").debug(&format!("Raw logits shape: {:?}", logits.dims()));
         }
 
         let last_logits = if logits.dims().len() == 2 {
@@ -159,11 +159,11 @@ pub fn generate_text(
         };
 
         if i == 0 {
-            debug!(
+            runtime::logger("candle").debug(&format!(
                 "Logits shape: {:?}, dtype: {:?}",
                 last_logits.dims(),
                 last_logits.dtype()
-            );
+            ));
         }
 
         // Protect against NaN/Inf in logits before sampling
@@ -193,11 +193,11 @@ pub fn generate_text(
         .map_err(|e| format!("Decode failed: {e}"))?;
 
     let duration = start.elapsed();
-    info!(
+    runtime::logger("candle").info(&format!(
         "Generated {} tokens in {:?}",
         generated_tokens.len(),
         duration
-    );
+    ));
 
     Ok((output_text, generated_tokens.len()))
 }
@@ -205,12 +205,12 @@ pub fn generate_text(
 /// Download model weights, handling both single file and sharded models
 fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<std::path::PathBuf>, String> {
     if let Ok(path) = repo.get("model.safetensors") {
-        info!("  Weights (single file): {path:?}");
+        runtime::logger("candle").info(&format!("  Weights (single file): {:?}", path));
         return Ok(vec![path]);
     }
 
     if let Ok(index_path) = repo.get("model.safetensors.index.json") {
-        info!("  Found sharded weights index");
+        runtime::logger("candle").info("  Found sharded weights index");
         let index_str = std::fs::read_to_string(&index_path)
             .map_err(|e| format!("Failed to read index: {e}"))?;
         let index: serde_json::Value =
@@ -229,7 +229,7 @@ fn download_weights(repo: &hf_hub::api::sync::ApiRepo) -> Result<Vec<std::path::
         shard_files.sort();
         shard_files.dedup();
 
-        info!("  Downloading {} weight shards...", shard_files.len());
+        runtime::logger("candle").info(&format!("  Downloading {} weight shards...", shard_files.len()));
 
         let mut paths = Vec::new();
         for shard in &shard_files {
@@ -260,24 +260,24 @@ pub fn select_best_device() -> Device {
     #[cfg(feature = "cuda")]
     {
         if let Ok(device) = Device::new_cuda(0) {
-            info!("  Using CUDA device");
+            runtime::logger("candle").info("  Using CUDA device");
             return device;
         }
-        info!("  CUDA not available");
+        runtime::logger("candle").info("  CUDA not available");
     }
 
     // Try Metal (macOS)
     #[cfg(feature = "metal")]
     {
         if let Ok(device) = Device::new_metal(0) {
-            info!("  Using Metal device");
+            runtime::logger("candle").info("  Using Metal device");
             return device;
         }
-        info!("  Metal not available");
+        runtime::logger("candle").info("  Metal not available");
     }
 
     // Fall back to CPU
-    info!("  Using CPU (no GPU acceleration)");
+    runtime::logger("candle").info("  Using CPU (no GPU acceleration)");
     Device::Cpu
 }
 
@@ -285,11 +285,11 @@ pub fn select_best_device() -> Device {
 pub fn load_model_by_id(
     model_id: &str,
 ) -> Result<ModelState, Box<dyn std::error::Error + Send + Sync>> {
-    info!("Loading model: {model_id}");
+    runtime::logger("candle").info(&format!("Loading model: {}", model_id));
     let start = Instant::now();
 
     let device = select_best_device();
-    info!("  Device: {device:?}");
+    runtime::logger("candle").info(&format!("  Device: {:?}", device));
 
     let api = Api::new()?;
     let repo = api.repo(Repo::with_revision(
@@ -298,7 +298,7 @@ pub fn load_model_by_id(
         "main".to_string(),
     ));
 
-    info!("  Downloading model files...");
+    runtime::logger("candle").info("  Downloading model files...");
     let config_path = repo.get("config.json")?;
     let tokenizer_path = repo.get("tokenizer.json")?;
 
@@ -307,16 +307,16 @@ pub fn load_model_by_id(
 
     let config_str = std::fs::read_to_string(&config_path)?;
     let llama_config: LlamaConfig = serde_json::from_str(&config_str)?;
-    info!(
+    runtime::logger("candle").info(&format!(
         "  Config: vocab_size={}, hidden_size={}, layers={}",
         llama_config.vocab_size, llama_config.hidden_size, llama_config.num_hidden_layers
-    );
+    ));
 
     let use_flash_attn = false;
     let config = llama_config.into_config(use_flash_attn);
 
     let eos_token_ids = parse_eos_tokens(&config.eos_token_id);
-    info!("  EOS token IDs: {eos_token_ids:?}");
+    runtime::logger("candle").info(&format!("  EOS token IDs: {:?}", eos_token_ids));
 
     let tokenizer = Tokenizer::from_file(&tokenizer_path)
         .map_err(|e| format!("Failed to load tokenizer: {e}"))?;
@@ -325,19 +325,19 @@ pub fn load_model_by_id(
         Device::Metal(_) => DType::BF16,
         _ => DType::F32,
     };
-    info!("  Dtype: {dtype:?}");
+    runtime::logger("candle").info(&format!("  Dtype: {:?}", dtype));
 
-    info!(
+    runtime::logger("candle").info(&format!(
         "  Loading model weights from {} file(s)...",
         weight_paths.len()
-    );
+    ));
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&weight_paths, dtype, &device)? };
 
     let model = Llama::load(vb, &config)?;
     let cache = Cache::new(true, dtype, &config, &device)?;
 
     let duration = start.elapsed();
-    info!("Model loaded in {duration:?}");
+    runtime::logger("candle").info(&format!("Model loaded in {:?}", duration));
 
     Ok(ModelState {
         model,
@@ -372,10 +372,10 @@ pub fn rebuild_with_lora_from_paths(
 ) -> Result<Llama, Box<dyn std::error::Error + Send + Sync>> {
     use safetensors::SafeTensors;
 
-    info!(
+    runtime::logger("candle").info(&format!(
         "Rebuilding model with {} LoRA layers merged",
         lora_weights.len()
-    );
+    ));
     let start = Instant::now();
 
     // Load all base weights into memory
@@ -418,7 +418,7 @@ pub fn rebuild_with_lora_from_paths(
                     Tensor::from_vec(f32_data, shape.as_slice(), device)?
                 }
                 _ => {
-                    info!("  Skipping unsupported dtype: {st_dtype:?} for {name}");
+                    runtime::logger("candle").info(&format!("  Skipping unsupported dtype: {:?} for {}", st_dtype, name));
                     continue;
                 }
             };
@@ -434,7 +434,7 @@ pub fn rebuild_with_lora_from_paths(
         }
     }
 
-    info!("  Loaded {} base tensors", all_tensors.len());
+    runtime::logger("candle").info(&format!("  Loaded {} base tensors", all_tensors.len()));
 
     // Apply LoRA deltas
     let mut merged_count = 0;
@@ -447,24 +447,24 @@ pub fn rebuild_with_lora_from_paths(
                 Ok(merged) => {
                     all_tensors.insert(model_name.clone(), merged);
                     merged_count += 1;
-                    debug!("  Merged: {lora_name} -> {model_name}");
+                    runtime::logger("candle").debug(&format!("  Merged: {} -> {}", lora_name, model_name));
                 }
                 Err(e) => {
-                    info!("  Failed to merge {lora_name}: {e}");
+                    runtime::logger("candle").info(&format!("  Failed to merge {}: {}", lora_name, e));
                     failed_count += 1;
                 }
             }
         } else {
-            debug!("  No base weight for: {lora_name} (mapped to {model_name})");
+            runtime::logger("candle").debug(&format!("  No base weight for: {} (mapped to {})", lora_name, model_name));
             failed_count += 1;
         }
     }
 
     if failed_count > 0 {
-        info!("  {failed_count} LoRA layers failed to merge");
+        runtime::logger("candle").info(&format!("  {} LoRA layers failed to merge", failed_count));
     }
 
-    info!("  Merged {merged_count} LoRA layers into base weights");
+    runtime::logger("candle").info(&format!("  Merged {} LoRA layers into base weights", merged_count));
 
     // Build VarBuilder from merged tensors
     let vb = VarBuilder::from_tensors(all_tensors, dtype, device);
@@ -473,7 +473,7 @@ pub fn rebuild_with_lora_from_paths(
     let model = Llama::load(vb, config)?;
 
     let duration = start.elapsed();
-    info!("Model rebuilt with LoRA in {duration:?}");
+    runtime::logger("candle").info(&format!("Model rebuilt with LoRA in {:?}", duration));
 
     Ok(model)
 }
@@ -499,11 +499,11 @@ pub fn rebuild_with_stacked_lora(
     use safetensors::SafeTensors;
 
     let total_layers: usize = adapters.iter().map(|a| a.weights.len()).sum();
-    info!(
+    runtime::logger("candle").info(&format!(
         "Rebuilding model with {} adapters ({} total LoRA layers)",
         adapters.len(),
         total_layers
-    );
+    ));
     let start = Instant::now();
 
     // Load all base weights into memory
@@ -557,19 +557,19 @@ pub fn rebuild_with_stacked_lora(
         }
     }
 
-    info!("  Loaded {} base tensors", all_tensors.len());
+    runtime::logger("candle").info(&format!("  Loaded {} base tensors", all_tensors.len()));
 
     // Apply LoRA deltas from ALL adapters: W' = W + sum(scale_i x B_i @ A_i)
     let mut merged_count = 0;
     let mut failed_count = 0;
 
     for adapter in adapters {
-        info!(
+        runtime::logger("candle").info(&format!(
             "  Applying adapter '{}' (scale={}, {} layers)",
             adapter.adapter_id,
             adapter.scale,
             adapter.weights.len()
-        );
+        ));
 
         for (lora_name, lora) in &adapter.weights {
             let model_name = map_lora_name_to_model_name(lora_name);
@@ -589,7 +589,7 @@ pub fn rebuild_with_stacked_lora(
                         merged_count += 1;
                     }
                     Err(e) => {
-                        debug!("  Failed to merge {lora_name}: {e}");
+                        runtime::logger("candle").debug(&format!("  Failed to merge {}: {}", lora_name, e));
                         failed_count += 1;
                     }
                 }
@@ -600,14 +600,14 @@ pub fn rebuild_with_stacked_lora(
     }
 
     if failed_count > 0 {
-        info!("  {failed_count} LoRA layers failed to merge");
+        runtime::logger("candle").info(&format!("  {} LoRA layers failed to merge", failed_count));
     }
 
-    info!(
+    runtime::logger("candle").info(&format!(
         "  Merged {} LoRA layers from {} adapters",
         merged_count,
         adapters.len()
-    );
+    ));
 
     // Build VarBuilder from merged tensors
     let vb = VarBuilder::from_tensors(all_tensors, dtype, device);
@@ -616,7 +616,7 @@ pub fn rebuild_with_stacked_lora(
     let model = Llama::load(vb, config)?;
 
     let duration = start.elapsed();
-    info!("Genome applied in {duration:?}");
+    runtime::logger("candle").info(&format!("Genome applied in {:?}", duration));
 
     Ok(model)
 }

@@ -2,6 +2,11 @@
 //!
 //! Each module gets its own log file: .continuum/jtag/logs/system/modules/{name}.log
 //! Automatic category prefixing. Zero configuration for module authors.
+//!
+//! Usage:
+//! - ServiceModules: Use `ctx.logger("module_name")` from ModuleContext
+//! - Library code: Use `ModuleLogger::for_component("component_name")` for any code
+//!   that needs logging but isn't a ServiceModule (e.g., AI adapters, inference code)
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -9,15 +14,22 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub struct ModuleLogger {
-    module_name: &'static str,
+    module_name: String,
     log_file: Mutex<Option<std::fs::File>>,
     log_path: PathBuf,
 }
 
 impl ModuleLogger {
+    /// Create a logger for a ServiceModule (called by ModuleContext)
     pub fn new(module_name: &'static str) -> Self {
+        Self::for_component(module_name)
+    }
+
+    /// Create a logger for any component (adapters, libraries, etc.)
+    /// This is the general-purpose constructor for non-module code.
+    pub fn for_component(component_name: &str) -> Self {
         let log_dir = PathBuf::from(".continuum/jtag/logs/system/modules");
-        let log_path = log_dir.join(format!("{}.log", module_name));
+        let log_path = log_dir.join(format!("{}.log", component_name));
 
         // Ensure directory exists
         let _ = fs::create_dir_all(&log_dir);
@@ -30,7 +42,7 @@ impl ModuleLogger {
             .ok();
 
         Self {
-            module_name,
+            module_name: component_name.to_string(),
             log_file: Mutex::new(file),
             log_path,
         }
@@ -38,7 +50,7 @@ impl ModuleLogger {
 
     fn write(&self, level: &str, msg: &str) {
         let timestamp = chrono::Utc::now().to_rfc3339();
-        let line = format!("[{}] [{}] [{}] {}\n", timestamp, level, self.module_name, msg);
+        let line = format!("[{}] [{}] [{}] {}\n", timestamp, level, &self.module_name, msg);
 
         if let Ok(mut guard) = self.log_file.lock() {
             if let Some(ref mut file) = *guard {

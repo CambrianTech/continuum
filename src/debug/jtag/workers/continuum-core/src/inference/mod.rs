@@ -16,6 +16,10 @@
 //! - `quantized.rs` - Quantized GGUF model support
 //! - `lora.rs` - LoRA weight loading and merging
 //! - `candle_adapter.rs` - AIProviderAdapter implementation
+//!
+//! Logging:
+//! - Use `crate::runtime::logger("candle")` for inference logging
+//! - Logs go to `.continuum/jtag/logs/system/modules/candle.log`
 
 pub mod lora;
 pub mod model;

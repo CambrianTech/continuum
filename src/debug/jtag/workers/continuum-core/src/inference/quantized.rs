@@ -18,11 +18,11 @@ use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::quantized_llama::ModelWeights;
 use hf_hub::{api::sync::Api, Repo, RepoType};
-use tracing::{debug, info, warn, error};
 use rand::Rng;
 use tokenizers::Tokenizer;
 
 use super::model::select_best_device;
+use crate::runtime;
 
 /// Quantized model state
 pub struct QuantizedModelState {
@@ -48,18 +48,18 @@ pub fn download_gguf_model(
     repo_id: &str,
     filename: &str,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
-    info!("Downloading GGUF model: {repo_id}/{filename}");
+    runtime::logger("candle").info(&format!("Downloading GGUF model: {}/{}", repo_id, filename));
     let start = Instant::now();
 
     let api = Api::new()?;
     let repo = api.repo(Repo::new(repo_id.to_string(), RepoType::Model));
     let path = repo.get(filename)?;
 
-    info!(
+    runtime::logger("candle").info(&format!(
         "GGUF downloaded in {:.2}s: {:?}",
         start.elapsed().as_secs_f32(),
         path
-    );
+    ));
     Ok(path)
 }
 
@@ -68,11 +68,12 @@ pub fn load_quantized_model(
     model_path: &PathBuf,
     tokenizer_repo: &str,
 ) -> Result<QuantizedModelState, Box<dyn std::error::Error + Send + Sync>> {
-    info!("Loading quantized model from {model_path:?}");
+    let log = runtime::logger("candle");
+    log.info(&format!("Loading quantized model from {:?}", model_path));
     let start = Instant::now();
 
     let device = select_best_device();
-    info!("  Device: {device:?}");
+    log.info(&format!("  Device: {:?}", device));
 
     // Open GGUF file
     let mut file = File::open(model_path)?;
@@ -86,13 +87,13 @@ pub fn load_quantized_model(
         .map(|v| format!("Q{v}"))
         .unwrap_or_else(|| "unknown".to_string());
 
-    info!("  Quantization: {quant_type}");
+    log.info(&format!("  Quantization: {}", quant_type));
 
     // Load model weights
     let mut reader = BufReader::new(File::open(model_path)?);
     let model = ModelWeights::from_gguf(content, &mut reader, &device)?;
 
-    info!("  Model loaded");
+    log.info("  Model loaded");
 
     // Load tokenizer from the base model repo
     let api = Api::new()?;
@@ -105,10 +106,10 @@ pub fn load_quantized_model(
     let eos_token_ids = vec![128009u32];
 
     let duration = start.elapsed();
-    info!(
+    log.info(&format!(
         "Quantized model loaded in {:.2}s",
         duration.as_secs_f32()
-    );
+    ));
 
     Ok(QuantizedModelState {
         model,
@@ -127,8 +128,8 @@ pub fn load_quantized_model(
 /// GPU sync frequency - sync every N tokens instead of every token
 const GPU_SYNC_INTERVAL: usize = 16;
 
-/// Only check for NaN on first N tokens
-const NAN_CHECK_TOKENS: usize = 3;
+/// Max NaN/Inf retries before aborting generation
+const MAX_NAN_RETRIES: usize = 5;
 
 /// Generate text from a prompt using quantized model
 pub fn generate_text_quantized(
@@ -137,6 +138,7 @@ pub fn generate_text_quantized(
     max_tokens: usize,
     temperature: f64,
 ) -> Result<(String, usize), String> {
+    let log = runtime::logger("candle");
     let start = Instant::now();
 
     // Tokenize prompt
@@ -151,7 +153,7 @@ pub fn generate_text_quantized(
         return Err("Empty prompt".to_string());
     }
 
-    debug!("Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len());
+    log.debug(&format!("Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len()));
 
     // Setup logits processor
     let seed = rand::thread_rng().gen::<u64>();
@@ -199,28 +201,31 @@ pub fn generate_text_quantized(
             logits
         };
 
-        // Only check NaN on first few tokens
-        let logits = if i < NAN_CHECK_TOKENS {
-            let (sanitized, had_nan) = sanitize_logits_with_flag(&logits, &state.device)?;
-            if had_nan {
+        // Try sampling, with fallback sanitization on NaN/Inf
+        let next_token = match logits_processor.sample(&logits) {
+            Ok(token) => token,
+            Err(sample_error) => {
+                // Sampling failed - likely due to NaN/Inf. Sanitize and retry.
+                log.warn(&format!("Sampling failed at token {}, attempting sanitization: {}", i, sample_error));
                 nan_count += 1;
+
                 if i == 0 {
-                    error!("NaN/Inf on first token - prompt may be malformed");
-                    return Err("Model produced NaN on first token - prompt may be malformed or too long".to_string());
+                    log.error("Sampling failed on first token - prompt may be malformed");
+                    return Err("Model produced invalid logits on first token - prompt may be malformed or too long".to_string());
                 }
-                if nan_count > 2 {
-                    error!("Multiple NaN tokens in first {} - aborting", NAN_CHECK_TOKENS);
+
+                if nan_count > MAX_NAN_RETRIES {
+                    log.error(&format!("Too many NaN/Inf tokens ({}) - aborting generation", nan_count));
                     break;
                 }
-            }
-            sanitized
-        } else {
-            logits
-        };
 
-        let next_token = logits_processor
-            .sample(&logits)
-            .map_err(|e| format!("Sampling failed: {e}"))?;
+                // Sanitize logits and retry
+                let (sanitized, _) = sanitize_logits_with_flag(&logits, &state.device)?;
+                logits_processor
+                    .sample(&sanitized)
+                    .map_err(|e| format!("Sampling failed even after sanitization: {e}"))?
+            }
+        };
 
         if state.eos_token_ids.contains(&next_token) {
             break;
@@ -243,11 +248,11 @@ pub fn generate_text_quantized(
         .map_err(|e| format!("Decode failed: {e}"))?;
 
     let duration = start.elapsed();
-    info!(
+    log.info(&format!(
         "Quantized generated {} tokens in {:?}",
         generated_tokens.len(),
         duration
-    );
+    ));
 
     Ok((output_text, generated_tokens.len()))
 }
@@ -261,7 +266,7 @@ fn sanitize_logits_with_flag(logits: &Tensor, device: &Device) -> Result<(Tensor
     let has_bad_values = logits_vec.iter().any(|&x| x.is_nan() || x.is_infinite());
 
     if has_bad_values {
-        warn!("Detected NaN/Inf in logits, applying sanitization");
+        runtime::logger("candle").warn("Detected NaN/Inf in logits, applying sanitization");
 
         let sanitized: Vec<f32> = logits_vec
             .iter()

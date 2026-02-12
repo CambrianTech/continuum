@@ -23,26 +23,32 @@ use crate::ai::{
     TextGenerationRequest, TextGenerationResponse, RoutingInfo, ChatMessage, MessageContent,
     NativeToolSpec, ToolChoice,
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule, ModuleLogger};
 use crate::logging::TimingGuard;
-use crate::log_info;
 use crate::secrets::get_secret;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, OnceCell};
 
 /// AIProviderModule - ServiceModule implementation for AI inference
 pub struct AIProviderModule {
     registry: Arc<RwLock<AdapterRegistry>>,
+    log: OnceCell<Arc<ModuleLogger>>,
 }
 
 impl AIProviderModule {
     pub fn new() -> Self {
         Self {
             registry: Arc::new(RwLock::new(AdapterRegistry::new())),
+            log: OnceCell::new(),
         }
+    }
+
+    /// Get logger (panics if called before initialize)
+    fn log(&self) -> &ModuleLogger {
+        self.log.get().expect("AIProviderModule not initialized").as_ref()
     }
 
     /// Register all available adapters
@@ -61,42 +67,42 @@ impl AIProviderModule {
 
         // Only register adapters that have API keys configured
         if get_secret("DEEPSEEK_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering DeepSeek adapter");
+            self.log().info("Registering DeepSeek adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::deepseek()), 0);
         }
 
         if get_secret("ANTHROPIC_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering Anthropic adapter");
+            self.log().info("Registering Anthropic adapter");
             registry.register(Box::new(AnthropicAdapter::new()), 1);
         }
 
         if get_secret("OPENAI_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering OpenAI adapter");
+            self.log().info("Registering OpenAI adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::openai()), 2);
         }
 
         if get_secret("GROQ_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering Groq adapter");
+            self.log().info("Registering Groq adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::groq()), 3);
         }
 
         if get_secret("TOGETHER_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering Together adapter");
+            self.log().info("Registering Together adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::together()), 4);
         }
 
         if get_secret("FIREWORKS_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering Fireworks adapter");
+            self.log().info("Registering Fireworks adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::fireworks()), 5);
         }
 
         if get_secret("XAI_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering XAI adapter");
+            self.log().info("Registering XAI adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::xai()), 6);
         }
 
         if get_secret("GOOGLE_API_KEY").is_some() {
-            log_info!("module", "ai_provider", "Registering Google adapter");
+            self.log().info("Registering Google adapter");
             registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
         }
 
@@ -107,7 +113,7 @@ impl AIProviderModule {
             || inference_mode.eq_ignore_ascii_case("hybrid");
 
         if enable_candle {
-            log_info!("module", "ai_provider", "Registering Candle adapter (local inference)");
+            self.log().info("Registering Candle adapter (local inference)");
             // Priority 8: Local inference is fallback when cloud fails or for LoRA
             // If INFERENCE_MODE=local or candle, make it priority 0 (highest)
             let priority = if inference_mode.eq_ignore_ascii_case("local") || inference_mode.eq_ignore_ascii_case("candle") { 0 } else { 8 };
@@ -118,12 +124,11 @@ impl AIProviderModule {
         registry.initialize_all().await?;
 
         let available = registry.available();
-        log_info!("module", "ai_provider", "AIProviderModule initialized with {} providers: {:?}",
-            available.len(), available);
+        self.log().info(&format!("AIProviderModule initialized with {} providers: {:?}",
+            available.len(), available));
 
         if available.is_empty() {
-            log_info!("module", "ai_provider",
-                "⚠️ No providers available! Add API keys to ~/.continuum/config.env");
+            self.log().warn("No providers available! Add API keys to ~/.continuum/config.env");
         }
 
         Ok(())
@@ -256,7 +261,9 @@ impl ServiceModule for AIProviderModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Store logger for this module
+        let _ = self.log.set(ctx.logger("ai_provider"));
         self.register_adapters().await
     }
 
@@ -287,8 +294,8 @@ impl ServiceModule for AIProviderModule {
                         }
                     })?;
 
-                log_info!("module", "ai_provider", "Using {} adapter for model {:?}",
-                    provider_id, request.model);
+                self.log().info(&format!("Using {} adapter for model {:?}",
+                    provider_id, request.model));
 
                 // Generate text
                 let mut response = adapter.generate_text(request).await?;

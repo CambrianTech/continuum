@@ -11,17 +11,19 @@
 //!
 //! This adapter reports `LoRACapabilities::MultiLayerPaging` since local
 //! Candle has full control over adapter paging, unlike cloud providers.
+//!
+//! Logging: Uses crate::runtime::logger("candle") - no special setup needed.
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use tracing::info;
 
 use crate::ai::{
     AdapterCapabilities, AdapterConfig, AIProviderAdapter, ApiStyle,
     FinishReason, HealthState, HealthStatus, LoRACapabilities, LoRAAdapterInfo,
     ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
+use crate::runtime;
 
 use super::lora::{load_lora_adapter, LoadedAdapter};
 use super::model::{generate_text, load_model_by_id, rebuild_with_stacked_lora, GenomeAdapter, ModelState};
@@ -116,7 +118,7 @@ impl CandleAdapter {
         loaded.weights = Some(weights);
         adapters.insert(adapter_id.to_string(), loaded);
 
-        info!("Loaded LoRA adapter: {} from {}", adapter_id, path);
+        runtime::logger("candle").info(&format!("Loaded LoRA adapter: {} from {}", adapter_id, path));
         Ok(())
     }
 
@@ -147,7 +149,7 @@ impl CandleAdapter {
         // Rebuild model with active adapters
         self.rebuild_model_with_active_lora().await?;
 
-        info!("Applied LoRA adapter: {}", adapter_id);
+        runtime::logger("candle").info(&format!("Applied LoRA adapter: {}", adapter_id));
         Ok(())
     }
 
@@ -170,7 +172,7 @@ impl CandleAdapter {
         // Rebuild model without this adapter
         self.rebuild_model_with_active_lora().await?;
 
-        info!("Removed LoRA adapter: {}", adapter_id);
+        runtime::logger("candle").info(&format!("Removed LoRA adapter: {}", adapter_id));
         Ok(())
     }
 
@@ -183,7 +185,7 @@ impl CandleAdapter {
         let mut adapters = self.loaded_adapters.write();
         adapters.remove(adapter_id);
 
-        info!("Unloaded LoRA adapter: {}", adapter_id);
+        runtime::logger("candle").info(&format!("Unloaded LoRA adapter: {}", adapter_id));
         Ok(())
     }
 
@@ -207,7 +209,7 @@ impl CandleAdapter {
         let active = self.active_adapters.read().clone();
         if active.is_empty() {
             // No active adapters - reload base model
-            info!("No active adapters, reloading base model");
+            runtime::logger("candle").info("No active adapters, reloading base model");
             drop(active);
             return self.reload_base_model().await;
         }
@@ -323,7 +325,7 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
-        info!("Initializing Candle adapter (quantized={})", self.use_quantized);
+        runtime::logger("candle").info(&format!("Initializing Candle adapter (quantized={})", self.use_quantized));
 
         // Load the model
         if self.use_quantized {
@@ -338,12 +340,12 @@ impl AIProviderAdapter for CandleAdapter {
             *model = Some(ModelVariant::Regular(state));
         }
 
-        info!("Candle adapter initialized successfully");
+        runtime::logger("candle").info("Candle adapter initialized successfully");
         Ok(())
     }
 
     async fn shutdown(&mut self) -> Result<(), String> {
-        info!("Shutting down Candle adapter");
+        runtime::logger("candle").info("Shutting down Candle adapter");
         let mut model = self.model.write();
         *model = None;
         Ok(())
