@@ -36,11 +36,11 @@ export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerat
       );
     }
 
-    // Resolve model - only use LOCAL_MODELS.DEFAULT for Candle/llamacpp
-    // Ollama and cloud providers should use their own defaults (handled by Rust adapter)
-    const candleProviders = ['candle', 'local', 'llamacpp'];
-    const isCandleProvider = params.provider && candleProviders.includes(params.provider.toLowerCase());
-    const requestedModel = params.model || (isCandleProvider ? LOCAL_MODELS.DEFAULT : undefined);
+    // Resolve model - use LOCAL_MODELS.DEFAULT for local providers
+    // Cloud providers should use their own defaults (handled by Rust adapter)
+    const localProviders = ['candle', 'local', 'llamacpp'];
+    const isLocalProvider = params.provider && localProviders.includes(params.provider.toLowerCase());
+    const requestedModel = params.model || (isLocalProvider ? LOCAL_MODELS.DEFAULT : undefined);
 
     // Filter adapters to only those with existing files
     let adaptersToApply: Array<{ name: string; path: string; domain: string }> = [];

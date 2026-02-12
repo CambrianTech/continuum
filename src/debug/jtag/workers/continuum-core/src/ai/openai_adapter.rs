@@ -349,53 +349,6 @@ impl OpenAICompatibleAdapter {
         })
     }
 
-    /// Create adapter for Ollama (local inference, no auth required)
-    /// Base URL is read from OLLAMA_HOST env var (defaults to http://localhost:11434)
-    pub fn ollama() -> Self {
-        Self::new(OpenAICompatibleConfig {
-            provider_id: "ollama",
-            name: "Ollama",
-            base_url: "http://localhost:11434",  // Default, will be overridden by OLLAMA_HOST
-            api_key_env: "OLLAMA_HOST",  // Used to check if configured and get base URL
-            default_model: "llama3.2:3b",
-            supports_tools: true,
-            supports_vision: true,  // llama3.2-vision supports images
-            requires_auth: false,   // No API key needed for local Ollama
-            base_url_from_env: true,  // Read base URL from OLLAMA_HOST
-            models: vec![
-                ModelInfo {
-                    id: "llama3.2:3b".to_string(),
-                    name: "Llama 3.2 3B".to_string(),
-                    provider: "ollama".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                        ModelCapability::ToolUse,
-                    ],
-                    context_window: 128000,
-                    max_output_tokens: Some(4096),
-                    cost_per_1k_tokens: None,  // Local = free
-                    supports_streaming: true,
-                    supports_tools: true,
-                },
-                ModelInfo {
-                    id: "llama3.2:1b".to_string(),
-                    name: "Llama 3.2 1B".to_string(),
-                    provider: "ollama".to_string(),
-                    capabilities: vec![
-                        ModelCapability::TextGeneration,
-                        ModelCapability::Chat,
-                    ],
-                    context_window: 128000,
-                    max_output_tokens: Some(4096),
-                    cost_per_1k_tokens: None,
-                    supports_streaming: true,
-                    supports_tools: false,
-                },
-            ],
-        })
-    }
-
     /// Convert ChatMessage to OpenAI format
     fn format_messages(&self, messages: &[ChatMessage], system_prompt: Option<&str>) -> Vec<Value> {
         let mut result = Vec::new();
@@ -861,10 +814,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "fireworks" => vec!["accounts/fireworks/"], // Fireworks namespace
             "xai" => vec!["grok"],
             "google" => vec!["gemini"],
-            // Ollama supports many local models - common prefixes
-            "ollama" => vec!["llama", "qwen", "phi", "mistral", "codellama", "gemma",
-                             "tinyllama", "orca", "vicuna", "wizardlm", "neural-chat",
-                             "stablelm", "yi", "deepseek-coder"],
             _ => vec![], // No auto-routing for unknown providers
         }
     }

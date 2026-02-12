@@ -100,13 +100,6 @@ impl AIProviderModule {
             registry.register(Box::new(OpenAICompatibleAdapter::google()), 7);
         }
 
-        // Ollama - local inference via OpenAI-compatible API (always register if OLLAMA_HOST is set)
-        // Priority 8: Local inference alongside Candle
-        if get_secret("OLLAMA_HOST").is_some() {
-            log_info!("module", "ai_provider", "Registering Ollama adapter (local inference)");
-            registry.register(Box::new(OpenAICompatibleAdapter::ollama()), 8);
-        }
-
         // Check if Candle local inference is enabled (INFERENCE_MODE=local, candle, or hybrid)
         let inference_mode = get_secret("INFERENCE_MODE").unwrap_or_default();
         let enable_candle = inference_mode.eq_ignore_ascii_case("local")
@@ -115,9 +108,9 @@ impl AIProviderModule {
 
         if enable_candle {
             log_info!("module", "ai_provider", "Registering Candle adapter (local inference)");
-            // Priority 9: Candle is fallback when Ollama unavailable or for LoRA
+            // Priority 8: Local inference is fallback when cloud fails or for LoRA
             // If INFERENCE_MODE=local or candle, make it priority 0 (highest)
-            let priority = if inference_mode.eq_ignore_ascii_case("local") || inference_mode.eq_ignore_ascii_case("candle") { 0 } else { 9 };
+            let priority = if inference_mode.eq_ignore_ascii_case("local") || inference_mode.eq_ignore_ascii_case("candle") { 0 } else { 8 };
             registry.register(Box::new(CandleAdapter::quantized()), priority);
         }
 
