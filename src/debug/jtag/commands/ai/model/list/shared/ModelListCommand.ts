@@ -8,6 +8,7 @@
 import { CommandBase } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 import type { ModelListParams, ModelListResult, ModelInfo, ModelCapabilities } from './ModelListTypes';
+import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 
 export abstract class ModelListCommand extends CommandBase<CommandParams, CommandResult> {
   static readonly commandName = 'model/list';
@@ -18,11 +19,11 @@ export abstract class ModelListCommand extends CommandBase<CommandParams, Comman
    */
   protected getModelCatalog(): ModelInfo[] {
     return [
-      // Llama 3.2 family (Ollama)
+      // Llama 3.2 family (Candle)
       {
         name: 'llama3.2:1b',
         displayName: 'Llama 3.2 1B',
-        provider: 'ollama',
+        provider: 'candle',
         parameters: '1B',
         contextLength: 128000,
         supportsJSON: true,
@@ -35,9 +36,9 @@ export abstract class ModelListCommand extends CommandBase<CommandParams, Comman
         available: true
       },
       {
-        name: 'llama3.2:3b',
+        name: LOCAL_MODELS.DEFAULT,
         displayName: 'Llama 3.2 3B',
-        provider: 'ollama',
+        provider: 'candle',
         parameters: '3B',
         contextLength: 128000,
         supportsJSON: true,
@@ -52,7 +53,7 @@ export abstract class ModelListCommand extends CommandBase<CommandParams, Comman
       {
         name: 'phi3:mini',
         displayName: 'Phi-3 Mini',
-        provider: 'ollama',
+        provider: 'candle',
         parameters: '3.8B',
         contextLength: 128000,
         supportsJSON: true,

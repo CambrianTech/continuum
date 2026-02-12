@@ -109,9 +109,10 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'candle': {
     provider: 'candle',
-    model: 'llama3.2:3b',
+    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model for proper context window
     temperature: 0.7,
     maxTokens: 150,
+    contextWindow: 8000,  // Q4_K_M practical limit - NaN/Inf issues beyond this
     systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
   }
 };

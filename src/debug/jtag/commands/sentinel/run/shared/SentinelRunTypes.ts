@@ -51,7 +51,7 @@ export interface BuildSentinelParams extends SentinelRunParams {
   /** LLM capacity for error analysis (SMALL recommended for speed) */
   capacity?: ModelCapacity;
 
-  /** LLM provider (LOCAL, OLLAMA, ANTHROPIC, etc.) */
+  /** LLM provider (LOCAL, CANDLE, ANTHROPIC, etc.) */
   provider?: ModelProvider;
 }
 

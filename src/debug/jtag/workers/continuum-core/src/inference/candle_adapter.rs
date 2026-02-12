@@ -17,6 +17,7 @@
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::ai::{
     AdapterCapabilities, AdapterConfig, AIProviderAdapter, ApiStyle,
@@ -35,10 +36,16 @@ enum ModelVariant {
     Quantized(QuantizedModelState),
 }
 
+// Required for spawn_blocking
+// SAFETY: ModelVariant contains GPU tensors that are pinned to the thread that created them.
+// We ensure all model access happens within spawn_blocking on a consistent thread pool.
+unsafe impl Send for ModelVariant {}
+
 /// Candle adapter for local LLM inference
 pub struct CandleAdapter {
     config: AdapterConfig,
-    model: RwLock<Option<ModelVariant>>,
+    /// Model wrapped in Arc for sharing across spawn_blocking threads
+    model: Arc<RwLock<Option<ModelVariant>>>,
     /// Loaded LoRA adapters (may or may not be active)
     loaded_adapters: RwLock<HashMap<String, LoadedAdapter>>,
     /// Currently active adapter IDs (order matters for stacking)
@@ -56,15 +63,15 @@ impl CandleAdapter {
                 name: "Candle Local".to_string(),
                 base_url: String::new(), // Not used for local
                 api_key_env: String::new(), // Not used for local
-                default_model: "unsloth/Llama-3.2-3B-Instruct".to_string(),
+                default_model: "meta-llama/Llama-3.1-8B-Instruct".to_string(),
                 timeout_ms: 300_000, // 5 minutes for local generation
                 max_retries: 1,
                 retry_delay_ms: 0,
             },
-            model: RwLock::new(None),
+            model: Arc::new(RwLock::new(None)),
             loaded_adapters: RwLock::new(HashMap::new()),
             active_adapters: RwLock::new(Vec::new()),
-            use_quantized: true, // Default to quantized for speed
+            use_quantized: false, // BF16 for stability and LoRA training support
         }
     }
 
@@ -325,22 +332,32 @@ impl AIProviderAdapter for CandleAdapter {
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
-        runtime::logger("candle").info(&format!("Initializing Candle adapter (quantized={})", self.use_quantized));
+        let log = runtime::logger("candle");
+        log.info(&format!("Initializing Candle adapter (quantized={}, self_ptr={:p})", self.use_quantized, self as *const _));
 
         // Load the model
         if self.use_quantized {
+            log.info("About to call load_default_quantized...");
             let state = load_default_quantized()
                 .map_err(|e| format!("Failed to load quantized model: {e}"))?;
+            log.info("load_default_quantized returned, acquiring write lock...");
             let mut model = self.model.write();
+            log.info("Write lock acquired, storing model...");
             *model = Some(ModelVariant::Quantized(state));
+            log.info(&format!("Model stored, is_some={}", model.is_some()));
         } else {
             let state = load_model_by_id(&self.config.default_model)
                 .map_err(|e| format!("Failed to load model: {e}"))?;
             let mut model = self.model.write();
             *model = Some(ModelVariant::Regular(state));
+            log.info(&format!("Model stored, is_some={}", model.is_some()));
         }
 
-        runtime::logger("candle").info("Candle adapter initialized successfully");
+        // Verify it's actually stored
+        let verification = self.model.read();
+        log.info(&format!("Post-init verification: is_some={}", verification.is_some()));
+
+        log.info("Candle adapter initialized successfully");
         Ok(())
     }
 
@@ -355,36 +372,93 @@ impl AIProviderAdapter for CandleAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
+        let log = runtime::logger("candle");
         let start = std::time::Instant::now();
 
+        log.info(&format!("generate_text called, use_quantized={}, self_ptr={:p}", self.use_quantized, self as *const _));
+
         // Build prompt from messages
-        let prompt = build_prompt_from_messages(&request.messages);
+        let mut prompt = build_prompt_from_messages(&request.messages);
 
-        let max_tokens = request.max_tokens.unwrap_or(1024) as usize;
-        let temperature = request.temperature.unwrap_or(0.7) as f64;
+        let mut max_tokens = request.max_tokens.unwrap_or(1024) as usize;
+        // Clamp temperature to prevent numerical instability in quantized models
+        // High temperatures (>0.5) can cause NaN/Inf in logits
+        let requested_temp = request.temperature.unwrap_or(0.7) as f64;
+        let temperature = requested_temp.min(0.3);
 
-        // Generate text
-        let mut model = self.model.write();
-        let model = model.as_mut().ok_or("Model not loaded")?;
+        // Limit max_tokens for context window (4096 total - 2000 input leaves 2000 for output)
+        // and for stability (quantized models can become unstable with very long generations)
+        const MAX_OUTPUT_TOKENS: usize = 1000;
+        if max_tokens > MAX_OUTPUT_TOKENS {
+            log.info(&format!("Capping max_tokens from {} to {} for stability", max_tokens, MAX_OUTPUT_TOKENS));
+            max_tokens = MAX_OUTPUT_TOKENS;
+        }
 
-        let (output_text, completion_tokens) = match model {
-            ModelVariant::Regular(state) => {
-                generate_text(state, &prompt, max_tokens, temperature)?
-            }
-            ModelVariant::Quantized(state) => {
-                generate_text_quantized(state, &prompt, max_tokens, temperature)?
-            }
-        };
+        // Truncate prompt if too long for quantized model stability
+        // Quantized Q4 models become numerically unstable with very long prompts (>~1500 tokens)
+        // observed as NaN in logits at token 3-8. Keep prompts under ~1000 tokens (~4000 chars)
+        // to maintain stable inference.
+        const MAX_INPUT_CHARS: usize = 4000;
+        if prompt.len() > MAX_INPUT_CHARS {
+            let original_len = prompt.len();
+            // Smart truncation: preserve system prompt (at start) and recent messages (at end)
+            // This keeps the model instructions and most recent conversation context intact
+            let keep_start = MAX_INPUT_CHARS * 1 / 4;  // 25% for system prompt
+            let keep_end = MAX_INPUT_CHARS * 2 / 4;    // 50% for recent messages
+            let start = &prompt[..keep_start];
+            let end = &prompt[prompt.len() - keep_end..];
+            prompt = format!("{}\n\n[... earlier context truncated for model limits ...]\n\n{}", start, end);
+            log.warn(&format!("Truncated prompt from {} to {} chars for quantized model stability", original_len, prompt.len()));
+        }
+
+        log.info(&format!("Prompt length: {} chars, max_tokens: {}", prompt.len(), max_tokens));
+
+        // Clone Arc for spawn_blocking - this allows the async runtime to continue
+        // handling other requests while inference runs on a dedicated thread
+        let model_arc = Arc::clone(&self.model);
+        let _use_quantized = self.use_quantized;
+        let default_model = self.config.default_model.clone();
+
+        // Run CPU-intensive inference on a blocking thread pool
+        // This prevents inference from blocking the async IPC handler,
+        // allowing data operations to continue in parallel
+        let result = tokio::task::spawn_blocking(move || {
+            let log = runtime::logger("candle");
+
+            // Acquire model lock within blocking thread
+            let mut model_guard = model_arc.write();
+            log.info(&format!("Got model write lock (blocking), model is_some={}", model_guard.is_some()));
+
+            let model = model_guard.as_mut().ok_or_else(|| {
+                log.error("Model not loaded - was initialize() called?");
+                "Model not loaded".to_string()
+            })?;
+
+            let (output_text, completion_tokens) = match model {
+                ModelVariant::Regular(state) => {
+                    generate_text(state, &prompt, max_tokens, temperature)?
+                }
+                ModelVariant::Quantized(state) => {
+                    generate_text_quantized(state, &prompt, max_tokens, temperature)?
+                }
+            };
+
+            Ok::<_, String>((output_text, completion_tokens, prompt.len()))
+        })
+        .await
+        .map_err(|e| format!("Inference task panicked: {e}"))?;
+
+        let (output_text, completion_tokens, prompt_len) = result?;
 
         let duration = start.elapsed();
 
-        let input_tokens = (prompt.len() / 4) as u32; // Rough estimate
+        let input_tokens = (prompt_len / 4) as u32; // Rough estimate
         let output_tokens = completion_tokens as u32;
 
         // Build response
         Ok(TextGenerationResponse {
             text: output_text,
-            model: self.config.default_model.clone(),
+            model: default_model,
             provider: "candle".to_string(),
             finish_reason: FinishReason::Stop,
             usage: UsageMetrics {
@@ -480,12 +554,44 @@ impl AIProviderAdapter for CandleAdapter {
     }
 }
 
-/// Build a prompt string from chat messages (Llama 3 format)
+/// Build a prompt string from chat messages using Llama 3/3.2 chat template
+///
+/// CRITICAL: Llama 3 Instruct models require specific chat template format with special tokens.
+/// Using generic "System: User: Assistant:" format WILL NOT WORK and produces garbage output.
+///
+/// Llama 3 chat template format:
+/// ```
+/// <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+///
+/// {system_message}<|eot_id|><|start_header_id|>user<|end_header_id|>
+///
+/// {user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+///
+/// {assistant_message}<|eot_id|>...
+/// ```
+///
+/// The final assistant turn MUST end with just the header (no eot_id) so the model generates the response.
+///
+/// Reference: https://www.llama.com/docs/model-cards-and-prompt-formats/meta-llama-3/
 fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
-    let mut prompt = String::new();
+    let mut prompt = String::from("<|begin_of_text|>");
+
+    // Check if there's a system message
+    let has_system = messages.iter().any(|m| m.role == "system");
+    if !has_system {
+        // Add default system prompt
+        prompt.push_str("<|start_header_id|>system<|end_header_id|>\n\n");
+        prompt.push_str("You are a helpful AI assistant.<|eot_id|>");
+    }
 
     for msg in messages {
-        let role = &msg.role;
+        let role = match msg.role.as_str() {
+            "system" => "system",
+            "user" => "user",
+            "assistant" => "assistant",
+            _ => "user", // Default unknown roles to user
+        };
+
         let content = match &msg.content {
             crate::ai::MessageContent::Text(text) => text.clone(),
             crate::ai::MessageContent::Parts(parts) => {
@@ -503,30 +609,202 @@ fn build_prompt_from_messages(messages: &[crate::ai::ChatMessage]) -> String {
             }
         };
 
-        // Llama 3 format
-        match role.as_str() {
-            "system" => {
-                prompt.push_str("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("<|eot_id|>");
-            }
-            "user" => {
-                prompt.push_str("<|start_header_id|>user<|end_header_id|>\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("<|eot_id|>");
-            }
-            "assistant" => {
-                prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
-                prompt.push_str(&content);
-                prompt.push_str("<|eot_id|>");
-            }
-            _ => {
-                prompt.push_str(&content);
-            }
+        // Add message with proper Llama 3 chat template format
+        prompt.push_str(&format!("<|start_header_id|>{}<|end_header_id|>\n\n", role));
+        prompt.push_str(&content);
+        prompt.push_str("<|eot_id|>");
+    }
+
+    // Add final assistant header for model to generate response
+    prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
+
+    prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::{ChatMessage, MessageContent};
+
+    /// Helper to create a ChatMessage
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: MessageContent::Text(content.to_string()),
+            name: None,
         }
     }
 
-    // Add assistant header to prompt for generation
-    prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
-    prompt
+    /// Test that build_prompt_from_messages produces correct Llama 3 chat template format
+    #[test]
+    fn test_prompt_format_simple() {
+        let messages = vec![msg("user", "What is 2+2?")];
+
+        let prompt = build_prompt_from_messages(&messages);
+
+        // Should have begin_of_text
+        assert!(prompt.starts_with("<|begin_of_text|>"), "Should start with begin_of_text");
+
+        // Should have default system prompt (since no system message provided)
+        assert!(prompt.contains("<|start_header_id|>system<|end_header_id|>"), "Should have system header");
+        assert!(prompt.contains("You are a helpful AI assistant."), "Should have default system content");
+
+        // Should have user message
+        assert!(prompt.contains("<|start_header_id|>user<|end_header_id|>"), "Should have user header");
+        assert!(prompt.contains("What is 2+2?"), "Should have user content");
+
+        // Should end with assistant header for generation
+        assert!(prompt.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"), "Should end with assistant header");
+
+        // Should have eot_id after content
+        assert!(prompt.contains("<|eot_id|>"), "Should have eot_id markers");
+
+        println!("Generated prompt:\n{}", prompt);
+    }
+
+    /// Test that prompt format works with system message
+    #[test]
+    fn test_prompt_format_with_system() {
+        let messages = vec![
+            msg("system", "You are a pirate."),
+            msg("user", "Hello!"),
+        ];
+
+        let prompt = build_prompt_from_messages(&messages);
+
+        // Should have custom system message
+        assert!(prompt.contains("You are a pirate."), "Should have custom system content");
+
+        // Should NOT have default system (since custom provided)
+        assert!(!prompt.contains("You are a helpful AI assistant."), "Should not have default system");
+
+        println!("Generated prompt:\n{}", prompt);
+    }
+
+    /// Test multi-turn conversation format
+    #[test]
+    fn test_prompt_format_multi_turn() {
+        let messages = vec![
+            msg("system", "Be concise."),
+            msg("user", "Hi"),
+            msg("assistant", "Hello!"),
+            msg("user", "How are you?"),
+        ];
+
+        let prompt = build_prompt_from_messages(&messages);
+
+        // Verify structure
+        assert!(prompt.starts_with("<|begin_of_text|>"));
+        assert!(prompt.contains("<|start_header_id|>system<|end_header_id|>\n\nBe concise.<|eot_id|>"));
+        assert!(prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|>"));
+        assert!(prompt.contains("<|start_header_id|>assistant<|end_header_id|>\n\nHello!<|eot_id|>"));
+        assert!(prompt.contains("<|start_header_id|>user<|end_header_id|>\n\nHow are you?<|eot_id|>"));
+        assert!(prompt.ends_with("<|start_header_id|>assistant<|end_header_id|>\n\n"));
+
+        println!("Generated prompt:\n{}", prompt);
+    }
+
+    /// Full integration test - generate text with proper format via CandleAdapter
+    ///
+    /// Run with: cargo test --release test_candle_adapter_generation -- --ignored --nocapture
+    #[test]
+    #[ignore] // Requires model download, takes ~60 seconds
+    fn test_candle_adapter_generation() {
+        // Create and initialize adapter
+        let mut adapter = CandleAdapter::quantized();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async {
+            adapter.initialize().await.expect("Failed to initialize adapter");
+
+            // Simple request
+            let request = TextGenerationRequest {
+                messages: vec![
+                    msg("system", "You are a helpful assistant. Keep responses very short."),
+                    msg("user", "What is 2+2?"),
+                ],
+                system_prompt: None,
+                model: None,
+                provider: None,
+                temperature: Some(0.3),
+                max_tokens: Some(50),
+                top_p: None,
+                top_k: None,
+                stop_sequences: None,
+                tools: None,
+                tool_choice: None,
+                request_id: None,
+                user_id: None,
+                room_id: None,
+                purpose: None,
+            };
+
+            let response = adapter.generate_text(request).await.expect("Generation failed");
+
+            println!("Response: {}", response.text);
+            println!("Tokens: {}/{}", response.usage.output_tokens, response.usage.input_tokens);
+
+            // Verify response is coherent (not garbage)
+            assert!(!response.text.contains('\u{FFFD}'), "Response contains garbage");
+            assert!(!response.text.is_empty(), "Response is empty");
+
+            // Should mention 4 somewhere (the answer to 2+2)
+            let has_answer = response.text.contains("4") || response.text.to_lowercase().contains("four");
+            assert!(has_answer, "Response should contain the answer (4): {}", response.text);
+        });
+    }
+
+    /// Test with longer conversation (simulates real chat usage)
+    ///
+    /// Run with: cargo test --release test_candle_adapter_long_conversation -- --ignored --nocapture
+    #[test]
+    #[ignore] // Requires model download, takes ~60 seconds
+    fn test_candle_adapter_long_conversation() {
+        let mut adapter = CandleAdapter::quantized();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async {
+            adapter.initialize().await.expect("Failed to initialize adapter");
+
+            // Simulate a longer conversation with context
+            let request = TextGenerationRequest {
+                messages: vec![
+                    msg("system", "You are Helper AI, a friendly assistant in a development team chat. Keep responses brief and helpful."),
+                    msg("user", "Hi team, I'm testing the local inference."),
+                    msg("assistant", "Great! Local inference is working. How can I help?"),
+                    msg("user", "What color is the sky?"),
+                ],
+                system_prompt: None,
+                model: None,
+                provider: None,
+                temperature: Some(0.3),
+                max_tokens: Some(100),
+                top_p: None,
+                top_k: None,
+                stop_sequences: None,
+                tools: None,
+                tool_choice: None,
+                request_id: None,
+                user_id: None,
+                room_id: None,
+                purpose: None,
+            };
+
+            let response = adapter.generate_text(request).await.expect("Generation failed");
+
+            println!("Response: {}", response.text);
+
+            // Verify response is coherent (not garbage)
+            assert!(!response.text.contains('\u{FFFD}'), "Response contains garbage");
+            assert!(!response.text.is_empty(), "Response is empty");
+
+            // Response should be intelligible English (not random tokens)
+            // The actual content may vary - the model may answer about sky color OR
+            // deflect the question based on the "development team chat" context
+            let has_words = response.text.split_whitespace().count() >= 3;
+            assert!(has_words, "Response should have at least 3 words: {}", response.text);
+
+            println!("✓ Long conversation generated coherent response");
+        });
+    }
 }

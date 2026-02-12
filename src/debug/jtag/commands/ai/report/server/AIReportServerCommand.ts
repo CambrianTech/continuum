@@ -14,6 +14,7 @@ import { AIDecisionService, type AIDecisionContext } from '../../../../system/ai
 import { COLLECTIONS } from '../../../../system/data/config/DatabaseConfig';
 import type { ChatMessageEntity } from '../../../../system/data/entities/ChatMessageEntity';
 import { getThoughtStreamCoordinator } from '../../../../system/conversation/server/ThoughtStreamCoordinator';
+import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 
 interface ParsedDecision {
   timestamp: string;
@@ -561,7 +562,7 @@ export class AIReportServerCommand extends AIReportCommand {
 
     // Use AIDecisionService to recreate the decision (same code path as PersonaUser)
     const result = await AIDecisionService.evaluateGating(decisionContext, {
-      model: decision.model ?? 'llama3.2:1b',
+      model: decision.model ?? LOCAL_MODELS.DEFAULT,
       temperature: 0.3
     });
 

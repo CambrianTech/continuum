@@ -26,6 +26,7 @@ import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { UserStateEntity } from '../../../../data/entities/UserStateEntity';
 import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
+import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -91,7 +92,7 @@ export class LimbicSystem {
       personaUser.id,
       personaUser.displayName,
       {
-        baseModel: personaUser.modelConfig.model || 'llama3.2:3b',
+        baseModel: personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT,
         memoryBudgetMB: 200,
         adaptersPath: './lora-adapters',
         initialAdapters: [

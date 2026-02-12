@@ -1,14 +1,14 @@
 /**
  * Candle Adapter - Native Rust LLM Inference via Candle Framework
  *
- * Replaces Ollama for local inference with key advantages:
+ * Primary local inference with key advantages:
  * - Unix socket (no HTTP overhead)
  * - Multi-adapter LoRA composition (genome vision)
  * - Metal-accelerated on Apple Silicon
  * - In-process control (no external binary)
  *
  * Implements AIProviderAdapter interface for seamless integration with
- * AIProviderDaemon - higher-level code doesn't know if it's Candle, Ollama, or API.
+ * AIProviderDaemon - higher-level code doesn't know if it's Candle or API.
  */
 
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
@@ -41,14 +41,13 @@ interface CandleAdapterConfig {
   /** Max concurrent requests (not currently enforced at adapter level) */
   maxConcurrent?: number;
   /**
-   * Maximum input tokens before truncation (default: 4000)
+   * Maximum input tokens before truncation (default: 2000)
    *
-   * Small models (1.5B params) process ~8-10ms per token. With a 180s timeout:
-   * - 4000 tokens ≈ 35s (safe)
-   * - 10000 tokens ≈ 90s (risky)
-   * - 20000 tokens ≈ 180s (timeout!)
+   * The 3B model has a 4096 context window. We need to leave room for output:
+   * - 2000 input + 2000 output = 4000 tokens (within 4096 limit)
    *
-   * This limit prevents timeout errors from large RAG contexts.
+   * This limit prevents "Forward pass failed: narrow invalid args" errors
+   * when the total context (input + output) exceeds the model's window.
    */
   maxInputTokens?: number;
 }
@@ -61,7 +60,7 @@ interface LoadedAdapterInfo {
 }
 
 // ============================================================================
-// Model Name Mapping (Ollama → HuggingFace)
+// Model Name Mapping (Legacy → HuggingFace)
 // ============================================================================
 // Uses LOCAL_MODELS from Constants.ts as SINGLE SOURCE OF TRUTH
 // See system/shared/Constants.ts for the canonical mapping
@@ -92,7 +91,9 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.defaultModel = config.defaultModel || LOCAL_MODELS.DEFAULT;
     this.baseTimeout = config.timeout || 180000; // 180s to handle model download + generation
-    this.maxInputTokens = config.maxInputTokens || 4000; // ~35s at 8ms/token
+    // Model has 4096 context window - leave room for output (2096 tokens)
+    // 2000 input + up to 2000 output = 4000 (within 4096 limit)
+    this.maxInputTokens = config.maxInputTokens || 2000;
 
     // Note: Model is pre-loaded by gRPC server at startup
   }

@@ -15,7 +15,7 @@ export interface AgentStartParams extends CommandParams {
   task: string;
   /** Working directory for file operations */
   working_dir: string;
-  /** Ollama model to use (required - run 'ollama list' to see available) */
+  /** Model to use (required - see available models via 'candle' provider) */
   model: string;
   /** Maximum iterations before stopping (default: 20) */
   max_iterations?: number;

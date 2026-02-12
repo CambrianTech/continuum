@@ -27,7 +27,7 @@
  *    }
  *    ```
  *
- * 2. **Adapter** (SentinelAdapter.ts, OllamaAdapter.ts, etc.):
+ * 2. **Adapter** (SentinelAdapter.ts, CandleAdapter.ts, etc.):
  *    ```typescript
  *    import { formatPrompt } from '../shared/PromptFormatters';
  *

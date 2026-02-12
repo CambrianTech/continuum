@@ -27,10 +27,19 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::logging::TimingGuard;
 use crate::secrets::get_secret;
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::{RwLock, OnceCell};
+
+/// Global singleton registry - survives module recreation on server restart
+static GLOBAL_REGISTRY: Lazy<Arc<RwLock<AdapterRegistry>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(AdapterRegistry::new()))
+});
+
+/// Track if we've done first-time initialization
+static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// AIProviderModule - ServiceModule implementation for AI inference
 pub struct AIProviderModule {
@@ -41,7 +50,7 @@ pub struct AIProviderModule {
 impl AIProviderModule {
     pub fn new() -> Self {
         Self {
-            registry: Arc::new(RwLock::new(AdapterRegistry::new())),
+            registry: GLOBAL_REGISTRY.clone(),  // Use global singleton
             log: OnceCell::new(),
         }
     }
@@ -53,6 +62,12 @@ impl AIProviderModule {
 
     /// Register all available adapters
     async fn register_adapters(&self) -> Result<(), String> {
+        // Check global flag to prevent re-initialization (survives module recreation)
+        if INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.log().info("Adapters already initialized (global), skipping re-registration");
+            return Ok(());
+        }
+
         let mut registry = self.registry.write().await;
 
         // Priority order (lower = higher priority):

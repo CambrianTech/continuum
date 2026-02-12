@@ -13,7 +13,7 @@
  * Supported Providers:
  * - OpenAI-compatible (OpenAI, Together, Fireworks, Groq, DeepSeek, XAI)
  * - Anthropic (proprietary format)
- * - Ollama (chat API with base64 images)
+ * - Candle (local inference with base64 images)
  *
  * Why centralized?
  * - Eliminates duplicate formatMultimodalContent() implementations
@@ -50,8 +50,8 @@ export interface AnthropicContentPart {
   };
 }
 
-// Ollama chat format (images at message level)
-export interface OllamaMessage {
+// Local inference chat format (images at message level)
+export interface LocalChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
   images?: string[];  // Base64-encoded images (no data URL prefix)
@@ -141,17 +141,17 @@ export class MediaContentFormatter {
   }
 
   /**
-   * Format messages for Ollama Chat API
+   * Format messages for local inference Chat API
    *
-   * Ollama format is different - images are at message level, not inline:
+   * Local format - images are at message level, not inline:
    * { role: 'user', content: 'Describe this image', images: ['base64...'] }
    *
-   * @returns Ollama chat message with content and images array
+   * @returns Local chat message with content and images array
    */
-  static formatForOllama(
+  static formatForLocal(
     role: 'system' | 'user' | 'assistant',
     content: string | ContentPart[]
-  ): OllamaMessage {
+  ): LocalChatMessage {
     // Simple string content
     if (typeof content === 'string') {
       return { role, content };
@@ -172,7 +172,7 @@ export class MediaContentFormatter {
       }
     }
 
-    const message: OllamaMessage = {
+    const message: LocalChatMessage = {
       role,
       content: textParts.join('\n'),
     };
@@ -237,7 +237,7 @@ export class MediaContentFormatter {
 
   /**
    * Extract raw base64 data from ImageInput (no data URL prefix)
-   * Used by Ollama which expects raw base64
+   * Used by local inference which expects raw base64
    */
   private static extractBase64(image: ImageInput): string | null {
     if (image.base64) {
@@ -250,7 +250,7 @@ export class MediaContentFormatter {
     }
 
     // TODO: For URLs, could fetch and convert to base64
-    // For now, skip URL-based images for Ollama
+    // For now, skip URL-based images for local inference
     return null;
   }
 

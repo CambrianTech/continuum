@@ -428,12 +428,12 @@ export class AICapabilityRegistry {
     });
 
     // ================================
-    // Ollama (Local)
-    // Model names must match EXACTLY what `ollama list` shows
+    // Candle (Local)
+    // Primary local inference provider
     // ================================
     this.registerProvider({
-      providerId: 'ollama',
-      providerName: 'Ollama',
+      providerId: 'candle',
+      providerName: 'Candle',
       defaultCapabilities: ['text-input', 'text-output', 'embeddings'],
       models: [
         {

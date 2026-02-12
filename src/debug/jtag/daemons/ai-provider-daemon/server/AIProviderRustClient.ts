@@ -255,13 +255,15 @@ export class AIProviderRustClient {
         }
       });
 
-      // Timeout after 120 seconds (AI can be slow)
+      // Timeout after 300 seconds (5 minutes) to allow for Candle queue wait
+      // Multiple local personas (Helper AI, Teacher AI, CodeReview AI, Local Assistant)
+      // all serialize on the Candle model lock, so requests can wait 2-3 minutes
       setTimeout(() => {
         if (this.pendingRequests.has(requestId)) {
           this.pendingRequests.delete(requestId);
           reject(new Error('Request timeout'));
         }
-      }, 120000);
+      }, 300000);
     });
   }
 

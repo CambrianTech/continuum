@@ -38,7 +38,7 @@ export interface VectorSearchParams extends CommandParams {
 
   // Model selection
   readonly embeddingModel?: string;             // Model name: 'all-minilm' | 'nomic-embed-text'
-  readonly embeddingProvider?: string;          // Provider: 'ollama' | 'openai' | 'huggingface'
+  readonly embeddingProvider?: string;          // Provider: 'candle' | 'openai' | 'huggingface'
 }
 
 /**

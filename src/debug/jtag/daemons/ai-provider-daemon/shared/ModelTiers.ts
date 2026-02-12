@@ -24,7 +24,7 @@
  * - FAST: claude-3-haiku, gpt-4o-mini, llama-3.1-8b
  * - BALANCED: claude-3-5-sonnet, gpt-4o, mixtral-8x7b
  * - PREMIUM: claude-3-opus, o1-pro, llama-3.1-405b
- * - FREE: ollama models, free API tiers
+ * - FREE: candle models, free API tiers
  * - LATEST: Always newest version (e.g., claude-3-5-sonnet-20250122)
  */
 export enum ModelTier {

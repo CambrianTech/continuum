@@ -28,8 +28,8 @@ export enum ModelCapacity {
  * Model providers
  */
 export enum ModelProvider {
-  LOCAL = 'local',         // Local inference service (Qwen, etc.)
-  OLLAMA = 'ollama',       // Ollama models
+  LOCAL = 'local',         // Local inference service (Candle/Qwen, etc.)
+  CANDLE = 'candle',       // Candle native Rust inference
   ANTHROPIC = 'anthropic', // Claude API
   OPENAI = 'openai',       // OpenAI API
   AUTO = 'auto',           // Auto-select best available
@@ -57,7 +57,7 @@ const MODEL_REGISTRY: Record<ModelProvider, Partial<Record<ModelCapacity, string
     [ModelCapacity.LARGE]: 'qwen2.5:32b',
     [ModelCapacity.SOTA]: 'qwen2.5:72b',
   },
-  [ModelProvider.OLLAMA]: {
+  [ModelProvider.CANDLE]: {
     [ModelCapacity.TINY]: 'phi3:mini',
     [ModelCapacity.SMALL]: 'llama3.2:3b',
     [ModelCapacity.MEDIUM]: 'llama3.1:8b',
@@ -138,7 +138,7 @@ export class ModelSelector {
    * Auto-select best available model for capacity
    */
   private autoSelect(capacity: ModelCapacity): { provider: ModelProvider; model: string } {
-    // Priority: LOCAL > OLLAMA > ANTHROPIC > OPENAI
+    // Priority: LOCAL > CANDLE > ANTHROPIC > OPENAI
     // (prefer local/free over API)
 
     // Check if local inference is available
@@ -152,15 +152,15 @@ export class ModelSelector {
       // Local not available
     }
 
-    // Check Ollama
+    // Check Candle (native Rust)
     try {
-      execSync('ollama list', { stdio: 'pipe' });
-      const model = MODEL_REGISTRY[ModelProvider.OLLAMA][capacity];
+      execSync('./jtag ai/providers/status', { cwd: this.workingDir, stdio: 'pipe' });
+      const model = MODEL_REGISTRY[ModelProvider.CANDLE][capacity];
       if (model) {
-        return { provider: ModelProvider.OLLAMA, model };
+        return { provider: ModelProvider.CANDLE, model };
       }
     } catch {
-      // Ollama not available
+      // Candle not available
     }
 
     // Fallback to Anthropic if API key exists
@@ -212,8 +212,8 @@ export class ModelInvoker {
     switch (provider) {
       case ModelProvider.LOCAL:
         return this.invokeLocal(prompt, model, maxTokens);
-      case ModelProvider.OLLAMA:
-        return this.invokeOllama(prompt, model, maxTokens);
+      case ModelProvider.CANDLE:
+        return this.invokeCandle(prompt, model, maxTokens);
       case ModelProvider.ANTHROPIC:
         return this.invokeAnthropic(prompt, model, maxTokens);
       case ModelProvider.OPENAI:
@@ -243,16 +243,20 @@ export class ModelInvoker {
     }
   }
 
-  private async invokeOllama(prompt: string, model: string, maxTokens: number): Promise<InferenceResult> {
+  private async invokeCandle(prompt: string, model: string, maxTokens: number): Promise<InferenceResult> {
     try {
-      const escapedPrompt = prompt.replace(/'/g, "'\\''");
+      const escapedPrompt = prompt.replace(/"/g, '\\"').replace(/\n/g, '\\n');
       const response = execSync(
-        `ollama run ${model} '${escapedPrompt}' 2>/dev/null`,
-        { encoding: 'utf-8', timeout: 120000, maxBuffer: 10 * 1024 * 1024 }
+        `./jtag inference/generate --prompt="${escapedPrompt}" --provider="candle" --maxTokens=${maxTokens}`,
+        { cwd: this.workingDir, encoding: 'utf-8', timeout: 120000, maxBuffer: 10 * 1024 * 1024 }
       );
-      return { success: true, text: response.trim(), model, provider: ModelProvider.OLLAMA };
+      const parsed = JSON.parse(response);
+      if (parsed.success && parsed.text) {
+        return { success: true, text: parsed.text, model, provider: ModelProvider.CANDLE };
+      }
+      return { success: false, error: parsed.error || 'No response', model, provider: ModelProvider.CANDLE };
     } catch (error: any) {
-      return { success: false, error: error.message, model, provider: ModelProvider.OLLAMA };
+      return { success: false, error: error.message, model, provider: ModelProvider.CANDLE };
     }
   }
 

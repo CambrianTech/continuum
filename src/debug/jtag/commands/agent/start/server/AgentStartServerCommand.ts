@@ -42,7 +42,7 @@ export class AgentStartServerCommand extends CommandBase<AgentStartParams, Agent
         success: false,
         handle: '',
         status: 'failed',
-        error: "Missing required parameter: model. Run 'ollama list' to see available models.",
+        error: "Missing required parameter: model. Run 'candle' provider to see available models.",
       });
     }
 

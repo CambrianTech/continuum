@@ -37,7 +37,7 @@ export type PromptFormat =
  */
 export interface ModelConfig {
   readonly model?: string;
-  readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, ollama)
+  readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, candle)
   readonly temperature?: number;
   readonly maxTokens?: number;          // Maximum output tokens
   readonly contextWindow?: number;      // Maximum input tokens (context length)

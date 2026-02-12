@@ -18,6 +18,7 @@ import { ORM } from '../../../../daemons/data-daemon/server/ORM';
 import { UserEntity } from '../../../../system/data/entities/UserEntity';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { SystemPaths } from '../../../../system/core/config/SystemPaths';
+import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 
 export class AIGenerateServerCommand extends AIGenerateCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -117,7 +118,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
         // Build request with personaContext for proper logging and routing
         request = {
           messages,
-          model: params.model || 'llama3.2:1b',
+          model: params.model || LOCAL_MODELS.DEFAULT,
           temperature: params.temperature ?? 0.7,
           maxTokens: params.maxTokens ?? 150,
           preferredProvider: params.preferredProvider || 'candle',

@@ -40,9 +40,9 @@ pub struct OpenAICompatibleConfig {
     pub supports_tools: bool,
     pub supports_vision: bool,
     pub models: Vec<ModelInfo>,
-    /// Whether this provider requires Authorization header (true for cloud, false for local like Ollama)
+    /// Whether this provider requires Authorization header
     pub requires_auth: bool,
-    /// If true, use api_key_env value as the base URL (for Ollama where OLLAMA_HOST is the URL)
+    /// If true, use api_key_env value as the base URL instead of API key
     pub base_url_from_env: bool,
 }
 
@@ -50,7 +50,7 @@ pub struct OpenAICompatibleConfig {
 pub struct OpenAICompatibleAdapter {
     config: OpenAICompatibleConfig,
     api_key: Option<String>,
-    /// Runtime base URL (overrides config.base_url for providers like Ollama)
+    /// Runtime base URL (overrides config.base_url when base_url_from_env is set)
     runtime_base_url: Option<String>,
     client: reqwest::Client,
     initialized: bool,
@@ -552,10 +552,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // Load API key or host URL from env
         let env_value = get_secret(self.config.api_key_env).map(|s| s.to_string());
 
-        // Handle base_url_from_env (for Ollama where env var is the URL, not API key)
+        // Handle base_url_from_env (when env var contains URL, not API key)
         if self.config.base_url_from_env {
             if let Some(ref url) = env_value {
-                // Store the URL from env var (e.g., OLLAMA_HOST=http://localhost:11434)
+                // Store the URL from env var
                 self.runtime_base_url = Some(url.clone());
             } else {
                 // Use default base_url from config
@@ -643,7 +643,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        // Make request - use runtime base URL if set (for Ollama), otherwise config base URL
+        // Make request - use runtime base URL if set, otherwise config base URL
         let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
         let url = format!("{}/v1/chat/completions", base_url);
 

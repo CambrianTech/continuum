@@ -1,7 +1,7 @@
 /**
  * Inference Generate Command - Shared Types
  *
- * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
+ * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
  */
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
@@ -18,7 +18,7 @@ export interface InferenceGenerateParams extends CommandParams {
   prompt: string;
   // Model to use (e.g., 'llama3.2:3b', 'Qwen/Qwen2-1.5B-Instruct'). Defaults to LOCAL_MODELS.DEFAULT
   model?: string;
-  // Preferred provider: 'candle' | 'ollama' | 'anthropic' | 'openai' | 'groq' | 'together' | 'fireworks'. Auto-routes if not specified
+  // Preferred provider: 'candle' | 'anthropic' | 'openai' | 'groq' | 'together' | 'fireworks'. Auto-routes if not specified
   provider?: string;
   // Maximum tokens to generate (default: 2048)
   maxTokens?: number;
@@ -41,7 +41,7 @@ export const createInferenceGenerateParams = (
     prompt: string;
     // Model to use (e.g., 'llama3.2:3b', 'Qwen/Qwen2-1.5B-Instruct'). Defaults to LOCAL_MODELS.DEFAULT
     model?: string;
-    // Preferred provider: 'candle' | 'ollama' | 'anthropic' | 'openai' | 'groq' | 'together' | 'fireworks'. Auto-routes if not specified
+    // Preferred provider: 'candle' | 'anthropic' | 'openai' | 'groq' | 'together' | 'fireworks'. Auto-routes if not specified
     provider?: string;
     // Maximum tokens to generate (default: 2048)
     maxTokens?: number;
@@ -73,7 +73,7 @@ export interface InferenceGenerateResult extends CommandResult {
   model: string;
   // Provider that handled the request
   provider: string;
-  // Whether inference was local (Candle/Ollama) or cloud
+  // Whether inference was local (Candle) or cloud
   isLocal: boolean;
   // LoRA adapters that were actually applied
   adaptersApplied: string[];
@@ -101,7 +101,7 @@ export const createInferenceGenerateResult = (
     model?: string;
     // Provider that handled the request
     provider?: string;
-    // Whether inference was local (Candle/Ollama) or cloud
+    // Whether inference was local (Candle) or cloud
     isLocal?: boolean;
     // LoRA adapters that were actually applied
     adaptersApplied?: string[];

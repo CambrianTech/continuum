@@ -103,14 +103,14 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     ]);
 
     // STEP 2: Register LOCAL adapter - Candle gRPC (native Rust inference)
-    // NO FALLBACK: If Candle fails, we FAIL. No silent degradation to Ollama.
-    // Ollama is NOT registered - Candle is the ONLY local inference path.
+    // NO FALLBACK: If Candle fails, we FAIL. No silent degradation.
+    // Candle is the ONLY local inference path.
     const candlePromise = (async () => {
       const { CandleGrpcAdapter } = await import('../adapters/candle-grpc/shared/CandleGrpcAdapter');
       const adapter = new CandleGrpcAdapter();
       await adapter.initialize();
       await this.registerAdapter(adapter, { priority: 105, enabled: true });
-      this.log.info('✅ Candle gRPC adapter registered (Ollama disabled - Candle is the only local path)');
+      this.log.info('✅ Candle gRPC adapter registered (Candle is the only local path)');
     })();
 
     // Sentinel adapter (if configured)
@@ -165,7 +165,7 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     ].filter(Boolean) as Promise<void>[];
 
     // Wait for ALL adapters to register (Candle + Sentinel + cloud in parallel)
-    // NO OLLAMA - Candle is the only local inference path
+    // Candle is the only local inference path
     await Promise.allSettled([candlePromise, sentinelPromise, ...cloudAdapters]);
 
     // Call base initialization

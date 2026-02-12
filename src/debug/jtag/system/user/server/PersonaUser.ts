@@ -98,6 +98,7 @@ import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 import { PersonaToolRegistry } from './modules/PersonaToolRegistry';
 import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
+import { LOCAL_MODELS } from '../../shared/Constants';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
@@ -1480,7 +1481,7 @@ export class PersonaUser extends AIUser {
     timer.setMeta('displayName', this.displayName);
     timer.setMeta('context', request.context || 'unknown');
     timer.setMeta('provider', this.modelConfig.provider || 'candle');
-    timer.setMeta('model', this.modelConfig.model || 'llama3.2:3b');
+    timer.setMeta('model', this.modelConfig.model || LOCAL_MODELS.DEFAULT);
 
     try {
       const messages: { role: 'system' | 'user'; content: string }[] = [];
@@ -1500,7 +1501,7 @@ export class PersonaUser extends AIUser {
 
       const genRequest: TextGenerationRequest = {
         messages,
-        model: this.modelConfig.model || 'llama3.2:3b',
+        model: this.modelConfig.model || LOCAL_MODELS.DEFAULT,
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
         preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],

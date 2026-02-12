@@ -57,6 +57,7 @@ import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
+import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 // DataCreate import removed — response posting now uses ORM.store() directly
@@ -370,7 +371,7 @@ export class PersonaResponseGenerator {
     }
 
     // 4. Fall back to configured base model
-    return this.modelConfig.model || 'llama3.2:3b';
+    return this.modelConfig.model || LOCAL_MODELS.DEFAULT;
   }
 
   /**
@@ -1133,7 +1134,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
         const cost = calculateModelCost(
           this.modelConfig.provider ?? 'candle',
-          this.modelConfig.model ?? 'llama3.2:3b',
+          this.modelConfig.model ?? LOCAL_MODELS.DEFAULT,
           inputTokenEstimate,
           outputTokenEstimate
         );
@@ -1142,7 +1143,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           this.personaId,
           this.personaName,
           this.modelConfig.provider ?? 'candle',
-          this.modelConfig.model ?? 'llama3.2:3b',
+          this.modelConfig.model ?? LOCAL_MODELS.DEFAULT,
           `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           inputTokenEstimate,
           outputTokenEstimate,
@@ -1546,7 +1547,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           this.personaId,
           this.personaName,
           this.modelConfig.provider || 'candle',
-          this.modelConfig.model || 'llama3.2:3b',
+          this.modelConfig.model || LOCAL_MODELS.DEFAULT,
           messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
           messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,
           0,  // No completion tokens on error
@@ -1869,7 +1870,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       const result = await AIDecisionService.checkRedundancy(
         myResponse,
         decisionContext,
-        { model: 'llama3.2:3b' }
+        { model: LOCAL_MODELS.DEFAULT }
       );
 
       return result.isRedundant;

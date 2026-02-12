@@ -89,9 +89,10 @@ pub fn generate_text(
 ) -> Result<(String, usize), String> {
     let start = Instant::now();
 
+    // DON'T add special tokens - build_prompt_from_messages already includes them
     let encoding = state
         .tokenizer
-        .encode(prompt, true)
+        .encode(prompt, false)
         .map_err(|e| format!("Tokenization failed: {e}"))?;
     let prompt_tokens: Vec<u32> = encoding.get_ids().to_vec();
     let prompt_len = prompt_tokens.len();
@@ -169,9 +170,18 @@ pub fn generate_text(
         // Protect against NaN/Inf in logits before sampling
         let last_logits = sanitize_logits(&last_logits, &state.device)?;
 
-        let next_token = logits_processor
-            .sample(&last_logits)
-            .map_err(|e| format!("Sampling failed: {e}"))?;
+        // Try to sample - if it fails, log and retry with fresh sanitization
+        let next_token = match logits_processor.sample(&last_logits) {
+            Ok(token) => token,
+            Err(e) => {
+                runtime::logger("candle").warn(&format!("Sampling failed at token {}, retrying: {}", i, e));
+                // Re-sanitize and retry - this shouldn't happen but be defensive
+                let sanitized = sanitize_logits(&last_logits, &state.device)?;
+                logits_processor
+                    .sample(&sanitized)
+                    .map_err(|e| format!("Sampling failed even after re-sanitization at token {}: {}", i, e))?
+            }
+        };
 
         if state.eos_token_ids.contains(&next_token) {
             break;

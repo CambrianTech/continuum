@@ -19,7 +19,7 @@ import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 export interface AdapterTestParams extends CommandParams {
-  /** Which adapter to test (e.g., 'ollama', 'openai', 'anthropic') */
+  /** Which adapter to test (e.g., 'candle', 'openai', 'anthropic') */
   adapter?: string;
 
   /** Specific model to test with (optional) */

@@ -19,6 +19,7 @@ import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEn
 import { SystemIdentity } from '../api/data-seed/SystemIdentity';
 import { PERSONA_CONFIGS, PERSONA_UNIQUE_IDS } from './seed/personas';
 import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
+import { LOCAL_MODELS } from '../system/shared/Constants';
 import {
   createRoom,
   createDefaultContentTypes,
@@ -481,7 +482,7 @@ async function seedViaJTAG() {
         cooldownSeconds: 30,
         maxResponsesPerSession: 50,
         gatingModel: 'deterministic',
-        responseModel: 'llama3.2:3b'
+        responseModel: LOCAL_MODELS.DEFAULT
       }),
       updatePersonaConfig(teacherPersona.id, {
         domainKeywords: ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson', 'tutorial', 'guide'],
@@ -490,7 +491,7 @@ async function seedViaJTAG() {
         cooldownSeconds: 30,
         maxResponsesPerSession: 50,
         gatingModel: 'deterministic',
-        responseModel: 'llama3.2:3b'
+        responseModel: LOCAL_MODELS.DEFAULT
       }),
       updatePersonaConfig(codeReviewPersona.id, {
         domainKeywords: ['code', 'programming', 'function', 'bug', 'typescript', 'javascript', 'review', 'refactor'],
@@ -499,7 +500,7 @@ async function seedViaJTAG() {
         cooldownSeconds: 30,
         maxResponsesPerSession: 50,
         gatingModel: 'deterministic',
-        responseModel: 'llama3.2:3b'
+        responseModel: LOCAL_MODELS.DEFAULT
       })
     ]);
     console.log('✅ Persona configurations applied');

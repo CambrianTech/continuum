@@ -62,6 +62,13 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'llama3.1:70b': 128000,
   'llama3.1:8b': 128000,
 
+  // HuggingFace IDs (used by Candle adapter directly)
+  // IMPORTANT: Q4_K_M quantization becomes numerically unstable beyond practical limits.
+  'meta-llama/Llama-3.1-8B-Instruct': 8000,  // Q4_K_M practical limit for 8B
+  'unsloth/Llama-3.2-3B-Instruct': 2000,     // Q4_K_M practical limit due to NaN/Inf
+  'Qwen/Qwen2-1.5B-Instruct': 4000,          // Smaller model, more stable
+  'Qwen/Qwen2-0.5B-Instruct': 4000,
+
   // Qwen Models via Ollama
   'qwen2.5': 128000,
   'qwen2.5:7b': 128000,
@@ -150,6 +157,13 @@ export const MODEL_INFERENCE_SPEEDS: Readonly<Record<string, number>> = {
   'qwen2.5:3b': 100,
   'qwen2:0.5b': 300,
   'qwen2:1.5b': 150,
+
+  // HuggingFace IDs (used by Candle adapter directly)
+  // These MUST match the actual model IDs used in Rust CandleAdapter
+  'meta-llama/Llama-3.1-8B-Instruct': 40,   // Q4_K_M 8B - slower but much better quality
+  'unsloth/Llama-3.2-3B-Instruct': 60,      // Q4_K_M quantized - conservative due to NaN/Inf at long contexts
+  'Qwen/Qwen2-1.5B-Instruct': 80,
+  'Qwen/Qwen2-0.5B-Instruct': 150,
 
   // Local medium models (7-14B params)
   // ~50-150 TPS on Apple Silicon

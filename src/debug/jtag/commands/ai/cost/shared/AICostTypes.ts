@@ -15,7 +15,7 @@ export interface AICostParams extends CommandParams {
   endTime?: string;                // ISO timestamp or relative (default: now)
 
   // Entity filtering
-  provider?: string;               // Filter by provider: "openai", "anthropic", "ollama", "deepseek"
+  provider?: string;               // Filter by provider: "openai", "anthropic", "candle", "deepseek"
   model?: string;                  // Filter by model: "gpt-4", "claude-3-opus", etc.
   userId?: UUID;                   // Filter by user (human or AI)
   roomId?: UUID;                   // Filter by room

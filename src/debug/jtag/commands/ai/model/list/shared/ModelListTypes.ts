@@ -34,7 +34,7 @@ export interface ModelCapabilities {
   taskType?: 'reasoning' | 'creative' | 'classification' | 'extraction' | 'code' | 'chat' | 'gating';
 
   // Provider constraints
-  preferredProviders?: string[];     // e.g., ["ollama", "openai"]
+  preferredProviders?: string[];     // e.g., ["candle", "openai"]
   excludeProviders?: string[];
 }
 
@@ -45,7 +45,7 @@ export interface ModelInfo {
   // Identity
   name: string;                      // e.g., "llama3.2:1b"
   displayName: string;               // e.g., "Llama 3.2 1B"
-  provider: string;                  // e.g., "ollama", "openai"
+  provider: string;                  // e.g., "candle", "openai"
 
   // Capabilities
   parameters: string;                // e.g., "1B", "3B", "70B"

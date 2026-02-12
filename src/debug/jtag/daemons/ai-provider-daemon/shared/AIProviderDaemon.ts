@@ -2,7 +2,7 @@
  * AI Provider Daemon - Universal AI Integration Layer
  * ====================================================
  *
- * Central daemon for all AI provider integrations (Ollama, OpenAI, Anthropic, etc.)
+ * Central daemon for all AI provider integrations (Candle, OpenAI, Anthropic, etc.)
  * Provides unified interface for PersonaUsers and other AI-powered features.
  *
  * Architecture:
@@ -16,7 +16,7 @@
  *   endpoint: '/ai-provider',
  *   payload: {
  *     type: 'generate-text',
- *     request: { messages: [...], preferredProvider: 'ollama' }
+ *     request: { messages: [...], preferredProvider: 'candle' }
  *   }
  * });
  */
@@ -571,15 +571,15 @@ export class AIProviderDaemon extends DaemonBase {
    * - When preferredProvider is 'local' etc., route to Candle (native Rust)
    * - Candle enables LoRA adapter composition for the genome vision
    *
-   * OLLAMA IS REMOVED: Candle is the ONLY local inference path.
-   * Legacy 'ollama' provider requests are aliased to Candle for backward compat.
+   * Candle is the ONLY local inference path.
+   * Legacy 'local'/'llamacpp' provider requests are aliased to Candle.
    *
    * IMPORTANT: Candle is ONLY used for local inference.
    * Cloud providers use their own adapters. This prevents queue bottlenecks.
    *
    * ROUTING PRIORITY (in order):
    * 1. Explicit preferredProvider (if specified and available)
-   * 2. Local provider aliasing (legacy 'ollama'/local → candle)
+   * 2. Local provider aliasing (legacy 'local'/'llamacpp' → candle)
    * 3. Default by priority (highest priority enabled adapter)
    *
    * @returns AdapterSelection with routing metadata for observability
@@ -590,8 +590,8 @@ export class AIProviderDaemon extends DaemonBase {
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (preferredProvider) {
       // LOCAL PROVIDER ALIASING: Route local providers to Candle
-      // Candle is the ONLY local inference path - 'ollama' kept for backward compat only
-      const localProviders = ['local', 'llamacpp', 'ollama']; // 'ollama' DEPRECATED - aliased to candle
+      // Candle is the ONLY local inference path
+      const localProviders = ['local', 'llamacpp'];
       if (localProviders.includes(preferredProvider)) {
         const candleReg = this.adapters.get('candle');
         if (candleReg && candleReg.enabled) {
@@ -775,7 +775,7 @@ export class AIProviderDaemon extends DaemonBase {
    * const response = await AIProviderDaemon.generateText({
    *   messages: [{ role: 'user', content: 'Hello!' }],
    *   model: 'llama3.2:1b',
-   *   preferredProvider: 'ollama'
+   *   preferredProvider: 'candle'
    * });
    */
   static async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
@@ -817,7 +817,7 @@ export class AIProviderDaemon extends DaemonBase {
    * const response = await AIProviderDaemon.createEmbedding({
    *   input: 'Hello, world!',
    *   model: 'nomic-embed-text',
-   *   preferredProvider: 'ollama'
+   *   preferredProvider: 'candle'
    * });
    */
   static async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -881,7 +881,7 @@ export class AIProviderDaemon extends DaemonBase {
    * Get adapter by provider ID with automatic instance injection - CLEAN INTERFACE
    *
    * @example
-   * const adapter = AIProviderDaemon.getAdapter('ollama');
+   * const adapter = AIProviderDaemon.getAdapter('candle');
    * if (adapter) {
    *   const models = await adapter.getAvailableModels();
    * }

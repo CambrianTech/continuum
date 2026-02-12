@@ -2,7 +2,7 @@
  * Inference Generate Command - Server Implementation
  *
  * Generate text using local or cloud AI inference. Auto-routes to best available backend
- * (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
+ * (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
  *
  * This is the SINGLE ENTRY POINT for all text generation in the system.
  * PersonaUser, tools, and any other consumer should use this command.

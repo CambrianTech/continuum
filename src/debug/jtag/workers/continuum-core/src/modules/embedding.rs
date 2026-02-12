@@ -3,9 +3,9 @@
 //! Handles: embedding/generate, embedding/model/load, embedding/model/list,
 //!          embedding/model/info, embedding/model/unload
 //!
-//! Benefits over Ollama HTTP:
-//! - No network overhead (~5ms vs ~80ms per embedding)
-//! - Batch processing (100 texts in ~100ms vs ~8s)
+//! Benefits of native embedding:
+//! - No network overhead (~5ms per embedding)
+//! - Batch processing (100 texts in ~100ms)
 //! - No external service dependency
 //! - True parallelism via ONNX Runtime
 //!
@@ -462,7 +462,7 @@ fn get_model_info_list() -> Vec<ModelInfo> {
         ModelInfo {
             name: "NomicEmbedTextV15".to_string(),
             dimensions: 768,
-            description: "Nomic model, same as Ollama nomic-embed-text".to_string(),
+            description: "Nomic Embed Text v1.5 - 768 dimensions".to_string(),
             size_mb: 550,
             loaded: loaded_models.contains(&"NomicEmbedTextV15".to_string()),
         },

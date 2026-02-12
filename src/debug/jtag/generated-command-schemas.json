@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-12T15:06:40.931Z",
+  "generated": "2026-02-12T23:22:10.015Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3358,7 +3358,7 @@
     },
     {
       "name": "inference/generate",
-      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
       "params": {
         "prompt": {
           "type": "string",
@@ -3564,7 +3564,7 @@
     },
     {
       "name": "genome/paging-adapter-register",
-      "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Ollama adapters",
+      "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Candle adapters",
       "params": {
         "adapterId": {
           "type": "string",
