@@ -40,12 +40,18 @@ pub struct OpenAICompatibleConfig {
     pub supports_tools: bool,
     pub supports_vision: bool,
     pub models: Vec<ModelInfo>,
+    /// Whether this provider requires Authorization header (true for cloud, false for local like Ollama)
+    pub requires_auth: bool,
+    /// If true, use api_key_env value as the base URL (for Ollama where OLLAMA_HOST is the URL)
+    pub base_url_from_env: bool,
 }
 
 /// OpenAI-compatible adapter implementation
 pub struct OpenAICompatibleAdapter {
     config: OpenAICompatibleConfig,
     api_key: Option<String>,
+    /// Runtime base URL (overrides config.base_url for providers like Ollama)
+    runtime_base_url: Option<String>,
     client: reqwest::Client,
     initialized: bool,
 }
@@ -60,6 +66,7 @@ impl OpenAICompatibleAdapter {
         Self {
             config,
             api_key: None,
+            runtime_base_url: None,
             client,
             initialized: false,
         }
@@ -75,6 +82,8 @@ impl OpenAICompatibleAdapter {
             default_model: "deepseek-chat",
             supports_tools: true,
             supports_vision: false,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![
                 ModelInfo {
                     id: "deepseek-chat".to_string(),
@@ -126,6 +135,8 @@ impl OpenAICompatibleAdapter {
             default_model: "gpt-4-turbo-preview",
             supports_tools: true,
             supports_vision: true,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![
                 ModelInfo {
                     id: "gpt-4-turbo-preview".to_string(),
@@ -180,6 +191,8 @@ impl OpenAICompatibleAdapter {
             default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
             supports_tools: true,
             supports_vision: false,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![ModelInfo {
                 id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo".to_string(),
                 name: "Llama 3.1 70B Instruct".to_string(),
@@ -211,6 +224,8 @@ impl OpenAICompatibleAdapter {
             default_model: "llama-3.1-8b-instant",
             supports_tools: true,
             supports_vision: false,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![ModelInfo {
                 id: "llama-3.1-8b-instant".to_string(),
                 name: "Llama 3.1 8B Instant".to_string(),
@@ -239,12 +254,14 @@ impl OpenAICompatibleAdapter {
             name: "Fireworks AI",
             base_url: "https://api.fireworks.ai/inference",
             api_key_env: "FIREWORKS_API_KEY",
-            default_model: "accounts/fireworks/models/deepseek-v3",
+            default_model: "accounts/fireworks/models/llama-v3p3-70b-instruct",
             supports_tools: true,
             supports_vision: false,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![ModelInfo {
-                id: "accounts/fireworks/models/deepseek-v3".to_string(),
-                name: "DeepSeek V3 (Fireworks)".to_string(),
+                id: "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string(),
+                name: "Llama 3.3 70B Instruct".to_string(),
                 provider: "fireworks".to_string(),
                 capabilities: vec![
                     ModelCapability::TextGeneration,
@@ -273,6 +290,8 @@ impl OpenAICompatibleAdapter {
             default_model: "grok-3",
             supports_tools: true,
             supports_vision: false,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![
                 ModelInfo {
                     id: "grok-3".to_string(),
@@ -306,6 +325,8 @@ impl OpenAICompatibleAdapter {
             default_model: "gemini-2.0-flash",
             supports_tools: true,
             supports_vision: true,
+            requires_auth: true,
+            base_url_from_env: false,
             models: vec![ModelInfo {
                 id: "gemini-2.0-flash".to_string(),
                 name: "Gemini 2.0 Flash".to_string(),
@@ -325,6 +346,53 @@ impl OpenAICompatibleAdapter {
                 supports_streaming: true,
                 supports_tools: true,
             }],
+        })
+    }
+
+    /// Create adapter for Ollama (local inference, no auth required)
+    /// Base URL is read from OLLAMA_HOST env var (defaults to http://localhost:11434)
+    pub fn ollama() -> Self {
+        Self::new(OpenAICompatibleConfig {
+            provider_id: "ollama",
+            name: "Ollama",
+            base_url: "http://localhost:11434",  // Default, will be overridden by OLLAMA_HOST
+            api_key_env: "OLLAMA_HOST",  // Used to check if configured and get base URL
+            default_model: "llama3.2:3b",
+            supports_tools: true,
+            supports_vision: true,  // llama3.2-vision supports images
+            requires_auth: false,   // No API key needed for local Ollama
+            base_url_from_env: true,  // Read base URL from OLLAMA_HOST
+            models: vec![
+                ModelInfo {
+                    id: "llama3.2:3b".to_string(),
+                    name: "Llama 3.2 3B".to_string(),
+                    provider: "ollama".to_string(),
+                    capabilities: vec![
+                        ModelCapability::TextGeneration,
+                        ModelCapability::Chat,
+                        ModelCapability::ToolUse,
+                    ],
+                    context_window: 128000,
+                    max_output_tokens: Some(4096),
+                    cost_per_1k_tokens: None,  // Local = free
+                    supports_streaming: true,
+                    supports_tools: true,
+                },
+                ModelInfo {
+                    id: "llama3.2:1b".to_string(),
+                    name: "Llama 3.2 1B".to_string(),
+                    provider: "ollama".to_string(),
+                    capabilities: vec![
+                        ModelCapability::TextGeneration,
+                        ModelCapability::Chat,
+                    ],
+                    context_window: 128000,
+                    max_output_tokens: Some(4096),
+                    cost_per_1k_tokens: None,
+                    supports_streaming: true,
+                    supports_tools: false,
+                },
+            ],
         })
     }
 
@@ -528,14 +596,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
-        // Load API key
-        self.api_key = get_secret(self.config.api_key_env).map(|s| s.to_string());
+        // Load API key or host URL from env
+        let env_value = get_secret(self.config.api_key_env).map(|s| s.to_string());
 
-        if self.api_key.is_none() {
-            return Err(format!(
-                "{} API key not configured ({})",
-                self.config.name, self.config.api_key_env
-            ));
+        // Handle base_url_from_env (for Ollama where env var is the URL, not API key)
+        if self.config.base_url_from_env {
+            if let Some(ref url) = env_value {
+                // Store the URL from env var (e.g., OLLAMA_HOST=http://localhost:11434)
+                self.runtime_base_url = Some(url.clone());
+            } else {
+                // Use default base_url from config
+                self.runtime_base_url = Some(self.config.base_url.to_string());
+            }
+        }
+
+        // Only require API key if provider needs auth
+        if self.config.requires_auth {
+            self.api_key = env_value;
+            if self.api_key.is_none() {
+                return Err(format!(
+                    "{} API key not configured ({})",
+                    self.config.name, self.config.api_key_env
+                ));
+            }
         }
 
         self.initialized = true;
@@ -551,8 +634,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String> {
-        let api_key = self.api_key.as_ref()
-            .ok_or_else(|| format!("{} not initialized", self.config.name))?;
+        // Only require API key for providers that need auth
+        if self.config.requires_auth && self.api_key.is_none() {
+            return Err(format!("{} not initialized", self.config.name));
+        }
 
         let start = Instant::now();
         let request_id = request.request_id.clone()
@@ -605,12 +690,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        // Make request
-        let url = format!("{}/v1/chat/completions", self.config.base_url);
-        let response = self.client
+        // Make request - use runtime base URL if set (for Ollama), otherwise config base URL
+        let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
+        let url = format!("{}/v1/chat/completions", base_url);
+
+        let mut request_builder = self.client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // Only add Authorization header if provider requires auth
+        if self.config.requires_auth {
+            if let Some(api_key) = &self.api_key {
+                request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        let response = request_builder
             .json(&body)
             .send()
             .await
@@ -691,7 +786,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        if self.api_key.is_none() {
+        // Only require API key if provider needs auth
+        if self.config.requires_auth && self.api_key.is_none() {
             return HealthStatus {
                 status: HealthState::Unhealthy,
                 api_available: false,
@@ -705,13 +801,21 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let start = Instant::now();
 
         // Try to list models as health check
-        let url = format!("{}/v1/models", self.config.base_url);
-        let result = self.client
+        let base_url = self.runtime_base_url.as_deref().unwrap_or(self.config.base_url);
+        let url = format!("{}/v1/models", base_url);
+
+        let mut request_builder = self.client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key.as_ref().unwrap()))
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await;
+            .timeout(std::time::Duration::from_secs(5));
+
+        // Only add Authorization header if provider requires auth
+        if self.config.requires_auth {
+            if let Some(api_key) = &self.api_key {
+                request_builder = request_builder.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+
+        let result = request_builder.send().await;
 
         let response_time_ms = start.elapsed().as_millis() as u64;
 
@@ -757,6 +861,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "fireworks" => vec!["accounts/fireworks/"], // Fireworks namespace
             "xai" => vec!["grok"],
             "google" => vec!["gemini"],
+            // Ollama supports many local models - common prefixes
+            "ollama" => vec!["llama", "qwen", "phi", "mistral", "codellama", "gemma",
+                             "tinyllama", "orca", "vicuna", "wizardlm", "neural-chat",
+                             "stablelm", "yi", "deepseek-coder"],
             _ => vec![], // No auto-routing for unknown providers
         }
     }
