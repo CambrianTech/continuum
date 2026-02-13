@@ -95,7 +95,7 @@ export class PricingManager {
               'deepseek-reasoner': { inputPer1M: 0.55, outputPer1M: 2.19, currency: 'USD', effectiveDate: '2025-01-20' }
             }
           },
-          ollama: {
+          candle: {
             models: {
               '*': { inputPer1M: 0.00, outputPer1M: 0.00, currency: 'USD', effectiveDate: '2024-01-01' }
             }
@@ -131,7 +131,7 @@ export class PricingManager {
       return staticPrice;
     }
 
-    // Check wildcard pricing (e.g., ollama = free)
+    // Check wildcard pricing (e.g., candle = free)
     const wildcardPrice = this.staticPricing?.providers?.[provider]?.models?.['*'];
     if (wildcardPrice) {
       return wildcardPrice;

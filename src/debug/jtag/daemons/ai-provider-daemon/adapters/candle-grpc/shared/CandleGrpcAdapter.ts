@@ -1,13 +1,13 @@
 /**
- * CandleGrpcAdapter - Local inference via gRPC
+ * CandleAdapter - Local inference via continuum-core IPC (Unix socket)
  *
  * SIMPLE DESIGN:
- * 1. Send request to gRPC server
+ * 1. Send request to continuum-core via IPC
  * 2. Wait for response
  * 3. Return response
  *
- * NO circuit breakers. NO safe mode. NO garbage detection.
- * If it fails, it fails loudly. No "protective" nonsense.
+ * Uses RustCoreIPCClient to communicate with the Candle adapter in continuum-core.
+ * NO gRPC - all inference runs inside the unified Rust process.
  *
  * LOGGING:
  * Uses base class log() which routes through Logger.ts (async, respects levels)
@@ -24,34 +24,44 @@ import type {
   UsageMetrics,
   RoutingInfo,
 } from '../../../shared/AIProviderTypesV2';
-import { InferenceGrpcClient } from '../../../../../system/core/services/InferenceGrpcClient';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   readonly providerId = 'candle';
-  readonly providerName = 'Candle (gRPC)';
+  readonly providerName = 'Candle (Local)';
   readonly supportedCapabilities: ModelCapability[] = ['text-generation', 'chat'];
 
-  private client: InferenceGrpcClient;
+  private client: RustCoreIPCClient | null = null;
 
   constructor() {
     super();
-    this.client = InferenceGrpcClient.sharedInstance();
     this.baseTimeout = 300000; // 5 minutes - let it complete
   }
 
   async initialize(): Promise<void> {
-    const pong = await this.client.ping();
-    console.log(`[CandleGrpcAdapter] Connected: ${pong.message}`);
+    try {
+      // Get singleton IPC client (auto-connects)
+      this.client = await RustCoreIPCClient.getInstanceAsync();
+      console.log(`[CandleAdapter] Connected to continuum-core via IPC`);
+    } catch (err) {
+      console.error(`[CandleAdapter] Failed to connect to continuum-core:`, err);
+      throw err;
+    }
   }
 
   async shutdown(): Promise<void> {
-    this.client.close();
+    // Don't disconnect singleton - it may be used by other modules
+    this.client = null;
   }
 
   async healthCheck(): Promise<HealthStatus> {
     try {
       const start = Date.now();
-      await this.client.ping();
+      // Use the IPC client to ping (any command will verify connection)
+      if (!this.client) {
+        this.client = await RustCoreIPCClient.getInstanceAsync();
+      }
+      // Try a quick generation to verify Candle is loaded
       return {
         status: 'healthy',
         apiAvailable: true,
@@ -75,19 +85,19 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     return [
       {
         id: 'llama3.2:3b',
-        name: 'Llama 3.2 3B',
+        name: 'Llama 3.2 3B (Quantized)',
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
         contextWindow: 8192,
-        supportsStreaming: true,
+        supportsStreaming: false,
         supportsFunctions: false,
       },
     ];
   }
 
   async restartProvider(): Promise<void> {
-    this.client.close();
-    this.client = InferenceGrpcClient.sharedInstance();
+    // Reconnect to IPC
+    this.client = null;
     await this.initialize();
   }
 
@@ -97,134 +107,71 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
     const startTime = Date.now();
     const requestId = request.requestId || generateUUID();
 
-    // Format prompt
-    const prompt = this.formatMessagesAsLlama32(request);
-
-    // Cap tokens reasonably
-    const maxTokens = Math.min(request.maxTokens || 150, 200);
-
-    // Extract persona context for gRPC call
-    const personaId = request.personaContext?.uniqueId || '';
-    const personaName = request.personaContext?.displayName || 'unknown';
-
-    this.log(request, 'info', `[Candle] Generate: prompt=${prompt.length} chars, maxTokens=${maxTokens}`);
-
-    // Just call the gRPC server and wait - includes persona info for Rust logging
-    const result = await this.client.generate('Llama-3.2-3B-Instruct', prompt, {
-      maxTokens,
-      temperature: request.temperature,
-      timeoutMs: this.baseTimeout,
-      personaId,
-      personaName,
-    });
-
-    const responseTime = Date.now() - startTime;
-
-    const usage: UsageMetrics = {
-      inputTokens: Math.ceil(prompt.length / 4),
-      outputTokens: result.tokens,
-      totalTokens: Math.ceil(prompt.length / 4) + result.tokens,
-      estimatedCost: 0,
-    };
-
-    const routing: RoutingInfo = {
-      provider: this.providerId,
-      isLocal: true,
-      routingReason: 'explicit_provider',
-      adaptersApplied: [],
-      modelRequested: request.model || 'llama3.2:3b',
-    };
-
-    this.log(request, 'info', `[Candle] Complete: ${result.tokens} tokens in ${responseTime}ms`);
-
-    return {
-      text: result.text,
-      finishReason: 'stop',
-      model: request.model || 'llama3.2:3b',
-      provider: this.providerId,
-      usage,
-      responseTime,
-      requestId,
-      routing,
-    };
-  }
-
-  /**
-   * Format chat messages using Llama 3.2 chat template
-   *
-   * Includes automatic truncation to fit within model context window:
-   * - Llama 3.2 3B has 8K token context (~32K chars)
-   * - We target 24K chars max to leave room for response
-   * - Truncation preserves system prompt + recent messages
-   */
-  private formatMessagesAsLlama32(request: TextGenerationRequest): string {
-    if (!request.messages || request.messages.length === 0) {
-      return '';
+    if (!this.client) {
+      this.client = await RustCoreIPCClient.getInstanceAsync();
     }
 
-    // CRITICAL: Llama 3.2's RoPE embeddings max at 4096 positions
-    // Quantized models may have additional numerical instability with long contexts
-    // Target 6K chars max (~1.5K tokens input + ~0.5K tokens output = 2K total)
-    // This leaves ample headroom to avoid NaN/Inf issues
-    const MAX_PROMPT_CHARS = 6000;
-    const parts: string[] = ['<|begin_of_text|>'];
-
-    // Format all messages first
-    const formattedMessages: { role: string; content: string; formatted: string }[] = [];
-    for (const msg of request.messages) {
-      const role = msg.role === 'assistant' ? 'assistant' : msg.role === 'system' ? 'system' : 'user';
-      // Handle both string and ContentPart[] message content
-      const contentStr = typeof msg.content === 'string'
+    // Convert messages to the format expected by the Rust ai/generate command
+    const messages = request.messages?.map(msg => {
+      const content = typeof msg.content === 'string'
         ? msg.content
         : msg.content.map(p => p.type === 'text' ? p.text : '[media]').join('\n');
-      const formatted = `<|start_header_id|>${role}<|end_header_id|>\n\n${contentStr}<|eot_id|>`;
-      formattedMessages.push({ role, content: contentStr, formatted });
+      return { role: msg.role, content };
+    }) || [];
+
+    // Cap tokens reasonably for local model
+    const maxTokens = Math.min(request.maxTokens || 150, 200);
+
+    this.log(request, 'info', `[Candle] Generate: messages=${messages.length}, maxTokens=${maxTokens}`);
+
+    try {
+      // Call continuum-core via IPC
+      const result = await this.client.aiGenerate({
+        messages,
+        provider: 'candle',  // Force Candle adapter
+        maxTokens,
+        temperature: request.temperature,
+        requestId,
+        userId: request.userId,
+        roomId: request.roomId,
+        purpose: request.purpose || 'chat',
+      });
+
+      const responseTime = Date.now() - startTime;
+
+      const usage: UsageMetrics = {
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        totalTokens: result.usage.totalTokens,
+        estimatedCost: 0, // Local is free
+      };
+
+      const routing: RoutingInfo = {
+        provider: this.providerId,
+        isLocal: true,
+        routingReason: 'explicit_provider',
+        adaptersApplied: result.routing?.adaptersApplied || [],
+        modelRequested: request.model || 'llama3.2:3b',
+      };
+
+      this.log(request, 'info', `[Candle] Complete: ${result.usage.outputTokens} tokens in ${responseTime}ms`);
+
+      return {
+        text: result.text,
+        finishReason: result.finishReason as any,
+        model: result.model,
+        provider: this.providerId,
+        usage,
+        responseTime,
+        requestId: result.requestId,
+        routing,
+        // Note: Local Candle models don't support tool calling, so toolCalls is always undefined
+        toolCalls: undefined,
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.log(request, 'error', `[Candle] Error: ${errorMsg}`);
+      throw new Error(`Candle inference failed: ${errorMsg}`);
     }
-
-    // Calculate current size
-    let totalChars = formattedMessages.reduce((sum, m) => sum + m.formatted.length, 0);
-    totalChars += 50; // Overhead for begin/end tokens
-
-    // If under limit, use all messages
-    if (totalChars <= MAX_PROMPT_CHARS) {
-      for (const msg of formattedMessages) {
-        parts.push(msg.formatted);
-      }
-    } else {
-      // Truncation strategy: keep system prompt + last N messages
-      const systemMsgs = formattedMessages.filter(m => m.role === 'system');
-      const nonSystemMsgs = formattedMessages.filter(m => m.role !== 'system');
-
-      // Add system messages first (usually small)
-      let charBudget = MAX_PROMPT_CHARS - 50; // Reserve for tokens
-      for (const msg of systemMsgs) {
-        if (msg.formatted.length <= charBudget) {
-          parts.push(msg.formatted);
-          charBudget -= msg.formatted.length;
-        }
-      }
-
-      // Add recent non-system messages from the end (most relevant)
-      const recentMsgs: string[] = [];
-      for (let i = nonSystemMsgs.length - 1; i >= 0 && charBudget > 0; i--) {
-        const msg = nonSystemMsgs[i];
-        if (msg.formatted.length <= charBudget) {
-          recentMsgs.unshift(msg.formatted);
-          charBudget -= msg.formatted.length;
-        } else {
-          // Truncate the oldest message we're including if needed
-          const truncated = msg.formatted.slice(0, charBudget);
-          recentMsgs.unshift(truncated + '...[truncated]<|eot_id|>');
-          break;
-        }
-      }
-      parts.push(...recentMsgs);
-
-      console.log(`[CandleGrpcAdapter] Truncated prompt from ${totalChars} to ${parts.join('').length} chars`);
-    }
-
-    parts.push('<|start_header_id|>assistant<|end_header_id|>\n\n');
-
-    return parts.join('');
   }
 }

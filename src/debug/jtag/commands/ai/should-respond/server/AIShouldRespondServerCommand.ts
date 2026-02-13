@@ -10,6 +10,7 @@ import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/C
 import type { AIShouldRespondParams, AIShouldRespondResult } from '../shared/AIShouldRespondTypes';
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import type { TextGenerationRequest } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 
 export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -47,7 +48,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           ...markedHistory,  // Conversation with trigger message marked
           { role: 'user', content: gatingInstruction }
         ],
-        model: params.model ?? 'llama3.2:3b',  // Instruction-tuned model
+        model: params.model ?? LOCAL_MODELS.DEFAULT,  // Candle uses pre-loaded model
         temperature: 0.3,
         maxTokens: 200,
         preferredProvider: 'candle'
@@ -64,14 +65,14 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
 
       // If parsing failed (confidence = 0.0 means parse error), retry with better model to fix JSON
       if (parsed.confidence === 0.0 && parsed.reason === 'Failed to parse AI response') {
-        console.warn(`⚠️ Gating JSON parse failed with ${request.model}, retrying with llama3.2:3b to fix malformed JSON`);
+        console.warn(`⚠️ Gating JSON parse failed with ${request.model}, retrying with Candle to fix malformed JSON`);
 
         const fixRequest: TextGenerationRequest = {
           messages: [
             { role: 'system', content: 'You are a JSON repair tool. Fix malformed JSON and return valid JSON only.' },
             { role: 'user', content: `This JSON is malformed:\n\n${response.text}\n\nFix it and return ONLY valid JSON with this exact structure:\n{\n  "shouldRespond": true/false,\n  "confidence": 0.0-1.0,\n  "reason": "string",\n  "factors": {\n    "mentioned": true/false,\n    "questionAsked": true/false,\n    "domainRelevant": true/false,\n    "recentlySpoke": true/false,\n    "othersAnswered": true/false\n  }\n}` }
           ],
-          model: 'llama3.2:3b',  // Better model for JSON repair
+          model: LOCAL_MODELS.DEFAULT,  // Candle uses pre-loaded model
           temperature: 0.1,  // Low temp for structured output
           maxTokens: 200,
           preferredProvider: 'candle'
@@ -81,9 +82,9 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
         if (fixedResponse.text) {
           parsed = this.parseGatingResponse(fixedResponse.text);
           if (parsed.confidence !== 0.0) {
-            console.log(`✅ JSON repair succeeded with llama3.2:3b`);
+            console.log(`✅ JSON repair succeeded with Candle`);
           } else {
-            throw new Error(`JSON repair failed even with llama3.2:3b. Original: ${response.text.slice(0, 200)}`);
+            throw new Error(`JSON repair failed even with Candle. Original: ${response.text.slice(0, 200)}`);
           }
         } else {
           throw new Error(`JSON repair request failed: ${fixedResponse.error}`);

@@ -14,7 +14,7 @@ import { generateUUID, type UUID } from '../../system/core/types/CrossPlatformUU
 import { DEFAULT_USERS } from '../../system/data/domains/DefaultEntities';
 import type { BaseUserDataWithRelationships } from '../../domain/user/UserRelationships';
 import { USER_IDS, USER_CONFIG, COLLECTIONS } from './SeedConstants';
-import { MODEL_IDS } from '../../system/shared/Constants';
+import { MODEL_IDS, LOCAL_MODELS } from '../../system/shared/Constants';
 
 // Rust-like branded type for strict typing
 export type UserId = string & { readonly __brand: 'UserId' };
@@ -470,7 +470,7 @@ export class UserDataSeed {
       isOnline: true,
       intelligenceLevel: 55,  // Capable instruction-tuned model - basic reasoning
       modelConfig: {
-        model: 'llama3.2:3b',
+        model: LOCAL_MODELS.DEFAULT,  // HuggingFace model ID for Candle
         provider: 'candle',
         ragCertified: false,  // Not yet tested with complex RAG
         maxTokens: 2000,

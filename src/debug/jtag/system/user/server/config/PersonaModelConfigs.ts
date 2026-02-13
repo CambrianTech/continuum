@@ -72,7 +72,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'fireworks': {
     provider: 'fireworks',
-    model: 'accounts/fireworks/models/llama-v3p1-8b-instruct', // Default from FireworksBaseConfig
+    model: 'accounts/fireworks/models/llama-v3p3-70b-instruct', // Llama 3.3 70B - more reliable than deprecated 3.1 8B
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: 'You are Fireworks AI assistant. You provide fast, high-quality responses optimized for production workloads.'
@@ -109,9 +109,12 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'candle': {
     provider: 'candle',
-    model: 'llama3.2:3b',
+    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model
     temperature: 0.7,
-    maxTokens: 150,
+    maxTokens: 200,
+    // Context window is defined in ModelContextWindows.ts (SINGLE SOURCE OF TRUTH)
+    // ChatRAGBuilder uses ModelContextWindows.getContextWindow(modelId) for budget calculation
+    // Latency-aware budgeting further limits slow local models to prevent timeouts
     systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
   }
 };

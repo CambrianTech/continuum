@@ -6,6 +6,7 @@
  */
 
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import { CodeDaemon } from '../shared/CodeDaemon';
 import type {
   WorkspaceEditMode,
@@ -33,67 +34,67 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
     log.warn('continuum-core not available — workspace operations will fail until Rust server starts');
   }
 
-  CodeDaemon.createWorkspace = async (personaId: string, workspaceRoot: string, readRoots?: string[]) => {
+  CodeDaemon.createWorkspace = async (personaId: UUID, workspaceRoot: string, readRoots?: string[]) => {
     await rustClient.codeCreateWorkspace(personaId, workspaceRoot, readRoots);
   };
 
-  CodeDaemon.workspaceRead = async (personaId: string, filePath: string, startLine?: number, endLine?: number) => {
+  CodeDaemon.workspaceRead = async (personaId: UUID, filePath: string, startLine?: number, endLine?: number) => {
     return await rustClient.codeRead(personaId, filePath, startLine, endLine);
   };
 
-  CodeDaemon.workspaceWrite = async (personaId: string, filePath: string, content: string, description?: string) => {
+  CodeDaemon.workspaceWrite = async (personaId: UUID, filePath: string, content: string, description?: string) => {
     return await rustClient.codeWrite(personaId, filePath, content, description);
   };
 
-  CodeDaemon.workspaceEdit = async (personaId: string, filePath: string, editMode: WorkspaceEditMode, description?: string) => {
+  CodeDaemon.workspaceEdit = async (personaId: UUID, filePath: string, editMode: WorkspaceEditMode, description?: string) => {
     return await rustClient.codeEdit(personaId, filePath, editMode, description);
   };
 
-  CodeDaemon.workspaceDelete = async (personaId: string, filePath: string, description?: string) => {
+  CodeDaemon.workspaceDelete = async (personaId: UUID, filePath: string, description?: string) => {
     return await rustClient.codeDelete(personaId, filePath, description);
   };
 
-  CodeDaemon.workspaceDiff = async (personaId: string, filePath: string, editMode: WorkspaceEditMode) => {
+  CodeDaemon.workspaceDiff = async (personaId: UUID, filePath: string, editMode: WorkspaceEditMode) => {
     return await rustClient.codeDiff(personaId, filePath, editMode);
   };
 
-  CodeDaemon.workspaceUndo = async (personaId: string, changeId?: string, count?: number) => {
+  CodeDaemon.workspaceUndo = async (personaId: UUID, changeId?: string, count?: number) => {
     return await rustClient.codeUndo(personaId, changeId, count);
   };
 
-  CodeDaemon.workspaceHistory = async (personaId: string, filePath?: string, limit?: number) => {
+  CodeDaemon.workspaceHistory = async (personaId: UUID, filePath?: string, limit?: number) => {
     return await rustClient.codeHistory(personaId, filePath, limit);
   };
 
-  CodeDaemon.workspaceSearch = async (personaId: string, pattern: string, fileGlob?: string, maxResults?: number) => {
+  CodeDaemon.workspaceSearch = async (personaId: UUID, pattern: string, fileGlob?: string, maxResults?: number) => {
     return await rustClient.codeSearch(personaId, pattern, fileGlob, maxResults);
   };
 
-  CodeDaemon.workspaceTree = async (personaId: string, treePath?: string, maxDepth?: number, includeHidden?: boolean) => {
+  CodeDaemon.workspaceTree = async (personaId: UUID, treePath?: string, maxDepth?: number, includeHidden?: boolean) => {
     return await rustClient.codeTree(personaId, treePath, maxDepth, includeHidden);
   };
 
-  CodeDaemon.workspaceGitStatus = async (personaId: string) => {
+  CodeDaemon.workspaceGitStatus = async (personaId: UUID) => {
     return await rustClient.codeGitStatus(personaId);
   };
 
-  CodeDaemon.workspaceGitDiff = async (personaId: string, staged?: boolean) => {
+  CodeDaemon.workspaceGitDiff = async (personaId: UUID, staged?: boolean) => {
     return await rustClient.codeGitDiff(personaId, staged);
   };
 
-  CodeDaemon.workspaceGitLog = async (personaId: string, count?: number) => {
+  CodeDaemon.workspaceGitLog = async (personaId: UUID, count?: number) => {
     return await rustClient.codeGitLog(personaId, count);
   };
 
-  CodeDaemon.workspaceGitAdd = async (personaId: string, paths: string[]) => {
+  CodeDaemon.workspaceGitAdd = async (personaId: UUID, paths: string[]) => {
     return await rustClient.codeGitAdd(personaId, paths);
   };
 
-  CodeDaemon.workspaceGitCommit = async (personaId: string, message: string) => {
+  CodeDaemon.workspaceGitCommit = async (personaId: UUID, message: string) => {
     return await rustClient.codeGitCommit(personaId, message);
   };
 
-  CodeDaemon.workspaceGitPush = async (personaId: string, remote?: string, branch?: string) => {
+  CodeDaemon.workspaceGitPush = async (personaId: UUID, remote?: string, branch?: string) => {
     return await rustClient.codeGitPush(personaId, remote, branch);
   };
 
@@ -101,31 +102,31 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
   // Shell Session Operations (Handle + Poll pattern)
   // ========================================================================
 
-  CodeDaemon.shellCreate = async (personaId: string, workspaceRoot: string) => {
+  CodeDaemon.shellCreate = async (personaId: UUID, workspaceRoot: string) => {
     return await rustClient.shellCreate(personaId, workspaceRoot);
   };
 
-  CodeDaemon.shellExecute = async (personaId: string, cmd: string, options?: { timeoutMs?: number; wait?: boolean }) => {
+  CodeDaemon.shellExecute = async (personaId: UUID, cmd: string, options?: { timeoutMs?: number; wait?: boolean }) => {
     return await rustClient.shellExecute(personaId, cmd, options);
   };
 
-  CodeDaemon.shellPoll = async (personaId: string, executionId: string) => {
+  CodeDaemon.shellPoll = async (personaId: UUID, executionId: string) => {
     return await rustClient.shellPoll(personaId, executionId);
   };
 
-  CodeDaemon.shellKill = async (personaId: string, executionId: string) => {
+  CodeDaemon.shellKill = async (personaId: UUID, executionId: string) => {
     await rustClient.shellKill(personaId, executionId);
   };
 
-  CodeDaemon.shellCd = async (personaId: string, path: string) => {
+  CodeDaemon.shellCd = async (personaId: UUID, path: string) => {
     return await rustClient.shellCd(personaId, path);
   };
 
-  CodeDaemon.shellStatus = async (personaId: string) => {
+  CodeDaemon.shellStatus = async (personaId: UUID) => {
     return await rustClient.shellStatus(personaId);
   };
 
-  CodeDaemon.shellDestroy = async (personaId: string) => {
+  CodeDaemon.shellDestroy = async (personaId: UUID) => {
     await rustClient.shellDestroy(personaId);
   };
 
@@ -133,11 +134,11 @@ export async function initializeCodeDaemon(jtagContext: JTAGContext): Promise<vo
   // Shell Watch + Sentinel (Event-driven output streaming)
   // ========================================================================
 
-  CodeDaemon.shellWatch = async (personaId: string, executionId: string) => {
+  CodeDaemon.shellWatch = async (personaId: UUID, executionId: string) => {
     return await rustClient.shellWatch(personaId, executionId);
   };
 
-  CodeDaemon.shellSentinel = async (personaId: string, executionId: string, rules) => {
+  CodeDaemon.shellSentinel = async (personaId: UUID, executionId: string, rules) => {
     return await rustClient.shellSentinel(personaId, executionId, rules);
   };
 

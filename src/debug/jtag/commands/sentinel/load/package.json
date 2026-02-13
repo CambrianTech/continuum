@@ -1,0 +1,5 @@
+{
+  "name": "sentinel-load",
+  "version": "1.0.0",
+  "description": "Load and optionally run saved sentinel definitions from database"
+}

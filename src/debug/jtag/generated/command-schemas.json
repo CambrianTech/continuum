@@ -26,6 +26,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -60,6 +68,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -89,6 +105,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -123,6 +147,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -170,6 +202,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -216,6 +256,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -249,6 +297,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -320,6 +376,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -354,6 +418,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -375,6 +447,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -414,6 +494,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -443,6 +531,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -506,6 +602,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -536,6 +640,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -561,6 +673,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -596,6 +716,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -621,6 +749,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -692,6 +828,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -705,6 +849,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -772,6 +924,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -813,6 +973,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -856,6 +1024,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -873,6 +1049,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -903,6 +1087,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -945,6 +1137,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -995,6 +1195,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1054,6 +1262,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1108,6 +1324,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1154,6 +1378,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1184,6 +1416,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1213,6 +1453,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1264,6 +1512,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1301,6 +1557,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1344,6 +1608,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1373,6 +1645,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1420,6 +1700,564 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/diff": {
+    "name": "code/diff",
+    "description": "Code Diff Command - Shared Types",
+    "params": {
+      "filePath": {
+        "type": "string",
+        "required": true
+      },
+      "editType": {
+        "type": "string",
+        "required": true
+      },
+      "search": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "replace": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "replaceAll": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "startLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "endLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "newContent": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "line": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "content": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/edit": {
+    "name": "code/edit",
+    "description": "Code Edit Command - Shared Types",
+    "params": {
+      "filePath": {
+        "type": "string",
+        "required": true
+      },
+      "editType": {
+        "type": "string",
+        "required": true
+      },
+      "search": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "replace": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "replaceAll": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "startLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "endLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "newContent": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "line": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "content": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "description": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/git": {
+    "name": "code/git",
+    "description": "Code Git Command - Shared Types",
+    "params": {
+      "userId": {
+        "type": "string",
+        "required": true
+      },
+      "operation": {
+        "type": "string",
+        "required": true
+      },
+      "paths": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "message": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "remote": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "branch": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "staged": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "count": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/history": {
+    "name": "code/history",
+    "description": "Code History Command - Shared Types",
+    "params": {
+      "filePath": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/read": {
+    "name": "code/read",
+    "description": "Code Read Command - Shared Types",
+    "params": {
+      "filePath": {
+        "type": "string",
+        "required": true
+      },
+      "startLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "endLine": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/search": {
+    "name": "code/search",
+    "description": "Code Search Command - Shared Types",
+    "params": {
+      "pattern": {
+        "type": "string",
+        "required": true
+      },
+      "fileGlob": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "maxResults": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/shell/execute": {
+    "name": "code/shell/execute",
+    "description": "Code Shell Execute Command - Shared Types",
+    "params": {
+      "cmd": {
+        "type": "string",
+        "required": true
+      },
+      "wait": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "timeoutMs": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/shell/kill": {
+    "name": "code/shell/kill",
+    "description": "Code Shell Kill Command - Shared Types",
+    "params": {
+      "executionId": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/shell/sentinel": {
+    "name": "code/shell/sentinel",
+    "description": "Code Shell Sentinel Command - Shared Types",
+    "params": {
+      "executionId": {
+        "type": "string",
+        "required": true
+      },
+      "rules": {
+        "type": "SentinelRule[]",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/shell/status": {
+    "name": "code/shell/status",
+    "description": "Code Shell Status Command - Shared Types",
+    "params": {
+      "_noParams": {
+        "type": "undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/shell/watch": {
+    "name": "code/shell/watch",
+    "description": "Code Shell Watch Command - Shared Types",
+    "params": {
+      "executionId": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/tree": {
+    "name": "code/tree",
+    "description": "Code Tree Command - Shared Types",
+    "params": {
+      "path": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "maxDepth": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "includeHidden": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/undo": {
+    "name": "code/undo",
+    "description": "Code Undo Command - Shared Types",
+    "params": {
+      "changeId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "count": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/verify": {
+    "name": "code/verify",
+    "description": "Code Verify Command - Shared Types",
+    "params": {
+      "typeCheck": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "testFiles": {
+        "type": "string[] | undefined",
+        "required": false
+      },
+      "cwd": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "code/write": {
+    "name": "code/write",
+    "description": "Code Write Command - Shared Types",
+    "params": {
+      "filePath": {
+        "type": "string",
+        "required": true
+      },
+      "content": {
+        "type": "string",
+        "required": true
+      },
+      "description": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1466,6 +2304,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1487,6 +2333,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1513,6 +2367,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1559,6 +2421,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1610,6 +2480,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1631,6 +2509,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1661,6 +2547,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1716,6 +2610,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1745,6 +2647,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1783,6 +2693,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1829,6 +2747,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1880,6 +2806,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1897,6 +2831,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1932,6 +2874,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -1963,10 +2913,6 @@
         "type": "SignificanceLevel | undefined",
         "required": false
       },
-      "proposerId": {
-        "type": "string | undefined",
-        "required": false
-      },
       "contextId": {
         "type": "string | undefined",
         "required": false
@@ -1977,6 +2923,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -1993,16 +2947,20 @@
         "type": "string[]",
         "required": true
       },
-      "voterId": {
-        "type": "string | undefined",
-        "required": false
-      },
       "userId": {
         "type": "string | undefined",
         "required": false
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2021,6 +2979,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2048,6 +3014,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2069,6 +3043,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2092,6 +3074,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2105,6 +3095,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2131,6 +3129,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2174,6 +3180,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2212,39 +3226,13 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
-      }
-    }
-  },
-  "comms-test": {
-    "name": "comms-test",
-    "description": "Comms Test Command Types - Database Testing Edition",
-    "params": {
-      "mode": {
-        "type": "\"echo\" | \"database\"",
-        "required": true
       },
-      "message": {
-        "type": "string | undefined",
+      "background": {
+        "type": "boolean | undefined",
         "required": false
       },
-      "dbCount": {
-        "type": "number | undefined",
-        "required": false
-      },
-      "testDir": {
-        "type": "string | undefined",
-        "required": false
-      },
-      "operations": {
-        "type": "number | undefined",
-        "required": false
-      },
-      "userId": {
-        "type": "string | undefined",
-        "required": false
-      },
-      "timeout": {
-        "type": "number | undefined",
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2271,6 +3259,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2309,6 +3305,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2352,6 +3356,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2365,6 +3377,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2383,6 +3403,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2413,6 +3441,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2448,6 +3484,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2474,12 +3518,20 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
   "data/list": {
     "name": "data/list",
-    "description": "Data List Command - Shared Types",
+    "description": "Data List Command - Query entities from collections",
     "params": {
       "collection": {
         "type": "string",
@@ -2524,6 +3576,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2538,16 +3598,30 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
   "data/open": {
     "name": "data/open",
-    "description": "Data Open Command - Shared Types",
+    "description": "Data Open Command - ADVANCED: Opens secondary database handles",
     "params": {
       "adapter": {
         "type": "AdapterType",
-        "required": true
+        "required": true,
+        "description": [
+          {
+            "text": "\"sqlite\"",
+            "kind": "text"
+          }
+        ]
       },
       "config": {
         "type": "AdapterConfig",
@@ -2559,6 +3633,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2582,6 +3664,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2603,6 +3693,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2634,12 +3732,20 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
   "data/read": {
     "name": "data/read",
-    "description": "Data Read Command - Shared Types",
+    "description": "Data Read Command - Read a single entity by ID",
     "params": {
       "id": {
         "type": "string",
@@ -2663,6 +3769,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2694,6 +3808,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2720,6 +3842,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2737,6 +3867,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2761,6 +3899,10 @@
         "type": "boolean | undefined",
         "required": false
       },
+      "suppressEvents": {
+        "type": "boolean | undefined",
+        "required": false
+      },
       "collection": {
         "type": "string",
         "required": true
@@ -2769,16 +3911,20 @@
         "type": "string | undefined",
         "required": false
       },
-      "suppressEvents": {
-        "type": "boolean | undefined",
-        "required": false
-      },
       "userId": {
         "type": "string | undefined",
         "required": false
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2834,6 +3980,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2864,6 +4018,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2882,18 +4044,16 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
-  },
-  "development/code/pattern-search": {
-    "name": "development/code/pattern-search",
-    "description": "code/find command types - Find files by name pattern",
-    "params": {}
-  },
-  "development/code/read": {
-    "name": "development/code/read",
-    "description": "code/read command types",
-    "params": {}
   },
   "development/compile-typescript": {
     "name": "development/compile-typescript",
@@ -2925,6 +4085,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -2978,6 +4146,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -2999,6 +4175,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3052,6 +4236,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3094,6 +4286,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3119,6 +4319,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3165,6 +4373,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3228,6 +4444,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3261,6 +4485,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3327,6 +4559,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3398,6 +4638,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3452,6 +4700,14 @@
       "userId": {
         "type": "string | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3482,6 +4738,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3503,6 +4767,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3530,6 +4802,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3551,6 +4831,14 @@
       },
       "userId": {
         "type": "string | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3586,6 +4874,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3619,6 +4915,14 @@
       },
       "userId": {
         "type": "string | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3654,6 +4958,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3684,6 +4996,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3705,6 +5025,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3731,6 +5059,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3762,6 +5098,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3783,6 +5127,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3826,6 +5178,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3864,6 +5224,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3886,6 +5254,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3907,6 +5283,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3942,6 +5326,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -3963,6 +5355,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -3994,6 +5394,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4012,6 +5420,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4029,6 +5445,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4051,6 +5475,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4077,6 +5509,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4120,6 +5560,40 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/browser/capabilities": {
+    "name": "interface/browser/capabilities",
+    "description": "Interface Browser Capabilities Command - Shared Types",
+    "params": {
+      "_noParams": {
+        "type": "undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4154,6 +5628,14 @@
       "userId": {
         "type": "string | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4180,6 +5662,48 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/launch/url": {
+    "name": "interface/launch/url",
+    "description": "Interface Launch Url Command - Shared Types",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "waitForLoad": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "screenshot": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4205,6 +5729,124 @@
       },
       "userId": {
         "type": "string | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/page/fill": {
+    "name": "interface/page/fill",
+    "description": "Interface Page Fill Command - Shared Types",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "formId": {
+        "type": "string",
+        "required": true
+      },
+      "values": {
+        "type": "Record<string, string>",
+        "required": true
+      },
+      "waitForSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/page/forms": {
+    "name": "interface/page/forms",
+    "description": "Interface Page Forms Command - Shared Types",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "waitForSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/page/submit": {
+    "name": "interface/page/submit",
+    "description": "Interface Page Submit Command - Shared Types",
+    "params": {
+      "url": {
+        "type": "string",
+        "required": true
+      },
+      "formId": {
+        "type": "string",
+        "required": true
+      },
+      "values": {
+        "type": "Record<string, string> | undefined",
+        "required": false
+      },
+      "waitForNavigation": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "waitForSelector": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4235,6 +5877,14 @@
       },
       "userId": {
         "type": "string | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4334,6 +5984,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4363,6 +6021,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4394,6 +6060,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4419,6 +6093,14 @@
       },
       "userId": {
         "type": "string | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4450,6 +6132,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4476,6 +6166,74 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/webmcp/call": {
+    "name": "interface/webmcp/call",
+    "description": "Interface Webmcp Call Command - Shared Types",
+    "params": {
+      "toolName": {
+        "type": "string",
+        "required": true
+      },
+      "params": {
+        "type": "object",
+        "required": true
+      },
+      "url": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "interface/webmcp/discover": {
+    "name": "interface/webmcp/discover",
+    "description": "Interface Webmcp Discover Command - Shared Types",
+    "params": {
+      "url": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4497,6 +6255,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4523,6 +6289,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4565,6 +6339,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4612,6 +6394,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4642,6 +6432,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4655,6 +6453,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4778,6 +6584,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4836,6 +6650,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4853,6 +6675,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -4912,6 +6742,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4958,6 +6796,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -4991,6 +6837,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5046,6 +6900,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5071,6 +6933,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5118,6 +6988,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5143,6 +7021,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5198,6 +7084,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5232,6 +7126,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5265,6 +7167,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5308,6 +7218,168 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "runtime/metrics": {
+    "name": "runtime/metrics",
+    "description": "Runtime Metrics Command - Shared Types",
+    "params": {
+      "mode": {
+        "type": "\"all\" | \"module\" | \"slow\" | \"list\" | undefined",
+        "required": false
+      },
+      "module": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "search/execute": {
+    "name": "search/execute",
+    "description": "Search Execute Command Types",
+    "params": {
+      "algorithm": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "query": {
+        "type": "string",
+        "required": true
+      },
+      "corpus": {
+        "type": "string[]",
+        "required": true
+      },
+      "params": {
+        "type": "Record<string, unknown> | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "search/list": {
+    "name": "search/list",
+    "description": "Search List Command Types",
+    "params": {
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "search/params": {
+    "name": "search/params",
+    "description": "Search Params Command Types",
+    "params": {
+      "algorithm": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "search/vector": {
+    "name": "search/vector",
+    "description": "Search Vector Command Types",
+    "params": {
+      "queryVector": {
+        "type": "number[]",
+        "required": true
+      },
+      "corpusVectors": {
+        "type": "number[][]",
+        "required": true
+      },
+      "normalize": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "threshold": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5329,6 +7401,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5360,6 +7440,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5378,6 +7466,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5391,6 +7487,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5410,6 +7514,272 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "skill/activate": {
+    "name": "skill/activate",
+    "description": "Skill Activate Command - Shared Types",
+    "params": {
+      "skillId": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "skill/generate": {
+    "name": "skill/generate",
+    "description": "Skill Generate Command - Shared Types",
+    "params": {
+      "skillId": {
+        "type": "string",
+        "required": true
+      },
+      "outputDir": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "skill/list": {
+    "name": "skill/list",
+    "description": "Skill List Command - Shared Types",
+    "params": {
+      "status": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "scope": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "createdById": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "skill/propose": {
+    "name": "skill/propose",
+    "description": "Skill Propose Command - Shared Types",
+    "params": {
+      "name": {
+        "type": "string",
+        "required": true
+      },
+      "description": {
+        "type": "string",
+        "required": true
+      },
+      "skillParams": {
+        "type": "Record<string, unknown>[]",
+        "required": true
+      },
+      "skillResults": {
+        "type": "Record<string, unknown>[]",
+        "required": true
+      },
+      "implementation": {
+        "type": "string",
+        "required": true
+      },
+      "scope": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "examples": {
+        "type": "Record<string, unknown>[] | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "skill/validate": {
+    "name": "skill/validate",
+    "description": "Skill Validate Command - Shared Types",
+    "params": {
+      "skillId": {
+        "type": "string",
+        "required": true
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/browse": {
+    "name": "social/browse",
+    "description": "Social Browse Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "mode": {
+        "type": "BrowseMode | undefined",
+        "required": false
+      },
+      "target": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "sort": {
+        "type": "\"top\" | \"hot\" | \"new\" | \"rising\" | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/classify": {
+    "name": "social/classify",
+    "description": "Social Classify Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "target": {
+        "type": "string",
+        "required": true
+      },
+      "depth": {
+        "type": "ClassifyDepth | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5425,11 +7795,19 @@
         "type": "string",
         "required": true
       },
+      "action": {
+        "type": "\"list\" | \"create\" | undefined",
+        "required": false
+      },
       "content": {
-        "type": "string",
-        "required": true
+        "type": "string | undefined",
+        "required": false
       },
       "parentId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "sort": {
         "type": "string | undefined",
         "required": false
       },
@@ -5444,6 +7822,136 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/community": {
+    "name": "social/community",
+    "description": "Social Community Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "action": {
+        "type": "CommunityAction",
+        "required": true
+      },
+      "name": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "description": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/downvote": {
+    "name": "social/downvote",
+    "description": "Social Downvote Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "postId": {
+        "type": "string",
+        "required": true
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/engage": {
+    "name": "social/engage",
+    "description": "Social Engage Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "action": {
+        "type": "EngageAction",
+        "required": true
+      },
+      "target": {
+        "type": "string",
+        "required": true
+      },
+      "targetType": {
+        "type": "\"post\" | \"comment\" | undefined",
+        "required": false
+      },
+      "direction": {
+        "type": "\"up\" | \"down\" | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5456,7 +7964,7 @@
         "required": true
       },
       "sort": {
-        "type": "string | undefined",
+        "type": "\"top\" | \"hot\" | \"new\" | \"rising\" | undefined",
         "required": false
       },
       "community": {
@@ -5481,6 +7989,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5511,6 +8027,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5550,6 +8074,188 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/profile": {
+    "name": "social/profile",
+    "description": "Social Profile Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "agentName": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "update": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "description": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/propose": {
+    "name": "social/propose",
+    "description": "Social Propose Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "mode": {
+        "type": "ProposeMode",
+        "required": true
+      },
+      "action": {
+        "type": "ProposalAction | undefined",
+        "required": false
+      },
+      "target": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "reason": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "title": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "content": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "community": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "postId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "commentContent": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "voteDirection": {
+        "type": "\"up\" | \"down\" | undefined",
+        "required": false
+      },
+      "targetType": {
+        "type": "\"post\" | \"comment\" | undefined",
+        "required": false
+      },
+      "proposalId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "direction": {
+        "type": "\"up\" | \"down\" | undefined",
+        "required": false
+      },
+      "status": {
+        "type": "ProposalStatus | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/search": {
+    "name": "social/search",
+    "description": "Social Search Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "query": {
+        "type": "string",
+        "required": true
+      },
+      "type": {
+        "type": "\"agent\" | \"post\" | \"comment\" | \"submolt\" | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5584,6 +8290,56 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "social/trending": {
+    "name": "social/trending",
+    "description": "Social Trending Command - Shared Types",
+    "params": {
+      "platform": {
+        "type": "string",
+        "required": true
+      },
+      "sort": {
+        "type": "\"top\" | \"hot\" | \"rising\" | undefined",
+        "required": false
+      },
+      "community": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "limit": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5602,6 +8358,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5619,6 +8383,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5645,6 +8417,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5676,6 +8456,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5702,6 +8490,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5724,6 +8520,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5741,6 +8545,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5768,6 +8580,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5790,6 +8610,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5807,6 +8635,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5849,6 +8685,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5900,6 +8744,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -5913,6 +8765,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5939,6 +8799,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -5974,6 +8842,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6000,6 +8876,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6017,6 +8901,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -6056,6 +8948,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6068,7 +8968,7 @@
         "required": true
       },
       "errorHandling": {
-        "type": "\"stop\" | \"continue\" | \"collect\" | undefined",
+        "type": "\"continue\" | \"stop\" | \"collect\" | undefined",
         "required": false
       },
       "timeout": {
@@ -6085,6 +8985,14 @@
       },
       "userId": {
         "type": "string | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -6112,6 +9020,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6129,6 +9045,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -6172,6 +9096,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6202,6 +9134,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6228,6 +9168,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6250,6 +9198,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6267,6 +9223,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -6294,6 +9258,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6320,6 +9292,44 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
+      }
+    }
+  },
+  "workspace/list": {
+    "name": "workspace/list",
+    "description": "Workspace List Command - Shared Types",
+    "params": {
+      "personaId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "includeGitStatus": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "userId": {
+        "type": "string | undefined",
+        "required": false
+      },
+      "timeout": {
+        "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6345,6 +9355,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -6379,6 +9397,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }
@@ -6434,6 +9460,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6488,6 +9522,14 @@
       "timeout": {
         "type": "number | undefined",
         "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
+        "required": false
       }
     }
   },
@@ -6519,6 +9561,14 @@
       },
       "timeout": {
         "type": "number | undefined",
+        "required": false
+      },
+      "background": {
+        "type": "boolean | undefined",
+        "required": false
+      },
+      "onTimeout": {
+        "type": "\"cancel\" | \"continue\" | \"fail\" | undefined",
         "required": false
       }
     }

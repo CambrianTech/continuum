@@ -3,7 +3,7 @@
  * ==========================================
  *
  * Unified interface for text, audio, video, image, and multimodal AI providers.
- * Supports both local inference (Ollama, MLX) and API providers (OpenAI, Anthropic, etc.)
+ * Supports both local inference (Candle, MLX) and API providers (OpenAI, Anthropic, etc.)
  *
  * Capabilities:
  * - Text generation (LLMs)
@@ -275,7 +275,7 @@ export interface RoutingInfo {
   /** Why was this adapter selected? */
   routingReason:
     | 'explicit_provider'      // preferredProvider was specified
-    | 'provider_aliasing'      // Legacy 'ollama' requests aliased to 'candle'
+    | 'provider_aliasing'      // Legacy 'local' requests aliased to 'candle'
     | 'model_detection'        // Model name matched local pattern (DEPRECATED - to be removed)
     | 'default_priority'       // Selected by priority order
     | 'fallback';              // Primary failed, used fallback
@@ -418,7 +418,7 @@ export interface AIProviderAdapter {
 
   // Skill management (optional - only providers that support skill modification)
   // Examples:
-  // - Ollama: Load LoRA adapter weights
+  // - Candle: Load LoRA adapter weights
   // - Claude/GPT: Inject RAG context or modify system prompt
   // - Any provider: Add few-shot examples or tools
   applySkill?(skillImplementation: unknown): Promise<void>;

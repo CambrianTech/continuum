@@ -69,6 +69,7 @@ import {
 } from '../../events/shared/AILearningEvents';
 import { Events } from '../../core/shared/Events';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
+import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
 import { ROOM_UNIQUE_IDS } from '../../data/constants/RoomConstants';
 import { DataList, type DataListParams, type DataListResult } from '../../../commands/data/list/shared/DataListTypes';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
@@ -97,6 +98,7 @@ import { CognitionLogger } from './modules/cognition/CognitionLogger';
 import { PersonaToolExecutor } from './modules/PersonaToolExecutor';
 import { PersonaToolRegistry } from './modules/PersonaToolRegistry';
 import { PersonaTaskExecutor } from './modules/PersonaTaskExecutor';
+import { LOCAL_MODELS } from '../../shared/Constants';
 import { PersonaTrainingManager } from './modules/PersonaTrainingManager';
 import { PersonaAutonomousLoop } from './modules/PersonaAutonomousLoop';
 import { PersonaResponseGenerator } from './modules/PersonaResponseGenerator';
@@ -119,6 +121,7 @@ import { SystemPaths } from '../../core/config/SystemPaths';
 import { UnifiedConsciousness } from './modules/consciousness/UnifiedConsciousness';
 import { registerConsciousness, unregisterConsciousness } from '../../rag/sources/GlobalAwarenessSource';
 import { Workspace } from '../../code/server/Workspace';
+import { initShellEventHandler } from './modules/ShellEventHandler';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { DataOpen } from '../../../commands/data/open/shared/DataOpenTypes';
 import type { CorpusMemory } from '../../../workers/continuum-core/bindings/CorpusMemory';
@@ -482,10 +485,17 @@ export class PersonaUser extends AIUser {
       logger: this.logger,
       memory: this.memory,  // For accessing trained LoRA adapters during inference
       ensureCodeWorkspace: async () => {
+        this.log.debug(`🔧 ensureCodeWorkspace called, ${this._workspaces.size} existing workspaces`);
         // Reuse any existing workspace (project or sandbox) before creating a new one.
         // This allows workspaces created via explicit commands to be preserved.
         const existing = this._workspaces.get('default') ?? this._workspaces.values().next().value;
         if (existing) {
+          // CRITICAL: Always re-register with Rust using persona UUID (not handle).
+          // This ensures Rust CodeModule can look up the workspace by personaId.
+          // Idempotent - Rust DashMap will just update the existing entry.
+          // Include the main repo as a read root so personas can explore the codebase.
+          const repoPath = process.cwd();  // JTAG root is the repo
+          await CodeDaemon.createWorkspace(this.id, existing.dir, [repoPath]);
           // Ensure shell session exists even for pre-existing workspaces.
           // code/shell/* commands call CodeDaemon directly (bypass Workspace object),
           // so the Rust-side shell session must be eagerly created.
@@ -741,6 +751,17 @@ export class PersonaUser extends AIUser {
       );
       this._eventUnsubscribes.push(unsubAudioInjection);
       this.log.info(`🎙️ ${this.displayName}: Subscribed to TTS audio injection events`);
+
+      // Subscribe to shell events from Rust CodeModule (feedback loop for coding system)
+      // Events: shell:{personaId}:complete, shell:{personaId}:error, shell:{personaId}:started
+      // Routes shell execution results back to inbox for autonomous iteration
+      const unsubShellEvents = initShellEventHandler(this.id, async (_personaId, task) => {
+        await this.inbox.enqueue(task);
+        this.personaState.updateInboxLoad(this.inbox.getSize());
+        this.log.info(`🔧 ${this.displayName}: Shell event routed to inbox (type=${task.taskType}, priority=${task.priority.toFixed(2)})`);
+      });
+      this._eventUnsubscribes.push(unsubShellEvents);
+      this.log.info(`🔧 ${this.displayName}: Subscribed to shell events (coding feedback loop enabled)`);
 
       this.eventsSubscribed = true;
       this.log.info(`✅ ${this.displayName}: Subscriptions complete, eventsSubscribed=${this.eventsSubscribed}`);
@@ -1367,14 +1388,25 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Convert timestamp to number (handles Date, number, or undefined from JSON serialization)
+   * Convert timestamp to number (handles Date, number, string, or undefined from JSON serialization)
    * PUBLIC: Used by PersonaMessageEvaluator module
+   *
+   * NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z").
+   * Must handle all formats to prevent type mismatch errors when passing to Rust IPC.
    */
-  timestampToNumber(timestamp: Date | number | undefined): number {
+  timestampToNumber(timestamp: Date | number | string | undefined): number {
     if (timestamp === undefined) {
       return Date.now(); // Use current time if timestamp missing
     }
-    return timestamp instanceof Date ? timestamp.getTime() : timestamp;
+    if (timestamp instanceof Date) {
+      return timestamp.getTime();
+    }
+    if (typeof timestamp === 'string') {
+      // Parse ISO string from Rust ORM (e.g., "2026-02-07T18:17:56.886Z")
+      const parsed = new Date(timestamp).getTime();
+      return isNaN(parsed) ? Date.now() : parsed;
+    }
+    return timestamp; // Already a number
   }
 
   /**
@@ -1449,7 +1481,7 @@ export class PersonaUser extends AIUser {
     timer.setMeta('displayName', this.displayName);
     timer.setMeta('context', request.context || 'unknown');
     timer.setMeta('provider', this.modelConfig.provider || 'candle');
-    timer.setMeta('model', this.modelConfig.model || 'llama3.2:3b');
+    timer.setMeta('model', this.modelConfig.model || LOCAL_MODELS.DEFAULT);
 
     try {
       const messages: { role: 'system' | 'user'; content: string }[] = [];
@@ -1469,7 +1501,7 @@ export class PersonaUser extends AIUser {
 
       const genRequest: TextGenerationRequest = {
         messages,
-        model: this.modelConfig.model || 'llama3.2:3b',
+        model: this.modelConfig.model || LOCAL_MODELS.DEFAULT,
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
         preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],

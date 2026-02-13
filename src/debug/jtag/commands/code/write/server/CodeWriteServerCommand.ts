@@ -11,6 +11,8 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { CodeWriteParams, CodeWriteResult } from '../shared/CodeWriteTypes';
 import { createCodeWriteResultFromParams } from '../shared/CodeWriteTypes';
 import { CodeDaemon } from '@daemons/code-daemon/shared/CodeDaemon';
+import { ToolResult } from '@system/core/shared/ToolResult';
+import { v4 as uuid } from 'uuid';
 
 export class CodeWriteServerCommand extends CommandBase<CodeWriteParams, CodeWriteResult> {
 
@@ -37,12 +39,32 @@ export class CodeWriteServerCommand extends CommandBase<CodeWriteParams, CodeWri
     }
     const personaId = params.userId;
 
+    const handle = uuid();
+    const startTime = Date.now();
+
     const result = await CodeDaemon.workspaceWrite(
       personaId,
       params.filePath,
       params.content,
       params.description
     );
+
+    // Emit tool result for memory capture
+    ToolResult.emit({
+      tool: 'code/write',
+      handle,
+      userId: personaId,
+      success: result.success,
+      summary: result.success
+        ? `Wrote ${result.bytes_written} bytes to ${result.file_path}`
+        : `Failed to write ${params.filePath}`,
+      data: {
+        path: result.file_path,
+        bytes: result.bytes_written,
+        changeId: result.change_id,
+      },
+      durationMs: Date.now() - startTime,
+    });
 
     return createCodeWriteResultFromParams(params, {
       success: result.success,

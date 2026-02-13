@@ -1,0 +1,50 @@
+{
+  "name": "interface/browser/capabilities",
+  "description": "Check available browser automation capabilities. Returns explicit status for each capability (webmcp, puppeteer, etc). No fallbacks - AIs see exactly what is/isn't available.",
+  "params": [],
+  "results": [
+    {
+      "name": "webmcp",
+      "type": "boolean",
+      "description": "Whether WebMCP (navigator.modelContext) is available"
+    },
+    {
+      "name": "webmcpReason",
+      "type": "string",
+      "description": "Why WebMCP is unavailable (empty if available)"
+    },
+    {
+      "name": "puppeteer",
+      "type": "boolean",
+      "description": "Whether Puppeteer automation is available"
+    },
+    {
+      "name": "puppeteerReason",
+      "type": "string",
+      "description": "Why Puppeteer is unavailable (empty if available)"
+    },
+    {
+      "name": "systemBrowser",
+      "type": "boolean",
+      "description": "Whether system browser (open/xdg-open) is available"
+    },
+    {
+      "name": "availableBackends",
+      "type": "string[]",
+      "description": "List of available browser automation backends"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Check capabilities (WebMCP available)",
+      "command": "./jtag interface/browser/capabilities",
+      "expectedResult": "{ webmcp: true, webmcpReason: \"\", puppeteer: true, puppeteerReason: \"\", systemBrowser: true, availableBackends: [\"webmcp\", \"puppeteer\", \"system-browser\"] }"
+    },
+    {
+      "description": "Check capabilities (WebMCP not available)",
+      "command": "./jtag interface/browser/capabilities",
+      "expectedResult": "{ webmcp: false, webmcpReason: \"Chrome Canary 146+ with WebMCP flag required\", puppeteer: true, puppeteerReason: \"\", systemBrowser: true, availableBackends: [\"puppeteer\", \"system-browser\"] }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

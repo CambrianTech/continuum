@@ -11,6 +11,8 @@ import { PersistenceError } from '@system/core/types/ErrorTypes';
 import type { FileSaveParams, FileSaveResult } from '@commands/file/save/shared/FileSaveTypes';
 import type { MediaItem } from '@system/data/entities/ChatMessageEntity';
 import type { MediaResizeParams, MediaResizeResult } from '@commands/media/resize/shared/MediaResizeTypes';
+import { ToolResult } from '@system/core/shared/ToolResult';
+import { v4 as uuid } from 'uuid';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -27,7 +29,9 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
    */
   async execute(params: JTAGPayload): Promise<ScreenshotResult> {
     const screenshotParams = params as ScreenshotParams;
-    
+    const handle = uuid();
+    const startTime = Date.now();
+
     // console.debug(`📸 SERVER: Starting screenshot`);
     // console.debug(`🔍 DEBUG: ScreenshotServerCommand received sessionId: ${screenshotParams.sessionId}`);
 
@@ -127,8 +131,36 @@ export class ScreenshotServerCommand extends CommandBase<ScreenshotParams, Scree
     // console.debug(`🔍 SERVER: File save result:`, JSON.stringify(saveResult, null, 2));
 
     if (!saveResult.success) {
+      // Emit tool result for failure
+      ToolResult.emit({
+        tool: 'interface/screenshot',
+        handle,
+        userId: screenshotParams.sessionId,
+        success: false,
+        summary: `Failed to save screenshot: ${filename}`,
+        error: `File save command failed: ${JSON.stringify(saveResult)}`,
+        durationMs: Date.now() - startTime,
+      });
       throw new PersistenceError(filename, 'write', `File save command failed: ${JSON.stringify(saveResult)}`);
     }
+
+    // Emit tool result for memory capture
+    ToolResult.emit({
+      tool: 'interface/screenshot',
+      handle,
+      userId: screenshotParams.sessionId,
+      success: true,
+      summary: `Screenshot saved to ${saveResult.filepath}`,
+      data: {
+        filepath: saveResult.filepath,
+        filename,
+        querySelector: screenshotParams.querySelector,
+        width: screenshotParams.metadata?.width,
+        height: screenshotParams.metadata?.height,
+        resized: screenshotParams.context.callerType === 'persona',
+      },
+      durationMs: Date.now() - startTime,
+    });
 
     // Create base result (all callers get this)
     const baseResult = createScreenshotResult(screenshotParams.context, screenshotParams.sessionId, {

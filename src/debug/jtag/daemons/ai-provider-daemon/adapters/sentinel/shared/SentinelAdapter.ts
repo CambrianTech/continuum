@@ -3,7 +3,7 @@
  * ========================================================
  *
  * Adapter for Sentinel-AI server running local models.
- * Uses HTTP API (like Ollama) instead of shell execution.
+ * Uses HTTP API instead of shell execution.
  *
  * Features:
  * - Models stay loaded in memory (fast inference)

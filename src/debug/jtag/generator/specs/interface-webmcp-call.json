@@ -1,0 +1,69 @@
+{
+  "name": "interface/webmcp/call",
+  "description": "Call a WebMCP tool on the current page. Returns structured result from the tool. Fails explicitly if WebMCP is not available or tool not found.",
+  "params": [
+    {
+      "name": "toolName",
+      "type": "string",
+      "optional": false,
+      "description": "Name of the tool to call (from discover results)"
+    },
+    {
+      "name": "params",
+      "type": "object",
+      "optional": false,
+      "description": "Parameters to pass to the tool (must match tool's inputSchema)"
+    },
+    {
+      "name": "url",
+      "type": "string",
+      "optional": true,
+      "description": "URL to navigate to before calling tool. If not provided, uses current page."
+    }
+  ],
+  "results": [
+    {
+      "name": "called",
+      "type": "boolean",
+      "description": "Whether the tool was successfully called"
+    },
+    {
+      "name": "reason",
+      "type": "string",
+      "description": "Why the call failed (empty if successful)"
+    },
+    {
+      "name": "toolName",
+      "type": "string",
+      "description": "Name of the tool that was called"
+    },
+    {
+      "name": "result",
+      "type": "unknown",
+      "description": "Result returned by the tool"
+    },
+    {
+      "name": "pageUrl",
+      "type": "string",
+      "description": "URL of the page where tool was called"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Search flights using WebMCP",
+      "command": "./jtag interface/webmcp/call --toolName=\"searchFlights\" --params='{\"origin\":\"SFO\",\"destination\":\"NYC\",\"date\":\"2026-03-15\"}'",
+      "expectedResult": "{ called: true, toolName: \"searchFlights\", result: { flights: [...] }, pageUrl: \"https://travel-demo.bandarra.me/\" }"
+    },
+    {
+      "description": "Call tool when WebMCP unavailable",
+      "command": "./jtag interface/webmcp/call --toolName=\"searchFlights\" --params='{}'",
+      "expectedResult": "{ called: false, reason: \"WebMCP not available - Chrome Canary 146+ with WebMCP flag required\", toolName: \"searchFlights\", result: null }"
+    },
+    {
+      "description": "Call non-existent tool",
+      "command": "./jtag interface/webmcp/call --toolName=\"nonExistent\" --params='{}'",
+      "expectedResult": "{ called: false, reason: \"Tool 'nonExistent' not found on page\", toolName: \"nonExistent\", result: null }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

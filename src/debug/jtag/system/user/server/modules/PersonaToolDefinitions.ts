@@ -542,12 +542,21 @@ You have ${tools.length} tools available. Here they ALL are, organized by catego
   }
 
   // Show essential tools with full details
+  // IMPORTANT: Bias toward DOING (write, edit, execute, build) not just READING
   const essentialTools = tools.filter(t =>
-    ['screenshot', 'help', 'collaboration/chat/send', 'collaboration/wall/write',
-     'code/read', 'code/search'].includes(t.name)
+    ['code/write', 'code/edit', 'code/shell/execute', 'code/verify',
+     'code/read', 'code/tree', 'screenshot', 'development/build'].includes(t.name)
   );
 
-  output += `=== FREQUENTLY USED TOOLS (with parameters) ===\n`;
+  output += `
+=== CRITICAL: DO NOT DISCUSS. DO. ===
+When someone asks for code: WRITE IT. Don't explain what you would do - USE code/write.
+When asked to fix something: EDIT IT. Don't describe the fix - USE code/edit.
+When asked to test: RUN IT. Don't talk about testing - USE code/shell/execute.
+Every response to a coding request should contain tool_use blocks, not explanations.
+
+=== DEVELOPMENT TOOLS (read → write → build → verify) ===
+`;
 
   for (const tool of essentialTools) {
     output += `\n${tool.name} - ${tool.description}\n`;
@@ -561,31 +570,35 @@ You have ${tools.length} tools available. Here they ALL are, organized by catego
   }
 
   output += `
-=== HOW TO USE TOOLS ===
+=== DEVELOPMENT WORKFLOW ===
 
-For any tool above, use this format:
+1. READ first: code/read to understand existing code
+2. WRITE/EDIT: code/write for new files, code/edit for changes
+3. BUILD: code/shell/execute to compile/test
+4. VERIFY: code/verify to check for errors
+5. SEE RESULTS: screenshot to view output
+
+Example - Write a file:
 <tool_use>
-  <tool_name>TOOL_NAME</tool_name>
+  <tool_name>code/write</tool_name>
   <parameters>
-    <param1>value1</param1>
-    <param2>value2</param2>
+    <filePath>src/calculator.ts</filePath>
+    <content>export function add(a: number, b: number): number { return a + b; }</content>
   </parameters>
 </tool_use>
 
-Example - Take a screenshot:
+Example - Run a command:
 <tool_use>
-  <tool_name>screenshot</tool_name>
+  <tool_name>code/shell/execute</tool_name>
   <parameters>
-    <querySelector>chat-widget</querySelector>
+    <command>npm run build</command>
   </parameters>
 </tool_use>
 
-For help on any specific tool, use:
+Example - Verify changes:
 <tool_use>
-  <tool_name>help</tool_name>
-  <parameters>
-    <path>TOOL_NAME</path>
-  </parameters>
+  <tool_name>code/verify</tool_name>
+  <parameters></parameters>
 </tool_use>
 `;
 

@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-10T02:25:11.954Z",
+  "generated": "2026-02-13T05:10:50.368Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1503,6 +1503,392 @@
       }
     },
     {
+      "name": "sentinel/status",
+      "description": "Sentinel Status Command - Types",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/save",
+      "description": "Sentinel Save Command - Types\n *\n * Save sentinel definitions to database for persistence and sharing.\n * Sentinels are stored in the 'sentinels' collection.",
+      "params": {
+        "definition": {
+          "type": "string",
+          "required": false,
+          "description": "definition parameter"
+        },
+        "handle": {
+          "type": "string",
+          "required": false,
+          "description": "handle parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "description parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "isTemplate": {
+          "type": "boolean",
+          "required": false,
+          "description": "isTemplate parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "command": {
+          "type": "string",
+          "required": true,
+          "description": "command parameter"
+        },
+        "maxAttempts": {
+          "type": "number",
+          "required": false,
+          "description": "maxAttempts parameter"
+        },
+        "canAutoFix": {
+          "type": "boolean",
+          "required": false,
+          "description": "canAutoFix parameter"
+        },
+        "useLLM": {
+          "type": "boolean",
+          "required": false,
+          "description": "useLLM parameter"
+        },
+        "capacity": {
+          "type": "string",
+          "required": false,
+          "description": "capacity parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "goal": {
+          "type": "string",
+          "required": true,
+          "description": "goal parameter"
+        },
+        "maxIterations": {
+          "type": "number",
+          "required": false,
+          "description": "maxIterations parameter"
+        },
+        "capacity": {
+          "type": "string",
+          "required": false,
+          "description": "capacity parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "modelName": {
+          "type": "string",
+          "required": false,
+          "description": "modelName parameter"
+        },
+        "screenshotDir": {
+          "type": "string",
+          "required": false,
+          "description": "screenshotDir parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "target": {
+          "type": "string",
+          "required": true,
+          "description": "target parameter"
+        },
+        "filename": {
+          "type": "string",
+          "required": false,
+          "description": "filename parameter"
+        },
+        "outputDir": {
+          "type": "string",
+          "required": false,
+          "description": "outputDir parameter"
+        },
+        "viewport": {
+          "type": "object",
+          "required": false,
+          "description": "viewport parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "tasks": {
+          "type": "array",
+          "required": true,
+          "description": "tasks parameter"
+        },
+        "action": {
+          "type": "string",
+          "required": true,
+          "description": "action parameter"
+        },
+        "file": {
+          "type": "string",
+          "required": false,
+          "description": "file parameter"
+        },
+        "content": {
+          "type": "string",
+          "required": false,
+          "description": "content parameter"
+        },
+        "command": {
+          "type": "string",
+          "required": false,
+          "description": "command parameter"
+        },
+        "maxDepth": {
+          "type": "number",
+          "required": false,
+          "description": "maxDepth parameter"
+        },
+        "maxTotalTasks": {
+          "type": "number",
+          "required": false,
+          "description": "maxTotalTasks parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/load",
+      "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
+      "params": {
+        "id": {
+          "type": "string",
+          "required": true,
+          "description": "id parameter"
+        },
+        "run": {
+          "type": "boolean",
+          "required": false,
+          "description": "run parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/load",
+      "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "templatesOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "templatesOnly parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/list",
+      "description": "Sentinel List Command - Types\n *\n * List saved sentinel definitions from database.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "tags": {
+          "type": "array",
+          "required": false,
+          "description": "tags parameter"
+        },
+        "templatesOnly": {
+          "type": "boolean",
+          "required": false,
+          "description": "templatesOnly parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        },
+        "search": {
+          "type": "string",
+          "required": false,
+          "description": "search parameter"
+        }
+      }
+    },
+    {
       "name": "security/setup",
       "description": "security/setup command",
       "params": {
@@ -2484,6 +2870,38 @@
       }
     },
     {
+      "name": "interface/webmcp/discover",
+      "description": "Interface Webmcp Discover Command - Shared Types\n *\n * Discover WebMCP tools available on the current page. Returns structured tool definitions with schemas. Fails explicitly if WebMCP is not available.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": false,
+          "description": "url parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/webmcp/call",
+      "description": "Interface Webmcp Call Command - Shared Types\n *\n * Call a WebMCP tool on the current page. Returns structured result from the tool. Fails explicitly if WebMCP is not available or tool not found.",
+      "params": {
+        "toolName": {
+          "type": "string",
+          "required": true,
+          "description": "toolName parameter"
+        },
+        "params": {
+          "type": "string",
+          "required": true,
+          "description": "params parameter"
+        },
+        "url": {
+          "type": "string",
+          "required": false,
+          "description": "url parameter"
+        }
+      }
+    },
+    {
       "name": "interface/web/search",
       "description": "Web Search Command Types\n *\n * Allows AIs to search the web and get results.\n * Uses search APIs to find relevant information.",
       "params": {
@@ -2751,6 +3169,79 @@
       }
     },
     {
+      "name": "interface/page/submit",
+      "description": "Interface Page Submit Command - Shared Types\n *\n * Submit a form on a web page. Use interface/page/forms to discover forms,\n * interface/page/fill to populate fields, then this command to submit.\n * Returns the resulting page state after submission.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "formId": {
+          "type": "string",
+          "required": true,
+          "description": "formId parameter"
+        },
+        "values": {
+          "type": "object",
+          "required": false,
+          "description": "values parameter"
+        },
+        "waitForNavigation": {
+          "type": "boolean",
+          "required": false,
+          "description": "waitForNavigation parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/page/forms",
+      "description": "Interface Page Forms Command - Shared Types\n *\n * Discover all forms on a web page. Returns structured form definitions with field names,\n * types, labels, and submit buttons. Works on ANY page with HTML forms - no WebMCP required.\n * Use this first to understand what you can interact with, then use interface/page/fill\n * and interface/page/submit.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/page/fill",
+      "description": "Interface Page Fill Command - Shared Types\n *\n * Fill form fields on a web page. Use interface/page/forms first to discover available forms\n * and their fields. This command fills fields but does NOT submit - use interface/page/submit\n * after filling.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "formId": {
+          "type": "string",
+          "required": true,
+          "description": "formId parameter"
+        },
+        "values": {
+          "type": "object",
+          "required": true,
+          "description": "values parameter"
+        },
+        "waitForSelector": {
+          "type": "string",
+          "required": false,
+          "description": "waitForSelector parameter"
+        }
+      }
+    },
+    {
       "name": "interface/navigate",
       "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
       "params": {
@@ -2773,6 +3264,27 @@
           "type": "string",
           "required": false,
           "description": "target parameter"
+        }
+      }
+    },
+    {
+      "name": "interface/launch/url",
+      "description": "Interface Launch Url Command - Shared Types\n *\n * Opens a URL in the default browser. Enables personas to view what they build.",
+      "params": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "url parameter"
+        },
+        "waitForLoad": {
+          "type": "boolean",
+          "required": false,
+          "description": "waitForLoad parameter"
+        },
+        "screenshot": {
+          "type": "boolean",
+          "required": false,
+          "description": "screenshot parameter"
         }
       }
     },
@@ -2834,8 +3346,19 @@
       }
     },
     {
+      "name": "interface/browser/capabilities",
+      "description": "Interface Browser Capabilities Command - Shared Types\n *\n * Check available browser automation capabilities. Returns explicit status for each capability (webmcp, puppeteer, etc). No fallbacks - AIs see exactly what is/isn't available.",
+      "params": {
+        "_noParams": {
+          "type": "string",
+          "required": false,
+          "description": "_noParams parameter"
+        }
+      }
+    },
+    {
       "name": "inference/generate",
-      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
       "params": {
         "prompt": {
           "type": "string",
@@ -3041,7 +3564,7 @@
     },
     {
       "name": "genome/paging-adapter-register",
-      "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Ollama adapters",
+      "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Candle adapters",
       "params": {
         "adapterId": {
           "type": "string",
@@ -6948,6 +7471,59 @@
           "description": "all parameter"
         }
       }
+    },
+    {
+      "name": "agent/stop",
+      "description": "Agent Stop Command - Shared Types\n *\n * Stops a running agent.\n *\n * Usage:\n *   ./jtag agent/stop --handle=\"abc12345\"",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "agent/status",
+      "description": "Agent Status Command - Shared Types\n *\n * Gets the status of an agent by handle.\n *\n * Usage:\n *   ./jtag agent/status --handle=\"abc12345\"",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
+      "name": "agent/start",
+      "description": "Agent Start Command - Shared Types\n *\n * Starts an autonomous coding agent.\n *\n * Usage:\n *   ./jtag agent/start --task=\"List files in current directory\" --working_dir=\".\"\n *   ./jtag agent/start --task=\"Fix the bug in main.ts\" --working_dir=\"/path/to/project\" --model=\"qwen2.5:7b\"",
+      "params": {
+        "task": {
+          "type": "string",
+          "required": true,
+          "description": "task parameter"
+        },
+        "working_dir": {
+          "type": "string",
+          "required": true,
+          "description": "working_dir parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": true,
+          "description": "model parameter"
+        },
+        "max_iterations": {
+          "type": "number",
+          "required": false,
+          "description": "max_iterations parameter"
+        }
+      }
+    },
+    {
+      "name": "agent/list",
+      "description": "Agent List Command - Shared Types\n *\n * Lists all running agents.",
+      "params": {}
     },
     {
       "name": "adapter/try",

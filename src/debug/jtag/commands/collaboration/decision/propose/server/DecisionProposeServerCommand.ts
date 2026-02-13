@@ -182,7 +182,7 @@ async function getUsersInScope(scope: string): Promise<UserEntity[]> {
         });
 
       case 'local-models':
-        // Personas running on Ollama
+        // Personas running on local inference (Candle)
         return allUsers.filter((u: any) => {
           return u.type === 'persona';
         });

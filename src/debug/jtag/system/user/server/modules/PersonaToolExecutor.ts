@@ -280,16 +280,22 @@ export class PersonaToolExecutor {
     });
 
     // Auto-bootstrap workspace if any code/* tools are being called
-    if (!this.workspaceBootstrapped && this.persona.ensureCodeWorkspace) {
-      const hasCodeTools = filtered.some(tc => tc.toolName.startsWith('code/'));
-      if (hasCodeTools) {
+    const hasCodeTools = filtered.some(tc => tc.toolName.startsWith('code/'));
+    this.log.debug(`📋 prepareBatch: ${filtered.length} tools, hasCodeTools=${hasCodeTools}, bootstrapped=${this.workspaceBootstrapped}`);
+
+    if (hasCodeTools && !this.workspaceBootstrapped) {
+      if (this.persona.ensureCodeWorkspace) {
         try {
           this.log.info('🔧 Auto-bootstrapping workspace for code/* tool execution');
           await this.persona.ensureCodeWorkspace();
           this.workspaceBootstrapped = true;
+          this.log.info('✅ Workspace bootstrapped successfully');
         } catch (err: any) {
-          this.log.error(`Failed to bootstrap workspace: ${err.message}`);
+          this.log.error(`❌ Failed to bootstrap workspace: ${err.message}`);
+          // Don't return early - let the tool execution fail with a clearer error
         }
+      } else {
+        this.log.warn('⚠️ code/* tools called but ensureCodeWorkspace callback not available');
       }
     }
 

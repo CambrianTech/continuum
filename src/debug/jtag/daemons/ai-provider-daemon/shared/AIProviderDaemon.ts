@@ -2,7 +2,7 @@
  * AI Provider Daemon - Universal AI Integration Layer
  * ====================================================
  *
- * Central daemon for all AI provider integrations (Ollama, OpenAI, Anthropic, etc.)
+ * Central daemon for all AI provider integrations (Candle, OpenAI, Anthropic, etc.)
  * Provides unified interface for PersonaUsers and other AI-powered features.
  *
  * Architecture:
@@ -16,7 +16,7 @@
  *   endpoint: '/ai-provider',
  *   payload: {
  *     type: 'generate-text',
- *     request: { messages: [...], preferredProvider: 'ollama' }
+ *     request: { messages: [...], preferredProvider: 'candle' }
  *   }
  * });
  */
@@ -571,15 +571,15 @@ export class AIProviderDaemon extends DaemonBase {
    * - When preferredProvider is 'local' etc., route to Candle (native Rust)
    * - Candle enables LoRA adapter composition for the genome vision
    *
-   * OLLAMA IS REMOVED: Candle is the ONLY local inference path.
-   * Legacy 'ollama' provider requests are aliased to Candle for backward compat.
+   * Candle is the ONLY local inference path.
+   * Legacy 'local'/'llamacpp' provider requests are aliased to Candle.
    *
    * IMPORTANT: Candle is ONLY used for local inference.
    * Cloud providers use their own adapters. This prevents queue bottlenecks.
    *
    * ROUTING PRIORITY (in order):
    * 1. Explicit preferredProvider (if specified and available)
-   * 2. Local provider aliasing (legacy 'ollama'/local → candle)
+   * 2. Local provider aliasing (legacy 'local'/'llamacpp' → candle)
    * 3. Default by priority (highest priority enabled adapter)
    *
    * @returns AdapterSelection with routing metadata for observability
@@ -590,8 +590,8 @@ export class AIProviderDaemon extends DaemonBase {
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
     if (preferredProvider) {
       // LOCAL PROVIDER ALIASING: Route local providers to Candle
-      // Candle is the ONLY local inference path - 'ollama' kept for backward compat only
-      const localProviders = ['local', 'llamacpp', 'ollama']; // 'ollama' DEPRECATED - aliased to candle
+      // Candle is the ONLY local inference path
+      const localProviders = ['local', 'llamacpp'];
       if (localProviders.includes(preferredProvider)) {
         const candleReg = this.adapters.get('candle');
         if (candleReg && candleReg.enabled) {
@@ -631,22 +631,8 @@ export class AIProviderDaemon extends DaemonBase {
       );
     }
 
-    // 2. LOCAL MODEL DETECTION: Route local models to Candle when NO preferredProvider
-    // This catches cases like SignalDetector using 'llama3.2:1b' without specifying provider
-    // ONLY runs when preferredProvider is NOT specified to avoid misrouting API models
-    if (!preferredProvider && model && this.isLocalModel(model)) {
-      const candleReg = this.adapters.get('candle');
-      if (candleReg && candleReg.enabled) {
-        this.log.info(`🔄 AIProviderDaemon: Routing model '${model}' → 'candle' (model_detection, no preferredProvider)`);
-        return {
-          adapter: candleReg.adapter,
-          routingReason: 'model_detection',
-          isLocal: true,
-        };
-      }
-    }
-
-    // 3. DEFAULT: Select highest priority enabled adapter EXCLUDING Candle
+    // 2. DEFAULT: Select highest priority enabled adapter EXCLUDING Candle
+    // Note: Local model detection now happens in Rust via supported_model_prefixes()
     // Candle is only for local inference - don't use as catch-all default
     // This prevents queue bottlenecks when many personas share one local model
     const registrations = Array.from(this.adapters.values())
@@ -664,32 +650,6 @@ export class AIProviderDaemon extends DaemonBase {
     }
 
     return null;
-  }
-
-  /**
-   * Check if a model name indicates a local model that should use Candle
-   * Examples: llama3.2:1b, qwen2:1.5b, phi3:mini, mistral:7b
-   */
-  private isLocalModel(model: string): boolean {
-    const localModelPrefixes = [
-      'llama',      // Meta's LLaMA models
-      'qwen',       // Alibaba's Qwen models
-      'phi',        // Microsoft's Phi models
-      'mistral',    // Mistral AI models
-      'codellama',  // Code-focused LLaMA
-      'gemma',      // Google's Gemma models
-      'tinyllama',  // TinyLlama
-      'orca',       // Orca models
-      'vicuna',     // Vicuna models
-      'wizardlm',   // WizardLM
-      'neural-chat',// Intel Neural Chat
-      'stablelm',   // Stability AI LM
-      'yi',         // 01.AI Yi models
-      'deepseek-coder', // DeepSeek local coder (not the API)
-    ];
-
-    const modelLower = model.toLowerCase();
-    return localModelPrefixes.some(prefix => modelLower.startsWith(prefix));
   }
 
   /**
@@ -815,7 +775,7 @@ export class AIProviderDaemon extends DaemonBase {
    * const response = await AIProviderDaemon.generateText({
    *   messages: [{ role: 'user', content: 'Hello!' }],
    *   model: 'llama3.2:1b',
-   *   preferredProvider: 'ollama'
+   *   preferredProvider: 'candle'
    * });
    */
   static async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
@@ -823,7 +783,31 @@ export class AIProviderDaemon extends DaemonBase {
       throw new Error('AIProviderDaemon not initialized - system must call AIProviderDaemon.initialize() first');
     }
 
-    return await AIProviderDaemon.sharedInstance.generateText(request);
+    // Route ALL requests through Rust adapter system
+    // Rust handles routing via AdapterRegistry.select():
+    // - Explicit provider selection
+    // - Model-based routing (adapter.supported_model_prefixes())
+    // - Priority-based fallback
+    // This removes need for TypeScript model/provider detection
+    const { AIProviderRustClient } = await import('../server/AIProviderRustClient');
+    const rustClient = AIProviderRustClient.getInstance();
+
+    try {
+      const response = await rustClient.generateText(request);
+      // Log generation via TypeScript (Rust only handles inference, not DB logging)
+      AIProviderDaemon.sharedInstance['logGeneration'](response, request).catch(() => {});
+      return response;
+    } catch (error) {
+      // Log failed generation
+      AIProviderDaemon.sharedInstance['logFailedGeneration'](
+        request.requestId || `req-${Date.now()}`,
+        request.model || 'unknown',
+        error,
+        request,
+        request.preferredProvider || 'unknown'
+      ).catch(() => {});
+      throw error;
+    }
   }
 
   /**
@@ -833,7 +817,7 @@ export class AIProviderDaemon extends DaemonBase {
    * const response = await AIProviderDaemon.createEmbedding({
    *   input: 'Hello, world!',
    *   model: 'nomic-embed-text',
-   *   preferredProvider: 'ollama'
+   *   preferredProvider: 'candle'
    * });
    */
   static async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {
@@ -897,7 +881,7 @@ export class AIProviderDaemon extends DaemonBase {
    * Get adapter by provider ID with automatic instance injection - CLEAN INTERFACE
    *
    * @example
-   * const adapter = AIProviderDaemon.getAdapter('ollama');
+   * const adapter = AIProviderDaemon.getAdapter('candle');
    * if (adapter) {
    *   const models = await adapter.getAvailableModels();
    * }

@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/interface/page/forms",
+  "version": "1.0.0",
+  "description": "Discover all forms on a web page. Returns structured form definitions with field names, types, labels, and submit buttons. Works on ANY page with HTML forms - no WebMCP required. Use this first to understand what you can interact with, then use interface/page/fill and interface/page/submit.",
+  "main": "server/InterfacePageFormsServerCommand.ts",
+  "types": "shared/InterfacePageFormsTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/InterfacePageFormsIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "interface/page/forms"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

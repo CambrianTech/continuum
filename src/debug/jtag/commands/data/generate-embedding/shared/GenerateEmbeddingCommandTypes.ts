@@ -16,7 +16,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 export interface GenerateEmbeddingParams extends CommandParams {
   readonly text: string;
   readonly model?: string;     // Model name: 'all-minilm' | 'nomic-embed-text' | 'text-embedding-3-small'
-  readonly provider?: string;  // Provider: 'ollama' | 'openai' | 'huggingface'
+  readonly provider?: string;  // Provider: 'candle' | 'openai' | 'huggingface'
 }
 
 /**

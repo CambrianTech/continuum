@@ -22,11 +22,11 @@ const PROVIDER_CONFIG: Array<{
   billingUrl?: string;
 }> = [
   {
-    provider: 'Ollama',
-    key: 'OLLAMA_HOST',
+    provider: 'Candle',
+    key: 'CANDLE_ENABLED',
     category: 'local',
-    description: 'Local AI server - free, private, no API key needed',
-    getKeyUrl: 'https://ollama.ai/download'
+    description: 'Local AI server via Candle - free, private, no API key needed',
+    getKeyUrl: 'https://github.com/huggingface/candle'
   },
   {
     provider: 'Anthropic',

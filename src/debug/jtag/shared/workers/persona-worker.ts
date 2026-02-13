@@ -9,7 +9,7 @@
  * Phase 2: Mock evaluation
  * Phase 3: Real Candle (native Rust) inference
  *
- * NOTE: Ollama is REMOVED. Candle is the ONLY local inference path.
+ * NOTE: Candle is the ONLY local inference path.
  */
 
 import { parentPort, workerData } from 'worker_threads';
@@ -31,8 +31,8 @@ console.log(`🧵 PersonaWorker[${personaId}]: Provider type: ${providerType}`);
 let provider: BaseAIProviderAdapter | null = null;
 
 async function initializeProvider(): Promise<void> {
-  // 'candle' or legacy 'ollama' both use Candle now
-  if (providerType === 'candle' || providerType === 'ollama' || providerType === 'local') {
+  // 'candle' or 'local' both use Candle
+  if (providerType === 'candle' || providerType === 'local') {
     console.log(`🧵 PersonaWorker[${personaId}]: Initializing CandleGrpcAdapter...`);
 
     const adapter = new CandleGrpcAdapter();
@@ -75,8 +75,8 @@ async function initializeProvider(): Promise<void> {
 
       try {
         if (provider) {
-          // Real Ollama inference (Phase 3)
-          console.log(`🧠 PersonaWorker[${personaId}]: Using real Ollama inference...`);
+          // Real Candle inference (Phase 3)
+          console.log(`🧠 PersonaWorker[${personaId}]: Using real Candle inference...`);
 
           const prompt = `You are evaluating whether you should respond to a message in a conversation.
 

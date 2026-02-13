@@ -1,0 +1,28 @@
+[package]
+name = "jtag-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "MCP (Model Context Protocol) server for JTAG commands"
+
+[[bin]]
+name = "jtag-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Unix socket IPC
+# (tokio provides UnixStream with tokio feature)
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# For reading the socket path
+dirs = "5"

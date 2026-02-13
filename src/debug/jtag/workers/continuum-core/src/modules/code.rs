@@ -42,11 +42,25 @@ impl CodeState {
 
 pub struct CodeModule {
     state: Arc<CodeState>,
+    /// Message bus for publishing shell events (set during initialize)
+    bus: std::sync::OnceLock<Arc<crate::runtime::MessageBus>>,
 }
 
 impl CodeModule {
     pub fn new(state: Arc<CodeState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            bus: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Publish a shell event to the message bus.
+    /// Events: shell:{persona_id}:output, shell:{persona_id}:error, shell:{persona_id}:complete
+    fn publish_shell_event(&self, persona_id: &str, event_type: &str, payload: serde_json::Value) {
+        if let Some(bus) = self.bus.get() {
+            let event_name = format!("shell:{}:{}", persona_id, event_type);
+            bus.publish_async_only(&event_name, payload);
+        }
     }
 }
 
@@ -63,7 +77,10 @@ impl ServiceModule for CodeModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Store message bus for shell event publishing
+        let _ = self.bus.set(ctx.bus.clone());
+        log_info!("module", "code", "CodeModule initialized with event bus");
         Ok(())
     }
 
@@ -98,7 +115,8 @@ impl ServiceModule for CodeModule {
                 let engine = FileEngine::new(persona_id, security);
                 self.state.file_engines.insert(persona_id.to_string(), engine);
 
-                log_info!("module", "code", "Created workspace for {} at {}", persona_id, workspace_root);
+                log_info!("module", "code", "Created workspace for {} at {} with {} read roots: {:?}",
+                    persona_id, workspace_root, read_roots.len(), read_roots);
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
             }
 
@@ -498,25 +516,94 @@ impl ServiceModule for CodeModule {
                 let persona_id = params.get("persona_id")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing persona_id")?;
-                let command = params.get("command")
+                let command = params.get("cmd")
                     .and_then(|v| v.as_str())
-                    .ok_or("Missing command")?;
+                    .ok_or("Missing cmd")?;
                 let timeout_ms = params.get("timeout_ms")
                     .and_then(|v| v.as_u64());
                 let wait = params.get("wait")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                let mut shell = self.state.shell_sessions.get_mut(persona_id)
-                    .ok_or_else(|| format!("No shell session for {}", persona_id))?;
+                // Start execution (get execution_id and state_arc immediately)
+                let (execution_id, state_arc) = {
+                    let mut shell = self.state.shell_sessions.get_mut(persona_id)
+                        .ok_or_else(|| format!("No shell session for {}", persona_id))?;
+
+                    let exec_id = shell.execute(command, timeout_ms, &self.state.rt_handle)
+                        .map_err(|e| format!("{}", e))?;
+
+                    let state = shell.get_execution_state(&exec_id)
+                        .ok_or_else(|| "Execution vanished".to_string())?;
+
+                    (exec_id, state)
+                };
+                // DashMap lock is now released
 
                 if wait {
-                    let result = shell.execute_and_wait(command, timeout_ms, &self.state.rt_handle)
-                        .map_err(|e| format!("{}", e))?;
+                    // Await completion using the notify mechanism (async-safe)
+                    let result = loop {
+                        let (is_done, response, notify) = {
+                            let s = state_arc.lock()
+                                .map_err(|e| format!("Lock poisoned: {e}"))?;
+                            if s.status != crate::code::shell_types::ShellExecutionStatus::Running {
+                                let resp = crate::code::shell_types::ShellExecuteResponse {
+                                    execution_id: s.id.clone(),
+                                    status: s.status.clone(),
+                                    stdout: Some(s.stdout_lines.join("\n")),
+                                    stderr: Some(s.stderr_lines.join("\n")),
+                                    exit_code: s.exit_code,
+                                };
+                                (true, Some(resp), None)
+                            } else {
+                                (false, None, Some(s.output_notify.clone()))
+                            }
+                        };
+
+                        if is_done {
+                            break response.unwrap();
+                        }
+
+                        // Wait for notification (non-blocking async wait)
+                        if let Some(n) = notify {
+                            n.notified().await;
+                        }
+                    };
+
+                    // Emit shell:complete event with execution result
+                    let exit_code = result.exit_code.unwrap_or(-1);
+                    let has_error = exit_code != 0;
+                    self.publish_shell_event(persona_id, "complete", serde_json::json!({
+                        "execution_id": result.execution_id,
+                        "command": command,
+                        "exit_code": exit_code,
+                        "success": !has_error,
+                        "stdout_lines": result.stdout.as_ref().map(|s| s.lines().count()).unwrap_or(0),
+                        "stderr_lines": result.stderr.as_ref().map(|s| s.lines().count()).unwrap_or(0),
+                        "has_error": has_error,
+                    }));
+
+                    // If there were errors, also emit shell:error event
+                    if has_error {
+                        if let Some(stderr) = &result.stderr {
+                            let error_preview: String = stderr.lines().take(5).collect::<Vec<_>>().join("\n");
+                            self.publish_shell_event(persona_id, "error", serde_json::json!({
+                                "execution_id": result.execution_id,
+                                "command": command,
+                                "exit_code": exit_code,
+                                "error_preview": error_preview,
+                            }));
+                        }
+                    }
+
                     Ok(CommandResult::Json(serde_json::to_value(&result).unwrap_or_default()))
                 } else {
-                    let execution_id = shell.execute(command, timeout_ms, &self.state.rt_handle)
-                        .map_err(|e| format!("{}", e))?;
+                    // Emit shell:started event for async execution
+                    self.publish_shell_event(persona_id, "started", serde_json::json!({
+                        "execution_id": execution_id,
+                        "command": command,
+                    }));
+
                     Ok(CommandResult::Json(serde_json::json!({
                         "execution_id": execution_id,
                         "started": true,

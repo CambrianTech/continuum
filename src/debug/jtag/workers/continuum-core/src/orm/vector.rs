@@ -36,7 +36,6 @@ pub struct EmbeddingModel {
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingProvider {
     Fastembed,
-    Ollama,
     OpenAI,
 }
 

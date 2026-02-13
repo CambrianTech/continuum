@@ -30,6 +30,8 @@ export { VoiceConversationSource, registerVoiceOrchestrator, unregisterVoiceOrch
 export { SocialMediaRAGSource } from './SocialMediaRAGSource';
 export { CodeToolSource } from './CodeToolSource';
 export { ProjectContextSource } from './ProjectContextSource';
+export { GovernanceSource } from './GovernanceSource';
+export { ActivityContextSource } from './ActivityContextSource';
 
 // Re-export types for convenience
 export type { RAGSource, RAGSourceContext, RAGSection } from '../shared/RAGSource';

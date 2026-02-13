@@ -5,7 +5,7 @@
  * This must be done before activating adapters for personas.
  *
  * Phase 7: Mock adapters only
- * Phase 8+: Real Ollama adapters
+ * Phase 8+: Real Candle adapters
  */
 
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';

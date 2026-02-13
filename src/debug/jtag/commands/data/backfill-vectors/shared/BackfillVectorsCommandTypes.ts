@@ -19,7 +19,7 @@ export interface BackfillVectorsParams extends CommandParams {
   readonly filter?: UniversalFilter;             // Only backfill matching records
   readonly batchSize?: number;                   // Process N records at a time (default: 100)
   readonly model?: string;                       // Model name: 'all-minilm' | 'nomic-embed-text'
-  readonly provider?: string;                    // Provider: 'ollama' | 'openai'
+  readonly provider?: string;                    // Provider: 'candle' | 'openai'
   readonly skipExisting?: boolean;               // Skip records that already have embeddings (default: true)
 }
 

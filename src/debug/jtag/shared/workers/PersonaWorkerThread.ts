@@ -9,7 +9,7 @@
  *
  * Phase 1: Skeleton implementation (ping-pong only)
  * Phase 2: Add message evaluation
- * Phase 3: Add real Ollama inference
+ * Phase 3: Add real Candle inference
  */
 
 import { Worker } from 'worker_threads';

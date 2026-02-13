@@ -224,6 +224,11 @@ export class JTAGSystemServer extends JTAGSystem {
     const { ServerCommands } = await import('../../server/ServerCommands');
     ServerCommands.initialize();
 
+    // Initialize tool result → persona memory capture (captures ALL tool results)
+    const { initToolResultMemoryCapture } = await import('../../../sentinel/ToolResultMemoryCapture');
+    initToolResultMemoryCapture();
+    console.log(`🧠 JTAG System: Tool result memory capture initialized`);
+
     return system;
   }
 

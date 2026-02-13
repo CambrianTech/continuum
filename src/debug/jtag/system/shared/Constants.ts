@@ -134,8 +134,8 @@ export const MODEL_IDS = {
     GROK_4: 'grok-4'
   },
 
-  /** Ollama local models (legacy - use LOCAL_MODELS for new code) */
-  OLLAMA: {
+  /** Candle local models (use LOCAL_MODELS for new code) */
+  CANDLE: {
     LLAMA_3_2_3B: 'llama3.2:3b',
     LLAMA_3_1_8B: 'llama3.1:8b'
   },
@@ -168,21 +168,21 @@ export const LOCAL_MODELS = {
     'Qwen/Qwen2-0.5B-Instruct',  // Fast model for gating/classification
   ],
 
-  /** Default model for local inference */
-  DEFAULT: 'Qwen/Qwen2-1.5B-Instruct',
+  /** Default model for local inference (8B for quality) */
+  DEFAULT: 'meta-llama/Llama-3.1-8B-Instruct',
 
   /** Fast model for gating/classification tasks */
   GATING: 'Qwen/Qwen2-0.5B-Instruct',
 
-  /** Map legacy model names → HuggingFace model IDs (Ollama naming style kept for backward compat) */
-  OLLAMA_TO_HUGGINGFACE: {
-    // Llama 3.2 family → Qwen fallback (Llama requires HF approval)
-    'llama3.2:3b': 'Qwen/Qwen2-1.5B-Instruct',
-    'llama3.2:1b': 'Qwen/Qwen2-0.5B-Instruct',
-    'llama3.2-3b': 'Qwen/Qwen2-1.5B-Instruct',
+  /** Map legacy model names → HuggingFace model IDs (legacy naming style kept for backward compat) */
+  LEGACY_TO_HUGGINGFACE: {
+    // Llama 3.2 family → Llama 3.1 8B (better quality via GGUF)
+    'llama3.2:3b': 'meta-llama/Llama-3.1-8B-Instruct',
+    'llama3.2:1b': 'Qwen/Qwen2-0.5B-Instruct',  // Keep 1B small for gating
+    'llama3.2-3b': 'meta-llama/Llama-3.1-8B-Instruct',
     'llama3.2-1b': 'Qwen/Qwen2-0.5B-Instruct',
 
-    // Llama 3.1 family (requires HF approval)
+    // Llama 3.1 family (GGUF available via bartowski)
     'llama3.1:8b': 'meta-llama/Llama-3.1-8B-Instruct',
     'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
 
@@ -228,7 +228,7 @@ export const LOCAL_MODELS = {
    */
   mapToHuggingFace(modelName: string): string {
     const normalized = modelName.toLowerCase().trim();
-    const mapping = LOCAL_MODELS.OLLAMA_TO_HUGGINGFACE as Record<string, string>;
+    const mapping = LOCAL_MODELS.LEGACY_TO_HUGGINGFACE as Record<string, string>;
 
     // Direct lookup
     if (mapping[normalized]) {

@@ -8,7 +8,7 @@
  * Features:
  * - Native C++ bindings (no HTTP overhead)
  * - True parallel inference across worker processes
- * - Uses Ollama's downloaded GGUF models
+ * - Uses downloaded GGUF models
  * - Metal/CUDA/Vulkan acceleration support
  * - Privacy-first (data never leaves machine)
  *
@@ -47,11 +47,11 @@ import * as path from 'path';
 import * as os from 'os';
 
 /**
- * Resolve Ollama model name to GGUF file path
+ * Resolve model name to GGUF file path from local model storage
  */
-function resolveOllamaModelPath(modelName: string): string | null {
-  const ollamaDir = path.join(os.homedir(), '.ollama', 'models');
-  const manifestPath = path.join(ollamaDir, 'manifests', 'registry.ollama.ai', 'library', modelName.replace(':', '/'));
+function resolveLocalModelPath(modelName: string): string | null {
+  const modelsDir = path.join(os.homedir(), '.continuum', 'models');
+  const manifestPath = path.join(modelsDir, 'manifests', 'library', modelName.replace(':', '/'));
 
   if (!fs.existsSync(manifestPath)) {
     return null;
@@ -60,7 +60,7 @@ function resolveOllamaModelPath(modelName: string): string | null {
   try {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     const modelLayer = manifest.layers?.find((layer: { mediaType?: string; digest?: string }) =>
-      layer.mediaType === 'application/vnd.ollama.image.model'
+      layer.mediaType === 'application/vnd.gguf.model'
     );
 
     if (!modelLayer) {
@@ -68,7 +68,7 @@ function resolveOllamaModelPath(modelName: string): string | null {
     }
 
     const digest = modelLayer.digest.replace('sha256:', 'sha256-');
-    const blobPath = path.join(ollamaDir, 'blobs', digest);
+    const blobPath = path.join(modelsDir, 'blobs', digest);
 
     return fs.existsSync(blobPath) ? blobPath : null;
   } catch (error) {
@@ -112,7 +112,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       this.log(`✅ ${this.providerName}: llama.cpp bindings loaded`);
 
       // Pre-load default model
-      const modelPath = resolveOllamaModelPath(this.config.defaultModel);
+      const modelPath = resolveLocalModelPath(this.config.defaultModel);
       if (modelPath) {
         this.log(`🔄 ${this.providerName}: Pre-loading default model ${this.config.defaultModel}...`);
         await this.loadModel(this.config.defaultModel);
@@ -150,10 +150,10 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       return;
     }
 
-    const modelPath = resolveOllamaModelPath(modelName);
+    const modelPath = resolveLocalModelPath(modelName);
     if (!modelPath) {
       throw new AIProviderError(
-        `Model ${modelName} not found in Ollama storage`,
+        `Model ${modelName} not found in local storage`,
         'adapter',
         'MODEL_NOT_FOUND',
         { modelName }
@@ -259,21 +259,21 @@ export class LlamaCppAdapter implements AIProviderAdapter {
   }
 
   async getAvailableModels(): Promise<ModelInfo[]> {
-    const ollamaDir = path.join(os.homedir(), '.ollama', 'models', 'manifests', 'registry.ollama.ai', 'library');
+    const modelsDir = path.join(os.homedir(), '.continuum', 'models', 'manifests', 'library');
 
-    if (!fs.existsSync(ollamaDir)) {
+    if (!fs.existsSync(modelsDir)) {
       return [];
     }
 
     const models: ModelInfo[] = [];
 
     try {
-      const entries = fs.readdirSync(ollamaDir, { withFileTypes: true });
+      const entries = fs.readdirSync(modelsDir, { withFileTypes: true });
 
       for (const entry of entries) {
         if (entry.isDirectory()) {
           const modelName = entry.name;
-          const variantsDir = path.join(ollamaDir, modelName);
+          const variantsDir = path.join(modelsDir, modelName);
           const variants = fs.readdirSync(variantsDir);
 
           for (const variant of variants) {

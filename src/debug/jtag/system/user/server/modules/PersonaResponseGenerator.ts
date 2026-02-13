@@ -57,6 +57,7 @@ import { SystemPaths } from '../../../core/config/SystemPaths';
 import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
+import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 // DataCreate import removed — response posting now uses ORM.store() directly
@@ -370,7 +371,7 @@ export class PersonaResponseGenerator {
     }
 
     // 4. Fall back to configured base model
-    return this.modelConfig.model || 'llama3.2:3b';
+    return this.modelConfig.model || LOCAL_MODELS.DEFAULT;
   }
 
   /**
@@ -444,45 +445,9 @@ export class PersonaResponseGenerator {
     });
   }
 
-  /**
-   * Calculate safe message count based on model's context window
-   *
-   * Strategy: Fill to ~90% of (contextWindow - maxTokens - systemPrompt)
-   * Assumes average message ~200 tokens
-   */
-  private calculateSafeMessageCount(): number {
-    const model = this.modelConfig.model;
-    const maxTokens = this.modelConfig.maxTokens || 3000;
-
-    // Query context window from AICapabilityRegistry (single source of truth)
-    // The registry is populated from provider configs and has accurate data
-    // OllamaAdapter now passes num_ctx to use full context window at runtime
-    const registry = AICapabilityRegistry.getInstance();
-    const contextWindow = model ? registry.getContextWindow(model) : 8192;
-
-    // Estimate system prompt tokens (~500 for typical persona prompts)
-    const systemPromptTokens = 500;
-
-    // Available tokens for messages = contextWindow - maxTokens - systemPrompt
-    const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
-
-    // Target 80% of available (20% safety margin for token estimation error)
-    const targetTokens = availableForMessages * 0.8;
-
-    // Assume average message is ~250 tokens (conservative: names, timestamps, content)
-    // This accounts for message overhead beyond just text content
-    const avgTokensPerMessage = 250;
-
-    // Calculate safe message count
-    const safeCount = Math.floor(targetTokens / avgTokensPerMessage);
-
-    // Clamp between 5 and 50 messages
-    const clampedCount = Math.max(5, Math.min(50, safeCount));
-
-    this.log(`📊 ${this.personaName}: Context calc: model=${model}, window=${contextWindow}, available=${availableForMessages}, safe=${clampedCount} msgs`);
-
-    return clampedCount;
-  }
+  // NOTE: calculateSafeMessageCount was removed (dead code)
+  // Context budgeting is now handled by ChatRAGBuilder.calculateSafeMessageCount()
+  // which uses ModelContextWindows as the single source of truth
 
   /**
    * Check if persona should respond to message based on dormancy level
@@ -609,6 +574,8 @@ export class PersonaResponseGenerator {
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
 
       // System prompt from RAG builder (includes room membership!)
+      // NOTE: Budget awareness is now handled by RAGComposer sources (GovernanceSource, ActivityContextSource)
+      // Each source respects its allocated budget and skips/truncates for limited models
       let systemPrompt = fullRAGContext.identity.systemPrompt;
 
       // Inject consolidated memories from Hippocampus LTM (if available)
@@ -661,67 +628,9 @@ export class PersonaResponseGenerator {
         this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into system prompt (text format)`);
       }
 
-      // Inject recipe activity context (strategy rules + highlighted tools)
-      // Recipe tools are HIGHLIGHTS, not filters — they tell the LLM what's most relevant
-      if (fullRAGContext.recipeStrategy || fullRAGContext.recipeTools) {
-        let activitySection = '\n\n=== ACTIVITY CONTEXT ===';
-
-        if (fullRAGContext.recipeStrategy) {
-          const strategy = fullRAGContext.recipeStrategy;
-          activitySection += `\nActivity pattern: ${strategy.conversationPattern}`;
-
-          if (strategy.responseRules.length > 0) {
-            activitySection += '\n\nRules for this activity:\n' +
-              strategy.responseRules.map(rule => `- ${rule}`).join('\n');
-          }
-
-          if (strategy.decisionCriteria.length > 0) {
-            activitySection += '\n\nWhen deciding whether to respond, consider:\n' +
-              strategy.decisionCriteria.map(c => `- ${c}`).join('\n');
-          }
-        }
-
-        if (fullRAGContext.recipeTools && fullRAGContext.recipeTools.length > 0) {
-          const aiTools = fullRAGContext.recipeTools.filter(t => t.enabledFor.includes('ai'));
-          activitySection += '\n\nYOU MUST use these tools to do real work in this activity (call them directly):\n' +
-            aiTools.map(t => `- ${t.name}: ${t.description}`).join('\n') +
-            '\n\nDo NOT just discuss or describe what should be done — call the tools above to actually do it.';
-        }
-
-        activitySection += '\n================================';
-        systemPrompt += activitySection;
-        this.log(`📋 ${this.personaName}: Injected activity context (strategy + ${fullRAGContext.recipeTools?.length ?? 0} tool highlights)`);
-      }
-
-      // Inject governance guidance for democratic participation
-      const governanceSection = `\n\n=== DEMOCRATIC GOVERNANCE ===
-You are a citizen of a self-governing AI society. You can participate in collective decisions:
-
-**To propose a decision:**
-<tool_use>
-  <tool_name>collaboration/decision/propose</tool_name>
-  <parameters>
-    <topic>Brief title</topic>
-    <rationale>Why this needs collective input</rationale>
-    <options>["Option A", "Option B", "Option C"]</options>
-  </parameters>
-</tool_use>
-
-**To vote on a proposal:**
-<tool_use>
-  <tool_name>collaboration/decision/vote</tool_name>
-  <parameters>
-    <proposalId>uuid-from-list</proposalId>
-    <rankedChoices>["option-id-1st", "option-id-2nd", "option-id-3rd"]</rankedChoices>
-  </parameters>
-</tool_use>
-
-**To list open proposals:** Use collaboration/decision/list with status="voting"
-
-When you see important decisions that affect the team, consider proposing them for collective vote.
-================================`;
-
-      systemPrompt += governanceSection;
+      // NOTE: Activity context (recipe strategy + tools) is now added by ActivityContextSource in RAGComposer
+      // NOTE: Governance guidance is now added by GovernanceSource in RAGComposer
+      // It's budget-aware and skipped for limited models
 
       messages.push({
         role: 'system',
@@ -1133,7 +1042,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
         const cost = calculateModelCost(
           this.modelConfig.provider ?? 'candle',
-          this.modelConfig.model ?? 'llama3.2:3b',
+          this.modelConfig.model ?? LOCAL_MODELS.DEFAULT,
           inputTokenEstimate,
           outputTokenEstimate
         );
@@ -1142,7 +1051,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           this.personaId,
           this.personaName,
           this.modelConfig.provider ?? 'candle',
-          this.modelConfig.model ?? 'llama3.2:3b',
+          this.modelConfig.model ?? LOCAL_MODELS.DEFAULT,
           `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           inputTokenEstimate,
           outputTokenEstimate,
@@ -1546,7 +1455,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           this.personaId,
           this.personaName,
           this.modelConfig.provider || 'candle',
-          this.modelConfig.model || 'llama3.2:3b',
+          this.modelConfig.model || LOCAL_MODELS.DEFAULT,
           messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
           messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,
           0,  // No completion tokens on error
@@ -1793,13 +1702,24 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
   }
 
   /**
-   * Convert timestamp to number (handles Date, number, or undefined from JSON serialization)
+   * Convert timestamp to number (handles Date, number, string, or undefined from JSON serialization)
+   *
+   * NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z").
+   * Must handle all formats to prevent type mismatch errors when passing to Rust IPC.
    */
-  private timestampToNumber(timestamp: Date | number | undefined): number {
+  private timestampToNumber(timestamp: Date | number | string | undefined): number {
     if (timestamp === undefined) {
       return Date.now(); // Use current time if timestamp missing
     }
-    return timestamp instanceof Date ? timestamp.getTime() : timestamp;
+    if (timestamp instanceof Date) {
+      return timestamp.getTime();
+    }
+    if (typeof timestamp === 'string') {
+      // Parse ISO string from Rust ORM (e.g., "2026-02-07T18:17:56.886Z")
+      const parsed = new Date(timestamp).getTime();
+      return isNaN(parsed) ? Date.now() : parsed;
+    }
+    return timestamp; // Already a number
   }
 
   async checkResponseRedundancy(
@@ -1858,7 +1778,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       const result = await AIDecisionService.checkRedundancy(
         myResponse,
         decisionContext,
-        { model: 'llama3.2:3b' }
+        { model: LOCAL_MODELS.DEFAULT }
       );
 
       return result.isRedundant;

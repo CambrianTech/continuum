@@ -2,7 +2,7 @@
  * Inference Generate Command - Server Implementation
  *
  * Generate text using local or cloud AI inference. Auto-routes to best available backend
- * (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
+ * (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
  *
  * This is the SINGLE ENTRY POINT for all text generation in the system.
  * PersonaUser, tools, and any other consumer should use this command.
@@ -36,8 +36,11 @@ export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerat
       );
     }
 
-    // Resolve model - use default if not specified
-    const requestedModel = params.model || LOCAL_MODELS.DEFAULT;
+    // Resolve model - use LOCAL_MODELS.DEFAULT for local providers
+    // Cloud providers should use their own defaults (handled by Rust adapter)
+    const localProviders = ['candle', 'local', 'llamacpp'];
+    const isLocalProvider = params.provider && localProviders.includes(params.provider.toLowerCase());
+    const requestedModel = params.model || (isLocalProvider ? LOCAL_MODELS.DEFAULT : undefined);
 
     // Filter adapters to only those with existing files
     let adaptersToApply: Array<{ name: string; path: string; domain: string }> = [];
@@ -98,7 +101,7 @@ export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerat
       return createInferenceGenerateResultFromParams(params, {
         success: false,
         text: '',
-        model: requestedModel,
+        model: requestedModel || params.model || 'unknown',
         provider: params.provider || 'unknown',
         isLocal: false,
         adaptersApplied: [],

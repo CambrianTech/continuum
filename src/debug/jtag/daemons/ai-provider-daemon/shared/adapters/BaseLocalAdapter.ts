@@ -2,7 +2,7 @@
  * BaseLocalAdapter - Shared logic for local inference providers
  *
  * Base class for local model providers that run on the same machine:
- * - Ollama
+ * - Candle (primary)
  * - llama.cpp server
  * - MLX server (future)
  * - LM Studio (future)

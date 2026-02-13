@@ -156,7 +156,7 @@ export interface AIReportResult {
       filteredMessages: number;
       timeWindowMinutes?: number;
     };
-    debugPrompt: string;  // Reconstructed prompt to test in Ollama
+    debugPrompt: string;  // Reconstructed prompt to test locally
   };
 
   // Coordination statistics (quality-boost + recency rotation)

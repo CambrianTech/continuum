@@ -48,7 +48,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   private readonly circuitBreakerCooldown: number = 5000; // Reduced from 30s
 
   // Base layer timeout - adapters get this for FREE (can override in subclass)
-  protected baseTimeout: number = 30000; // 30s default, Ollama overrides to 60s
+  protected baseTimeout: number = 30000; // 30s default, Candle overrides to 60s
 
   // Logger cache for persona-specific adapters logs
   private personaLoggers: Map<string, ComponentLogger> = new Map();
@@ -108,7 +108,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
   /**
    * Provider-specific restart logic
    *
-   * For Ollama: killall ollama && ollama serve
+   * For Candle: restart gRPC server
    * For OpenAI: reconnect to API with backoff
    * For Anthropic: reconnect to API with backoff
    * etc.

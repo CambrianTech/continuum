@@ -39,10 +39,16 @@ ndarray.workspace = true
 num_cpus = "1.16"  # CPU count detection
 dirs = "5.0"  # User directories for model paths
 
-# Candle ML framework (for Orpheus TTS — Llama-3B GGUF inference)
+# Candle ML framework (for local LLM inference + Orpheus TTS)
 candle-core.workspace = true
+candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
-tokenizers = { workspace = true, features = ["onig"] }  # Orpheus tokenizer
+tokenizers = { workspace = true, features = ["onig"] }
+
+# Model loading (for inference module)
+safetensors.workspace = true  # Model weight files
+hf-hub.workspace = true       # HuggingFace model downloads
+half = "2.4"                  # f16/bf16 handling for LoRA
 earshot = "0.1"  # Fast VAD (WebRTC-style)
 msedge-tts.workspace = true  # Edge-TTS (free Microsoft TTS API)
 tracing.workspace = true
@@ -60,6 +66,11 @@ regex = "1"                      # Regex search for code search
 
 # ORM module — database-agnostic storage with adapter traits
 rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
+
+[features]
+default = ["metal"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 
 [dev-dependencies]
 tokio-test = "0.4"

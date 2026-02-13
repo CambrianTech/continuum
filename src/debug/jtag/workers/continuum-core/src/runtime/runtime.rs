@@ -31,6 +31,7 @@ pub const EXPECTED_MODULES: &[&str] = &[
     "search",     // Phase 4b: BM25, TF-IDF, vector search
     "embedding",  // Phase 4c: fastembed vector generation
     "runtime",    // RuntimeModule: metrics and control
+    "mcp",        // MCP server: dynamic tool discovery
 ];
 
 pub struct Runtime {

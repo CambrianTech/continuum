@@ -10,6 +10,7 @@
 //! Architecture: Rust is the brain, TypeScript is the face.
 //! Target: 60-70% Rust (cognition, compute, real-time), 30-40% TypeScript (UI only)
 
+pub mod ai;
 pub mod audio_constants;
 pub mod concurrent;
 pub mod voice;
@@ -25,6 +26,8 @@ pub mod models;
 pub mod runtime;
 pub mod modules;
 pub mod orm;
+pub mod secrets;
+pub mod inference;
 
 pub use audio_constants::*;
 

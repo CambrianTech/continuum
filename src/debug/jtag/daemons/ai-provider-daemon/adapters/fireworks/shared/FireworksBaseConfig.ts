@@ -53,6 +53,18 @@ export class FireworksBaseConfig {
    */
   getAvailableModels(): ModelInfo[] {
     return [
+      // Llama 3.3 models (current recommended)
+      {
+        id: 'accounts/fireworks/models/llama-v3p3-70b-instruct',
+        name: 'Llama 3.3 70B Instruct',
+        provider: this.providerId,
+        capabilities: ['text-generation', 'chat'],
+        contextWindow: 131072,
+        costPer1kTokens: { input: 0.0009, output: 0.0009 },
+        supportsStreaming: true,
+        supportsFunctions: true
+      },
+      // Llama 3.1 models (some may be deprecated - use 3.3 instead)
       {
         id: 'accounts/fireworks/models/llama-v3p1-405b-instruct',
         name: 'Llama 3.1 405B Instruct',
@@ -70,16 +82,6 @@ export class FireworksBaseConfig {
         capabilities: ['text-generation', 'chat'],
         contextWindow: 131072,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
-        supportsStreaming: true,
-        supportsFunctions: true
-      },
-      {
-        id: 'accounts/fireworks/models/llama-v3p1-8b-instruct',
-        name: 'Llama 3.1 8B Instruct',
-        provider: this.providerId,
-        capabilities: ['text-generation', 'chat'],
-        contextWindow: 131072,
-        costPer1kTokens: { input: 0.0002, output: 0.0002 },
         supportsStreaming: true,
         supportsFunctions: true
       },
@@ -108,16 +110,17 @@ export class FireworksBaseConfig {
 
   /**
    * Get default model for inference
+   * Using Llama 3.3 70B - more reliable than deprecated 3.1 8B
    */
   getDefaultModel(): string {
-    return 'accounts/fireworks/models/llama-v3p1-8b-instruct';
+    return 'accounts/fireworks/models/llama-v3p3-70b-instruct';
   }
 
   /**
    * Get default model for fine-tuning
    */
   getDefaultFineTuningModel(): string {
-    return 'accounts/fireworks/models/llama-v3p1-8b-instruct';
+    return 'accounts/fireworks/models/llama-v3p1-70b-instruct';
   }
 
   /**
@@ -125,7 +128,6 @@ export class FireworksBaseConfig {
    */
   getSupportedFineTuningModels(): string[] {
     return [
-      'accounts/fireworks/models/llama-v3p1-8b-instruct',
       'accounts/fireworks/models/llama-v3p1-70b-instruct',
       'accounts/fireworks/models/mixtral-8x7b-instruct',
       'accounts/fireworks/models/qwen2p5-72b-instruct'

@@ -1,7 +1,7 @@
 /**
  * Inference Generate Command - Browser Implementation
  *
- * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
+ * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';

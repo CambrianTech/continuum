@@ -1,0 +1,81 @@
+{
+  "name": "interface/page/submit",
+  "description": "Submit a form on a web page. Use interface/page/forms to discover forms, interface/page/fill to populate fields, then this command to submit. Returns the resulting page state after submission.",
+  "params": [
+    {
+      "name": "url",
+      "type": "string",
+      "required": true,
+      "description": "The URL of the page containing the form"
+    },
+    {
+      "name": "formId",
+      "type": "string",
+      "required": true,
+      "description": "The formId from interface/page/forms response"
+    },
+    {
+      "name": "values",
+      "type": "object",
+      "required": false,
+      "description": "Optional: fill these values before submitting (combines fill + submit)"
+    },
+    {
+      "name": "waitForNavigation",
+      "type": "boolean",
+      "required": false,
+      "description": "Wait for page navigation after submit (default: true)"
+    },
+    {
+      "name": "waitForSelector",
+      "type": "string",
+      "required": false,
+      "description": "Wait for this selector on the result page"
+    }
+  ],
+  "results": [
+    {
+      "name": "success",
+      "type": "boolean",
+      "description": "Whether form was submitted successfully"
+    },
+    {
+      "name": "formId",
+      "type": "string",
+      "description": "The form that was submitted"
+    },
+    {
+      "name": "navigatedTo",
+      "type": "string",
+      "description": "The URL after form submission (may be same page or new page)"
+    },
+    {
+      "name": "pageTitle",
+      "type": "string",
+      "description": "Title of the resulting page"
+    },
+    {
+      "name": "pageContent",
+      "type": "string",
+      "description": "Brief summary of the result page content (first 500 chars of visible text)"
+    },
+    {
+      "name": "hasMoreForms",
+      "type": "boolean",
+      "description": "Whether the result page has forms (call interface/page/forms to discover)"
+    },
+    {
+      "name": "hint",
+      "type": "string",
+      "description": "Guidance on what to do with the result page"
+    },
+    {
+      "name": "error",
+      "type": "string",
+      "required": false,
+      "description": "Error message if submission failed"
+    }
+  ],
+  "environments": ["server"],
+  "example": "./jtag interface/page/submit --url=\"https://example.com/search\" --formId=\"search-form\""
+}

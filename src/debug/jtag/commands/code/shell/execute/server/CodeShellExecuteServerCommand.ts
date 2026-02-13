@@ -12,6 +12,7 @@ import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { CodeShellExecuteParams, CodeShellExecuteResult } from '../shared/CodeShellExecuteTypes';
 import { createCodeShellExecuteResultFromParams } from '../shared/CodeShellExecuteTypes';
 import { CodeDaemon } from '@daemons/code-daemon/shared/CodeDaemon';
+import { ToolResult } from '@system/core/shared/ToolResult';
 
 export class CodeShellExecuteServerCommand extends CommandBase<CodeShellExecuteParams, CodeShellExecuteResult> {
 
@@ -45,9 +46,33 @@ export class CodeShellExecuteServerCommand extends CommandBase<CodeShellExecuteP
     const timeoutMs = (typeof rawTimeout === 'string' ? parseInt(rawTimeout, 10) : rawTimeout as number | undefined)
       ?? (wait ? 30000 : undefined);
 
+    const startTime = Date.now();
+
     const result = await CodeDaemon.shellExecute(personaId, params.cmd, {
       timeoutMs,
       wait,
+    });
+
+    // Emit tool result for memory capture
+    // Use execution_id as handle since it's already unique
+    const success = result.exit_code === 0 || result.exit_code === undefined;
+    ToolResult.emit({
+      tool: 'code/shell/execute',
+      handle: result.execution_id,
+      userId: personaId,
+      success,
+      summary: success
+        ? `Shell command completed: ${params.cmd.substring(0, 50)}${params.cmd.length > 50 ? '...' : ''}`
+        : `Shell command failed (exit ${result.exit_code}): ${params.cmd.substring(0, 50)}${params.cmd.length > 50 ? '...' : ''}`,
+      data: {
+        command: params.cmd,
+        exitCode: result.exit_code,
+        status: result.status,
+        stdoutLength: result.stdout?.length || 0,
+        stderrLength: result.stderr?.length || 0,
+        waited: wait,
+      },
+      durationMs: Date.now() - startTime,
     });
 
     return createCodeShellExecuteResultFromParams(params, {

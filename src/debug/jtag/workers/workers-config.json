@@ -22,8 +22,8 @@
       "binary": "workers/target/release/inference-grpc",
       "type": "tcp",
       "port": 50051,
-      "description": "gRPC inference server with Candle LLM backend. Metal-accelerated.",
-      "enabled": true,
+      "description": "DEPRECATED: Candle inference now in continuum-core via CandleAdapter. Keep disabled.",
+      "enabled": false,
       "memoryLimit": "8G"
     },
     {

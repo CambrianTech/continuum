@@ -25,6 +25,8 @@ use crate::modules::data::DataModule;
 use crate::modules::logger::LoggerModule;
 use crate::modules::search::SearchModule;
 use crate::modules::embedding::EmbeddingModule;
+use crate::modules::agent::AgentModule;
+use crate::modules::ai_provider::AIProviderModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -663,6 +665,19 @@ pub fn start_server(
     // RuntimeModule: Exposes metrics and control for AI-driven system management (Ares)
     // Provides runtime/metrics/{all,module,slow}, runtime/list
     runtime.register(Arc::new(crate::modules::runtime_control::RuntimeModule::new()));
+
+    // MCPModule: Dynamic tool discovery for MCP servers
+    // Provides mcp/list-tools, mcp/search-tools, mcp/tool-help
+    runtime.register(Arc::new(crate::modules::mcp::MCPModule::new()));
+
+    // AgentModule: Autonomous AI coding agents with structured tool calling
+    // Provides agent/start, agent/status, agent/stop, agent/list, agent/wait
+    runtime.register(Arc::new(AgentModule::new(rt_handle.clone())));
+
+    // AIProviderModule: Unified AI provider for cloud and local inference
+    // Provides ai/generate, ai/providers/list, ai/providers/health
+    // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google
+    runtime.register(Arc::new(AIProviderModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

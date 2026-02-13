@@ -12,6 +12,8 @@ import type { CodeEditParams, CodeEditResult } from '../shared/CodeEditTypes';
 import { createCodeEditResultFromParams } from '../shared/CodeEditTypes';
 import { CodeDaemon } from '@daemons/code-daemon/shared/CodeDaemon';
 import type { WorkspaceEditMode } from '@daemons/code-daemon/shared/CodeDaemonTypes';
+import { ToolResult } from '@system/core/shared/ToolResult';
+import { v4 as uuid } from 'uuid';
 
 export class CodeEditServerCommand extends CommandBase<CodeEditParams, CodeEditResult> {
 
@@ -38,6 +40,9 @@ export class CodeEditServerCommand extends CommandBase<CodeEditParams, CodeEditR
     }
     const personaId = params.userId;
 
+    const handle = uuid();
+    const startTime = Date.now();
+
     const editMode = this.buildEditMode(params);
 
     const result = await CodeDaemon.workspaceEdit(
@@ -46,6 +51,24 @@ export class CodeEditServerCommand extends CommandBase<CodeEditParams, CodeEditR
       editMode,
       params.description
     );
+
+    // Emit tool result for memory capture
+    ToolResult.emit({
+      tool: 'code/edit',
+      handle,
+      userId: personaId,
+      success: result.success,
+      summary: result.success
+        ? `${params.editType} edit: wrote ${result.bytes_written} bytes to ${result.file_path}`
+        : `Failed to edit ${params.filePath} (${params.editType})`,
+      data: {
+        editType: params.editType,
+        path: result.file_path,
+        bytes: result.bytes_written,
+        changeId: result.change_id,
+      },
+      durationMs: Date.now() - startTime,
+    });
 
     return createCodeEditResultFromParams(params, {
       success: result.success,

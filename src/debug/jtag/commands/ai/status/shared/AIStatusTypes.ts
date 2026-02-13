@@ -39,7 +39,7 @@ export interface PersonaHealth {
   recentResponseRate?: number;         // Responses in last hour
 
   // Model configuration
-  provider: string;                    // 'anthropic' | 'ollama' | 'openai' etc.
+  provider: string;                    // 'anthropic' | 'candle' | 'openai' etc.
   model: string;                       // 'claude-3-5-sonnet-20241022' | 'llama3.2:3b' etc.
   temperature?: number;
 

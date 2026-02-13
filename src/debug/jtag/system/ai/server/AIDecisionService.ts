@@ -383,8 +383,8 @@ ${generatedText}
   ): Promise<AIGenerationResult> {
     const startTime = Date.now();
     const model = options.model ?? 'llama3.2:3b';
-    const timeoutMs = options.timeoutMs ?? 45000;
-    const provider = 'ollama';  // Response generation uses local inference
+    const timeoutMs = options.timeoutMs ?? 180000;  // 3 min for Candle inference (can be slow)
+    const provider = 'candle';  // Response generation uses local Candle inference
 
     // Request inference slot to prevent thundering herd
     const messageId = options.messageId ?? context.triggerMessage?.id ?? 'generate-' + Date.now();
@@ -409,7 +409,7 @@ ${generatedText}
         model,
         temperature: options.temperature ?? 0.7,
         maxTokens: options.maxTokens ?? 150,
-        preferredProvider: 'ollama'
+        preferredProvider: 'candle'
       };
 
       // Wrap with timeout

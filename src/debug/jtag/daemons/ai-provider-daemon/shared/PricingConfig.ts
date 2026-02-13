@@ -65,7 +65,6 @@ const PRICING_DB: Record<string, ModelPricing> = {
   'xai/*': { inputPerMillion: 5.0, outputPerMillion: 15.0 }, // Default for xAI
 
   // ====== Local (FREE) ======
-  'ollama/*': { inputPerMillion: 0, outputPerMillion: 0 },
   'candle/*': { inputPerMillion: 0, outputPerMillion: 0 },
   'candle-grpc/*': { inputPerMillion: 0, outputPerMillion: 0 },
   'sentinel/*': { inputPerMillion: 0, outputPerMillion: 0 },

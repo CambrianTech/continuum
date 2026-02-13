@@ -20,7 +20,7 @@ export interface EmbeddingGenerateParams extends CommandParams {
   /** Content type hint for model selection */
   contentType?: 'code' | 'text' | 'documentation';
 
-  /** Provider to use (default: 'ollama') */
+  /** Provider to use (default: 'candle') */
   provider?: string;
 }
 

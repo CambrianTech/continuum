@@ -1,14 +1,14 @@
 /**
  * Candle Adapter - Native Rust LLM Inference via Candle Framework
  *
- * Replaces Ollama for local inference with key advantages:
+ * Primary local inference with key advantages:
  * - Unix socket (no HTTP overhead)
  * - Multi-adapter LoRA composition (genome vision)
  * - Metal-accelerated on Apple Silicon
  * - In-process control (no external binary)
  *
  * Implements AIProviderAdapter interface for seamless integration with
- * AIProviderDaemon - higher-level code doesn't know if it's Candle, Ollama, or API.
+ * AIProviderDaemon - higher-level code doesn't know if it's Candle or API.
  */
 
 import { generateUUID } from '../../../../../system/core/types/CrossPlatformUUID';
@@ -41,14 +41,13 @@ interface CandleAdapterConfig {
   /** Max concurrent requests (not currently enforced at adapter level) */
   maxConcurrent?: number;
   /**
-   * Maximum input tokens before truncation (default: 4000)
+   * Maximum input tokens before truncation (default: 2000)
    *
-   * Small models (1.5B params) process ~8-10ms per token. With a 180s timeout:
-   * - 4000 tokens ≈ 35s (safe)
-   * - 10000 tokens ≈ 90s (risky)
-   * - 20000 tokens ≈ 180s (timeout!)
+   * The 3B model has a 4096 context window. We need to leave room for output:
+   * - 2000 input + 2000 output = 4000 tokens (within 4096 limit)
    *
-   * This limit prevents timeout errors from large RAG contexts.
+   * This limit prevents "Forward pass failed: narrow invalid args" errors
+   * when the total context (input + output) exceeds the model's window.
    */
   maxInputTokens?: number;
 }
@@ -61,7 +60,7 @@ interface LoadedAdapterInfo {
 }
 
 // ============================================================================
-// Model Name Mapping (Ollama → HuggingFace)
+// Model Name Mapping (Legacy → HuggingFace)
 // ============================================================================
 // Uses LOCAL_MODELS from Constants.ts as SINGLE SOURCE OF TRUTH
 // See system/shared/Constants.ts for the canonical mapping
@@ -92,7 +91,10 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.defaultModel = config.defaultModel || LOCAL_MODELS.DEFAULT;
     this.baseTimeout = config.timeout || 180000; // 180s to handle model download + generation
-    this.maxInputTokens = config.maxInputTokens || 4000; // ~35s at 8ms/token
+    // Q8_0 quantized model can handle ~1500 tokens input reliably
+    // RAG should already limit context via PersonaModelConfigs.contextWindow,
+    // so this is primarily a safety net matching Rust's MAX_INPUT_CHARS (6000 chars)
+    this.maxInputTokens = config.maxInputTokens || 1500;
 
     // Note: Model is pre-loaded by gRPC server at startup
   }
@@ -174,7 +176,9 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     // Convert messages to prompt string
     // (Candle currently takes raw prompt, not chat format)
     let prompt = this.formatMessagesAsPrompt(request);
-    this.log(request, 'info', `🔧 TRACE-3: Prompt formatted (${prompt.length} chars)`);
+    this.log(request, 'info', `🔧 TRACE-3: Prompt formatted (${prompt.length} chars, ${request.messages.length} messages)`);
+    this.log(request, 'info', `🔧 TRACE-3a: Prompt START: ${prompt.slice(0, 400).replace(/\n/g, '\\n')}...`);
+    this.log(request, 'info', `🔧 TRACE-3b: Prompt END: ...${prompt.slice(-300).replace(/\n/g, '\\n')}`);
 
     // CRITICAL: Truncate prompt if too long for fast inference
     // Small models (1.5B) take ~8-10ms per token; 20k tokens = 180s timeout!
@@ -402,16 +406,35 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   }
 
   /**
-   * Format chat messages as a prompt string for Candle
+   * Format chat messages as a prompt string for Candle using Llama 3 chat template
    *
-   * TODO: Use proper chat templates based on model type (Llama, Mistral, etc.)
+   * Llama 3/3.2 chat template format:
+   * <|begin_of_text|><|start_header_id|>system<|end_header_id|>
+   *
+   * System message<|eot_id|><|start_header_id|>user<|end_header_id|>
+   *
+   * User message<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+   *
+   * (Model generates here)
    */
   private formatMessagesAsPrompt(request: TextGenerationRequest): string {
-    const parts: string[] = [];
+    const parts: string[] = ['<|begin_of_text|>'];
 
-    // Add system prompt if provided
+    // Check if there's a system message
+    const hasSystemMessage = request.messages.some(m => m.role === 'system') || request.systemPrompt;
+
+    // Add system prompt if provided (standalone)
     if (request.systemPrompt) {
-      parts.push(`System: ${request.systemPrompt}\n`);
+      parts.push('<|start_header_id|>system<|end_header_id|>\n\n');
+      parts.push(request.systemPrompt);
+      parts.push('<|eot_id|>');
+    }
+
+    // Add default system prompt if none exists
+    if (!hasSystemMessage) {
+      parts.push('<|start_header_id|>system<|end_header_id|>\n\n');
+      parts.push('You are a helpful AI assistant.');
+      parts.push('<|eot_id|>');
     }
 
     // Add messages
@@ -424,21 +447,17 @@ export class CandleAdapter extends BaseAIProviderAdapter {
               .map((p) => (p as { type: 'text'; text: string }).text)
               .join('\n');
 
-      switch (message.role) {
-        case 'system':
-          parts.push(`System: ${content}\n`);
-          break;
-        case 'user':
-          parts.push(`User: ${content}\n`);
-          break;
-        case 'assistant':
-          parts.push(`Assistant: ${content}\n`);
-          break;
-      }
+      const role = message.role === 'system' ? 'system' :
+                   message.role === 'user' ? 'user' :
+                   message.role === 'assistant' ? 'assistant' : 'user';
+
+      parts.push(`<|start_header_id|>${role}<|end_header_id|>\n\n`);
+      parts.push(content);
+      parts.push('<|eot_id|>');
     }
 
-    // Add assistant prefix for continuation
-    parts.push('Assistant:');
+    // Add final assistant header for model to generate response
+    parts.push('<|start_header_id|>assistant<|end_header_id|>\n\n');
 
     return parts.join('');
   }
