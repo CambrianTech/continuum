@@ -91,9 +91,10 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.defaultModel = config.defaultModel || LOCAL_MODELS.DEFAULT;
     this.baseTimeout = config.timeout || 180000; // 180s to handle model download + generation
-    // Model has 4096 context window - leave room for output (2096 tokens)
-    // 2000 input + up to 2000 output = 4000 (within 4096 limit)
-    this.maxInputTokens = config.maxInputTokens || 2000;
+    // Q8_0 quantized model can handle ~1500 tokens input reliably
+    // RAG should already limit context via PersonaModelConfigs.contextWindow,
+    // so this is primarily a safety net matching Rust's MAX_INPUT_CHARS (6000 chars)
+    this.maxInputTokens = config.maxInputTokens || 1500;
 
     // Note: Model is pre-loaded by gRPC server at startup
   }

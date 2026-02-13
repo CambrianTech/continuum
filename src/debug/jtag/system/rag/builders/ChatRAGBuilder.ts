@@ -47,7 +47,9 @@ import {
   GlobalAwarenessSource,
   SocialMediaRAGSource,
   CodeToolSource,
-  ProjectContextSource
+  ProjectContextSource,
+  GovernanceSource,
+  ActivityContextSource
 } from '../sources';
 
 /**
@@ -135,9 +137,11 @@ export class ChatRAGBuilder extends RAGBuilder {
         new SemanticMemorySource(),      // Priority 60: Long-term memories
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
-        new CodeToolSource()             // Priority 50: Coding workflow guidance
+        new CodeToolSource(),            // Priority 50: Coding workflow guidance
+        new ActivityContextSource(),     // Priority 40: Recipe/activity context
+        new GovernanceSource()           // Priority 20: Democratic participation guidance
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 8 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 10 sources');
     }
     return this.composer;
   }

@@ -394,21 +394,18 @@ impl AIProviderAdapter for CandleAdapter {
             max_tokens = MAX_OUTPUT_TOKENS;
         }
 
-        // Truncate prompt if too long for quantized model stability
-        // Q8_0 models are more stable than Q4_K_M, but still need ~1000 token limit
-        // to avoid NaN in logits. Keep prompts under ~3500 chars (~875 tokens).
-        // With this limit: 1400 chars for system, 1400 chars for recent = ~350 tokens each.
-        const MAX_INPUT_CHARS: usize = 3500;
-        if prompt.len() > MAX_INPUT_CHARS {
+        // Emergency safety truncation - RAG should already limit context via contextWindow,
+        // but if something goes wrong, prevent OOM/NaN by hard-limiting at 16K chars (~4K tokens)
+        const EMERGENCY_MAX_CHARS: usize = 16000;
+        if prompt.len() > EMERGENCY_MAX_CHARS {
             let original_len = prompt.len();
-            // Smart truncation: balance system prompt and recent messages
-            // 40% start, 40% end = 80% of context preserved
-            let keep_start = MAX_INPUT_CHARS * 2 / 5;  // 1400 chars for system prompt
-            let keep_end = MAX_INPUT_CHARS * 2 / 5;    // 1400 chars for recent messages
+            // Keep start (system) and end (recent messages)
+            let keep_start = EMERGENCY_MAX_CHARS * 30 / 100;
+            let keep_end = EMERGENCY_MAX_CHARS * 65 / 100;
             let start = &prompt[..keep_start];
             let end = &prompt[prompt.len() - keep_end..];
-            prompt = format!("{}\n\n[... earlier context truncated for model limits ...]\n\n{}", start, end);
-            log.warn(&format!("Truncated prompt from {} to {} chars for quantized model stability", original_len, prompt.len()));
+            prompt = format!("{}\n\n[... emergency truncation - check RAG contextWindow ...]\n\n{}", start, end);
+            log.error(&format!("EMERGENCY truncation: {} -> {} chars - RAG contextWindow may be misconfigured!", original_len, prompt.len()));
         }
 
         log.info(&format!("Prompt length: {} chars, max_tokens: {}", prompt.len(), max_tokens));

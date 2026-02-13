@@ -109,10 +109,12 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'candle': {
     provider: 'candle',
-    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model for proper context window
+    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model
     temperature: 0.7,
-    maxTokens: 150,
-    contextWindow: 8000,  // Q4_K_M practical limit - NaN/Inf issues beyond this
+    maxTokens: 200,
+    // Context window is defined in ModelContextWindows.ts (SINGLE SOURCE OF TRUTH)
+    // ChatRAGBuilder uses ModelContextWindows.getContextWindow(modelId) for budget calculation
+    // Latency-aware budgeting further limits slow local models to prevent timeouts
     systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
   }
 };

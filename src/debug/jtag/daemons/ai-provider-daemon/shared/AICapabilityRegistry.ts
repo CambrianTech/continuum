@@ -430,17 +430,35 @@ export class AICapabilityRegistry {
     // ================================
     // Candle (Local)
     // Primary local inference provider
+    //
+    // CRITICAL: Context windows must match Rust MAX_INPUT_CHARS (3500 chars = ~875 tokens)
+    // Quantized models have practical limits due to numerical stability issues.
+    // Setting accurate values prevents RAG from building prompts that get truncated.
     // ================================
     this.registerProvider({
       providerId: 'candle',
       providerName: 'Candle',
       defaultCapabilities: ['text-input', 'text-output', 'embeddings'],
       models: [
+        // Primary model: Q8_0 quantized for stability
+        // Context limit: 3500 chars / 4 = ~875 tokens input
+        // Leave room for output: use 800 token effective window
+        {
+          modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+          displayName: 'Llama 3.1 8B (Quantized)',
+          capabilities: ['coding', 'reasoning'],
+          contextWindow: 1600, // 800 input + 800 output to avoid NaN
+          maxOutputTokens: 200,
+          costTier: 'free',
+          latencyTier: 'fast',
+        },
+        // Aliases that map to the same model
         {
           modelId: 'llama3.2:3b',
           displayName: 'Llama 3.2 3B',
           capabilities: ['coding', 'reasoning'],
-          contextWindow: 128000,
+          contextWindow: 1600,
+          maxOutputTokens: 200,
           costTier: 'free',
           latencyTier: 'fast',
         },
@@ -448,7 +466,8 @@ export class AICapabilityRegistry {
           modelId: 'llama3.2:1b',
           displayName: 'Llama 3.2 1B',
           capabilities: ['coding'],
-          contextWindow: 128000,
+          contextWindow: 1600,
+          maxOutputTokens: 200,
           costTier: 'free',
           latencyTier: 'fast',
         },
@@ -456,7 +475,7 @@ export class AICapabilityRegistry {
           modelId: 'llava:7b',
           displayName: 'LLaVA 7B',
           capabilities: ['image-input', 'multimodal'],
-          contextWindow: 4096,
+          contextWindow: 2048, // Vision models may have different limits
           costTier: 'free',
           latencyTier: 'medium',
         },
@@ -464,7 +483,8 @@ export class AICapabilityRegistry {
           modelId: 'phi3:mini',
           displayName: 'Phi-3 Mini',
           capabilities: ['coding', 'reasoning'],
-          contextWindow: 128000,
+          contextWindow: 1600,
+          maxOutputTokens: 200,
           costTier: 'free',
           latencyTier: 'fast',
         },
