@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-13T05:10:50.368Z",
+  "generated": "2026-02-13T20:12:30.837Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1806,6 +1806,64 @@
       }
     },
     {
+      "name": "sentinel/logs/tail",
+      "description": "Sentinel Logs Tail Command - Types\n *\n * Get the last N lines of a log stream (like Unix tail).",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        },
+        "stream": {
+          "type": "string",
+          "required": true,
+          "description": "stream parameter"
+        },
+        "lines": {
+          "type": "number",
+          "required": false,
+          "description": "lines parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/logs/read",
+      "description": "Sentinel Logs Read Command - Types\n *\n * Read a log stream for a sentinel.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        },
+        "stream": {
+          "type": "string",
+          "required": true,
+          "description": "stream parameter"
+        },
+        "offset": {
+          "type": "number",
+          "required": false,
+          "description": "offset parameter"
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "limit parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/logs/list",
+      "description": "Sentinel Logs List Command - Types\n *\n * List available log streams for a sentinel.",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": true,
+          "description": "handle parameter"
+        }
+      }
+    },
+    {
       "name": "sentinel/load",
       "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
       "params": {
@@ -2845,6 +2903,49 @@
           "type": "string",
           "required": false,
           "description": "action parameter"
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
+        }
+      }
+    },
+    {
+      "name": "logging/status",
+      "description": "Logging Status Command - Shared Types\n *\n * Show current logging configuration for all personas or a specific persona",
+      "params": {
+        "persona": {
+          "type": "string",
+          "required": false,
+          "description": "persona parameter"
+        }
+      }
+    },
+    {
+      "name": "logging/enable",
+      "description": "Logging Enable Command - Shared Types\n *\n * Enable logging for a persona. Persists to .continuum/logging.json",
+      "params": {
+        "persona": {
+          "type": "string",
+          "required": true,
+          "description": "persona parameter"
+        },
+        "category": {
+          "type": "string",
+          "required": false,
+          "description": "category parameter"
+        }
+      }
+    },
+    {
+      "name": "logging/disable",
+      "description": "Logging Disable Command - Shared Types\n *\n * Disable logging for a persona. Persists to .continuum/logging.json",
+      "params": {
+        "persona": {
+          "type": "string",
+          "required": true,
+          "description": "persona parameter"
         },
         "category": {
           "type": "string",

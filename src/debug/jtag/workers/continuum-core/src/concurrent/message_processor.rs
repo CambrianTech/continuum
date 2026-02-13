@@ -1,3 +1,4 @@
+use crate::clog_error;
 use tokio::sync::mpsc;
 use std::sync::Arc;
 
@@ -46,7 +47,7 @@ impl<P: MessageProcessor + 'static> ConcurrentProcessor<P> {
 
             tokio::spawn(async move {
                 if let Err(e) = processor.on_start().await {
-                    eprintln!("Worker {worker_id}: start error: {e}");
+                    clog_error!("Worker {}: start error: {}", worker_id, e);
                     return;
                 }
 
@@ -59,7 +60,7 @@ impl<P: MessageProcessor + 'static> ConcurrentProcessor<P> {
                     match message {
                         Some(msg) => {
                             if let Err(e) = processor.process(msg).await {
-                                eprintln!("Worker {worker_id}: process error: {e}");
+                                clog_error!("Worker {}: process error: {}", worker_id, e);
                             }
                         }
                         None => break,  // Channel closed

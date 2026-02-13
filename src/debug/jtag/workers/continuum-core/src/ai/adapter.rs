@@ -14,6 +14,7 @@
 //! - Google (Gemini)
 //! - Local (Candle, llama.cpp)
 
+use crate::clog_warn;
 use async_trait::async_trait;
 
 use super::types::{
@@ -369,7 +370,7 @@ impl AdapterRegistry {
         for id in ids {
             if let Some(adapter) = self.adapters.get_mut(&id) {
                 if let Err(e) = adapter.initialize().await {
-                    eprintln!("⚠️ Failed to initialize {} adapter: {}", id, e);
+                    clog_warn!("Failed to initialize {} adapter: {}", id, e);
                     // Don't fail entirely - other adapters may work
                 }
             }
@@ -381,7 +382,7 @@ impl AdapterRegistry {
     pub async fn shutdown_all(&mut self) -> Result<(), String> {
         for (id, adapter) in self.adapters.iter_mut() {
             if let Err(e) = adapter.shutdown().await {
-                eprintln!("⚠️ Failed to shutdown {} adapter: {}", id, e);
+                clog_warn!("Failed to shutdown {} adapter: {}", id, e);
             }
         }
         Ok(())

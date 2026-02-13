@@ -84,6 +84,16 @@ function generateBindings(pkg: string, description: string): boolean {
       return true;
     }
 
+    // ts-rs emits harmless warnings about serde attributes it can't parse
+    // These should not fail the build
+    const isOnlyTsRsWarnings = stderr.includes('ts-rs failed to parse this attribute') &&
+      !stderr.includes('error[') && !stderr.includes('error:') &&
+      !stderr.includes('could not compile');
+    if (isOnlyTsRsWarnings) {
+      console.log(`     ⚠️  ts-rs warnings (ignored)`);
+      return true;
+    }
+
     console.error(`     ❌ Failed: ${stderr.slice(0, 200)}`);
     return false;
   }
