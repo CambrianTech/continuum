@@ -72,7 +72,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   'fireworks': {
     provider: 'fireworks',
-    model: 'accounts/fireworks/models/llama-v3p1-8b-instruct', // Default from FireworksBaseConfig
+    model: 'accounts/fireworks/models/llama-v3p3-70b-instruct', // Llama 3.3 70B - more reliable than deprecated 3.1 8B
     temperature: 0.7,
     maxTokens: 2000,
     systemPrompt: 'You are Fireworks AI assistant. You provide fast, high-quality responses optimized for production workloads.'
