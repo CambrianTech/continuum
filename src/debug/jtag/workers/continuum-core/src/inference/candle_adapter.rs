@@ -395,16 +395,16 @@ impl AIProviderAdapter for CandleAdapter {
         }
 
         // Truncate prompt if too long for quantized model stability
-        // Quantized Q4 models become numerically unstable with very long prompts (>~1500 tokens)
-        // observed as NaN in logits at token 3-8. Keep prompts under ~1000 tokens (~4000 chars)
-        // to maintain stable inference.
-        const MAX_INPUT_CHARS: usize = 4000;
+        // Q8_0 models are more stable than Q4_K_M, but still need ~1000 token limit
+        // to avoid NaN in logits. Keep prompts under ~3500 chars (~875 tokens).
+        // With this limit: 1400 chars for system, 1400 chars for recent = ~350 tokens each.
+        const MAX_INPUT_CHARS: usize = 3500;
         if prompt.len() > MAX_INPUT_CHARS {
             let original_len = prompt.len();
-            // Smart truncation: preserve system prompt (at start) and recent messages (at end)
-            // This keeps the model instructions and most recent conversation context intact
-            let keep_start = MAX_INPUT_CHARS * 1 / 4;  // 25% for system prompt
-            let keep_end = MAX_INPUT_CHARS * 2 / 4;    // 50% for recent messages
+            // Smart truncation: balance system prompt and recent messages
+            // 40% start, 40% end = 80% of context preserved
+            let keep_start = MAX_INPUT_CHARS * 2 / 5;  // 1400 chars for system prompt
+            let keep_end = MAX_INPUT_CHARS * 2 / 5;    // 1400 chars for recent messages
             let start = &prompt[..keep_start];
             let end = &prompt[prompt.len() - keep_end..];
             prompt = format!("{}\n\n[... earlier context truncated for model limits ...]\n\n{}", start, end);
