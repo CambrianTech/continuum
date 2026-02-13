@@ -431,12 +431,57 @@ impl AIProviderAdapter for CandleAdapter {
                 "Model not loaded".to_string()
             })?;
 
+            // For quantized models, limit input tokens to prevent NaN
+            // Based on testing: NaN occurs at ~1400+ tokens, safe threshold is ~800
+            // This token-based limiting is more accurate than char-based EMERGENCY_MAX_CHARS
+            let final_prompt = match model {
+                ModelVariant::Quantized(state) => {
+                    const SAFE_INPUT_TOKENS: usize = 800;
+                    let tokens = state.tokenizer.encode(prompt.as_str(), true)
+                        .map_err(|e| format!("Tokenization failed: {e}"))?;
+                    let token_count = tokens.len();
+
+                    if token_count > SAFE_INPUT_TOKENS {
+                        // Truncate by keeping first ~30% and last ~60% of tokens
+                        // (system prompt at start, recent messages at end)
+                        let keep_start = SAFE_INPUT_TOKENS * 30 / 100; // 240 tokens
+                        let keep_end = SAFE_INPUT_TOKENS * 60 / 100;   // 480 tokens
+
+                        let token_ids = tokens.get_ids();
+                        let mut truncated_ids: Vec<u32> = Vec::with_capacity(SAFE_INPUT_TOKENS + 10);
+
+                        // Keep first N tokens (system prompt)
+                        truncated_ids.extend_from_slice(&token_ids[..keep_start]);
+
+                        // Add truncation marker (just use newlines, don't add extra tokens)
+                        // The model will understand context was cut
+
+                        // Keep last N tokens (recent messages)
+                        let end_start = token_ids.len().saturating_sub(keep_end);
+                        truncated_ids.extend_from_slice(&token_ids[end_start..]);
+
+                        let truncated_prompt = state.tokenizer.decode(&truncated_ids, true)
+                            .map_err(|e| format!("Decode failed: {e}"))?;
+
+                        log.warn(&format!(
+                            "TOKEN LIMIT: {} -> {} tokens (RAG sent too much context for quantized model)",
+                            token_count, truncated_ids.len()
+                        ));
+
+                        truncated_prompt
+                    } else {
+                        prompt.clone()
+                    }
+                }
+                ModelVariant::Regular(_) => prompt.clone(),
+            };
+
             let (output_text, completion_tokens) = match model {
                 ModelVariant::Regular(state) => {
-                    generate_text(state, &prompt, max_tokens, temperature)?
+                    generate_text(state, &final_prompt, max_tokens, temperature)?
                 }
                 ModelVariant::Quantized(state) => {
-                    generate_text_quantized(state, &prompt, max_tokens, temperature)?
+                    generate_text_quantized(state, &final_prompt, max_tokens, temperature)?
                 }
             };
 

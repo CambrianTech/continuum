@@ -223,6 +223,22 @@ pub fn generate_text_quantized(
 
     log.debug(&format!("Quantized generation: {} tokens from {} char prompt", prompt_len, prompt.len()));
 
+    // INCIDENT CAPTURE: Log prompt hash and first/last chars for reproducibility
+    // When NaN occurs, we can find this prompt in logs and recreate in tests
+    let prompt_hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        prompt.hash(&mut hasher);
+        hasher.finish()
+    };
+    log.debug(&format!(
+        "INCIDENT_CAPTURE: prompt_hash={:016x} tokens={} first_100={}",
+        prompt_hash,
+        prompt_len,
+        &prompt.chars().take(100).collect::<String>().replace('\n', "\\n")
+    ));
+
     // Setup logits processor
     let seed = rand::thread_rng().gen::<u64>();
     let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
@@ -474,5 +490,142 @@ mod tests {
             || output_lower.contains("hey")
             || output_lower.contains("greet");
         assert!(has_greeting, "Output should contain a greeting: {}", output);
+    }
+
+    /// Test to find the NaN threshold for quantized model
+    ///
+    /// This test sends progressively longer prompts to identify the exact
+    /// token count where NaN starts occurring. Used to set safe limits.
+    ///
+    /// Known from production logs:
+    /// - 149 tokens: works fine
+    /// - 1451 tokens: NaN detected
+    /// - 1622 tokens: NaN abort
+    ///
+    /// Run with: cargo test --release test_find_nan_threshold -- --ignored --nocapture
+    #[test]
+    #[ignore] // Requires model download, takes several minutes
+    fn test_find_nan_threshold() {
+        let mut state = load_default_quantized()
+            .expect("Failed to load quantized model");
+
+        println!("Finding NaN threshold for model: {}", state.model_id);
+        println!("============================================");
+
+        // Test at different token counts
+        // We'll generate prompts of various sizes and see where NaN appears
+        let test_sizes: Vec<usize> = vec![
+            100,   // Should work
+            200,   // Should work
+            400,   // Should work
+            600,   // Likely works
+            800,   // May start having issues
+            1000,  // Threshold area based on docs
+            1200,  // Above documented threshold
+            1400,  // Near observed failure point
+        ];
+
+        // Create a repeatable filler that tokenizes consistently
+        // "The quick brown fox jumps. " is ~7 tokens
+        let filler = "The quick brown fox jumps over the lazy dog. ";
+
+        for target_tokens in test_sizes {
+            // Build prompt with approximately target_tokens
+            // Header is ~20 tokens, so subtract that
+            let content_tokens = target_tokens.saturating_sub(20);
+            let repetitions = content_tokens / 10; // ~10 tokens per filler repetition
+
+            let mut content = String::new();
+            for _ in 0..repetitions {
+                content.push_str(filler);
+            }
+
+            let prompt = format!(
+                "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+                content
+            );
+
+            // Count actual tokens
+            let tokens_encoded = state.tokenizer.encode(prompt.as_str(), true)
+                .expect("Tokenization failed");
+            let actual_tokens = tokens_encoded.len();
+
+            print!("Testing {} tokens (target {})... ", actual_tokens, target_tokens);
+
+            // Reload model to clear KV cache before each test
+            state.reload_model().expect("Reload failed");
+
+            match generate_text_quantized(&mut state, &prompt, 20, 0.3) {
+                Ok((output, gen_tokens)) => {
+                    // Check for garbage output (indicates NaN recovery produced junk)
+                    let has_garbage = output.chars().any(|c| {
+                        c == '\u{FFFD}' || // replacement char
+                        (c as u32 > 0x1F000) || // emoji/symbol range often = garbage
+                        output.contains("zeroes") || // Known garbage pattern
+                        output.contains("valueOf") // Known garbage pattern
+                    });
+
+                    if has_garbage {
+                        println!("⚠️  {} tokens generated but GARBAGE detected: {}",
+                            gen_tokens, &output.chars().take(50).collect::<String>());
+                    } else {
+                        println!("✓ {} tokens, output: {}",
+                            gen_tokens, &output.chars().take(30).collect::<String>());
+                    }
+                }
+                Err(e) => {
+                    println!("✗ FAILED: {}", e);
+                    println!("\n==> NaN threshold appears to be around {} input tokens", actual_tokens);
+                    break;
+                }
+            }
+        }
+
+        println!("\n============================================");
+        println!("Test complete. Use results to set safe input token limits.");
+    }
+
+    /// Test that prompts at the safe threshold work reliably
+    ///
+    /// Run with: cargo test --release test_safe_threshold -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn test_safe_threshold() {
+        let mut state = load_default_quantized()
+            .expect("Failed to load quantized model");
+
+        // Test at safe threshold (800 tokens based on analysis)
+        const SAFE_INPUT_TOKENS: usize = 800;
+
+        let filler = "The quick brown fox jumps over the lazy dog. ";
+        let repetitions = (SAFE_INPUT_TOKENS - 20) / 10;
+
+        let mut content = String::new();
+        for _ in 0..repetitions {
+            content.push_str(filler);
+        }
+
+        let prompt = format!(
+            "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
+            content
+        );
+
+        let tokens = state.tokenizer.encode(prompt.as_str(), true)
+            .expect("Tokenization failed").len();
+
+        println!("Testing safe threshold with {} tokens", tokens);
+
+        // Run 5 times to ensure reliability
+        for i in 0..5 {
+            state.reload_model().expect("Reload failed");
+            let (output, gen_tokens) = generate_text_quantized(&mut state, &prompt, 20, 0.3)
+                .expect(&format!("Generation {} failed", i + 1));
+
+            assert!(!output.contains('\u{FFFD}'), "Output {} contains garbage", i + 1);
+            assert!(!output.contains("zeroes"), "Output {} contains garbage pattern", i + 1);
+            println!("Run {}: {} tokens, OK", i + 1, gen_tokens);
+        }
+
+        println!("✓ Safe threshold of {} tokens verified reliable", tokens);
     }
 }
