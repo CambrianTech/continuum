@@ -38,7 +38,9 @@ pub use persona::{
     QueueItem, SenderType, Modality, Mood,
 };
 pub use concurrent::*;
-pub use logging::{init_logger, logger, LogLevel};
+// Easy logging macros - auto-route to proper log files based on module_path!()
+// Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
+pub use logging::{init_logger, logger, LogLevel, module_path_to_category, extract_component};
 pub use ipc::start_server;
 pub use voice::call_server::CallManager;
 pub use rag::{RagEngine, RagContext, RagOptions, LlmMessage, MessageRole};

@@ -1,0 +1,48 @@
+{
+  "name": "logging/enable",
+  "description": "Enable logging for a persona. Persists to .continuum/logging.json",
+  "params": [
+    {
+      "name": "persona",
+      "type": "string",
+      "optional": false,
+      "description": "Persona uniqueId to enable logging for (e.g., 'helper', 'codereview')"
+    },
+    {
+      "name": "category",
+      "type": "string",
+      "optional": true,
+      "description": "Specific category to enable (e.g., 'cognition', 'hippocampus'). If not specified, enables all categories"
+    }
+  ],
+  "results": [
+    {
+      "name": "persona",
+      "type": "string",
+      "description": "The persona that was enabled"
+    },
+    {
+      "name": "categories",
+      "type": "string[]",
+      "description": "Categories now enabled for this persona"
+    },
+    {
+      "name": "message",
+      "type": "string",
+      "description": "Human-readable status message"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Enable all logging for helper persona",
+      "command": "./jtag logging/enable --persona=helper",
+      "expectedResult": "{ persona: 'helper', categories: ['*'], message: 'Enabled all logging for helper' }"
+    },
+    {
+      "description": "Enable only cognition logs",
+      "command": "./jtag logging/enable --persona=helper --category=cognition",
+      "expectedResult": "{ persona: 'helper', categories: ['cognition'], message: 'Enabled cognition logging for helper' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

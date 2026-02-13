@@ -1,6 +1,7 @@
 //! Phonemizer using espeak-ng for text-to-phoneme conversion
 //! Piper TTS models require espeak-ng IPA phonemes
 
+use crate::{clog_error, clog_warn};
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -66,7 +67,7 @@ impl Phonemizer {
         let phonemes = match self.call_espeak(text) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("Phonemizer error: {e}");
+                clog_error!("Phonemizer error: {}", e);
                 // Return minimal valid sequence on error
                 return vec![1, 59, 2]; // ^, ə, $
             }
@@ -93,14 +94,14 @@ impl Phonemizer {
                 unknown_count += 1;
                 if unknown_count <= 5 {  // Only log first 5 to avoid spam
                     let ch_code = ch as u32;
-                    eprintln!("Unknown phoneme '{ch}' (U+{ch_code:04X}), skipping");
+                    clog_warn!("Unknown phoneme '{}' (U+{:04X}), skipping", ch, ch_code);
                 }
             }
         }
 
         if unknown_count > 5 {
             let remaining = unknown_count - 5;
-            eprintln!("... and {remaining} more unknown phonemes");
+            clog_warn!("... and {} more unknown phonemes", remaining);
         }
 
         // If we got no valid phonemes, return minimal sequence
@@ -121,7 +122,7 @@ impl Default for Phonemizer {
         // Load from default model config
         Self::load_from_config("../models/piper/en_US-libritts_r-medium.onnx.json")
             .unwrap_or_else(|e| {
-                eprintln!("Failed to load phoneme map from config: {e}");
+                clog_error!("Failed to load phoneme map from config: {}", e);
                 Self { phoneme_to_id: HashMap::new() }
             })
     }

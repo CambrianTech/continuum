@@ -1,0 +1,52 @@
+{
+  "name": "logging/status",
+  "description": "Show current logging configuration for all personas or a specific persona",
+  "params": [
+    {
+      "name": "persona",
+      "type": "string",
+      "optional": true,
+      "description": "Specific persona to show status for. If not specified, shows all personas"
+    }
+  ],
+  "results": [
+    {
+      "name": "personas",
+      "type": "object[]",
+      "description": "Array of persona logging statuses with { persona, enabled, categories }"
+    },
+    {
+      "name": "systemEnabled",
+      "type": "boolean",
+      "description": "Whether system logging is enabled"
+    },
+    {
+      "name": "defaultEnabled",
+      "type": "boolean",
+      "description": "Default enabled state for unconfigured personas"
+    },
+    {
+      "name": "availableCategories",
+      "type": "string[]",
+      "description": "List of valid category names"
+    },
+    {
+      "name": "summary",
+      "type": "string",
+      "description": "Human-readable summary of logging state"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Show all logging status",
+      "command": "./jtag logging/status",
+      "expectedResult": "{ personas: [...], systemEnabled: true, defaultEnabled: false, summary: '2/11 personas logging enabled' }"
+    },
+    {
+      "description": "Show status for specific persona",
+      "command": "./jtag logging/status --persona=helper",
+      "expectedResult": "{ personas: [{ persona: 'helper', enabled: true, categories: ['cognition'] }], summary: 'helper: ON (cognition)' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

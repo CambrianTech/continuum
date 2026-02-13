@@ -1,0 +1,53 @@
+{
+  "name": "logging/disable",
+  "description": "Disable logging for a persona. Persists to .continuum/logging.json",
+  "params": [
+    {
+      "name": "persona",
+      "type": "string",
+      "optional": false,
+      "description": "Persona uniqueId to disable logging for (e.g., 'helper', 'codereview')"
+    },
+    {
+      "name": "category",
+      "type": "string",
+      "optional": true,
+      "description": "Specific category to disable. If not specified, disables all logging for the persona"
+    }
+  ],
+  "results": [
+    {
+      "name": "persona",
+      "type": "string",
+      "description": "The persona that was disabled"
+    },
+    {
+      "name": "enabled",
+      "type": "boolean",
+      "description": "Whether any logging remains enabled for this persona"
+    },
+    {
+      "name": "categories",
+      "type": "string[]",
+      "description": "Categories still enabled (empty if all disabled)"
+    },
+    {
+      "name": "message",
+      "type": "string",
+      "description": "Human-readable status message"
+    }
+  ],
+  "examples": [
+    {
+      "description": "Disable all logging for helper persona",
+      "command": "./jtag logging/disable --persona=helper",
+      "expectedResult": "{ persona: 'helper', enabled: false, categories: [], message: 'Disabled all logging for helper' }"
+    },
+    {
+      "description": "Disable only training logs",
+      "command": "./jtag logging/disable --persona=helper --category=training",
+      "expectedResult": "{ persona: 'helper', enabled: true, categories: ['cognition'], message: 'Disabled training logging for helper' }"
+    }
+  ],
+  "accessLevel": "ai-safe"
+}

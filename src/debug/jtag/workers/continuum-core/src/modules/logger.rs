@@ -6,10 +6,17 @@
 //! - File handle caching (files stay open)
 //! - Auto-recovery if log files deleted
 //! - Per-file locking (no global contention)
+//! - Global sender for clog_* macros (non-blocking)
 //!
 //! Commands:
 //! - log/write: Write log entry to file
 //! - log/ping: Health check with stats
+//!
+//! Usage from Rust code:
+//! ```rust
+//! use crate::clog_info;
+//! clog_info!("Session started");  // Non-blocking, routes to modules/voice.log
+//! ```
 //!
 //! Migration from: workers/logger (222 lines main.rs + 4 modules)
 
@@ -24,10 +31,41 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use ts_rs::TS;
+
+// ============================================================================
+// Global Logger Sender — For clog_* Macros
+// ============================================================================
+
+/// Global sender for clog_* macros. Set by LoggerModule::new().
+/// Uses SyncSender with try_send() for GUARANTEED non-blocking.
+static GLOBAL_LOG_SENDER: OnceLock<mpsc::SyncSender<WriteLogPayload>> = OnceLock::new();
+
+/// Channel capacity - if full, new messages dropped (NEVER blocks)
+const CLOG_CHANNEL_CAPACITY: usize = 4096;
+
+/// Queue a log entry for async writing (called by clog_* macros).
+/// GUARANTEED NON-BLOCKING: Uses try_send(), drops if channel full.
+/// If LoggerModule not yet initialized, message is dropped.
+#[inline]
+pub fn queue_log(category: &str, level: LogLevel, component: &str, message: &str) {
+    if let Some(sender) = GLOBAL_LOG_SENDER.get() {
+        let payload = WriteLogPayload {
+            category: category.to_string(),
+            level,
+            component: component.to_string(),
+            message: message.to_string(),
+            args: None,
+        };
+        // GUARANTEED NON-BLOCKING: try_send returns immediately
+        // If channel full, message dropped - NEVER blocks caller
+        let _ = sender.try_send(payload);
+    }
+    // If GLOBAL_LOG_SENDER not set, silently drop (LoggerModule not initialized yet)
+}
 
 // ============================================================================
 // Types (matches legacy worker's messages.rs)
@@ -174,11 +212,53 @@ type LockedFile = Arc<Mutex<File>>;
 type FileCache = Arc<Mutex<HashMap<String, LockedFile>>>;
 type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 
+/// Resolve category to proper log path based on concern hierarchy.
+///
+/// Categories follow a structured naming convention:
+/// - `system/{component}` → .continuum/jtag/logs/system/{component}.log
+/// - `modules/{module}` → .continuum/jtag/logs/modules/{module}.log
+/// - `personas/{uniqueId}/{subsystem}` → .continuum/personas/{uniqueId}/logs/{subsystem}.log
+/// - `sentinels/{handle}/{stream}` → .sentinel-workspaces/{handle}/logs/{stream}.log
+/// - `daemons/{name}` → .continuum/jtag/logs/system/daemons/{name}.log
+/// - Anything else → .continuum/jtag/logs/system/{category}.log (legacy fallback)
 fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
-    if category.starts_with("personas/") {
-        PathBuf::from(format!(".continuum/{category}.log"))
-    } else {
-        PathBuf::from(log_dir).join(format!("{category}.log"))
+    let parts: Vec<&str> = category.split('/').collect();
+
+    match parts.as_slice() {
+        // personas/{uniqueId}/{subsystem} → .continuum/personas/{uniqueId}/logs/{subsystem}.log
+        ["personas", unique_id, subsystem] => {
+            PathBuf::from(format!(".continuum/personas/{unique_id}/logs/{subsystem}.log"))
+        }
+        // personas/{uniqueId} → .continuum/personas/{uniqueId}/logs/general.log
+        ["personas", unique_id] => {
+            PathBuf::from(format!(".continuum/personas/{unique_id}/logs/general.log"))
+        }
+        // sentinels/{handle}/{stream} → .sentinel-workspaces/{handle}/logs/{stream}.log
+        ["sentinels", handle, stream] => {
+            PathBuf::from(format!(".sentinel-workspaces/{handle}/logs/{stream}.log"))
+        }
+        // sentinels/{handle} → .sentinel-workspaces/{handle}/logs/execution.log
+        ["sentinels", handle] => {
+            PathBuf::from(format!(".sentinel-workspaces/{handle}/logs/execution.log"))
+        }
+        // modules/{module} → {log_dir}/modules/{module}.log
+        ["modules", module] => {
+            PathBuf::from(log_dir).join(format!("modules/{module}.log"))
+        }
+        // daemons/{name} → {log_dir}/daemons/{name}.log
+        ["daemons", name] => {
+            PathBuf::from(log_dir).join(format!("daemons/{name}.log"))
+        }
+        // system/{component} → {log_dir}/{component}.log
+        ["system", component] => {
+            PathBuf::from(log_dir).join(format!("{component}.log"))
+        }
+        // Legacy/fallback: put in system dir with category as filename
+        _ => {
+            // Replace slashes with underscores for legacy categories
+            let safe_name = category.replace('/', "_");
+            PathBuf::from(log_dir).join(format!("{safe_name}.log"))
+        }
     }
 }
 
@@ -347,7 +427,7 @@ pub struct LoggerModule {
     file_cache: FileCache,
     #[allow(dead_code)] // Used by writer thread, but compiler doesn't see through thread::spawn
     headers_written: HeaderTracker,
-    log_tx: mpsc::Sender<WriteLogPayload>,
+    log_tx: mpsc::SyncSender<WriteLogPayload>,
     started_at: Instant,
     requests_processed: AtomicU64,
     pending_writes: Arc<AtomicU64>,
@@ -362,8 +442,12 @@ impl LoggerModule {
         let headers_written = Arc::new(Mutex::new(HashSet::new()));
         let pending_writes = Arc::new(AtomicU64::new(0));
 
-        // Create channel for background writer
-        let (log_tx, log_rx) = mpsc::channel::<WriteLogPayload>();
+        // Create BOUNDED sync_channel for GUARANTEED non-blocking
+        // try_send() returns immediately - if full, message dropped (NEVER blocks)
+        let (log_tx, log_rx) = mpsc::sync_channel::<WriteLogPayload>(CLOG_CHANNEL_CAPACITY);
+
+        // Set global sender for clog_* macros (if not already set)
+        let _ = GLOBAL_LOG_SENDER.set(log_tx.clone());
 
         // Spawn dedicated writer thread (same architecture as legacy worker)
         let writer_file_cache = file_cache.clone();

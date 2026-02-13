@@ -4,6 +4,7 @@
 //! Uses a dedicated thread for SQLite operations since rusqlite::Connection
 //! is not Send+Sync.
 
+use crate::{clog_info, clog_error, clog_warn};
 use async_trait::async_trait;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -103,7 +104,7 @@ impl Default for SqliteAdapter {
 
 /// Worker thread that owns the SQLite connection
 fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
-    eprintln!("[sqlite_worker] Starting worker for path: {}", path);
+    clog_info!("Starting worker for path: {}", path);
 
     // Open connection
     let conn = match Connection::open_with_flags(
@@ -114,15 +115,15 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
     ) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[sqlite_worker] ERROR: SQLite open failed: {}", e);
+            clog_error!("SQLite open failed: {}", e);
             return;
         }
     };
-    eprintln!("[sqlite_worker] Connection opened successfully");
+    clog_info!("Connection opened successfully");
 
     // Enable WAL mode for better concurrency
     if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;") {
-        eprintln!("[sqlite_worker] PRAGMA error: {}", e);
+        clog_error!("PRAGMA error: {}", e);
     }
 
     let mut query_count = 0u64;
@@ -159,7 +160,7 @@ fn sqlite_worker(path: String, mut receiver: mpsc::Receiver<SqliteCommand>) {
                 let collection = query.collection.clone();
                 let result = do_query(&conn, query);
                 if start.elapsed().as_millis() > 100 {
-                    eprintln!("[sqlite_worker] SLOW query #{} on {}: {}ms", query_count, collection, start.elapsed().as_millis());
+                    clog_warn!("SLOW query #{} on {}: {}ms", query_count, collection, start.elapsed().as_millis());
                 }
                 let _ = reply.send(result);
             }
@@ -248,7 +249,7 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) {
     );
 
     if let Err(e) = conn.execute(&sql, []) {
-        eprintln!("SQLite table creation error for '{}': {}", table, e);
+        clog_error!("SQLite table creation error for '{}': {}", table, e);
     }
 }
 

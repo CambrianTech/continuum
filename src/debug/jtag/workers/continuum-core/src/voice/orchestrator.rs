@@ -1,4 +1,5 @@
 use super::types::*;
+use crate::clog_info;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -33,7 +34,7 @@ impl VoiceOrchestrator {
             let mut contexts = self.session_contexts.lock().unwrap();
             contexts.insert(session_id, ConversationContext::new(session_id, room_id));
         }
-        println!("🎙️ VoiceOrchestrator: Registered session {} with {} participants",
+        clog_info!("Registered session {} with {} participants",
                  &session_id.to_string()[..8], participants.len());
     }
 
@@ -41,13 +42,13 @@ impl VoiceOrchestrator {
         self.session_participants.lock().unwrap().remove(&session_id);
         self.session_contexts.lock().unwrap().remove(&session_id);
         self.voice_responders.lock().unwrap().remove(&session_id);
-        println!("🎙️ VoiceOrchestrator: Unregistered session {}", &session_id.to_string()[..8]);
+        clog_info!("Unregistered session {}", &session_id.to_string()[..8]);
     }
 
     /// Process utterance and return ALL AI participant IDs (broadcast model)
     /// Each AI will decide if they want to respond via their own logic
     pub fn on_utterance(&self, event: UtteranceEvent) -> Vec<Uuid> {
-        println!("🎙️ VoiceOrchestrator: Utterance from {}: \"{}...\"",
+        clog_info!("Utterance from {}: \"{}...\"",
                  event.speaker_name, crate::voice::tts::truncate_str(&event.transcript, 50));
 
         // Get context
@@ -55,7 +56,7 @@ impl VoiceOrchestrator {
         let context = match contexts.get_mut(&event.session_id) {
             Some(ctx) => ctx,
             None => {
-                println!("🎙️ VoiceOrchestrator: No context for session {}", crate::voice::tts::truncate_str(&event.session_id.to_string(), 8));
+                clog_info!("No context for session {}", crate::voice::tts::truncate_str(&event.session_id.to_string(), 8));
                 return Vec::new();
             }
         };
@@ -68,7 +69,7 @@ impl VoiceOrchestrator {
         let session_participants = match participants.get(&event.session_id) {
             Some(p) => p,
             None => {
-                println!("🎙️ VoiceOrchestrator: No participants for session {}", &event.session_id.to_string()[..8]);
+                clog_info!("No participants for session {}", &event.session_id.to_string()[..8]);
                 return Vec::new();
             }
         };
@@ -80,13 +81,13 @@ impl VoiceOrchestrator {
             .collect();
 
         if ai_participants.is_empty() {
-            println!("🎙️ VoiceOrchestrator: No AI participants to respond");
+            clog_info!("No AI participants to respond");
             return Vec::new();
         }
 
         // NO ARBITER - broadcast to ALL AI participants, let THEM decide if they want to respond
         // Their PersonaUser.shouldRespond() logic handles engagement decisions
-        println!("🎙️ VoiceOrchestrator: Broadcasting to {} AIs (no filtering)", ai_participants.len());
+        clog_info!("Broadcasting to {} AIs (no filtering)", ai_participants.len());
 
         ai_participants.iter().map(|p| p.user_id).collect()
     }
