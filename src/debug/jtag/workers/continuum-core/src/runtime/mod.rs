@@ -33,6 +33,7 @@ pub mod module_logger;
 pub mod module_metrics;
 pub mod control;
 pub mod runtime;
+pub mod command_executor;
 
 pub use service_module::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, CommandSchema, ParamSchema};
 pub use registry::ModuleRegistry;
@@ -43,6 +44,7 @@ pub use module_logger::ModuleLogger;
 pub use module_metrics::{ModuleMetrics, ModuleStats, CommandTiming};
 pub use control::{RuntimeControl, ModuleInfo};
 pub use runtime::Runtime;
+pub use command_executor::{CommandExecutor, execute as execute_command, execute_json as execute_command_json, executor, init_executor};
 
 // ============================================================================
 // Global Logger Access

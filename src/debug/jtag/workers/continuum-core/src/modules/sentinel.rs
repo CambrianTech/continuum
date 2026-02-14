@@ -787,12 +787,13 @@ impl SentinelModule {
     }
 
     /// Static command step execution
+    /// Uses global CommandExecutor to route to ANY command (Rust or TypeScript)
     async fn execute_command_step_static(
         command: &str,
         params: &Value,
         index: usize,
         ctx: &mut ExecutionContext,
-        registry: &Arc<ModuleRegistry>,
+        _registry: &Arc<ModuleRegistry>,  // Kept for API compatibility, not used
     ) -> Result<StepResult, String> {
         use crate::runtime;
         let log = runtime::logger("sentinel");
@@ -803,43 +804,25 @@ impl SentinelModule {
 
         log.info(&format!("Command step: {}", command));
 
-        // Route to module
-        let (module, cmd) = registry.route_command(command)
-            .ok_or_else(|| format!("Command not found in registry: {}", command))?;
-
-        let result = module.handle_command(&cmd, interpolated_params).await?;
+        // Execute via global CommandExecutor (routes to Rust OR TypeScript)
+        let json = runtime::command_executor::execute_json(command, interpolated_params).await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        match result {
-            CommandResult::Json(json) => {
-                let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
-                let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
+        // CommandExecutor returns Value directly
+        let success = json.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+        let error = json.get("error").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-                Ok(StepResult {
-                    step_index: index,
-                    step_type: "command".to_string(),
-                    success,
-                    duration_ms,
-                    output: None,
-                    error,
-                    exit_code: None,
-                    data: json,
-                })
-            }
-            CommandResult::Binary { data, .. } => {
-                Ok(StepResult {
-                    step_index: index,
-                    step_type: "command".to_string(),
-                    success: true,
-                    duration_ms,
-                    output: Some(format!("<binary {} bytes>", data.len())),
-                    error: None,
-                    exit_code: None,
-                    data: json!({ "binarySize": data.len() }),
-                })
-            }
-        }
+        Ok(StepResult {
+            step_index: index,
+            step_type: "command".to_string(),
+            success,
+            duration_ms,
+            output: None,
+            error,
+            exit_code: None,
+            data: json,
+        })
     }
 
     /// Static condition step execution
