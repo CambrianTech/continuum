@@ -112,6 +112,54 @@ export interface SentinelLogsTailResult {
 }
 
 /**
+ * Pipeline step types for multi-step execution
+ */
+export type PipelineStep =
+	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string }
+	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string }
+	| { type: 'command'; command: string; params?: Record<string, unknown> }
+	| { type: 'condition'; if: string; then: PipelineStep[]; else?: PipelineStep[] }
+	| { type: 'loop'; count: number; steps: PipelineStep[] };
+
+/**
+ * Pipeline definition
+ */
+export interface Pipeline {
+	name?: string;
+	steps: PipelineStep[];
+	workingDir?: string;
+	timeoutSecs?: number;
+	inputs?: Record<string, unknown>;
+}
+
+/**
+ * Step result from pipeline execution
+ */
+export interface StepResult {
+	stepIndex: number;
+	stepType: string;
+	success: boolean;
+	durationMs: number;
+	output?: string;
+	error?: string;
+	exitCode?: number;
+	data?: unknown;
+}
+
+/**
+ * Pipeline execution result
+ */
+export interface PipelineResult {
+	handle: string;
+	success: boolean;
+	totalDurationMs: number;
+	stepsCompleted: number;
+	stepsTotal: number;
+	stepResults: StepResult[];
+	error?: string;
+}
+
+/**
  * Mixin interface for type-safety
  */
 export interface SentinelMixin {
@@ -123,6 +171,7 @@ export interface SentinelMixin {
 	sentinelLogsList(handle: string): Promise<SentinelLogsListResult>;
 	sentinelLogsRead(handle: string, stream?: string, offset?: number, limit?: number): Promise<SentinelLogsReadResult>;
 	sentinelLogsTail(handle: string, stream?: string, lines?: number): Promise<SentinelLogsTailResult>;
+	sentinelPipeline(pipeline: Pipeline): Promise<PipelineResult>;
 }
 
 /**
@@ -310,6 +359,25 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 			}
 
 			return response.result as SentinelLogsTailResult;
+		}
+
+		/**
+		 * Execute a pipeline (multi-step with LLM, conditions, loops).
+		 *
+		 * Routes directly to Rust SentinelModule's pipeline executor.
+		 * This is the primary way to execute complex, multi-step tasks.
+		 */
+		async sentinelPipeline(pipeline: Pipeline): Promise<PipelineResult> {
+			const response = await this.request({
+				command: 'sentinel/pipeline',
+				pipeline,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'sentinel/pipeline failed');
+			}
+
+			return response.result as PipelineResult;
 		}
 	};
 }

@@ -594,13 +594,190 @@ const CODE_SENTINEL_PERMISSIONS: SentinelPermissions = {
 
 ---
 
+## Runtime Execution Model
+
+### Workspace Structure
+
+All sentinel execution happens within `.continuum/jtag/`:
+
+```
+.continuum/jtag/
+├── logs/system/
+│   ├── sentinels/                    # All sentinel logs here
+│   │   ├── {handle}/
+│   │   │   ├── stdout.log
+│   │   │   ├── stderr.log
+│   │   │   ├── combined.log
+│   │   │   └── steps.jsonl           # Step-by-step results
+│   │   └── index.log                 # Sentinel start/stop events
+│   └── ...
+├── sentinels/
+│   ├── workspaces/                   # Sentinel scratch space
+│   │   └── {handle}/
+│   │       ├── output/               # Files sentinel creates
+│   │       ├── metadata.json         # Pipeline definition, permissions
+│   │       └── results.json          # Final step results
+│   └── definitions/                  # Saved sentinel definitions
+│       └── {id}.json
+└── ...
+```
+
+**Key principle**: Sentinels write to their workspace by default. Access outside requires explicit permission.
+
+---
+
+### Filesystem Permission Model
+
+```typescript
+interface SentinelFilesystemConfig {
+  // Static whitelist (declared in pipeline definition)
+  read: string[];                     // Glob patterns: ["src/**/*.ts", "package.json"]
+  write: string[];                    // Default: ["$workspace/**"]
+  execute: string[];                  // Commands: ["npm", "cargo", "git"]
+
+  // Dynamic access
+  requestDynamic: boolean;            // Can request more at runtime
+  autoApprove: string[];              // Auto-approve patterns: ["$workspace/**"]
+}
+```
+
+**Default sandbox**: Sentinels can ONLY write to `$workspace` (their handle's directory) unless explicitly granted more.
+
+---
+
+### Event-Based Permission Requests (Non-Blocking)
+
+When a sentinel needs access outside its sandbox:
+
+```
+Step needs /some/external/path
+  │
+  ├─→ emit: "sentinel:{handle}:permission:request"
+  │     payload: { path: "/some/external/path", access: "write", reason: "Save analysis" }
+  │
+  ├─→ Sentinel continues with other steps (NON-BLOCKING)
+  │     OR marks step as "waiting:permission" and moves on
+  │
+  ├─→ User/system responds:
+  │     emit: "sentinel:{handle}:permission:response"
+  │     payload: { path: "/some/external/path", granted: true, expires: "2026-02-14T12:00:00Z" }
+  │
+  └─→ Sentinel receives permission, executes deferred step
+```
+
+**No blocking waits.** Everything is handles, events, commands.
+
+---
+
+### Handle-Based Execution
+
+Every sentinel execution returns a handle immediately:
+
+```typescript
+interface SentinelHandle {
+  id: string;                         // e.g., "aeb8fb01"
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'waiting';
+  progress: number;                   // 0-100
+  currentStep?: number;
+  totalSteps?: number;
+
+  // Workspace paths
+  workspace: string;                  // .continuum/jtag/sentinels/workspaces/{handle}/
+  logsDir: string;                    // .continuum/jtag/logs/system/sentinels/{handle}/
+
+  // Timing
+  startTime: number;
+  endTime?: number;
+
+  // Results
+  exitCode?: number;
+  error?: string;
+  stepResults?: StepResult[];         // Available after completion
+}
+```
+
+**Query via**: `sentinel/status --handle={id}`
+**Results via**: `sentinel/results --handle={id}` (returns step outputs)
+
+---
+
+### Step Result Storage
+
+Each step's output is captured and stored:
+
+```typescript
+interface StepResult {
+  stepIndex: number;
+  stepType: 'shell' | 'llm' | 'command' | 'condition' | 'loop';
+  success: boolean;
+  durationMs: number;
+
+  // Outputs
+  output?: string;                    // stdout or LLM response
+  error?: string;                     // stderr or error message
+  exitCode?: number;                  // For shell steps
+  data?: any;                         // Structured result data
+}
+```
+
+Results written to:
+- `.continuum/jtag/logs/system/sentinels/{handle}/steps.jsonl` (streaming)
+- `.continuum/jtag/sentinels/workspaces/{handle}/results.json` (final)
+
+---
+
+### Concurrent Execution Limits
+
+```typescript
+interface SentinelRuntimeLimits {
+  maxConcurrentSentinels: number;     // e.g., 4
+  maxStepsPerPipeline: number;        // e.g., 100
+  maxStepTimeout: number;             // e.g., 300_000 (5 min)
+  maxPipelineTimeout: number;         // e.g., 3600_000 (1 hour)
+
+  // Resource limits per sentinel
+  maxMemoryMb: number;                // e.g., 512
+  maxDiskMb: number;                  // e.g., 1024 (workspace size)
+  maxOpenFiles: number;               // e.g., 100
+}
+```
+
+---
+
+### Inter-Sentinel Communication
+
+Sentinels can emit events for other sentinels:
+
+```typescript
+// Pipeline step to emit event
+{
+  type: 'emit',
+  event: 'codeanalysis:complete',
+  data: '{{steps.2.output}}'          // Variable interpolation
+}
+
+// Another sentinel triggers on this
+{
+  trigger: {
+    type: 'event',
+    event: 'codeanalysis:complete'
+  }
+}
+```
+
+**Pattern**: Sentinels coordinate via events, not direct calls.
+
+---
+
 ## Implementation Roadmap
 
 ### Phase 1: Foundation
 1. ✅ Create SentinelUser base class (extends PersonaUser)
-2. ⏭️ Implement tool registry for sentinel access
-3. ⏭️ Create trigger system (events, schedules, requests)
-4. ⏭️ Build permissions system
+2. ✅ Implement Rust SentinelModule with pipeline execution
+3. ⏭️ Move logs to `.continuum/jtag/logs/system/sentinels/`
+4. ⏭️ Add step result storage and `sentinel/results` command
+5. ⏭️ Implement workspace isolation (default sandbox)
+6. ⏭️ Build event-based permission request system
 
 ### Phase 2: First Sentinel
 5. ⏭️ Implement CodeSentinel (simplest, most useful)

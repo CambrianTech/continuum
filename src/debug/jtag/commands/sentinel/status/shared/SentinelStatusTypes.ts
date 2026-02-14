@@ -12,16 +12,10 @@ export interface SentinelStatusParams extends CommandParams {
 
 export interface SentinelStatusResult extends CommandResult {
   handle: string;
-  type?: SentinelType;
-  status: 'running' | 'completed' | 'failed' | 'not_found';
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'not_found';
   progress?: number;
-  duration?: number;
-  data?: {
-    success: boolean;
-    summary?: string;
-    filesCreated?: string[];
-    errors?: string[];
-    screenshot?: string;
-  };
+  exitCode?: number;
+  workingDir?: string;
+  logsDir?: string;
   error?: string;
 }

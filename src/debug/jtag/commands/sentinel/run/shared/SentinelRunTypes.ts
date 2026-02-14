@@ -166,6 +166,12 @@ export interface SentinelResultData {
     screenshot?: string;
     attempts?: number;
     iterations?: number;
+    // Pipeline-specific fields
+    stepResults?: unknown[];
+    stepsCompleted?: number;
+    stepsTotal?: number;
+    durationMs?: number;
+    error?: string;
   };
 }
 

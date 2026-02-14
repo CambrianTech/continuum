@@ -1,7 +1,7 @@
 /**
  * Sentinel Save Command - Server Implementation
  *
- * Saves sentinel definitions to the 'sentinels' collection in the database.
+ * Saves sentinel (pipeline) definitions to the 'sentinels' collection.
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -11,8 +11,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import { v4 as uuid } from 'uuid';
 import type { SentinelSaveParams, SentinelSaveResult } from '../shared/SentinelSaveTypes';
 import type { SentinelDefinition, SentinelEntity } from '../../../../system/sentinel';
-import { validateDefinition, createDefinitionFromParams } from '../../../../system/sentinel';
-import { getSentinelStatus } from '../../run/server/SentinelRunServerCommand';
+import { validateDefinition } from '../../../../system/sentinel';
 
 const COLLECTION = 'sentinels';
 
@@ -24,49 +23,27 @@ export class SentinelSaveServerCommand extends CommandBase<SentinelSaveParams, S
   async execute(params: JTAGPayload): Promise<SentinelSaveResult> {
     const saveParams = params as SentinelSaveParams;
 
-    let definition: SentinelDefinition | undefined;
-
-    // Option 1: Definition provided directly
-    if (saveParams.definition) {
-      // Parse if string (from CLI)
-      if (typeof saveParams.definition === 'string') {
-        try {
-          definition = JSON.parse(saveParams.definition);
-        } catch (e) {
-          return transformPayload(params, {
-            success: false,
-            error: 'Invalid definition JSON: ' + (e as Error).message,
-          });
-        }
-      } else {
-        definition = saveParams.definition;
-      }
-    }
-
-    // Option 2: Capture from handle
-    if (saveParams.handle && !definition) {
-      const handleData = getSentinelStatus(saveParams.handle);
-      if (!handleData) {
-        return transformPayload(params, {
-          success: false,
-          error: `Handle not found: ${saveParams.handle}`,
-        });
-      }
-
-      // Reconstruct definition from handle data
-      // Note: This captures what was run, which may have come from params
-      definition = createDefinitionFromParams({
-        type: handleData.type,
-        name: saveParams.name || `${handleData.type}-${saveParams.handle}`,
-        ...handleData.data,
-      });
-    }
-
-    if (!definition) {
+    // Definition is required
+    if (!saveParams.definition) {
       return transformPayload(params, {
         success: false,
-        error: 'Either definition or handle is required',
+        error: 'Definition is required',
       });
+    }
+
+    // Parse if string (from CLI)
+    let definition: SentinelDefinition;
+    if (typeof saveParams.definition === 'string') {
+      try {
+        definition = JSON.parse(saveParams.definition);
+      } catch (e) {
+        return transformPayload(params, {
+          success: false,
+          error: 'Invalid definition JSON: ' + (e as Error).message,
+        });
+      }
+    } else {
+      definition = saveParams.definition;
     }
 
     // Apply overrides

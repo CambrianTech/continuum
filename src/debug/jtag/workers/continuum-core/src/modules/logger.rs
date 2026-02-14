@@ -218,7 +218,7 @@ type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 /// - `system/{component}` → .continuum/jtag/logs/system/{component}.log
 /// - `modules/{module}` → .continuum/jtag/logs/modules/{module}.log
 /// - `personas/{uniqueId}/{subsystem}` → .continuum/personas/{uniqueId}/logs/{subsystem}.log
-/// - `sentinels/{handle}/{stream}` → .sentinel-workspaces/{handle}/logs/{stream}.log
+/// - `sentinels/{handle}/{stream}` → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
 /// - `daemons/{name}` → .continuum/jtag/logs/system/daemons/{name}.log
 /// - Anything else → .continuum/jtag/logs/system/{category}.log (legacy fallback)
 fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
@@ -233,13 +233,13 @@ fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
         ["personas", unique_id] => {
             PathBuf::from(format!(".continuum/personas/{unique_id}/logs/general.log"))
         }
-        // sentinels/{handle}/{stream} → .sentinel-workspaces/{handle}/logs/{stream}.log
+        // sentinels/{handle}/{stream} → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
         ["sentinels", handle, stream] => {
-            PathBuf::from(format!(".sentinel-workspaces/{handle}/logs/{stream}.log"))
+            PathBuf::from(format!(".continuum/jtag/logs/system/sentinels/{handle}/{stream}.log"))
         }
-        // sentinels/{handle} → .sentinel-workspaces/{handle}/logs/execution.log
+        // sentinels/{handle} → .continuum/jtag/logs/system/sentinels/{handle}/execution.log
         ["sentinels", handle] => {
-            PathBuf::from(format!(".sentinel-workspaces/{handle}/logs/execution.log"))
+            PathBuf::from(format!(".continuum/jtag/logs/system/sentinels/{handle}/execution.log"))
         }
         // modules/{module} → {log_dir}/modules/{module}.log
         ["modules", module] => {
