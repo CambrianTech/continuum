@@ -19,7 +19,7 @@ export interface SentinelDefinitionBase {
   id?: string;
 
   /** Sentinel type discriminator */
-  type: 'build' | 'orchestrate' | 'screenshot' | 'task' | 'script';
+  type: 'build' | 'orchestrate' | 'screenshot' | 'task' | 'script' | 'pipeline';
 
   /** Human-readable name */
   name: string;
@@ -185,15 +185,212 @@ export interface ScriptSentinelDefinition extends SentinelDefinitionBase {
   interpreter?: string;
 }
 
+// ============================================================================
+// Step-Based Pipeline Definitions (Declarative Runtime)
+// ============================================================================
+
 /**
- * Union of all sentinel definitions
+ * Loop control for pipeline sentinels.
+ */
+export type LoopConfig =
+  | { type: 'once' }                           // Run pipeline once
+  | { type: 'count'; max: number }             // Run N iterations
+  | { type: 'until'; check: string }           // Run until condition is true
+  | { type: 'while'; check: string }           // Run while condition is true
+  | { type: 'continuous'; intervalMs?: number } // Keep running
+  | { type: 'event'; event: string };          // Re-run on each event
+
+/**
+ * Trigger configuration for automatic sentinel start.
+ */
+export type SentinelTrigger =
+  | { type: 'immediate' }                      // Start now
+  | { type: 'event'; event: string }           // Start on event
+  | { type: 'schedule'; cronExpression: string } // Cron-like scheduling
+  | { type: 'manual' };                        // Started by command
+
+/**
+ * Safety controls for sentinel execution.
+ */
+export interface SentinelSafety {
+  maxIterations?: number;        // Hard limit on loop count
+  timeoutMs?: number;            // Hard limit on total runtime
+  maxStepTimeoutMs?: number;     // Per-step timeout
+  maxMemoryMb?: number;          // Memory budget
+  onTimeout?: 'stop' | 'pause';  // What to do when limits hit
+}
+
+/**
+ * Base step interface.
+ */
+export interface StepBase {
+  type: string;
+  outputTo?: string;             // Variable name for result
+  onError?: 'fail' | 'skip' | 'retry';
+}
+
+/**
+ * Execute a command. Output stored in variables[outputTo].
+ */
+export interface CommandStep extends StepBase {
+  type: 'command';
+  command: string;                     // e.g., 'code/read', 'code/verify', 'data/list'
+  params: Record<string, unknown>;     // Supports $variable references
+}
+
+/**
+ * Run LLM inference. Accumulated variables injected as context.
+ */
+export interface LLMStep extends StepBase {
+  type: 'llm';
+  prompt?: string;                     // Template with $variable references
+  model?: string | StepModelConfig;    // Model selection
+  temperature?: number;
+  tools?: string[];                    // Tool subset for this step
+  parseToolCalls?: boolean;            // Extract and execute tool calls
+}
+
+/**
+ * Model config for LLM steps (inline version).
+ */
+export interface StepModelConfig {
+  capacity?: ModelCapacity;
+  provider?: ModelProvider;
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+/**
+ * Block until classified output lines arrive.
+ */
+export interface WatchStep extends StepBase {
+  type: 'watch';
+  executionId: string;                 // $variable reference to running process
+  rules?: SentinelRule[];              // Classification rules
+  until?: 'finished' | 'error' | 'match';
+}
+
+/**
+ * Classification rule for watch steps.
+ */
+export interface SentinelRule {
+  pattern: string;                     // Regex pattern
+  classification: string;              // Category name
+  action?: 'Emit' | 'Log' | 'Ignore';
+}
+
+/**
+ * Conditional branching.
+ */
+export interface ConditionStep extends StepBase {
+  type: 'condition';
+  check: string;                       // JS expression with $variable access
+  then: SentinelStep[];                // Steps if true
+  else?: SentinelStep[];               // Steps if false
+}
+
+/**
+ * Spawn a nested sentinel (recursive composition).
+ */
+export interface SentinelSpawnStep extends StepBase {
+  type: 'sentinel';
+  definition: PipelineSentinelDefinition;  // Inline definition
+  await?: boolean;                     // Wait for completion or fire-and-forget
+}
+
+/**
+ * Emit an event (for cross-sentinel composition).
+ */
+export interface EmitStep extends StepBase {
+  type: 'emit';
+  event: string;                       // Event name
+  data?: string;                       // $variable reference for payload
+}
+
+/**
+ * Union of all step types.
+ */
+export type SentinelStep =
+  | CommandStep
+  | LLMStep
+  | WatchStep
+  | ConditionStep
+  | SentinelSpawnStep
+  | EmitStep;
+
+/**
+ * Pipeline-based sentinel definition (declarative, JSON-serializable).
+ *
+ * This is the target architecture for truly flexible AI-driven sentinels.
+ * AIs can create, modify, and share these as pure data.
+ */
+export interface PipelineSentinelDefinition {
+  /** Type discriminator for union compatibility */
+  type: 'pipeline';
+
+  /** Unique identifier (generated on save) */
+  id?: string;
+
+  /** Human-readable name */
+  name: string;
+
+  /** Description of what this sentinel does */
+  description?: string;
+
+  /** Working directory (defaults to cwd) */
+  workingDir?: string;
+
+  /** Schema version */
+  version: '1.0';
+
+  /** Timeout in milliseconds (for compatibility) */
+  timeout?: number;
+
+  /** RAG recipe ID for context building */
+  recipe?: string;
+
+  /** Explicit RAG sources (alternative to recipe) */
+  ragSources?: string[];
+
+  /** The pipeline steps */
+  steps: SentinelStep[];
+
+  /** Loop control */
+  loop: LoopConfig;
+
+  /** What triggers this sentinel */
+  trigger?: SentinelTrigger;
+
+  /** Safety controls */
+  safety?: SentinelSafety;
+
+  /** Available tools (highlights for LLM steps) */
+  tools?: string[];
+
+  /** Tags for organization */
+  tags?: string[];
+
+  /** Metadata */
+  createdAt?: string;
+  updatedAt?: string;
+  createdBy?: string;
+}
+
+// ============================================================================
+// Legacy Class-Based Definitions (for existing sentinels)
+// ============================================================================
+
+/**
+ * Union of all sentinel definitions (legacy + pipeline).
  */
 export type SentinelDefinition =
   | BuildSentinelDefinition
   | OrchestrateSentinelDefinition
   | ScreenshotSentinelDefinition
   | TaskSentinelDefinition
-  | ScriptSentinelDefinition;
+  | ScriptSentinelDefinition
+  | PipelineSentinelDefinition;
 
 /**
  * Sentinel execution result (saved alongside definition)
@@ -275,32 +472,43 @@ export function validateDefinition(def: SentinelDefinition): { valid: boolean; e
 
   switch (def.type) {
     case 'build':
-      if (!def.command) {
+      if (!(def as BuildSentinelDefinition).command) {
         errors.push('BuildSentinel requires command');
       }
       break;
 
     case 'orchestrate':
-      if (!def.goal) {
+      if (!(def as OrchestrateSentinelDefinition).goal) {
         errors.push('OrchestrateSentinel requires goal');
       }
       break;
 
     case 'screenshot':
-      if (!def.target) {
+      if (!(def as ScreenshotSentinelDefinition).target) {
         errors.push('ScreenshotSentinel requires target');
       }
       break;
 
     case 'task':
-      if (!def.tasks || def.tasks.length === 0) {
+      const taskDef = def as TaskSentinelDefinition;
+      if (!taskDef.tasks || taskDef.tasks.length === 0) {
         errors.push('TaskSentinel requires at least one task');
       }
       break;
 
     case 'script':
-      if (!def.script) {
+      if (!(def as ScriptSentinelDefinition).script) {
         errors.push('ScriptSentinel requires script');
+      }
+      break;
+
+    case 'pipeline':
+      const pipelineDef = def as PipelineSentinelDefinition;
+      if (!pipelineDef.steps || pipelineDef.steps.length === 0) {
+        errors.push('PipelineSentinel requires at least one step');
+      }
+      if (!pipelineDef.loop) {
+        errors.push('PipelineSentinel requires loop config');
       }
       break;
 
@@ -378,6 +586,19 @@ export function createDefinitionFromParams(params: Record<string, any>): Sentine
         interpreter: params.interpreter,
       } as ScriptSentinelDefinition;
 
+    case 'pipeline':
+      return {
+        ...base,
+        type: 'pipeline',
+        steps: params.steps || [],
+        loop: params.loop || { type: 'once' },
+        trigger: params.trigger,
+        safety: params.safety,
+        recipe: params.recipe,
+        ragSources: params.ragSources,
+        tools: params.tools,
+      } as PipelineSentinelDefinition;
+
     default:
       throw new Error(`Unknown sentinel type: ${params.type}`);
   }
@@ -407,6 +628,10 @@ export class SentinelBuilder {
 
   static script(script: string): SentinelBuilder {
     return new SentinelBuilder().type('script').set('script', script);
+  }
+
+  static pipeline(): SentinelBuilder {
+    return new SentinelBuilder().type('pipeline').set('steps', []).set('loop', { type: 'once' });
   }
 
   type(t: SentinelDefinition['type']): this {

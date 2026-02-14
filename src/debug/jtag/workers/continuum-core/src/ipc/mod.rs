@@ -27,6 +27,7 @@ use crate::modules::search::SearchModule;
 use crate::modules::embedding::EmbeddingModule;
 use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
+use crate::modules::sentinel::SentinelModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -678,6 +679,12 @@ pub fn start_server(
     // Provides ai/generate, ai/providers/list, ai/providers/health
     // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google
     runtime.register(Arc::new(AIProviderModule::new()));
+
+    // SentinelModule: Concurrent, fault-tolerant build/task execution
+    // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
+    // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
+    // Process isolation via child processes - safe for Xcode, cargo, etc.
+    runtime.register(Arc::new(SentinelModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

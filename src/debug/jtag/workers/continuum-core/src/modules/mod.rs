@@ -24,3 +24,4 @@ pub mod runtime_control;
 pub mod mcp;
 pub mod agent;
 pub mod ai_provider;
+pub mod sentinel;

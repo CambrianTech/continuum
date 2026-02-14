@@ -14,11 +14,12 @@
  * NOT pattern-matching with LLM fallback - LLM IS the reasoning engine.
  */
 
-import { execSync, exec } from 'child_process';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { BuildSentinelDefinition } from './SentinelDefinition';
 import { ModelConfig, ModelCapacity, ModelProvider, ModelInvoker } from './ModelProvider';
+import { RustCoreIPCClient } from '../../workers/continuum-core/bindings/RustCoreIPC';
 
 export interface BuildError {
   file: string;
@@ -192,12 +193,49 @@ export class BuildSentinel {
 
   /**
    * Execute a single build attempt
+   *
+   * Uses Rust SentinelModule for process isolation and logging when available.
+   * Falls back to execSync when Rust server isn't connected.
    */
   private async build(attemptNumber: number): Promise<BuildAttempt> {
     const startTime = Date.now();
     let output = '';
     let success = false;
 
+    // Try to use Rust for process isolation
+    try {
+      const client = RustCoreIPCClient.getInstance();
+      if (client.connected) {
+        // Parse command into executable and args
+        const parts = this.config.command.split(/\s+/);
+        const cmd = parts[0];
+        const args = parts.slice(1);
+
+        // Execute via Rust with full isolation
+        const result = await client.sentinelExecute({
+          command: cmd,
+          args,
+          workingDir: this.config.workingDir,
+          timeout: Math.floor(this.config.timeoutMs / 1000),
+          type: 'build',
+        });
+
+        output = result.output;
+        success = result.success;
+
+        return {
+          attemptNumber,
+          command: this.config.command,
+          success,
+          errors: success ? [] : this.parseErrors(output),
+          durationMs: Date.now() - startTime,
+        };
+      }
+    } catch {
+      // Rust not available, fall through to execSync
+    }
+
+    // Fallback: use execSync (blocking, no isolation)
     try {
       output = execSync(this.config.command, {
         cwd: this.config.workingDir,

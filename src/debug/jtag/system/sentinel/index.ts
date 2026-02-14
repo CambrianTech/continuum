@@ -76,7 +76,31 @@ export {
   type TaskAction,
   type SentinelEntity,
   type SentinelExecutionResult,
+  // Step-based pipeline types
+  type PipelineSentinelDefinition,
+  type LoopConfig,
+  type SentinelTrigger,
+  type SentinelSafety,
+  type SentinelStep as PipelineStep,
+  type CommandStep,
+  type LLMStep,
+  type ConditionStep,
+  type WatchStep,
+  type SentinelSpawnStep,
+  type EmitStep,
+  type SentinelRule,
 } from './SentinelDefinition';
+
+// Declarative step engine (the future!)
+export {
+  SentinelRunner,
+  runSentinel,
+  runSentinelFromFile,
+  type ExecutionContext as RunnerExecutionContext,
+  type StepTrace,
+  type SentinelResult as RunnerResult,
+  type RunnerConfig,
+} from './SentinelRunner';
 
 // Tool result → memory capture
 export {
