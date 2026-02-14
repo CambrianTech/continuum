@@ -26,6 +26,7 @@ import type {
   WatchStep,
   SentinelSpawnStep,
   EmitStep,
+  ParallelStep,
   StepModelConfig,
 } from './SentinelDefinition';
 
@@ -66,6 +67,20 @@ export interface SentinelResult {
   summary: string;
   context: ExecutionContext;
   exitCode?: number;
+}
+
+/** Parsed tool call from LLM response */
+export interface ParsedToolCall {
+  name: string;
+  params: Record<string, unknown>;
+}
+
+/** Result of executing a tool call */
+export interface ToolCallResult {
+  name: string;
+  success: boolean;
+  result?: unknown;
+  error?: string;
 }
 
 export interface RunnerConfig {
@@ -272,7 +287,12 @@ export class SentinelRunner {
         }
       }
 
-      const success = !ctx.stopReason || ctx.stopReason.includes('completed');
+      // Success is determined by:
+      // - No stopReason (natural completion)
+      // - stopReason starts with 'Completed' (normal completion message)
+      // Any other stopReason (including errors) means failure
+      const success = !ctx.stopReason || ctx.stopReason.startsWith('Completed');
+
       return {
         success,
         summary: ctx.stopReason || `Completed ${ctx.iteration} iteration(s)`,
@@ -368,6 +388,9 @@ export class SentinelRunner {
         case 'emit':
           output = await this.executeEmit(step as EmitStep, ctx);
           break;
+        case 'parallel':
+          output = await this.executeParallel(step as ParallelStep, ctx);
+          break;
         default:
           throw new Error(`Unknown step type: ${(step as any).type}`);
       }
@@ -444,21 +467,22 @@ export class SentinelRunner {
 
     // If tools are specified and parseToolCalls is true, we need to handle tool calling
     if (step.tools && step.tools.length > 0 && step.parseToolCalls) {
-      // For now, include tools in prompt as instructions
-      // Full tool calling requires integration with ModelInvoker's tool support
-      const toolsStr = step.tools.join(', ');
-      const toolPrompt = `${fullPrompt}\n\nAvailable tools: ${toolsStr}\nUse these tools as needed to accomplish the task.`;
+      const toolInstructions = this.buildToolInstructions(step.tools);
+      const toolPrompt = `${fullPrompt}\n\n${toolInstructions}`;
 
       const result = await this.invoker.generate(toolPrompt, modelConfig);
       if (!result.success) {
         throw new Error(result.error || 'LLM inference failed');
       }
 
-      // TODO: Parse and execute tool calls from response
-      // For now, return raw response
+      // Parse and execute tool calls from response
+      const { text, toolCalls } = this.parseToolCalls(result.text || '');
+      const toolResults = await this.executeToolCalls(toolCalls, ctx);
+
       return {
-        text: result.text,
-        toolCalls: [], // TODO: parse tool calls
+        text,
+        toolCalls,
+        toolResults,
       };
     }
 
@@ -468,6 +492,101 @@ export class SentinelRunner {
     }
 
     return result.text;
+  }
+
+  /**
+   * Build tool calling instructions for the LLM prompt.
+   */
+  private buildToolInstructions(tools: string[]): string {
+    const toolList = tools.map(t => `- ${t}: Execute the ${t} command`).join('\n');
+    return `Available tools:
+${toolList}
+
+To use a tool, output a JSON code block with the following format:
+\`\`\`tool
+{
+  "name": "tool-name",
+  "params": { "param1": "value1" }
+}
+\`\`\`
+
+You can use multiple tools by including multiple tool blocks.
+After all tool calls, provide your response text.`;
+  }
+
+  /**
+   * Parse tool calls from LLM response.
+   * Looks for ```tool JSON blocks.
+   */
+  private parseToolCalls(response: string): { text: string; toolCalls: ParsedToolCall[] } {
+    const toolCalls: ParsedToolCall[] = [];
+
+    // Match ```tool ... ``` blocks
+    const toolBlockRegex = /```tool\s*\n?([\s\S]*?)\n?```/g;
+    let match;
+    let textParts: string[] = [];
+    let lastIndex = 0;
+
+    while ((match = toolBlockRegex.exec(response)) !== null) {
+      // Capture text before this tool block
+      if (match.index > lastIndex) {
+        textParts.push(response.slice(lastIndex, match.index).trim());
+      }
+      lastIndex = match.index + match[0].length;
+
+      try {
+        const toolJson = JSON.parse(match[1]);
+        if (toolJson.name && typeof toolJson.name === 'string') {
+          toolCalls.push({
+            name: toolJson.name,
+            params: toolJson.params || {},
+          });
+        }
+      } catch (e) {
+        this.log(`Failed to parse tool call: ${match[1]}`, 'warn');
+      }
+    }
+
+    // Capture remaining text after last tool block
+    if (lastIndex < response.length) {
+      textParts.push(response.slice(lastIndex).trim());
+    }
+
+    const text = textParts.filter(Boolean).join('\n\n');
+    return { text, toolCalls };
+  }
+
+  /**
+   * Execute parsed tool calls via Commands.execute().
+   */
+  private async executeToolCalls(
+    toolCalls: ParsedToolCall[],
+    ctx: ExecutionContext
+  ): Promise<ToolCallResult[]> {
+    const results: ToolCallResult[] = [];
+
+    for (const call of toolCalls) {
+      this.log(`Executing tool: ${call.name}`, 'debug');
+      try {
+        const result = await Commands.execute(call.name, call.params as any);
+        results.push({
+          name: call.name,
+          success: true,
+          result,
+        });
+        // Store result in context for subsequent use
+        ctx.variables[`_tool_${call.name.replace(/\//g, '_')}`] = result;
+      } catch (error: any) {
+        this.log(`Tool ${call.name} failed: ${error.message}`, 'error');
+        results.push({
+          name: call.name,
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+
+    return results;
   }
 
   /**
@@ -556,6 +675,48 @@ export class SentinelRunner {
 
     Events.emit(step.event, data);
     return { emitted: step.event, data };
+  }
+
+  /**
+   * Execute multiple steps in parallel (concurrent execution).
+   */
+  private async executeParallel(step: ParallelStep, ctx: ExecutionContext): Promise<unknown> {
+    this.log(`Parallel: executing ${step.steps.length} steps concurrently`, 'debug');
+
+    const promises = step.steps.map(async (subStep, i) => {
+      try {
+        const trace = await this.executeStep(subStep, -1, ctx);
+        return { index: i, trace, success: trace.success };
+      } catch (error: any) {
+        return { index: i, success: false, error: error.message };
+      }
+    });
+
+    // Handle failFast - race for first failure or wait for all
+    if (step.failFast) {
+      const results: Array<{ index: number; trace?: StepTrace; success: boolean; error?: string }> = [];
+      for (const promise of promises) {
+        const result = await promise;
+        results.push(result);
+        if (!result.success) {
+          this.log(`Parallel step ${result.index} failed (failFast): ${result.error || result.trace?.error}`, 'error');
+          // Cancel remaining steps would require AbortController - for now just mark as stopped
+          ctx.shouldStop = true;
+          ctx.stopReason = `Parallel step ${result.index} failed`;
+          break;
+        }
+      }
+      return { parallel: true, results };
+    }
+
+    // Wait for all to complete
+    const results = await Promise.all(promises);
+    const failed = results.filter(r => !r.success);
+    if (failed.length > 0) {
+      this.log(`Parallel: ${failed.length}/${results.length} steps failed`, 'warn');
+    }
+
+    return { parallel: true, results };
   }
 }
 

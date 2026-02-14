@@ -205,8 +205,8 @@ export type LoopConfig =
  */
 export type SentinelTrigger =
   | { type: 'immediate' }                      // Start now
-  | { type: 'event'; event: string }           // Start on event
-  | { type: 'schedule'; cronExpression: string } // Cron-like scheduling
+  | { type: 'event'; event: string; debounceMs?: number; allowConcurrent?: boolean }  // Start on event
+  | { type: 'cron'; schedule: string; debounceMs?: number; allowConcurrent?: boolean }  // Cron-like scheduling
   | { type: 'manual' };                        // Started by command
 
 /**
@@ -309,6 +309,15 @@ export interface EmitStep extends StepBase {
 }
 
 /**
+ * Execute multiple steps in parallel (concurrent execution).
+ */
+export interface ParallelStep extends StepBase {
+  type: 'parallel';
+  steps: SentinelStep[];               // Steps to run concurrently
+  failFast?: boolean;                  // Stop all on first failure (default: false)
+}
+
+/**
  * Union of all step types.
  */
 export type SentinelStep =
@@ -317,7 +326,8 @@ export type SentinelStep =
   | WatchStep
   | ConditionStep
   | SentinelSpawnStep
-  | EmitStep;
+  | EmitStep
+  | ParallelStep;
 
 /**
  * Pipeline-based sentinel definition (declarative, JSON-serializable).

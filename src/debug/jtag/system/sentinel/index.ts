@@ -88,8 +88,17 @@ export {
   type WatchStep,
   type SentinelSpawnStep,
   type EmitStep,
+  type ParallelStep,
   type SentinelRule,
 } from './SentinelDefinition';
+
+// Event trigger management
+export {
+  SentinelTriggerManager,
+  getTriggerManager,
+  registerTrigger,
+  unregisterTrigger,
+} from './SentinelTrigger';
 
 // Declarative step engine (the future!)
 export {
