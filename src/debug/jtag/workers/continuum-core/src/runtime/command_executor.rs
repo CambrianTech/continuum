@@ -6,60 +6,54 @@
 //!
 //! Usage:
 //! ```rust
-//! let executor = CommandExecutor::new(registry.clone(), ws_url);
-//!
 //! // Works for Rust modules
-//! executor.execute("ai/generate", params).await?;
+//! runtime::execute_command_json("health-check", json!({})).await?;
 //!
-//! // Works for TypeScript commands
-//! executor.execute("code/edit", params).await?;
+//! // Works for TypeScript commands (via CommandRouterServer)
+//! runtime::execute_command_json("screenshot", json!({"querySelector": "body"})).await?;
 //!
 //! // Sentinel doesn't know or care where command is implemented
 //! ```
+//!
+//! Architecture:
+//! - Rust modules: Routed directly through ModuleRegistry
+//! - TypeScript commands: Routed via Unix socket to CommandRouterServer
+//!   (socket: /tmp/jtag-command-router.sock)
 
 use std::sync::Arc;
 use serde_json::Value;
-use tokio::sync::RwLock;
-use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::{ModuleRegistry, CommandResult};
+
+/// Socket path for TypeScript command routing
+const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
 
 /// Universal command executor that routes to Rust modules or TypeScript
 pub struct CommandExecutor {
     /// Rust module registry (for Rust-implemented commands)
     registry: Arc<ModuleRegistry>,
-
-    /// WebSocket URL for TypeScript commands (e.g., "ws://localhost:9001")
-    ts_ws_url: String,
-
-    /// Cached WebSocket connection to TypeScript server
-    ws_connection: RwLock<Option<WsConnection>>,
-}
-
-struct WsConnection {
-    // We'll use a simple request-response pattern
-    // Each command gets a unique ID, we wait for the response
 }
 
 impl CommandExecutor {
-    pub fn new(registry: Arc<ModuleRegistry>, ts_ws_url: &str) -> Self {
-        Self {
-            registry,
-            ts_ws_url: ts_ws_url.to_string(),
-            ws_connection: RwLock::new(None),
-        }
+    pub fn new(registry: Arc<ModuleRegistry>) -> Self {
+        Self { registry }
     }
 
     /// Execute ANY command - routes to Rust or TypeScript automatically
     /// Returns CommandResult for consistency with ServiceModule pattern
     pub async fn execute(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        let log = super::logger("command-executor");
+
         // 1. Try Rust module registry first
         if let Some((module, cmd)) = self.registry.route_command(command) {
+            log.debug(&format!("Routing '{}' to Rust module", command));
             return module.handle_command(&cmd, params).await;
         }
 
-        // 2. Route to TypeScript via WebSocket
+        // 2. Route to TypeScript via Unix socket (CommandRouterServer)
+        log.debug(&format!("Routing '{}' to TypeScript via CommandRouterServer", command));
         let json = self.execute_ts_command(command, params).await?;
         Ok(CommandResult::Json(json))
     }
@@ -72,62 +66,62 @@ impl CommandExecutor {
         }
     }
 
-    /// Execute command via TypeScript WebSocket bridge
+    /// Execute command via TypeScript CommandRouterServer (Unix socket)
+    ///
+    /// Protocol:
+    /// - Request: `{"command": "...", "params": {...}}\n`
+    /// - Response: `{"success": true, "result": ...}\n` or `{"success": false, "error": "..."}\n`
     async fn execute_ts_command(&self, command: &str, params: Value) -> Result<Value, String> {
-        use tokio_tungstenite::tungstenite::protocol::Message;
+        let log = super::logger("command-executor");
 
-        // Connect to TypeScript WebSocket server
-        let url = format!("{}/ws", self.ts_ws_url);
-        let (ws_stream, _) = connect_async(&url)
+        // Connect to CommandRouterServer
+        log.debug(&format!("Connecting to TypeScript socket: {}", TS_COMMAND_SOCKET));
+        let stream = UnixStream::connect(TS_COMMAND_SOCKET)
             .await
-            .map_err(|e| format!("Failed to connect to TS server: {}", e))?;
+            .map_err(|e| format!("Failed to connect to CommandRouterServer at {}: {}", TS_COMMAND_SOCKET, e))?;
 
-        let (mut write, mut read) = ws_stream.split();
+        let (reader, mut writer) = stream.into_split();
+        let mut buf_reader = BufReader::new(reader);
 
-        // Build command request
-        let request_id = uuid::Uuid::new_v4().to_string();
+        // Build and send request
         let request = serde_json::json!({
-            "type": "command",
-            "requestId": request_id,
             "command": command,
             "params": params,
         });
+        let request_line = format!("{}\n", request.to_string());
 
-        // Send command
-        write.send(Message::Text(request.to_string()))
+        log.debug(&format!("Sending: {}", command));
+        writer.write_all(request_line.as_bytes())
             .await
             .map_err(|e| format!("Failed to send command: {}", e))?;
+        writer.flush()
+            .await
+            .map_err(|e| format!("Failed to flush: {}", e))?;
 
-        // Wait for response
-        while let Some(msg) = read.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    let response: Value = serde_json::from_str(&text)
-                        .map_err(|e| format!("Invalid response JSON: {}", e))?;
+        // Read response
+        let mut response_line = String::new();
+        buf_reader.read_line(&mut response_line)
+            .await
+            .map_err(|e| format!("Failed to read response: {}", e))?;
 
-                    // Check if this is our response
-                    if response.get("requestId").and_then(|v| v.as_str()) == Some(&request_id) {
-                        if response.get("success").and_then(|v| v.as_bool()) == Some(true) {
-                            return Ok(response.get("data").cloned().unwrap_or(Value::Null));
-                        } else {
-                            let error = response.get("error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown error");
-                            return Err(error.to_string());
-                        }
-                    }
-                }
-                Ok(Message::Close(_)) => {
-                    return Err("WebSocket closed unexpectedly".to_string());
-                }
-                Err(e) => {
-                    return Err(format!("WebSocket error: {}", e));
-                }
-                _ => continue,
-            }
+        log.debug(&format!("Received response: {} bytes", response_line.len()));
+
+        // Parse response
+        let response: Value = serde_json::from_str(&response_line)
+            .map_err(|e| format!("Invalid response JSON: {} (raw: {})", e, response_line.trim()))?;
+
+        // Check success
+        if response.get("success").and_then(|v| v.as_bool()) == Some(true) {
+            let result = response.get("result").cloned().unwrap_or(Value::Null);
+            log.info(&format!("Command '{}' succeeded", command));
+            Ok(result)
+        } else {
+            let error = response.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown error from TypeScript");
+            log.error(&format!("Command '{}' failed: {}", command, error));
+            Err(error.to_string())
         }
-
-        Err("No response received from TypeScript server".to_string())
     }
 }
 
@@ -135,8 +129,10 @@ impl CommandExecutor {
 static GLOBAL_EXECUTOR: std::sync::OnceLock<Arc<CommandExecutor>> = std::sync::OnceLock::new();
 
 /// Initialize the global command executor (called once at startup)
-pub fn init_executor(registry: Arc<ModuleRegistry>, ts_ws_url: &str) {
-    let _ = GLOBAL_EXECUTOR.set(Arc::new(CommandExecutor::new(registry, ts_ws_url)));
+pub fn init_executor(registry: Arc<ModuleRegistry>) {
+    let log = super::logger("command-executor");
+    let _ = GLOBAL_EXECUTOR.set(Arc::new(CommandExecutor::new(registry)));
+    log.info(&format!("Initialized (TS bridge: {})", TS_COMMAND_SOCKET));
 }
 
 /// Get the global command executor
@@ -171,7 +167,7 @@ mod tests {
     #[test]
     fn test_executor_creation() {
         let registry = Arc::new(ModuleRegistry::new());
-        let executor = CommandExecutor::new(registry, "ws://localhost:9001");
-        assert_eq!(executor.ts_ws_url, "ws://localhost:9001");
+        let _executor = CommandExecutor::new(registry);
+        // Just verify it compiles and can be created
     }
 }

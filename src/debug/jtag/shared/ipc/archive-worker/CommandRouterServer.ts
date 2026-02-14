@@ -1,19 +1,20 @@
 /**
- * CommandRouterServer - Handles Commands.execute() calls FROM Rust workers
+ * CommandRouterServer - Handles command execution calls FROM Rust workers
  *
  * TEMPLATE: This pattern handles bidirectional communication
- * - Rust calls Commands.execute() via Unix socket
- * - This server executes command and returns result
+ * - Rust calls commands via Unix socket
+ * - This server executes command through CommandDaemon and returns result
  * - Keeps Rust workers as first-class citizens
  *
  * Flow:
- * Rust → Socket → CommandRouterServer → Commands.execute() → Result → Socket → Rust
+ * Rust → Socket → CommandRouterServer → CommandDaemon.execute() → Result → Socket → Rust
  */
 
 import * as net from 'net';
 import * as fs from 'fs';
-import { Commands } from '../../../system/core/shared/Commands';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
+import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 interface CommandRequest {
   command: string;
@@ -109,23 +110,57 @@ export class CommandRouterServer {
 
   /**
    * Handle single command request from Rust
+   *
+   * Uses JTAGClient-style routing to properly handle both browser and server commands.
+   * Commands are sent through the router's transport layer, which handles cross-context routing.
    */
   private async handleRequest(socket: net.Socket, line: string): Promise<void> {
     try {
       const request: CommandRequest = JSON.parse(line);
       this.log.info(`Executing command from Rust: ${request.command}`);
 
-      // Execute command via Commands.execute()
-      // Type assertion needed since we don't know command type at runtime
-      const result = await Commands.execute(request.command, request.params as Record<string, unknown>);
+      // Get JTAGSystemServer instance
+      const { JTAGSystemServer } = await import('../../../system/core/system/server/JTAGSystemServer');
+      const system = JTAGSystemServer.instance;
 
-      const response: CommandResponse = {
-        success: true,
-        result
-      };
+      if (!system) {
+        throw new Error('JTAGSystemServer not initialized');
+      }
 
-      // Send response back to Rust
-      socket.write(JSON.stringify(response) + '\n');
+      // Use getCommandsInterface() which returns the server-side command interface
+      // This includes routing capabilities for browser commands via the router
+      const commandsInterface = system.getCommandsInterface();
+      const commandFn = commandsInterface.get(request.command);
+
+      if (commandFn) {
+        // Server-side command - execute directly
+        const sessionId = (request.params.sessionId as UUID) || SYSTEM_SCOPES.SYSTEM as UUID;
+
+        // Use the system's context, which is a proper JTAGContext
+        const fullParams = {
+          context: system.context,
+          sessionId,
+          ...request.params
+        };
+
+        const result = await commandFn.execute(fullParams);
+
+        const response: CommandResponse = {
+          success: true,
+          result
+        };
+
+        socket.write(JSON.stringify(response) + '\n');
+      } else {
+        // Command not in server CommandDaemon - might be browser-only
+        // Return informative error (browser commands require CLI/WebSocket routing)
+        const available = Array.from(commandsInterface.keys()).slice(0, 20);
+        throw new Error(
+          `Command '${request.command}' not available in server context. ` +
+          `Server commands available: ${available.join(', ')}... ` +
+          `(Browser-only commands like 'screenshot' require CLI routing)`
+        );
+      }
     } catch (error) {
       this.log.error('Command execution error:', error);
 

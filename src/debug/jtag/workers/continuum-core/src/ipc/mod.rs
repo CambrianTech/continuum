@@ -705,10 +705,8 @@ pub fn start_server(
 
     // Initialize global CommandExecutor for all spawned processes (sentinels, agents, etc.)
     // This allows ANY async task to execute ANY command (Rust or TypeScript)
-    let ws_port = std::env::var("WS_PORT").unwrap_or_else(|_| "9001".to_string());
-    let ts_ws_url = format!("ws://127.0.0.1:{}", ws_port);
-    crate::runtime::init_executor(runtime.registry_arc(), &ts_ws_url);
-    log_info!("ipc", "server", "CommandExecutor initialized (TS bridge: {})", ts_ws_url);
+    // TypeScript commands route via Unix socket to /tmp/jtag-command-router.sock
+    crate::runtime::init_executor(runtime.registry_arc());
 
     let listener = UnixListener::bind(socket_path)?;
     let state = Arc::new(ServerState::new_with_shared_state(
