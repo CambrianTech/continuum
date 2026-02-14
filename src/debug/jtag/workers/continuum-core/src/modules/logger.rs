@@ -560,8 +560,16 @@ impl LoggerModule {
     }
 
     fn handle_write(&self, params: Value) -> Result<CommandResult, String> {
+        // WorkerClient sends data nested under "payload" field, extract it
+        // ORMRustClient sends data at top level - support both patterns
+        let payload_value = if let Some(nested) = params.get("payload") {
+            nested.clone()
+        } else {
+            params.clone()
+        };
+
         let payload: WriteLogPayload =
-            serde_json::from_value(params).map_err(|e| format!("Invalid payload: {e}"))?;
+            serde_json::from_value(payload_value).map_err(|e| format!("Invalid payload: {e}"))?;
 
         self.log_tx
             .send(payload)

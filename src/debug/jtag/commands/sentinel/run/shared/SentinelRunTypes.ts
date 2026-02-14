@@ -8,10 +8,12 @@
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { ModelCapacity, ModelProvider } from '../../../../system/sentinel/ModelProvider';
 
+import type { PipelineSentinelDefinition } from '../../../../system/sentinel/SentinelDefinition';
+
 /**
  * Sentinel types available
  */
-export type SentinelType = 'build' | 'orchestrate' | 'screenshot' | 'task';
+export type SentinelType = 'build' | 'orchestrate' | 'screenshot' | 'task' | 'pipeline';
 
 /**
  * Base params for all sentinel runs
@@ -122,13 +124,24 @@ export interface TaskSentinelParams extends SentinelRunParams {
 }
 
 /**
+ * PipelineSentinel params (declarative step-based execution)
+ */
+export interface PipelineSentinelParams extends SentinelRunParams {
+  type: 'pipeline';
+
+  /** Pipeline definition (JSON) */
+  definition: PipelineSentinelDefinition;
+}
+
+/**
  * Union of all sentinel param types
  */
 export type AnySentinelParams =
   | BuildSentinelParams
   | OrchestrateSentinelParams
   | ScreenshotSentinelParams
-  | TaskSentinelParams;
+  | TaskSentinelParams
+  | PipelineSentinelParams;
 
 /**
  * Sentinel result data (internal, without JTAGPayload fields)

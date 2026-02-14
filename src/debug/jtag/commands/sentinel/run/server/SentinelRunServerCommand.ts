@@ -19,6 +19,7 @@ import type {
   OrchestrateSentinelParams,
   ScreenshotSentinelParams,
   TaskSentinelParams,
+  PipelineSentinelParams,
   SentinelType,
 } from '../shared/SentinelRunTypes';
 
@@ -26,6 +27,7 @@ import type {
 import { BuildSentinel } from '../../../../system/sentinel/BuildSentinel';
 import { OrchestratorSentinel } from '../../../../system/sentinel/OrchestratorSentinel';
 import { VisualSentinel } from '../../../../system/sentinel/VisualSentinel';
+import { SentinelRunner } from '../../../../system/sentinel/SentinelRunner';
 import { ModelCapacity, ModelProvider } from '../../../../system/sentinel/ModelProvider';
 
 /**
@@ -154,6 +156,8 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
         return this.runScreenshotSentinel(handle, params as ScreenshotSentinelParams, workingDir);
       case 'task':
         return this.runTaskSentinel(handle, params as TaskSentinelParams, workingDir);
+      case 'pipeline':
+        return this.runPipelineSentinel(handle, params as PipelineSentinelParams, workingDir);
       default:
         return {
           success: false,
@@ -355,6 +359,52 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
         success: allSuccess,
         summary: `Completed ${results.length} tasks, ${results.filter(r => r.success).length} succeeded`,
         errors: results.filter(r => !r.success).map(r => `${r.name}: ${r.output}`),
+      },
+    };
+  }
+
+  /**
+   * Run PipelineSentinel (declarative step-based execution)
+   */
+  private async runPipelineSentinel(handle: string, params: PipelineSentinelParams, workingDir: string): Promise<SentinelResultData> {
+    const definition = params.definition;
+
+    this.emitProgress(handle, 'pipeline', 'starting', 0, `Starting pipeline: ${definition.name}`);
+
+    const runner = new SentinelRunner({
+      workingDir,
+      onLog: (msg, level) => {
+        console.log(`[Pipeline:${definition.name}] [${level.toUpperCase()}] ${msg}`);
+      },
+      onIteration: (iteration) => {
+        this.emitProgress(handle, 'pipeline', 'iteration',
+          Math.min(90, iteration * 10),
+          `Iteration ${iteration}`);
+      },
+      onStepComplete: (step, trace) => {
+        Events.emit('sentinel:step:complete', {
+          handle,
+          type: 'pipeline',
+          stepType: step.type,
+          stepIndex: trace.stepIndex,
+          success: trace.success,
+          durationMs: trace.durationMs,
+          error: trace.error,
+        });
+      },
+    });
+
+    const result = await runner.execute(definition);
+
+    return {
+      success: result.success,
+      handle,
+      completed: true,
+      data: {
+        success: result.success,
+        summary: result.summary,
+        iterations: result.context.iteration,
+        errors: result.context.trace.filter(t => !t.success).map(t => t.error || 'Unknown error'),
       },
     };
   }

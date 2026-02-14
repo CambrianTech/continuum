@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-13T22:53:14.308Z",
+  "generated": "2026-02-14T14:31:42.232Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1791,6 +1791,37 @@
           "type": "number",
           "required": false,
           "description": "maxTotalTasks parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/run",
+      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "params": {
+        "type": {
+          "type": "string",
+          "required": true,
+          "description": "type parameter"
+        },
+        "workingDir": {
+          "type": "string",
+          "required": false,
+          "description": "workingDir parameter"
+        },
+        "timeout": {
+          "type": "number",
+          "required": false,
+          "description": "timeout parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        },
+        "definition": {
+          "type": "string",
+          "required": true,
+          "description": "definition parameter"
         }
       }
     },

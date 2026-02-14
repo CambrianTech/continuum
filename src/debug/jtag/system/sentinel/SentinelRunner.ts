@@ -14,7 +14,11 @@
 
 import { Commands } from '../core/shared/Commands';
 import { Events } from '../core/shared/Events';
+import { Logger } from '../core/logging/Logger';
 import { ModelInvoker, ModelCapacity, ModelProvider } from './ModelProvider';
+
+// Create logger for SentinelRunner
+const log = Logger.create('SentinelRunner');
 import type { ModelConfig } from './ModelProvider';
 import type {
   PipelineSentinelDefinition,
@@ -181,7 +185,7 @@ function evaluateCondition(check: string, variables: Record<string, unknown>): b
     const evalFn = new Function(`"use strict"; return (${substituted});`);
     return Boolean(evalFn());
   } catch (e) {
-    console.warn(`[SentinelRunner] Failed to evaluate condition: ${check}`, e);
+    log.warn(`Failed to evaluate condition: ${check} - ${(e as Error).message}`);
     return false;
   }
 }
@@ -200,14 +204,10 @@ export class SentinelRunner {
   }
 
   private log(message: string, level: 'debug' | 'info' | 'warn' | 'error' = 'info'): void {
+    // Notify callback (for UI/progress tracking)
     this.config.onLog?.(message, level);
-    if (level === 'error') {
-      console.error(`[SentinelRunner] ${message}`);
-    } else if (level === 'warn') {
-      console.warn(`[SentinelRunner] ${message}`);
-    } else {
-      console.log(`[SentinelRunner] ${message}`);
-    }
+    // Use proper Logger system for persistence and routing
+    log[level](message);
   }
 
   /**

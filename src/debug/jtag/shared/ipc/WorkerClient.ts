@@ -235,9 +235,13 @@ export class WorkerClient<TReq = unknown, TRes = unknown> {
       return this.queueMessage(type, payload, userId);
     }
 
-    const request: WorkerRequest<TReq> = {
+    // NOTE: Rust IPC expects 'command' field, not 'type'
+    // The JTAGRequest interface uses 'type' but ORMRustClient uses 'command'
+    // We need to include both for compatibility
+    const request: WorkerRequest<TReq> & { command: string } = {
       id: generateUUID(),
       type,
+      command: type,  // Rust IPC looks for 'command' field
       timestamp: new Date().toISOString(),
       payload,
       userId: userId ?? this.defaultUserId
