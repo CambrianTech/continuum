@@ -1,6 +1,4 @@
 /**
- * Sentinel Save Command - Types
- *
  * Save sentinel definitions to database for persistence and sharing.
  * Sentinels are stored in the 'sentinels' collection.
  */

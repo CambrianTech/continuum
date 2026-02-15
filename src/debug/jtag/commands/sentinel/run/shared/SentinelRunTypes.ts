@@ -1,7 +1,5 @@
 /**
- * Sentinel Run Command - Types
- *
- * Allows AIs to create and run Sentinels via JSON config.
+ * Run sentinels for builds, orchestration, screenshots, tasks, or declarative pipelines.
  * Uses handles for long-running operations and emits events for progress.
  */
 
@@ -16,7 +14,7 @@ import type { PipelineSentinelDefinition } from '../../../../system/sentinel/Sen
 export type SentinelType = 'build' | 'orchestrate' | 'screenshot' | 'task' | 'pipeline';
 
 /**
- * Base params for all sentinel runs
+ * Run sentinels for builds, orchestration, screenshots, tasks, or declarative pipelines.
  */
 export interface SentinelRunParams extends CommandParams {
   /** Type of sentinel to run */

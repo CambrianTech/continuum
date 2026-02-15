@@ -1,13 +1,11 @@
 /**
- * Sentinel Logs Read Command - Types
- *
- * Read a log stream for a sentinel.
+ * Read a log stream for a sentinel with optional offset and limit for pagination.
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 
 /**
- * Read params
+ * Read a log stream for a sentinel with optional offset and limit for pagination.
  */
 export interface SentinelLogsReadParams extends CommandParams {
   /** Sentinel handle (short ID or full ID) */

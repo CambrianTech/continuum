@@ -1,14 +1,12 @@
 /**
- * Sentinel Load Command - Types
- *
  * Load and optionally run saved sentinel definitions from database.
  */
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
-import type { SentinelDefinition, SentinelEntity, SentinelExecutionResult } from '../../../../system/sentinel';
+import type { SentinelEntity, SentinelExecutionResult } from '../../../../system/sentinel';
 
 /**
- * Load params
+ * Load and optionally run a saved sentinel definition by ID.
  */
 export interface SentinelLoadParams extends CommandParams {
   /** Sentinel entity ID or shortId */
@@ -42,41 +40,4 @@ export interface SentinelLoadResult extends CommandResult {
 
   /** Error message if failed */
   error?: string;
-}
-
-/**
- * List params
- */
-export interface SentinelListParams extends CommandParams {
-  /** Filter by type */
-  type?: 'build' | 'orchestrate' | 'screenshot' | 'task' | 'script';
-
-  /** Filter by tags (any match) */
-  tags?: string[];
-
-  /** Only show templates */
-  templatesOnly?: boolean;
-
-  /** Limit results */
-  limit?: number;
-}
-
-/**
- * List result
- */
-export interface SentinelListResult extends CommandResult {
-  success: boolean;
-  sentinels: Array<{
-    id: string;
-    shortId: string;
-    name: string;
-    type: SentinelDefinition['type'];
-    description?: string;
-    tags?: string[];
-    isTemplate?: boolean;
-    executionCount: number;
-    lastRun?: string;
-    createdAt: string;
-  }>;
-  total: number;
 }

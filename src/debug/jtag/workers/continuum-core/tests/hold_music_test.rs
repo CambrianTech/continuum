@@ -37,7 +37,7 @@ async fn test_hold_music_plays_when_alone() {
                         println!("✓ Frame {}: Non-silence audio ({} samples, RMS: {:.1})",
                             frame_count, audio.len(), calculate_rms(&audio));
                     } else {
-                        println!("  Frame {}: Silence", frame_count);
+                        println!("  Frame {frame_count}: Silence");
                     }
                 }
             }
@@ -50,8 +50,8 @@ async fn test_hold_music_plays_when_alone() {
 
     // STEP 5: Verify hold music played (majority of frames should be non-silence)
     println!("\n=== RESULTS ===");
-    println!("Total frames: {}", frame_count);
-    println!("Non-silence frames: {}", non_silence_count);
+    println!("Total frames: {frame_count}");
+    println!("Non-silence frames: {non_silence_count}");
     println!("Hold music ratio: {:.1}%", (non_silence_count as f64 / frame_count as f64) * 100.0);
 
     // Assert that hold music was playing (at least 50% of frames should be non-silence)
