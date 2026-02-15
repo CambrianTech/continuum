@@ -56,18 +56,18 @@ pub fn clean_response(response: &str) -> String {
     cleaned.trim().to_string()
 }
 
-/// Check if a response has a prefix that would be cleaned.
-pub fn has_prefix(response: &str) -> bool {
-    let trimmed = response.trim();
-    PATTERN_TIMESTAMP_NAME.is_match(trimmed)
-        || PATTERN_NAME_ONLY.is_match(trimmed)
-        || PATTERN_TIMESTAMP_ONLY.is_match(trimmed)
-        || PATTERN_MARKDOWN_ROLE.is_match(trimmed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Check if a response has a prefix that would be cleaned.
+    fn has_prefix(response: &str) -> bool {
+        let trimmed = response.trim();
+        PATTERN_TIMESTAMP_NAME.is_match(trimmed)
+            || PATTERN_NAME_ONLY.is_match(trimmed)
+            || PATTERN_TIMESTAMP_ONLY.is_match(trimmed)
+            || PATTERN_MARKDOWN_ROLE.is_match(trimmed)
+    }
 
     #[test]
     fn test_strip_timestamp_and_name() {

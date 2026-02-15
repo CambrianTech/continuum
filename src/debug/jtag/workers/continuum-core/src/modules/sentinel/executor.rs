@@ -214,8 +214,10 @@ pub async fn execute_isolated(
     let mut stderr_writer = tokio::io::BufWriter::new(stderr_file);
     let mut combined_writer = tokio::io::BufWriter::new(combined_file);
 
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take()
+        .ok_or_else(|| "Failed to capture stdout — not piped".to_string())?;
+    let stderr = child.stderr.take()
+        .ok_or_else(|| "Failed to capture stderr — not piped".to_string())?;
 
     let mut stdout_reader = BufReader::new(stdout).lines();
     let mut stderr_reader = BufReader::new(stderr).lines();

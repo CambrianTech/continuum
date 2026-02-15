@@ -418,8 +418,8 @@ impl ServiceModule for CodeModule {
                             }
                         };
 
-                        if is_done {
-                            break response.unwrap();
+                        if let (true, Some(resp)) = (is_done, response) {
+                            break resp;
                         }
                         if let Some(n) = notify {
                             n.notified().await;

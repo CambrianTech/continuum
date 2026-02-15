@@ -108,6 +108,16 @@ pub enum CommandResult {
     },
 }
 
+impl CommandResult {
+    /// Create a Json result from any Serialize type.
+    /// Eliminates the `serde_json::to_value(x).unwrap()` anti-pattern.
+    pub fn json(value: &impl serde::Serialize) -> Result<Self, String> {
+        serde_json::to_value(value)
+            .map(CommandResult::Json)
+            .map_err(|e| format!("Serialization error: {e}"))
+    }
+}
+
 /// The ONE trait. Implement this and register — done.
 ///
 /// Every module in the system implements ServiceModule. The runtime:

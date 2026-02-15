@@ -478,7 +478,7 @@ impl SearchModule {
         let p = Params::new(&params);
         let algorithm = p.str_or("algorithm", "bm25");
         let query = p.str("query")?;
-        let corpus: Vec<String> = p.array_required("corpus")?
+        let corpus: Vec<String> = p.array("corpus")?
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();

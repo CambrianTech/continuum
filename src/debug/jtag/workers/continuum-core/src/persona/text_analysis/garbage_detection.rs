@@ -27,7 +27,7 @@ static PUNCT_CHARS: LazyLock<Regex> =
 static LETTER_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z]").unwrap());
 static REPEATED_PUNCT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]{5,}").unwrap());
 static NON_ASCII_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\x00-\x7F]").unwrap());
-static ASCII_LETTER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z]").unwrap());
+// ASCII_LETTER removed — use LETTER_CHARS (identical regex, one source of truth)
 static ERROR_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(error|failed|cannot|unable|timeout|invalid):").unwrap());
 
@@ -367,7 +367,7 @@ fn check_token_boundary_garbage(text: &str) -> Option<GarbageCheckResult> {
 
         // Non-ASCII mixed with ASCII in same word
         let non_ascii = NON_ASCII_CHAR.find_iter(word).count();
-        let ascii = ASCII_LETTER.find_iter(word).count();
+        let ascii = LETTER_CHARS.find_iter(word).count();
         if non_ascii > 0 && ascii > 0 && (non_ascii as i32 - ascii as i32).unsigned_abs() < 3 {
             weird_count += 1;
         }

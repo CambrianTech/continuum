@@ -217,59 +217,25 @@ impl ServiceModule for ChannelModule {
                 // Step 2: If item returned, run fast_path_decision in the SAME call
                 let decision = if service_result.should_process {
                     if let Some(ref item_json) = service_result.item {
-                        // Reconstruct InboxMessage from queue item JSON
-                        let id = item_json.get("id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| Uuid::parse_str(s).ok())
-                            .unwrap_or_default();
-                        let sender_id = item_json.get("senderId")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| Uuid::parse_str(s).ok())
-                            .unwrap_or_default();
-                        let room_id = item_json.get("roomId")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| Uuid::parse_str(s).ok())
-                            .unwrap_or_default();
-                        let sender_name = item_json.get("senderName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Unknown")
-                            .to_string();
-                        let sender_type_str = item_json.get("senderType")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("human");
-                        let content = item_json.get("content")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let timestamp = item_json.get("timestamp")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let priority = item_json.get("priority")
-                            .and_then(|v| v.as_f64())
-                            .map(|p| p as f32)
-                            .unwrap_or(0.5);
-
+                        // Reconstruct InboxMessage from queue item JSON using Params
+                        let ip = Params::new(item_json);
                         let inbox_msg = InboxMessage {
-                            id,
-                            room_id,
-                            sender_id,
-                            sender_name,
-                            sender_type: match sender_type_str {
+                            id: ip.uuid_opt("id").unwrap_or_default(),
+                            room_id: ip.uuid_opt("roomId").unwrap_or_default(),
+                            sender_id: ip.uuid_opt("senderId").unwrap_or_default(),
+                            sender_name: ip.str_or("senderName", "Unknown").to_string(),
+                            sender_type: match ip.str_or("senderType", "human") {
                                 "persona" => SenderType::Persona,
                                 "agent" => SenderType::Agent,
                                 "system" => SenderType::System,
                                 _ => SenderType::Human,
                             },
-                            content,
-                            timestamp,
-                            priority,
-                            source_modality: item_json.get("itemType")
-                                .and_then(|v| v.as_str())
-                                .map(|t| if t == "voice" { Some(Modality::Voice) } else { None })
-                                .flatten(),
-                            voice_session_id: item_json.get("voiceSessionId")
-                                .and_then(|v| v.as_str())
-                                .and_then(|s| Uuid::parse_str(s).ok()),
+                            content: ip.str_or("content", "").to_string(),
+                            timestamp: ip.u64_or("timestamp", 0),
+                            priority: ip.f32_or("priority", 0.5),
+                            source_modality: ip.str_opt("itemType")
+                                .and_then(|t| if t == "voice" { Some(Modality::Voice) } else { None }),
+                            voice_session_id: ip.uuid_opt("voiceSessionId"),
                         };
 
                         // Get cognition engine for fast-path decision

@@ -591,14 +591,17 @@ async fn call_llm(conversation: &[Value], model: &str, _working_dir: &Path) -> R
     Ok(response.text)
 }
 
+/// Static regexes for tool call parsing (compiled once)
+static TOOL_BLOCK_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap());
+static INLINE_TOOL_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap());
+
 /// Parse tool calls from LLM response
 fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
     let mut calls = Vec::new();
 
-    // Look for ```tool ... ``` blocks
-    let re = regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap();
-
-    for cap in re.captures_iter(response) {
+    for cap in TOOL_BLOCK_RE.captures_iter(response) {
         if let Some(json_str) = cap.get(1) {
             if let Ok(parsed) = serde_json::from_str::<ToolCall>(json_str.as_str().trim()) {
                 calls.push(parsed);
@@ -606,9 +609,7 @@ fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
         }
     }
 
-    // Also try inline JSON tool calls
-    let inline_re = regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap();
-    for cap in inline_re.captures_iter(response) {
+    for cap in INLINE_TOOL_RE.captures_iter(response) {
         if let (Some(name), Some(args)) = (cap.get(1), cap.get(2)) {
             if let Ok(arguments) = serde_json::from_str::<Value>(args.as_str()) {
                 let call = ToolCall {

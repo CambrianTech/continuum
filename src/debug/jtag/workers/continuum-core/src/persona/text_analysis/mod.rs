@@ -20,6 +20,6 @@ pub use similarity::{jaccard_char_bigram_similarity, jaccard_ngram_similarity, c
 pub use garbage_detection::is_garbage;
 pub use loop_detection::{LoopDetector, has_truncated_tool_call};
 pub use mention_detection::{is_persona_mentioned, has_directed_mention};
-pub use response_cleaning::{clean_response, has_prefix};
+pub use response_cleaning::clean_response;
 pub use validation::validate_response;
 pub use types::*;

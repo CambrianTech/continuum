@@ -291,7 +291,8 @@ pub fn init_registry() {
 pub fn get_registry() -> Arc<RwLock<TTSRegistry>> {
     TTS_REGISTRY.get().cloned().unwrap_or_else(|| {
         init_registry();
-        TTS_REGISTRY.get().cloned().unwrap()
+        TTS_REGISTRY.get().cloned()
+            .expect("TTS_REGISTRY must be set after init_registry()")
     })
 }
 

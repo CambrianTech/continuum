@@ -87,7 +87,7 @@ impl ServiceModule for RuntimeModule {
                     .get_metrics(module_name)
                     .ok_or_else(|| format!("Module '{}' not found", module_name))?;
 
-                Ok(CommandResult::Json(serde_json::to_value(metrics.stats()).unwrap()))
+                CommandResult::json(&metrics.stats())
             }
 
             // Get recent slow commands

@@ -418,7 +418,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         // Anthropic doesn't have a health endpoint, so we do a minimal API call
         let result = self.client
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", self.api_key.as_ref().unwrap())
+            .header("x-api-key", self.api_key.as_deref().unwrap_or_default())
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&json!({

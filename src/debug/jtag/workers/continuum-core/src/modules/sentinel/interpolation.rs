@@ -12,14 +12,16 @@
 
 use regex::Regex;
 use serde_json::Value;
+use std::sync::LazyLock;
 
 use super::types::ExecutionContext;
 
+static INTERPOLATION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{([^}]+)\}\}").unwrap());
+
 /// Interpolate {{variable}} references in a template string
 pub fn interpolate(template: &str, ctx: &ExecutionContext) -> String {
-    let re = Regex::new(r"\{\{([^}]+)\}\}").unwrap();
-
-    re.replace_all(template, |caps: &regex::Captures| {
+    INTERPOLATION_RE.replace_all(template, |caps: &regex::Captures| {
         let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
         resolve_path(path, ctx)
     }).to_string()

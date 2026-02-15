@@ -305,7 +305,7 @@ pub fn top_k_similar(
 
     // Sort by similarity descending and take top k
     let mut sorted = similarities;
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     sorted.truncate(k);
     sorted
 }
@@ -399,7 +399,7 @@ pub fn detect_clusters(
                         .sum::<f32>() / (component.len() - 1).max(1) as f32;
                     (item, avg)
                 })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(item, _)| item)
                 .unwrap_or(component[0]);
 
@@ -412,7 +412,7 @@ pub fn detect_clusters(
     }
 
     // Sort by strength descending
-    clusters.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap());
+    clusters.sort_by(|a, b| b.strength.partial_cmp(&a.strength).unwrap_or(std::cmp::Ordering::Equal));
     clusters
 }
 

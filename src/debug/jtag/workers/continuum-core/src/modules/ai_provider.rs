@@ -287,19 +287,17 @@ impl ServiceModule for AIProviderModule {
                 let mut response = adapter.generate_text(request).await?;
 
                 // Add routing info
+                let prior_routing = response.routing.take();
                 response.routing = Some(RoutingInfo {
                     provider: provider_id.to_string(),
                     is_local: adapter.capabilities().is_local,
-                    routing_reason: if response.routing.is_some() {
-                        response.routing.as_ref().unwrap().routing_reason.clone()
-                    } else {
-                        "adapter_selected".to_string()
-                    },
+                    routing_reason: prior_routing.as_ref()
+                        .map(|r| r.routing_reason.clone())
+                        .unwrap_or_else(|| "adapter_selected".to_string()),
                     adapters_applied: vec![],
                     model_mapped: None,
-                    model_requested: response.routing
-                        .as_ref()
-                        .and_then(|r| r.model_requested.clone()),
+                    model_requested: prior_routing
+                        .and_then(|r| r.model_requested),
                 });
 
                 Ok(CommandResult::Json(self.response_to_json(&response)))

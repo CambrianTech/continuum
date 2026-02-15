@@ -107,7 +107,7 @@ impl DataModule {
     /// Events follow pattern: data:{collection}:{action}
     /// Actions: created, updated, deleted, batch
     fn publish_event(&self, collection: &str, action: &str, payload: serde_json::Value) {
-        let ctx_guard = self.context.read().unwrap();
+        let ctx_guard = self.context.read().unwrap_or_else(|e| e.into_inner());
         if let Some(ctx) = ctx_guard.as_ref() {
             let event_name = format!("data:{}:{}", collection, action);
             ctx.bus.publish_async_only(&event_name, payload);
@@ -120,7 +120,7 @@ impl DataModule {
         if duration_ms < 50 {
             return;
         }
-        let ctx_guard = self.context.read().unwrap();
+        let ctx_guard = self.context.read().unwrap_or_else(|e| e.into_inner());
         if let Some(ctx) = ctx_guard.as_ref() {
             let logger = ctx.logger("data");
             logger.timing_with_meta(
@@ -191,7 +191,7 @@ impl ServiceModule for DataModule {
             ctx.compute.clone(),
             ctx.runtime.clone(),
         ));
-        *self.context.write().unwrap() = Some(ctx_arc);
+        *self.context.write().unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
         log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
@@ -484,7 +484,7 @@ impl DataModule {
             }));
         }
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_read(&self, params: Value) -> Result<CommandResult, String> {
@@ -501,7 +501,7 @@ impl DataModule {
         // Log slow reads to module log file
         self.log_slow_query("read", &params.collection, total_ms);
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_update(&self, params: Value) -> Result<CommandResult, String> {
@@ -532,7 +532,7 @@ impl DataModule {
             }));
         }
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_delete(&self, params: Value) -> Result<CommandResult, String> {
@@ -553,7 +553,7 @@ impl DataModule {
             }));
         }
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_query(&self, params: Value) -> Result<CommandResult, String> {
@@ -582,7 +582,7 @@ impl DataModule {
         // Log slow queries to module log file
         self.log_slow_query("query", &params.collection, total_ms);
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_query_with_join(&self, params: Value) -> Result<CommandResult, String> {
@@ -602,7 +602,7 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
                 let result = adapter.query_with_join(query).await;
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_count(&self, params: Value) -> Result<CommandResult, String> {
@@ -636,7 +636,7 @@ impl DataModule {
                 params.collection, total_ms, adapter_ms, count_ms, result.success);
         }
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_batch(&self, params: Value) -> Result<CommandResult, String> {
@@ -656,7 +656,7 @@ impl DataModule {
             }));
         }
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_ensure_schema(&self, params: Value) -> Result<CommandResult, String> {
@@ -666,7 +666,7 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
                 let result = adapter.ensure_schema(params.schema).await;
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_list_collections(&self, params: Value) -> Result<CommandResult, String> {
@@ -676,7 +676,7 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
                 let result = adapter.list_collections().await;
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_collection_stats(&self, params: Value) -> Result<CommandResult, String> {
@@ -686,7 +686,7 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
                 let result = adapter.collection_stats(&params.collection).await;
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_truncate(&self, params: Value) -> Result<CommandResult, String> {
@@ -696,7 +696,7 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
                 let result = adapter.truncate(&params.collection).await;
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_clear_all(&self, params: Value) -> Result<CommandResult, String> {
@@ -706,7 +706,7 @@ impl DataModule {
         let adapter = self.get_adapter(&params.db_path).await?;
                 let result = adapter.clear_all().await;
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     async fn handle_capabilities(&self, params: Value) -> Result<CommandResult, String> {
@@ -771,7 +771,7 @@ impl DataModule {
 
         // Step 1: Try to get vectors from cache (RwLock read - concurrent)
         let cached_vectors: Option<Arc<Vec<CachedVector>>> = {
-            let cache = self.vector_cache.read().unwrap();
+            let cache = self.vector_cache.read().unwrap_or_else(|e| e.into_inner());
             cache.get(&cache_key).map(|c| c.vectors.clone())
         };
 
@@ -825,7 +825,7 @@ impl DataModule {
 
             // Store in cache
             {
-                let mut cache = self.vector_cache.write().unwrap();
+                let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
                 cache.insert(cache_key, VectorCache { vectors: vectors_arc.clone() });
             }
 
@@ -988,7 +988,7 @@ impl DataModule {
         // Invalidate vector cache for this collection since we modified an embedding
         {
             let cache_key = (params.db_path.clone(), params.collection.clone());
-            let mut cache = self.vector_cache.write().unwrap();
+            let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key);
         }
 
@@ -996,7 +996,7 @@ impl DataModule {
         log_info!("data", "vector/index", "Indexed vector for {} in {}ms, success={}",
             params.id, total_ms, result.success);
 
-        Ok(CommandResult::Json(serde_json::to_value(result).unwrap()))
+        CommandResult::json(&result)
     }
 
     /// Get vector index statistics for a collection
@@ -1049,7 +1049,7 @@ impl DataModule {
         // Check cache status
         let cache_key = (params.db_path.clone(), params.collection.clone());
         let cached_count = {
-            let cache = self.vector_cache.read().unwrap();
+            let cache = self.vector_cache.read().unwrap_or_else(|e| e.into_inner());
             cache.get(&cache_key).map(|c| c.vectors.len()).unwrap_or(0)
         };
 
@@ -1082,7 +1082,7 @@ impl DataModule {
 
         let cache_key = (params.db_path.clone(), params.collection.clone());
         let removed = {
-            let mut cache = self.vector_cache.write().unwrap();
+            let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key).is_some()
         };
 
@@ -1199,7 +1199,7 @@ impl DataModule {
         // Invalidate vector cache since we modified embeddings
         {
             let cache_key = (params.db_path.clone(), params.collection.clone());
-            let mut cache = self.vector_cache.write().unwrap();
+            let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key);
         }
 

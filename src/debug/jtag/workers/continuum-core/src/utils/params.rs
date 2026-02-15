@@ -89,9 +89,9 @@ impl<'a> Params<'a> {
         self.0.get(key).and_then(|v| v.as_u64())
     }
 
-    /// Optional u32 (truncates from u64).
+    /// Optional u32 (returns None if missing or value exceeds u32::MAX).
     pub fn u32_opt(&self, key: &str) -> Option<u32> {
-        self.u64_opt(key).map(|n| n as u32)
+        self.u64_opt(key).and_then(|n| u32::try_from(n).ok())
     }
 
     /// Optional i64.
@@ -99,18 +99,18 @@ impl<'a> Params<'a> {
         self.0.get(key).and_then(|v| v.as_i64())
     }
 
+    /// i64 with default.
+    pub fn i64_or(&self, key: &str, default: i64) -> i64 {
+        self.i64_opt(key).unwrap_or(default)
+    }
+
     // ================================================================
     // Floats
     // ================================================================
 
-    /// Optional f64 parameter as f32 with default.
-    pub fn f32_or(&self, key: &str, default: f32) -> f32 {
-        self.f64_opt(key).map(|f| f as f32).unwrap_or(default)
-    }
-
-    /// Optional f32 (returns None if missing).
-    pub fn f32_opt(&self, key: &str) -> Option<f32> {
-        self.f64_opt(key).map(|f| f as f32)
+    /// Required f64 parameter.
+    pub fn f64(&self, key: &str) -> Result<f64, String> {
+        self.f64_opt(key).ok_or_else(|| format!("Missing {key}"))
     }
 
     /// Optional f64 (returns None if missing).
@@ -123,6 +123,21 @@ impl<'a> Params<'a> {
         self.f64_opt(key).unwrap_or(default)
     }
 
+    /// Required f32 parameter.
+    pub fn f32(&self, key: &str) -> Result<f32, String> {
+        self.f64(key).map(|f| f as f32)
+    }
+
+    /// Optional f32 (returns None if missing).
+    pub fn f32_opt(&self, key: &str) -> Option<f32> {
+        self.f64_opt(key).map(|f| f as f32)
+    }
+
+    /// Optional f64 parameter as f32 with default.
+    pub fn f32_or(&self, key: &str, default: f32) -> f32 {
+        self.f64_opt(key).map(|f| f as f32).unwrap_or(default)
+    }
+
     /// Optional f64 with alias fallback (e.g. "top_p" or "topP").
     pub fn f64_opt_alias(&self, key1: &str, key2: &str) -> Option<f64> {
         self.f64_opt(key1).or_else(|| self.f64_opt(key2))
@@ -132,23 +147,28 @@ impl<'a> Params<'a> {
     // Bool
     // ================================================================
 
+    /// Optional bool (returns None if missing).
+    pub fn bool_opt(&self, key: &str) -> Option<bool> {
+        self.0.get(key).and_then(|v| v.as_bool())
+    }
+
     /// Optional bool parameter with default.
     pub fn bool_or(&self, key: &str, default: bool) -> bool {
-        self.0.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+        self.bool_opt(key).unwrap_or(default)
     }
 
     // ================================================================
     // Arrays
     // ================================================================
 
-    /// Optional array parameter.
-    pub fn array(&self, key: &str) -> Option<&'a Vec<Value>> {
-        self.0.get(key).and_then(|v| v.as_array())
+    /// Required array parameter.
+    pub fn array(&self, key: &str) -> Result<&'a Vec<Value>, String> {
+        self.array_opt(key).ok_or_else(|| format!("Missing {key}"))
     }
 
-    /// Required array parameter.
-    pub fn array_required(&self, key: &str) -> Result<&'a Vec<Value>, String> {
-        self.array(key).ok_or_else(|| format!("Missing {key} array"))
+    /// Optional array parameter.
+    pub fn array_opt(&self, key: &str) -> Option<&'a Vec<Value>> {
+        self.0.get(key).and_then(|v| v.as_array())
     }
 
     // ================================================================
@@ -267,10 +287,56 @@ mod tests {
 
     #[test]
     fn test_u32_opt() {
-        let v = json!({"line": 100});
+        let v = json!({"line": 100, "big": 5_000_000_000u64});
         let p = Params::new(&v);
         assert_eq!(p.u32_opt("line"), Some(100));
         assert_eq!(p.u32_opt("missing"), None);
+        // Values exceeding u32::MAX return None instead of silently truncating
+        assert_eq!(p.u32_opt("big"), None);
+    }
+
+    #[test]
+    fn test_bool_opt() {
+        let v = json!({"flag": true, "off": false});
+        let p = Params::new(&v);
+        assert_eq!(p.bool_opt("flag"), Some(true));
+        assert_eq!(p.bool_opt("off"), Some(false));
+        assert_eq!(p.bool_opt("missing"), None);
+    }
+
+    #[test]
+    fn test_i64_or() {
+        let v = json!({"offset": -10});
+        let p = Params::new(&v);
+        assert_eq!(p.i64_or("offset", 0), -10);
+        assert_eq!(p.i64_or("missing", -1), -1);
+    }
+
+    #[test]
+    fn test_f64_required() {
+        let v = json!({"temp": 0.7});
+        let p = Params::new(&v);
+        assert!((p.f64("temp").unwrap() - 0.7).abs() < 0.001);
+        assert!(p.f64("missing").is_err());
+    }
+
+    #[test]
+    fn test_f64_or() {
+        let v = json!({"temp": 0.9});
+        let p = Params::new(&v);
+        assert!((p.f64_or("temp", 0.5) - 0.9).abs() < 0.001);
+        assert!((p.f64_or("missing", 0.5) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_array_naming() {
+        let v = json!({"items": [1, 2, 3]});
+        let p = Params::new(&v);
+        // array() is required, array_opt() is optional
+        assert!(p.array("items").is_ok());
+        assert!(p.array("missing").is_err());
+        assert!(p.array_opt("items").is_some());
+        assert!(p.array_opt("missing").is_none());
     }
 
     #[test]

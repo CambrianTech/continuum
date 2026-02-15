@@ -100,10 +100,9 @@ impl SentinelModule {
 
         // Check if this is a pipeline execution
         let pipeline_json = env.get("PIPELINE_JSON").cloned();
-        let is_pipeline = sentinel_type == "pipeline" && pipeline_json.is_some();
 
-        let pipeline: Option<Pipeline> = if is_pipeline {
-            match serde_json::from_str::<Pipeline>(pipeline_json.as_ref().unwrap()) {
+        let pipeline: Option<Pipeline> = if let Some(ref json_str) = pipeline_json.filter(|_| sentinel_type == "pipeline") {
+            match serde_json::from_str::<Pipeline>(json_str) {
                 Ok(p) => Some(p),
                 Err(e) => {
                     return Err(format!("Failed to parse PIPELINE_JSON: {e}"));
@@ -125,7 +124,7 @@ impl SentinelModule {
             progress: 0,
             start_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_millis() as u64,
             end_time: None,
             exit_code: None,
@@ -139,7 +138,7 @@ impl SentinelModule {
             cancel_tx: Some(cancel_tx),
         });
 
-        let mode_str = if is_pipeline { "pipeline" } else { "shell" };
+        let mode_str = if pipeline.is_some() { "pipeline" } else { "shell" };
         log.info(&format!(
             "Starting sentinel {handle_id} (type={sentinel_type}, mode={mode_str}, cmd={command} {args:?})"
         ));
