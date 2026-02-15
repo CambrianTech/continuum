@@ -9,6 +9,9 @@ import type {
 	PriorityScore,
 	PersonaState,
 	ActivityDomain,
+	TextSimilarityResult,
+	SemanticLoopResult,
+	ConversationMessage,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -29,6 +32,8 @@ export interface CognitionMixin {
 	cognitionFastPathDecision(personaId: string, message: InboxMessageRequest): Promise<CognitionDecision>;
 	cognitionEnqueueMessage(personaId: string, message: InboxMessageRequest): Promise<void>;
 	cognitionGetState(personaId: string): Promise<PersonaState & { service_cadence_ms: number }>;
+	cognitionTextSimilarity(text1: string, text2: string): Promise<TextSimilarityResult>;
+	cognitionCheckSemanticLoop(responseText: string, history: ConversationMessage[], maxHistory?: number): Promise<SemanticLoopResult>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -142,6 +147,47 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as PersonaState & { service_cadence_ms: number };
+		}
+
+		/**
+		 * Unified text similarity — both char-bigram and word-ngram Jaccard in one call.
+		 * Replaces 3 duplicate TS implementations.
+		 */
+		async cognitionTextSimilarity(text1: string, text2: string): Promise<TextSimilarityResult> {
+			const response = await this.request({
+				command: 'cognition/text-similarity',
+				text1,
+				text2,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to compute text similarity');
+			}
+
+			return response.result as TextSimilarityResult;
+		}
+
+		/**
+		 * Check if a response is semantically looping against conversation history.
+		 * Blocks at 95% similarity, warns at 80%.
+		 */
+		async cognitionCheckSemanticLoop(
+			responseText: string,
+			history: ConversationMessage[],
+			maxHistory?: number
+		): Promise<SemanticLoopResult> {
+			const response = await this.request({
+				command: 'cognition/check-semantic-loop',
+				response_text: responseText,
+				history,
+				max_history: maxHistory ?? 10,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to check semantic loop');
+			}
+
+			return response.result as SemanticLoopResult;
 		}
 	};
 }

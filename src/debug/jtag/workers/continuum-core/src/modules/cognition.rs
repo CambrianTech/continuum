@@ -5,10 +5,12 @@
 //!
 //! Handles: cognition/create-engine, cognition/calculate-priority,
 //!          cognition/fast-path-decision, cognition/enqueue-message, cognition/get-state,
+//!          cognition/text-similarity, cognition/check-semantic-loop,
 //!          inbox/create
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
+use crate::persona::text_analysis;
 use crate::rag::RagEngine;
 use crate::logging::TimingGuard;
 use crate::log_info;
@@ -263,6 +265,75 @@ impl ServiceModule for CognitionModule {
 
                 log_info!("module", "cognition", "Created inbox for {}", persona_id);
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
+            }
+
+            // ================================================================
+            // Text Analysis commands (Phase 1: Similarity)
+            // ================================================================
+
+            "cognition/text-similarity" => {
+                let _timer = TimingGuard::new("module", "cognition_text_similarity");
+
+                let text1 = params.get("text1")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing text1")?;
+                let text2 = params.get("text2")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing text2")?;
+
+                let start = std::time::Instant::now();
+
+                let ngram_similarity = text_analysis::jaccard_ngram_similarity(text1, text2);
+                let char_similarity = text_analysis::jaccard_char_bigram_similarity(text1, text2);
+
+                let elapsed_us = start.elapsed().as_micros() as u64;
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "ngram_similarity": ngram_similarity,
+                    "char_similarity": char_similarity,
+                    "compute_time_us": elapsed_us,
+                })))
+            }
+
+            "cognition/check-semantic-loop" => {
+                let _timer = TimingGuard::new("module", "cognition_check_semantic_loop");
+
+                let response_text = params.get("response_text")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing response_text")?;
+                let max_history = params.get("max_history")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+                    .unwrap_or(10);
+
+                let history_arr = params.get("history")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing history array")?;
+
+                let history: Vec<text_analysis::ConversationMessage> = history_arr.iter()
+                    .filter_map(|item| {
+                        let role = item.get("role")?.as_str()?;
+                        let content = item.get("content")?.as_str()?;
+                        let name = item.get("name").and_then(|n| n.as_str()).map(String::from);
+                        Some(text_analysis::ConversationMessage {
+                            role: role.to_string(),
+                            content: content.to_string(),
+                            name,
+                        })
+                    })
+                    .collect();
+
+                let result = text_analysis::check_semantic_loop(
+                    response_text,
+                    &history,
+                    max_history,
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "should_block": result.should_block,
+                    "similarity": result.similarity,
+                    "reason": result.reason,
+                })))
             }
 
             _ => Err(format!("Unknown cognition command: {command}")),

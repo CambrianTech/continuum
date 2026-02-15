@@ -723,7 +723,7 @@ export class PersonaMessageEvaluator {
 
       if (otherAIResponses.length > 0) {
         // Check if any response is adequate (substantial and related)
-        const adequacyResult = this.checkResponseAdequacy(
+        const adequacyResult = await this.checkResponseAdequacy(
           messageEntity,
           otherAIResponses  // Already flat ChatMessageEntity objects from cache
         );
@@ -1086,8 +1086,8 @@ export class PersonaMessageEvaluator {
       return true; // No text content = new topic
     }
 
-    // Fast text similarity using n-gram Jaccard
-    const similarity = this.computeTextSimilarity(currentText, recentTexts);
+    // Text similarity via Rust IPC (word n-gram Jaccard)
+    const similarity = await this.computeTextSimilarity(currentText, recentTexts);
 
     // Below threshold = new topic
     const isNewTopic = similarity < threshold;
@@ -1100,50 +1100,12 @@ export class PersonaMessageEvaluator {
   }
 
   /**
-   * Compute text similarity using n-gram Jaccard coefficient
-   * Fast O(n) algorithm - no embeddings or API calls needed
-   *
-   * Uses unigrams + bigrams for better phrase detection
+   * Compute text similarity via Rust IPC (word n-gram Jaccard).
+   * Replaces inline Jaccard implementation — single source of truth in Rust.
    */
-  private computeTextSimilarity(text1: string, text2: string): number {
-    // Tokenize into words (filter short words as noise)
-    const tokenize = (text: string): string[] => {
-      return text
-        .toLowerCase()
-        .split(/\W+/)
-        .filter(word => word.length > 2);
-    };
-
-    const tokens1 = tokenize(text1);
-    const tokens2 = tokenize(text2);
-
-    if (tokens1.length === 0 || tokens2.length === 0) {
-      return 0;
-    }
-
-    // Generate unigrams + bigrams for better phrase matching
-    const generateNgrams = (tokens: string[]): Set<string> => {
-      const ngrams = new Set<string>();
-
-      // Unigrams
-      tokens.forEach(t => ngrams.add(t));
-
-      // Bigrams
-      for (let i = 0; i < tokens.length - 1; i++) {
-        ngrams.add(`${tokens[i]}_${tokens[i + 1]}`);
-      }
-
-      return ngrams;
-    };
-
-    const ngrams1 = generateNgrams(tokens1);
-    const ngrams2 = generateNgrams(tokens2);
-
-    // Jaccard coefficient = |intersection| / |union|
-    const intersection = [...ngrams1].filter(n => ngrams2.has(n)).length;
-    const union = new Set([...ngrams1, ...ngrams2]).size;
-
-    return union > 0 ? intersection / union : 0;
+  private async computeTextSimilarity(text1: string, text2: string): Promise<number> {
+    const result = await this.personaUser.rustCognition.textSimilarity(text1, text2);
+    return result.ngram_similarity;
   }
 
   /**
@@ -1152,10 +1114,10 @@ export class PersonaMessageEvaluator {
    * Used for post-inference re-evaluation to prevent redundant responses
    * when another AI already answered during our inference time.
    */
-  private checkResponseAdequacy(
+  private async checkResponseAdequacy(
     originalMessage: ProcessableMessage,
     otherResponses: ChatMessageEntity[]
-  ): { isAdequate: boolean; confidence: number; reason: string } {
+  ): Promise<{ isAdequate: boolean; confidence: number; reason: string }> {
     const originalText = originalMessage.content?.text || '';
 
     for (const response of otherResponses) {
@@ -1164,8 +1126,8 @@ export class PersonaMessageEvaluator {
       // Skip short responses (likely not adequate)
       if (responseText.length < 100) continue;
 
-      // Check if response is related to original question
-      const similarity = this.computeTextSimilarity(originalText, responseText);
+      // Check if response is related to original question (via Rust IPC)
+      const similarity = await this.computeTextSimilarity(originalText, responseText);
 
       // Substantial response (>100 chars) that's related to the question (>0.2 similarity)
       if (similarity > 0.2) {

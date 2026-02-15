@@ -58,6 +58,8 @@ import { GarbageDetector } from '../../../ai/server/GarbageDetector';
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
+import type { RustCognitionBridge } from './RustCognitionBridge';
+import type { SemanticLoopResult } from '../../../../shared/generated';
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 // DataCreate import removed — response posting now uses ORM.store() directly
@@ -109,6 +111,8 @@ export class PersonaResponseGenerator {
   private contentDeduplicator: ContentDeduplicator;
   /** Response cleaner - strips unwanted prefixes from AI responses */
   private responseCleaner: ResponseCleaner;
+  /** Rust cognition bridge — set lazily after PersonaUser creates it */
+  private _rustBridge: RustCognitionBridge | null = null;
 
   /**
    * RESPONSE-LEVEL LOOP DETECTION
@@ -146,7 +150,7 @@ export class PersonaResponseGenerator {
    * Check if response is a loop (appears too frequently in recent history)
    * Returns true if blocked (is a loop), false if allowed
    */
-  private isResponseLoop(responseText: string): boolean {
+  private async isResponseLoop(responseText: string): Promise<boolean> {
     const hash = PersonaResponseGenerator.hashResponse(responseText);
     const now = Date.now();
 
@@ -158,12 +162,12 @@ export class PersonaResponseGenerator {
       entry => now - entry.timestamp < PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS
     );
 
-    // Count how many times similar response appears (using similarity threshold)
-    const duplicateCount = recentResponses.filter(entry => {
-      // Check if hashes are similar (allow some variation for minor differences)
-      const similarity = this.calculateSimilarity(entry.hash, hash);
-      return similarity > 0.8; // 80% similar = probable loop
-    }).length;
+    // Count how many times similar response appears (using similarity threshold via Rust IPC)
+    let duplicateCount = 0;
+    for (const entry of recentResponses) {
+      const similarity = await this.calculateSimilarity(entry.hash, hash);
+      if (similarity > 0.8) duplicateCount++;
+    }
 
     // Record this response (even if it will be blocked)
     recentResponses.push({ hash, timestamp: now });
@@ -179,32 +183,26 @@ export class PersonaResponseGenerator {
   }
 
   /**
-   * Calculate similarity between two strings (0-1 scale)
-   * Uses simple character overlap for speed
+   * Set Rust cognition bridge (called after PersonaUser creates it)
    */
-  private calculateSimilarity(a: string, b: string): number {
+  setRustBridge(bridge: RustCognitionBridge): void {
+    this._rustBridge = bridge;
+  }
+
+  /**
+   * Character-bigram Jaccard similarity via Rust IPC.
+   * Used for response loop detection (comparing response hashes).
+   */
+  private async calculateSimilarity(a: string, b: string): Promise<number> {
     if (a === b) return 1;
     if (a.length === 0 || b.length === 0) return 0;
 
-    // Jaccard similarity on character bigrams
-    const getBigrams = (s: string): Set<string> => {
-      const bigrams = new Set<string>();
-      for (let i = 0; i < s.length - 1; i++) {
-        bigrams.add(s.slice(i, i + 2));
-      }
-      return bigrams;
-    };
-
-    const bigramsA = getBigrams(a);
-    const bigramsB = getBigrams(b);
-
-    let intersection = 0;
-    for (const bigram of bigramsA) {
-      if (bigramsB.has(bigram)) intersection++;
+    if (!this._rustBridge) {
+      throw new Error('Rust bridge not initialized — cannot compute similarity');
     }
 
-    const union = bigramsA.size + bigramsB.size - intersection;
-    return union === 0 ? 0 : intersection / union;
+    const result = await this._rustBridge.textSimilarity(a, b);
+    return result.char_similarity;
   }
 
   /**
@@ -217,91 +215,21 @@ export class PersonaResponseGenerator {
   }
 
   /**
-   * SEMANTIC LOOP DETECTION
+   * Semantic loop detection via Rust IPC.
+   * Compares response against conversation history using word n-gram Jaccard.
+   * Blocks at 95% similarity, warns at 80%.
    *
-   * Uses embedding-based similarity to detect if proposed response is too similar
-   * to recent messages in the room (from ANY source, not just self).
-   *
-   * This catches cases where multiple AIs post semantically identical content
-   * (e.g., Teacher AI and Local Assistant posting the same explanation).
-   *
-   * AUTONOMY-PRESERVING:
-   * - ALLOW (<0.75): Post normally
-   * - WARN (0.75-0.85): Log warning but allow (preserve autonomy)
-   * - BLOCK (>0.85): Truly redundant, block to prevent spam
-   *
-   * @param responseText - The proposed response text
-   * @param roomId - The room ID for context
-   * @returns true if should BLOCK (>0.85 similarity), false otherwise
+   * Replaces inline jaccardSimilarity + checkSemanticLoop (both deleted).
    */
-  /**
-   * Inline Jaccard n-gram similarity — O(n) text comparison, no DB or embedding calls.
-   * Returns 0-1 score (1 = identical).
-   */
-  private jaccardSimilarity(text1: string, text2: string): number {
-    if (!text1 || !text2) return 0;
-    if (text1 === text2) return 1.0;
-
-    const tokenize = (text: string): Set<string> => {
-      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-      const ngrams = new Set<string>();
-      for (const word of words) ngrams.add(word);
-      for (let i = 0; i < words.length - 1; i++) ngrams.add(`${words[i]} ${words[i + 1]}`);
-      return ngrams;
-    };
-
-    const set1 = tokenize(text1);
-    const set2 = tokenize(text2);
-    let intersection = 0;
-    for (const gram of set1) {
-      if (set2.has(gram)) intersection++;
-    }
-    const union = set1.size + set2.size - intersection;
-    return union === 0 ? 0 : intersection / union;
-  }
-
-  /**
-   * Check semantic loop using in-memory RAG context (0ms, no DB/embedding calls).
-   * Previous implementation called AiDetectSemanticLoop.execute() which did embedding IPC + DB query (~20s).
-   * Now uses inline Jaccard n-gram similarity against already-loaded conversation history.
-   */
-  private checkSemanticLoop(
+  private async checkSemanticLoop(
     responseText: string,
     conversationHistory: Array<{ role: string; content: string; name?: string }>
-  ): { shouldBlock: boolean; similarity: number; reason: string } {
-    // Short responses are unlikely to be loops
-    if (responseText.length < 50) {
-      return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
+  ): Promise<SemanticLoopResult> {
+    if (!this._rustBridge) {
+      throw new Error('Rust bridge not initialized — cannot check semantic loop');
     }
 
-    // Compare against last 10 messages in the already-loaded RAG context
-    const recentMessages = conversationHistory.slice(-10);
-    let maxSimilarity = 0;
-    let mostSimilarExcerpt = '';
-
-    for (const msg of recentMessages) {
-      if (!msg.content || msg.content.length < 20) continue;
-      const similarity = this.jaccardSimilarity(responseText, msg.content);
-      if (similarity > maxSimilarity) {
-        maxSimilarity = similarity;
-        mostSimilarExcerpt = msg.content.slice(0, 100);
-      }
-    }
-
-    // Thresholds (same as AiDetectSemanticLoopServerCommand)
-    const WARN_THRESHOLD = 0.80;
-    const BLOCK_THRESHOLD = 0.95;
-
-    if (maxSimilarity >= BLOCK_THRESHOLD) {
-      this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
-      this.log(`   Most similar to: "${mostSimilarExcerpt}"`);
-      return { shouldBlock: true, similarity: maxSimilarity, reason: `${Math.round(maxSimilarity * 100)}% similar to recent message` };
-    } else if (maxSimilarity >= WARN_THRESHOLD) {
-      this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
-      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
-    }
-
-    return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
+    return this._rustBridge.checkSemanticLoop(responseText, conversationHistory);
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -1141,7 +1069,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         // - Response is truncated mid-tool-call (DeepSeek's issue)
         // - AI repeats same content with minor variations
         // - Tool-level detection would miss it
-        if (!hasToolCalls && this.isResponseLoop(aiResponse.text)) {
+        if (!hasToolCalls && await this.isResponseLoop(aiResponse.text)) {
           this.log(`🔁 ${this.personaName}: [PHASE 3.3.5b] Response loop detected - DISCARDING response`);
 
           // Release inference slot
@@ -1210,8 +1138,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         // Uses Jaccard n-gram similarity against already-loaded RAG context.
         // Previous: AiDetectSemanticLoop.execute() — embedding IPC + DB query (~20 seconds)
         // Now: inline text comparison against in-memory conversation history (~0ms)
-        const semanticCheck = this.checkSemanticLoop(aiResponse.text, fullRAGContext.conversationHistory);
-        if (semanticCheck.shouldBlock) {
+        const semanticCheck = await this.checkSemanticLoop(aiResponse.text, fullRAGContext.conversationHistory);
+        if (semanticCheck.should_block) {
           this.log(`🚫 ${this.personaName}: [PHASE 3.3.5d] SEMANTIC LOOP BLOCKED (${semanticCheck.similarity.toFixed(2)} similarity)`);
 
           // Release inference slot

@@ -25,6 +25,9 @@ import type {
   ActivityDomain,
   ChannelRegistryStatus,
   ChannelEnqueueRequest,
+  TextSimilarityResult,
+  SemanticLoopResult,
+  ConversationMessage,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -549,6 +552,65 @@ export class RustCognitionBridge {
       const elapsed = performance.now() - start;
       this.logger.error(`memoryConsciousnessContext FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`roomId=${roomId}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Text Analysis — Unified similarity + semantic loop checking in Rust
+  // Replaces 3 duplicate Jaccard implementations in TS
+  // ========================================================================
+
+  /**
+   * Compute text similarity using Rust's unified Jaccard implementation.
+   * Returns both character-bigram and word-ngram similarity in one IPC call.
+   * THROWS on failure
+   */
+  async textSimilarity(text1: string, text2: string): Promise<TextSimilarityResult> {
+    this.assertReady('textSimilarity');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionTextSimilarity(text1, text2);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`TextSimilarity: ngram=${result.ngram_similarity.toFixed(3)}, char=${result.char_similarity.toFixed(3)}, compute=${result.compute_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`textSimilarity FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a response is semantically looping against conversation history.
+   * Uses word-ngram Jaccard: blocks at 95%, warns at 80%.
+   * THROWS on failure
+   */
+  async checkSemanticLoop(
+    responseText: string,
+    history: ConversationMessage[],
+    maxHistory?: number
+  ): Promise<SemanticLoopResult> {
+    this.assertReady('checkSemanticLoop');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCheckSemanticLoop(responseText, history, maxHistory);
+      const elapsed = performance.now() - start;
+
+      if (result.should_block) {
+        this.logger.warn(`SemanticLoop BLOCKED: ${result.reason} (similarity=${result.similarity.toFixed(3)}, ${elapsed.toFixed(2)}ms)`);
+      } else {
+        this.logger.info(`SemanticLoop: pass, similarity=${result.similarity.toFixed(3)} (${elapsed.toFixed(2)}ms)`);
+      }
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`checkSemanticLoop FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

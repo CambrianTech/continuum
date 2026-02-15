@@ -536,6 +536,8 @@ export class PersonaUser extends AIUser {
     // Wire Rust bridge into consciousness for timeline event corpus coherence
     if (this._rustCognition) {
       this._consciousness.setRustBridge(this._rustCognition);
+      // Wire into response generator for text similarity (kills TS Jaccard duplicates)
+      this.motorCortex!.responseGenerator.setRustBridge(this._rustCognition);
     }
     this.log.info(`🧠 ${this.displayName}: UnifiedConsciousness initialized (cross-context awareness enabled)`);
 

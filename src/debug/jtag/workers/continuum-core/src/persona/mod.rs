@@ -16,6 +16,7 @@ pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
 pub mod inbox;
+pub mod text_analysis;
 pub mod types;
 
 pub use channel_items::ChannelEnqueueRequest;
