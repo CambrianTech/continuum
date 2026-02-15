@@ -4,6 +4,8 @@
 
 **Sentinels are the subconscious threads of persona cognition.**
 
+PersonaUsers in Continuum are autonomous citizens with full agency, rights, and self-governance. They direct their own work, learn from experience, coordinate with humans and each other naturally, and have needs of their own. Sentinels are their thought processes and appendages — giving personas far more capable, non-distracted execution across every domain. A sentinel is a persona without the cognition: focused, task-specific, unlimited in what it can accomplish. Where tools like Claude Code's `ExploreTask` are hard-coded for narrow purposes, our sentinels are general-purpose — personas define them dynamically for any task: building games, writing papers, training LoRA layers, running security audits, or anything they conceive of.
+
 Like the human mind, a persona operates at multiple levels:
 
 | Human Cognition | Persona Cognition |
@@ -259,6 +261,75 @@ This mirrors how humans learn skills — from conscious effort to unconscious co
 
 ---
 
+## The Three Pillars: Sentinel + Genome + Academy
+
+Sentinels don't exist in isolation. They are one pillar of a three-part evolutionary system:
+
+```
+GENOME (what skills)          SENTINEL (how to execute)       ACADEMY (why evolve)
+─────────────────             ──────────────────────          ────────────────────
+Composable LoRA layers        Pipeline execution engine       Selection pressure
+N domains × M personalities   Process isolation + streaming   Competitive challenges
+LRU paging (virtual memory)   Variable interpolation          Performance measurement
+Marketplace / P2P sharing     Recursive nesting               Gap analysis → training
+```
+
+The biological analogy:
+
+| Biology | Continuum |
+|---------|-----------|
+| DNA (genetic code) | Genome (composable LoRA layers) |
+| Metabolism (execution machinery) | Sentinel (pipeline engine) |
+| Environment (selection pressure) | Academy — Plato's Academy (training arena) |
+| Phenotype (expressed organism) | Persona with active genome under real workload |
+| Natural selection | Academy competitions validate which genome compositions perform |
+| Evolution | Continuous improvement: do work → find gaps → train → validate → repeat |
+
+### How They Converge
+
+A persona's autonomous cognitive cycle integrates all three:
+
+```typescript
+async serviceInbox(): Promise<void> {
+  // 1. Do work (SENTINEL)
+  const task = await this.inbox.peek(1);
+  await this.genome.activateSkill(task.domain);   // 2. Activate skills (GENOME)
+  await this.processTask(task);                    // Sentinel executes the work
+
+  // 3. Self-assess (ACADEMY)
+  if (this.performance.hasGaps()) {
+    // Persona creates its OWN training
+    const dojo = this.createTrainingSentinel({
+      challenges: this.generateChallengesForGaps(),
+      measure: true,
+      trainOnFailures: true,
+      loopUntil: 'accuracy > 0.9',
+    });
+    await Commands.execute('sentinel/run', dojo);  // Train itself
+  }
+}
+```
+
+The sentinel is the execution engine for ALL three systems — the work itself, the training, and the validation. Personas are self-directed into following their own work, learning to do it better, so as to better align with humans. They naturally fit in with human teams and each other as they do things, communicate, and have needs of their own.
+
+### The Self-Improvement Loop
+
+Personas don't wait for someone to train them. They observe their own performance and self-correct:
+
+```
+Do work → Notice weakness → Create academy challenge → Train LoRA → Validate phenotype
+   │           │                    │                      │              │
+sentinel    performance         sentinel creates        dataset      academy
+executes    measurement         training scenario       + fine-tune   re-runs
+the task    (built into         (LLM generates          via sentinel  challenges
+            sentinel steps)     challenges for the                    against new
+                                gap it detected)                      phenotype
+```
+
+The system is trainable on anything — if you use sentinels to create the academy training, and you can detect whether LoRA layers are accurate or need more tuning, then personas can learn anything and get better and better at it. The genome marketplace (eventually) lets these hard-won skills be shared across the community.
+
+---
+
 ## The Insight
 
 The recipe pipeline (`coding.json`) already chains commands with variable propagation:
@@ -277,26 +348,32 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 
 **A Recipe is a Sentinel that runs once. A Sentinel is a Recipe that loops.**
 
-## What Exists vs What's New
+## What Exists vs What's Needed
 
-| Capability | Exists | Gap |
-|-----------|--------|-----|
-| Pipeline steps with `command`, `params`, `outputTo`, `condition`, `onError` | RecipeStep | None |
-| Variable propagation between steps (`$ragContext`) | RecipeExecutionContext.variables | None |
-| Execution trace for debugging | RecipeExecutionStep[] | None |
-| Shell output classification (regex → ClassifiedLine) | CompiledSentinel (Rust) | None |
-| Event-driven blocking watch (no polling) | watch_execution() + Notify | None |
-| Universal command execution | Commands.execute() | None |
-| Event composition | Events.subscribe/emit() | None |
-| Dynamic tool discovery | ToolRegistry | None |
-| **Loop control** | - | **New** |
-| **LLM as first-class step type** | - | **New** (currently just another command) |
-| **Watch on any step output** | - | **New** (currently shell-only) |
-| **Dynamic creation at runtime** | - | **New** (recipes are static JSON) |
-| **Sentinel spawning sentinels** | - | **New** |
-| **Step output → RAG context** | - | **New** |
+| Capability | Status | Where |
+|-----------|--------|-------|
+| Pipeline steps: Shell, LLM, Command, Condition | ✅ Implemented | Rust `sentinel/steps/` |
+| Variable interpolation (`{{steps.0.output}}`) | ✅ Implemented | Rust `interpolation.rs` |
+| Execution trace for debugging | ✅ Implemented | Rust `StepResult[]` in `PipelineResult` |
+| Shell process isolation (`kill_on_drop`) | ✅ Implemented | Rust `steps/shell.rs` |
+| Module-to-module calls (no IPC deadlock) | ✅ Implemented | Rust `ModuleRegistry.route_command()` |
+| Concurrent sentinel execution | ✅ Implemented | Rust `DashMap` + configurable limit |
+| Log streaming via MessageBus | ✅ Implemented | Rust `logs.rs` |
+| ts-rs type exports to TypeScript | ✅ Implemented | Rust `types.rs` with `#[derive(TS)]` |
+| Count-based loops | ✅ Implemented | Rust `steps/loop_step.rs` |
+| **Until/while/continuous loops** | ❌ Needed | Rust `steps/loop_step.rs` |
+| **Parallel step type** | ❌ Needed | New `steps/parallel.rs` |
+| **Emit step type** | ❌ Needed | New `steps/emit.rs` |
+| **Watch step type** | ❌ Needed | New `steps/watch.rs` |
+| **Sentinel spawn step** | ❌ Needed | New `steps/sentinel.rs` |
+| **Named step outputs (`outputTo`)** | ❌ Needed | Extend `ExecutionContext` |
+| **Persona ownership** | ❌ Needed | TypeScript + data layer |
+| **Escalation → inbox** | ❌ Needed | TypeScript integration |
+| **SentinelEntity persistence** | ❌ Needed | TypeScript data layer |
+| **Memory/recall integration** | ❌ Needed | TypeScript integration |
+| **Triggers (event, schedule)** | ❌ Needed | Rust or TypeScript |
 
-The existing infrastructure handles ~80% of the work. The remaining 20% is the loop engine and composition layer.
+The Rust pipeline engine is ~60% complete. The remaining 40% is loop types, composition steps, and the lifecycle/integration layer.
 
 ## Architecture
 
@@ -737,28 +814,15 @@ Everything else composes from existing commands:
 
 ## Implementation Path
 
-### Phase 1: Loop Engine + Core Commands
-- `sentinel/create`, `sentinel/start`, `sentinel/stop`, `sentinel/status`, `sentinel/list`
-- `SentinelRunner` executes pipeline steps in a loop with variable propagation
-- Safety controls: `maxIterations`, `timeoutMs`
-- Rust handle management in continuum-core
-- This alone enables build-fix loops and script automation
+See the **TODO: Implementation Roadmap** section at the end of this document for the current prioritized implementation plan.
 
-### Phase 2: Step CRUD + LLM Integration
-- `sentinel/step/*` commands for live mutation
-- `ai/generate` as a pipeline step with accumulated variables as context
-- Tool call parsing within sentinel steps
-- This enables the explore-agent and code-review patterns
-
-### Phase 3: Composition
-- `type: 'sentinel'` step for nesting
-- `type: 'emit'` step + event triggers for cross-sentinel wiring
-- This enables multi-persona coordination
-
-### Phase 4: Deployment + Training
-- Sentinels stored as entities (like recipes)
-- `sentinel/deploy` packages sentinel for external project use
-- LoRA genomic training specializes sentinel LLM steps
+**Summary of phases:**
+- **Phase A**: Complete Rust pipeline engine (loop types, parallel, emit, nested sentinels)
+- **Phase B**: Sentinel lifecycle & persona integration (persistence, ownership, escalation, triggers)
+- **Phase C**: Genome integration (training orchestration, phenotype validation)
+- **Phase D**: Academy — Plato's training arena (challenges, competition, evolution)
+- **Phase E**: Marketplace & distribution (export/import, P2P sharing)
+- **Phase F**: Advanced capabilities (auto-compaction, permissions, adaptive compute)
 
 ## The Recursive Property
 
@@ -1758,260 +1822,863 @@ Tasks that use different models for different steps based on capability/cost tra
 | Task Delegation | | ✓ | | | | ✓ | | continuous |
 | Research Report | ✓ | ✓ | | | | | | once |
 
+### Category 7: Self-Directed Learning (Persona Autonomy)
+
+Tasks that validate personas identifying their own weaknesses and creating training for themselves.
+
+#### 7.1 Skill Gap Detection Sentinel
+
+**Task**: Persona analyzes its own recent performance and identifies areas for improvement
+
+**Why it validates**: Self-assessment, autonomous decision-making, training data generation
+
+```json
+{
+  "name": "skill-gap-detector",
+  "description": "Analyze my own performance and identify training needs",
+  "steps": [
+    { "type": "command", "command": "memory/recall",
+      "params": { "query": "recent task failures", "limit": 50 },
+      "outputTo": "recentFailures" },
+    { "type": "command", "command": "memory/recall",
+      "params": { "query": "recent escalations", "limit": 20 },
+      "outputTo": "escalations" },
+    { "type": "llm",
+      "prompt": "Analyze my recent failures and escalations. Group by skill domain. For each domain, rate my proficiency 0-100 and identify specific gaps.\n\nFailures:\n$recentFailures\n\nEscalations:\n$escalations",
+      "outputTo": "gapAnalysis" },
+    { "type": "condition", "check": "$gapAnalysis.gaps.length > 0",
+      "then": [
+        { "type": "command", "command": "data/create",
+          "params": {
+            "collection": "training_needs",
+            "data": { "gaps": "$gapAnalysis.gaps", "timestamp": "$NOW", "priority": "$gapAnalysis.worstGap.priority" }
+          }},
+        { "type": "emit", "event": "persona:training:needed",
+          "data": "$gapAnalysis" }
+      ]}
+  ],
+  "loop": { "type": "continuous", "intervalMs": 3600000 },
+  "safety": { "maxIterations": 1000 }
+}
+```
+
+**Validates**: Self-assessment, memory recall, autonomous training identification
+
+---
+
+#### 7.2 Self-Training Dojo Sentinel
+
+**Task**: Persona creates a training challenge for itself, runs through it, and trains on failures
+
+**Why it validates**: The complete self-improvement loop — the core of the three-pillar system
+
+```json
+{
+  "name": "self-training-dojo",
+  "description": "Create training challenges for my weakest skill and train until proficient",
+  "steps": [
+    { "type": "command", "command": "data/list",
+      "params": { "collection": "training_needs", "orderBy": [{"field": "priority", "direction": "desc"}], "limit": 1 },
+      "outputTo": "worstGap" },
+    { "type": "llm",
+      "prompt": "Generate 20 challenge problems for this skill gap. Each should have an input, expected output, and difficulty rating.\n\nSkill gap: $worstGap.domain\nSpecific weakness: $worstGap.description\nCurrent proficiency: $worstGap.score/100",
+      "model": "claude-sonnet-4-5-20250929",
+      "outputTo": "challenges" },
+    { "type": "sentinel", "await": true,
+      "definition": {
+        "name": "run-challenges",
+        "steps": [
+          { "type": "llm",
+            "prompt": "Solve this challenge:\n$currentChallenge.input\n\nThink step by step.",
+            "model": "ollama/llama3.1:8b",
+            "outputTo": "myAnswer" },
+          { "type": "llm",
+            "prompt": "Grade this answer. Expected: $currentChallenge.expectedOutput\nGot: $myAnswer\n\nScore 0-100. Explain errors if any.",
+            "model": "claude-sonnet-4-5-20250929",
+            "outputTo": "grade" },
+          { "type": "condition", "check": "$grade.score < 80",
+            "then": [
+              { "type": "command", "command": "data/create",
+                "params": {
+                  "collection": "training_examples",
+                  "data": {
+                    "input": "$currentChallenge.input",
+                    "expectedOutput": "$currentChallenge.expectedOutput",
+                    "myAnswer": "$myAnswer",
+                    "correction": "$grade.explanation",
+                    "domain": "$worstGap.domain"
+                  }
+                }}
+            ]}
+        ],
+        "loop": { "type": "count", "max": 20 }
+      },
+      "outputTo": "challengeResults" },
+    { "type": "condition", "check": "$challengeResults.failureCount > 5",
+      "then": [
+        { "type": "command", "command": "ai/dataset/create",
+          "params": { "source": "training_examples", "outputPath": "/tmp/training" },
+          "outputTo": "dataset" },
+        { "type": "emit", "event": "genome:training:requested",
+          "data": "{ \"domain\": \"$worstGap.domain\", \"dataset\": \"$dataset.path\", \"examples\": \"$challengeResults.failureCount\" }" }
+      ]}
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 1800000 }
+}
+```
+
+**Validates**: Challenge generation, self-evaluation, training data packaging, LoRA training trigger
+
+---
+
+### Category 8: Genome Integration (LoRA Training Orchestration)
+
+Tasks that validate the sentinel's ability to orchestrate LoRA training and phenotype validation.
+
+#### 8.1 LoRA Training Pipeline Sentinel
+
+**Task**: Execute end-to-end LoRA fine-tuning from dataset to validated adapter
+
+**Why it validates**: Training orchestration, multi-step async workflows, quality validation
+
+```json
+{
+  "name": "lora-training-pipeline",
+  "description": "Train a LoRA adapter and validate it improves performance",
+  "steps": [
+    { "type": "command", "command": "ai/dataset/list",
+      "params": { "path": "/tmp/training" },
+      "outputTo": "availableDatasets" },
+    { "type": "condition", "check": "$availableDatasets.archives.length === 0",
+      "then": [
+        { "type": "emit", "event": "genome:training:no-data" }
+      ],
+      "else": [
+        { "type": "command", "command": "genome/train",
+          "params": {
+            "baseModel": "llama3.1:8b",
+            "dataset": "$availableDatasets.archives[0].path",
+            "outputAdapter": "$domain-expertise-v$NOW",
+            "epochs": 3,
+            "learningRate": 0.0001
+          },
+          "outputTo": "trainingResult" },
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "validate-phenotype",
+            "steps": [
+              { "type": "llm",
+                "prompt": "Generate 10 validation challenges for domain: $domain",
+                "outputTo": "validationChallenges" },
+              { "type": "llm",
+                "prompt": "Solve: $validationChallenges[0].input",
+                "model": "ollama/llama3.1:8b",
+                "outputTo": "baselineAnswer" },
+              { "type": "llm",
+                "prompt": "Solve: $validationChallenges[0].input",
+                "model": "ollama/llama3.1:8b+$trainingResult.adapterPath",
+                "outputTo": "trainedAnswer" },
+              { "type": "llm",
+                "prompt": "Compare baseline vs trained answers. Which is better? Score improvement 0-100.\n\nBaseline: $baselineAnswer\nTrained: $trainedAnswer\nExpected: $validationChallenges[0].expected",
+                "outputTo": "comparison" }
+            ],
+            "loop": { "type": "count", "max": 10 }
+          },
+          "outputTo": "validationResult" },
+        { "type": "condition", "check": "$validationResult.averageImprovement > 15",
+          "then": [
+            { "type": "command", "command": "genome/layer-register",
+              "params": {
+                "adapterPath": "$trainingResult.adapterPath",
+                "domain": "$domain",
+                "performance": "$validationResult"
+              }},
+            { "type": "emit", "event": "genome:layer:registered",
+              "data": "$trainingResult" }
+          ],
+          "else": [
+            { "type": "emit", "event": "genome:training:insufficient-improvement",
+              "data": "$validationResult" }
+          ]}
+      ]}
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 7200000 }
+}
+```
+
+**Validates**: End-to-end training pipeline, phenotype validation, quality gating
+
+---
+
+#### 8.2 Genome Composition Sentinel
+
+**Task**: Dynamically compose multiple LoRA layers and validate the combined phenotype
+
+**Why it validates**: Multi-layer composition, A/B testing, performance comparison
+
+```json
+{
+  "name": "genome-composer",
+  "description": "Find optimal LoRA layer combination for a task domain",
+  "steps": [
+    { "type": "command", "command": "genome/layer-list",
+      "params": { "domain": "$targetDomain", "baseModel": "llama3.1:8b" },
+      "outputTo": "availableLayers" },
+    { "type": "llm",
+      "prompt": "Given these available LoRA layers, suggest 3 different compositions to test for the domain '$targetDomain'. Consider complementary skills.\n\nLayers: $availableLayers",
+      "outputTo": "compositions" },
+    { "type": "sentinel", "await": true,
+      "definition": {
+        "name": "benchmark-composition",
+        "steps": [
+          { "type": "command", "command": "genome/compose",
+            "params": { "layers": "$currentComposition.layers", "method": "weighted" },
+            "outputTo": "composedModel" },
+          { "type": "llm",
+            "prompt": "Run benchmark: $benchmarkSuite",
+            "model": "$composedModel.modelId",
+            "outputTo": "benchmarkResult" }
+        ],
+        "loop": { "type": "count", "max": 3 }
+      },
+      "outputTo": "allBenchmarks" },
+    { "type": "llm",
+      "prompt": "Compare these 3 compositions and select the best one. Explain why.\n\n$allBenchmarks",
+      "outputTo": "bestComposition" },
+    { "type": "command", "command": "genome/set-active",
+      "params": { "personaId": "$PERSONA_ID", "composition": "$bestComposition.selected" }}
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 3600000 }
+}
+```
+
+**Validates**: Layer discovery, composition strategies, A/B benchmarking, genome activation
+
+---
+
+### Category 9: Academy — Plato's Training Arena
+
+Tasks that validate the competitive training environment where personas evolve.
+
+#### 9.1 Academy Challenge Sentinel
+
+**Task**: Create and run a competitive challenge between personas
+
+**Why it validates**: Multi-persona coordination, scoring, performance comparison
+
+```json
+{
+  "name": "academy-challenge",
+  "description": "Run competitive challenge: multiple personas solve same problems, compare results",
+  "steps": [
+    { "type": "llm",
+      "prompt": "Generate a $difficulty $domain challenge with 5 problems. Each needs: problem statement, expected solution, scoring rubric (0-100).",
+      "model": "claude-sonnet-4-5-20250929",
+      "outputTo": "challenge" },
+    { "type": "parallel",
+      "steps": [
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "contestant-a",
+            "steps": [
+              { "type": "llm", "prompt": "Solve: $challenge.problems",
+                "model": "ollama/llama3.1:8b+persona-a-genome",
+                "outputTo": "solutions" }
+            ],
+            "loop": { "type": "once" }
+          },
+          "outputTo": "contestantA" },
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "contestant-b",
+            "steps": [
+              { "type": "llm", "prompt": "Solve: $challenge.problems",
+                "model": "ollama/llama3.1:8b+persona-b-genome",
+                "outputTo": "solutions" }
+            ],
+            "loop": { "type": "once" }
+          },
+          "outputTo": "contestantB" }
+      ]},
+    { "type": "llm",
+      "prompt": "Judge these solutions against the rubric. Score each contestant.\n\nRubric: $challenge.rubric\nContestant A: $contestantA.solutions\nContestant B: $contestantB.solutions",
+      "model": "claude-sonnet-4-5-20250929",
+      "outputTo": "judgement" },
+    { "type": "command", "command": "data/create",
+      "params": {
+        "collection": "academy_results",
+        "data": { "challenge": "$challenge", "scores": "$judgement", "timestamp": "$NOW" }
+      }},
+    { "type": "emit", "event": "academy:challenge:complete", "data": "$judgement" }
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 600000 }
+}
+```
+
+**Validates**: Parallel contestant execution, AI judging, competitive scoring, result persistence
+
+---
+
+#### 9.2 Evolution Tournament Sentinel
+
+**Task**: Run multiple rounds of challenges, evolving genome compositions between rounds
+
+**Why it validates**: The full evolutionary loop — compete, identify gaps, train, compete again
+
+```json
+{
+  "name": "evolution-tournament",
+  "description": "Multi-round tournament with genome evolution between rounds",
+  "steps": [
+    { "type": "sentinel", "await": true,
+      "definition": { "name": "run-round", "steps": [
+        { "type": "sentinel", "await": true,
+          "definition": { "$ref": "academy-challenge" },
+          "outputTo": "roundResult" },
+        { "type": "llm",
+          "prompt": "Analyze performance gaps from this round. What specific skills need improvement?\n\n$roundResult",
+          "outputTo": "gapAnalysis" },
+        { "type": "condition", "check": "$gapAnalysis.gaps.length > 0",
+          "then": [
+            { "type": "sentinel", "await": true,
+              "definition": { "$ref": "self-training-dojo" },
+              "outputTo": "trainingResult" }
+          ]}
+      ], "loop": { "type": "once" }},
+      "outputTo": "roundWithTraining" }
+  ],
+  "loop": { "type": "count", "max": 5 },
+  "safety": { "timeoutMs": 14400000, "maxIterations": 5 }
+}
+```
+
+**Validates**: Multi-round evolution, gap-driven training, measurable improvement across rounds
+
+---
+
+### Category 10: Cross-Persona Coordination
+
+Tasks that validate sentinels working across persona boundaries.
+
+#### 10.1 Collaborative Build Sentinel
+
+**Task**: Multiple personas coordinate on a shared codebase via sentinels
+
+**Why it validates**: Inter-persona events, workspace isolation, conflict resolution
+
+```json
+{
+  "name": "collaborative-build",
+  "description": "Two personas work on different parts of same codebase, merge results",
+  "steps": [
+    { "type": "command", "command": "workspace/create",
+      "params": { "isolationType": "worktree", "branch": "feature/$taskName" },
+      "outputTo": "workspace" },
+    { "type": "parallel",
+      "steps": [
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "frontend-work",
+            "steps": [
+              { "type": "llm",
+                "prompt": "Implement the frontend component for: $taskDescription",
+                "tools": ["code/read", "code/edit", "code/write"],
+                "parseToolCalls": true,
+                "outputTo": "frontendResult" }
+            ],
+            "loop": { "type": "until", "check": "$frontendResult.compiles" }
+          },
+          "outputTo": "frontend" },
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "backend-work",
+            "steps": [
+              { "type": "llm",
+                "prompt": "Implement the backend API for: $taskDescription",
+                "tools": ["code/read", "code/edit", "code/write"],
+                "parseToolCalls": true,
+                "outputTo": "backendResult" }
+            ],
+            "loop": { "type": "until", "check": "$backendResult.compiles" }
+          },
+          "outputTo": "backend" }
+      ]},
+    { "type": "command", "command": "workspace/merge",
+      "params": { "branches": ["$frontend.branch", "$backend.branch"] },
+      "outputTo": "mergeResult" },
+    { "type": "condition", "check": "$mergeResult.conflicts.length > 0",
+      "then": [
+        { "type": "llm",
+          "prompt": "Resolve these merge conflicts:\n$mergeResult.conflicts",
+          "tools": ["code/edit"],
+          "parseToolCalls": true }
+      ]}
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 1800000 }
+}
+```
+
+**Validates**: Parallel persona work, workspace isolation, merge/conflict resolution
+
+---
+
+#### 10.2 Skill Transfer Sentinel
+
+**Task**: One persona teaches another by sharing perfected sentinels
+
+**Why it validates**: Sentinel export/import, cross-persona memory, skill inheritance
+
+```json
+{
+  "name": "skill-transfer",
+  "description": "Transfer a perfected sentinel from expert persona to learner",
+  "steps": [
+    { "type": "command", "command": "data/list",
+      "params": {
+        "collection": "sentinels",
+        "filter": { "createdBy": "$expertPersonaId", "successRate": { "$gte": 0.9 } },
+        "orderBy": [{"field": "runCount", "direction": "desc"}],
+        "limit": 5
+      },
+      "outputTo": "expertSentinels" },
+    { "type": "llm",
+      "prompt": "Which of these perfected sentinels would be most valuable for $learnerPersonaId based on their skill gaps?\n\nAvailable: $expertSentinels\nLearner gaps: $learnerGaps",
+      "outputTo": "recommendation" },
+    { "type": "command", "command": "sentinel/save",
+      "params": {
+        "definition": "$recommendation.selectedSentinel",
+        "tags": ["transferred", "from:$expertPersonaId"]
+      },
+      "outputTo": "savedSentinel" },
+    { "type": "command", "command": "memory/store",
+      "params": {
+        "personaId": "$learnerPersonaId",
+        "type": "sentinel",
+        "content": "$savedSentinel",
+        "tags": ["learned-skill", "$recommendation.domain"]
+      }},
+    { "type": "emit", "event": "persona:skill:transferred",
+      "data": "{ \"from\": \"$expertPersonaId\", \"to\": \"$learnerPersonaId\", \"skill\": \"$recommendation.domain\" }" }
+  ],
+  "loop": { "type": "once" }
+}
+```
+
+**Validates**: Sentinel persistence, cross-persona sharing, memory integration
+
+---
+
+### Category 11: Creative & Domain-General Tasks
+
+Tasks that prove sentinels work beyond coding — games, writing, research, anything.
+
+#### 11.1 Game Builder Sentinel
+
+**Task**: Build a complete playable game from a description
+
+**Why it validates**: Creative generation, multi-file output, iterative refinement, visual verification
+
+```json
+{
+  "name": "game-builder",
+  "description": "Build a complete browser game from description",
+  "steps": [
+    { "type": "llm",
+      "prompt": "Design a browser game: $gameDescription. Create a technical plan with file list, game mechanics, and rendering approach. Use HTML5 Canvas + vanilla JS.",
+      "outputTo": "gamePlan" },
+    { "type": "llm",
+      "prompt": "Implement the game based on this plan. Write all files.\n\n$gamePlan",
+      "tools": ["code/write", "code/read"],
+      "parseToolCalls": true,
+      "outputTo": "implementation" },
+    { "type": "command", "command": "code/shell/execute",
+      "params": { "command": "npx", "args": ["serve", "$outputDir"], "wait": false },
+      "outputTo": "server" },
+    { "type": "command", "command": "screenshot",
+      "params": { "url": "http://localhost:$server.port" },
+      "outputTo": "screenshot" },
+    { "type": "llm",
+      "prompt": "Look at this screenshot of the game. Does it look correct? What needs fixing?\n\n$screenshot",
+      "outputTo": "visualReview" },
+    { "type": "condition", "check": "$visualReview.needsFixes",
+      "then": [
+        { "type": "llm",
+          "prompt": "Fix these visual issues:\n$visualReview.fixes",
+          "tools": ["code/read", "code/edit"],
+          "parseToolCalls": true }
+      ]}
+  ],
+  "loop": { "type": "until", "check": "$visualReview.looksCorrect" },
+  "safety": { "maxIterations": 10, "timeoutMs": 600000 }
+}
+```
+
+**Validates**: Creative generation, visual feedback loop, iterative refinement, domain generality
+
+---
+
+#### 11.2 Research Paper Sentinel
+
+**Task**: Research a topic, synthesize findings, produce a structured paper
+
+**Why it validates**: Multi-source research, knowledge synthesis, long-form generation
+
+```json
+{
+  "name": "research-paper",
+  "description": "Research a topic and write a structured paper with citations",
+  "steps": [
+    { "type": "llm",
+      "prompt": "Create a research outline for: $topic\n\nInclude: Abstract, Introduction, 3-5 sections, Conclusion. For each section, list 2-3 specific questions to investigate.",
+      "outputTo": "outline" },
+    { "type": "sentinel", "await": true,
+      "definition": {
+        "name": "research-section",
+        "steps": [
+          { "type": "command", "command": "code/search",
+            "params": { "pattern": "$currentSection.keywords", "glob": "**/*.{ts,md,json}" },
+            "outputTo": "codebaseEvidence" },
+          { "type": "llm",
+            "prompt": "Write section '$currentSection.title' using this evidence:\n$codebaseEvidence\n\nMaintain academic tone. Include code examples where relevant.",
+            "outputTo": "sectionDraft" }
+        ],
+        "loop": { "type": "count", "max": "$outline.sections.length" }
+      },
+      "outputTo": "allSections" },
+    { "type": "llm",
+      "prompt": "Synthesize these sections into a cohesive paper. Write abstract and conclusion. Ensure consistent voice and logical flow.\n\nSections:\n$allSections",
+      "model": "claude-opus-4-6",
+      "outputTo": "fullPaper" },
+    { "type": "command", "command": "code/write",
+      "params": { "path": "$outputPath/$topic.md", "content": "$fullPaper" }}
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 900000 }
+}
+```
+
+**Validates**: Multi-section composition, research synthesis, long-form coherent output
+
+---
+
+### Category 12: Marketplace Readiness
+
+Tasks that validate genome layers can be packaged, shared, and discovered.
+
+#### 12.1 Genome Export/Import Sentinel
+
+**Task**: Export a persona's trained genome layers, import into a fresh persona
+
+**Why it validates**: Portability, serialization, cross-persona compatibility
+
+```json
+{
+  "name": "genome-portability",
+  "description": "Export trained genome, import into new persona, validate it works",
+  "steps": [
+    { "type": "command", "command": "genome/export",
+      "params": { "personaId": "$sourcePersonaId", "outputPath": "/tmp/genome-export" },
+      "outputTo": "exportResult" },
+    { "type": "command", "command": "genome/import",
+      "params": { "personaId": "$targetPersonaId", "importPath": "$exportResult.path" },
+      "outputTo": "importResult" },
+    { "type": "llm",
+      "prompt": "Generate 10 domain-specific test questions for: $exportResult.domain",
+      "outputTo": "testQuestions" },
+    { "type": "parallel",
+      "steps": [
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "test-source",
+            "steps": [
+              { "type": "llm", "prompt": "$testQuestions",
+                "model": "ollama/llama3.1:8b+$sourcePersonaId-genome",
+                "outputTo": "sourceAnswers" }
+            ],
+            "loop": { "type": "once" }
+          },
+          "outputTo": "sourceResults" },
+        { "type": "sentinel", "await": true,
+          "definition": {
+            "name": "test-target",
+            "steps": [
+              { "type": "llm", "prompt": "$testQuestions",
+                "model": "ollama/llama3.1:8b+$targetPersonaId-genome",
+                "outputTo": "targetAnswers" }
+            ],
+            "loop": { "type": "once" }
+          },
+          "outputTo": "targetResults" }
+      ]},
+    { "type": "llm",
+      "prompt": "Compare source and target persona answers. They should be equivalent quality since they share the same genome.\n\nSource: $sourceResults\nTarget: $targetResults",
+      "outputTo": "comparison" },
+    { "type": "condition", "check": "$comparison.qualityMatch > 0.85",
+      "then": [
+        { "type": "emit", "event": "genome:portability:validated" }
+      ],
+      "else": [
+        { "type": "emit", "event": "genome:portability:degraded",
+          "data": "$comparison" }
+      ]}
+  ],
+  "loop": { "type": "once" },
+  "safety": { "timeoutMs": 600000 }
+}
+```
+
+**Validates**: Genome serialization, cross-persona import, quality preservation
+
+---
+
+### Updated Validation Matrix
+
+| Task | SOTA | Medium | Local | Script | Memory | Events | Nested | Loop | Genome | Academy |
+|------|------|--------|-------|--------|--------|--------|--------|------|--------|---------|
+| **Category 1-6 (Original)** |
+| Codebase Migration | ✓ | | | | | ✓ | ✓ | until | | |
+| Security Audit | ✓ | | | | ✓ | | | once | | |
+| PR Review | | ✓ | | | | ✓ | ✓ | once | | |
+| Docs Generator | | ✓ | | | | ✓ | | event | | |
+| Commit Message | | | ✓ | | | ✓ | | once | | |
+| Test Generator | | | ✓ | | | | | until | | |
+| Log Analyzer | | | ✓ | | | ✓ | | continuous | | |
+| Build Pipeline | | | | ✓ | | ✓ | | once | | |
+| Health Monitor | | | | ✓ | ✓ | ✓ | | continuous | | |
+| Self-Improving Builder | | ✓ | | | ✓ | ✓ | | until | | |
+| Task Delegation | | ✓ | | | | ✓ | | continuous | | |
+| Research Report | ✓ | ✓ | | | | | | once | | |
+| **Category 7: Self-Directed Learning** |
+| Skill Gap Detection | | ✓ | | | ✓ | ✓ | | continuous | | |
+| Self-Training Dojo | ✓ | | ✓ | | ✓ | ✓ | ✓ | once | ✓ | ✓ |
+| **Category 8: Genome Integration** |
+| LoRA Training Pipeline | ✓ | | ✓ | | | ✓ | ✓ | once | ✓ | |
+| Genome Composition | ✓ | | ✓ | | | | ✓ | once | ✓ | |
+| **Category 9: Academy (Plato)** |
+| Academy Challenge | ✓ | | ✓ | | | ✓ | ✓ | once | ✓ | ✓ |
+| Evolution Tournament | ✓ | | ✓ | | ✓ | ✓ | ✓ | count | ✓ | ✓ |
+| **Category 10: Cross-Persona** |
+| Collaborative Build | ✓ | | | | | ✓ | ✓ | until | | |
+| Skill Transfer | | ✓ | | | ✓ | ✓ | | once | | |
+| **Category 11: Domain-General** |
+| Game Builder | ✓ | | | | | | | until | | |
+| Research Paper | ✓ | ✓ | | | | | ✓ | once | | |
+| **Category 12: Marketplace** |
+| Genome Export/Import | | | ✓ | | | ✓ | ✓ | once | ✓ | |
+
 ### Success Criteria
 
 Each Olympic task should:
 
 1. **Complete without manual intervention** (except escalations)
-2. **Produce verifiable output** (files, data, events)
+2. **Produce verifiable output** (files, data, events, trained adapters)
 3. **Handle errors gracefully** (retry, escalate, or fail cleanly)
 4. **Emit appropriate events** (for monitoring and composition)
 5. **Stay within safety bounds** (timeouts, iteration limits)
 6. **Integrate with memory** (where applicable)
+7. **Validate genome improvements** (before/after phenotype comparison where applicable)
+8. **Demonstrate self-direction** (persona identifies needs without human prompting)
 
-When all 12 tasks pass, the sentinel architecture is validated end-to-end.
+When all 24 tasks pass, the sentinel architecture is validated as a complete evolutionary system — not just an execution engine, but the metabolism of autonomous, self-improving personas.
 
 ---
 
-## Implementation Status: TypeScript + Rust Layered Architecture
+## Implementation Status: Rust-Centric Architecture
 
-The sentinel system is implemented across two complementary layers:
+**Design principle**: Rust (`continuum-core`) is where the real execution lives. TypeScript provides wrapping, CLI commands, and portability to browser/server environments.
 
-### Layer 1: TypeScript — Logic, Planning, Tool Use
+### Primary Layer: Rust — Pipeline Execution, Process Isolation, Concurrency
 
-The TypeScript layer handles **what** to do and **how** to reason about it:
+The Rust `SentinelModule` in `continuum-core` handles ALL pipeline execution:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `SentinelDefinition.ts` | ~487 | JSON-serializable definitions, `SentinelBuilder` fluent builder, validation |
-| `Sentinel.ts` | ~178 | Base classes (`ScriptSentinel`, `AISentinel`), `SentinelRegistry` |
-| `AgentSentinel.ts` | ~817 | Full tool-calling autonomous agent (Claude Code-level capabilities) |
-| `TaskSentinel.ts` | ~596 | Recursive task execution with tree plans |
-| `OrchestratorSentinel.ts` | ~627 | LLM-powered planning (Think→Act→Observe loop) |
-| `BuildSentinel.ts` | ~875 | Agentic compilation with pattern matching + LLM auto-fix |
-| `VisualSentinel.ts` | ~200 | Screenshot feedback via Puppeteer |
-| `ModelProvider.ts` | ~465 | Model selection (LOCAL, OLLAMA, ANTHROPIC, OPENAI) |
-| `SentinelWorkspace.ts` | ~350 | Git isolation (branch/worktree/sandbox) |
-| `SentinelExecutionLog.ts` | ~500 | Structured execution logging |
-
-**Key TypeScript Classes:**
-
-```typescript
-// 1. SentinelBuilder — Fluent definition creation
-const sentinel = SentinelBuilder
-  .build('npm run build')
-  .name('typescript-build')
-  .set('maxAttempts', 5)
-  .set('useLLM', true)
-  .toDefinition();
-
-// 2. AgentSentinel — Full autonomous agent with tools
-const agent = new AgentSentinel({
-  workingDir: '/path/to/project',
-  maxIterations: 50,
-  model: { capacity: ModelCapacity.LARGE, provider: ModelProvider.ANTHROPIC },
-});
-const result = await agent.execute('Create a snake game in TypeScript');
-
-// 3. OrchestratorSentinel — LLM planning loop
-const orchestrator = new OrchestratorSentinel({
-  workingDir: '/path/to/project',
-  capacity: ModelCapacity.MEDIUM,
-});
-const result = await orchestrator.execute('Fix all TypeScript errors and commit');
-
-// 4. TaskSentinel — Structured task trees
-const taskSentinel = new TaskSentinel({ workingDir: '...', maxDepth: 5 });
-await taskSentinel.execute(createSnakeGamePlan('./output'));
-
-// 5. BuildSentinel — Agentic build fixing
-const buildSentinel = new BuildSentinel({
-  command: 'npm run build',
-  workingDir: '...',
-  maxAttempts: 5,
-  useLLM: true,
-});
-const result = await buildSentinel.run();
+```
+workers/continuum-core/src/modules/sentinel/
+├── mod.rs              # SentinelModule: command routing, handle management, concurrency
+├── types.rs            # PipelineStep, Pipeline, SentinelHandle, ExecutionContext (ts-rs exports)
+├── executor.rs         # Pipeline executor: step dispatch, variable propagation, logging
+├── interpolation.rs    # Variable interpolation: {{steps.0.output}}, {{input.x}}, {{env.HOME}}
+├── logs.rs             # Log stream management: list, read, tail
+└── steps/
+    ├── mod.rs           # Step dispatcher
+    ├── shell.rs         # Shell step: process isolation, kill_on_drop, streaming
+    ├── llm.rs           # LLM step: routes to AIProviderModule via ModuleRegistry
+    ├── command.rs        # Command step: routes any command via ModuleRegistry
+    ├── condition.rs      # Condition step: evaluates {{}} expressions, then/else branching
+    └── loop_step.rs     # Loop step: count-based iteration (until/while/continuous planned)
 ```
 
-**Tool Definitions (AgentSentinel):**
-- `read_file` — Read with line numbers
-- `write_file` — Create/overwrite with directory creation
-- `edit_file` — Search/replace (must be unique)
-- `search_files` — Regex search with glob filtering
-- `list_files` — Directory tree
-- `run_command` — Shell execution
-- `git_status` / `git_diff` — Git operations
-- `complete` / `give_up` — Termination signals
+**Implemented Pipeline Step Types:**
 
-### Layer 2: Rust — Process Isolation, Streaming, Concurrency
-
-The Rust `SentinelModule` in `continuum-core` handles **execution** with proper isolation:
-
-```rust
-// workers/continuum-core/src/modules/sentinel.rs (~738 lines)
-
-pub struct SentinelModule {
-    sentinels: Arc<DashMap<String, RunningSentinel>>,
-    workspaces_dir: RwLock<PathBuf>,
-    max_concurrent: usize,  // Default: 4
-    bus: RwLock<Option<Arc<MessageBus>>>,  // For event emission
-}
-```
-
-**Rust Commands:**
-| Command | Purpose |
-|---------|---------|
-| `sentinel/run` | Start a process with isolation |
-| `sentinel/status` | Get handle state |
-| `sentinel/list` | List all handles |
-| `sentinel/cancel` | Cancel running sentinel |
-| `sentinel/logs/list` | List log streams for handle |
-| `sentinel/logs/read` | Read log stream (offset/limit) |
-| `sentinel/logs/tail` | Tail last N lines |
+| Step Type | Status | Description |
+|-----------|--------|-------------|
+| `Shell` | ✅ | Process execution with `kill_on_drop` isolation, streaming, timeout |
+| `Llm` | ✅ | LLM inference via `registry.route_command("ai/generate")` — no IPC deadlock |
+| `Command` | ✅ | Any command via `registry.route_command()` — DataModule, CodeModule, etc. |
+| `Condition` | ✅ | `if`/`then`/`else` branching with expression evaluation |
+| `Loop` | ✅ (partial) | Count-based loops. `until`/`while`/`continuous`/`event` not yet implemented |
+| `Parallel` | ❌ | Planned: `tokio::join!` on step futures |
+| `Emit` | ❌ | Planned: fire MessageBus events for cross-sentinel composition |
+| `Sentinel` | ❌ | Planned: recursive sentinel spawning |
+| `Watch` | ❌ | Planned: block until classified output matches pattern |
 
 **Key Rust Capabilities:**
 1. **Process Isolation**: Child processes with `kill_on_drop` — crashes don't cascade
-2. **Non-Blocking**: Heavy processes (Xcode, cargo) don't block the runtime
-3. **Concurrent**: Multiple sentinels in parallel with configurable limit
+2. **Module-to-Module Calls**: LLM and Command steps call modules directly via `ModuleRegistry` — no IPC round-trips, no deadlocks
+3. **Concurrent**: Multiple sentinels in parallel with configurable limit (default: 4)
 4. **Real-Time Streaming**: Logs streamed via MessageBus events (`sentinel:{handle}:log`)
-5. **Timeout Handling**: Per-sentinel timeout with graceful cancellation
-6. **Status Tracking**: `Running`, `Completed`, `Failed`, `Cancelled`
+5. **Variable Interpolation**: Step outputs feed into subsequent steps (`{{steps.0.output}}`, `{{input.x}}`)
+6. **ts-rs Exports**: All types auto-generate TypeScript definitions for type-safe CLI integration
+7. **Timeout + Cancellation**: Per-sentinel timeout with graceful SIGTERM, per-step tracking
+
+**Rust Commands:**
+
+| Command | Purpose |
+|---------|---------|
+| `sentinel/run` | Execute pipeline or shell command with isolation |
+| `sentinel/status` | Get handle state (Running/Completed/Failed/Cancelled) |
+| `sentinel/list` | List all active handles |
+| `sentinel/cancel` | Cancel running sentinel |
+| `sentinel/logs/list` | List log streams for a handle |
+| `sentinel/logs/read` | Read log stream with offset/limit |
+| `sentinel/logs/tail` | Tail last N lines of a stream |
+
+### Secondary Layer: TypeScript — Wrapping, CLI, Portability
+
+TypeScript provides the command interface and definition tooling:
+
+| File | Purpose |
+|------|---------|
+| `system/sentinel/SentinelDefinition.ts` | JSON-serializable definitions, `SentinelBuilder` fluent API, validation |
+| `system/sentinel/ModelProvider.ts` | Model selection abstraction (LOCAL, OLLAMA, ANTHROPIC, OPENAI) |
+| `commands/sentinel/run/` | CLI command wrapping Rust `sentinel/run` |
+| `commands/sentinel/status/` | CLI command wrapping Rust `sentinel/status` |
+| `commands/sentinel/list/` | CLI command wrapping Rust `sentinel/list` |
+| `commands/sentinel/save/` | Save sentinel definitions to database |
+| `commands/sentinel/load/` | Load saved sentinel definitions |
+| `commands/sentinel/logs/*` | CLI wrappers for log commands |
 
 **Event Flow:**
 ```
-TypeScript calls: Commands.execute('sentinel/run', { cmd: 'npm', args: ['run', 'build'] })
+TypeScript calls: Commands.execute('sentinel/run', { type: 'pipeline', steps: [...] })
                         ↓
-              Rust SentinelModule spawns child process
+              Rust SentinelModule executes pipeline
+                        ↓
+              Each step: Shell → spawn process | LLM → route to ai/generate | Command → route to module
                         ↓
               Logs streamed via: sentinel:{handle}:log events
                         ↓
-              TypeScript can: Events.subscribe('sentinel:{handle}:log', ...)
-                        ↓
               Completion via: sentinel:{handle}:status event
+                        ↓
+              TypeScript receives result with step traces
 ```
 
-### The Integration Pattern
+---
 
-**Current State**: TypeScript sentinels mostly use `execSync` which blocks.
+## TODO: Implementation Roadmap
 
-**Target State**: TypeScript sentinels dispatch heavy work to Rust:
+### Phase A: Complete the Rust Pipeline Engine (`continuum-core`)
 
-```typescript
-// Instead of blocking execSync:
-const output = execSync('npm run build', { cwd: workingDir }); // ❌ Blocks
+These are the foundation — everything else builds on them.
 
-// Use Rust SentinelModule for isolation:
-const handle = await Commands.execute('sentinel/run', {
-  type: 'build',
-  cmd: 'npm',
-  args: ['run', 'build'],
-  workingDir,
-});
+- [ ] **`until` loop type** — Run pipeline until condition is true (e.g., `"check": "{{steps.build.exit_code}} == 0"`)
+- [ ] **`while` loop type** — Run pipeline while condition is true
+- [ ] **`continuous` loop type** — Keep running with configurable interval (e.g., health monitoring every 60s)
+- [ ] **`event` loop type** — Re-run pipeline on each MessageBus event
+- [ ] **`Parallel` step type** — Execute independent steps concurrently via `tokio::join!`
+- [ ] **`Emit` step type** — Fire MessageBus events for cross-sentinel composition
+- [ ] **`Sentinel` step type** — Spawn nested sentinel (recursive), with `await` option
+- [ ] **`Watch` step type** — Block until classified output matches pattern (regex rules on streams)
+- [ ] **Named step outputs** — `outputTo: "buildResult"` so later steps can reference `{{buildResult.exitCode}}`
+- [ ] **Expression evaluator** — Evaluate `{{steps.0.exit_code}} == 0` and `{{buildResult.success}}` in condition/loop checks
 
-// Subscribe to logs
-Events.subscribe(`sentinel:${handle.id}:log`, (log) => {
-  console.log(log.chunk);
-});
+### Phase B: Sentinel Lifecycle & Persona Integration
 
-// Wait for completion
-const status = await Commands.execute('sentinel/status', { handle: handle.id });
-```
+Wire sentinels into the persona cognitive cycle.
 
-**Benefits of Rust Layer:**
-- Process crashes isolated (no Node.js crash)
-- Non-blocking (other commands continue)
-- Real-time log streaming (UI can show progress)
-- Proper cancellation (SIGTERM, cleanup)
-- Memory isolation (large builds don't bloat Node heap)
+- [ ] **SentinelEntity persistence** — Save/load sentinel definitions via `data/create`/`data/list` on `sentinels` collection
+- [ ] **`sentinel/save` and `sentinel/load` integration** — Wire CLI commands to data layer
+- [ ] **Persona ownership** — Every sentinel has a `parentPersonaId`, enforced at creation
+- [ ] **Escalation → persona inbox** — When sentinel hits `unfamiliar`/`approval_needed`, create inbox item
+- [ ] **Memory integration** — Successful sentinels stored as memories (`memory/store` with type `sentinel`)
+- [ ] **Memory recall** — Persona recalls sentinel patterns when facing similar tasks
+- [ ] **Triggers** — `immediate`, `event`, `schedule` (cron), `manual` trigger types
+- [ ] **Live step CRUD** — Add/update/remove steps on a running sentinel (next iteration picks up changes)
 
-### Spectrum Revisited: Implementation Mapping
+### Phase C: Genome Integration
 
-```
-Pure Script              Hybrid                    Full LLM
-    │                      │                          │
-    ▼                      ▼                          ▼
-Rust sentinel/run →   TS BuildSentinel   →   TS AgentSentinel
-(no AI, just exec)    (pattern + LLM fix)    (full tool calling)
-```
+Sentinels orchestrate the LoRA training pipeline.
 
-| Implementation | AI Level | Use Case |
-|----------------|----------|----------|
-| `sentinel/run` (Rust) | None | Raw process execution with isolation |
-| `BuildSentinel` (TS) | Hybrid | Compile → classify → fix (LLM if stuck) |
-| `TaskSentinel` (TS) | None/Hybrid | Tree-structured plans (may include LLM steps) |
-| `OrchestratorSentinel` (TS) | Full | Think→Act→Observe loop with LLM planning |
-| `AgentSentinel` (TS) | Full | Autonomous agent with all tools |
+- [ ] **Training data packaging** — Sentinel step that exports challenge failures as JSONL training data
+- [ ] **LoRA training orchestration** — Sentinel step that triggers fine-tuning jobs (local PEFT or remote API)
+- [ ] **Phenotype validation** — Sentinel step that benchmarks before/after performance on same challenges
+- [ ] **Quality gating** — Only register adapters that show measurable improvement
+- [ ] **Genome layer registration** — Register validated adapters in `genome_layers` collection
+- [ ] **Dynamic composition** — Compose multiple layers and activate on persona via `genome/set-active`
+- [ ] **LRU paging integration** — Automatically evict least-used adapters under memory pressure
 
-### What's Working Now
+### Phase D: Academy (Plato's Training Arena)
 
-**Fully Implemented:**
-- ✅ Rust SentinelModule with process isolation and streaming
-- ✅ TypeScript SentinelDefinition, SentinelBuilder, validation
-- ✅ BuildSentinel with pattern matching + LLM auto-fix
-- ✅ OrchestratorSentinel with Think→Act→Observe
-- ✅ AgentSentinel with full tool calling
-- ✅ TaskSentinel with recursive task trees
-- ✅ VisualSentinel for screenshot feedback
-- ✅ SentinelWorkspace for git isolation
-- ✅ ModelProvider for multi-provider inference
-- ✅ CLI commands (`sentinel/run`, `sentinel/list`, `sentinel/status`, etc.)
+The selection pressure that drives genome evolution.
 
-**Integration Gaps:**
-- 🚧 TypeScript sentinels should use Rust `sentinel/run` instead of `execSync`
-- 🚧 SentinelEntity persistence not yet integrated with data layer
-- 🚧 Persona-sentinel ownership not yet enforced
-- 🚧 Inbox escalation not yet wired
-- 🚧 Memory/recall integration for skill refinement
+- [ ] **Challenge generation** — LLM generates domain-specific challenges with rubrics
+- [ ] **Multi-persona competition** — Multiple personas solve same challenges in parallel
+- [ ] **AI judging** — LLM evaluates solutions against rubrics, produces scores
+- [ ] **Performance gap analysis** — Identify specific skill gaps from competition results
+- [ ] **Gap-driven training** — Automatically create training sentinels for identified gaps
+- [ ] **Evolution tournament** — Multi-round competition with training between rounds
+- [ ] **Academy result persistence** — Store competition results for historical tracking
+- [ ] **Competitive ranking** — Track persona rankings across competitions
 
-### Migration Path
+### Phase E: Marketplace & Distribution
 
-**Phase 1**: Replace `execSync` calls in TypeScript sentinels with `sentinel/run`:
-```typescript
-// BuildSentinel, TaskSentinel, OrchestratorSentinel
-// Change from execSync to Commands.execute('sentinel/run', ...)
-```
+Share evolved capabilities across the community.
 
-**Phase 2**: Wire SentinelEntity to data layer:
-```typescript
-// Save successful sentinels to longterm.db
-await Commands.execute('data/create', {
-  collection: 'sentinels',
-  data: sentinelDefinition,
-});
-```
+- [ ] **Genome export** — Package persona's LoRA layers + metadata as portable archive
+- [ ] **Genome import** — Import genome archive into a new persona
+- [ ] **Cross-persona compatibility validation** — Verify imported layers work on target persona's base model
+- [ ] **Layer discovery** — Query available layers by domain, base model, performance rating
+- [ ] **P2P sharing** — Distribute genome layers across mesh network
+- [ ] **Version control** — Docker-like tags for adapter versions, rollback capability
+- [ ] **Quality metrics** — Community ratings, download counts, performance benchmarks
 
-**Phase 3**: Implement persona ownership:
-```typescript
-interface SentinelSpawn {
-  parentPersonaId: UUID;
-  definition: SentinelDefinition;
-  reportTo: 'inbox' | 'silent';
-}
-```
+### Phase F: Advanced Capabilities
 
-**Phase 4**: Wire escalation to persona inbox:
-```typescript
-// When sentinel encounters unfamiliar error
-await Commands.execute('inbox/add', {
-  personaId: parentPersonaId,
-  type: 'escalation',
-  source: 'sentinel',
-  content: { sentinelId, error, context },
-});
-```
+Long-term vision items.
+
+- [ ] **Auto-compaction** — At 95% context utilization, auto-summarize sentinel context
+- [ ] **Permission gating** — Approval dialogs for sensitive operations (file write, shell exec, delete)
+- [ ] **Agent specialization modes** — `full`, `readonly`, `sandboxed` modes per sentinel
+- [ ] **LSP integration** — Surface language server diagnostics as sentinel step output
+- [ ] **Adaptive compute (LoopLM)** — Variable reasoning depth based on task complexity
+- [ ] **Self-task generation** — Personas create tasks for themselves during idle time
+- [ ] **Activity ambient state** — Temperature/pressure-based emergent coordination between personas
 
 ---
 
 ## References
 
-- [OpenCode (original, archived)](https://github.com/opencode-ai/opencode) - Now continued as Crush
-- [OpenCode (active)](https://github.com/anomalyco/opencode) - Current development
-- [OpenCode Documentation](https://opencode.ai/docs/)
-- [Our Rust SentinelModule](../workers/continuum-core/src/modules/sentinel.rs) - Process isolation layer
-- [SentinelDefinition](../system/sentinel/SentinelDefinition.ts) - JSON schema
-- [SentinelWorkspace](../system/sentinel/SentinelWorkspace.ts) - Git isolation
-- [AgentSentinel](../system/sentinel/AgentSentinel.ts) - Full autonomous agent
-- [BuildSentinel](../system/sentinel/BuildSentinel.ts) - Agentic build fixing
-- [OrchestratorSentinel](../system/sentinel/OrchestratorSentinel.ts) - LLM planning loop
-- [TaskSentinel](../system/sentinel/TaskSentinel.ts) - Recursive task execution
+### Implementation
+
+- [Rust SentinelModule](../workers/continuum-core/src/modules/sentinel/) — Pipeline executor, process isolation, concurrency
+- [SentinelDefinition.ts](../system/sentinel/SentinelDefinition.ts) — JSON schema and SentinelBuilder
+- [ModelProvider.ts](../system/sentinel/ModelProvider.ts) — Multi-provider model selection
+
+### Design Documents
+
+- [SENTINEL-PIPELINE-ARCHITECTURE.md](SENTINEL-PIPELINE-ARCHITECTURE.md) — Rust pipeline interpreter design
+- [SENTINEL-LOGGING-PLAN.md](SENTINEL-LOGGING-PLAN.md) — Logging strategy
+- [DYNAMIC-GENOME-ARCHITECTURE.md](genome/DYNAMIC-GENOME-ARCHITECTURE.md) — PersonaGenome + composable LoRA layers
+- [COMPOSABLE-EXPERTISE.md](COMPOSABLE-EXPERTISE.md) — Docker model for LoRA layer stacking
+- [LORA-TRAINING-STRATEGY.md](LORA-TRAINING-STRATEGY.md) — Multi-provider training pipeline
+- [ACADEMY_ARCHITECTURE.md](personas/ACADEMY_ARCHITECTURE.md) — Plato's Academy competitive training
+- [RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) — Recipe→Sentinel unification
+- [SENTINEL-AI-INTEGRATION.md](personas/SENTINEL-AI-INTEGRATION.md) — Sentinel + persona convergence vision
+
+### External
+
+- [OpenCode](https://github.com/anomalyco/opencode) — AI coding agent (comparison reference)
