@@ -11,7 +11,7 @@ import type { RAGContext } from '../../../../../system/rag/shared/RAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for rag/inspect command
+ * Inspect the RAG context that would be built for a given persona in a specific room, including decision-point analysis and learning mode diagnostics.
  */
 export interface RAGInspectParams extends CommandParams {
   /** Room/context ID to build RAG for */

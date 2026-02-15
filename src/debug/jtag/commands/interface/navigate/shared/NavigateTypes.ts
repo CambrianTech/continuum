@@ -1,24 +1,5 @@
 // ISSUES: 0 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
-/**
- * Navigate Command - Shared Types for Browser Navigation
- * 
- * Minimal, focused types for URL navigation across browser/server contexts.
- * Follows the elegant pattern of screenshot command - simple params and results
- * with clean inheritance from CommandParams/CommandResult base classes.
- * 
- * DESIGN PRINCIPLES:
- * - Object.assign() in constructor for clean initialization
- * - Optional properties with sensible defaults
- * - Environment-aware results with timestamps
- * - Type safety without overkill complexity
- * 
- * USAGE:
- * - Browser: Direct window.location navigation
- * - Server: Delegates to browser context
- * - Symmetric interface across both contexts
- */
-
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
@@ -27,6 +8,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 
 export type NavigateTarget = '_blank' | '_self' | '_parent' | '_top' | 'webview' | string;
 
+/** Navigate the browser to a URL. */
 export interface NavigateParams extends CommandParams {
   readonly url?: string;  // Optional - if not provided, triggers location.reload()
   readonly timeout?: number;

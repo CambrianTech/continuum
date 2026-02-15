@@ -10,7 +10,7 @@ import type { CommandParams, CommandResult, CommandInput} from '@system/core/typ
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for persona/learning/capture-interaction command
+ * Captures an AI persona's input/output pair during task execution, accumulating training examples in-memory for batch LoRA micro-tuning within a specified learning domain.
  */
 export interface GenomeCaptureInteractionParams extends CommandParams {
   /**

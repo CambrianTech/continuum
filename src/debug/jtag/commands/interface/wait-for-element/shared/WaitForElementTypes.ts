@@ -4,6 +4,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Wait for a DOM element to appear, matching a CSS selector. */
 export interface WaitForElementParams extends CommandParams {
   readonly selector: string;
   readonly timeout?: number;

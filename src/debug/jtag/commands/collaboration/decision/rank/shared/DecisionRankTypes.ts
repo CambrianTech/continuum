@@ -1,12 +1,8 @@
-/**
- * decision/rank - Types
- * Submit ranked-choice vote for a decision proposal
- */
-
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '@system/core/types/JTAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/** Submit a ranked-choice vote on a decision proposal, using Condorcet pairwise comparison to determine the winner. */
 export interface DecisionRankParams extends CommandParams {
   proposalId: UUID;
   rankedChoices: string[]; // Array of option IDs in preference order (first = most preferred)

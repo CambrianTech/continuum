@@ -2,6 +2,7 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../syst
 import type { UserEntity } from '../../../../system/data/entities/UserEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Resolve a session to its owning UserEntity, defaulting to the caller's session or targeting a specific one. */
 export interface SessionGetUserParams extends CommandParams {
   /**
    * Optional: The session ID to look up

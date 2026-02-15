@@ -10,7 +10,7 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for task/complete command
+ * Marks a task as completed or failed, recording its output, error details, and performance metrics such as tokens used, latency, and confidence.
  */
 export interface TaskCompleteParams extends CommandParams {
   /**

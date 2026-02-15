@@ -10,7 +10,7 @@ import type { ModelCapabilities, ModelInfo } from '../../list/shared/ModelListTy
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Model find params
+ * Find the best available AI model matching a set of capability requirements, with optional fallback to the closest match.
  */
 export interface ModelFindParams extends CommandParams {
   // Capability requirements

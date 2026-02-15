@@ -68,7 +68,7 @@ export interface ModelInfo {
 }
 
 /**
- * Model list params
+ * Enumerate all available AI models across providers, with optional filtering by capabilities, provider, and availability.
  */
 export interface ModelListParams extends CommandParams {
   // Optional filtering

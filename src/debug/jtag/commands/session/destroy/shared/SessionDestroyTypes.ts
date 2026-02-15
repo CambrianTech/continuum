@@ -8,9 +8,7 @@ import type { JTAGContext, JTAGPayload, CommandParams, CommandResult, CommandInp
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
-/**
- * Parameters for session destroy command
- */
+/** Tear down a user session and clean up all associated resources, optionally recording the reason for destruction. */
 export interface SessionDestroyParams extends CommandParams {
   context: JTAGContext;
   sessionId: UUID;

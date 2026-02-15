@@ -1,6 +1,7 @@
 import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
+/** Return aggregate statistics about all log files, including total file count and combined size in megabytes. */
 export interface LogsStatsParams extends CommandParams {}
 export interface LogsStatsResult { context: JTAGContext; sessionId: UUID; success: boolean; error?: string; totalFiles: number; totalSizeMB: number; }
 

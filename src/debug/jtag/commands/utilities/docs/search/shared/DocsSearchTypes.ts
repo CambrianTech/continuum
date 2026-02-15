@@ -2,6 +2,9 @@ import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/**
+ * Searches across all project documentation files for lines matching a text pattern, returning matching lines with their document name, line number, and content.
+ */
 export interface DocsSearchParams extends CommandParams {
   pattern: string;
   caseSensitive?: boolean;

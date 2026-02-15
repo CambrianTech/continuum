@@ -4,6 +4,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Type text into a form field or input element. */
 export interface TypeParams extends CommandParams {
   readonly selector: string;
   readonly text: string;

@@ -11,7 +11,7 @@ import type { TaskDomain, TaskType, TaskPriority } from '@system/data/entities/T
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for task/create command
+ * Creates a new task and assigns it to a PersonaUser, specifying domain, type, priority, optional deadline, dependencies, and a human-readable description of the work to be done.
  */
 export interface TaskCreateParams extends CommandParams {
   /**

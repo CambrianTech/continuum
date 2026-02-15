@@ -2,6 +2,7 @@ import type { CommandParams, CommandResult, CommandInput} from '@system/core/typ
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/** Analyze a chat room for duplicate messages, timestamp anomalies, and data integrity issues. */
 export interface ChatAnalyzeParams extends CommandParams {
   /** Room ID (UUID) to analyze */
   roomId: UUID;

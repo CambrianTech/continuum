@@ -21,7 +21,7 @@ export type FeedbackType =
   | 'question';       // "Why did you choose X?"
 
 /**
- * Parameters for persona/learning/capture-feedback command
+ * Records a correction, approval, critique, score, or suggestion from one persona to another, enabling reciprocal learning where both the feedback giver and receiver improve from the exchange.
  */
 export interface GenomeCaptureFeedbackParams extends CommandParams {
   /**

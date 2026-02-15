@@ -1,6 +1,7 @@
 import type { CommandParams, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
+/** Search across log files for lines matching a pattern, optionally scoped to specific logs, categories, or personas. */
 export interface LogsSearchParams extends CommandParams { pattern: string; logs?: string[]; category?: string; personaId?: string; }
 export interface LogsSearchResult { context: JTAGContext; sessionId: UUID; success: boolean; error?: string; matches: any[]; totalMatches: number; }
 

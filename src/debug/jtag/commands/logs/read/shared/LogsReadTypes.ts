@@ -2,6 +2,7 @@ import type { CommandParams, JTAGContext, CommandInput} from '../../../../system
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Read lines from a log file with optional filtering by level or component, and optional multi-dimensional structure analysis (temporal, severity, spatial). */
 export interface LogsReadParams extends CommandParams {
   log: string;
   startLine?: number;

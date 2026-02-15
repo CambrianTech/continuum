@@ -8,7 +8,7 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../../s
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for ai/embedding/generate command
+ * Generate vector embeddings from text or code for use in semantic search, similarity matching, and RAG retrieval.
  */
 export interface EmbeddingGenerateParams extends CommandParams {
   /** Text to generate embedding for (or array of texts) */

@@ -11,7 +11,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
- * Parameters for bag-of-words command
+ * Orchestrate a multi-persona conversation in a chat room, selecting which AI personas participate and how they take turns responding.
  */
 export interface BagOfWordsParams extends CommandParams {
   /**

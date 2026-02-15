@@ -419,7 +419,8 @@ class CommandSchemaGenerator {
     const before = content.substring(0, interfaceStart);
 
     // Find the LAST (nearest) JSDoc block before the interface
-    const jsdocBlocks = [...before.matchAll(/\/\*\*\s*\n([\s\S]*?)\*\//g)];
+    // Matches both multi-line /** \n ... */ and single-line /** text */
+    const jsdocBlocks = [...before.matchAll(/\/\*\*([\s\S]*?)\*\//g)];
     if (jsdocBlocks.length === 0) return '';
 
     const lastBlock = jsdocBlocks[jsdocBlocks.length - 1];

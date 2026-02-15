@@ -4,6 +4,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Extract text content from a DOM element by CSS selector. */
 export interface GetTextParams extends CommandParams {
   readonly selector: string;
   readonly trim?: boolean;

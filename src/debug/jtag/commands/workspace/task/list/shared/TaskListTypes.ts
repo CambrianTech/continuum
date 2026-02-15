@@ -11,7 +11,7 @@ import type { TaskDomain, TaskType, TaskStatus, TaskPriority } from '@system/dat
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for task/list command
+ * Queries the task queue with filters for assignee, status, domain, task type, and context, returning matching tasks with priority-sorted results and aggregate statistics.
  */
 export interface TaskListParams extends CommandParams {
   /**

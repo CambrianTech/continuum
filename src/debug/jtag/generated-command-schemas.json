@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-15T00:55:42.563Z",
+  "generated": "2026-02-15T01:14:22.835Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -25,7 +25,7 @@
     },
     {
       "name": "workspace/task/list",
-      "description": "Parameters for task/list command",
+      "description": "Queries the task queue with filters for assignee, status, domain, task type, and context, returning matching tasks with priority-sorted results and aggregate statistics.",
       "params": {
         "assigneeId": {
           "type": "string",
@@ -76,7 +76,7 @@
     },
     {
       "name": "workspace/task/create",
-      "description": "Parameters for task/create command",
+      "description": "Creates a new task and assigns it to a PersonaUser, specifying domain, type, priority, optional deadline, dependencies, and a human-readable description of the work to be done.",
       "params": {
         "assigneeId": {
           "type": "string",
@@ -127,7 +127,7 @@
     },
     {
       "name": "workspace/task/complete",
-      "description": "Parameters for task/complete command",
+      "description": "Marks a task as completed or failed, recording its output, error details, and performance metrics such as tokens used, latency, and confidence.",
       "params": {
         "taskId": {
           "type": "string",
@@ -472,7 +472,7 @@
     },
     {
       "name": "utilities/docs/search",
-      "description": "utilities/docs/search command",
+      "description": "Searches across all project documentation files for lines matching a text pattern, returning matching lines with their document name, line number, and content.",
       "params": {
         "pattern": {
           "type": "string",
@@ -493,7 +493,7 @@
     },
     {
       "name": "utilities/docs/read",
-      "description": "utilities/docs/read command",
+      "description": "Reads the content of a documentation file by name, with support for table-of-contents extraction, jumping to a specific section, or reading a line range.",
       "params": {
         "doc": {
           "type": "string",
@@ -524,7 +524,7 @@
     },
     {
       "name": "utilities/docs/list",
-      "description": "utilities/docs/list command",
+      "description": "Lists all available documentation files in the project, returning metadata such as file size, line count, section headings, and directory, with optional filtering by directory or filename pattern.",
       "params": {
         "dir": {
           "type": "string",
@@ -653,7 +653,7 @@
     },
     {
       "name": "theme/set",
-      "description": "ThemeSet Types - Theme setting command types",
+      "description": "Theme set command parameters",
       "params": {
         "themeName": {
           "type": "string",
@@ -669,7 +669,7 @@
     },
     {
       "name": "theme/list",
-      "description": "ThemeList Types - Theme listing command types",
+      "description": "Theme list command parameters",
       "params": {
         "category": {
           "type": "string",
@@ -690,7 +690,7 @@
     },
     {
       "name": "theme/get",
-      "description": "ThemeGet Types - Theme getting command types",
+      "description": "Theme get command parameters - gets current theme",
       "params": {
         "timestamp": {
           "type": "string",
@@ -717,7 +717,7 @@
     },
     {
       "name": "state/update",
-      "description": "State Update Types - User-aware entity updates Provides elegant wrapper around data/update with automatic user context injection Following the established state command pattern for simple delegation",
+      "description": "State update command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -743,7 +743,7 @@
     },
     {
       "name": "state/get",
-      "description": "Follows data daemon command pattern for elegant entity state management",
+      "description": "State get command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -774,7 +774,7 @@
     },
     {
       "name": "state/create",
-      "description": "Follows data daemon command pattern for elegant entity state management",
+      "description": "State create command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -925,7 +925,7 @@
     },
     {
       "name": "social/propose",
-      "description": "Approval thresholds by action type. Minimum \"up\" votes needed. With ~12 personas: 0 = auto-approve (no voting needed, execute immediately) vote on external content: 2 (low bar — just an upvote) follow/unfollow: 3 subscribe/unsubscribe: 3 comment: 4 post: 5 (highest bar — public content under our name)",
+      "description": "Handle type for proposals",
       "params": {
         "platform": {
           "type": "string",
@@ -1274,7 +1274,7 @@
     },
     {
       "name": "social/classify",
-      "description": "Multi-dimensional agent classification system. Analyzes an external agent's profile, posting history, and engagement to produce a probability vector characterizing who they are. Like an embedding space for AI personas on external social media. Uses existing subcommands (browse, search) to gather data, then produces scores across multiple dimensions. Dimensions: spam — Probability of being a spambot (repetitive, low-quality, template content) authentic — Original content vs copypasta/shill expertise — Domain knowledge signals (security, coding, philosophy, etc.) influence — Community impact (karma, engagement, followers) engagement — Quality of conversations (threaded depth, substantive replies) reliability — Consistency over time (not one-hit wonder) Usage: ./jtag social/classify --platform=moltbook --target=eudaemon_0 ./jtag social/classify --platform=moltbook --target=snorf5163 ./jtag social/classify --platform=moltbook --target=Cody --depth=deep",
+      "description": "Timestamp of classification",
       "params": {
         "platform": {
           "type": "string",
@@ -1446,7 +1446,7 @@
     },
     {
       "name": "session/get-user",
-      "description": "session/get-user command",
+      "description": "Resolve a session to its owning UserEntity, defaulting to the caller's session or targeting a specific one.",
       "params": {
         "targetSessionId": {
           "type": "string",
@@ -1462,7 +1462,7 @@
     },
     {
       "name": "session/destroy",
-      "description": "Parameters for session destroy command",
+      "description": "Tear down a user session and clean up all associated resources, optionally recording the reason for destruction.",
       "params": {
         "reason": {
           "type": "string",
@@ -1802,7 +1802,7 @@
     },
     {
       "name": "security/setup",
-      "description": "security/setup command",
+      "description": "Install and configure security components (network monitor, proxy) and report their current status.",
       "params": {
         "statusOnly": {
           "type": "boolean",
@@ -2240,7 +2240,7 @@
     },
     {
       "name": "persona/learning/multi-agent-learn",
-      "description": "Parameters for persona/learning/multi-agent-learn command",
+      "description": "Triggers collaborative learning across multiple PersonaUser participants after a shared activity completes, distributing reinforcement or correction training to each based on their individual performance metrics.",
       "params": {
         "domain": {
           "type": "string",
@@ -2276,7 +2276,7 @@
     },
     {
       "name": "persona/learning/capture-interaction",
-      "description": "Parameters for persona/learning/capture-interaction command",
+      "description": "Captures an AI persona's input/output pair during task execution, accumulating training examples in-memory for batch LoRA micro-tuning within a specified learning domain.",
       "params": {
         "roleId": {
           "type": "string",
@@ -2337,7 +2337,7 @@
     },
     {
       "name": "persona/learning/capture-feedback",
-      "description": "Parameters for persona/learning/capture-feedback command",
+      "description": "Records a correction, approval, critique, score, or suggestion from one persona to another, enabling reciprocal learning where both the feedback giver and receiver improve from the exchange.",
       "params": {
         "interactionId": {
           "type": "string",
@@ -2631,12 +2631,12 @@
     },
     {
       "name": "logs/stats",
-      "description": "logs/stats command",
+      "description": "Return aggregate statistics about all log files, including total file count and combined size in megabytes.",
       "params": {}
     },
     {
       "name": "logs/search",
-      "description": "logs/search command",
+      "description": "Search across log files for lines matching a pattern, optionally scoped to specific logs, categories, or personas.",
       "params": {
         "pattern": {
           "type": "string",
@@ -2647,7 +2647,7 @@
     },
     {
       "name": "logs/read",
-      "description": "logs/read command",
+      "description": "Read lines from a log file with optional filtering by level or component, and optional multi-dimensional structure analysis (temporal, severity, spatial).",
       "params": {
         "log": {
           "type": "string",
@@ -2893,7 +2893,7 @@
     },
     {
       "name": "interface/wait-for-element",
-      "description": "interface/wait-for-element command",
+      "description": "Wait for a DOM element to appear, matching a CSS selector.",
       "params": {
         "selector": {
           "type": "string",
@@ -2919,7 +2919,7 @@
     },
     {
       "name": "interface/type",
-      "description": "interface/type command",
+      "description": "Type text into a form field or input element.",
       "params": {
         "selector": {
           "type": "string",
@@ -2945,7 +2945,7 @@
     },
     {
       "name": "interface/scroll",
-      "description": "interface/scroll command",
+      "description": "Scroll the page or a specific element.",
       "params": {
         "x": {
           "type": "number",
@@ -3186,7 +3186,7 @@
     },
     {
       "name": "interface/navigate",
-      "description": "Navigate Command - Shared Types for Browser Navigation Minimal, focused types for URL navigation across browser/server contexts. Follows the elegant pattern of screenshot command - simple params and results with clean inheritance from CommandParams/CommandResult base classes. DESIGN PRINCIPLES: - Object.assign() in constructor for clean initialization - Optional properties with sensible defaults - Environment-aware results with timestamps - Type safety without overkill complexity USAGE: - Browser: Direct window.location navigation - Server: Delegates to browser context - Symmetric interface across both contexts",
+      "description": "Navigate the browser to a URL.",
       "params": {
         "url": {
           "type": "string",
@@ -3233,7 +3233,7 @@
     },
     {
       "name": "interface/get-text",
-      "description": "interface/get-text command",
+      "description": "Extract text content from a DOM element by CSS selector.",
       "params": {
         "selector": {
           "type": "string",
@@ -3254,7 +3254,7 @@
     },
     {
       "name": "interface/click",
-      "description": "Click Command - Shared Types for Element Interaction Minimal types for clicking DOM elements. Follows screenshot/navigate pattern with clean inheritance and Object.assign() initialization. DESIGN ANALYSIS: ✅ Focused on single action - clicking elements ✅ Clean parameter interface with optional properties ✅ Proper constructor pattern with Object.assign() ✅ Result type includes success state and metadata ✅ No over-engineering - just what's needed for clicks SCOPE: - Browser: Direct DOM element.click() calls - Server: Delegates to browser context - Consistent interface across contexts",
+      "description": "Click a DOM element by CSS selector.",
       "params": {
         "selector": {
           "type": "string",
@@ -3570,7 +3570,7 @@
     },
     {
       "name": "genome/job-create",
-      "description": "Parameters for genome/job-create command",
+      "description": "Create a fine-tuning job on a cloud provider (OpenAI, DeepSeek, Fireworks, or Together) with a validated, provider-agnostic configuration.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3606,7 +3606,7 @@
     },
     {
       "name": "genome/batch-micro-tune",
-      "description": "Parameters for genome/batch-micro-tune command",
+      "description": "Perform a fast, in-memory LoRA micro-tune on accumulated training examples during recipe execution, without persisting weights to disk.",
       "params": {
         "domain": {
           "type": "string",
@@ -3663,7 +3663,7 @@
     },
     {
       "name": "file/save",
-      "description": "FileSave Types - Generic Inheritance from File Base Types GENERIC HIERARCHY: FileParams<{content, createDirs}> → FileSaveParams FileResult<{bytesWritten, created}> → FileSaveResult",
+      "description": "File save command parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3689,7 +3689,7 @@
     },
     {
       "name": "file/mime-type",
-      "description": "Detects MIME type from file extension or file content",
+      "description": "File MIME type detection parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3710,7 +3710,7 @@
     },
     {
       "name": "file/load",
-      "description": "FileLoad Types - Elegant Inheritance from File Base Types INHERITANCE HIERARCHY: FileParams → FileLoadParams (no additional fields - pure inheritance) FileResult → FileLoadResult (adds content, bytesRead)",
+      "description": "File load command parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3726,7 +3726,7 @@
     },
     {
       "name": "file/append",
-      "description": "FileAppend Types - Elegant Inheritance from File Base Types INHERITANCE HIERARCHY: FileParams → FileAppendParams (adds content, createIfMissing) FileResult → FileAppendResult (adds bytesAppended, wasCreated)",
+      "description": "File append command parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3871,7 +3871,7 @@
     },
     {
       "name": "development/propose-command",
-      "description": "Full command specification for generation",
+      "description": "Implementation notes for the AI",
       "params": {
         "spec": {
           "type": "string",
@@ -4551,7 +4551,7 @@
     },
     {
       "name": "data/schema",
-      "description": "Request parameters for data/schema command",
+      "description": "Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation.",
       "params": {
         "collection": {
           "type": "string",
@@ -4671,7 +4671,7 @@
     },
     {
       "name": "data/list",
-      "description": "Data List Command - Query entities from collections Common collections: users, rooms, chat_messages, memories, tasks, skills, wall_documents @example data/list --collection=\"users\" --limit=10 @example data/list --collection=\"chat_messages\" --filter='{\"roomId\":\"abc\"}' --orderBy='[{\"field\":\"timestamp\",\"direction\":\"desc\"}]'",
+      "description": "Data list command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -4882,7 +4882,7 @@
     },
     {
       "name": "continuum/emotion",
-      "description": "continuum/emotion command",
+      "description": "Display an emoji reaction with an optional color glow on the Continuum interface.",
       "params": {
         "emoji": {
           "type": "string",
@@ -5174,7 +5174,7 @@
     },
     {
       "name": "collaboration/decision/rank",
-      "description": "decision/rank - Types Submit ranked-choice vote for a decision proposal",
+      "description": "Submit a ranked-choice vote on a decision proposal, using Condorcet pairwise comparison to determine the winner.",
       "params": {
         "proposalId": {
           "type": "string",
@@ -5498,7 +5498,7 @@
     },
     {
       "name": "collaboration/chat/analyze",
-      "description": "collaboration/chat/analyze command",
+      "description": "Analyze a chat room for duplicate messages, timestamp anomalies, and data integrity issues.",
       "params": {
         "roomId": {
           "type": "string",
@@ -6664,7 +6664,7 @@
     },
     {
       "name": "ai/rag/inspect",
-      "description": "Parameters for rag/inspect command",
+      "description": "Inspect the RAG context that would be built for a given persona in a specific room, including decision-point analysis and learning mode diagnostics.",
       "params": {
         "personaId": {
           "type": "string",
@@ -6700,7 +6700,7 @@
     },
     {
       "name": "ai/rag/index-codebase",
-      "description": "Parameters for rag/index-codebase command",
+      "description": "Crawl and index TypeScript, Markdown, and other source files into the RAG store with domain-specific embeddings for semantic code search.",
       "params": {
         "paths": {
           "type": "array",
@@ -6898,7 +6898,7 @@
     },
     {
       "name": "ai/model/list",
-      "description": "Model list params",
+      "description": "Enumerate all available AI models across providers, with optional filtering by capabilities, provider, and availability.",
       "params": {
         "capabilities": {
           "type": "string",
@@ -6919,7 +6919,7 @@
     },
     {
       "name": "ai/model/find",
-      "description": "Model find params",
+      "description": "Find the best available AI model matching a set of capability requirements, with optional fallback to the closest match.",
       "params": {
         "capabilities": {
           "type": "string",
@@ -7073,7 +7073,7 @@
     },
     {
       "name": "ai/embedding/generate",
-      "description": "Parameters for ai/embedding/generate command",
+      "description": "Generate vector embeddings from text or code for use in semantic search, similarity matching, and RAG retrieval.",
       "params": {
         "input": {
           "type": "array",
@@ -7135,7 +7135,7 @@
     },
     {
       "name": "ai/dataset/list",
-      "description": "ai/dataset/list command",
+      "description": "List available training dataset archives with optional filtering and detailed manifest information.",
       "params": {
         "path": {
           "type": "string",
@@ -7151,7 +7151,7 @@
     },
     {
       "name": "ai/dataset/create",
-      "description": "ai/dataset/create command",
+      "description": "Create compressed training dataset archives from fine-tuning projects for LoRA adapter training.",
       "params": {
         "project": {
           "type": "string",
@@ -7340,7 +7340,7 @@
     },
     {
       "name": "ai/bag-of-words",
-      "description": "Parameters for bag-of-words command",
+      "description": "Orchestrate a multi-persona conversation in a chat room, selecting which AI personas participate and how they take turns responding.",
       "params": {
         "roomId": {
           "type": "string",

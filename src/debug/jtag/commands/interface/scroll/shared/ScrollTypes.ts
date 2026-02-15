@@ -4,6 +4,7 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Scroll the page or a specific element. */
 export interface ScrollParams extends CommandParams {
   readonly x?: number;
   readonly y?: number;

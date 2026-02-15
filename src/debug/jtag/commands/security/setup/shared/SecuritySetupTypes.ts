@@ -1,6 +1,7 @@
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 
+/** Install and configure security components (network monitor, proxy) and report their current status. */
 export interface SecuritySetupParams extends CommandParams {
     /** Skip interactive prompts and show status only */
     statusOnly?: boolean;
