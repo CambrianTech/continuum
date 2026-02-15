@@ -136,17 +136,161 @@ fn event_matches(event_name: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::sentinel::types::ExecutionContext;
+    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
+    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: Vec::new(),
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        }
+    }
+
+    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+        PipelineContext {
+            handle_id: "test-watch",
+            registry,
+            bus: Some(bus),
+        }
+    }
+
+    // ── event_matches tests ──
 
     #[test]
-    fn test_event_matching() {
+    fn test_exact_match() {
         assert!(event_matches("build:complete", "build:complete"));
+    }
+
+    #[test]
+    fn test_trailing_wildcard() {
         assert!(event_matches("build:complete", "build:*"));
         assert!(event_matches("build:failed", "build:*"));
         assert!(event_matches("sentinel:abc:status", "sentinel:*"));
+    }
+
+    #[test]
+    fn test_universal_wildcard() {
         assert!(event_matches("anything", "*"));
+        assert!(event_matches("a:b:c", "*"));
+    }
+
+    #[test]
+    fn test_segment_wildcard() {
+        assert!(event_matches("a:b:c", "a:*:c"));
+    }
+
+    #[test]
+    fn test_no_match() {
         assert!(!event_matches("build:complete", "build:failed"));
         assert!(!event_matches("build:complete", "deploy:complete"));
-        assert!(event_matches("a:b:c", "a:*:c"));
         assert!(!event_matches("a:b:c", "a:*:d"));
+    }
+
+    #[test]
+    fn test_length_mismatch() {
+        assert!(!event_matches("a:b", "a:b:c"));
+        assert!(!event_matches("a:b:c", "a:b"));
+    }
+
+    // ── watch execution tests ──
+
+    #[tokio::test]
+    async fn test_watch_receives_matching_event() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Spawn a task that emits the event after a small delay
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            bus_clone.publish_async_only("build:done", json!({"result": "ok"}));
+        });
+
+        let result = execute("build:done", Some(5), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output.as_deref(), Some("build:done"));
+        assert_eq!(result.data["event"], "build:done");
+        assert_eq!(result.data["payload"]["result"], "ok");
+    }
+
+    #[tokio::test]
+    async fn test_watch_timeout() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Watch for an event that never arrives, with 1s timeout
+        let result = execute("never:arrives", Some(1), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("Timed out"));
+        assert_eq!(result.data["timeoutSecs"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_watch_ignores_non_matching() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            // Emit non-matching event first
+            bus_clone.publish_async_only("other:event", json!({}));
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            // Then matching event
+            bus_clone.publish_async_only("target:event", json!({"found": true}));
+        });
+
+        let result = execute("target:event", Some(5), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["event"], "target:event");
+        assert_eq!(result.data["payload"]["found"], true);
+    }
+
+    #[tokio::test]
+    async fn test_watch_wildcard_pattern() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let bus_clone = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            bus_clone.publish_async_only("build:complete", json!({"branch": "main"}));
+        });
+
+        let result = execute("build:*", Some(5), 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["event"], "build:complete");
+    }
+
+    #[tokio::test]
+    async fn test_watch_requires_bus() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let pipeline_ctx = PipelineContext {
+            handle_id: "test-watch",
+            registry: &registry,
+            bus: None,
+        };
+        let mut ctx = test_ctx();
+
+        let result = execute("test:event", Some(1), 0, &mut ctx, &pipeline_ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("requires MessageBus"));
     }
 }

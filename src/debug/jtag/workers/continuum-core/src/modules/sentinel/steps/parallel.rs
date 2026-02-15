@@ -156,3 +156,165 @@ pub async fn execute(
         }),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::sentinel::types::PipelineStep;
+    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
+    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: Vec::new(),
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        }
+    }
+
+    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+        PipelineContext {
+            handle_id: "test-par",
+            registry,
+            bus: Some(bus),
+        }
+    }
+
+    fn echo_step(msg: &str) -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "echo".to_string(),
+            args: vec![msg.to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+        }
+    }
+
+    fn failing_step() -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_branches() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(&[], false, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["branchCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_single_branch() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            &[vec![echo_step("branch-0")]],
+            false, 0, &mut ctx, &pipeline_ctx,
+        ).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["branchCount"], 1);
+        assert_eq!(result.data["branchResults"][0]["success"], true);
+        assert_eq!(result.data["branchResults"][0]["stepsCompleted"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_two_branches_succeed() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            &[
+                vec![echo_step("alpha")],
+                vec![echo_step("beta")],
+            ],
+            false, 0, &mut ctx, &pipeline_ctx,
+        ).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["branchCount"], 2);
+        assert_eq!(result.data["branchResults"][0]["success"], true);
+        assert_eq!(result.data["branchResults"][1]["success"], true);
+    }
+
+    #[tokio::test]
+    async fn test_one_branch_fails() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            &[
+                vec![echo_step("good")],
+                vec![failing_step()],
+            ],
+            false, 0, &mut ctx, &pipeline_ctx,
+        ).await.unwrap();
+
+        assert!(!result.success);
+        assert!(result.error.is_some());
+        // Both branches complete since fail_fast is false
+        assert_eq!(result.data["branchCount"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_multi_step_branches() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            &[
+                vec![echo_step("a1"), echo_step("a2")],
+                vec![echo_step("b1"), echo_step("b2"), echo_step("b3")],
+            ],
+            false, 0, &mut ctx, &pipeline_ctx,
+        ).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["branchResults"][0]["stepsCompleted"], 2);
+        assert_eq!(result.data["branchResults"][1]["stepsCompleted"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_branches_run_concurrently() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Two branches each sleeping 100ms — if sequential would take 200ms+
+        let sleep_step = PipelineStep::Shell {
+            cmd: "sleep".to_string(),
+            args: vec!["0.1".to_string()],
+            timeout_secs: Some(5),
+            working_dir: None,
+        };
+
+        let result = execute(
+            &[vec![sleep_step.clone()], vec![sleep_step]],
+            false, 0, &mut ctx, &pipeline_ctx,
+        ).await.unwrap();
+
+        assert!(result.success);
+        // Concurrent: should complete in ~100ms, not ~200ms
+        assert!(result.duration_ms < 180, "Expected concurrent execution, took {}ms", result.duration_ms);
+    }
+}

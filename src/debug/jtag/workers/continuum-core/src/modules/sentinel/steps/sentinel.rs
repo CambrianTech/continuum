@@ -91,3 +91,194 @@ pub async fn execute(
         }),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::sentinel::types::{ExecutionContext, PipelineStep};
+    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
+    use std::sync::Arc;
+    use std::collections::HashMap;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: Vec::new(),
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        }
+    }
+
+    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+        PipelineContext {
+            handle_id: "test-sentinel",
+            registry,
+            bus: Some(bus),
+        }
+    }
+
+    fn echo_step(msg: &str) -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "echo".to_string(),
+            args: vec![msg.to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+        }
+    }
+
+    fn failing_step() -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nested_pipeline_succeeds() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let pipeline = Pipeline {
+            name: Some("child".to_string()),
+            steps: vec![echo_step("child-step-1"), echo_step("child-step-2")],
+            working_dir: None,
+            timeout_secs: None,
+            inputs: HashMap::new(),
+        };
+
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["pipelineName"], "child");
+        assert_eq!(result.data["stepsCompleted"], 2);
+        assert_eq!(result.data["stepsTotal"], 2);
+        // Last step output becomes sentinel step output
+        assert_eq!(result.output.as_deref(), Some("child-step-2\n"));
+    }
+
+    #[tokio::test]
+    async fn test_nested_pipeline_inherits_inputs() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+        ctx.inputs.insert("parent_var".to_string(), json!("inherited"));
+
+        let pipeline = Pipeline {
+            name: Some("child".to_string()),
+            steps: vec![PipelineStep::Shell {
+                cmd: "echo".to_string(),
+                args: vec!["{{input.parent_var}}".to_string()],
+                timeout_secs: Some(10),
+                working_dir: None,
+            }],
+            working_dir: None,
+            timeout_secs: None,
+            inputs: HashMap::new(),
+        };
+
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output.as_deref(), Some("inherited\n"));
+    }
+
+    #[tokio::test]
+    async fn test_nested_pipeline_child_overrides() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+        ctx.inputs.insert("var".to_string(), json!("parent_value"));
+
+        let mut child_inputs = HashMap::new();
+        child_inputs.insert("var".to_string(), json!("child_value"));
+
+        let pipeline = Pipeline {
+            name: Some("child".to_string()),
+            steps: vec![PipelineStep::Shell {
+                cmd: "echo".to_string(),
+                args: vec!["{{input.var}}".to_string()],
+                timeout_secs: Some(10),
+                working_dir: None,
+            }],
+            working_dir: None,
+            timeout_secs: None,
+            inputs: child_inputs,
+        };
+
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output.as_deref(), Some("child_value\n"));
+    }
+
+    #[tokio::test]
+    async fn test_nested_pipeline_failure() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let pipeline = Pipeline {
+            name: Some("failing-child".to_string()),
+            steps: vec![echo_step("ok"), failing_step(), echo_step("never-reached")],
+            working_dir: None,
+            timeout_secs: None,
+            inputs: HashMap::new(),
+        };
+
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.data["stepsCompleted"], 2); // echo ok + failing step
+        assert_eq!(result.data["stepsTotal"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_empty_nested_pipeline() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let pipeline = Pipeline {
+            name: Some("empty".to_string()),
+            steps: vec![],
+            working_dir: None,
+            timeout_secs: None,
+            inputs: HashMap::new(),
+        };
+
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["stepsCompleted"], 0);
+        assert!(result.output.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_unnamed_nested_pipeline() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let pipeline = Pipeline {
+            name: None,
+            steps: vec![echo_step("anon")],
+            working_dir: None,
+            timeout_secs: None,
+            inputs: HashMap::new(),
+        };
+
+        let result = execute(&pipeline, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["pipelineName"], "nested");
+    }
+}

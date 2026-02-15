@@ -166,3 +166,285 @@ fn resolve_step_result_field(result: &super::types::StepResult, parts: &[&str]) 
         _ => "".to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::types::StepResult;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn make_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "shell".to_string(),
+                    success: true,
+                    duration_ms: 42,
+                    output: Some("hello world".to_string()),
+                    error: None,
+                    exit_code: Some(0),
+                    data: json!({ "stdout": "hello world", "exitCode": 0 }),
+                },
+                StepResult {
+                    step_index: 1,
+                    step_type: "shell".to_string(),
+                    success: false,
+                    duration_ms: 10,
+                    output: None,
+                    error: Some("not found".to_string()),
+                    exit_code: Some(127),
+                    data: json!({ "stderr": "command not found", "exitCode": 127 }),
+                },
+            ],
+            inputs: {
+                let mut m = HashMap::new();
+                m.insert("name".to_string(), json!("test-pipeline"));
+                m.insert("count".to_string(), json!(5));
+                m
+            },
+            working_dir: PathBuf::from("/tmp/test"),
+            named_outputs: {
+                let mut m = HashMap::new();
+                m.insert("build".to_string(), StepResult {
+                    step_index: 0,
+                    step_type: "shell".to_string(),
+                    success: true,
+                    duration_ms: 100,
+                    output: Some("build OK".to_string()),
+                    error: None,
+                    exit_code: Some(0),
+                    data: json!({ "artifacts": ["a.o", "b.o"] }),
+                });
+                m
+            },
+        }
+    }
+
+    // ── Steps path resolution ──
+
+    #[test]
+    fn test_steps_output() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.0.output}}", &ctx), "hello world");
+    }
+
+    #[test]
+    fn test_steps_default_to_output() {
+        let ctx = make_ctx();
+        // Bare steps.N without field returns output
+        assert_eq!(interpolate("{{steps.0}}", &ctx), "hello world");
+    }
+
+    #[test]
+    fn test_steps_success() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.0.success}}", &ctx), "true");
+        assert_eq!(interpolate("{{steps.1.success}}", &ctx), "false");
+    }
+
+    #[test]
+    fn test_steps_error() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.1.error}}", &ctx), "not found");
+        assert_eq!(interpolate("{{steps.0.error}}", &ctx), "");
+    }
+
+    #[test]
+    fn test_steps_exit_code() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.0.exitCode}}", &ctx), "0");
+        assert_eq!(interpolate("{{steps.1.exit_code}}", &ctx), "127");
+    }
+
+    #[test]
+    fn test_steps_data_field() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.0.data.stdout}}", &ctx), "hello world");
+        assert_eq!(interpolate("{{steps.0.data.exitCode}}", &ctx), "0");
+    }
+
+    #[test]
+    fn test_steps_nested_data() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.1.data.stderr}}", &ctx), "command not found");
+    }
+
+    #[test]
+    fn test_steps_metadata() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.0.type}}", &ctx), "shell");
+        assert_eq!(interpolate("{{steps.0.stepType}}", &ctx), "shell");
+        assert_eq!(interpolate("{{steps.0.index}}", &ctx), "0");
+        assert_eq!(interpolate("{{steps.0.durationMs}}", &ctx), "42");
+    }
+
+    #[test]
+    fn test_steps_out_of_bounds() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{steps.99.output}}", &ctx), "");
+    }
+
+    // ── Input path resolution ──
+
+    #[test]
+    fn test_input_string() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{input.name}}", &ctx), "test-pipeline");
+        assert_eq!(interpolate("{{inputs.name}}", &ctx), "test-pipeline");
+    }
+
+    #[test]
+    fn test_input_number() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{input.count}}", &ctx), "5");
+    }
+
+    #[test]
+    fn test_input_missing() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{input.nonexistent}}", &ctx), "");
+    }
+
+    // ── Named output resolution ──
+
+    #[test]
+    fn test_named_output() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{named.build.output}}", &ctx), "build OK");
+    }
+
+    #[test]
+    fn test_named_success() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{named.build.success}}", &ctx), "true");
+    }
+
+    #[test]
+    fn test_named_data_field() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{named.build.data.artifacts}}", &ctx), "[\"a.o\",\"b.o\"]");
+    }
+
+    #[test]
+    fn test_named_missing() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{named.deploy.output}}", &ctx), "");
+    }
+
+    // ── Env resolution ──
+
+    #[test]
+    fn test_env_var() {
+        let ctx = make_ctx();
+        std::env::set_var("SENTINEL_TEST_VAR", "sentinel_value");
+        assert_eq!(interpolate("{{env.SENTINEL_TEST_VAR}}", &ctx), "sentinel_value");
+        std::env::remove_var("SENTINEL_TEST_VAR");
+    }
+
+    #[test]
+    fn test_env_missing() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{env.NONEXISTENT_VAR_12345}}", &ctx), "");
+    }
+
+    // ── Mixed interpolation ──
+
+    #[test]
+    fn test_multiple_refs_in_string() {
+        let ctx = make_ctx();
+        let result = interpolate("Name: {{input.name}}, Output: {{steps.0.output}}", &ctx);
+        assert_eq!(result, "Name: test-pipeline, Output: hello world");
+    }
+
+    #[test]
+    fn test_no_refs_passthrough() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("plain text", &ctx), "plain text");
+    }
+
+    #[test]
+    fn test_unknown_root_preserved() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{unknown.path}}", &ctx), "{{unknown.path}}");
+    }
+
+    #[test]
+    fn test_whitespace_trimmed() {
+        let ctx = make_ctx();
+        assert_eq!(interpolate("{{ steps.0.output }}", &ctx), "hello world");
+    }
+
+    // ── interpolate_value (JSON) ──
+
+    #[test]
+    fn test_interpolate_json_string() {
+        let ctx = make_ctx();
+        let val = json!("result: {{steps.0.output}}");
+        let result = interpolate_value(&val, &ctx);
+        assert_eq!(result, json!("result: hello world"));
+    }
+
+    #[test]
+    fn test_interpolate_json_object() {
+        let ctx = make_ctx();
+        let val = json!({ "name": "{{input.name}}", "out": "{{steps.0.output}}" });
+        let result = interpolate_value(&val, &ctx);
+        assert_eq!(result, json!({ "name": "test-pipeline", "out": "hello world" }));
+    }
+
+    #[test]
+    fn test_interpolate_json_array() {
+        let ctx = make_ctx();
+        let val = json!(["{{input.name}}", "{{steps.0.output}}"]);
+        let result = interpolate_value(&val, &ctx);
+        assert_eq!(result, json!(["test-pipeline", "hello world"]));
+    }
+
+    #[test]
+    fn test_interpolate_preserves_numbers() {
+        let ctx = make_ctx();
+        let val = json!(42);
+        assert_eq!(interpolate_value(&val, &ctx), json!(42));
+    }
+
+    #[test]
+    fn test_interpolate_preserves_booleans() {
+        let ctx = make_ctx();
+        let val = json!(true);
+        assert_eq!(interpolate_value(&val, &ctx), json!(true));
+    }
+
+    // ── evaluate_condition ──
+
+    #[test]
+    fn test_condition_true_false() {
+        assert!(evaluate_condition("true"));
+        assert!(!evaluate_condition("false"));
+    }
+
+    #[test]
+    fn test_condition_truthy_strings() {
+        assert!(evaluate_condition("hello"));
+        assert!(evaluate_condition("1"));
+        assert!(evaluate_condition("yes"));
+    }
+
+    #[test]
+    fn test_condition_falsy_values() {
+        assert!(!evaluate_condition(""));
+        assert!(!evaluate_condition("0"));
+        assert!(!evaluate_condition("null"));
+        assert!(!evaluate_condition("undefined"));
+        assert!(!evaluate_condition("false"));
+    }
+
+    #[test]
+    fn test_condition_whitespace() {
+        assert!(evaluate_condition("  true  "));
+        assert!(!evaluate_condition("  false  "));
+        assert!(!evaluate_condition("   "));
+    }
+}

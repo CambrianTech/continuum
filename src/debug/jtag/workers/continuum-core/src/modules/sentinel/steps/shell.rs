@@ -84,3 +84,116 @@ pub async fn execute(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::sentinel::types::ExecutionContext;
+    use crate::runtime::{ModuleRegistry, message_bus::MessageBus};
+    use std::sync::Arc;
+    use std::collections::HashMap;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: Vec::new(),
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        }
+    }
+
+    fn test_pipeline_ctx<'a>(registry: &'a Arc<ModuleRegistry>, bus: &'a Arc<MessageBus>) -> PipelineContext<'a> {
+        PipelineContext {
+            handle_id: "test-001",
+            registry,
+            bus: Some(bus),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_echo() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute("echo", &["hello".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.output.as_deref(), Some("hello\n"));
+    }
+
+    #[tokio::test]
+    async fn test_nonzero_exit() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute("/bin/sh", &["-c".into(), "exit 42".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_shell_passthrough_for_spaces() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // cmd with spaces and no args should be passed through /bin/sh -c
+        let result = execute("echo hello world", &[], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.output.as_deref(), Some("hello world\n"));
+    }
+
+    #[tokio::test]
+    async fn test_timeout() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute("sleep", &["10".into()], 1, None, 0, &mut ctx, &pipeline_ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_command() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute("/nonexistent/binary", &[], 10, None, 0, &mut ctx, &pipeline_ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("failed to execute"));
+    }
+
+    #[tokio::test]
+    async fn test_cmd_interpolation() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+        ctx.inputs.insert("msg".to_string(), serde_json::json!("interpolated"));
+
+        let result = execute("echo", &["{{input.msg}}".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert!(result.success);
+        assert_eq!(result.output.as_deref(), Some("interpolated\n"));
+    }
+
+    #[tokio::test]
+    async fn test_data_has_stdout_stderr() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute("echo", &["data-test".into()], 10, None, 0, &mut ctx, &pipeline_ctx).await.unwrap();
+        assert_eq!(result.data["stdout"], "data-test\n");
+        assert_eq!(result.data["exitCode"], 0);
+    }
+}
