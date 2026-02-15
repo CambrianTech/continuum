@@ -14,6 +14,7 @@ use crate::persona::{
 };
 use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
 use crate::logging::TimingGuard;
+use crate::utils::params::Params;
 use crate::log_info;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -79,18 +80,13 @@ impl ServiceModule for ChannelModule {
         command: &str,
         params: Value,
     ) -> Result<CommandResult, String> {
+        let p = Params::new(&params);
+
         match command {
             "channel/enqueue" => {
                 let _timer = TimingGuard::new("module", "channel_enqueue");
-
-                let persona_id = params.get("persona_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing persona_id")?;
-                let item = params.get("item")
-                    .ok_or("Missing item")?;
-
-                let persona_uuid = Uuid::parse_str(persona_id)
-                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+                let persona_uuid = p.uuid("persona_id")?;
+                let item = p.value("item").ok_or("Missing item")?;
 
                 // Parse the item as ChannelEnqueueRequest
                 let enqueue_request: ChannelEnqueueRequest = serde_json::from_value(item.clone())
@@ -117,19 +113,12 @@ impl ServiceModule for ChannelModule {
 
             "channel/dequeue" => {
                 let _timer = TimingGuard::new("module", "channel_dequeue");
-
-                let persona_id = params.get("persona_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing persona_id")?;
-                let domain_str = params.get("domain")
-                    .and_then(|v| v.as_str());
-
-                let persona_uuid = Uuid::parse_str(persona_id)
-                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+                let persona_uuid = p.uuid("persona_id")?;
+                let domain_str = p.str_opt("domain");
 
                 let mut entry = match self.state.registries.get_mut(&persona_uuid) {
                     Some(r) => r,
-                    None => return Err(format!("No channel registry for {persona_id}")),
+                    None => return Err(format!("No channel registry for {persona_uuid}")),
                 };
                 let (registry, _state) = entry.value_mut();
 
@@ -179,13 +168,7 @@ impl ServiceModule for ChannelModule {
 
             "channel/status" => {
                 let _timer = TimingGuard::new("module", "channel_status");
-
-                let persona_id = params.get("persona_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing persona_id")?;
-
-                let persona_uuid = Uuid::parse_str(persona_id)
-                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+                let persona_uuid = p.uuid("persona_id")?;
 
                 let entry = match self.state.registries.get(&persona_uuid) {
                     Some(r) => r,
@@ -207,13 +190,7 @@ impl ServiceModule for ChannelModule {
 
             "channel/service-cycle" => {
                 let _timer = TimingGuard::new("module", "channel_service_cycle");
-
-                let persona_id = params.get("persona_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing persona_id")?;
-
-                let persona_uuid = Uuid::parse_str(persona_id)
-                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+                let persona_uuid = p.uuid("persona_id")?;
 
                 let mut entry = self.state.registries
                     .entry(persona_uuid)
@@ -226,13 +203,7 @@ impl ServiceModule for ChannelModule {
 
             "channel/service-cycle-full" => {
                 let _timer = TimingGuard::new("module", "channel_service_cycle_full");
-
-                let persona_id = params.get("persona_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing persona_id")?;
-
-                let persona_uuid = Uuid::parse_str(persona_id)
-                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+                let persona_uuid = p.uuid("persona_id")?;
 
                 // Step 1: Service cycle — consolidate, schedule, return next item
                 let service_result = {
@@ -334,20 +305,14 @@ impl ServiceModule for ChannelModule {
 
             "channel/clear" => {
                 let _timer = TimingGuard::new("module", "channel_clear");
-
-                let persona_id = params.get("persona_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing persona_id")?;
-
-                let persona_uuid = Uuid::parse_str(persona_id)
-                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+                let persona_uuid = p.uuid("persona_id")?;
 
                 if let Some(mut entry) = self.state.registries.get_mut(&persona_uuid) {
                     let (registry, _state) = entry.value_mut();
                     registry.clear_all();
                 }
 
-                log_info!("module", "channel", "Cleared channels for {}", persona_id);
+                log_info!("module", "channel", "Cleared channels for {}", persona_uuid);
                 Ok(CommandResult::Json(serde_json::json!({ "cleared": true })))
             }
 

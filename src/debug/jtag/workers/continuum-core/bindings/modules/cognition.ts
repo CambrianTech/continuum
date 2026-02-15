@@ -13,6 +13,8 @@ import type {
 	SemanticLoopResult,
 	ConversationMessage,
 	ValidationResult,
+	MentionCheckResult,
+	CleanedResponse,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -41,6 +43,12 @@ export interface CognitionMixin {
 		hasToolCalls: boolean,
 		conversationHistory?: ConversationMessage[]
 	): Promise<ValidationResult>;
+	cognitionCheckMentions(
+		messageText: string,
+		personaDisplayName: string,
+		personaUniqueId: string
+	): Promise<MentionCheckResult>;
+	cognitionCleanResponse(responseText: string): Promise<CleanedResponse>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -195,6 +203,45 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as SemanticLoopResult;
+		}
+
+		/**
+		 * Combined mention detection: is_persona_mentioned + has_directed_mention.
+		 * ONE IPC call replaces 2 separate string checks.
+		 */
+		async cognitionCheckMentions(
+			messageText: string,
+			personaDisplayName: string,
+			personaUniqueId: string
+		): Promise<MentionCheckResult> {
+			const response = await this.request({
+				command: 'cognition/check-mentions',
+				message_text: messageText,
+				persona_display_name: personaDisplayName,
+				persona_unique_id: personaUniqueId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to check mentions');
+			}
+
+			return response.result as MentionCheckResult;
+		}
+
+		/**
+		 * Clean AI response by stripping unwanted prefixes (timestamps, names, markdown).
+		 */
+		async cognitionCleanResponse(responseText: string): Promise<CleanedResponse> {
+			const response = await this.request({
+				command: 'cognition/clean-response',
+				response_text: responseText,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to clean response');
+			}
+
+			return response.result as CleanedResponse;
 		}
 
 		/**

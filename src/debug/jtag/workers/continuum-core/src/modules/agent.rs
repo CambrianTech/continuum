@@ -22,6 +22,7 @@
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext, MessageBus};
 use crate::logging::TimingGuard;
+use crate::utils::params::Params;
 use crate::log_info;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -1097,20 +1098,12 @@ impl ServiceModule for AgentModule {
         match command {
             "agent/start" => {
                 let _timer = TimingGuard::new("module", "agent_start");
-
-                let task = params.get("task")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing task")?;
-                let working_dir = params.get("working_dir")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing working_dir")?;
-                let max_iterations = params.get("max_iterations")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as u32;
-                // Model is required - no hardcoded defaults
-                let model = params.get("model")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing required parameter: model. Use 'deepseek-chat', 'claude-sonnet-4-5-20250929', 'gpt-4', etc.")?
+                let p = Params::new(&params);
+                let task = p.str("task")?;
+                let working_dir = p.str("working_dir")?;
+                let max_iterations = p.u64_or("max_iterations", 50) as u32;
+                let model = p.str("model")
+                    .map_err(|_| "Missing required parameter: model. Use 'deepseek-chat', 'claude-sonnet-4-5-20250929', 'gpt-4', etc.".to_string())?
                     .to_string();
 
                 // Generate handle
@@ -1136,10 +1129,8 @@ impl ServiceModule for AgentModule {
 
             "agent/status" => {
                 let _timer = TimingGuard::new("module", "agent_status");
-
-                let handle = params.get("handle")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing handle")?;
+                let p = Params::new(&params);
+                let handle = p.str("handle")?;
 
                 if let Some(entry) = self.agents.get(handle) {
                     if let Ok(state) = entry.lock() {
@@ -1155,10 +1146,8 @@ impl ServiceModule for AgentModule {
 
             "agent/stop" => {
                 let _timer = TimingGuard::new("module", "agent_stop");
-
-                let handle = params.get("handle")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing handle")?;
+                let p = Params::new(&params);
+                let handle = p.str("handle")?;
 
                 if let Some(entry) = self.agents.get(handle) {
                     if let Ok(mut state) = entry.lock() {
@@ -1196,13 +1185,9 @@ impl ServiceModule for AgentModule {
 
             "agent/wait" => {
                 let _timer = TimingGuard::new("module", "agent_wait");
-
-                let handle = params.get("handle")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing handle")?;
-                let timeout_ms = params.get("timeout_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(300000); // 5 min default
+                let p = Params::new(&params);
+                let handle = p.str("handle")?;
+                let timeout_ms = p.u64_or("timeout_ms", 300000);
 
                 // Get completion notify
                 let notify = {

@@ -50,7 +50,6 @@ import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaTool
 import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, getToolCapability, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
-import { ResponseCleaner } from './ResponseCleaner';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
 // import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
@@ -109,8 +108,6 @@ export class PersonaResponseGenerator {
 
   /** Content deduplicator - prevents same content from being posted within time window */
   private contentDeduplicator: ContentDeduplicator;
-  /** Response cleaner - strips unwanted prefixes from AI responses */
-  private responseCleaner: ResponseCleaner;
   /** Rust cognition bridge — set lazily after PersonaUser creates it */
   private _rustBridge: RustCognitionBridge | null = null;
 
@@ -137,7 +134,6 @@ export class PersonaResponseGenerator {
 
     // Initialize modular helpers
     this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
-    this.responseCleaner = new ResponseCleaner({ log: this.log.bind(this) });
   }
 
   /**
@@ -909,21 +905,19 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           }
         ).catch(err => this.log(`⚠️ Failed to emit stage complete event: ${err}`));
 
-        // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
-        // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-        const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
-        if (cleanedResponse !== aiResponse.text.trim()) {
-          aiResponse.text = cleanedResponse;
-        }
-
-        // 🔧 PHASE 3.3.5: COMBINED VALIDATION GATES (1 Rust IPC call)
-        // Runs 4 gates in Rust: garbage detection, response loop, truncated tool call, semantic loop.
-        // Response cleaner (above) stays in TS because it mutates the text.
-        const hasToolCalls = !!(aiResponse.toolCalls && aiResponse.toolCalls.length > 0);
-
+        // Clean AI response via Rust IPC — strip name prefixes LLMs add
         if (!this._rustBridge) {
           throw new Error('Rust bridge not initialized — cannot validate response');
         }
+
+        const cleaned = await this._rustBridge.cleanResponse(aiResponse.text.trim());
+        if (cleaned.was_cleaned) {
+          aiResponse.text = cleaned.text;
+        }
+
+        // Combined validation gates (1 Rust IPC call)
+        // Runs 4 gates in Rust: garbage detection, response loop, truncated tool call, semantic loop.
+        const hasToolCalls = !!(aiResponse.toolCalls && aiResponse.toolCalls.length > 0);
 
         const validation = await this._rustBridge.validateResponse(
           aiResponse.text,
@@ -1139,8 +1133,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               break;
             }
 
-            // Update full response state
-            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text?.trim() || '');
+            // Update full response state — clean via Rust IPC
+            const loopCleaned = await this._rustBridge!.cleanResponse(regeneratedResponse.text?.trim() || '');
+            aiResponse.text = loopCleaned.text;
             aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
             aiResponse.content = regeneratedResponse.content ?? undefined;
             aiResponse.finishReason = regeneratedResponse.finishReason;

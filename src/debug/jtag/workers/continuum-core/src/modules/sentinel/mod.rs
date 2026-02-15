@@ -34,6 +34,7 @@ use crate::runtime::{
     CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
     message_bus::MessageBus, ModuleRegistry,
 };
+use crate::utils::params::Params;
 
 /// Sentinel Module - manages concurrent sentinel execution and pipeline interpretation
 pub struct SentinelModule {
@@ -85,38 +86,17 @@ impl SentinelModule {
         }
 
         // Parse params
-        let sentinel_type = params.get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("build")
-            .to_string();
+        let p = Params::new(&params);
 
-        let working_dir = params.get("workingDir")
-            .and_then(|v| v.as_str())
+        let sentinel_type = p.str_or("type", "build").to_string();
+        let working_dir = p.str_opt("workingDir")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-        let command = params.get("cmd")
-            .and_then(|v| v.as_str())
-            .unwrap_or("npm")
-            .to_string();
-
-        let args: Vec<String> = params.get("args")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        let command = p.str_or("cmd", "npm").to_string();
+        let args: Vec<String> = p.json_opt("args")
             .unwrap_or_else(|| vec!["run".to_string(), "build".to_string()]);
-
-        let timeout_secs = params.get("timeout")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(600);
-
-        let env: HashMap<String, String> = params.get("env")
-            .and_then(|v| v.as_object())
-            .map(|obj| {
-                obj.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let timeout_secs = p.u64_or("timeout", 600);
+        let env: HashMap<String, String> = p.json_or("env");
 
         // Check if this is a pipeline execution
         let pipeline_json = env.get("PIPELINE_JSON").cloned();
@@ -288,9 +268,8 @@ impl SentinelModule {
 
     /// Get sentinel status
     async fn get_status(&self, params: Value) -> Result<CommandResult, String> {
-        let handle_id = params.get("handle")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: handle")?;
+        let p = Params::new(&params);
+        let handle_id = p.str("handle")?;
 
         if let Some(entry) = self.sentinels.get(handle_id) {
             Ok(CommandResult::Json(json!({
@@ -316,9 +295,8 @@ impl SentinelModule {
 
     /// Cancel a running sentinel
     async fn cancel_sentinel(&self, params: Value) -> Result<CommandResult, String> {
-        let handle_id = params.get("handle")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing required parameter: handle")?;
+        let p = Params::new(&params);
+        let handle_id = p.str("handle")?;
 
         if let Some(mut entry) = self.sentinels.get_mut(handle_id) {
             if entry.handle.status == SentinelStatus::Running {
@@ -341,8 +319,10 @@ impl SentinelModule {
     async fn execute_pipeline_command(&self, params: Value) -> Result<CommandResult, String> {
         let handle_id = Self::generate_handle_id();
 
-        let pipeline: Pipeline = serde_json::from_value(params.get("pipeline").cloned().unwrap_or(params.clone()))
-            .map_err(|e| format!("Failed to parse pipeline: {e}"))?;
+        let p = Params::new(&params);
+        let pipeline: Pipeline = p.json("pipeline")
+            .or_else(|_| serde_json::from_value::<Pipeline>(params.clone())
+                .map_err(|e| format!("Failed to parse pipeline: {e}")))?;
 
         let logs_base_dir = self.logs_base_dir.read().clone();
         let bus = self.bus.read().clone();

@@ -21,10 +21,10 @@
 use crate::ai::{
     AdapterRegistry, AnthropicAdapter, CandleAdapter, OpenAICompatibleAdapter,
     TextGenerationRequest, TextGenerationResponse, RoutingInfo, ChatMessage, MessageContent,
-    NativeToolSpec, ToolChoice,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule, ModuleLogger};
 use crate::logging::TimingGuard;
+use crate::utils::params::Params;
 use crate::secrets::get_secret;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
@@ -151,12 +151,13 @@ impl AIProviderModule {
 
     /// Parse TextGenerationRequest from JSON params
     fn parse_request(&self, params: &Value) -> Result<TextGenerationRequest, String> {
-        // Parse messages
-        let messages: Vec<ChatMessage> = if let Some(msgs) = params.get("messages") {
+        let p = Params::new(params);
+
+        // Parse messages (array) or simple prompt (string)
+        let messages: Vec<ChatMessage> = if let Some(msgs) = p.value("messages") {
             serde_json::from_value(msgs.clone())
                 .map_err(|e| format!("Failed to parse messages: {}", e))?
-        } else if let Some(prompt) = params.get("prompt").and_then(|p| p.as_str()) {
-            // Support simple text prompt
+        } else if let Some(prompt) = p.str_opt("prompt") {
             vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt.to_string()),
@@ -170,53 +171,23 @@ impl AIProviderModule {
             return Err("Messages cannot be empty".to_string());
         }
 
-        // Parse tools if provided
-        let tools: Option<Vec<NativeToolSpec>> = params.get("tools")
-            .and_then(|t| serde_json::from_value(t.clone()).ok());
-
-        // Parse tool_choice if provided
-        let tool_choice: Option<ToolChoice> = params.get("tool_choice")
-            .and_then(|tc| serde_json::from_value(tc.clone()).ok());
-
         Ok(TextGenerationRequest {
             messages,
-            system_prompt: params.get("system_prompt")
-                .or_else(|| params.get("systemPrompt"))
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string()),
-            model: params.get("model").and_then(|m| m.as_str()).map(|s| s.to_string()),
-            provider: params.get("provider").and_then(|p| p.as_str()).map(|s| s.to_string()),
-            temperature: params.get("temperature").and_then(|t| t.as_f64()).map(|t| t as f32),
-            max_tokens: params.get("max_tokens")
-                .or_else(|| params.get("maxTokens"))
-                .and_then(|t| t.as_u64())
-                .map(|t| t as u32),
-            top_p: params.get("top_p")
-                .or_else(|| params.get("topP"))
-                .and_then(|t| t.as_f64())
-                .map(|t| t as f32),
-            top_k: params.get("top_k")
-                .or_else(|| params.get("topK"))
-                .and_then(|t| t.as_u64())
-                .map(|t| t as u32),
-            stop_sequences: params.get("stop_sequences")
-                .or_else(|| params.get("stopSequences"))
-                .and_then(|s| serde_json::from_value(s.clone()).ok()),
-            tools,
-            tool_choice,
-            request_id: params.get("request_id")
-                .or_else(|| params.get("requestId"))
-                .and_then(|r| r.as_str())
-                .map(|s| s.to_string()),
-            user_id: params.get("user_id")
-                .or_else(|| params.get("userId"))
-                .and_then(|u| u.as_str())
-                .map(|s| s.to_string()),
-            room_id: params.get("room_id")
-                .or_else(|| params.get("roomId"))
-                .and_then(|r| r.as_str())
-                .map(|s| s.to_string()),
-            purpose: params.get("purpose").and_then(|p| p.as_str()).map(|s| s.to_string()),
+            system_prompt: p.string_opt_alias("system_prompt", "systemPrompt"),
+            model: p.str_opt("model").map(String::from),
+            provider: p.str_opt("provider").map(String::from),
+            temperature: p.f32_opt("temperature"),
+            max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
+            top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
+            top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
+            stop_sequences: p.json_opt("stop_sequences")
+                .or_else(|| p.json_opt("stopSequences")),
+            tools: p.json_opt("tools"),
+            tool_choice: p.json_opt("tool_choice"),
+            request_id: p.string_opt_alias("request_id", "requestId"),
+            user_id: p.string_opt_alias("user_id", "userId"),
+            room_id: p.string_opt_alias("room_id", "roomId"),
+            purpose: p.str_opt("purpose").map(String::from),
         })
     }
 

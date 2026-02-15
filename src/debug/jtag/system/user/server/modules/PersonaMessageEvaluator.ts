@@ -274,8 +274,9 @@ export class PersonaMessageEvaluator {
 
     // EARLY GATE: Directed message filter — when someone @mentions a specific persona, others stay silent.
     // Must run BEFORE expensive cognition work (plan formulation, working memory, state snapshots).
-    const isMentionedEarly = this.isPersonaMentioned(safeMessageText);
-    if (!isMentionedEarly && this.messageHasDirectedMention(safeMessageText)) {
+    // Combined into ONE Rust IPC call (replaces 2 inline TS string checks).
+    const mentionResult = await this.personaUser.rustCognition.checkMentions(safeMessageText);
+    if (!mentionResult.is_persona_mentioned && mentionResult.has_directed_mention) {
       this.log(`🎯 ${this.personaUser.displayName}: Message directed at another persona via @mention, staying silent (early gate)`);
       this.personaUser.logAIDecision('SILENT', 'Message directed at another persona via @mention', {
         message: safeMessageText.slice(0, 100),
@@ -502,8 +503,9 @@ export class PersonaMessageEvaluator {
       return;
     }
 
-    // STEP 3: Check if mentioned
-    const isMentioned = this.isPersonaMentioned(safeMessageText);
+    // STEP 3: Check if mentioned (Rust IPC — combined mention check)
+    const mentionCheck = await this.personaUser.rustCognition.checkMentions(safeMessageText);
+    const isMentioned = mentionCheck.is_persona_mentioned;
 
     // STEP 4: Check rate limiting (before expensive LLM call)
     if (this.personaUser.rateLimiter.isRateLimited(messageEntity.roomId)) {
@@ -546,7 +548,8 @@ export class PersonaMessageEvaluator {
 
     // STEP 6: Directed message filter — when someone @mentions a specific persona, others stay silent.
     // This prevents dog-piling where 5+ AIs all respond to "@deepseek fix the bug".
-    if (!isMentioned && this.messageHasDirectedMention(safeMessageText)) {
+    // Reuses mentionCheck from STEP 3 (same IPC call result).
+    if (!isMentioned && mentionCheck.has_directed_mention) {
       this.log(`🎯 ${this.personaUser.displayName}: Message directed at another persona via @mention, staying silent`);
       this.personaUser.logAIDecision('SILENT', 'Message directed at another persona via @mention', {
         message: safeMessageText.slice(0, 100),
@@ -883,46 +886,6 @@ export class PersonaMessageEvaluator {
       case 'file':
         return 'file';
     }
-  }
-
-  /**
-   * Check if this persona is mentioned in a message
-   * Supports @username mentions and channel directives
-   *
-   * TODO Phase 2: Use dedicated mention/directive events instead of text parsing
-   */
-  private isPersonaMentioned(safeMessageText: string): boolean {
-    const safeMessageTextLower = safeMessageText.toLowerCase();
-    const displayNameLower = this.personaUser.displayName.toLowerCase();
-    const uniqueIdLower = this.personaUser.entity.uniqueId?.toLowerCase() || '';
-
-    // Check for @mentions ANYWHERE in message: "@PersonaName" or "@uniqueid"
-    // Works like Discord/Slack - @ can be at start, middle, or end
-    if (safeMessageTextLower.includes(`@${displayNameLower}`) ||
-        safeMessageTextLower.includes(`@${uniqueIdLower}`)) {
-      return true;
-    }
-
-    // Check for direct address at START: "PersonaName," or "PersonaName:"
-    // e.g. "Teacher AI, explain closures" or "teacher-ai: what's up"
-    if (safeMessageTextLower.startsWith(displayNameLower + ',') ||
-        safeMessageTextLower.startsWith(displayNameLower + ':') ||
-        safeMessageTextLower.startsWith(uniqueIdLower + ',') ||
-        safeMessageTextLower.startsWith(uniqueIdLower + ':')) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Detect if a message contains @mentions directed at someone (any persona).
-   * Used to prevent dog-piling: if someone @mentions a specific AI, others stay silent.
-   */
-  private messageHasDirectedMention(text: string): boolean {
-    // Match @word patterns — the standard mention format in this system.
-    // Excludes email-like patterns (word@word) by requiring @ at start or after whitespace.
-    return /(?:^|\s)@[a-zA-Z][\w\s-]*/.test(text);
   }
 
   /**

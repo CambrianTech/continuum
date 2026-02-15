@@ -101,3 +101,31 @@ pub struct ValidationResult {
     #[ts(type = "number")]
     pub total_time_us: u64,
 }
+
+// --- Phase 3: Mention detection + response cleaning types ---
+
+/// Combined result of mention detection (1 IPC call for both checks)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/MentionCheckResult.ts")]
+pub struct MentionCheckResult {
+    /// Whether THIS persona is mentioned (@name, @uniqueid, or direct address at start)
+    pub is_persona_mentioned: bool,
+    /// Whether ANY directed @mention exists (used to prevent dog-piling)
+    pub has_directed_mention: bool,
+    /// Computation time in microseconds
+    #[ts(type = "number")]
+    pub compute_time_us: u64,
+}
+
+/// Result of response prefix cleaning
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/CleanedResponse.ts")]
+pub struct CleanedResponse {
+    /// Cleaned text with prefixes stripped
+    pub text: String,
+    /// Whether any cleaning was applied
+    pub was_cleaned: bool,
+    /// Computation time in microseconds
+    #[ts(type = "number")]
+    pub compute_time_us: u64,
+}

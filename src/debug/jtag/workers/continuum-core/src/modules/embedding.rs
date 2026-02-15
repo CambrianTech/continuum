@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{info, warn};
 
+use crate::utils::params::Params;
+
 /// Global model cache - models loaded on demand
 static MODEL_CACHE: OnceCell<Arc<Mutex<HashMap<String, TextEmbedding>>>> = OnceCell::new();
 
@@ -486,13 +488,9 @@ impl EmbeddingModule {
     }
 
     fn handle_generate(&self, params: &Value) -> Result<CommandResult, String> {
-        let texts: Vec<String> = params.get("texts")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'texts' array")?;
-
-        let model_name = params.get("model")
-            .and_then(|v| v.as_str())
-            .unwrap_or("AllMiniLML6V2");
+        let p = Params::new(params);
+        let texts: Vec<String> = p.json("texts")?;
+        let model_name = p.str_or("model", "AllMiniLML6V2");
 
         if texts.is_empty() {
             return Err("No texts provided".to_string());
@@ -583,9 +581,8 @@ impl EmbeddingModule {
     }
 
     fn handle_model_load(&self, params: &Value) -> Result<CommandResult, String> {
-        let model = params.get("model")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing 'model' parameter")?;
+        let p = Params::new(params);
+        let model = p.str("model")?;
 
         let start = Instant::now();
         get_or_load_model(model)?;
@@ -608,9 +605,8 @@ impl EmbeddingModule {
     }
 
     fn handle_model_info(&self, params: &Value) -> Result<CommandResult, String> {
-        let model = params.get("model")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing 'model' parameter")?;
+        let p = Params::new(params);
+        let model = p.str("model")?;
 
         let models = get_model_info_list();
         match models.into_iter().find(|m| m.name == model) {
@@ -622,9 +618,8 @@ impl EmbeddingModule {
     }
 
     fn handle_model_unload(&self, params: &Value) -> Result<CommandResult, String> {
-        let model = params.get("model")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing 'model' parameter")?;
+        let p = Params::new(params);
+        let model = p.str("model")?;
 
         let cache = get_model_cache();
         let mut models = cache.lock().map_err(|e| format!("Lock error: {e}"))?;
@@ -642,13 +637,9 @@ impl EmbeddingModule {
 
     /// Handle embedding/similarity - compute cosine similarity between two embeddings
     fn handle_similarity(&self, params: &Value) -> Result<CommandResult, String> {
-        let a: Vec<f32> = params.get("a")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'a' vector")?;
-
-        let b: Vec<f32> = params.get("b")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'b' vector")?;
+        let p = Params::new(params);
+        let a: Vec<f32> = p.json("a")?;
+        let b: Vec<f32> = p.json("b")?;
 
         if a.len() != b.len() {
             return Err(format!("Dimension mismatch: {} vs {}", a.len(), b.len()));
@@ -667,9 +658,8 @@ impl EmbeddingModule {
     /// Takes an array of embeddings, returns lower-triangular similarity matrix.
     /// For n embeddings, returns n*(n-1)/2 similarity values.
     fn handle_similarity_matrix(&self, params: &Value) -> Result<CommandResult, String> {
-        let embeddings: Vec<Vec<f32>> = params.get("embeddings")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'embeddings' array")?;
+        let p = Params::new(params);
+        let embeddings: Vec<Vec<f32>> = p.json("embeddings")?;
 
         let n = embeddings.len();
         if n < 2 {
@@ -725,21 +715,11 @@ impl EmbeddingModule {
     /// Takes a query embedding and array of target embeddings, returns indices
     /// and similarities of top-k matches. Parallelized with Rayon.
     fn handle_top_k(&self, params: &Value) -> Result<CommandResult, String> {
-        let query: Vec<f32> = params.get("query")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'query' vector")?;
-
-        let targets: Vec<Vec<f32>> = params.get("targets")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'targets' array")?;
-
-        let k = params.get("k")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10) as usize;
-
-        let threshold = params.get("threshold")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32;
+        let p = Params::new(params);
+        let query: Vec<f32> = p.json("query")?;
+        let targets: Vec<Vec<f32>> = p.json("targets")?;
+        let k = p.u64_or("k", 10) as usize;
+        let threshold = p.f64_or("threshold", 0.0) as f32;
 
         if targets.is_empty() {
             return Ok(CommandResult::Json(json!({
@@ -827,17 +807,10 @@ impl EmbeddingModule {
     /// Takes embeddings and clustering parameters, returns cluster assignments.
     /// Full clustering algorithm in Rust (similarity matrix + connected components).
     fn handle_cluster(&self, params: &Value) -> Result<CommandResult, String> {
-        let embeddings: Vec<Vec<f32>> = params.get("embeddings")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .ok_or("Missing or invalid 'embeddings' array")?;
-
-        let min_similarity = params.get("minSimilarity")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.7) as f32;
-
-        let min_cluster_size = params.get("minClusterSize")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let p = Params::new(params);
+        let embeddings: Vec<Vec<f32>> = p.json("embeddings")?;
+        let min_similarity = p.f64_or("minSimilarity", 0.7) as f32;
+        let min_cluster_size = p.u64_or("minClusterSize", 2) as usize;
 
         let n = embeddings.len();
         if n < min_cluster_size {

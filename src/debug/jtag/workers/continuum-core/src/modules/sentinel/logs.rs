@@ -4,13 +4,13 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 use crate::runtime::CommandResult;
+use crate::utils::params::Params;
 use super::types::LogStreamInfo;
 
 /// List log streams for a sentinel handle
 pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandResult, String> {
-    let handle_id = params.get("handle")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing required parameter: handle")?;
+    let p = Params::new(&params);
+    let handle_id = p.str("handle")?;
 
     let logs_dir = logs_base_dir.join(handle_id);
 
@@ -59,21 +59,11 @@ pub async fn list_logs(logs_base_dir: &Path, params: Value) -> Result<CommandRes
 
 /// Read a log stream with offset and limit
 pub async fn read_log(logs_base_dir: &Path, params: Value) -> Result<CommandResult, String> {
-    let handle_id = params.get("handle")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing required parameter: handle")?;
-
-    let stream = params.get("stream")
-        .and_then(|v| v.as_str())
-        .unwrap_or("combined");
-
-    let offset = params.get("offset")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as usize;
-
-    let limit = params.get("limit")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(1000) as usize;
+    let p = Params::new(&params);
+    let handle_id = p.str("handle")?;
+    let stream = p.str_or("stream", "combined");
+    let offset = p.u64_or("offset", 0) as usize;
+    let limit = p.u64_or("limit", 1000) as usize;
 
     let logs_dir = logs_base_dir.join(handle_id);
     let log_path = logs_dir.join(format!("{stream}.log"));
@@ -115,17 +105,10 @@ pub async fn read_log(logs_base_dir: &Path, params: Value) -> Result<CommandResu
 
 /// Tail a log stream (last N lines)
 pub async fn tail_log(logs_base_dir: &Path, params: Value) -> Result<CommandResult, String> {
-    let handle_id = params.get("handle")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing required parameter: handle")?;
-
-    let stream = params.get("stream")
-        .and_then(|v| v.as_str())
-        .unwrap_or("combined");
-
-    let lines_count = params.get("lines")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let p = Params::new(&params);
+    let handle_id = p.str("handle")?;
+    let stream = p.str_or("stream", "combined");
+    let lines_count = p.u64_or("lines", 20) as usize;
 
     let logs_dir = logs_base_dir.join(handle_id);
     let log_path = logs_dir.join(format!("{stream}.log"));

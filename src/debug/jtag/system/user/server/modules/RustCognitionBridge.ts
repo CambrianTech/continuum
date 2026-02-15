@@ -29,6 +29,8 @@ import type {
   SemanticLoopResult,
   ConversationMessage,
   ValidationResult,
+  MentionCheckResult,
+  CleanedResponse,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -58,6 +60,7 @@ export class RustCognitionBridge {
   private readonly client: RustCoreIPCClient;
   private readonly personaId: UUID;
   private readonly personaName: string;
+  private readonly personaUniqueId: string;
   private readonly logger: SubsystemLogger;
   private connected = false;
   private engineCreated = false;
@@ -78,6 +81,7 @@ export class RustCognitionBridge {
   constructor(personaUser: PersonaUserForRustCognition) {
     this.personaId = personaUser.id;
     this.personaName = personaUser.displayName;
+    this.personaUniqueId = personaUser.entity.uniqueId;
     this.client = new RustCoreIPCClient(SOCKET_PATH);
 
     // Logger writes to persona's logs directory: .continuum/personas/{uniqueId}/logs/rust-cognition.log
@@ -612,6 +616,62 @@ export class RustCognitionBridge {
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`checkSemanticLoop FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 3: Mention Detection + Response Cleaning — 2 combined IPC calls
+  // ========================================================================
+
+  /**
+   * Combined mention detection: checks both is_persona_mentioned and has_directed_mention
+   * in ONE IPC call. Replaces two inline TS string checks.
+   * THROWS on failure
+   */
+  async checkMentions(messageText: string): Promise<MentionCheckResult> {
+    this.assertReady('checkMentions');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCheckMentions(
+        messageText,
+        this.personaName,
+        this.personaUniqueId
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Mentions: persona=${result.is_persona_mentioned}, directed=${result.has_directed_mention}, compute=${result.compute_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`checkMentions FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Clean AI response by stripping unwanted prefixes (timestamps, names, markdown).
+   * Replaces ResponseCleaner.clean() in TypeScript.
+   * THROWS on failure
+   */
+  async cleanResponse(responseText: string): Promise<CleanedResponse> {
+    this.assertReady('cleanResponse');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCleanResponse(responseText);
+      const elapsed = performance.now() - start;
+
+      if (result.was_cleaned) {
+        this.logger.info(`Response cleaned: compute=${result.compute_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      }
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`cleanResponse FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }
