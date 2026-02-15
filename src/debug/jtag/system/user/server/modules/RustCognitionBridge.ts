@@ -28,6 +28,7 @@ import type {
   TextSimilarityResult,
   SemanticLoopResult,
   ConversationMessage,
+  ValidationResult,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -611,6 +612,49 @@ export class RustCognitionBridge {
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`checkSemanticLoop FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 2: Combined Validation — 4 gates in 1 IPC call
+  // ========================================================================
+
+  /**
+   * Run ALL response validation gates in a single Rust IPC call:
+   * 1. Garbage detection (8 checks)
+   * 2. Response loop detection (per-persona DashMap state)
+   * 3. Truncated tool call detection
+   * 4. Semantic loop detection
+   * THROWS on failure
+   */
+  async validateResponse(
+    responseText: string,
+    hasToolCalls: boolean,
+    conversationHistory?: ConversationMessage[]
+  ): Promise<ValidationResult> {
+    this.assertReady('validateResponse');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionValidateResponse(
+        this.personaId,
+        responseText,
+        hasToolCalls,
+        conversationHistory
+      );
+      const elapsed = performance.now() - start;
+
+      if (!result.passed) {
+        this.logger.warn(`Validation FAILED: gate=${result.gate_failed}, compute=${result.total_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      } else {
+        this.logger.info(`Validation passed: compute=${result.total_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      }
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`validateResponse FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

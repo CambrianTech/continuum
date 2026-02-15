@@ -8,8 +8,12 @@
 //! Phase 3: Mention detection, response cleaning
 //! Phase 4: Conversation heuristics
 
+pub mod garbage_detection;
+pub mod loop_detection;
 pub mod similarity;
 pub mod types;
 
 pub use similarity::{jaccard_char_bigram_similarity, jaccard_ngram_similarity, check_semantic_loop};
+pub use garbage_detection::is_garbage;
+pub use loop_detection::{LoopDetector, has_truncated_tool_call};
 pub use types::*;

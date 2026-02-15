@@ -54,12 +54,12 @@ import { ResponseCleaner } from './ResponseCleaner';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
 // import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
-import { GarbageDetector } from '../../../ai/server/GarbageDetector';
+// GarbageDetector — moved to Rust (persona/text_analysis/garbage_detection.rs)
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
-import type { SemanticLoopResult } from '../../../../shared/generated';
+// SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 // DataCreate import removed — response posting now uses ORM.store() directly
@@ -115,121 +115,11 @@ export class PersonaResponseGenerator {
   private _rustBridge: RustCognitionBridge | null = null;
 
   /**
-   * RESPONSE-LEVEL LOOP DETECTION
-   *
-   * Tracks recent AI response hashes per persona to detect infinite loops.
-   * This catches loops BEFORE tool parsing, which is critical because:
-   * 1. Truncated responses never reach tool parsing
-   * 2. Tool-level detection only catches tool call loops, not content loops
-   * 3. DeepSeek was stuck repeating the same governance proposal 15+ times
-   *
-   * Map<personaId, Array<{hash: string, timestamp: number}>>
-   */
-  private static readonly recentResponseHashes: Map<string, Array<{ hash: string; timestamp: number }>> = new Map();
-  private static readonly RESPONSE_LOOP_WINDOW_MS = 600000; // 10 minutes (DeepSeek generates 34k tokens = slow)
-  private static readonly RESPONSE_LOOP_THRESHOLD = 3; // Block after 3 similar responses
-  private static readonly RESPONSE_HASH_LENGTH = 200; // First 200 chars for comparison
-
-  /**
-   * Create a hash of response content for loop detection
-   * Uses first N characters, normalized (lowercase, trimmed, no whitespace)
-   */
-  private static hashResponse(text: string): string {
-    const normalized = text
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, ' ')  // Normalize whitespace
-      .slice(0, PersonaResponseGenerator.RESPONSE_HASH_LENGTH);
-
-    // Simple hash: just use the normalized string as-is
-    // Could use crypto.createHash('md5') but not needed for loop detection
-    return normalized;
-  }
-
-  /**
-   * Check if response is a loop (appears too frequently in recent history)
-   * Returns true if blocked (is a loop), false if allowed
-   */
-  private async isResponseLoop(responseText: string): Promise<boolean> {
-    const hash = PersonaResponseGenerator.hashResponse(responseText);
-    const now = Date.now();
-
-    // Get or create recent responses list for this persona
-    let recentResponses = PersonaResponseGenerator.recentResponseHashes.get(this.personaId) || [];
-
-    // Clean up old entries outside the window
-    recentResponses = recentResponses.filter(
-      entry => now - entry.timestamp < PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS
-    );
-
-    // Count how many times similar response appears (using similarity threshold via Rust IPC)
-    let duplicateCount = 0;
-    for (const entry of recentResponses) {
-      const similarity = await this.calculateSimilarity(entry.hash, hash);
-      if (similarity > 0.8) duplicateCount++;
-    }
-
-    // Record this response (even if it will be blocked)
-    recentResponses.push({ hash, timestamp: now });
-    PersonaResponseGenerator.recentResponseHashes.set(this.personaId, recentResponses);
-
-    // Block if threshold exceeded
-    if (duplicateCount >= PersonaResponseGenerator.RESPONSE_LOOP_THRESHOLD) {
-      this.log(`🔁 RESPONSE LOOP DETECTED: "${hash.slice(0, 50)}..." appeared ${duplicateCount + 1}x in ${PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS / 1000}s - BLOCKING`);
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Set Rust cognition bridge (called after PersonaUser creates it)
+   * Set Rust cognition bridge (called after PersonaUser creates it).
+   * All validation gates (garbage, loop, truncated tool, semantic loop) are in Rust.
    */
   setRustBridge(bridge: RustCognitionBridge): void {
     this._rustBridge = bridge;
-  }
-
-  /**
-   * Character-bigram Jaccard similarity via Rust IPC.
-   * Used for response loop detection (comparing response hashes).
-   */
-  private async calculateSimilarity(a: string, b: string): Promise<number> {
-    if (a === b) return 1;
-    if (a.length === 0 || b.length === 0) return 0;
-
-    if (!this._rustBridge) {
-      throw new Error('Rust bridge not initialized — cannot compute similarity');
-    }
-
-    const result = await this._rustBridge.textSimilarity(a, b);
-    return result.char_similarity;
-  }
-
-  /**
-   * Clear response loop history for this persona
-   * Call this when context changes significantly (e.g., room switch, manual reset)
-   */
-  clearResponseLoopHistory(): void {
-    PersonaResponseGenerator.recentResponseHashes.delete(this.personaId);
-    this.log(`🧹 Cleared response loop history for ${this.personaName}`);
-  }
-
-  /**
-   * Semantic loop detection via Rust IPC.
-   * Compares response against conversation history using word n-gram Jaccard.
-   * Blocks at 95% similarity, warns at 80%.
-   *
-   * Replaces inline jaccardSimilarity + checkSemanticLoop (both deleted).
-   */
-  private async checkSemanticLoop(
-    responseText: string,
-    conversationHistory: Array<{ role: string; content: string; name?: string }>
-  ): Promise<SemanticLoopResult> {
-    if (!this._rustBridge) {
-      throw new Error('Rust bridge not initialized — cannot check semantic loop');
-    }
-
-    return this._rustBridge.checkSemanticLoop(responseText, conversationHistory);
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -1026,20 +916,42 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           aiResponse.text = cleanedResponse;
         }
 
-        // 🔧 PHASE 3.3.5a: GARBAGE DETECTION
-        // Detect and reject garbage output (Unicode garbage, repetition, encoding errors)
-        // This catches model failures that produce gibberish instead of coherent text.
-        // Skip when the response has native tool calls — models with function calling often
-        // return empty text + tool_calls, which is valid (the agent loop will execute them).
-        const hasToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
-        const garbageCheck = hasToolCalls ? { isGarbage: false, reason: '', details: '', score: 0 } : GarbageDetector.isGarbage(aiResponse.text);
-        if (garbageCheck.isGarbage) {
-          this.log(`🗑️ ${this.personaName}: [PHASE 3.3.5a] GARBAGE DETECTED (${garbageCheck.reason}: ${garbageCheck.details})`);
+        // 🔧 PHASE 3.3.5: COMBINED VALIDATION GATES (1 Rust IPC call)
+        // Runs 4 gates in Rust: garbage detection, response loop, truncated tool call, semantic loop.
+        // Response cleaner (above) stays in TS because it mutates the text.
+        const hasToolCalls = !!(aiResponse.toolCalls && aiResponse.toolCalls.length > 0);
+
+        if (!this._rustBridge) {
+          throw new Error('Rust bridge not initialized — cannot validate response');
+        }
+
+        const validation = await this._rustBridge.validateResponse(
+          aiResponse.text,
+          hasToolCalls,
+          fullRAGContext.conversationHistory
+        );
+
+        if (!validation.passed) {
+          const gate = validation.gate_failed ?? 'unknown';
+          this.log(`🚫 ${this.personaName}: [PHASE 3.3.5] Validation gate FAILED: ${gate} (${validation.total_time_us}us)`);
 
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators (fire-and-forget)
+          // Build gate-specific event data
+          const gateConfidence = gate === 'garbage' ? validation.garbage_result.score
+            : gate === 'response_loop' ? 0.9
+            : gate === 'truncated_tool_call' ? 0.95
+            : gate === 'semantic_loop' ? validation.semantic_result.similarity
+            : 0.8;
+
+          const gateReason = gate === 'garbage' ? `Garbage output: ${validation.garbage_result.reason} - ${validation.garbage_result.details}`
+            : gate === 'response_loop' ? `Response loop detected - ${validation.loop_duplicate_count} duplicates`
+            : gate === 'truncated_tool_call' ? 'Truncated tool call detected - response cut off mid-tool-call'
+            : gate === 'semantic_loop' ? validation.semantic_result.reason
+            : `Validation failed: ${gate}`;
+
+          // Emit DECIDED_SILENT event (fire-and-forget)
           if (this.client) {
             Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
@@ -1051,120 +963,18 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 messageId: originalMessage.id,
                 isHumanMessage: originalMessage.senderType === 'human',
                 timestamp: Date.now(),
-                confidence: garbageCheck.score,
-                reason: `Garbage output detected: ${garbageCheck.reason} - ${garbageCheck.details}`,
-                gatingModel: 'garbage-detector'
+                confidence: gateConfidence,
+                reason: gateReason,
+                gatingModel: `rust-${gate}`
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
-          // Return failure so caller knows this wasn't successful
-          return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${garbageCheck.reason}` };
-        }
-
-        // 🔧 PHASE 3.3.5b: RESPONSE-LEVEL LOOP DETECTION
-        // Check if this AI is stuck in a loop BEFORE tool parsing
-        // This catches cases where:
-        // - Response is truncated mid-tool-call (DeepSeek's issue)
-        // - AI repeats same content with minor variations
-        // - Tool-level detection would miss it
-        if (!hasToolCalls && await this.isResponseLoop(aiResponse.text)) {
-          this.log(`🔁 ${this.personaName}: [PHASE 3.3.5b] Response loop detected - DISCARDING response`);
-
-          // Release inference slot
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-
-          // Emit event to clear UI indicators (fire-and-forget)
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: 0.9,
-                reason: 'Response loop detected - same content repeated 3+ times',
-                gatingModel: 'response-loop-detector'
-              },
-              {
-                scope: EVENT_SCOPES.ROOM,
-                scopeId: originalMessage.roomId
-              }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+          // Garbage returns failure; loops/truncated return redundant
+          if (gate === 'garbage') {
+            return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${validation.garbage_result.reason}` };
           }
-
-          // Return early - treat as redundant (don't post this looping response)
-          return { success: true, wasRedundant: true, storedToolResultIds: [] };
-        }
-
-        // 🔧 PHASE 3.3.5c: TRUNCATED TOOL CALL DETECTION
-        // Detect tool calls that were cut off mid-generation (DeepSeek's issue)
-        // If we see <tool_use> or <tool  but no matching closing tag, the response is truncated
-        const hasToolStart = aiResponse.text.includes('<tool_use>') || aiResponse.text.includes('<tool ');
-        const hasToolEnd = aiResponse.text.includes('</tool_use>') || aiResponse.text.includes('</tool>');
-        if (hasToolStart && !hasToolEnd) {
-          this.log(`⚠️ ${this.personaName}: [PHASE 3.3.5c] TRUNCATED TOOL CALL detected - blocking response to prevent loop`);
-          this.log(`   Response ends with: "${(aiResponse.text ?? '').slice(-100)}"`);
-
-          // Treat truncated tool calls the same as loops - they will just repeat forever
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: 0.95,
-                reason: 'Truncated tool call detected - response cut off mid-tool-call',
-                gatingModel: 'truncated-tool-detector'
-              },
-              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-          }
-          return { success: true, wasRedundant: true, storedToolResultIds: [] };
-        }
-
-        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION (inline, ~0ms)
-        // Uses Jaccard n-gram similarity against already-loaded RAG context.
-        // Previous: AiDetectSemanticLoop.execute() — embedding IPC + DB query (~20 seconds)
-        // Now: inline text comparison against in-memory conversation history (~0ms)
-        const semanticCheck = await this.checkSemanticLoop(aiResponse.text, fullRAGContext.conversationHistory);
-        if (semanticCheck.should_block) {
-          this.log(`🚫 ${this.personaName}: [PHASE 3.3.5d] SEMANTIC LOOP BLOCKED (${semanticCheck.similarity.toFixed(2)} similarity)`);
-
-          // Release inference slot
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-
-          // Emit event to clear UI indicators (fire-and-forget)
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: semanticCheck.similarity,
-                reason: semanticCheck.reason,
-                gatingModel: 'semantic-loop-detector'
-              },
-              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-          }
-
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 

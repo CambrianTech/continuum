@@ -12,6 +12,7 @@ import type {
 	TextSimilarityResult,
 	SemanticLoopResult,
 	ConversationMessage,
+	ValidationResult,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -34,6 +35,12 @@ export interface CognitionMixin {
 	cognitionGetState(personaId: string): Promise<PersonaState & { service_cadence_ms: number }>;
 	cognitionTextSimilarity(text1: string, text2: string): Promise<TextSimilarityResult>;
 	cognitionCheckSemanticLoop(responseText: string, history: ConversationMessage[], maxHistory?: number): Promise<SemanticLoopResult>;
+	cognitionValidateResponse(
+		personaId: string,
+		responseText: string,
+		hasToolCalls: boolean,
+		conversationHistory?: ConversationMessage[]
+	): Promise<ValidationResult>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -188,6 +195,31 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as SemanticLoopResult;
+		}
+
+		/**
+		 * Combined validation: garbage + response loop + truncated tool + semantic loop.
+		 * ONE IPC call replaces 4 separate validation gates.
+		 */
+		async cognitionValidateResponse(
+			personaId: string,
+			responseText: string,
+			hasToolCalls: boolean,
+			conversationHistory?: ConversationMessage[]
+		): Promise<ValidationResult> {
+			const response = await this.request({
+				command: 'cognition/validate-response',
+				persona_id: personaId,
+				response_text: responseText,
+				has_tool_calls: hasToolCalls,
+				conversation_history: conversationHistory ?? [],
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to validate response');
+			}
+
+			return response.result as ValidationResult;
 		}
 	};
 }

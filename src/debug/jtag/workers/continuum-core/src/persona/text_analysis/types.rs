@@ -40,3 +40,64 @@ pub struct ConversationMessage {
     #[ts(optional)]
     pub name: Option<String>,
 }
+
+// --- Phase 2: Validation types ---
+
+/// Garbage check reason codes (matches TypeScript GarbageReason exactly)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/GarbageReason.ts")]
+pub enum GarbageReason {
+    #[serde(rename = "")]
+    None,
+    #[serde(rename = "unicode_garbage")]
+    UnicodeGarbage,
+    #[serde(rename = "repetition")]
+    Repetition,
+    #[serde(rename = "encoding_errors")]
+    EncodingErrors,
+    #[serde(rename = "empty")]
+    Empty,
+    #[serde(rename = "truncation_marker")]
+    TruncationMarker,
+    #[serde(rename = "excessive_punctuation")]
+    ExcessivePunctuation,
+    #[serde(rename = "token_boundary_garbage")]
+    TokenBoundaryGarbage,
+    #[serde(rename = "inference_error")]
+    InferenceError,
+}
+
+/// Result of garbage detection
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/GarbageCheckResult.ts")]
+pub struct GarbageCheckResult {
+    pub is_garbage: bool,
+    pub reason: GarbageReason,
+    pub details: String,
+    pub score: f64,
+}
+
+/// Combined result of ALL validation gates (1 IPC call replaces 4 gates)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/ValidationResult.ts")]
+pub struct ValidationResult {
+    /// Whether all gates passed
+    pub passed: bool,
+    /// Which gate failed (if any)
+    #[ts(optional)]
+    pub gate_failed: Option<String>,
+    /// Garbage detection result
+    pub garbage_result: GarbageCheckResult,
+    /// Response loop detection
+    pub is_response_loop: bool,
+    /// Number of duplicate responses found in window
+    #[ts(type = "number")]
+    pub loop_duplicate_count: u64,
+    /// Truncated tool call detected
+    pub has_truncated_tool_call: bool,
+    /// Semantic loop check result
+    pub semantic_result: SemanticLoopResult,
+    /// Total validation time in microseconds
+    #[ts(type = "number")]
+    pub total_time_us: u64,
+}

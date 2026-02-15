@@ -11,6 +11,7 @@
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
 use crate::persona::text_analysis;
+use crate::persona::text_analysis::LoopDetector;
 use crate::rag::RagEngine;
 use crate::logging::TimingGuard;
 use crate::log_info;
@@ -29,6 +30,8 @@ pub struct CognitionState {
     pub inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
     /// Shared RAG engine.
     pub rag_engine: Arc<RagEngine>,
+    /// Per-persona response loop detector (Phase 2).
+    pub loop_detector: LoopDetector,
 }
 
 impl CognitionState {
@@ -37,6 +40,7 @@ impl CognitionState {
             engines: Arc::new(DashMap::new()),
             inboxes: Arc::new(DashMap::new()),
             rag_engine,
+            loop_detector: LoopDetector::new(),
         }
     }
 
@@ -46,7 +50,7 @@ impl CognitionState {
         inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
         rag_engine: Arc<RagEngine>,
     ) -> Self {
-        Self { engines, inboxes, rag_engine }
+        Self { engines, inboxes, rag_engine, loop_detector: LoopDetector::new() }
     }
 }
 
@@ -333,6 +337,136 @@ impl ServiceModule for CognitionModule {
                     "should_block": result.should_block,
                     "similarity": result.similarity,
                     "reason": result.reason,
+                })))
+            }
+
+            // ================================================================
+            // Validation commands (Phase 2: Combined validation gates)
+            // ================================================================
+
+            "cognition/validate-response" => {
+                let _timer = TimingGuard::new("module", "cognition_validate_response");
+                let start = std::time::Instant::now();
+
+                let persona_id = params.get("persona_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing persona_id")?;
+                let response_text = params.get("response_text")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing response_text")?;
+                let has_tool_calls = params.get("has_tool_calls")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let persona_uuid = Uuid::parse_str(persona_id)
+                    .map_err(|e| format!("Invalid persona_id: {e}"))?;
+
+                // Gate 1: Garbage detection (skip if has native tool calls — empty text + tools is valid)
+                let garbage_result = if has_tool_calls {
+                    text_analysis::GarbageCheckResult {
+                        is_garbage: false,
+                        reason: text_analysis::GarbageReason::None,
+                        details: String::new(),
+                        score: 0.0,
+                    }
+                } else {
+                    text_analysis::is_garbage(response_text)
+                };
+
+                if garbage_result.is_garbage {
+                    let total_us = start.elapsed().as_micros() as u64;
+                    return Ok(CommandResult::Json(serde_json::json!({
+                        "passed": false,
+                        "gate_failed": "garbage",
+                        "garbage_result": garbage_result,
+                        "is_response_loop": false,
+                        "loop_duplicate_count": 0,
+                        "has_truncated_tool_call": false,
+                        "semantic_result": { "should_block": false, "similarity": 0.0, "reason": "" },
+                        "total_time_us": total_us,
+                    })));
+                }
+
+                // Gate 2: Response loop detection (skip if has tool calls)
+                let (is_loop, dup_count) = if has_tool_calls {
+                    (false, 0)
+                } else {
+                    self.state.loop_detector.check_response_loop(persona_uuid, response_text)
+                };
+
+                if is_loop {
+                    let total_us = start.elapsed().as_micros() as u64;
+                    return Ok(CommandResult::Json(serde_json::json!({
+                        "passed": false,
+                        "gate_failed": "response_loop",
+                        "garbage_result": garbage_result,
+                        "is_response_loop": true,
+                        "loop_duplicate_count": dup_count,
+                        "has_truncated_tool_call": false,
+                        "semantic_result": { "should_block": false, "similarity": 0.0, "reason": "" },
+                        "total_time_us": total_us,
+                    })));
+                }
+
+                // Gate 3: Truncated tool call detection
+                let truncated = text_analysis::has_truncated_tool_call(response_text);
+                if truncated {
+                    let total_us = start.elapsed().as_micros() as u64;
+                    return Ok(CommandResult::Json(serde_json::json!({
+                        "passed": false,
+                        "gate_failed": "truncated_tool_call",
+                        "garbage_result": garbage_result,
+                        "is_response_loop": false,
+                        "loop_duplicate_count": dup_count,
+                        "has_truncated_tool_call": true,
+                        "semantic_result": { "should_block": false, "similarity": 0.0, "reason": "" },
+                        "total_time_us": total_us,
+                    })));
+                }
+
+                // Gate 4: Semantic loop detection
+                let history_arr = params.get("conversation_history")
+                    .and_then(|v| v.as_array());
+
+                let semantic_result = if let Some(arr) = history_arr {
+                    let history: Vec<text_analysis::ConversationMessage> = arr.iter()
+                        .filter_map(|item| {
+                            let role = item.get("role")?.as_str()?;
+                            let content = item.get("content")?.as_str()?;
+                            let name = item.get("name").and_then(|n| n.as_str()).map(String::from);
+                            Some(text_analysis::ConversationMessage {
+                                role: role.to_string(),
+                                content: content.to_string(),
+                                name,
+                            })
+                        })
+                        .collect();
+                    text_analysis::check_semantic_loop(response_text, &history, 10)
+                } else {
+                    text_analysis::SemanticLoopResult {
+                        should_block: false,
+                        similarity: 0.0,
+                        reason: "No conversation history provided".to_string(),
+                    }
+                };
+
+                let passed = !semantic_result.should_block;
+                let gate_failed = if semantic_result.should_block {
+                    Some("semantic_loop")
+                } else {
+                    None
+                };
+
+                let total_us = start.elapsed().as_micros() as u64;
+                Ok(CommandResult::Json(serde_json::json!({
+                    "passed": passed,
+                    "gate_failed": gate_failed,
+                    "garbage_result": garbage_result,
+                    "is_response_loop": false,
+                    "loop_duplicate_count": dup_count,
+                    "has_truncated_tool_call": false,
+                    "semantic_result": semantic_result,
+                    "total_time_us": total_us,
                 })))
             }
 
