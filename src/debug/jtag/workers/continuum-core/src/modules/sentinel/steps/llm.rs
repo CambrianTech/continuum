@@ -154,9 +154,10 @@ async fn execute_agent_mode(
         agent_params["maxIterations"] = json!(max_iter);
     }
 
-    // Route to TypeScript ai/agent via CommandExecutor (Unix socket IPC)
-    // This transparently handles Rust-or-TypeScript routing
-    let json = runtime::command_executor::execute_json("ai/agent", agent_params).await
+    // Route to TypeScript ai/agent directly via Unix socket (bypasses Rust registry).
+    // MUST use execute_ts_json — the ai/ prefix is claimed by Rust's ai_provider module,
+    // so execute_json would route back to Rust and never reach TypeScript.
+    let json = runtime::command_executor::execute_ts_json("ai/agent", agent_params).await
         .map_err(|e| format!("[{}] LLM agent step error: {}", pipeline_ctx.handle_id, e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;

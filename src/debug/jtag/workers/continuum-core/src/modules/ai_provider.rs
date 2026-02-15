@@ -464,7 +464,15 @@ impl ServiceModule for AIProviderModule {
                 })))
             }
 
-            _ => Err(format!("Unknown ai command: {}", command)),
+            _ => {
+                // Forward unknown ai/* commands directly to TypeScript via Unix socket.
+                // MUST use execute_ts (not execute) to bypass Rust registry — otherwise
+                // the registry matches "ai/" prefix back to this module → infinite recursion.
+                use crate::runtime::command_executor;
+                let log = crate::runtime::logger("ai_provider");
+                log.info(&format!("Forwarding '{}' to TypeScript via Unix socket (bypassing registry)", command));
+                command_executor::execute_ts(command, params).await
+            }
         }
     }
 

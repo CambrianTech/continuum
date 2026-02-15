@@ -66,6 +66,19 @@ impl CommandExecutor {
         }
     }
 
+    /// Execute a command ONLY via TypeScript (bypasses Rust registry).
+    /// Use this when a Rust module needs to forward to a TypeScript-implemented
+    /// command that shares the same prefix (avoids infinite recursion).
+    pub async fn execute_ts(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        let json = self.execute_ts_command(command, params).await?;
+        Ok(CommandResult::Json(json))
+    }
+
+    /// Convenience: execute via TypeScript only and extract JSON directly
+    pub async fn execute_ts_json(&self, command: &str, params: Value) -> Result<Value, String> {
+        self.execute_ts_command(command, params).await
+    }
+
     /// Execute command via TypeScript CommandRouterServer (Unix socket)
     ///
     /// Protocol:
@@ -158,6 +171,18 @@ pub async fn execute(command: &str, params: Value) -> Result<CommandResult, Stri
 /// Execute a command and extract JSON result (convenience for most use cases)
 pub async fn execute_json(command: &str, params: Value) -> Result<Value, String> {
     executor().execute_json(command, params).await
+}
+
+/// Execute a command ONLY via TypeScript, bypassing Rust registry.
+/// Use when a Rust module needs to forward to a TypeScript command
+/// that shares the same prefix (e.g., ai_provider forwarding ai/agent).
+pub async fn execute_ts(command: &str, params: Value) -> Result<CommandResult, String> {
+    executor().execute_ts(command, params).await
+}
+
+/// Execute via TypeScript only and extract JSON (convenience)
+pub async fn execute_ts_json(command: &str, params: Value) -> Result<Value, String> {
+    executor().execute_ts_json(command, params).await
 }
 
 #[cfg(test)]
