@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-15T04:43:34.745Z",
+  "generated": "2026-02-15T13:14:35.358Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -7381,6 +7381,67 @@
           "type": "boolean",
           "required": false,
           "description": "includeHumanObserver parameter"
+        }
+      }
+    },
+    {
+      "name": "ai/agent",
+      "description": "Universal agentic loop command. Generates text via LLM, parses tool calls, executes tools, feeds results back, and re-generates until the model stops calling tools.",
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": false,
+          "description": "prompt parameter"
+        },
+        "messages": {
+          "type": "array",
+          "required": false,
+          "description": "messages parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "temperature parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "tools": {
+          "type": "array",
+          "required": false,
+          "description": "tools parameter"
+        },
+        "maxIterations": {
+          "type": "number",
+          "required": false,
+          "description": "maxIterations parameter"
+        },
+        "callerId": {
+          "type": "string",
+          "required": false,
+          "description": "callerId parameter"
+        },
+        "sentinelHandle": {
+          "type": "string",
+          "required": false,
+          "description": "sentinelHandle parameter"
         }
       }
     },

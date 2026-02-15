@@ -122,6 +122,7 @@ const ADMIN_COMMANDS = new Set([
   'user/set-role',                 // Role assignment
   'secrets/set',                   // Secret management
   'secrets/delete',                // Secret management
+  'ai/agent',                      // Prevent recursive self-invocation by personas
 ]);
 
 /**
@@ -193,8 +194,9 @@ export async function refreshToolDefinitions(): Promise<void> {
   try {
     log('Refreshing tool cache from Commands system...');
 
-    // Query list command to discover all available commands
-    const result = await List.execute({}) as unknown as ListResult;
+    // Query list command to discover all available commands with full metadata
+    // includeDescription + includeSignature ensures we get param schemas and descriptions
+    const result = await List.execute({ includeDescription: true, includeSignature: true }) as unknown as ListResult;
 
     if (!result.success || !result.commands) {
       log(`❌ Failed to refresh tools: ${result.error}`);

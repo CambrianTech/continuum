@@ -67,7 +67,11 @@ pub enum PipelineStep {
         working_dir: Option<String>,
     },
 
-    /// LLM inference via AIProviderModule
+    /// LLM inference via AIProviderModule (default) or agentic loop via ai/agent command
+    ///
+    /// When `agentMode` is false/absent: fast in-process Rust call to ai/generate.
+    /// When `agentMode` is true: routes to TypeScript ai/agent command via CommandExecutor
+    /// for full tool-calling loop with 243+ discoverable tools.
     Llm {
         prompt: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +84,15 @@ pub enum PipelineStep {
         temperature: Option<f32>,
         #[serde(default, skip_serializing_if = "Option::is_none", rename = "systemPrompt")]
         system_prompt: Option<String>,
+        /// Tool subset for agent mode (undefined = all public, [] = none)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tools: Option<Vec<String>>,
+        /// Enable agentic loop: LLM can call tools, see results, re-generate
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "agentMode")]
+        agent_mode: Option<bool>,
+        /// Override safety cap for tool iterations in agent mode
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxIterations")]
+        max_iterations: Option<u32>,
     },
 
     /// Route to any command (Rust or TypeScript) via CommandExecutor

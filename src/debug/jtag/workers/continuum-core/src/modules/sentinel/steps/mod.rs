@@ -28,7 +28,7 @@ pub fn execute_step<'a>(
             PipelineStep::Shell { cmd, args, timeout_secs, working_dir } => {
                 shell::execute(cmd, args, timeout_secs.unwrap_or(300), working_dir.as_ref(), index, ctx, pipeline_ctx).await
             }
-            PipelineStep::Llm { prompt, model, provider, max_tokens, temperature, system_prompt } => {
+            PipelineStep::Llm { prompt, model, provider, max_tokens, temperature, system_prompt, tools, agent_mode, max_iterations } => {
                 llm::execute(llm::LlmStepParams {
                     prompt,
                     model: model.as_deref(),
@@ -36,6 +36,9 @@ pub fn execute_step<'a>(
                     max_tokens: *max_tokens,
                     temperature: *temperature,
                     system_prompt: system_prompt.as_deref(),
+                    tools: tools.as_ref(),
+                    agent_mode: *agent_mode,
+                    max_iterations: *max_iterations,
                 }, index, ctx, pipeline_ctx).await
             }
             PipelineStep::Command { command, params } => {
