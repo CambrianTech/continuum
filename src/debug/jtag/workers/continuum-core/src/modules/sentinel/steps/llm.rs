@@ -1,12 +1,11 @@
 //! LLM step execution — calls AIProviderModule via registry
 
 use serde_json::json;
-use std::sync::Arc;
 use std::time::Instant;
 
-use crate::runtime::{CommandResult, ModuleRegistry};
+use crate::runtime::CommandResult;
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, StepResult};
+use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
 
 /// LLM step configuration extracted from PipelineStep::Llm
 pub struct LlmStepParams<'a> {
@@ -23,7 +22,7 @@ pub async fn execute(
     params: LlmStepParams<'_>,
     index: usize,
     ctx: &mut ExecutionContext,
-    registry: &Arc<ModuleRegistry>,
+    pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
     use crate::runtime;
     let log = runtime::logger("sentinel");
@@ -32,10 +31,9 @@ pub async fn execute(
     let interpolated_prompt = interpolation::interpolate(params.prompt, ctx);
     let interpolated_system = params.system_prompt.map(|s| interpolation::interpolate(s, ctx));
 
-    log.info(&format!("LLM step: model={:?}, provider={:?}, prompt_len={}",
-        params.model, params.provider, interpolated_prompt.len()));
+    log.info(&format!("[{}] LLM step: model={:?}, provider={:?}, prompt_len={}",
+        pipeline_ctx.handle_id, params.model, params.provider, interpolated_prompt.len()));
 
-    // Build params for ai/generate
     let mut ai_params = json!({
         "prompt": interpolated_prompt,
     });
@@ -56,11 +54,11 @@ pub async fn execute(
         ai_params["system_prompt"] = json!(sys);
     }
 
-    // Route to ai/generate via registry
-    let (module, cmd) = registry.route_command("ai/generate")
-        .ok_or("ai module not found in registry")?;
+    let (module, cmd) = pipeline_ctx.registry.route_command("ai/generate")
+        .ok_or_else(|| format!("[{}] ai module not found in registry", pipeline_ctx.handle_id))?;
 
-    let result = module.handle_command(&cmd, ai_params).await?;
+    let result = module.handle_command(&cmd, ai_params).await
+        .map_err(|e| format!("[{}] LLM step error: {}", pipeline_ctx.handle_id, e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -82,7 +80,7 @@ pub async fn execute(
             })
         }
         CommandResult::Binary { .. } => {
-            Err("Unexpected binary response from ai/generate".to_string())
+            Err(format!("[{}] Unexpected binary response from ai/generate", pipeline_ctx.handle_id))
         }
     }
 }

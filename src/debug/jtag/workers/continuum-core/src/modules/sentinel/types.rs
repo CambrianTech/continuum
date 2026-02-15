@@ -47,23 +47,27 @@ pub struct LogStreamInfo {
     pub modified_at: String,
 }
 
-/// A single step in a pipeline
+/// A single step in a pipeline.
+///
+/// Each variant maps to a JSON object with `"type": "<variant>"`.
+/// Steps compose recursively — condition, loop, parallel, and sentinel
+/// all contain nested steps, enabling arbitrarily complex pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/sentinel/PipelineStep.ts")]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum PipelineStep {
-    /// Execute a shell command
+    /// Execute a shell command as an isolated child process
     Shell {
         cmd: String,
         #[serde(default)]
         args: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeoutSecs")]
         timeout_secs: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none", rename = "workingDir")]
         working_dir: Option<String>,
     },
 
-    /// LLM inference (calls AIProviderModule directly)
+    /// LLM inference via AIProviderModule
     Llm {
         prompt: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,7 +82,7 @@ pub enum PipelineStep {
         system_prompt: Option<String>,
     },
 
-    /// Call any command via ModuleRegistry
+    /// Route to any command (Rust or TypeScript) via CommandExecutor
     Command {
         command: String,
         #[serde(default)]
@@ -86,7 +90,7 @@ pub enum PipelineStep {
         params: Value,
     },
 
-    /// Conditional execution
+    /// Branch based on interpolated condition expression
     Condition {
         #[serde(rename = "if")]
         condition: String,
@@ -96,10 +100,63 @@ pub enum PipelineStep {
         else_steps: Vec<PipelineStep>,
     },
 
-    /// Loop with count
+    /// Iterate over sub-steps with flexible termination modes.
+    ///
+    /// Modes (exactly one should be specified):
+    /// - `count`: fixed N iterations
+    /// - `while`: condition checked before each iteration, continues while truthy
+    /// - `until`: condition checked after each iteration, stops when truthy
+    /// - none of the above + `maxIterations`: continuous loop with safety limit
+    ///
+    /// `maxIterations` provides a safety cap for while/until/continuous modes.
+    /// Defaults to 10000 if omitted on non-count loops.
     Loop {
-        count: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        count: Option<usize>,
         steps: Vec<PipelineStep>,
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "while")]
+        while_condition: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "maxIterations")]
+        max_iterations: Option<usize>,
+    },
+
+    /// Execute multiple branch pipelines concurrently.
+    ///
+    /// Each branch is a sequence of steps. All branches start simultaneously.
+    /// Each branch gets a snapshot of the execution context at fork time.
+    Parallel {
+        /// Each branch is a sequence of steps executed in order
+        branches: Vec<Vec<PipelineStep>>,
+        /// If true, cancel remaining branches on first failure (default: false)
+        #[serde(default, rename = "failFast")]
+        fail_fast: bool,
+    },
+
+    /// Publish an event on the MessageBus for inter-sentinel composition
+    Emit {
+        /// Event name (e.g. "build:complete", "sentinel:custom:done")
+        event: String,
+        /// Arbitrary JSON payload (interpolated before emission)
+        #[serde(default)]
+        #[ts(type = "Record<string, unknown>")]
+        payload: Value,
+    },
+
+    /// Block until a matching event arrives on the MessageBus
+    Watch {
+        /// Event name pattern to match
+        event: String,
+        /// Timeout in seconds (default: 300)
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "timeoutSecs")]
+        timeout_secs: Option<u64>,
+    },
+
+    /// Execute a nested pipeline inline (recursive composition)
+    Sentinel {
+        /// The nested pipeline to execute
+        pipeline: Box<Pipeline>,
     },
 }
 
@@ -156,15 +213,21 @@ pub struct PipelineResult {
     pub error: Option<String>,
 }
 
-/// Execution context for variable interpolation
+/// Execution context for variable interpolation.
+///
+/// Carried through the pipeline, accumulating step results.
+/// Cloned at fork points (parallel branches) so branches share
+/// a read-only snapshot but diverge independently.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionContext {
     /// Results from previous steps (by index)
     pub step_results: Vec<StepResult>,
-    /// Pipeline inputs
+    /// Pipeline inputs (also used for loop iteration variable)
     pub inputs: HashMap<String, Value>,
-    /// Working directory
+    /// Working directory for shell commands
     pub working_dir: PathBuf,
+    /// Named outputs for cleaner interpolation: {{named.build.output}}
+    pub named_outputs: HashMap<String, StepResult>,
 }
 
 /// Immutable context shared across all step executions in a pipeline.
@@ -182,6 +245,9 @@ pub struct RunningSentinel {
     pub cancel_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
+/// Safety limit for while/until/continuous loops when maxIterations is omitted
+pub const DEFAULT_MAX_ITERATIONS: usize = 10_000;
+
 /// Get the type name of a step for logging
 pub fn step_type_name(step: &PipelineStep) -> &'static str {
     match step {
@@ -190,5 +256,9 @@ pub fn step_type_name(step: &PipelineStep) -> &'static str {
         PipelineStep::Command { .. } => "command",
         PipelineStep::Condition { .. } => "condition",
         PipelineStep::Loop { .. } => "loop",
+        PipelineStep::Parallel { .. } => "parallel",
+        PipelineStep::Emit { .. } => "emit",
+        PipelineStep::Watch { .. } => "watch",
+        PipelineStep::Sentinel { .. } => "sentinel",
     }
 }

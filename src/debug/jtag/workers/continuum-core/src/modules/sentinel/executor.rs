@@ -46,6 +46,7 @@ pub async fn execute_pipeline(
         step_results: Vec::new(),
         inputs: pipeline.inputs.clone(),
         working_dir: pipeline.working_dir.clone().map(PathBuf::from).unwrap_or(working_dir),
+        named_outputs: HashMap::new(),
     };
 
     // Execute steps
@@ -351,6 +352,7 @@ pub async fn execute_pipeline_direct(
         step_results: Vec::new(),
         inputs: pipeline.inputs.clone(),
         working_dir,
+        named_outputs: HashMap::new(),
     };
 
     // Create logs directory

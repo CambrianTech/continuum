@@ -1,4 +1,4 @@
-//! Shell step execution — runs a child process
+//! Shell step execution — runs a child process with isolation
 
 use serde_json::json;
 use std::path::PathBuf;
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::process::Command;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, StepResult};
+use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
 
 /// Execute a shell step
 pub async fn execute(
@@ -16,13 +16,13 @@ pub async fn execute(
     working_dir_override: Option<&String>,
     index: usize,
     ctx: &mut ExecutionContext,
-    handle_id: &str,
+    pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
     use crate::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 
-    // Interpolate args
+    let interpolated_cmd = interpolation::interpolate(cmd, ctx);
     let interpolated_args: Vec<String> = args.iter()
         .map(|arg| interpolation::interpolate(arg, ctx))
         .collect();
@@ -31,20 +31,22 @@ pub async fn execute(
         .map(|p| PathBuf::from(interpolation::interpolate(p, ctx)))
         .unwrap_or_else(|| ctx.working_dir.clone());
 
-    log.info(&format!("[{handle_id}] Shell: {cmd} {interpolated_args:?} in {work_dir:?}"));
+    log.info(&format!("[{}] Shell: {} {:?} in {:?}",
+        pipeline_ctx.handle_id, interpolated_cmd, interpolated_args, work_dir));
 
     // If cmd contains spaces and no args, run through shell
-    let (actual_cmd, actual_args): (&str, Vec<String>) = if cmd.contains(' ') && interpolated_args.is_empty() {
-        ("/bin/sh", vec!["-c".to_string(), cmd.to_string()])
+    let (actual_cmd, actual_args): (String, Vec<String>) = if interpolated_cmd.contains(' ') && interpolated_args.is_empty() {
+        ("/bin/sh".to_string(), vec!["-c".to_string(), interpolated_cmd])
     } else {
-        (cmd, interpolated_args)
+        (interpolated_cmd, interpolated_args)
     };
 
     let output = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        Command::new(actual_cmd)
+        Command::new(&actual_cmd)
             .args(&actual_args)
             .current_dir(&work_dir)
+            .kill_on_drop(true)
             .output()
     ).await;
 
@@ -73,10 +75,12 @@ pub async fn execute(
             })
         }
         Ok(Err(e)) => {
-            Err(format!("Failed to execute command: {e}"))
+            Err(format!("[{}] Shell step failed to execute '{}': {}",
+                pipeline_ctx.handle_id, actual_cmd, e))
         }
         Err(_) => {
-            Err(format!("Command timed out after {timeout_secs}s"))
+            Err(format!("[{}] Shell step timed out after {}s",
+                pipeline_ctx.handle_id, timeout_secs))
         }
     }
 }

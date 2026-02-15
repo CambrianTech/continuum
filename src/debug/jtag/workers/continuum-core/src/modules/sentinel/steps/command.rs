@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::time::Instant;
 
 use crate::modules::sentinel::interpolation;
-use crate::modules::sentinel::types::{ExecutionContext, StepResult};
+use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
 
 /// Execute a command step via global CommandExecutor (routes to Rust OR TypeScript)
 pub async fn execute(
@@ -12,17 +12,19 @@ pub async fn execute(
     params: &Value,
     index: usize,
     ctx: &mut ExecutionContext,
+    pipeline_ctx: &PipelineContext<'_>,
 ) -> Result<StepResult, String> {
     use crate::runtime;
     let log = runtime::logger("sentinel");
     let start = Instant::now();
 
+    let interpolated_command = interpolation::interpolate(command, ctx);
     let interpolated_params = interpolation::interpolate_value(params, ctx);
 
-    log.info(&format!("Command step: {command}"));
+    log.info(&format!("[{}] Command step: {}", pipeline_ctx.handle_id, interpolated_command));
 
-    // Execute via global CommandExecutor (routes to Rust OR TypeScript)
-    let json = runtime::command_executor::execute_json(command, interpolated_params).await?;
+    let json = runtime::command_executor::execute_json(&interpolated_command, interpolated_params).await
+        .map_err(|e| format!("[{}] Command '{}' failed: {}", pipeline_ctx.handle_id, interpolated_command, e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 

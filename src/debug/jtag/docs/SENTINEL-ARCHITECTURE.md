@@ -354,6 +354,7 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 |-----------|--------|-------|
 | Pipeline steps: Shell, LLM, Command, Condition | ✅ Implemented | Rust `sentinel/steps/` |
 | Variable interpolation (`{{steps.0.output}}`) | ✅ Implemented | Rust `interpolation.rs` |
+| Named outputs (`{{named.build.output}}`) | ✅ Implemented | Rust `interpolation.rs` + `ExecutionContext` |
 | Execution trace for debugging | ✅ Implemented | Rust `StepResult[]` in `PipelineResult` |
 | Shell process isolation (`kill_on_drop`) | ✅ Implemented | Rust `steps/shell.rs` |
 | Module-to-module calls (no IPC deadlock) | ✅ Implemented | Rust `ModuleRegistry.route_command()` |
@@ -361,19 +362,19 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 | Log streaming via MessageBus | ✅ Implemented | Rust `logs.rs` |
 | ts-rs type exports to TypeScript | ✅ Implemented | Rust `types.rs` with `#[derive(TS)]` |
 | Count-based loops | ✅ Implemented | Rust `steps/loop_step.rs` |
-| **Until/while/continuous loops** | ❌ Needed | Rust `steps/loop_step.rs` |
-| **Parallel step type** | ❌ Needed | New `steps/parallel.rs` |
-| **Emit step type** | ❌ Needed | New `steps/emit.rs` |
-| **Watch step type** | ❌ Needed | New `steps/watch.rs` |
-| **Sentinel spawn step** | ❌ Needed | New `steps/sentinel.rs` |
-| **Named step outputs (`outputTo`)** | ❌ Needed | Extend `ExecutionContext` |
+| While/until/continuous loops | ✅ Implemented | Rust `steps/loop_step.rs` (4 modes) |
+| Parallel step (concurrent branches) | ✅ Implemented | Rust `steps/parallel.rs` |
+| Emit step (MessageBus events) | ✅ Implemented | Rust `steps/emit.rs` |
+| Watch step (await MessageBus events) | ✅ Implemented | Rust `steps/watch.rs` |
+| Sentinel step (nested pipelines) | ✅ Implemented | Rust `steps/sentinel.rs` |
+| Uniform step signatures (PipelineContext) | ✅ Implemented | All steps receive `PipelineContext` |
 | **Persona ownership** | ❌ Needed | TypeScript + data layer |
 | **Escalation → inbox** | ❌ Needed | TypeScript integration |
 | **SentinelEntity persistence** | ❌ Needed | TypeScript data layer |
 | **Memory/recall integration** | ❌ Needed | TypeScript integration |
 | **Triggers (event, schedule)** | ❌ Needed | Rust or TypeScript |
 
-The Rust pipeline engine is ~60% complete. The remaining 40% is loop types, composition steps, and the lifecycle/integration layer.
+The Rust pipeline engine is ~90% complete. 9 step types implemented across all composition patterns (sequential, conditional, looping, parallel, event-driven, nested). The remaining work is the lifecycle/integration layer (persona ownership, persistence, triggers).
 
 ## Architecture
 
@@ -2499,32 +2500,36 @@ The Rust `SentinelModule` in `continuum-core` handles ALL pipeline execution:
 ```
 workers/continuum-core/src/modules/sentinel/
 ├── mod.rs              # SentinelModule: command routing, handle management, concurrency
-├── types.rs            # PipelineStep, Pipeline, SentinelHandle, ExecutionContext (ts-rs exports)
+├── types.rs            # PipelineStep (9 variants), Pipeline, SentinelHandle, ExecutionContext (ts-rs exports)
 ├── executor.rs         # Pipeline executor: step dispatch, variable propagation, logging
-├── interpolation.rs    # Variable interpolation: {{steps.0.output}}, {{input.x}}, {{env.HOME}}
+├── interpolation.rs    # Variable interpolation: {{steps.N.output}}, {{named.x.data}}, {{env.HOME}}
 ├── logs.rs             # Log stream management: list, read, tail
 └── steps/
-    ├── mod.rs           # Step dispatcher
-    ├── shell.rs         # Shell step: process isolation, kill_on_drop, streaming
-    ├── llm.rs           # LLM step: routes to AIProviderModule via ModuleRegistry
-    ├── command.rs        # Command step: routes any command via ModuleRegistry
-    ├── condition.rs      # Condition step: evaluates {{}} expressions, then/else branching
-    └── loop_step.rs     # Loop step: count-based iteration (until/while/continuous planned)
+    ├── mod.rs           # Step dispatcher — routes PipelineStep variants to handlers
+    ├── shell.rs         # Shell: process isolation, kill_on_drop, cmd interpolation
+    ├── llm.rs           # LLM: inference via AIProviderModule, prompt interpolation
+    ├── command.rs        # Command: any Rust/TypeScript command via CommandExecutor
+    ├── condition.rs      # Condition: if/then/else with expression evaluation
+    ├── loop_step.rs     # Loop: count, while, until, continuous (4 modes, safety limit)
+    ├── parallel.rs      # Parallel: concurrent branch execution, fail_fast, context snapshot
+    ├── emit.rs          # Emit: publish interpolated events on MessageBus
+    ├── watch.rs         # Watch: block until matching event arrives (glob patterns, timeout)
+    └── sentinel.rs      # Sentinel: execute nested pipeline inline (recursive composition)
 ```
 
-**Implemented Pipeline Step Types:**
+**All 9 Pipeline Step Types:**
 
 | Step Type | Status | Description |
 |-----------|--------|-------------|
-| `Shell` | ✅ | Process execution with `kill_on_drop` isolation, streaming, timeout |
+| `Shell` | ✅ | Process execution with `kill_on_drop` isolation, cmd interpolation, timeout |
 | `Llm` | ✅ | LLM inference via `registry.route_command("ai/generate")` — no IPC deadlock |
-| `Command` | ✅ | Any command via `registry.route_command()` — DataModule, CodeModule, etc. |
-| `Condition` | ✅ | `if`/`then`/`else` branching with expression evaluation |
-| `Loop` | ✅ (partial) | Count-based loops. `until`/`while`/`continuous`/`event` not yet implemented |
-| `Parallel` | ❌ | Planned: `tokio::join!` on step futures |
-| `Emit` | ❌ | Planned: fire MessageBus events for cross-sentinel composition |
-| `Sentinel` | ❌ | Planned: recursive sentinel spawning |
-| `Watch` | ❌ | Planned: block until classified output matches pattern |
+| `Command` | ✅ | Any command via `CommandExecutor` — routes to Rust OR TypeScript |
+| `Condition` | ✅ | `if`/`then`/`else` branching with interpolated condition expressions |
+| `Loop` | ✅ | Four modes: `count`, `while`, `until`, `continuous` with `maxIterations` safety limit |
+| `Parallel` | ✅ | Concurrent branch execution with context snapshots and `failFast` option |
+| `Emit` | ✅ | Publish interpolated events on MessageBus for inter-sentinel composition |
+| `Watch` | ✅ | Block until matching event (glob patterns) with configurable timeout |
+| `Sentinel` | ✅ | Execute nested pipeline inline — recursive composition with inherited context |
 
 **Key Rust Capabilities:**
 1. **Process Isolation**: Child processes with `kill_on_drop` — crashes don't cascade
@@ -2585,16 +2590,17 @@ TypeScript calls: Commands.execute('sentinel/run', { type: 'pipeline', steps: [.
 
 These are the foundation — everything else builds on them.
 
-- [ ] **`until` loop type** — Run pipeline until condition is true (e.g., `"check": "{{steps.build.exit_code}} == 0"`)
-- [ ] **`while` loop type** — Run pipeline while condition is true
-- [ ] **`continuous` loop type** — Keep running with configurable interval (e.g., health monitoring every 60s)
+- [x] **`until` loop type** — Condition checked after each iteration, stops when truthy
+- [x] **`while` loop type** — Condition checked before each iteration, continues while truthy
+- [x] **`continuous` loop type** — Runs until `maxIterations` safety limit (default 10,000)
 - [ ] **`event` loop type** — Re-run pipeline on each MessageBus event
-- [ ] **`Parallel` step type** — Execute independent steps concurrently via `tokio::join!`
-- [ ] **`Emit` step type** — Fire MessageBus events for cross-sentinel composition
-- [ ] **`Sentinel` step type** — Spawn nested sentinel (recursive), with `await` option
-- [ ] **`Watch` step type** — Block until classified output matches pattern (regex rules on streams)
-- [ ] **Named step outputs** — `outputTo: "buildResult"` so later steps can reference `{{buildResult.exitCode}}`
+- [x] **`Parallel` step type** — Execute branch pipelines concurrently with `fail_fast` option
+- [x] **`Emit` step type** — Publish interpolated events on MessageBus
+- [x] **`Sentinel` step type** — Execute nested pipeline inline (recursive composition)
+- [x] **`Watch` step type** — Block until matching event arrives on MessageBus (glob patterns, timeout)
+- [x] **Named step outputs** — `{{named.label.output}}` via `ExecutionContext.named_outputs`
 - [ ] **Expression evaluator** — Evaluate `{{steps.0.exit_code}} == 0` and `{{buildResult.success}}` in condition/loop checks
+- [x] **Uniform step signatures** — All 9 step types receive `PipelineContext` for consistent access to registry/bus
 
 ### Phase B: Sentinel Lifecycle & Persona Integration
 
