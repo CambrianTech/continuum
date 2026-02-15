@@ -29,7 +29,7 @@ import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
 import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
-import { AIDecisionService, type AIDecisionContext } from '../../../ai/server/AIDecisionService';
+// AIDecisionService removed — redundancy checking disabled (too flaky, false positives)
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
@@ -1231,43 +1231,6 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         throw error;
       }
 
-      // === SUB-PHASE 3.4: SELF-REVIEW: Check if response is redundant before posting ===
-      // DISABLED: Redundancy checking via LLM is too flaky (false positives like C++ vs JavaScript questions)
-      // It adds AI unreliability on top of AI unreliability, leading to valid responses being discarded
-      // TODO: Replace with simple heuristics (exact text match, time-based deduplication)
-      this.log(`⏭️  ${this.personaName}: [PHASE 3.4] Redundancy check DISABLED (too flaky), proceeding to post`);
-      const isRedundant = false; // Disabled
-
-      if (isRedundant) {
-        this.log(`⚠️ ${this.personaName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
-
-        // Emit DECIDED_SILENT event to clear AI status indicator (fire-and-forget)
-        if (this.client) {
-          Events.emit<AIDecidedSilentEventData>(
-            DataDaemon.jtagContext!,
-            AI_DECISION_EVENTS.DECIDED_SILENT,
-            {
-              personaId: this.personaId,
-              personaName: this.personaName,
-              roomId: originalMessage.roomId,
-              messageId: originalMessage.id,
-              isHumanMessage: originalMessage.senderType === 'human',
-              timestamp: Date.now(),
-              confidence: 0.5,
-              reason: 'Response was redundant with previous answers',
-              gatingModel: 'redundancy-check'
-            },
-            {
-              scope: EVENT_SCOPES.ROOM,
-              scopeId: originalMessage.roomId
-            }
-          ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-        }
-
-        return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Discard response
-      }
-      this.log(`✅ ${this.personaName}: [PHASE 3.4] Response not redundant, proceeding to post`);
-
       // 🔧 SUB-PHASE 3.5: Create and post response
       this.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
       const responseMessage = new ChatMessageEntity();
@@ -1375,7 +1338,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             isHumanMessage: originalMessage.senderType === 'human',
             timestamp: Date.now(),
             responseMessageId: postedEntity.id,
-            passedRedundancyCheck: !isRedundant
+            passedRedundancyCheck: true
           },
           {
             scope: EVENT_SCOPES.ROOM,
@@ -1453,72 +1416,6 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       return isNaN(parsed) ? Date.now() : parsed;
     }
     return timestamp; // Already a number
-  }
-
-  async checkResponseRedundancy(
-    myResponse: string,
-    roomId: UUID,
-    conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
-  ): Promise<boolean> {
-    try {
-      // Use AIDecisionService for centralized redundancy checking
-      // Create minimal context without needing full trigger message
-      const decisionContext: AIDecisionContext = {
-        personaId: this.personaId,
-        personaName: this.personaName,
-        roomId,
-        triggerMessage: {
-          id: '',
-          roomId,
-          senderId: '',
-          senderName: 'System',
-          senderType: 'system',
-          content: { text: 'redundancy check', attachments: [] },
-          timestamp: new Date(),
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          version: 1,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          status: 'sent',
-          priority: 0,
-          reactions: []
-        } as unknown as ChatMessageEntity,
-        ragContext: {
-          domain: 'chat',
-          contextId: roomId,
-          personaId: this.personaId,
-          identity: {
-            name: this.personaName,
-            systemPrompt: ''
-          },
-          conversationHistory: conversationHistory.map(msg => ({
-            role: msg.role as 'user' | 'assistant',
-            content: msg.content,
-            name: msg.name,
-            timestamp: msg.timestamp
-          })),
-          artifacts: [],
-          privateMemories: [],
-          metadata: {
-            messageCount: conversationHistory.length,
-            artifactCount: 0,
-            memoryCount: 0,
-            builtAt: new Date()
-          }
-        }
-      };
-
-      const result = await AIDecisionService.checkRedundancy(
-        myResponse,
-        decisionContext,
-        { model: LOCAL_MODELS.DEFAULT }
-      );
-
-      return result.isRedundant;
-    } catch (error) {
-      AIDecisionLogger.logError(this.personaName, 'Redundancy check', error instanceof Error ? error.message : String(error));
-      return false; // On error, allow the response (fail open)
-    }
   }
 
 }
