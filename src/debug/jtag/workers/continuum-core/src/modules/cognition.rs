@@ -3,17 +3,24 @@
 //! Stateful per-persona DashMap isolation for cognition engines and inboxes,
 //! plus stateless text analysis commands (similarity, validation, mentions, cleaning).
 //!
-//! Phase 1 additions:
-//! - `cognition/full-evaluate`: Unified evaluation gate (replaces 5 TS gates)
+//! Phase 1: Unified evaluation gate
+//! - `cognition/full-evaluate`: Replaces 5 TS gates with single IPC call
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
+//! - `cognition/configure-rate-limiter`: Configure rate limiter params
+//!
+//! Phase 2: Model selection
+//! - `cognition/select-model`: 4-tier model priority chain (trait → current → any → base)
+//! - `cognition/sync-adapters`: Sync adapter registry from TypeScript genome state
 //!
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
 use crate::persona::{RateLimiterState, SleepState, SleepMode};
+use crate::persona::{AdapterInfo, AdapterRegistry, ModelSelectionRequest};
 use crate::persona::evaluator;
+use crate::persona::model_selection;
 use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
 use crate::rag::RagEngine;
@@ -37,6 +44,8 @@ pub struct CognitionState {
     pub rate_limiters: Arc<DashMap<Uuid, RateLimiterState>>,
     /// Per-persona sleep mode (Phase 1: unified evaluation)
     pub sleep_states: Arc<DashMap<Uuid, SleepState>>,
+    /// Per-persona adapter registries (Phase 2: model selection)
+    pub adapter_registries: Arc<DashMap<Uuid, AdapterRegistry>>,
 }
 
 impl CognitionState {
@@ -48,6 +57,7 @@ impl CognitionState {
             loop_detector: LoopDetector::new(),
             rate_limiters: Arc::new(DashMap::new()),
             sleep_states: Arc::new(DashMap::new()),
+            adapter_registries: Arc::new(DashMap::new()),
         }
     }
 
@@ -62,6 +72,7 @@ impl CognitionState {
             loop_detector: LoopDetector::new(),
             rate_limiters: Arc::new(DashMap::new()),
             sleep_states: Arc::new(DashMap::new()),
+            adapter_registries: Arc::new(DashMap::new()),
         }
     }
 }
@@ -440,6 +451,67 @@ impl ServiceModule for CognitionModule {
                     "configured": true,
                     "min_seconds_between_responses": min_seconds,
                     "max_responses_per_session": max_responses,
+                })))
+            }
+
+            // =================================================================
+            // Phase 2: Model Selection
+            // =================================================================
+            "cognition/select-model" => {
+                let _timer = TimingGuard::new("module", "cognition_select_model");
+                let persona_uuid = p.uuid("persona_id")?;
+                let task_domain = params.get("task_domain")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let base_model = p.str("base_model")?.to_string();
+
+                let request = ModelSelectionRequest {
+                    persona_id: persona_uuid,
+                    task_domain,
+                    base_model,
+                };
+
+                let registry = self.state.adapter_registries
+                    .entry(persona_uuid)
+                    .or_insert_with(AdapterRegistry::default);
+
+                let result = model_selection::select_model(&request, &registry);
+
+                Ok(CommandResult::Json(serde_json::to_value(&result)
+                    .map_err(|e| format!("Serialize error: {e}"))?))
+            }
+
+            "cognition/sync-adapters" => {
+                let _timer = TimingGuard::new("module", "cognition_sync_adapters");
+                let persona_uuid = p.uuid("persona_id")?;
+                let adapters_json = params.get("adapters")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing adapters array")?;
+
+                let mut registry = self.state.adapter_registries
+                    .entry(persona_uuid)
+                    .or_insert_with(AdapterRegistry::default);
+
+                // Replace entire adapter set (full sync, not incremental)
+                registry.adapters.clear();
+
+                for adapter_val in adapters_json {
+                    let adapter: AdapterInfo = serde_json::from_value(adapter_val.clone())
+                        .map_err(|e| format!("Invalid adapter: {e}"))?;
+                    registry.adapters.insert(adapter.name.clone(), adapter);
+                }
+
+                let count = registry.adapters.len();
+
+                log_info!(
+                    "module", "cognition",
+                    "sync-adapters {}: synced {} adapters",
+                    persona_uuid, count
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "synced": true,
+                    "adapter_count": count,
                 })))
             }
 

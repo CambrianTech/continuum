@@ -64,6 +64,8 @@ export type {
 	FullEvaluateRequest,
 	FullEvaluateResult,
 	SleepMode,
+	ModelSelectionResult,
+	AdapterInfo,
 	EditMode,
 	ReadResult,
 	WriteResult,

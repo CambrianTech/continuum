@@ -34,6 +34,8 @@ import type {
   FullEvaluateRequest,
   FullEvaluateResult,
   SleepMode,
+  ModelSelectionResult,
+  AdapterInfo,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -784,7 +786,60 @@ export class RustCognitionBridge {
   }
 
   // ========================================================================
-  // Phase 2: Combined Validation — 4 gates in 1 IPC call
+  // Phase 2: Model Selection — 4-tier priority chain in Rust
+  // ========================================================================
+
+  /**
+   * Select the best model using 4-tier priority chain:
+   * 1. Trait-specific adapter (domain → trait mapping)
+   * 2. Current active adapter
+   * 3. Any available trained adapter
+   * 4. Base model fallback
+   * THROWS on failure
+   */
+  async selectModel(baseModel: string, taskDomain?: string): Promise<ModelSelectionResult> {
+    this.assertReady('selectModel');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSelectModel(this.personaId, baseModel, taskDomain);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SelectModel: model=${result.model}, source=${result.source}${result.adapter_name ? `, adapter=${result.adapter_name}` : ''}${result.trait_used ? `, trait=${result.trait_used}` : ''} (${elapsed.toFixed(2)}ms, rust=${result.decision_time_us.toFixed(1)}μs)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`selectModel FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync adapter registry from TypeScript genome state to Rust.
+   * Call during initialization and after adapter load/unload.
+   * THROWS on failure
+   */
+  async syncAdapters(adapters: AdapterInfo[]): Promise<void> {
+    this.assertReady('syncAdapters');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSyncAdapters(this.personaId, adapters);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SyncAdapters: ${result.adapter_count} adapters synced (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`syncAdapters FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Combined Validation — 4 gates in 1 IPC call
   // ========================================================================
 
   /**

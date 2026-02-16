@@ -137,89 +137,20 @@ export class PersonaResponseGenerator {
   }
 
   /**
-   * Get effective model for inference
-   *
-   * Priority:
-   * 1. Trait-specific trained adapter (if context provides task domain)
-   * 2. Current active adapter (most recently used)
-   * 3. Any available trained adapter
-   * 4. Base model configured for this persona
-   *
-   * @param context - Optional context for trait-aware selection
-   * @returns The model name to use for inference
+   * Get effective model for inference via Rust IPC.
+   * 4-tier priority chain: trait adapter → current → any → base model.
+   * Domain-to-trait mapping is canonical in Rust (no TS duplicate).
    */
-  private getEffectiveModel(context?: { taskDomain?: string }): string {
-    if (this.genome) {
-      // 1. Try trait-specific adapter based on task context
-      if (context?.taskDomain) {
-        const relevantTrait = this.determineRelevantTrait(context);
-        const traitAdapter = this.genome.getAdapterByTrait(relevantTrait);
-        if (traitAdapter) {
-          const ollamaModel = traitAdapter.getOllamaModelName();
-          if (ollamaModel) {
-            this.log(`🧬 ${this.personaName}: Using trait-specific model: ${ollamaModel} (trait: ${relevantTrait})`);
-            return ollamaModel;
-          }
-        }
-      }
+  private async getEffectiveModel(taskDomain?: string): Promise<string> {
+    const baseModel = this.modelConfig.model || LOCAL_MODELS.DEFAULT;
 
-      // 2. Fall back to current active adapter (most recently used)
-      const currentAdapter = this.genome.getCurrentAdapter();
-      if (currentAdapter) {
-        const ollamaModel = currentAdapter.getOllamaModelName();
-        if (ollamaModel) {
-          this.log(`🧬 ${this.personaName}: Using trained model: ${ollamaModel} (adapter: ${currentAdapter.getName()})`);
-          return ollamaModel;
-        }
-      }
-
-      // 3. Check for any available trained adapter
-      const allAdapters = this.genome.getAllAdapters();
-      for (const adapter of allAdapters) {
-        const ollamaModel = adapter.getOllamaModelName();
-        if (ollamaModel) {
-          this.log(`🧬 ${this.personaName}: Using available trained model: ${ollamaModel} (adapter: ${adapter.getName()})`);
-          return ollamaModel;
-        }
-      }
+    if (this._rustBridge) {
+      const result = await this._rustBridge.selectModel(baseModel, taskDomain);
+      return result.model;
     }
 
-    // 4. Fall back to configured base model
-    return this.modelConfig.model || LOCAL_MODELS.DEFAULT;
-  }
-
-  /**
-   * Determine which trait adapter is most relevant for the current context
-   *
-   * Maps task domains to trait types:
-   * - code → reasoning_style
-   * - creative → creative_expression
-   * - support/help → social_dynamics
-   * - default → tone_and_voice
-   */
-  private determineRelevantTrait(context: { taskDomain?: string }): string {
-    const domain = context.taskDomain?.toLowerCase();
-
-    switch (domain) {
-      case 'code':
-      case 'debug':
-      case 'analysis':
-        return 'reasoning_style';
-      case 'creative':
-      case 'art':
-      case 'writing':
-        return 'creative_expression';
-      case 'support':
-      case 'help':
-      case 'social':
-        return 'social_dynamics';
-      case 'facts':
-      case 'knowledge':
-      case 'expertise':
-        return 'domain_expertise';
-      default:
-        return 'tone_and_voice';  // Default trait for general chat
-    }
+    // Rust bridge not yet initialized — use base model
+    return baseModel;
   }
 
   /**
@@ -697,7 +628,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         provider: this.modelConfig.provider
       });
 
-      const effectiveModel = this.getEffectiveModel();
+      const effectiveModel = await this.getEffectiveModel();
       const request: TextGenerationRequest = {
         messages,
         model: effectiveModel,  // Use trained model if available, otherwise base model

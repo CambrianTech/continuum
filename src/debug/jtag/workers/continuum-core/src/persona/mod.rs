@@ -18,6 +18,7 @@ pub mod channel_types;
 pub mod cognition;
 pub mod evaluator;
 pub mod inbox;
+pub mod model_selection;
 pub mod self_task_generator;
 pub mod text_analysis;
 pub mod types;
@@ -30,4 +31,7 @@ pub use evaluator::{
     FullEvaluateRequest, FullEvaluateResult, GateDetails, SleepMode, SleepState, RateLimiterState,
 };
 pub use inbox::PersonaInbox;
+pub use model_selection::{
+    AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
+};
 pub use types::*;

@@ -667,6 +667,22 @@ export class PersonaUser extends AIUser {
         );
         this.log.info(`🦀 ${this.displayName}: Rate limiter synced to Rust (min=${rlConfig.minSecondsBetweenResponses}s, max=${rlConfig.maxResponsesPerSession})`);
       }
+
+      // Sync genome adapter registry to Rust for model selection
+      if (this._rustCognition && this.memory?.genome) {
+        const adapters = this.memory.genome.getAllAdapters().map(a => ({
+          name: a.getName(),
+          domain: a.getDomain(),
+          ollama_model_name: a.getOllamaModelName() ?? undefined,
+          is_loaded: a.isLoaded(),
+          is_current: a === this.memory!.genome.getCurrentAdapter(),
+          priority: a.getPriority(),
+        }));
+        if (adapters.length > 0) {
+          await this._rustCognition.syncAdapters(adapters as any);
+          this.log.info(`🦀 ${this.displayName}: ${adapters.length} adapters synced to Rust for model selection`);
+        }
+      }
     } catch (error) {
       this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
       // Don't throw - let persona initialize, but message handling will fail loudly

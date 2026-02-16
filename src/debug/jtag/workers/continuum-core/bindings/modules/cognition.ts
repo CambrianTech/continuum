@@ -18,6 +18,8 @@ import type {
 	FullEvaluateRequest,
 	FullEvaluateResult,
 	SleepMode,
+	ModelSelectionResult,
+	AdapterInfo,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -56,6 +58,8 @@ export interface CognitionMixin {
 	cognitionTrackResponse(personaId: string, roomId: string): Promise<{ tracked: boolean; response_count: number }>;
 	cognitionSetSleepMode(personaId: string, mode: SleepMode, reason?: string, durationMinutes?: number): Promise<{ set: boolean; previous_mode: string; new_mode: string; wake_at_ms: number | null }>;
 	cognitionConfigureRateLimiter(personaId: string, minSeconds?: number, maxResponses?: number): Promise<{ configured: boolean }>;
+	cognitionSelectModel(personaId: string, baseModel: string, taskDomain?: string): Promise<ModelSelectionResult>;
+	cognitionSyncAdapters(personaId: string, adapters: AdapterInfo[]): Promise<{ synced: boolean; adapter_count: number }>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -357,6 +361,50 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as { configured: boolean };
+		}
+
+		/**
+		 * Select the best model for a persona using 4-tier priority chain.
+		 * Tier 1: trait-specific adapter → 2: current → 3: any → 4: base model.
+		 */
+		async cognitionSelectModel(
+			personaId: string,
+			baseModel: string,
+			taskDomain?: string
+		): Promise<ModelSelectionResult> {
+			const response = await this.request({
+				command: 'cognition/select-model',
+				persona_id: personaId,
+				base_model: baseModel,
+				...(taskDomain && { task_domain: taskDomain }),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to select model');
+			}
+
+			return response.result as ModelSelectionResult;
+		}
+
+		/**
+		 * Sync adapter registry from TypeScript genome state to Rust.
+		 * Full replacement — sends all known adapters.
+		 */
+		async cognitionSyncAdapters(
+			personaId: string,
+			adapters: AdapterInfo[]
+		): Promise<{ synced: boolean; adapter_count: number }> {
+			const response = await this.request({
+				command: 'cognition/sync-adapters',
+				persona_id: personaId,
+				adapters,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to sync adapters');
+			}
+
+			return response.result as { synced: boolean; adapter_count: number };
 		}
 	};
 }
