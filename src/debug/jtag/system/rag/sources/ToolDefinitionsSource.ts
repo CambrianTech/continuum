@@ -112,8 +112,8 @@ export class ToolDefinitionsSource implements RAGSource {
     let tokenEstimate = this.estimateNativeToolTokens(specs);
 
     // If over budget, progressively drop lowest-priority tools
-    while (tokenEstimate > allocatedBudget && prioritizedTools.length > 5) {
-      prioritizedTools = prioritizedTools.slice(0, prioritizedTools.length - 5);
+    while (tokenEstimate > allocatedBudget && prioritizedTools.length > 2) {
+      prioritizedTools = prioritizedTools.slice(0, prioritizedTools.length - 3);
       const reducedSpecs = convertToNativeToolSpecs(prioritizedTools);
       tokenEstimate = this.estimateNativeToolTokens(reducedSpecs);
     }
@@ -172,10 +172,14 @@ export class ToolDefinitionsSource implements RAGSource {
     let finalToolCount = prioritized.length;
 
     // Budget truncation: progressively drop lowest-priority tools (at end of list)
-    if (tokenCount > allocatedBudget && prioritized.length > 5) {
+    // Minimum 2 tools (critical: chat/send + chat/history) — not 5, which is too
+    // many for tight Candle budgets (~250 tokens for tools).
+    if (tokenCount > allocatedBudget && prioritized.length > 2) {
       let reducedTools = prioritized;
-      while (tokenCount > allocatedBudget && reducedTools.length > 5) {
-        reducedTools = reducedTools.slice(0, reducedTools.length - 5);
+      while (tokenCount > allocatedBudget && reducedTools.length > 2) {
+        // Drop 3 at a time for faster convergence, or 1 when close to minimum
+        const dropCount = reducedTools.length > 8 ? 3 : 1;
+        reducedTools = reducedTools.slice(0, reducedTools.length - dropCount);
         const reduced = adapter.formatToolsForPrompt(reducedTools);
         finalSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools:\n\n${reduced}\n================================`;
         tokenCount = this.estimateTokens(finalSection);

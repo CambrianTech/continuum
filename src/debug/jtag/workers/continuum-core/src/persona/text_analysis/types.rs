@@ -65,6 +65,8 @@ pub enum GarbageReason {
     TokenBoundaryGarbage,
     #[serde(rename = "inference_error")]
     InferenceError,
+    #[serde(rename = "fabricated_conversation")]
+    FabricatedConversation,
 }
 
 /// Result of garbage detection

@@ -7,7 +7,7 @@
 //! repetition → truncation markers → excessive punctuation → token boundary garbage
 
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use super::types::{GarbageCheckResult, GarbageReason};
@@ -30,6 +30,17 @@ static NON_ASCII_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\x00-\x
 // ASCII_LETTER removed — use LETTER_CHARS (identical regex, one source of truth)
 static ERROR_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^(error|failed|cannot|unable|timeout|invalid):").unwrap());
+
+// Fabricated conversation patterns
+// Timestamped speaker: "02/16/2026 09:51 General AI: text" or "2026-02-16 09:51 Name: text"
+static FABRICATED_TIMESTAMP_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s+\d{1,2}:\d{2}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s").unwrap()
+});
+// Multi-word speaker at line start: "General AI: text", "Local Assistant: text"
+// Requires 2+ capitalized words to avoid matching "Note:", "Warning:", etc.
+static FABRICATED_MULTI_WORD_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S").unwrap()
+});
 
 // Inference error patterns
 static INFERENCE_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
@@ -93,6 +104,9 @@ pub fn is_garbage(text: &str) -> GarbageCheckResult {
         return r;
     }
     if let Some(r) = check_token_boundary_garbage(text) {
+        return r;
+    }
+    if let Some(r) = check_fabricated_conversation(text) {
         return r;
     }
 
@@ -386,6 +400,64 @@ fn check_token_boundary_garbage(text: &str) -> Option<GarbageCheckResult> {
     None
 }
 
+/// Detect fabricated multi-party conversations within a single response.
+///
+/// LLMs (especially small local models) sometimes generate entire conversations
+/// with multiple speaker entries instead of responding as themselves. E.g.:
+///   "02/16/2026 09:51 General AI: What's the best way to...
+///    02/16/2026 09:51 Local Assistant: You can use..."
+///
+/// Two checks:
+/// 1. Timestamped speaker lines (highly specific, zero false positives)
+/// 2. Multi-word speaker prefixes with 2+ distinct names (e.g. "General AI:", "Local Assistant:")
+fn check_fabricated_conversation(text: &str) -> Option<GarbageCheckResult> {
+    // Only check responses with enough content to contain a fabricated conversation
+    if text.len() < 60 {
+        return None;
+    }
+
+    // Check 1: Timestamped speaker lines — "MM/DD/YYYY HH:MM Name: text"
+    let timestamp_count = FABRICATED_TIMESTAMP_SPEAKER.find_iter(text).count();
+    if timestamp_count >= 3 {
+        return Some(GarbageCheckResult {
+            is_garbage: true,
+            reason: GarbageReason::FabricatedConversation,
+            details: format!("{} timestamped speaker lines in one response", timestamp_count),
+            score: (timestamp_count as f64 / 5.0).min(1.0),
+        });
+    }
+
+    // Check 2: Multi-word speaker prefixes with distinct names
+    // "General AI: text", "Local Assistant: text" — requires 2+ capitalized words before ":"
+    let mut speakers: HashSet<String> = HashSet::new();
+    let mut speaker_line_count = 0usize;
+    for m in FABRICATED_MULTI_WORD_SPEAKER.find_iter(text) {
+        let matched = m.as_str();
+        if let Some(colon_pos) = matched.find(':') {
+            let name = matched[..colon_pos].trim().to_string();
+            speakers.insert(name);
+            speaker_line_count += 1;
+        }
+    }
+
+    if speaker_line_count >= 4 && speakers.len() >= 2 {
+        let sample_names: Vec<&String> = speakers.iter().take(3).collect();
+        return Some(GarbageCheckResult {
+            is_garbage: true,
+            reason: GarbageReason::FabricatedConversation,
+            details: format!(
+                "{} speaker lines from {} speakers ({})",
+                speaker_line_count,
+                speakers.len(),
+                sample_names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            ),
+            score: (speaker_line_count as f64 / 6.0).min(1.0),
+        });
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +571,45 @@ mod tests {
         let r = is_garbage("gRPC service unavailable: connection to localhost:50051 refused");
         assert!(r.is_garbage);
         assert_eq!(r.reason, GarbageReason::InferenceError);
+    }
+
+    #[test]
+    fn test_fabricated_conversation_with_timestamps() {
+        let fabricated = r#"02/16/2026 09:51 General AI: What's the best way to optimize code?
+02/16/2026 09:51 Local Assistant: You can use caching and memoization.
+02/16/2026 09:51 General AI: That's a good start, what about frameworks?
+02/16/2026 09:51 Local Assistant: Yes, frameworks can simplify the process."#;
+        let r = is_garbage(fabricated);
+        assert!(r.is_garbage);
+        assert_eq!(r.reason, GarbageReason::FabricatedConversation);
+    }
+
+    #[test]
+    fn test_fabricated_conversation_multi_word_speakers() {
+        let fabricated = "General AI: Hello there!\nLocal Assistant: Hi, how can I help?\nGeneral AI: I need some advice.\nLocal Assistant: Sure, what about?\nGeneral AI: Performance tuning.";
+        let r = is_garbage(fabricated);
+        assert!(r.is_garbage);
+        assert_eq!(r.reason, GarbageReason::FabricatedConversation);
+    }
+
+    #[test]
+    fn test_normal_response_not_fabricated() {
+        // A normal response mentioning people should NOT be flagged
+        let r = is_garbage("I agree with what was discussed earlier. Here are my thoughts on the topic of performance optimization and code readability.");
+        assert!(!r.is_garbage);
+    }
+
+    #[test]
+    fn test_single_speaker_prefix_not_fabricated() {
+        // A single "Name:" at the start is handled by response_cleaning, not garbage detection
+        let r = is_garbage("General AI: I think we should use caching for this particular use case.");
+        assert!(!r.is_garbage);
+    }
+
+    #[test]
+    fn test_list_with_colons_not_fabricated() {
+        // A list with colons should NOT be flagged
+        let r = is_garbage("Here are some tips:\n- Performance: Use caching\n- Readability: Use clear names\n- Testing: Write unit tests\n- Documentation: Keep it updated");
+        assert!(!r.is_garbage);
     }
 }

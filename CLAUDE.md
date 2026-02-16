@@ -403,6 +403,42 @@ sleep 10
 ./jtag ai/report                       # AI performance metrics
 ```
 
+### Persona Logging (Cognition Visibility)
+
+Persona logging is **opt-in** and controlled by `.continuum/logging.json`. Categories include `cognition` (thought process, tool decisions, agent loop traces) and `hippocampus` (memory/recall).
+
+**Config file** (`.continuum/logging.json`):
+```json
+{
+  "version": 1,
+  "defaults": { "enabled": true, "categories": ["cognition"] },
+  "personas": {
+    "helper": { "enabled": true, "categories": ["cognition"] }
+  },
+  "system": { "enabled": true, "categories": [] }
+}
+```
+
+**Commands**:
+```bash
+# Enable logging for a persona (persists to logging.json)
+./jtag logging/enable --persona="helper" --category="cognition"
+
+# Disable logging for a persona
+./jtag logging/disable --persona="helper"
+
+# Show logging status for all personas
+./jtag logging/status
+
+# Show logging status for a specific persona
+./jtag logging/status --persona="helper"
+```
+
+**Log locations**:
+- Per-persona cognition: `.continuum/jtag/logs/personas/<persona>/cognition.log`
+- AI provider routing: `.continuum/jtag/logs/system/modules/ai_provider.log`
+- Prompt captures (full LLM req/res): `.continuum/jtag/logs/prompt-captures.jsonl`
+
 ### System Logs
 ```bash
 tail -f .continuum/sessions/user/shared/*/logs/server.log
