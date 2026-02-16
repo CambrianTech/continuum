@@ -16,7 +16,7 @@ pub mod similarity;
 pub mod types;
 pub mod validation;
 
-pub use similarity::{jaccard_char_bigram_similarity, jaccard_ngram_similarity, check_semantic_loop};
+pub use similarity::{jaccard_char_bigram_similarity, jaccard_ngram_similarity, jaccard_from_sets, build_word_ngrams, check_semantic_loop};
 pub use garbage_detection::is_garbage;
 pub use loop_detection::{LoopDetector, has_truncated_tool_call};
 pub use mention_detection::{is_persona_mentioned, has_directed_mention};

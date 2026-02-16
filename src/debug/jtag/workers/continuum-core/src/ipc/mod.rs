@@ -9,7 +9,7 @@
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
-use crate::persona::{PersonaInbox, PersonaCognitionEngine, ChannelRegistry, PersonaState};
+use crate::persona::{ChannelRegistry, PersonaState};
 use crate::rag::RagEngine;
 use crate::code::{FileEngine, ShellSession};
 use crate::runtime::{Runtime, CommandResult};
@@ -116,47 +116,32 @@ impl Response {
 #[allow(dead_code)]
 struct ServerState {
     voice_service: Arc<crate::voice::voice_service::VoiceService>,
-    /// Per-persona inboxes — DashMap for per-key locking (no cross-persona contention).
-    inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
-    /// Per-persona cognition engines — DashMap: all hot-path ops are &self (read-only).
-    cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
-    /// 14 personas across DashMap's shards = near-zero contention.
     channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
     rag_engine: Arc<RagEngine>,
     /// Shared CallManager for direct audio injection (speak-in-call).
-    /// Audio never leaves Rust — IPC only returns metadata.
     call_manager: Arc<crate::voice::call_server::CallManager>,
     /// Server-side audio buffer pool for handle-based synthesis.
-    /// Audio stays in Rust — TypeScript gets Handle + metadata only.
     audio_pool: Arc<crate::voice::audio_buffer::AudioBufferPool>,
     /// Tokio runtime handle for calling async CallManager methods from IPC threads.
     rt_handle: tokio::runtime::Handle,
     /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
-    /// Data comes from the TS ORM via IPC. Zero SQL access.
     memory_manager: Arc<crate::memory::PersonaMemoryManager>,
     /// Per-persona file engines — workspace-scoped file operations with change tracking.
     file_engines: Arc<DashMap<String, FileEngine>>,
     /// Per-persona shell sessions — persistent bash per workspace with handle+poll.
     shell_sessions: Arc<DashMap<String, ShellSession>>,
     /// Modular runtime — ServiceModule-based command routing.
-    /// Phase 1+: routes health-check, get-stats through HealthModule.
-    /// Phase 2+: routes cognition/, channel/ through CognitionModule, ChannelModule.
-    /// Eventually replaces the entire match statement below.
     runtime: Arc<Runtime>,
 }
 
 impl ServerState {
-    /// Create with shared state (for module state sharing).
-    /// Phase 3+: Modules and ServerState share all per-persona and service state.
     #[allow(clippy::too_many_arguments)]
     fn new_with_shared_state(
         call_manager: Arc<crate::voice::call_server::CallManager>,
         rt_handle: tokio::runtime::Handle,
         memory_manager: Arc<crate::memory::PersonaMemoryManager>,
         runtime: Arc<Runtime>,
-        cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
-        inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
         channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
         rag_engine: Arc<RagEngine>,
         voice_service: Arc<crate::voice::voice_service::VoiceService>,
@@ -166,8 +151,6 @@ impl ServerState {
     ) -> Self {
         Self {
             voice_service,
-            inboxes,
-            cognition_engines,
             channel_registries,
             rag_engine,
             call_manager,
@@ -179,7 +162,6 @@ impl ServerState {
             runtime,
         }
     }
-
 }
 
 // ============================================================================
@@ -597,23 +579,17 @@ pub fn start_server(
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
 
-    // Create shared DashMaps for per-persona state (shared between ServerState and modules)
-    let cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>> = Arc::new(DashMap::new());
-    let inboxes: Arc<DashMap<Uuid, PersonaInbox>> = Arc::new(DashMap::new());
-    let channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>> = Arc::new(DashMap::new());
+    // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
-
-    // Phase 2: CognitionModule + ChannelModule (per-persona DashMap state)
-    let cognition_state = Arc::new(CognitionState::from_existing(
-        cognition_engines.clone(),
-        inboxes.clone(),
-        rag_engine.clone(),
-    ));
+    let cognition_state = Arc::new(CognitionState::new(rag_engine.clone()));
+    let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));
 
+    // Channel module shares the unified personas map for fast-path decisions
+    let channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>> = Arc::new(DashMap::new());
     let channel_state = Arc::new(ChannelState::from_existing(
         channel_registries.clone(),
-        cognition_engines.clone(),
+        personas,
     ));
     runtime.register(Arc::new(ChannelModule::new(channel_state)));
 
@@ -728,8 +704,6 @@ pub fn start_server(
         rt_handle,
         memory_manager,
         runtime,
-        cognition_engines,
-        inboxes,
         channel_registries,
         rag_engine,
         voice_service,

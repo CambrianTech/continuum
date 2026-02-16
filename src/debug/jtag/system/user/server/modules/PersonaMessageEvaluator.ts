@@ -28,8 +28,6 @@ import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../../data/entities/CoordinationDecisionEntity';
 import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
-import type { AIDecisionContext } from '../../../ai/server/AIDecisionService';
-import { AIDecisionService } from '../../../ai/server/AIDecisionService';
 import { contentPreview, truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
@@ -767,8 +765,7 @@ export class PersonaMessageEvaluator {
     // Signal conversation activity (warms room — active conversation stays alive)
     getChatCoordinator().onMessageServiced(messageEntity.roomId, this.personaUser.id);
 
-    // Track response for rate limiting (both TS and Rust state)
-    this.personaUser.rateLimiter.trackResponse(messageEntity.roomId);
+    // Track response for rate limiting (Rust is sole authority)
     this.personaUser.rustCognition.trackResponse(messageEntity.roomId)
       .catch(err => this.log(`⚠️ Rust trackResponse failed (non-fatal): ${err}`));
 
@@ -843,12 +840,6 @@ export class PersonaMessageEvaluator {
         return 'file';
     }
   }
-
-  // Dead code removed in Phase 1 migration:
-  // - getPersonaDomainKeywords() → not used by any remaining gate
-  // - calculateResponseHeuristics() → not used by any remaining gate
-  // - isSenderHuman() → sender type now passed directly via senderIsHuman param
-  // - detectNewTopic() → topic detection now in Rust evaluator (SleepMode::UntilTopic)
 
   /**
    * Check if existing AI responses are adequate (no need for another response).

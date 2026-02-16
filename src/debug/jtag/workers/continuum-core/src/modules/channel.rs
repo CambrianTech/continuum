@@ -10,7 +10,7 @@
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{
     ChannelRegistry, PersonaState, ChannelEnqueueRequest, ActivityDomain,
-    PersonaCognitionEngine, InboxMessage, SenderType, Modality,
+    PersonaCognition, InboxMessage, SenderType, Modality,
 };
 use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
 use crate::persona::channel_items::TaskQueueItem;
@@ -68,8 +68,9 @@ impl Default for ChannelTickConfig {
 pub struct ChannelState {
     /// Per-persona channel registries + states.
     pub registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
-    /// Reference to cognition engines for service-cycle-full fast-path decision.
-    pub cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
+    /// Unified per-persona cognition (shared with CognitionModule).
+    /// Used for fast-path decision in service-cycle-full.
+    pub personas: Arc<DashMap<Uuid, PersonaCognition>>,
     /// Per-persona self-task generators (lazily created on first tick).
     pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
     /// Tick configuration — adjustable at runtime via channel/tick-config command.
@@ -77,10 +78,10 @@ pub struct ChannelState {
 }
 
 impl ChannelState {
-    pub fn new(cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>) -> Self {
+    pub fn new(personas: Arc<DashMap<Uuid, PersonaCognition>>) -> Self {
         Self {
             registries: Arc::new(DashMap::new()),
-            cognition_engines,
+            personas,
             self_task_generators: DashMap::new(),
             tick_config: std::sync::RwLock::new(ChannelTickConfig::default()),
         }
@@ -89,11 +90,11 @@ impl ChannelState {
     /// Create from existing DashMaps (for gradual migration from ServerState).
     pub fn from_existing(
         registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
-        cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
+        personas: Arc<DashMap<Uuid, PersonaCognition>>,
     ) -> Self {
         Self {
             registries,
-            cognition_engines,
+            personas,
             self_task_generators: DashMap::new(),
             tick_config: std::sync::RwLock::new(ChannelTickConfig::default()),
         }
@@ -295,8 +296,8 @@ impl ServiceModule for ChannelModule {
                         };
 
                         // Get cognition engine for fast-path decision
-                        if let Some(engine) = self.state.cognition_engines.get(&persona_uuid) {
-                            let decision = engine.fast_path_decision(&inbox_msg);
+                        if let Some(persona) = self.state.personas.get(&persona_uuid) {
+                            let decision = persona.engine.fast_path_decision(&inbox_msg);
                             Some(serde_json::json!({
                                 "should_respond": decision.should_respond,
                                 "confidence": decision.confidence,

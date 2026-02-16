@@ -29,7 +29,6 @@ import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
 import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
-// AIDecisionService removed — redundancy checking disabled (too flaky, false positives)
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
@@ -142,15 +141,10 @@ export class PersonaResponseGenerator {
    * Domain-to-trait mapping is canonical in Rust (no TS duplicate).
    */
   private async getEffectiveModel(taskDomain?: string): Promise<string> {
+    if (!this._rustBridge) throw new Error('Rust bridge not initialized — cannot select model');
     const baseModel = this.modelConfig.model || LOCAL_MODELS.DEFAULT;
-
-    if (this._rustBridge) {
-      const result = await this._rustBridge.selectModel(baseModel, taskDomain);
-      return result.model;
-    }
-
-    // Rust bridge not yet initialized — use base model
-    return baseModel;
+    const result = await this._rustBridge.selectModel(baseModel, taskDomain);
+    return result.model;
   }
 
   /**

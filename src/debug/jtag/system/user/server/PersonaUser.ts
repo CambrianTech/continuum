@@ -1176,11 +1176,12 @@ export class PersonaUser extends AIUser {
     }
 
     // STEP 2: Deduplication - prevent evaluating same message multiple times
+    // Uses TS-local Set (not Rust DashSet) because CognitionEngine.evaluated_messages
+    // serves a different purpose (fast_path_decision pipeline dedup). Merging them
+    // caused all messages to be skipped — channel tick marks them before PersonaUser sees them.
     if (this.rateLimiter.hasEvaluatedMessage(messageEntity.id)) {
       return; // Already evaluated this message
     }
-
-    // Mark as evaluated
     this.rateLimiter.markMessageEvaluated(messageEntity.id);
 
     // STEP 3: Skip resolved messages (moderator marked as no longer needing responses)

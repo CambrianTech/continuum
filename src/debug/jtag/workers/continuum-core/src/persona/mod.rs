@@ -23,6 +23,7 @@ pub mod model_selection;
 pub mod self_task_generator;
 pub mod text_analysis;
 pub mod types;
+pub mod unified;
 
 pub use channel_items::ChannelEnqueueRequest;
 pub use channel_registry::ChannelRegistry;
@@ -40,3 +41,4 @@ pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
 };
 pub use types::*;
+pub use unified::PersonaCognition;

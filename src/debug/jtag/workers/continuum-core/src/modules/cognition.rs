@@ -1,33 +1,37 @@
 //! CognitionModule — per-persona cognitive state + text analysis IPC.
 //!
-//! Stateful per-persona DashMap isolation for cognition engines and inboxes,
-//! plus stateless text analysis commands (similarity, validation, mentions, cleaning).
+//! Unified per-persona state: one DashMap<Uuid, PersonaCognition> holds all
+//! cognitive state (engine, inbox, rate limiter, sleep, adapters, genome).
+//! Single lock acquisition per command. Related state is cache-local.
 //!
-//! Phase 1: Unified evaluation gate
-//! - `cognition/full-evaluate`: Replaces 5 TS gates with single IPC call
+//! Stateless text analysis commands (similarity, validation, mentions, cleaning)
+//! use no per-persona state.
+//!
+//! Commands:
+//! - `cognition/create-engine`: Create all per-persona cognitive state
+//! - `cognition/calculate-priority`: Priority scoring
+//! - `cognition/fast-path-decision`: Fast-path respond/skip decision
+//! - `cognition/enqueue-message`: Enqueue message to persona inbox
+//! - `cognition/get-state`: Get persona cognitive state
+//! - `cognition/full-evaluate`: Unified 6-gate evaluation (replaces 5 TS gates)
 //! - `cognition/track-response`: Track response for rate limiting
 //! - `cognition/set-sleep-mode`: Set voluntary sleep mode
 //! - `cognition/configure-rate-limiter`: Configure rate limiter params
-//!
-//! Phase 2: Model selection
-//! - `cognition/select-model`: 4-tier model priority chain (trait → current → any → base)
-//! - `cognition/sync-adapters`: Sync adapter registry from TypeScript genome state
-//!
-//! Phase 4: Genome paging
-//! - `cognition/genome-activate-skill`: LRU eviction + skill activation decision
+//! - `cognition/select-model`: 4-tier model priority chain
+//! - `cognition/sync-adapters`: Sync adapter registry from TypeScript
+//! - `cognition/genome-activate-skill`: LRU eviction + skill activation
 //! - `cognition/genome-sync`: Sync full adapter state from TypeScript
 //! - `cognition/genome-state`: Get current genome paging state
-//!
-//! Phase 5: Post-inference adequacy
-//! - `cognition/check-adequacy`: Batch check if other AIs already answered
+//! - `cognition/check-adequacy`: Batch adequacy check
+//! - `inbox/create`: Create persona inbox (alias for create-engine)
 //!
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
-use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
-use crate::persona::{RateLimiterState, SleepState, SleepMode, RecentResponse};
-use crate::persona::{AdapterInfo, AdapterRegistry, ModelSelectionRequest};
-use crate::persona::{GenomeAdapterInfo, GenomePagingEngine};
+use crate::persona::{PersonaCognition, InboxMessage, SenderType, Modality};
+use crate::persona::{SleepMode, RecentResponse};
+use crate::persona::{AdapterInfo, ModelSelectionRequest};
+use crate::persona::GenomeAdapterInfo;
 use crate::persona::evaluator;
 use crate::persona::model_selection;
 use crate::persona::text_analysis;
@@ -43,49 +47,28 @@ use std::any::Any;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Shared state for cognition module — per-persona engines and inboxes.
+/// Shared state for cognition module.
+///
+/// `personas` holds ALL per-persona cognitive state in a single DashMap.
+/// One lock acquisition gives atomic access to engine + inbox + rate limiter +
+/// sleep state + adapter registry + genome engine.
+///
+/// `rag_engine` and `loop_detector` are shared across all personas.
 pub struct CognitionState {
-    pub engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
-    pub inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
+    /// Unified per-persona state: 7 maps → 1.
+    pub personas: Arc<DashMap<Uuid, PersonaCognition>>,
+    /// Shared RAG engine (not per-persona).
     pub rag_engine: Arc<RagEngine>,
+    /// Shared loop detector (not per-persona).
     pub loop_detector: LoopDetector,
-    /// Per-persona rate limiter state (Phase 1: unified evaluation)
-    pub rate_limiters: Arc<DashMap<Uuid, RateLimiterState>>,
-    /// Per-persona sleep mode (Phase 1: unified evaluation)
-    pub sleep_states: Arc<DashMap<Uuid, SleepState>>,
-    /// Per-persona adapter registries (Phase 2: model selection)
-    pub adapter_registries: Arc<DashMap<Uuid, AdapterRegistry>>,
-    /// Per-persona genome paging engines (Phase 4: LRU eviction + memory budget)
-    pub genome_engines: Arc<DashMap<Uuid, GenomePagingEngine>>,
 }
 
 impl CognitionState {
     pub fn new(rag_engine: Arc<RagEngine>) -> Self {
         Self {
-            engines: Arc::new(DashMap::new()),
-            inboxes: Arc::new(DashMap::new()),
+            personas: Arc::new(DashMap::new()),
             rag_engine,
             loop_detector: LoopDetector::new(),
-            rate_limiters: Arc::new(DashMap::new()),
-            sleep_states: Arc::new(DashMap::new()),
-            adapter_registries: Arc::new(DashMap::new()),
-            genome_engines: Arc::new(DashMap::new()),
-        }
-    }
-
-    /// Create from existing DashMaps (for gradual migration from ServerState).
-    pub fn from_existing(
-        engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
-        inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
-        rag_engine: Arc<RagEngine>,
-    ) -> Self {
-        Self {
-            engines, inboxes, rag_engine,
-            loop_detector: LoopDetector::new(),
-            rate_limiters: Arc::new(DashMap::new()),
-            sleep_states: Arc::new(DashMap::new()),
-            adapter_registries: Arc::new(DashMap::new()),
-            genome_engines: Arc::new(DashMap::new()),
         }
     }
 }
@@ -98,6 +81,20 @@ impl CognitionModule {
     pub fn new(state: Arc<CognitionState>) -> Self {
         Self { state }
     }
+}
+
+/// Helper: get or create persona, returning mutable ref via DashMap entry API.
+/// Used by commands that need to lazily create persona state.
+macro_rules! get_or_create_persona {
+    ($self:expr, $persona_uuid:expr) => {
+        $self.state.personas
+            .entry($persona_uuid)
+            .or_insert_with(|| PersonaCognition::new(
+                $persona_uuid,
+                String::new(),
+                $self.state.rag_engine.clone(),
+            ))
+    };
 }
 
 #[async_trait]
@@ -127,7 +124,7 @@ impl ServiceModule for CognitionModule {
 
         match command {
             // ================================================================
-            // Persona Lifecycle (stateful, per-persona DashMap)
+            // Persona Lifecycle
             // ================================================================
 
             "cognition/create-engine" => {
@@ -135,16 +132,14 @@ impl ServiceModule for CognitionModule {
                 let persona_uuid = p.uuid("persona_id")?;
                 let persona_name = p.str("persona_name")?;
 
-                let (_, shutdown_rx) = tokio::sync::watch::channel(false);
-                let engine = PersonaCognitionEngine::new(
+                let cognition = PersonaCognition::new(
                     persona_uuid,
                     persona_name.to_string(),
                     self.state.rag_engine.clone(),
-                    shutdown_rx,
                 );
+                self.state.personas.insert(persona_uuid, cognition);
 
-                self.state.engines.insert(persona_uuid, engine);
-                log_info!("module", "cognition", "Created cognition engine for {}", persona_uuid);
+                log_info!("module", "cognition", "Created cognition for {}", persona_uuid);
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
             }
 
@@ -158,10 +153,10 @@ impl ServiceModule for CognitionModule {
                 let timestamp = p.u64("timestamp")?;
 
                 let sender = parse_sender_type(sender_type_str)?;
-                let engine = self.state.engines.get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition engine for {persona_uuid}"))?;
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                let score = engine.calculate_priority(content, sender, is_voice, room_uuid, timestamp);
+                let score = persona.engine.calculate_priority(content, sender, is_voice, room_uuid, timestamp);
                 Ok(CommandResult::Json(serde_json::to_value(&score)
                     .map_err(|e| format!("Serialize error: {e}"))?))
             }
@@ -172,10 +167,10 @@ impl ServiceModule for CognitionModule {
                 let message = p.value("message").ok_or("Missing message")?;
                 let inbox_msg = parse_inbox_message(message)?;
 
-                let engine = self.state.engines.get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition engine for {persona_uuid}"))?;
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                let decision = engine.fast_path_decision(&inbox_msg);
+                let decision = persona.engine.fast_path_decision(&inbox_msg);
                 Ok(CommandResult::Json(serde_json::to_value(&decision)
                     .map_err(|e| format!("Serialize error: {e}"))?))
             }
@@ -186,14 +181,12 @@ impl ServiceModule for CognitionModule {
                 let message = p.value("message").ok_or("Missing message")?;
                 let inbox_msg = parse_inbox_message(message)?;
 
-                let inbox = self.state.inboxes
-                    .entry(persona_uuid)
-                    .or_insert_with(|| PersonaInbox::new(persona_uuid));
-                inbox.enqueue(inbox_msg);
+                let persona = get_or_create_persona!(self, persona_uuid);
+                persona.inbox.enqueue(inbox_msg);
 
                 Ok(CommandResult::Json(serde_json::json!({
                     "enqueued": true,
-                    "queue_size": inbox.len(),
+                    "queue_size": persona.inbox.len(),
                 })))
             }
 
@@ -201,10 +194,10 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_get_state");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let engine = self.state.engines.get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition engine for {persona_uuid}"))?;
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                let state = engine.state();
+                let state = persona.engine.state();
                 Ok(CommandResult::Json(serde_json::json!({
                     "energy": state.energy,
                     "attention": state.attention,
@@ -220,9 +213,36 @@ impl ServiceModule for CognitionModule {
             "inbox/create" => {
                 let _timer = TimingGuard::new("module", "inbox_create");
                 let persona_uuid = p.uuid("persona_id")?;
-                self.state.inboxes.insert(persona_uuid, PersonaInbox::new(persona_uuid));
-                log_info!("module", "cognition", "Created inbox for {}", persona_uuid);
+                // Ensure persona exists with all state (inbox is part of PersonaCognition)
+                get_or_create_persona!(self, persona_uuid);
+                log_info!("module", "cognition", "Ensured inbox for {}", persona_uuid);
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
+            }
+
+            // ================================================================
+            // Message Deduplication (single source of truth in Rust)
+            // ================================================================
+
+            "cognition/has-evaluated" => {
+                let persona_uuid = p.uuid("persona_id")?;
+                let message_uuid = p.uuid("message_id")?;
+
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                let evaluated = persona.engine.has_evaluated_message(message_uuid);
+                Ok(CommandResult::Json(serde_json::json!({ "evaluated": evaluated })))
+            }
+
+            "cognition/mark-evaluated" => {
+                let persona_uuid = p.uuid("persona_id")?;
+                let message_uuid = p.uuid("message_id")?;
+
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
+
+                persona.engine.mark_message_evaluated(message_uuid);
+                Ok(CommandResult::Json(serde_json::json!({ "marked": true })))
             }
 
             // ================================================================
@@ -305,17 +325,17 @@ impl ServiceModule for CognitionModule {
             }
 
             // ================================================================
-            // Unified Evaluation (Phase 1: replaces 5 TS gates + fast-path)
+            // Unified Evaluation (6-gate pipeline, single lock)
             // ================================================================
 
             "cognition/full-evaluate" => {
                 let _timer = TimingGuard::new("module", "cognition_full_evaluate");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let engine = self.state.engines.get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition engine for {persona_uuid}"))?;
+                // Single lock — atomic access to engine + rate_limiter + sleep_state
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                // Build request from params
                 let request = evaluator::FullEvaluateRequest {
                     persona_id: persona_uuid,
                     persona_name: p.str("persona_name")?.to_string(),
@@ -334,14 +354,6 @@ impl ServiceModule for CognitionModule {
                     recent_room_texts: p.json_opt("recent_room_texts"),
                 };
 
-                // Get or create rate limiter + sleep state
-                let rate_limiter = self.state.rate_limiters
-                    .entry(persona_uuid)
-                    .or_insert_with(RateLimiterState::default);
-                let sleep_state = self.state.sleep_states
-                    .entry(persona_uuid)
-                    .or_insert_with(SleepState::default);
-
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -349,9 +361,9 @@ impl ServiceModule for CognitionModule {
 
                 let result = evaluator::full_evaluate(
                     &request,
-                    &rate_limiter,
-                    &sleep_state,
-                    &engine,
+                    &persona.rate_limiter,
+                    &persona.sleep_state,
+                    &persona.engine,
                     now_ms,
                 );
 
@@ -375,12 +387,10 @@ impl ServiceModule for CognitionModule {
                     .unwrap_or_default()
                     .as_millis() as u64;
 
-                let mut rate_limiter = self.state.rate_limiters
-                    .entry(persona_uuid)
-                    .or_insert_with(RateLimiterState::default);
-                rate_limiter.track_response(room_uuid, now_ms);
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                persona.rate_limiter.track_response(room_uuid, now_ms);
 
-                let count = rate_limiter.response_count(room_uuid);
+                let count = persona.rate_limiter.response_count(room_uuid);
                 log_info!(
                     "module", "cognition",
                     "track-response {}: room={}, count={}",
@@ -416,21 +426,19 @@ impl ServiceModule for CognitionModule {
 
                 let wake_at_ms = duration_minutes.map(|d| now_ms + (d * 60_000.0) as u64);
 
-                let previous = self.state.sleep_states
-                    .get(&persona_uuid)
-                    .map(|s| format!("{:?}", s.mode))
-                    .unwrap_or_else(|| "Active".into());
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                let previous = format!("{:?}", persona.sleep_state.mode);
 
-                self.state.sleep_states.insert(persona_uuid, SleepState {
+                persona.sleep_state = crate::persona::evaluator::SleepState {
                     mode,
                     reason: reason.clone(),
                     set_at_ms: now_ms,
                     wake_at_ms,
-                });
+                };
 
                 log_info!(
                     "module", "cognition",
-                    "set-sleep-mode {}: {:?} → {:?} (reason: {})",
+                    "set-sleep-mode {}: {} → {:?} (reason: {})",
                     persona_uuid, previous, mode, reason
                 );
 
@@ -448,11 +456,9 @@ impl ServiceModule for CognitionModule {
                 let min_seconds = p.f64_or("min_seconds_between_responses", 10.0);
                 let max_responses = p.u64_or("max_responses_per_session", 50) as u32;
 
-                let mut rate_limiter = self.state.rate_limiters
-                    .entry(persona_uuid)
-                    .or_insert_with(RateLimiterState::default);
-                rate_limiter.min_seconds_between_responses = min_seconds;
-                rate_limiter.max_responses_per_session = max_responses;
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                persona.rate_limiter.min_seconds_between_responses = min_seconds;
+                persona.rate_limiter.max_responses_per_session = max_responses;
 
                 log_info!(
                     "module", "cognition",
@@ -468,8 +474,9 @@ impl ServiceModule for CognitionModule {
             }
 
             // =================================================================
-            // Phase 2: Model Selection
+            // Model Selection
             // =================================================================
+
             "cognition/select-model" => {
                 let _timer = TimingGuard::new("module", "cognition_select_model");
                 let persona_uuid = p.uuid("persona_id")?;
@@ -484,11 +491,8 @@ impl ServiceModule for CognitionModule {
                     base_model,
                 };
 
-                let registry = self.state.adapter_registries
-                    .entry(persona_uuid)
-                    .or_insert_with(AdapterRegistry::default);
-
-                let result = model_selection::select_model(&request, &registry);
+                let persona = get_or_create_persona!(self, persona_uuid);
+                let result = model_selection::select_model(&request, &persona.adapter_registry);
 
                 Ok(CommandResult::Json(serde_json::to_value(&result)
                     .map_err(|e| format!("Serialize error: {e}"))?))
@@ -501,20 +505,18 @@ impl ServiceModule for CognitionModule {
                     .and_then(|v| v.as_array())
                     .ok_or("Missing adapters array")?;
 
-                let mut registry = self.state.adapter_registries
-                    .entry(persona_uuid)
-                    .or_insert_with(AdapterRegistry::default);
+                let mut persona = get_or_create_persona!(self, persona_uuid);
 
                 // Replace entire adapter set (full sync, not incremental)
-                registry.adapters.clear();
+                persona.adapter_registry.adapters.clear();
 
                 for adapter_val in adapters_json {
                     let adapter: AdapterInfo = serde_json::from_value(adapter_val.clone())
                         .map_err(|e| format!("Invalid adapter: {e}"))?;
-                    registry.adapters.insert(adapter.name.clone(), adapter);
+                    persona.adapter_registry.adapters.insert(adapter.name.clone(), adapter);
                 }
 
-                let count = registry.adapters.len();
+                let count = persona.adapter_registry.adapters.len();
 
                 log_info!(
                     "module", "cognition",
@@ -529,7 +531,7 @@ impl ServiceModule for CognitionModule {
             }
 
             // =================================================================
-            // Phase 4: Genome Paging (LRU eviction + memory budget decisions)
+            // Genome Paging (LRU eviction + memory budget decisions)
             // =================================================================
 
             "cognition/genome-activate-skill" => {
@@ -543,11 +545,9 @@ impl ServiceModule for CognitionModule {
                     .unwrap_or_default()
                     .as_millis() as u64;
 
-                let mut engine = self.state.genome_engines
-                    .entry(persona_uuid)
-                    .or_insert_with(|| GenomePagingEngine::new(memory_budget_mb));
-
-                let result = engine.activate_skill(&skill_name, now_ms);
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                persona.genome_engine.memory_budget_mb = memory_budget_mb;
+                let result = persona.genome_engine.activate_skill(&skill_name, now_ms);
 
                 log_info!(
                     "module", "cognition",
@@ -575,26 +575,23 @@ impl ServiceModule for CognitionModule {
                 let adapter_count = adapters.len();
                 let active_count = adapters.iter().filter(|a| a.is_loaded).count();
 
-                let mut engine = self.state.genome_engines
-                    .entry(persona_uuid)
-                    .or_insert_with(|| GenomePagingEngine::new(memory_budget_mb));
-
-                engine.memory_budget_mb = memory_budget_mb;
-                engine.sync_state(adapters);
+                let mut persona = get_or_create_persona!(self, persona_uuid);
+                persona.genome_engine.memory_budget_mb = memory_budget_mb;
+                persona.genome_engine.sync_state(adapters);
 
                 log_info!(
                     "module", "cognition",
                     "genome-sync {}: {} adapters ({} active), budget={}MB, used={}MB",
                     persona_uuid, adapter_count, active_count,
-                    engine.memory_budget_mb, engine.memory_used_mb
+                    persona.genome_engine.memory_budget_mb, persona.genome_engine.memory_used_mb
                 );
 
                 Ok(CommandResult::Json(serde_json::json!({
                     "synced": true,
                     "adapter_count": adapter_count,
                     "active_count": active_count,
-                    "memory_used_mb": engine.memory_used_mb,
-                    "memory_pressure": engine.memory_pressure(),
+                    "memory_used_mb": persona.genome_engine.memory_used_mb,
+                    "memory_pressure": persona.genome_engine.memory_pressure(),
                 })))
             }
 
@@ -602,16 +599,16 @@ impl ServiceModule for CognitionModule {
                 let _timer = TimingGuard::new("module", "cognition_genome_state");
                 let persona_uuid = p.uuid("persona_id")?;
 
-                let engine = self.state.genome_engines.get(&persona_uuid)
-                    .ok_or_else(|| format!("No genome engine for {persona_uuid}"))?;
+                let persona = self.state.personas.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
 
-                let state = engine.state();
+                let state = persona.genome_engine.state();
                 Ok(CommandResult::Json(serde_json::to_value(&state)
                     .map_err(|e| format!("Serialize error: {e}"))?))
             }
 
             // =================================================================
-            // Phase 5: Post-Inference Adequacy Check
+            // Post-Inference Adequacy Check
             // =================================================================
 
             "cognition/check-adequacy" => {

@@ -748,6 +748,49 @@ export class RustCognitionBridge {
   }
 
   /**
+   * Check if a message has already been evaluated (Rust-side deduplication).
+   * Sole authority for chat message dedup — TS rateLimiter no longer tracks this.
+   */
+  async hasEvaluatedMessage(messageId: string): Promise<boolean> {
+    this.assertReady('hasEvaluatedMessage');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionHasEvaluated(this.personaId, messageId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`HasEvaluated: ${messageId.slice(0, 8)}... → ${result} (${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`hasEvaluatedMessage FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Mark a message as evaluated in Rust (deduplication).
+   * Sole authority for chat message dedup — TS rateLimiter no longer tracks this.
+   */
+  async markMessageEvaluated(messageId: string): Promise<void> {
+    this.assertReady('markMessageEvaluated');
+    const start = performance.now();
+
+    try {
+      await this.client.cognitionMarkEvaluated(this.personaId, messageId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`MarkEvaluated: ${messageId.slice(0, 8)}... (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`markMessageEvaluated FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
    * Set voluntary sleep mode for this persona in Rust.
    * THROWS on failure
    */

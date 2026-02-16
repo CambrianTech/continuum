@@ -101,7 +101,6 @@ pub struct RateLimiterState {
     pub rooms: HashMap<Uuid, RoomRateState>,
     pub min_seconds_between_responses: f64,
     pub max_responses_per_session: u32,
-    pub evaluated_messages: std::collections::HashSet<Uuid>,
 }
 
 impl Default for RateLimiterState {
@@ -110,7 +109,6 @@ impl Default for RateLimiterState {
             rooms: HashMap::new(),
             min_seconds_between_responses: 10.0,
             max_responses_per_session: 50,
-            evaluated_messages: std::collections::HashSet::new(),
         }
     }
 }
@@ -121,7 +119,6 @@ impl RateLimiterState {
             rooms: HashMap::new(),
             min_seconds_between_responses: min_seconds,
             max_responses_per_session: max_responses,
-            evaluated_messages: std::collections::HashSet::new(),
         }
     }
 
@@ -496,6 +493,9 @@ pub fn check_response_adequacy(
 ) -> AdequacyResult {
     let start = Instant::now();
 
+    // Pre-compute original text ngrams once — reuse across all response comparisons
+    let original_ngrams = text_analysis::build_word_ngrams(original_text);
+
     for response in responses {
         // Skip short responses (likely not adequate)
         if response.text.len() < 100 {
@@ -503,7 +503,8 @@ pub fn check_response_adequacy(
         }
 
         // Check if response is related to original question
-        let similarity = text_analysis::jaccard_ngram_similarity(original_text, &response.text);
+        let response_ngrams = text_analysis::build_word_ngrams(&response.text);
+        let similarity = text_analysis::jaccard_from_sets(&original_ngrams, &response_ngrams);
 
         // Substantial response (>100 chars) that's related to the question (>0.2 similarity)
         if similarity > 0.2 {

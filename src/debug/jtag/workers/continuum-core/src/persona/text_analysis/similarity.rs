@@ -56,18 +56,33 @@ pub fn jaccard_ngram_similarity(text1: &str, text2: &str) -> f64 {
     let set1 = word_ngrams(text1);
     let set2 = word_ngrams(text2);
 
+    jaccard_from_sets(&set1, &set2)
+}
+
+/// Jaccard similarity from pre-computed ngram sets.
+///
+/// Use this when comparing one text against many — compute `word_ngrams()`
+/// once for the needle, then call this for each comparison target.
+pub fn jaccard_from_sets(set1: &HashSet<String>, set2: &HashSet<String>) -> f64 {
     if set1.is_empty() || set2.is_empty() {
         return 0.0;
     }
 
-    let intersection = set1.intersection(&set2).count();
-    let union = set1.union(&set2).count();
+    let intersection = set1.intersection(set2).count();
+    let union = set1.union(set2).count();
 
     if union == 0 {
         0.0
     } else {
         intersection as f64 / union as f64
     }
+}
+
+/// Build word ngram set (unigrams + bigrams) from text.
+///
+/// Public so callers can pre-compute for one-to-many comparisons.
+pub fn build_word_ngrams(text: &str) -> HashSet<String> {
+    word_ngrams(text)
 }
 
 /// Check if a response is semantically looping against recent conversation history.
@@ -100,11 +115,15 @@ pub fn check_semantic_loop(
 
     let mut max_similarity: f64 = 0.0;
 
+    // Pre-compute response ngrams once — reuse across all history comparisons
+    let response_ngrams = build_word_ngrams(response_text);
+
     for msg in recent {
         if msg.content.len() < 20 {
             continue;
         }
-        let similarity = jaccard_ngram_similarity(response_text, &msg.content);
+        let msg_ngrams = word_ngrams(&msg.content);
+        let similarity = jaccard_from_sets(&response_ngrams, &msg_ngrams);
         if similarity > max_similarity {
             max_similarity = similarity;
         }

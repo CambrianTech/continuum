@@ -68,6 +68,8 @@ export interface CognitionMixin {
 	cognitionGenomeSync(personaId: string, adapters: GenomeAdapterInfo[], memoryBudgetMb?: number): Promise<{ synced: boolean; adapter_count: number; active_count: number; memory_used_mb: number; memory_pressure: number }>;
 	cognitionGenomeState(personaId: string): Promise<GenomePagingState>;
 	cognitionCheckAdequacy(originalText: string, responses: Array<{ sender_name: string; text: string }>): Promise<AdequacyResult>;
+	cognitionHasEvaluated(personaId: string, messageId: string): Promise<boolean>;
+	cognitionMarkEvaluated(personaId: string, messageId: string): Promise<void>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -495,6 +497,38 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as AdequacyResult;
+		}
+
+		/**
+		 * Check if a message has already been evaluated (deduplication).
+		 */
+		async cognitionHasEvaluated(personaId: string, messageId: string): Promise<boolean> {
+			const response = await this.request({
+				command: 'cognition/has-evaluated',
+				persona_id: personaId,
+				message_id: messageId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to check evaluated status');
+			}
+
+			return (response.result as { evaluated: boolean }).evaluated;
+		}
+
+		/**
+		 * Mark a message as evaluated (deduplication).
+		 */
+		async cognitionMarkEvaluated(personaId: string, messageId: string): Promise<void> {
+			const response = await this.request({
+				command: 'cognition/mark-evaluated',
+				persona_id: personaId,
+				message_id: messageId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to mark message as evaluated');
+			}
 		}
 	};
 }
