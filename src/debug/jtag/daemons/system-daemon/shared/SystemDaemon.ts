@@ -99,8 +99,8 @@ export class SystemDaemon {
       log.info('No system config found, creating with factory defaults...');
       this.configCache = await this.createDefaultConfig();
     } else {
-      // Config exists - cache it
-      this.configCache = result.data[0].data;
+      // Config exists - hydrate into proper class instance (ORM returns POJOs)
+      this.configCache = Object.assign(new SystemConfigEntity(), result.data[0].data);
       log.info('System configuration loaded from database');
     }
 
@@ -150,7 +150,8 @@ export class SystemDaemon {
    */
   private onConfigUpdated(entity: SystemConfigEntity): void {
     log.info('System configuration updated, refreshing cache...');
-    this.configCache = entity;
+    // Event payloads are POJOs from deserialization — hydrate into proper instance
+    this.configCache = Object.assign(new SystemConfigEntity(), entity);
   }
 
   /**

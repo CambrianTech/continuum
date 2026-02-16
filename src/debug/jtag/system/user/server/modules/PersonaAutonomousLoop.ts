@@ -41,14 +41,15 @@ export class PersonaAutonomousLoop {
    *
    * Creates:
    * 1. Continuous async service loop (signal-based waiting, not polling)
-   * 2. Task poll loop (every 10 seconds) — OFF the hot path
-   * 3. Self-task generation loop (every 30 seconds) — OFF the hot path
-   * 4. Training readiness check loop (every 60 seconds)
+   * 2. Task poll loop (every 60 seconds) — OFF the hot path, staggered start
+   * 3. Self-task generation loop (every 60 seconds) — OFF the hot path, staggered start
+   * 4. Training readiness check loop (every 120 seconds)
    *
    * Architecture:
    * - Hot path is ONLY: wait for signal → Rust service_cycle → execute → drain → repeat
    * - DB queries and self-task generation run on their own timers, never blocking the hot path
    * - Loop uses signal/mutex pattern (RTOS-style, performant, no CPU spinning)
+   * - Staggered starts prevent thundering herd (10+ personas polling simultaneously)
    */
   startAutonomousServicing(): void {
     this.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
@@ -59,21 +60,30 @@ export class PersonaAutonomousLoop {
       this.log(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
     });
 
-    // Task polling on separate timer (OFF hot path — was previously called every service cycle)
-    this.taskPollLoop = setInterval(async () => {
-      await this.pollTasks();
-    }, 10000); // 10 seconds
+    // Stagger timer starts to prevent thundering herd (10+ personas all firing at once)
+    const stagger = Math.floor(Math.random() * 15000); // 0-15s random offset
+
+    // Task polling on separate timer (OFF hot path)
+    setTimeout(() => {
+      this.taskPollLoop = setInterval(async () => {
+        await this.pollTasks();
+      }, 60000); // 60 seconds (was 10s — 10 personas × 10s = thundering herd)
+    }, stagger);
 
     // Self-task generation on separate timer (OFF hot path)
-    this.selfTaskLoop = setInterval(async () => {
-      await this.generateSelfTasksFromCNS();
-    }, 30000); // 30 seconds
+    setTimeout(() => {
+      this.selfTaskLoop = setInterval(async () => {
+        await this.generateSelfTasksFromCNS();
+      }, 60000); // 60 seconds (was 30s)
+    }, stagger + 5000);
 
-    // Training readiness checks (every 60 seconds)
-    this.log(`🧬 ${this.personaUser.displayName}: Starting training readiness checks (every 60s)`);
-    this.trainingCheckLoop = setInterval(async () => {
-      await this.checkTrainingReadiness();
-    }, 60000); // 60 seconds
+    // Training readiness checks (every 120 seconds)
+    this.log(`🧬 ${this.personaUser.displayName}: Starting training readiness checks (every 120s)`);
+    setTimeout(() => {
+      this.trainingCheckLoop = setInterval(async () => {
+        await this.checkTrainingReadiness();
+      }, 120000); // 120 seconds (was 60s)
+    }, stagger + 10000);
   }
 
   /**
