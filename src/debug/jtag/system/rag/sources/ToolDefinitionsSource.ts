@@ -10,9 +10,10 @@
  * - 'native' (Anthropic, OpenAI, Together, Groq): Produces metadata.nativeToolSpecs
  *   for the JSON tools[] request parameter. Budget-aware — drops lowest-priority
  *   tools if they exceed the allocated budget.
- * - 'xml' (DeepSeek): Produces systemPromptSection with XML-formatted tool
- *   definitions, truncated to budget.
- * - 'none' (Candle, Ollama, xAI, Fireworks): Not applicable — returns nothing.
+ * - 'xml' (DeepSeek, Candle, Ollama, etc.): Produces systemPromptSection with
+ *   XML-formatted tool definitions, prioritized then truncated to budget.
+ *   Essential tools (collaboration/chat, code/*) are kept; lowest-priority dropped.
+ * - 'none': Not applicable — returns nothing. Must be explicitly set.
  *
  * Priority 45 — below CodeToolSource (50, workflow guidance), above ActivityContext (40).
  */
@@ -36,8 +37,8 @@ export class ToolDefinitionsSource implements RAGSource {
   readonly defaultBudgetPercent = 10;
 
   isApplicable(context: RAGSourceContext): boolean {
-    // No tool definitions for providers that can't call tools
-    if (context.toolCapability === 'none' || !context.toolCapability) {
+    // Only skip tools when explicitly disabled — every AI gets tools by default
+    if (context.toolCapability === 'none') {
       return false;
     }
     return true;
@@ -64,12 +65,16 @@ export class ToolDefinitionsSource implements RAGSource {
       }));
 
       if (context.toolCapability === 'native') {
-        return this.loadNativeTools(context, toolDefinitions, allocatedBudget, startTime);
-      } else if (context.toolCapability === 'xml') {
-        return this.loadXmlTools(toolDefinitions, allocatedBudget, startTime);
+        // Native tools go in request.tools (separate from system prompt), so they
+        // deserve a higher effective budget. Cloud providers have 200K+ context windows;
+        // even 3000 tokens for tools is a rounding error. The RAG budget's 10% allocation
+        // was designed for system prompt sections — native tools are a different beast.
+        const effectiveBudget = Math.max(allocatedBudget, 3000);
+        return this.loadNativeTools(context, toolDefinitions, effectiveBudget, startTime);
+      } else {
+        // XML tools go IN the system prompt — respect the allocated budget strictly
+        return this.loadXmlTools(context, toolDefinitions, allocatedBudget, startTime);
       }
-
-      return this.emptySection(startTime);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       log.error(`Failed to load tool definitions: ${message}`);
@@ -133,35 +138,52 @@ export class ToolDefinitionsSource implements RAGSource {
   }
 
   /**
-   * XML tool providers (DeepSeek):
+   * XML tool providers (DeepSeek, Candle, Ollama, etc.):
    * Produce systemPromptSection with formatted tool definitions, budget-truncated.
+   *
+   * CRITICAL: Prioritize BEFORE truncation. Previously, tools were truncated from
+   * the end of an alphabetically-sorted list, keeping useless tools (adapter/*)
+   * and dropping essential ones (collaboration/chat/send, code/*). Now we put
+   * essential tools first so budget truncation drops the least important ones.
    */
   private loadXmlTools(
+    context: RAGSourceContext,
     toolDefinitions: ToolDefinition[],
     allocatedBudget: number,
     startTime: number
   ): RAGSection {
-    const adapter = getPrimaryAdapter();
-    const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
+    // Prioritize BEFORE formatting — essential tools first, rest at end.
+    // This ensures budget truncation drops lowest-priority tools, not essential ones.
+    const recipeToolNames = this.getRecipeToolNames(context);
+    let prioritized = this.prioritizeTools(
+      toolDefinitions,
+      recipeToolNames,
+      recipeToolNames.size > 0,
+      toolDefinitions.length  // No cap yet — budget handles the limiting
+    );
 
-    const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formattedTools}\n\nThe tool will be executed and results will be provided for you to analyze and respond to.\n================================`;
+    const adapter = getPrimaryAdapter();
+    const formattedTools = adapter.formatToolsForPrompt(prioritized);
+
+    const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools:\n\n${formattedTools}\n================================`;
 
     let finalSection = toolsSection;
     let tokenCount = this.estimateTokens(toolsSection);
+    let finalToolCount = prioritized.length;
 
-    // Budget truncation: if over budget, reduce tool count
-    if (tokenCount > allocatedBudget && toolDefinitions.length > 5) {
-      // Progressively reduce tools until we fit
-      let reducedTools = toolDefinitions;
+    // Budget truncation: progressively drop lowest-priority tools (at end of list)
+    if (tokenCount > allocatedBudget && prioritized.length > 5) {
+      let reducedTools = prioritized;
       while (tokenCount > allocatedBudget && reducedTools.length > 5) {
         reducedTools = reducedTools.slice(0, reducedTools.length - 5);
         const reduced = adapter.formatToolsForPrompt(reducedTools);
         finalSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools:\n\n${reduced}\n================================`;
         tokenCount = this.estimateTokens(finalSection);
       }
+      finalToolCount = reducedTools.length;
     }
 
-    log.debug(`XML tools: ${toolDefinitions.length} tools (~${tokenCount} tokens)`);
+    log.debug(`XML tools: ${finalToolCount}/${toolDefinitions.length} tools (~${tokenCount} tokens, budget=${allocatedBudget})`);
 
     return {
       sourceName: this.name,
@@ -169,7 +191,8 @@ export class ToolDefinitionsSource implements RAGSource {
       loadTimeMs: performance.now() - startTime,
       systemPromptSection: finalSection,
       metadata: {
-        toolCount: toolDefinitions.length,
+        toolCount: finalToolCount,
+        totalAvailable: toolDefinitions.length,
         format: 'xml',
         budgetRespected: tokenCount <= allocatedBudget,
       },
@@ -177,10 +200,18 @@ export class ToolDefinitionsSource implements RAGSource {
   }
 
   /**
-   * Three-tier tool prioritization (same logic as PersonaResponseGenerator):
+   * Four-tier tool prioritization with sub-ordering:
    * 1. Recipe tools (activity's core toolset — go FIRST)
-   * 2. Essentials (bare minimum for coordination)
-   * 3. Everything else (fill remaining slots)
+   * 2. Critical tools (chat communication — bare minimum)
+   * 3. Essential tools (code, data, decisions — ordered by importance)
+   * 4. Everything else (fill remaining slots)
+   *
+   * Within essentials, tools are ordered by PREFIX PRIORITY so budget
+   * truncation (which drops from the end) removes the least important:
+   *   collaboration/chat > code > collaboration/decision > data > ai
+   *
+   * This ensures that when tight budgets (e.g., Candle 2-tool limit) kick in,
+   * AIs get collaboration/chat/send instead of ai/adapter/test.
    */
   private prioritizeTools(
     tools: ToolDefinition[],
@@ -188,33 +219,54 @@ export class ToolDefinitionsSource implements RAGSource {
     hasRecipeTools: boolean,
     maxTools: number
   ): ToolDefinition[] {
-    const ESSENTIAL_TOOLS = new Set([
+    // Critical tools that should ALWAYS survive budget truncation
+    const CRITICAL_TOOLS = new Set([
       'collaboration/chat/send', 'collaboration/chat/history',
-      'collaboration/decision/propose', 'collaboration/decision/vote',
     ]);
-    const essentialPrefixes = hasRecipeTools
+
+    // Essential prefix ordering — most important first.
+    // When budget truncation drops from the end, ai/* goes first, then data/*, etc.
+    const ESSENTIAL_PREFIX_ORDER: string[] = hasRecipeTools
       ? [] // When recipe tools exist, only allow exact essential matches
-      : ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
+      : [
+          'collaboration/chat/',     // Communication is #1
+          'code/',                   // Code abilities are #2
+          'collaboration/decision/', // Decision making #3
+          'data/',                   // Data access #4
+          'ai/',                     // AI meta-tools #5 (least important essential)
+        ];
 
     const recipe: ToolDefinition[] = [];
+    const critical: ToolDefinition[] = [];
     const essential: ToolDefinition[] = [];
     const rest: ToolDefinition[] = [];
 
     for (const tool of tools) {
       if (recipeToolNames.has(tool.name)) {
         recipe.push(tool);
-      } else if (ESSENTIAL_TOOLS.has(tool.name) ||
-                 essentialPrefixes.some(p => tool.name.startsWith(p))) {
+      } else if (CRITICAL_TOOLS.has(tool.name)) {
+        critical.push(tool);
+      } else if (ESSENTIAL_PREFIX_ORDER.some(p => tool.name.startsWith(p))) {
         essential.push(tool);
       } else {
         rest.push(tool);
       }
     }
 
-    const remaining = maxTools - recipe.length - essential.length;
-    const result = [...recipe, ...essential, ...rest.slice(0, Math.max(0, remaining))];
+    // Sort essentials by prefix priority (most important prefix first)
+    essential.sort((a, b) => {
+      const aIdx = ESSENTIAL_PREFIX_ORDER.findIndex(p => a.name.startsWith(p));
+      const bIdx = ESSENTIAL_PREFIX_ORDER.findIndex(p => b.name.startsWith(p));
+      const aPri = aIdx >= 0 ? aIdx : ESSENTIAL_PREFIX_ORDER.length;
+      const bPri = bIdx >= 0 ? bIdx : ESSENTIAL_PREFIX_ORDER.length;
+      if (aPri !== bPri) return aPri - bPri;
+      return a.name.localeCompare(b.name);
+    });
 
-    log.debug(`Tool prioritization: ${recipe.length} recipe + ${essential.length} essential + ${Math.max(0, remaining)} general = ${result.length} (from ${tools.length} total, cap=${maxTools})`);
+    const remaining = maxTools - recipe.length - critical.length - essential.length;
+    const result = [...recipe, ...critical, ...essential, ...rest.slice(0, Math.max(0, remaining))];
+
+    log.debug(`Tool prioritization: ${recipe.length} recipe + ${critical.length} critical + ${essential.length} essential + ${Math.max(0, remaining)} general = ${result.length} (from ${tools.length} total, cap=${maxTools})`);
 
     return result;
   }

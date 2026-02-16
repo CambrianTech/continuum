@@ -321,6 +321,22 @@ export class PersonaResponseGenerator {
       // Tool capability for XML parsing (still needed for response parsing, not injection)
       const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
 
+      // RAG DIAGNOSTIC: Log system prompt size and dump to /tmp for inspection
+      const promptChars = systemPrompt.length;
+      const promptTokensEst = Math.ceil(promptChars / 4);
+      const sections = systemPrompt.split(/\n\n(?:===|##)/).length - 1;
+      this.log(`📋 ${this.personaName}: [RAG AUDIT] System prompt: ${promptChars} chars (~${promptTokensEst} tokens), ${sections} sections, toolCap=${toolCap}, provider=${this.modelConfig.provider}`);
+      // Dump full system prompt + message array to /tmp for RAG audit
+      try {
+        const fs = await import('fs');
+        const safeName = this.personaName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+        const dumpPath = `/tmp/rag-audit-${safeName}.txt`;
+        const msgSummary = fullRAGContext.conversationHistory.map((m, i) =>
+          `[${i}] ${m.role}/${m.name}: ${m.content?.slice(0, 80)}...`
+        ).join('\n');
+        fs.writeFileSync(dumpPath, `=== RAG AUDIT: ${this.personaName} ===\nProvider: ${this.modelConfig.provider}\nModel: ${this.modelConfig.model}\nToolCap: ${toolCap}\nPrompt chars: ${promptChars}\nPrompt tokens (est): ${promptTokensEst}\nMessages: ${fullRAGContext.conversationHistory.length}\nMemories: ${fullRAGContext.privateMemories.length}\nToolDefs in metadata: ${fullRAGContext.metadata?.toolDefinitions?.toolCount ?? 'none'}\n\n=== SYSTEM PROMPT ===\n${systemPrompt}\n\n=== MESSAGE HISTORY ===\n${msgSummary}\n`);
+      } catch { /* ignore dump errors */ }
+
       messages.push({
         role: 'system',
         content: systemPrompt
