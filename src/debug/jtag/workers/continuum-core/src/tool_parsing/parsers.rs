@@ -65,8 +65,11 @@ fn parse_anthropic(text: &str) -> Vec<RawToolMatch> {
 
 // ─── Function-style ─────────────────────────────────────────────────
 
+// Match both proper XML and Groq's variant format:
+//   <function=name>{"param": "value"}</function>   — standard
+//   function=name>{"param": "value"}               — Groq variant (no < prefix, no closing tag)
 static RE_FUNCTION: Lazy<Regex> = Lazy::new(||
-    Regex::new(r"(?si)<function=([^>\s]+)>\s*([\s\S]*?)\s*</function>").unwrap()
+    Regex::new(r"(?si)<?function=([^>\s]+)>\s*(\{[\s\S]*?\})\s*(?:</function>)?").unwrap()
 );
 
 fn parse_function_style(text: &str) -> Vec<RawToolMatch> {
@@ -349,6 +352,35 @@ Then:
         let matches = parse_function_style(text);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].parameters.get("limit").unwrap(), "10");
+    }
+
+    #[test]
+    fn function_style_groq_variant_no_xml_wrapper() {
+        // Groq outputs function calls without < prefix and without </function> closing
+        let text = r#"function=code_shell_execute>{"cmd": "ping google.com", "wait": true}"#;
+        let matches = parse_function_style(text);
+        assert_eq!(matches.len(), 1, "Should match Groq's unwrapped function format");
+        assert_eq!(matches[0].tool_name, "code_shell_execute");
+        assert_eq!(matches[0].parameters.get("cmd").unwrap(), "ping google.com");
+        assert_eq!(matches[0].parameters.get("wait").unwrap(), "true");
+    }
+
+    #[test]
+    fn function_style_groq_tree_variant() {
+        let text = r#"function=code_tree>{"includeHidden": true, "maxDepth": 10, "path": "/shared/repository"}"#;
+        let matches = parse_function_style(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code_tree");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), "/shared/repository");
+    }
+
+    #[test]
+    fn function_style_groq_git_variant() {
+        let text = r#"function=code_git>{"operation": "log", "count": 100, "cwd": "/shared/repository"}"#;
+        let matches = parse_function_style(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code_git");
+        assert_eq!(matches[0].parameters.get("operation").unwrap(), "log");
     }
 
     // ─── Bare JSON ──────────────────────────────────────────────

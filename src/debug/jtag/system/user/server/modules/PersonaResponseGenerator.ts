@@ -22,7 +22,7 @@ import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
 // DataCreateParams/DataCreateResult imports removed — response posting now uses ORM.store() directly
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, NativeToolSpec, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
@@ -45,7 +45,7 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { supportsNativeTools, unsanitizeToolName, getToolCapability } from './ToolFormatAdapter';
+import { supportsNativeTools, unsanitizeToolName, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
@@ -54,6 +54,7 @@ import { SystemPaths } from '../../../core/config/SystemPaths';
 // GarbageDetector — moved to Rust (persona/text_analysis/garbage_detection.rs)
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
+import { PromptCapture } from '../../../rag/shared/PromptCapture';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 // SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
@@ -321,21 +322,8 @@ export class PersonaResponseGenerator {
       // Tool capability for XML parsing (still needed for response parsing, not injection)
       const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
 
-      // RAG DIAGNOSTIC: Log system prompt size and dump to /tmp for inspection
-      const promptChars = systemPrompt.length;
-      const promptTokensEst = Math.ceil(promptChars / 4);
-      const sections = systemPrompt.split(/\n\n(?:===|##)/).length - 1;
-      this.log(`📋 ${this.personaName}: [RAG AUDIT] System prompt: ${promptChars} chars (~${promptTokensEst} tokens), ${sections} sections, toolCap=${toolCap}, provider=${this.modelConfig.provider}`);
-      // Dump full system prompt + message array to /tmp for RAG audit
-      try {
-        const fs = await import('fs');
-        const safeName = this.personaName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-        const dumpPath = `/tmp/rag-audit-${safeName}.txt`;
-        const msgSummary = fullRAGContext.conversationHistory.map((m, i) =>
-          `[${i}] ${m.role}/${m.name}: ${m.content?.slice(0, 80)}...`
-        ).join('\n');
-        fs.writeFileSync(dumpPath, `=== RAG AUDIT: ${this.personaName} ===\nProvider: ${this.modelConfig.provider}\nModel: ${this.modelConfig.model}\nToolCap: ${toolCap}\nPrompt chars: ${promptChars}\nPrompt tokens (est): ${promptTokensEst}\nMessages: ${fullRAGContext.conversationHistory.length}\nMemories: ${fullRAGContext.privateMemories.length}\nToolDefs in metadata: ${fullRAGContext.metadata?.toolDefinitions?.toolCount ?? 'none'}\n\n=== SYSTEM PROMPT ===\n${systemPrompt}\n\n=== MESSAGE HISTORY ===\n${msgSummary}\n`);
-      } catch { /* ignore dump errors */ }
+      // Log system prompt size for monitoring
+      this.log(`📋 ${this.personaName}: [RAG] ${systemPrompt.length} chars (~${Math.ceil(systemPrompt.length / 4)} tokens), toolCap=${toolCap}, provider=${this.modelConfig.provider}`);
 
       messages.push({
         role: 'system',
@@ -650,6 +638,31 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
       this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot granted (${pipelineTiming['3.3a_slot']}ms)`);
 
+      // ── Prompt capture for replay/debugging ──
+      // Captures the complete prompt (system + messages + tools) in JSONL format.
+      // Read with: PromptCapture.load({ personaName: 'Helper AI', limit: 5 })
+      // Replay with: AIProviderDaemon.generateText(PromptCapture.toReplayRequest(capture))
+      PromptCapture.capture({
+        personaId: this.personaId,
+        personaName: this.personaName,
+        model: request.model || this.modelConfig.model || 'unknown',
+        provider: request.provider || 'candle',
+        temperature: request.temperature ?? 0.7,
+        maxTokens: request.maxTokens ?? 256,
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          name: undefined  // name is embedded in content as "[HH:MM] Name: text"
+        })),
+        tools: request.tools as unknown[] | undefined,
+        toolChoice: typeof request.toolChoice === 'string' ? request.toolChoice : request.toolChoice ? JSON.stringify(request.toolChoice) : undefined,
+        triggerMessageId: originalMessage.id,
+        triggerMessagePreview: originalMessage.content?.text?.slice(0, 100),
+        ragSourceCount: fullRAGContext.metadata?.messageCount,
+        ragTotalTokens: fullRAGContext.metadata?.inputTokenCount as number | undefined,
+        activeAdapters: request.activeAdapters?.map(a => ({ name: a.name, path: a.path }))
+      });
+
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
       // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
@@ -856,11 +869,29 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           toolIterations++;
           this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
 
-          if (useNativeProtocol && hasNativeToolCalls) {
-            // ── Native tool protocol (Anthropic, OpenAI, etc.) ──
-            // Full results go back as tool_result content blocks
-            const nativeToolCalls = aiResponse.toolCalls!;
-            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)`);
+          if (hasNativeToolCalls || (useNativeProtocol && hasXmlToolCalls)) {
+            // ── Native tool protocol (Anthropic, OpenAI, Groq, Together, etc.) ──
+            // Handles both:
+            //   1. Adapter returned structured tool_calls (normal case)
+            //   2. Model output tool calls in text, Rust parsed them (Groq/Llama case)
+            let nativeToolCalls: NativeToolCall[];
+            if (hasNativeToolCalls) {
+              nativeToolCalls = aiResponse.toolCalls!;
+            } else {
+              // Synthesize native format from text-parsed calls
+              // Coerce params to match schema types (e.g. string "true" → boolean true)
+              // so the API doesn't reject tool_use blocks on regeneration
+              const toolSpecs = (request.tools as NativeToolSpec[]) ?? [];
+              nativeToolCalls = parsed!.toolCalls.map((tc, i) => {
+                const name = sanitizeToolName(tc.toolName);
+                return {
+                  id: `synth_${Date.now()}_${i}`,
+                  name,
+                  input: coerceParamsToSchema(tc.parameters, toolSpecs, name),
+                };
+              });
+            }
+            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)${!hasNativeToolCalls ? ' (synthesized from text)' : ''}`);
 
             let toolResults: NativeToolResult[];
             let toolMedia: MediaItem[] = [];
@@ -884,16 +915,27 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               }));
             }
 
-            // Push assistant message with tool_use content blocks (as the model produced them)
-            const assistantContent: ContentPart[] = aiResponse.content ?? [
-              ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
-              ...nativeToolCalls.map(tc => ({
-                type: 'tool_use' as const,
-                id: tc.id,
-                name: tc.name,
-                input: tc.input,
-              })),
-            ];
+            // Push assistant message with tool_use content blocks
+            // Use adapter's content if native tool calls, synthesize if text-parsed
+            const assistantContent: ContentPart[] = hasNativeToolCalls
+              ? (aiResponse.content ?? [
+                  ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
+                  ...nativeToolCalls.map(tc => ({
+                    type: 'tool_use' as const,
+                    id: tc.id,
+                    name: tc.name,
+                    input: tc.input,
+                  })),
+                ])
+              : [
+                  ...(parsed!.cleanedText ? [{ type: 'text' as const, text: parsed!.cleanedText }] : []),
+                  ...nativeToolCalls.map(tc => ({
+                    type: 'tool_use' as const,
+                    id: tc.id,
+                    name: tc.name,
+                    input: tc.input,
+                  })),
+                ];
             messages.push({ role: 'assistant' as const, content: assistantContent });
 
             // Push tool results as user message with tool_result content blocks (FULL results)
@@ -911,17 +953,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
             messages.push({ role: 'user' as const, content: toolResultContent });
 
-          } else {
-            // ── XML fallback for non-native providers ──
+          } else if (hasXmlToolCalls) {
+            // ── XML path for non-native providers (DeepSeek, Ollama, Candle) ──
             // Parse XML tool calls, execute, return results as text
-            const xmlToolCalls = hasNativeToolCalls
-              ? aiResponse.toolCalls!.map((tc: NativeToolCall) => ({
-                  toolName: unsanitizeToolName(tc.name),
-                  parameters: Object.fromEntries(
-                    Object.entries(tc.input).map(([k, v]) => [k, String(v)])
-                  ) as Record<string, string>,
-                }))
-              : parsed!.toolCalls;
+            const xmlToolCalls = parsed!.toolCalls;
 
             this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${xmlToolCalls.length} XML tool call(s)`);
 
@@ -970,8 +1005,11 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             this.log(`⏱️  ${this.personaName}: [AGENT-LOOP] Regeneration took ${regenerateDuration}ms, finishReason: ${regeneratedResponse.finishReason}`);
 
             if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
-              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Empty response, using previous text`);
-              aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
+              this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Empty response from ${provider}/${effectiveModel} after ${toolIterations} tool iteration(s), using cleaned previous text`);
+              // Regeneration returned nothing — use the model's explanation text from before tool calls
+              // parseResponse strips tool blocks, leaving the natural language (e.g. "Let me check that...")
+              const fallback = await this.toolExecutor.parseResponse(aiResponse.text);
+              aiResponse.text = fallback.cleanedText;
               break;
             }
 

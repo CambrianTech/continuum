@@ -39,6 +39,8 @@ import {
 import {
   convertToNativeToolSpecs,
   supportsNativeTools,
+  sanitizeToolName,
+  coerceParamsToSchema,
   getToolCapability,
   getPrimaryAdapter,
   type ToolDefinition as AdapterToolDefinition,
@@ -184,7 +186,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
         // Check for tool calls (native first, then XML fallback)
         // ONE Rust IPC call replaces 3 separate sync TS calls (parse + correct + strip)
         const hasNative = response.toolCalls && response.toolCalls.length > 0;
-        const parsed = !hasNative && toolCap === 'xml' ? await executor.parseResponse(response.text) : null;
+        const parsed = !hasNative ? await executor.parseResponse(response.text) : null;
         const hasXml = parsed !== null && parsed.toolCalls.length > 0;
 
         if (!hasNative && !hasXml) {
@@ -194,9 +196,28 @@ export class AiAgentServerCommand extends AiAgentCommand {
 
         iterations++;
 
-        if (useNative && hasNative) {
-          // ── Native tool protocol ──────────────────────────────
-          const nativeCalls = response.toolCalls!;
+        if (hasNative || (useNative && hasXml)) {
+          // ── Native tool protocol (Anthropic, OpenAI, Groq, Together, etc.) ──
+          // Handles both:
+          //   1. Adapter returned structured tool_calls (normal case)
+          //   2. Model output tool calls in text, Rust parsed them (Groq/Llama case)
+          let nativeCalls: NativeToolCall[];
+          if (hasNative) {
+            nativeCalls = response.toolCalls!;
+          } else {
+            // Synthesize native format from text-parsed calls
+            // Coerce params to match schema types (e.g. string "true" → boolean true)
+            // so the API doesn't reject tool_use blocks on regeneration
+            const toolSpecs = nativeToolSpecs ?? [];
+            nativeCalls = parsed!.toolCalls.map((tc, i) => {
+              const name = sanitizeToolName(tc.toolName);
+              return {
+                id: `synth_${Date.now()}_${i}`,
+                name,
+                input: coerceParamsToSchema(tc.parameters, toolSpecs, name),
+              };
+            });
+          }
 
           // Execute tools
           const toolStart = Date.now();
@@ -217,15 +238,26 @@ export class AiAgentServerCommand extends AiAgentCommand {
           }
 
           // Push assistant message with tool_use content blocks
-          const assistantContent: ContentPart[] = response.content ?? [
-            ...(response.text ? [{ type: 'text' as const, text: response.text }] : []),
-            ...nativeCalls.map(tc => ({
-              type: 'tool_use' as const,
-              id: tc.id,
-              name: tc.name,
-              input: tc.input,
-            })),
-          ];
+          // Use adapter's content if native tool calls, synthesize if text-parsed
+          const assistantContent: ContentPart[] = hasNative
+            ? (response.content ?? [
+                ...(response.text ? [{ type: 'text' as const, text: response.text }] : []),
+                ...nativeCalls.map(tc => ({
+                  type: 'tool_use' as const,
+                  id: tc.id,
+                  name: tc.name,
+                  input: tc.input,
+                })),
+              ])
+            : [
+                ...(parsed!.cleanedText ? [{ type: 'text' as const, text: parsed!.cleanedText }] : []),
+                ...nativeCalls.map(tc => ({
+                  type: 'tool_use' as const,
+                  id: tc.id,
+                  name: tc.name,
+                  input: tc.input,
+                })),
+              ];
           messages.push({ role: 'assistant', content: assistantContent });
 
           // Push tool results as user message
@@ -237,8 +269,8 @@ export class AiAgentServerCommand extends AiAgentCommand {
           }));
           messages.push({ role: 'user', content: toolResultContent });
 
-        } else {
-          // ── XML fallback ──────────────────────────────────────
+        } else if (hasXml) {
+          // ── XML path for non-native providers ──────────────────
           const xmlCalls = parsed!.toolCalls;
 
           const toolStart = Date.now();
@@ -268,8 +300,9 @@ export class AiAgentServerCommand extends AiAgentCommand {
         });
 
         if (!regenerated.text && !regenerated.toolCalls?.length) {
-          // Empty response — use previous text
-          response.text = (await executor.parseResponse(response.text)).cleanedText;
+          // Regeneration returned nothing — use model's explanation text from before tool calls
+          const fallback = await executor.parseResponse(response.text);
+          response.text = fallback.cleanedText;
           break;
         }
 
