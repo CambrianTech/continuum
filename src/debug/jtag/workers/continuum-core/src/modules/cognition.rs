@@ -18,11 +18,14 @@
 //! - `cognition/genome-sync`: Sync full adapter state from TypeScript
 //! - `cognition/genome-state`: Get current genome paging state
 //!
+//! Phase 5: Post-inference adequacy
+//! - `cognition/check-adequacy`: Batch check if other AIs already answered
+//!
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
-use crate::persona::{RateLimiterState, SleepState, SleepMode};
+use crate::persona::{RateLimiterState, SleepState, SleepMode, RecentResponse};
 use crate::persona::{AdapterInfo, AdapterRegistry, ModelSelectionRequest};
 use crate::persona::{GenomeAdapterInfo, GenomePagingEngine};
 use crate::persona::evaluator;
@@ -604,6 +607,34 @@ impl ServiceModule for CognitionModule {
 
                 let state = engine.state();
                 Ok(CommandResult::Json(serde_json::to_value(&state)
+                    .map_err(|e| format!("Serialize error: {e}"))?))
+            }
+
+            // =================================================================
+            // Phase 5: Post-Inference Adequacy Check
+            // =================================================================
+
+            "cognition/check-adequacy" => {
+                let _timer = TimingGuard::new("module", "cognition_check_adequacy");
+                let original_text = p.str("original_text")?.to_string();
+                let responses_json = params.get("responses")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing responses array")?;
+
+                let responses: Vec<RecentResponse> = responses_json.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+
+                let result = evaluator::check_response_adequacy(&original_text, &responses);
+
+                log_info!(
+                    "module", "cognition",
+                    "check-adequacy: adequate={}, confidence={:.2}, responder={:?} ({:.0}μs, {} responses checked)",
+                    result.is_adequate, result.confidence,
+                    result.responder_name, result.check_time_us, responses.len()
+                );
+
+                Ok(CommandResult::Json(serde_json::to_value(&result)
                     .map_err(|e| format!("Serialize error: {e}"))?))
             }
 

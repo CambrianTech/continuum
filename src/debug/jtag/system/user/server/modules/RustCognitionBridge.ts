@@ -39,6 +39,7 @@ import type {
   GenomeAdapterInfo,
   ActivateSkillResult,
   GenomePagingState,
+  AdequacyResult,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -913,6 +914,41 @@ export class RustCognitionBridge {
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`genomeState FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 5: Post-Inference Adequacy Check — batch check in 1 IPC call
+  // ========================================================================
+
+  /**
+   * Batch check if other AIs already answered a question.
+   * ONE IPC call replaces N individual textSimilarity calls.
+   * THROWS on failure
+   */
+  async checkAdequacy(
+    originalText: string,
+    responses: Array<{ sender_name: string; text: string }>
+  ): Promise<AdequacyResult> {
+    this.assertReady('checkAdequacy');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCheckAdequacy(originalText, responses);
+      const elapsed = performance.now() - start;
+
+      if (result.is_adequate) {
+        this.logger.info(`CheckAdequacy: ADEQUATE — ${result.reason} (${elapsed.toFixed(2)}ms, rust=${result.check_time_us}μs)`);
+      } else {
+        this.logger.info(`CheckAdequacy: no adequate response (${responses.length} checked, ${elapsed.toFixed(2)}ms, rust=${result.check_time_us}μs)`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`checkAdequacy FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

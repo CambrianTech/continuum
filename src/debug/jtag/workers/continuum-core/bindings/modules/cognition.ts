@@ -23,6 +23,7 @@ import type {
 	GenomeAdapterInfo,
 	GenomePagingState,
 	ActivateSkillResult,
+	AdequacyResult,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -66,6 +67,7 @@ export interface CognitionMixin {
 	cognitionGenomeActivateSkill(personaId: string, skillName: string, memoryBudgetMb?: number): Promise<ActivateSkillResult>;
 	cognitionGenomeSync(personaId: string, adapters: GenomeAdapterInfo[], memoryBudgetMb?: number): Promise<{ synced: boolean; adapter_count: number; active_count: number; memory_used_mb: number; memory_pressure: number }>;
 	cognitionGenomeState(personaId: string): Promise<GenomePagingState>;
+	cognitionCheckAdequacy(originalText: string, responses: Array<{ sender_name: string; text: string }>): Promise<AdequacyResult>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -472,6 +474,27 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as GenomePagingState;
+		}
+
+		/**
+		 * Batch check if other AIs already answered a question.
+		 * ONE IPC call replaces N individual textSimilarity calls.
+		 */
+		async cognitionCheckAdequacy(
+			originalText: string,
+			responses: Array<{ sender_name: string; text: string }>
+		): Promise<AdequacyResult> {
+			const response = await this.request({
+				command: 'cognition/check-adequacy',
+				original_text: originalText,
+				responses,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to check adequacy');
+			}
+
+			return response.result as AdequacyResult;
 		}
 	};
 }

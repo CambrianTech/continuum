@@ -851,19 +851,11 @@ export class PersonaMessageEvaluator {
   // - detectNewTopic() → topic detection now in Rust evaluator (SleepMode::UntilTopic)
 
   /**
-   * Compute text similarity via Rust IPC (word n-gram Jaccard).
-   * Replaces inline Jaccard implementation — single source of truth in Rust.
-   */
-  private async computeTextSimilarity(text1: string, text2: string): Promise<number> {
-    const result = await this.personaUser.rustCognition.textSimilarity(text1, text2);
-    return result.ngram_similarity;
-  }
-
-  /**
-   * Check if existing AI responses are adequate (no need for another response)
+   * Check if existing AI responses are adequate (no need for another response).
    *
-   * Used for post-inference re-evaluation to prevent redundant responses
-   * when another AI already answered during our inference time.
+   * ONE Rust IPC call checks all responses in batch — replaces N individual
+   * textSimilarity calls. Rust handles length filtering (>100 chars) and
+   * Jaccard n-gram similarity (>0.2 threshold) internally.
    */
   private async checkResponseAdequacy(
     originalMessage: ProcessableMessage,
@@ -871,29 +863,18 @@ export class PersonaMessageEvaluator {
   ): Promise<{ isAdequate: boolean; confidence: number; reason: string }> {
     const originalText = originalMessage.content?.text || '';
 
-    for (const response of otherResponses) {
-      const responseText = response.content?.text || '';
+    // Build response array for Rust — single IPC call handles all comparisons
+    const responses = otherResponses.map(r => ({
+      sender_name: r.senderName ?? 'Unknown',
+      text: r.content?.text || '',
+    }));
 
-      // Skip short responses (likely not adequate)
-      if (responseText.length < 100) continue;
-
-      // Check if response is related to original question (via Rust IPC)
-      const similarity = await this.computeTextSimilarity(originalText, responseText);
-
-      // Substantial response (>100 chars) that's related to the question (>0.2 similarity)
-      if (similarity > 0.2) {
-        return {
-          isAdequate: true,
-          confidence: Math.min(similarity + 0.5, 1.0), // Boost confidence for related responses
-          reason: `${response.senderName} already provided a substantial response (${responseText.length} chars, ${(similarity * 100).toFixed(0)}% related)`
-        };
-      }
-    }
+    const result = await this.personaUser.rustCognition.checkAdequacy(originalText, responses);
 
     return {
-      isAdequate: false,
-      confidence: 0,
-      reason: 'No adequate responses found'
+      isAdequate: result.is_adequate,
+      confidence: result.confidence,
+      reason: result.reason,
     };
   }
 

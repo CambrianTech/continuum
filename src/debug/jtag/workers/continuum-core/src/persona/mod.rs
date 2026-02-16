@@ -30,6 +30,7 @@ pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, Se
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
 pub use evaluator::{
     FullEvaluateRequest, FullEvaluateResult, GateDetails, SleepMode, SleepState, RateLimiterState,
+    AdequacyResult, RecentResponse,
 };
 pub use inbox::PersonaInbox;
 pub use genome_paging::{
