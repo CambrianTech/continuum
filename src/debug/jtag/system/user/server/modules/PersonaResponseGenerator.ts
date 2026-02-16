@@ -45,8 +45,7 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
-import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, getToolCapability, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { supportsNativeTools, unsanitizeToolName, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
@@ -293,6 +292,8 @@ export class PersonaResponseGenerator {
             includeArtifacts: true,
             includeMemories: true,
             voiceSessionId,
+            provider: this.modelConfig.provider || 'candle',
+            toolCapability: getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig),
             currentMessage: {
               role: 'user',
               content: originalMessage.content.text,
@@ -312,64 +313,13 @@ export class PersonaResponseGenerator {
       // Adapters will transform based on model capability (raw images vs text descriptions)
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
 
-      // System prompt from RAG builder (includes room membership!)
-      // NOTE: Budget awareness is now handled by RAGComposer sources (GovernanceSource, ActivityContextSource)
-      // Each source respects its allocated budget and skips/truncates for limited models
+      // System prompt from RAG builder — includes room membership, memories, tool definitions,
+      // widget context, global awareness, etc. ALL injected by budget-aware RAG sources.
+      // No bypasses here — everything flows through the RAG budget system.
       let systemPrompt = fullRAGContext.identity.systemPrompt;
 
-      // Inject consolidated memories from Hippocampus LTM (if available)
-      if (fullRAGContext.privateMemories && fullRAGContext.privateMemories.length > 0) {
-        const memorySection = `\n\n=== YOUR CONSOLIDATED MEMORIES ===\nThese are important things you've learned and consolidated into long-term memory:\n\n${
-          fullRAGContext.privateMemories.map((mem, idx) =>
-            `${idx + 1}. [${mem.type}] ${mem.content} (${new Date(mem.timestamp).toLocaleDateString()})`
-          ).join('\n')
-        }\n\nUse these memories to inform your responses when relevant.\n================================`;
-
-        systemPrompt += memorySection;
-        this.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
-      }
-
-      // Inject available tools for autonomous tool discovery (Phase 3A)
-      // Use adapter-based formatting for harmony with parser
-      // CRITICAL: Only inject tools for models that can actually emit tool calls.
-      // Models without tool capability narrate instead of calling tools,
-      // wasting tokens and clogging chat with useless "let me use tool X" text.
+      // Tool capability for XML parsing (still needed for response parsing, not injection)
       const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
-      const availableTools = toolCap !== 'none'
-        ? await this.toolRegistry.listToolsForPersonaAsync(this.personaId)
-        : [];
-
-      if (toolCap === 'none') {
-        this.log(`🚫 ${this.personaName}: Tool injection skipped (provider=${this.modelConfig.provider}, toolCapability=none)`);
-      }
-
-      // Convert PersonaToolDefinitions to adapter format (used for both XML injection and native tools)
-      // Hoisted to outer scope so it's available for native tool_use injection later
-      const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-        category: t.category
-      }));
-
-      if (availableTools.length > 0 && !supportsNativeTools(this.modelConfig.provider || 'candle')) {
-        // Text-based tool injection for non-native providers (XML tool callers like DeepSeek).
-        // Native tool providers (Anthropic, OpenAI, Together, Groq) get tools via the JSON
-        // `tools` request parameter instead — injecting text descriptions alongside native specs
-        // confuses Llama models into narrating tool usage rather than calling the native API.
-        const adapter = getPrimaryAdapter();
-        const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
-
-        const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formattedTools}\n\nThe tool will be executed and results will be provided for you to analyze and respond to.
-================================`;
-
-        systemPrompt += toolsSection;
-        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into system prompt (text format)`);
-      }
-
-      // NOTE: Activity context (recipe strategy + tools) is now added by ActivityContextSource in RAGComposer
-      // NOTE: Governance guidance is now added by GovernanceSource in RAGComposer
-      // It's budget-aware and skipped for limited models
 
       messages.push({
         role: 'system',
@@ -652,63 +602,12 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // This prevents thundering herd - only N personas can generate simultaneously per provider
       const provider = this.modelConfig.provider || 'candle';
 
-      // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
-      // This enables tool_use blocks instead of XML parsing for more reliable tool execution
-      // CRITICAL: Prioritize relevant tools. Sending 200+ tools overwhelms models, causing them
-      // to loop on meta-tools (search_tools) instead of calling the actual tools they need.
-      if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
-        // Exclude meta-tools from native specs — models with native tool calling
-        // don't need discovery tools. search_tools/list_tools cause infinite loops.
-        const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
-        let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
-
-        // Recipe tools define the activity's core toolset. When present, recipe tools
-        // go FIRST and the cap is tighter — models use early tools and get confused by 64+.
-        const recipeToolNames = new Set(
-          (fullRAGContext.recipeTools || [])
-            .filter(t => t.enabledFor.includes('ai'))
-            .map(t => t.name)
-        );
-        const hasRecipeTools = recipeToolNames.size > 0;
-        const MAX_NATIVE_TOOLS = hasRecipeTools ? 32 : 64;
-
-        if (prioritizedTools.length > MAX_NATIVE_TOOLS) {
-          // Three-tier priority:
-          // 1. Recipe tools (the activity's core tools — go FIRST)
-          // 2. Essentials (bare minimum for coordination)
-          // 3. Everything else (fill remaining slots)
-          const ESSENTIAL_TOOLS = new Set([
-            'collaboration/chat/send', 'collaboration/chat/history',
-            'collaboration/decision/propose', 'collaboration/decision/vote',
-          ]);
-          const essentialPrefixes = hasRecipeTools
-            ? [] // When recipe tools exist, only allow exact essential matches
-            : ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
-
-          const recipe: AdapterToolDefinition[] = [];
-          const essential: AdapterToolDefinition[] = [];
-          const rest: AdapterToolDefinition[] = [];
-
-          for (const tool of prioritizedTools) {
-            if (recipeToolNames.has(tool.name)) {
-              recipe.push(tool);
-            } else if (ESSENTIAL_TOOLS.has(tool.name) ||
-                       essentialPrefixes.some(p => tool.name.startsWith(p))) {
-              essential.push(tool);
-            } else {
-              rest.push(tool);
-            }
-          }
-
-          // Recipe tools FIRST, then essentials, then fill from rest
-          const remaining = MAX_NATIVE_TOOLS - recipe.length - essential.length;
-          prioritizedTools = [...recipe, ...essential, ...rest.slice(0, Math.max(0, remaining))];
-          this.log(`🔧 ${this.personaName}: Tool prioritization: ${recipe.length} recipe + ${essential.length} essential + ${Math.max(0, remaining)} general = ${prioritizedTools.length} (from ${toolDefinitions.length} total, cap=${MAX_NATIVE_TOOLS})`);
-        }
-
-        request.tools = convertToNativeToolSpecs(prioritizedTools);
-        request.toolChoice = 'auto';
-        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format, toolChoice=auto)`);
+      // Native tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
+      const toolMeta = fullRAGContext.metadata?.toolDefinitions;
+      if (toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0) {
+        request.tools = toolMeta.nativeToolSpecs as any;
+        request.toolChoice = (toolMeta.toolChoice as string) || 'auto';
+        this.log(`🔧 ${this.personaName}: Added ${(toolMeta.nativeToolSpecs as unknown[]).length} native tools from RAG budget (toolChoice=${request.toolChoice})`);
       }
       pipelineTiming['3.2_format'] = Date.now() - phase32Start;
       this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);

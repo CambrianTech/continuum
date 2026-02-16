@@ -63,7 +63,7 @@ export class GovernanceSource implements RAGSource {
   readonly priority = 20;
 
   // Small budget allocation - governance is boilerplate, not context-specific
-  readonly defaultBudgetPercent = 3;
+  readonly defaultBudgetPercent = 5;
 
   isApplicable(context: RAGSourceContext): boolean {
     // Skip entirely for very limited models (< 2000 tokens)

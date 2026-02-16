@@ -34,6 +34,10 @@ export interface RAGSourceContext {
   readonly options: RAGBuildOptions;
   /** Total token budget for all sources */
   readonly totalBudget: number;
+  /** AI provider for this persona (e.g. 'anthropic', 'candle', 'deepseek') */
+  readonly provider?: string;
+  /** Tool calling capability of the provider */
+  readonly toolCapability?: 'native' | 'xml' | 'none';
 }
 
 /**

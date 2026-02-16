@@ -25,6 +25,7 @@ import { SignalDetector, getSignalDetector } from './SignalDetector';
 import { getTrainingBuffer } from './TrainingBuffer';
 import type { Task } from './cognition/reasoning/types';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
+import { getToolCapability } from './ToolFormatAdapter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../../data/entities/CoordinationDecisionEntity';
 import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
@@ -948,6 +949,7 @@ export class PersonaMessageEvaluator {
       // eliminating the redundant second RAG build that previously happened there.
       const ragStart = performance.now();
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+      const provider = this.personaUser.modelConfig.provider || 'candle';
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,
@@ -957,6 +959,8 @@ export class PersonaMessageEvaluator {
           includeArtifacts: true,    // Full context: include vision artifacts
           includeMemories: true,     // Full context: include Hippocampus LTM
           excludeMessageIds: this.personaUser.taskTracker.getProcessedToolResults(),
+          provider,
+          toolCapability: getToolCapability(provider, this.personaUser.modelConfig),
           currentMessage: {
             role: 'user',
             content: message.content.text,

@@ -20,7 +20,7 @@ const log = Logger.create('PersonaIdentitySource', 'rag');
 export class PersonaIdentitySource implements RAGSource {
   readonly name = 'persona-identity';
   readonly priority = 95;  // Critical - must be included
-  readonly defaultBudgetPercent = 15;
+  readonly defaultBudgetPercent = 20;
 
   // Identity never changes at runtime — cache per persona (indefinite TTL)
   private static _identityCache: Map<string, UserEntity> = new Map();

@@ -71,7 +71,7 @@ const CODE_TOOL_GROUPS: readonly CodeToolGroup[] = [
 export class CodeToolSource implements RAGSource {
   readonly name = 'code-tools';
   readonly priority = 50;  // Medium — below conversation/widget, above learning config
-  readonly defaultBudgetPercent = 8;
+  readonly defaultBudgetPercent = 5;
 
   private static _cachedPrompt: string | null = null;
   private static _cacheGeneratedAt = 0;

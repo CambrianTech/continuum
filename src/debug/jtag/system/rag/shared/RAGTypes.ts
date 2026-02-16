@@ -165,6 +165,13 @@ export interface RAGContext {
 
     // Project workspace context (git, team, build)
     hasProjectContext?: boolean;  // Whether project workspace context was included in system prompt
+
+    // Tool definitions (budget-aware via ToolDefinitionsSource)
+    toolDefinitions?: {
+      nativeToolSpecs?: unknown[];  // NativeToolSpec[] for JSON tool_use providers
+      toolChoice?: string;          // Tool choice mode ('auto', 'required', etc.)
+      toolCount?: number;           // Number of tools included
+    };
   };
 }
 
@@ -204,4 +211,8 @@ export interface RAGBuildOptions {
 
   // Voice mode optimization: Skip expensive semantic search for faster responses
   voiceSessionId?: UUID;  // Voice call session ID (if in voice mode)
+
+  // Provider info for tool-aware RAG sources
+  provider?: string;  // AI provider (e.g. 'anthropic', 'candle', 'deepseek')
+  toolCapability?: 'native' | 'xml' | 'none';  // Provider's tool calling capability
 }

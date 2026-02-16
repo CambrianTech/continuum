@@ -49,7 +49,8 @@ import {
   CodeToolSource,
   ProjectContextSource,
   GovernanceSource,
-  ActivityContextSource
+  ActivityContextSource,
+  ToolDefinitionsSource
 } from '../sources';
 
 /**
@@ -138,10 +139,11 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
         new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource(),            // Priority 50: Coding workflow guidance
+        new ToolDefinitionsSource(),     // Priority 45: Tool definitions (native/XML, budget-aware)
         new ActivityContextSource(),     // Priority 40: Recipe/activity context
         new GovernanceSource()           // Priority 20: Democratic participation guidance
       ]);
-      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 10 sources');
+      this.log('🔧 ChatRAGBuilder: Initialized RAGComposer with 11 sources');
     }
     return this.composer;
   }
@@ -159,6 +161,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     socialAwareness: string | null;
     codeToolGuidance: string | null;
     projectContext: string | null;
+    consolidatedMemories: string | null;
+    toolDefinitionsMetadata: Record<string, unknown> | null;
+    toolDefinitionsPrompt: string | null;
   } {
     let identity: PersonaIdentity | null = null;
     let conversationHistory: LLMMessage[] = [];
@@ -168,6 +173,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     let socialAwareness: string | null = null;
     let codeToolGuidance: string | null = null;
     let projectContext: string | null = null;
+    let consolidatedMemories: string | null = null;
+    let toolDefinitionsMetadata: Record<string, unknown> | null = null;
+    let toolDefinitionsPrompt: string | null = null;
 
     for (const section of result.sections) {
       if (section.identity) {
@@ -179,29 +187,40 @@ export class ChatRAGBuilder extends RAGBuilder {
       if (section.memories && section.memories.length > 0) {
         memories = section.memories;
       }
+      if (section.sourceName === 'semantic-memory' && section.systemPromptSection) {
+        // Formatted memory section — produced by SemanticMemorySource
+        consolidatedMemories = section.systemPromptSection;
+      }
       if (section.systemPromptSection && section.sourceName === 'widget-context') {
-        // Extract the raw context from the formatted section
         widgetContext = section.systemPromptSection;
       }
       if (section.systemPromptSection && section.sourceName === 'global-awareness') {
-        // Extract cross-context awareness (no severance!)
         globalAwareness = section.systemPromptSection;
       }
       if (section.systemPromptSection && section.sourceName === 'social-media') {
-        // Social media HUD — engagement awareness and duty
         socialAwareness = section.systemPromptSection;
       }
       if (section.systemPromptSection && section.sourceName === 'code-tools') {
-        // Coding workflow guidance — code/* tool awareness
         codeToolGuidance = section.systemPromptSection;
       }
       if (section.systemPromptSection && section.sourceName === 'project-context') {
-        // Project workspace context — git status, team activity, build status
         projectContext = section.systemPromptSection;
+      }
+      if (section.sourceName === 'tool-definitions') {
+        // Tool definitions — metadata contains nativeToolSpecs for native providers,
+        // systemPromptSection contains XML for text-based providers
+        toolDefinitionsMetadata = section.metadata ?? null;
+        if (section.systemPromptSection) {
+          toolDefinitionsPrompt = section.systemPromptSection;
+        }
       }
     }
 
-    return { identity, conversationHistory, memories, widgetContext, globalAwareness, socialAwareness, codeToolGuidance, projectContext };
+    return {
+      identity, conversationHistory, memories,
+      widgetContext, globalAwareness, socialAwareness, codeToolGuidance, projectContext,
+      consolidatedMemories, toolDefinitionsMetadata, toolDefinitionsPrompt
+    };
   }
 
   /**
@@ -236,6 +255,9 @@ export class ChatRAGBuilder extends RAGBuilder {
     let socialAwareness: string | null;
     let codeToolGuidance: string | null;
     let projectContext: string | null;
+    let consolidatedMemories: string | null = null;
+    let toolDefinitionsMetadata: Record<string, unknown> | null = null;
+    let toolDefinitionsPrompt: string | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
 
@@ -265,7 +287,9 @@ export class ChatRAGBuilder extends RAGBuilder {
           includeMemories,
           currentMessage: options?.currentMessage
         },
-        totalBudget
+        totalBudget,
+        provider: options?.provider,
+        toolCapability: options?.toolCapability,
       };
 
       // Load core sources via composer (parallel)
@@ -286,6 +310,9 @@ export class ChatRAGBuilder extends RAGBuilder {
       socialAwareness = extracted.socialAwareness;
       codeToolGuidance = extracted.codeToolGuidance;
       projectContext = extracted.projectContext;
+      consolidatedMemories = extracted.consolidatedMemories;
+      toolDefinitionsMetadata = extracted.toolDefinitionsMetadata;
+      toolDefinitionsPrompt = extracted.toolDefinitionsPrompt;
 
       // Still load these via legacy methods (not yet extracted to sources)
       const legacyStart = performance.now();
@@ -408,6 +435,18 @@ export class ChatRAGBuilder extends RAGBuilder {
       this.log('📦 ChatRAGBuilder: Injected project workspace context into system prompt');
     }
 
+    // 2.4.9. Inject consolidated memories (budget-aware via SemanticMemorySource)
+    if (consolidatedMemories) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt + consolidatedMemories;
+      this.log(`🧠 ChatRAGBuilder: Injected ${privateMemories.length} consolidated memories into system prompt`);
+    }
+
+    // 2.4.10. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
+    if (toolDefinitionsPrompt) {
+      finalIdentity.systemPrompt = finalIdentity.systemPrompt + toolDefinitionsPrompt;
+      this.log(`🔧 ChatRAGBuilder: Injected tool definitions into system prompt (XML format)`);
+    }
+
     // NOTE: Canvas context is now handled via the "inbox content" pattern
     // When strokes are added, they emit system messages to the canvas room
     // AIs see these in their conversation history naturally, no system prompt injection needed
@@ -474,7 +513,14 @@ export class ChatRAGBuilder extends RAGBuilder {
         hasSocialAwareness: !!socialAwareness,
 
         // Project workspace context (git, team, build)
-        hasProjectContext: !!projectContext
+        hasProjectContext: !!projectContext,
+
+        // Tool definitions (budget-aware via ToolDefinitionsSource)
+        toolDefinitions: toolDefinitionsMetadata ? {
+          nativeToolSpecs: (toolDefinitionsMetadata as any).nativeToolSpecs,
+          toolChoice: (toolDefinitionsMetadata as any).toolChoice,
+          toolCount: (toolDefinitionsMetadata as any).toolCount,
+        } : undefined,
       }
     };
 

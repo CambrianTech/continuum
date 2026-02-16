@@ -593,7 +593,7 @@ Example - Run a command:
 <tool_use>
   <tool_name>code/shell/execute</tool_name>
   <parameters>
-    <command>npm run build</command>
+    <cmd>npm run build</cmd>
   </parameters>
 </tool_use>
 

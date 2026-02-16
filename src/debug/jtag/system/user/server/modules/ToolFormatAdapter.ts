@@ -765,6 +765,11 @@ export type ToolCapability = 'native' | 'xml' | 'none';
 /**
  * Determine a model's tool-calling capability.
  * Provider-based auto-detection with per-persona override via modelConfig.toolCapability.
+ *
+ * IMPORTANT: Default to 'xml' not 'none'. A Candle model could be a powerful
+ * fine-tuned model with LoRA. Returning 'none' leaves it completely powerless.
+ * XML tool definitions are budget-aware via ToolDefinitionsSource and will be
+ * truncated if the model's context is tight.
  */
 export function getToolCapability(
   provider: string,
@@ -774,10 +779,9 @@ export function getToolCapability(
 
   if (supportsNativeTools(provider)) return 'native';
 
-  // Proven XML-capable providers (model emits well-formed tool call blocks)
-  const xmlCapable = ['deepseek'];
-  if (xmlCapable.includes(provider.toLowerCase())) return 'xml';
-
-  // Everything else: xai, fireworks, candle, sentinel, ollama
-  return 'none';
+  // All other providers get XML tool definitions in the system prompt.
+  // Models that can't use them will ignore them; models that can (DeepSeek,
+  // fine-tuned Candle, Ollama) benefit from having tools available.
+  // Budget-aware: ToolDefinitionsSource truncates for tight context windows.
+  return 'xml';
 }

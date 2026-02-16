@@ -39,7 +39,7 @@ interface InflightEntry {
 export class ConversationHistorySource implements RAGSource {
   readonly name = 'conversation-history';
   readonly priority = 80;  // High - conversation is core context
-  readonly defaultBudgetPercent = 40;  // Gets largest share of budget
+  readonly defaultBudgetPercent = 25;  // Gets largest share of budget
 
   // Room message cache: event-driven freshness. 30s TTL is a safety net only.
   // Primary freshness comes from event subscription updating cache entries.
