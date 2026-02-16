@@ -931,8 +931,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         while (toolIterations < SAFETY_MAX) {
           // Check for tool calls — native first, then XML fallback
+          // ONE Rust IPC call replaces 3 separate sync TS calls (parse + correct + strip)
           const hasNativeToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
-          const hasXmlToolCalls = !hasNativeToolCalls && this.toolExecutor.parseToolCalls(aiResponse.text).length > 0;
+          const parsed = !hasNativeToolCalls ? await this.toolExecutor.parseResponse(aiResponse.text) : null;
+          const hasXmlToolCalls = parsed !== null && parsed.toolCalls.length > 0;
 
           if (!hasNativeToolCalls && !hasXmlToolCalls) {
             // Model chose to stop — no more tool calls
@@ -1010,7 +1012,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                     Object.entries(tc.input).map(([k, v]) => [k, String(v)])
                   ) as Record<string, string>,
                 }))
-              : this.toolExecutor.parseToolCalls(aiResponse.text);
+              : parsed!.toolCalls;
 
             this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${xmlToolCalls.length} XML tool call(s)`);
 
@@ -1030,8 +1032,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               formattedResults = `<tool_result>\n<status>error</status>\n<error>\n\`\`\`\nTool execution error: ${errMsg}\n\`\`\`\n</error>\n</tool_result>`;
             }
 
-            // Strip tool blocks from response text for the assistant message
-            const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
+            // Use pre-parsed cleaned text from Rust IPC (already stripped)
+            const explanationText = parsed!.cleanedText;
 
             messages.push({ role: 'assistant' as const, content: explanationText });
 
@@ -1060,7 +1062,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
             if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
               this.log(`❌ ${this.personaName}: [AGENT-LOOP] Empty response, using previous text`);
-              aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+              aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
               break;
             }
 
@@ -1075,14 +1077,14 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
             this.log(`❌ ${this.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
-            aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+            aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
             break;
           }
         }
 
         if (toolIterations >= SAFETY_MAX) {
           this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
-          aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+          aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
         }
         pipelineTiming['3.4_agent_loop'] = Date.now() - agentLoopStart;
         if (toolIterations > 0) {

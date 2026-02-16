@@ -182,8 +182,10 @@ export class AiAgentServerCommand extends AiAgentCommand {
 
       while (iterations < safetyMax) {
         // Check for tool calls (native first, then XML fallback)
+        // ONE Rust IPC call replaces 3 separate sync TS calls (parse + correct + strip)
         const hasNative = response.toolCalls && response.toolCalls.length > 0;
-        const hasXml = !hasNative && toolCap === 'xml' && executor.parseToolCalls(response.text).length > 0;
+        const parsed = !hasNative && toolCap === 'xml' ? await executor.parseResponse(response.text) : null;
+        const hasXml = parsed !== null && parsed.toolCalls.length > 0;
 
         if (!hasNative && !hasXml) {
           // Model chose to stop — no more tool calls
@@ -237,7 +239,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
 
         } else {
           // ── XML fallback ──────────────────────────────────────
-          const xmlCalls = executor.parseToolCalls(response.text);
+          const xmlCalls = parsed!.toolCalls;
 
           const toolStart = Date.now();
           const xmlResult = await executor.executeXmlToolCalls(xmlCalls, callCtx);
@@ -251,8 +253,8 @@ export class AiAgentServerCommand extends AiAgentCommand {
             });
           }
 
-          // Strip tool blocks from response for assistant message
-          const explanationText = executor.stripToolBlocks(response.text);
+          // Use pre-parsed cleaned text from Rust IPC
+          const explanationText = parsed!.cleanedText;
           messages.push({ role: 'assistant', content: explanationText });
 
           // Full tool results as user message
@@ -267,7 +269,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
 
         if (!regenerated.text && !regenerated.toolCalls?.length) {
           // Empty response — use previous text
-          response.text = executor.stripToolBlocks(response.text);
+          response.text = (await executor.parseResponse(response.text)).cleanedText;
           break;
         }
 
@@ -276,7 +278,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
 
       // If we hit the safety cap, strip any remaining tool blocks
       if (iterations >= safetyMax) {
-        response.text = executor.stripToolBlocks(response.text);
+        response.text = (await executor.parseResponse(response.text)).cleanedText;
       }
 
       // ── 7. Return result ─────────────────────────────────────────

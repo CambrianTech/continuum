@@ -28,6 +28,7 @@ use crate::modules::embedding::EmbeddingModule;
 use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::sentinel::SentinelModule;
+use crate::modules::tool_parsing::ToolParsingModule;
 use ts_rs::TS;
 use crate::{log_debug, log_info, log_error};
 use serde::{Deserialize, Serialize};
@@ -685,6 +686,12 @@ pub fn start_server(
     // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
     // Process isolation via child processes - safe for Xcode, cargo, etc.
     runtime.register(Arc::new(SentinelModule::new()));
+
+    // ToolParsingModule: Stateless tool call parsing + correction
+    // Provides tool-parsing/parse, tool-parsing/correct, tool-parsing/register-tools,
+    // tool-parsing/decode-name, tool-parsing/encode-name
+    // Replaces 784 lines of TypeScript ToolFormatAdapter hierarchy
+    runtime.register(Arc::new(ToolParsingModule::new()));
 
     // Initialize modules (runs async init in sync context)
     rt_handle.block_on(async {

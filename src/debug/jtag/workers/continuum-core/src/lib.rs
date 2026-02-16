@@ -28,6 +28,7 @@ pub mod modules;
 pub mod orm;
 pub mod secrets;
 pub mod inference;
+pub mod tool_parsing;
 
 pub use audio_constants::*;
 

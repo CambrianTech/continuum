@@ -449,6 +449,15 @@ ${result.error || 'Unknown error'}
   }
 
   /**
+   * Parse + correct + strip in ONE Rust IPC call.
+   * Returns both tool calls (already corrected) and cleaned text.
+   * Replaces separate parseToolCalls() + stripToolBlocks() calls.
+   */
+  async parseResponse(responseText: string): Promise<{ toolCalls: ToolCall[]; cleanedText: string; parseTimeUs: number }> {
+    return this.agentExecutor.parseResponse(responseText);
+  }
+
+  /**
    * Strip tool blocks from response text to get clean user-facing message.
    * Delegates to AgentToolExecutor.
    */

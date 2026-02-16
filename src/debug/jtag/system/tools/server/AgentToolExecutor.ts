@@ -27,6 +27,8 @@ import type {
   ToolCall as NativeToolCall,
   ToolResult as NativeToolResult,
 } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { ToolParseResult } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import RustCoreIPCClient from '../../../workers/continuum-core/bindings/RustCoreIPC';
 
 // ─── Public Interfaces ───────────────────────────────────────────────
 
@@ -247,6 +249,26 @@ export class AgentToolExecutor {
       cleaned = cleaned.slice(0, m.start) + cleaned.slice(m.end);
     }
     return cleaned.trim();
+  }
+
+  // ─── Rust-accelerated Parsing (async) ──────────────────────────────
+
+  /**
+   * Parse + correct + strip in ONE Rust IPC call.
+   * Returns both tool calls (already corrected) and cleaned text.
+   * Sub-microsecond in Rust, replaces 3 separate sync calls.
+   */
+  async parseResponse(responseText: string): Promise<{ toolCalls: ToolCall[]; cleanedText: string; parseTimeUs: number }> {
+    const rustClient = RustCoreIPCClient.getInstance();
+    const result: ToolParseResult = await rustClient.toolParsingParse(responseText);
+    return {
+      toolCalls: result.tool_calls.map(tc => ({
+        toolName: tc.tool_name,
+        parameters: tc.parameters,
+      })),
+      cleanedText: result.cleaned_text,
+      parseTimeUs: result.parse_time_us,
+    };
   }
 
   // ─── Name/Param Correction ───────────────────────────────────────

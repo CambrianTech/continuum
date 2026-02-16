@@ -50,6 +50,7 @@ import { AIMixin } from './modules/ai';
 import { EmbeddingMixin } from './modules/embedding';
 import { RuntimeMixin } from './modules/runtime';
 import { SentinelMixin } from './modules/sentinel';
+import { ToolParsingMixin } from './modules/tool_parsing';
 
 // Re-export types from shared/generated (used by consumers)
 export type {
@@ -82,6 +83,9 @@ export type {
 	ShellSessionInfo,
 	ShellWatchResponse,
 	SentinelRule,
+	ToolParseResult,
+	ParsedToolCall,
+	CorrectedToolCall,
 } from '../../../shared/generated';
 
 // Re-export memory types
@@ -99,18 +103,20 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  * Compose all mixins into the full client class.
  * Order matters for TypeScript type inference.
  */
-const ComposedClient = SentinelMixin(
-	RuntimeMixin(
-		EmbeddingMixin(
-			AIMixin(
-				ModelsMixin(
-					RagMixin(
-						SearchMixin(
-							CodeMixin(
-								MemoryMixin(
-									ChannelMixin(
-										CognitionMixin(
-											VoiceMixin(RustCoreIPCClientBase)
+const ComposedClient = ToolParsingMixin(
+	SentinelMixin(
+		RuntimeMixin(
+			EmbeddingMixin(
+				AIMixin(
+					ModelsMixin(
+						RagMixin(
+							SearchMixin(
+								CodeMixin(
+									MemoryMixin(
+										ChannelMixin(
+											CognitionMixin(
+												VoiceMixin(RustCoreIPCClientBase)
+											)
 										)
 									)
 								)
