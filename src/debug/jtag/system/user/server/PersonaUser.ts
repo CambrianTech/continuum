@@ -24,7 +24,8 @@ import { Commands } from '../../core/shared/Commands';
 import type { JTAGClient } from '../../core/client/shared/JTAGClient';
 import { ChatMessageEntity } from '../../data/entities/ChatMessageEntity';
 import type { RoomEntity } from '../../data/entities/RoomEntity';
-import type { UserCreateParams, ModelConfig } from '../../../commands/user/create/shared/UserCreateTypes';
+import type { UserCreateParams } from '../../../commands/user/create/shared/UserCreateTypes';
+import type { ModelConfig } from '../../data/entities/UserEntity';
 import type { DataCreateParams, DataCreateResult } from '../../../commands/data/create/shared/DataCreateTypes';
 import type { DataReadParams, DataReadResult } from '../../../commands/data/read/shared/DataReadTypes';
 import type { DataUpdateParams, DataUpdateResult } from '../../../commands/data/update/shared/DataUpdateTypes';
@@ -1525,7 +1526,7 @@ export class PersonaUser extends AIUser {
         messages,
         model: this.modelConfig.model || LOCAL_MODELS.DEFAULT,
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
-        maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
+        maxTokens: request.maxTokens ?? this.modelConfig.maxTokens,
         provider: this.modelConfig.provider || 'candle',
         intelligenceLevel: this.entity.intelligenceLevel,
         personaContext: {

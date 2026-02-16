@@ -39,6 +39,11 @@ export interface DecisionContext<TEvent extends BaseEntity = BaseEntity> {
   gatingModel?: string;  // Which LLM model to use for gating
   contextWindowMinutes?: number;  // Time window for RAG context
   minContextMessages?: number;  // Minimum messages for context
+
+  // Model info (for RAG budget calculation — same model can have different
+  // context windows on different providers, e.g. Llama 8B on Together vs Candle)
+  modelId?: string;
+  provider?: string;
 }
 
 /**

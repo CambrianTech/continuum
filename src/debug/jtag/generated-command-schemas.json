@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-16T17:40:57.237Z",
+  "generated": "2026-02-16T23:24:49.782Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -6660,6 +6660,11 @@
           "type": "boolean",
           "required": false,
           "description": "includeMemories parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
         },
         "verbose": {
           "type": "boolean",

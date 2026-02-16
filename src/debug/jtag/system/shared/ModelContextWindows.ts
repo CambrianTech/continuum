@@ -53,7 +53,8 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   // Meta Models (Llama) — cloud API naming (dashes)
   'llama-3.1-8b-instant': 131072,                           // Groq LPU
   'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo': 131072,  // Together.ai
-  'accounts/fireworks/models/llama-v3p1-8b-instruct': 131072,  // Fireworks.ai
+  'accounts/fireworks/models/llama-v3p1-8b-instruct': 131072,  // Fireworks.ai (deprecated)
+  'accounts/fireworks/models/llama-v3p3-70b-instruct': 131072,  // Fireworks.ai Llama 3.3 70B
   // Meta Models (Llama) — Ollama naming (dots + colons)
   'llama3.2': 128000,
   'llama3.2:3b': 128000,
@@ -62,12 +63,15 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'llama3.1:70b': 128000,
   'llama3.1:8b': 128000,
 
-  // HuggingFace IDs (used by Candle adapter directly)
-  // IMPORTANT: Q4_K_M quantization becomes numerically unstable beyond practical limits.
-  'meta-llama/Llama-3.1-8B-Instruct': 8000,  // Q4_K_M practical limit for 8B
-  'unsloth/Llama-3.2-3B-Instruct': 2000,     // Q4_K_M practical limit due to NaN/Inf
-  'Qwen/Qwen2-1.5B-Instruct': 4000,          // Smaller model, more stable
-  'Qwen/Qwen2-0.5B-Instruct': 4000,
+  // HuggingFace IDs (Candle adapter) — FALLBACK only.
+  // Source of truth is CandleAdapter.capabilities().max_context_window in Rust,
+  // which feeds into ModelRegistry at startup via registerLocalModels().
+  // Candle quantized attention breaks at ~1000 input tokens on Metal.
+  // See: https://github.com/huggingface/candle/issues/1566
+  'meta-llama/Llama-3.1-8B-Instruct': 1400,
+  'unsloth/Llama-3.2-3B-Instruct': 1400,
+  'Qwen/Qwen2-1.5B-Instruct': 1400,
+  'Qwen/Qwen2-0.5B-Instruct': 1400,
 
   // Qwen Models via Ollama
   'qwen2.5': 128000,

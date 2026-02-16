@@ -30,6 +30,8 @@ export interface RAGInspectParams extends CommandParams {
   includeMemories?: boolean;
 
   /** Optional: Show full RAG content (like ping --verbose) */
+  /** Optional: Max tokens for context building */
+  maxTokens?: number;
   verbose?: boolean;
 
   /** Optional: Message ID that triggered evaluation (for decision-point analysis) */

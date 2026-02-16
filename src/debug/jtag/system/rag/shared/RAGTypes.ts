@@ -194,9 +194,9 @@ export interface RAGBuildOptions {
   // NEW: Task completion tracking - prevent infinite loops
   excludeMessageIds?: UUID[];  // Message IDs to exclude from RAG context (e.g., processed tool results)
 
-  // NEW: Model-aware context budgeting (Bug #5 fix)
+  // Model-aware context budgeting (Bug #5 fix)
   modelId?: string;  // Target model ID for calculating safe message count based on context window
-  maxTokens?: number;  // Max completion tokens (default: 3000)
+  maxTokens: number;  // Max completion tokens — REQUIRED, must come from model config
   systemPromptTokens?: number;  // Estimated system prompt tokens (default: 500)
 
   // NEW: Model capability-aware processing

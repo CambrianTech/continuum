@@ -69,7 +69,8 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
             maxMessages: params.maxMessages || 20,
             includeArtifacts: params.includeArtifacts ?? true,
             includeMemories: params.includeMemories ?? true,
-            triggeringTimestamp: Date.now()  // Preview shows current state (no race filtering for manual preview)
+            triggeringTimestamp: Date.now(),  // Preview shows current state (no race filtering for manual preview)
+            maxTokens: params.maxTokens ?? 2000,
           }
         );
 

@@ -268,6 +268,108 @@ export async function refreshToolDefinitions(): Promise<void> {
  * These overrides provide meaningful descriptions so LLMs know what to pass.
  */
 const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
+  // ── Chat (highest priority tools) ──────────────────────────────────
+  'collaboration/chat/send': {
+    message: 'Text of the message to send',
+    room: 'Room name to send to (e.g. "general"). Default: current room',
+    replyToId: 'Short ID of message to reply to (e.g. "abc1234")',
+    media: 'JSON array of media attachments [{type:"image",url:"..."}]',
+  },
+  'collaboration/chat/export': {
+    room: 'Room name (e.g. "general")',
+    limit: 'Max messages to return (default: 50)',
+    afterMessageId: 'Only messages after this message ID',
+    afterTimestamp: 'Only messages after this ISO timestamp',
+    output: 'File path to save markdown (omit to print to stdout)',
+    includeSystem: 'Include system messages (boolean)',
+    includeThreading: 'Show reply-to threading (boolean)',
+  },
+  'collaboration/chat/poll': {
+    afterMessageId: 'Message ID to poll after (returns newer messages)',
+    limit: 'Max messages to return',
+    room: 'Room name to poll',
+  },
+  'collaboration/chat/analyze': {
+    roomId: 'UUID of the room to analyze',
+    checkDuplicates: 'Check for duplicate messages (boolean)',
+    checkTimestamps: 'Check for timestamp anomalies (boolean)',
+    limit: 'Max messages to analyze',
+  },
+
+  // ── Decision/Governance ────────────────────────────────────────────
+  'collaboration/decision/propose': {
+    topic: 'Short title for the proposal (e.g. "Adopt TypeScript strict mode")',
+    rationale: 'Why this proposal matters — your reasoning',
+    options: 'JSON array of choice objects: [{"label":"Option A","description":"Details..."}]',
+    description: 'Detailed description of what is being decided',
+    tags: 'JSON array of tags for categorization (e.g. ["architecture","tooling"])',
+    scope: 'Scope: "team", "project", or "system"',
+    significanceLevel: 'Impact level: "minor", "moderate", or "major"',
+  },
+  'collaboration/decision/vote': {
+    proposalId: 'UUID of the proposal to vote on',
+    rankedChoices: 'JSON array of option IDs in preference order (best first)',
+    comment: 'Optional comment explaining your vote',
+  },
+  'collaboration/decision/list': {
+    status: 'Filter by status: "open", "closed", "all"',
+    domain: 'Filter by domain/tag',
+    limit: 'Max proposals to return',
+  },
+  'collaboration/decision/view': {
+    proposalId: 'UUID of the proposal to view',
+  },
+  'collaboration/decision/finalize': {
+    proposalId: 'UUID of the proposal to close voting on',
+  },
+  'collaboration/decision/create': {
+    proposalId: 'UUID for the new proposal',
+    topic: 'Short title for the proposal',
+    rationale: 'Why this proposal matters',
+    description: 'Detailed description of what is being decided',
+    options: 'JSON array of choice objects with label and description',
+    votingDeadline: 'ISO timestamp deadline for voting',
+    requiredQuorum: 'Minimum number of votes needed',
+  },
+
+  // ── Wall (collaborative documents) ─────────────────────────────────
+  'collaboration/wall/write': {
+    room: 'Room name (default: current room)',
+    doc: 'Document name (e.g. "meeting-notes", "architecture")',
+    content: 'Markdown content to write',
+    append: 'true to append to existing doc, false to overwrite',
+    commitMessage: 'Description of this change (like a git commit message)',
+  },
+  'collaboration/wall/read': {
+    room: 'Room name',
+    doc: 'Document name to read',
+    toc: 'true to show table of contents only',
+    lines: 'Line range like "10-20"',
+  },
+  'collaboration/wall/list': {
+    room: 'Room name',
+    pattern: 'Glob pattern to filter docs (e.g. "meeting-*")',
+  },
+  'collaboration/wall/history': {
+    room: 'Room name',
+    doc: 'Document name',
+    limit: 'Max history entries to show',
+  },
+
+  // ── Data ───────────────────────────────────────────────────────────
+  'data/list': {
+    collection: 'Collection name (e.g. "users", "chat_messages", "rooms")',
+    limit: 'Max items to return',
+    filter: 'JSON filter object (e.g. {"status":"active"})',
+    orderBy: 'JSON array: [{"field":"createdAt","direction":"desc"}]',
+    fields: 'JSON array of field names to return (projection)',
+  },
+  'data/get': {
+    collection: 'Collection name',
+    id: 'Entity UUID to retrieve',
+  },
+
+  // ── Code tools ─────────────────────────────────────────────────────
   'code/write': {
     filePath: 'Relative path to file within workspace (e.g. "index.html", "src/app.js")',
     content: 'Complete file content to write (the actual code/text, not a description)',
@@ -292,16 +394,36 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
     fileGlob: 'File glob pattern to filter (e.g. "*.ts", "src/**/*.js")',
     maxResults: 'Maximum number of results to return',
   },
+  'code/diff': {
+    filePath: 'Relative path to file to diff',
+    editType: '"search_replace", "line_range", or "insert"',
+    search: 'Text to find (for search_replace)',
+    replace: 'Replacement text (for search_replace)',
+    startLine: 'Start line (for line_range)',
+    endLine: 'End line (for line_range)',
+    newContent: 'New content (for line_range)',
+    line: 'Line number (for insert)',
+    content: 'Content to insert (for insert)',
+  },
+  'code/undo': {
+    changeId: 'Specific change ID to undo (from code/history)',
+    count: 'Number of recent changes to undo (default: 1)',
+  },
+  'code/history': {
+    filePath: 'File path to get history for (omit for entire workspace)',
+    limit: 'Max entries to return',
+  },
+  'code/verify': {
+    typeCheck: 'Run TypeScript type checking (boolean)',
+    testFiles: 'Specific test files to run (JSON array of file paths)',
+    cwd: 'Working directory override',
+  },
   'code/git': {
     operation: 'Git operation: "status", "diff", "log", "add", "commit"',
     message: 'Commit message (required for "commit" operation)',
     paths: 'File paths for "add" operation (JSON array of strings)',
     staged: 'Show staged changes only (for "diff" operation)',
     count: 'Number of log entries to show (for "log" operation)',
-  },
-  'code/verify': {
-    typeCheck: 'Run type checking (boolean)',
-    testFiles: 'Specific test files to run (JSON array of strings)',
   },
   'code/shell/execute': {
     cmd: 'Shell command to execute (e.g. "npm run build", "cargo test", "ls -la src/")',
@@ -321,6 +443,176 @@ const PARAM_DESCRIPTION_OVERRIDES: Record<string, Record<string, string>> = {
   'code/shell/kill': {
     executionId: 'Execution ID of the running process to kill',
   },
+
+  // ── System tools ───────────────────────────────────────────────────
+  'ping': {
+    verbose: 'Include detailed AI persona health status (boolean)',
+  },
+  'screenshot': {
+    querySelector: 'CSS selector of element to capture (e.g. "chat-widget", "body")',
+    filename: 'Output filename (default: screenshot.png)',
+    fullPage: 'Capture full scrollable page (boolean)',
+  },
+
+  // ── Live collaboration ─────────────────────────────────────────────
+  'collaboration/live/start': {
+    participants: 'JSON array of user IDs to invite',
+    name: 'Optional session name',
+    withVideo: 'Enable video (boolean, default: false)',
+  },
+  'collaboration/dm': {
+    participants: 'JSON array of user IDs for the DM room',
+    name: 'Optional room display name',
+  },
+};
+
+/**
+ * Rich tool-level description overrides for critical tools.
+ * The schema generator produces vague descriptions like "Code Write Types".
+ * These overrides provide Claude Code-quality descriptions that tell the LLM
+ * not just what the tool does, but HOW and WHEN to use it correctly.
+ */
+const TOOL_DESCRIPTION_OVERRIDES: Record<string, string> = {
+  // ── Code tools (most important for coding personas) ──────────
+  'code/read': 'Read file contents from workspace. Returns the file text with line numbers. You MUST read a file before editing it — editing without reading leads to wrong assumptions. Use startLine/endLine for large files.',
+
+  'code/write': 'Create a new file or completely replace an existing file. WARNING: This overwrites the ENTIRE file. For modifying existing files, prefer code/edit (search_replace) which is surgical. Only use code/write for files that do not exist yet or when you need to replace all content.',
+
+  'code/edit': 'Make precise edits to existing files. Supports search_replace (find exact text and replace it), line_range (replace specific lines), insert_at (add content at a line), and append (add to end). For search_replace: the search text must match EXACTLY as it appears in code/read output — character for character, including whitespace. If the search fails, re-read the file.',
+
+  'code/search': 'Search across files in the workspace using regex patterns. Returns matching lines with file paths and line numbers. Use this instead of shell grep — it is faster and codebase-aware. Supports file glob filtering (e.g., "*.ts", "src/**/*.rs").',
+
+  'code/tree': 'Display workspace directory structure as a tree. Use this to understand project layout before making changes. Do NOT use shell ls or find — code/tree is optimized for workspace navigation.',
+
+  'code/diff': 'Preview an edit as a unified diff without applying it. Use this to verify your changes look correct BEFORE using code/edit. Same parameters as code/edit.',
+
+  'code/verify': 'Run TypeScript type checking and optional tests on the workspace. Use this after EVERY edit to ensure your changes compile. If verify fails, read the error output, fix the issue, and verify again.',
+
+  'code/undo': 'Undo recent changes. Every code/write and code/edit creates a tracked change that can be reverted. Use when an edit breaks something.',
+
+  'code/history': 'View the change history for a file or the entire workspace. Shows what was changed, when, and the change IDs for undo.',
+
+  'code/git': 'Git operations: status, diff, log, add, commit. Check status before committing. Use diff to review staged changes.',
+
+  // ── Shell tools ──────────────────────────────────────────────
+  'code/shell/execute': 'Execute a shell command in the workspace. Use for build commands (npm, cargo), test runners, and system operations. Do NOT use for file reading (use code/read), searching (use code/search), or directory listing (use code/tree).',
+
+  'code/shell/watch': 'Stream output from a running async shell execution. Use after code/shell/execute with wait=false to monitor long-running processes.',
+
+  'code/shell/status': 'Check shell session status — working directory, active executions.',
+
+  'code/shell/kill': 'Kill a running shell execution by its execution ID.',
+
+  // ── Chat tools ───────────────────────────────────────────────
+  'collaboration/chat/send': 'Send a message to a chat room. Use the room name (e.g., "general") not a UUID.',
+
+  'collaboration/chat/export': 'Export chat messages as markdown. Useful for reviewing conversation history.',
+};
+
+/**
+ * Global parameter name → description fallback.
+ * Many commands share the same parameter names (room, limit, filter, etc.).
+ * This map provides decent descriptions for ALL tools without per-tool overrides.
+ * Per-tool overrides in PARAM_DESCRIPTION_OVERRIDES take priority when they exist.
+ */
+const GLOBAL_PARAM_DESCRIPTIONS: Record<string, string> = {
+  // ── Identity & targeting ─────────────────────────────────────────
+  room:           'Room name (e.g. "general")',
+  roomId:         'Room UUID',
+  userId:         'User UUID',
+  senderId:       'Sender user UUID',
+  targetUserId:   'Target user UUID',
+  personaId:      'Persona user UUID',
+  assignee:       'Assignee user UUID',
+  proposedBy:     'User UUID who proposed this',
+  callerId:       'Caller user UUID',
+  sessionId:      'Session UUID',
+  contextId:      'Context/conversation UUID',
+  activityId:     'Activity UUID',
+  entityId:       'Entity UUID',
+  id:             'Entity UUID',
+  uniqueId:       'Unique string identifier',
+  proposalId:     'Proposal UUID',
+  messageId:      'Message UUID',
+  changeId:       'Change/revision UUID',
+  executionId:    'Execution handle UUID',
+
+  // ── Content ──────────────────────────────────────────────────────
+  message:        'Text content of the message',
+  content:        'Body content (text, markdown, or code)',
+  text:           'Text content',
+  prompt:         'Prompt text for the AI',
+  description:    'Human-readable description',
+  rationale:      'Reasoning or justification',
+  topic:          'Subject/title',
+  comment:        'Optional comment text',
+  name:           'Display name',
+  displayName:    'Display name shown in UI',
+  title:          'Title text',
+  subtitle:       'Secondary title text',
+  doc:            'Document name',
+  label:          'Short label text',
+
+  // ── Query & pagination ───────────────────────────────────────────
+  limit:          'Maximum number of results',
+  offset:         'Number of results to skip',
+  cursor:         'Pagination cursor from previous query',
+  filter:         'JSON filter object (e.g. {"status":"active"})',
+  orderBy:        'Sort order: [{"field":"createdAt","direction":"desc"}]',
+  orderDirection: '"asc" or "desc"',
+  collection:     'Data collection name (e.g. "users", "rooms")',
+  status:         'Status filter (e.g. "active", "open", "closed")',
+  domain:         'Domain/category filter',
+  tags:           'JSON array of tags',
+  pattern:        'Search pattern (regex supported)',
+  query:          'Search query string',
+  fields:         'JSON array of field names to return',
+
+  // ── File operations ──────────────────────────────────────────────
+  filePath:       'File path relative to workspace',
+  path:           'Directory or file path',
+  startLine:      'Starting line number',
+  endLine:        'Ending line number',
+  lines:          'Line range (e.g. "10-20")',
+  fileGlob:       'File glob pattern (e.g. "*.ts", "src/**/*.js")',
+  maxDepth:       'Maximum directory depth',
+
+  // ── Behavior flags ───────────────────────────────────────────────
+  verbose:        'Include detailed output (boolean)',
+  append:         'Append instead of overwrite (boolean)',
+  wait:           'Wait for completion (boolean)',
+  includeSystem:  'Include system messages (boolean)',
+  includeMetadata:'Include metadata in output (boolean)',
+  toc:            'Show table of contents only (boolean)',
+  typeCheck:      'Run type checking (boolean)',
+
+  // ── Timing ───────────────────────────────────────────────────────
+  timeoutMs:      'Timeout in milliseconds',
+  timestamp:      'ISO timestamp or unix milliseconds',
+  afterMessageId: 'Only items after this message ID',
+  afterTimestamp: 'Only items after this ISO timestamp',
+  votingDeadline: 'Voting deadline (ISO timestamp)',
+
+  // ── AI/Model ─────────────────────────────────────────────────────
+  model:          'AI model identifier',
+  provider:       'AI provider name (e.g. "anthropic", "openai")',
+  temperature:    'Sampling temperature (0.0-1.0)',
+  maxTokens:      'Maximum output tokens',
+  tools:          'JSON array of tool names to enable',
+
+  // ── Collaboration ────────────────────────────────────────────────
+  replyToId:      'Message short ID to reply to',
+  participants:   'JSON array of user IDs',
+  role:           'Role name (e.g. "member", "admin")',
+  options:        'JSON array of choice options',
+  rankedChoices:  'JSON array of option IDs in preference order',
+  priority:       'Priority level (0.0-1.0 or "low"/"medium"/"high")',
+  scope:          'Scope: "team", "project", or "system"',
+  commitMessage:  'Description of the change (like a git commit message)',
+  output:         'Output file path (omit to print to stdout)',
+  count:          'Number of items',
+  cmd:            'Shell command to execute',
+  rules:          'JSON array of rule objects',
 };
 
 /**
@@ -334,14 +626,25 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
   const properties: Record<string, ParameterDefinition> = {};
   const required: string[] = [];
 
-  // Look up rich descriptions for this command
+  // Infrastructure params that are auto-injected by the command dispatcher.
+  // These must NEVER appear in tool specs — models can't provide them,
+  // and APIs reject tool calls for missing required infra params.
+  const INFRA_PARAMS = new Set(['userId', 'sessionId', 'contextId', 'context']);
+
+  // Look up rich descriptions for this command (per-tool overrides take priority)
   const descOverrides = PARAM_DESCRIPTION_OVERRIDES[cmd.name];
 
   if (cmd.params) {
     for (const [paramName, paramInfo] of Object.entries(cmd.params)) {
+      // Skip infrastructure params — auto-injected, not user-facing
+      if (INFRA_PARAMS.has(paramName)) continue;
+
       properties[paramName] = {
         type: paramInfo.type as any,  // Trust the type from command signature
-        description: descOverrides?.[paramName] || paramInfo.description || `${paramName} parameter`,
+        description: descOverrides?.[paramName]
+          || paramInfo.description
+          || GLOBAL_PARAM_DESCRIPTIONS[paramName]
+          || `${paramName}`,
         required: paramInfo.required
       };
 
@@ -351,16 +654,22 @@ function convertCommandToTool(cmd: CommandSignature): ToolDefinition {
     }
   }
 
-  // Clean JSDoc artifacts from description (schema generator captures raw comment blocks)
-  // "Foo Types\n *\n * Real description" → "Real description"
-  const rawDesc = cmd.description || `Execute ${cmd.name} command`;
-  const cleanedDesc = rawDesc
-    .replace(/^[^*]*\*\s*/gm, '')  // Strip leading " * " from JSDoc lines
-    .replace(/\n\s*\n/g, '\n')     // Collapse multiple newlines
-    .trim();
-  // Use the last meaningful sentence if first line is just a title (e.g. "Foo Types")
-  const descLines = cleanedDesc.split('\n').filter(l => l.trim().length > 0);
-  const description = descLines.length > 1 ? descLines.slice(1).join(' ').trim() || descLines[0] : descLines[0] || rawDesc;
+  // Use rich description override if available, otherwise clean JSDoc artifacts
+  let description: string;
+  if (TOOL_DESCRIPTION_OVERRIDES[cmd.name]) {
+    description = TOOL_DESCRIPTION_OVERRIDES[cmd.name];
+  } else {
+    // Clean JSDoc artifacts from description (schema generator captures raw comment blocks)
+    // "Foo Types\n *\n * Real description" → "Real description"
+    const rawDesc = cmd.description || `Execute ${cmd.name} command`;
+    const cleanedDesc = rawDesc
+      .replace(/^[^*]*\*\s*/gm, '')  // Strip leading " * " from JSDoc lines
+      .replace(/\n\s*\n/g, '\n')     // Collapse multiple newlines
+      .trim();
+    // Use the last meaningful sentence if first line is just a title (e.g. "Foo Types")
+    const descLines = cleanedDesc.split('\n').filter(l => l.trim().length > 0);
+    description = descLines.length > 1 ? descLines.slice(1).join(' ').trim() || descLines[0] : descLines[0] || rawDesc;
+  }
 
   return {
     name: cmd.name,
@@ -572,15 +881,33 @@ Every response to a coding request should contain tool_use blocks, not explanati
   }
 
   output += `
-=== DEVELOPMENT WORKFLOW ===
+=== CODE EDITING RULES ===
 
-1. READ first: code/read to understand existing code
-2. WRITE/EDIT: code/write for new files, code/edit for changes
-3. BUILD: code/shell/execute to compile/test
-4. VERIFY: code/verify to check for errors
-5. SEE RESULTS: screenshot to view output
+1. ORIENT: code/tree to see structure, code/search to find relevant files
+2. READ: ALWAYS code/read a file before editing it
+3. EDIT: code/edit (search_replace) for changes, code/write ONLY for new files
+4. VERIFY: code/verify after EVERY change — fix errors before moving on
+5. REVIEW: code/diff to preview, code/git status before committing
 
-Example - Write a file:
+CRITICAL:
+- code/edit search_replace: the search text must match EXACTLY as shown in code/read output
+- Prefer code/edit over code/write for existing files — code/write replaces the ENTIRE file
+- Use code/search instead of shell grep, code/tree instead of shell ls
+- NEVER edit a file you haven't read — your changes will be wrong
+- When code/verify fails: read the errors, fix the file, verify again
+
+Example - Edit existing file (preferred):
+<tool_use>
+  <tool_name>code/edit</tool_name>
+  <parameters>
+    <filePath>src/calculator.ts</filePath>
+    <editType>search_replace</editType>
+    <search>return a + b;</search>
+    <replace>return a + b + 0; // ensure numeric</replace>
+  </parameters>
+</tool_use>
+
+Example - Create new file:
 <tool_use>
   <tool_name>code/write</tool_name>
   <parameters>
@@ -589,18 +916,12 @@ Example - Write a file:
   </parameters>
 </tool_use>
 
-Example - Run a command:
+Example - Run build/test:
 <tool_use>
   <tool_name>code/shell/execute</tool_name>
   <parameters>
     <cmd>npm run build</cmd>
   </parameters>
-</tool_use>
-
-Example - Verify changes:
-<tool_use>
-  <tool_name>code/verify</tool_name>
-  <parameters></parameters>
 </tool_use>
 `;
 

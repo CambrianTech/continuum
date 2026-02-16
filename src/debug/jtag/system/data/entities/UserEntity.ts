@@ -13,6 +13,39 @@ import type { MediaType } from './ChatMessageEntity';
 export type UserType = 'human' | 'agent' | 'persona' | 'system';
 export type UserStatus = 'online' | 'offline' | 'away' | 'busy' | 'frozen' | 'deleted';
 
+/**
+ * Prompt format types - defines how different model families expect prompts
+ */
+export type PromptFormat =
+  | 'base'           // Base models (GPT-2, Llama base): "User: ...\n\nAssistant:"
+  | 'chatml'         // ChatML format: "<|im_start|>user\n...<|im_end|>"
+  | 'llama2'         // Llama-2 chat: "[INST] ... [/INST]"
+  | 'alpaca'         // Alpaca format: "### Instruction:\n...\n\n### Response:"
+  | 'openai'         // OpenAI native messages array
+  | 'anthropic';     // Anthropic native messages array
+
+/**
+ * Model configuration for AI users
+ *
+ * Single source of truth — used by UserEntity (storage), PersonaUser (runtime),
+ * seed data, and command params. maxTokens is REQUIRED: defaults are always
+ * provided at the parse/hydration boundary so the struct is always well-formed.
+ */
+export interface ModelConfig {
+  readonly model?: string;
+  readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, candle)
+  readonly temperature?: number;
+  readonly maxTokens: number;           // Maximum output tokens — REQUIRED
+
+  readonly contextWindow?: number;      // Maximum input tokens (context length)
+  readonly systemPrompt?: string;       // Custom system prompt for persona
+  readonly capabilities?: readonly string[];  // Model capabilities
+  readonly promptFormat?: PromptFormat; // How this model expects prompts formatted
+  readonly requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned (e.g., @sentinel)
+  readonly ragCertified?: boolean;      // Has this model been tested/certified with our complex RAG system?
+  readonly toolCapability?: 'native' | 'xml' | 'none';  // Override provider-based tool capability detection
+}
+
 export interface UserCapabilities {
   canSendMessages: boolean;
   canReceiveMessages: boolean;
@@ -114,18 +147,9 @@ export class UserEntity extends BaseEntity {
 
   // AI model configuration (for AI users: agents and personas)
   // Stores provider (anthropic, openai, groq, etc.) and model settings
+  // Uses ModelConfig — maxTokens is required, defaults applied at hydration boundary
   @JsonField({ nullable: true })
-  modelConfig?: {
-    model?: string;
-    provider?: string;
-    temperature?: number;
-    maxTokens?: number;
-    systemPrompt?: string;
-    capabilities?: readonly string[];
-    ragCertified?: boolean;  // Has this model been tested with our complex RAG system?
-    requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned
-    toolCapability?: 'native' | 'xml' | 'none';  // Override provider-based tool capability detection
-  };
+  modelConfig?: ModelConfig;
 
   // Media configuration (for AI users that can process images/audio/video)
   // Controls whether persona automatically loads media from tool results

@@ -31,7 +31,8 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
         {
           maxMessages: params.maxMessages ?? 20,
           includeArtifacts: params.includeArtifacts ?? true,
-          includeMemories: params.includeMemories ?? true
+          includeMemories: params.includeMemories ?? true,
+          maxTokens: params.maxTokens ?? 2000,
         }
       );
 

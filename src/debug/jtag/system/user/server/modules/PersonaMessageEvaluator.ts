@@ -955,6 +955,7 @@ export class PersonaMessageEvaluator {
         this.personaUser.id,
         {
           modelId: this.personaUser.modelConfig.model,
+          maxTokens: this.personaUser.modelConfig.maxTokens,
           maxMemories: 5,           // Full context: include memories for LLM prompt
           includeArtifacts: true,    // Full context: include vision artifacts
           includeMemories: true,     // Full context: include Hippocampus LTM

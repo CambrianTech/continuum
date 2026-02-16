@@ -788,17 +788,17 @@ export function coerceParamsToSchema(
 
 /**
  * Check if a provider supports native JSON tool calling.
- * Together AI and Groq both implement the OpenAI-compatible function calling spec
- * (tools parameter + tool_calls in response).
+ * OpenAI-compatible providers (Together, Groq, Fireworks, xAI) implement
+ * the function calling spec (tools parameter + tool_calls in response).
  */
 export function supportsNativeTools(provider: string): boolean {
-  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq'];
+  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq', 'fireworks', 'xai'];
   return nativeToolProviders.includes(provider.toLowerCase());
 }
 
 /**
  * Tool capability tier for a given provider/model combination.
- * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq)
+ * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq, Fireworks, xAI)
  * - 'xml': XML tool calls parsed by ToolCallParser (DeepSeek — proven to work)
  * - 'none': Model narrates instead of calling tools — don't inject tools
  */

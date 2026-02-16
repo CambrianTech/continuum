@@ -1,11 +1,16 @@
 //! Format-specific tool call parsers.
 //!
-//! Five formats supported (matching TypeScript ToolFormatAdapter hierarchy):
+//! Six formats supported (matching TypeScript ToolFormatAdapter hierarchy):
 //! 1. Anthropic XML: `<tool_use><tool_name>X</tool_name><parameters>...</parameters></tool_use>`
 //! 2. Function-style: `<function=tool_name>{"param": "value"}</function>`
-//! 3. Bare JSON: `tool/name {"param": "value"}`
-//! 4. Markdown backtick: `` `tool: name` `param=value` ``
-//! 5. Old-style XML: `<tool name="X"><param>value</param></tool>`
+//! 3. Bare JSON: `tool/name {"param": "value"}` or `tool_name {"param": "value"}</function>`
+//! 4. JSON Object: `{"name": "tool_name", "parameters": {"param": "value"}}`
+//! 5. Markdown backtick: `` `tool: name` `param=value` ``
+//! 6. Old-style XML: `<tool name="X"><param>value</param></tool>`
+//!
+//! Handles both canonical (slash) and sanitized (underscore) tool names.
+//! Sanitized names from native tool protocol (code_tree → code/tree) are
+//! automatically unsanitized back to canonical form.
 
 use regex::Regex;
 use std::collections::HashMap;
@@ -20,13 +25,14 @@ pub struct RawToolMatch {
     pub end: usize,
 }
 
-/// Parse all tool calls from response text using all 5 format adapters.
+/// Parse all tool calls from response text using all 6 format adapters.
 /// Returns matches in order of adapter priority (Anthropic first).
 pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
     results.extend(parse_anthropic(text));
     results.extend(parse_function_style(text));
     results.extend(parse_bare(text));
+    results.extend(parse_json_object(text));
     results.extend(parse_markdown(text));
     results.extend(parse_old_style(text));
     results
@@ -90,39 +96,78 @@ fn parse_function_style(text: &str) -> Vec<RawToolMatch> {
 
 // ─── Bare JSON ──────────────────────────────────────────────────────
 
-const TOOL_PREFIXES: &[&str] = &[
+// Slash-based prefixes (canonical tool names: code/tree, data/list, etc.)
+const TOOL_PREFIXES_SLASH: &[&str] = &[
     "code/", "data/", "collaboration/", "ai/", "voice/", "search/",
     "workspace/", "file/", "interface/", "genome/", "adapter/",
     "persona/", "runtime/", "session/", "user/", "logs/", "media/",
 ];
 
-static RE_BARE: Lazy<Regex> = Lazy::new(|| {
-    let prefix_pat = TOOL_PREFIXES.iter()
+// Underscore-based prefixes (sanitized names from native tool protocol:
+// code_tree, collaboration_chat_send, etc.)
+const TOOL_PREFIXES_UNDERSCORE: &[&str] = &[
+    "code_", "data_", "collaboration_", "ai_", "voice_", "search_",
+    "workspace_", "file_", "interface_", "genome_", "adapter_",
+    "persona_", "runtime_", "session_", "user_", "logs_", "media_",
+];
+
+fn all_prefix_pattern() -> String {
+    TOOL_PREFIXES_SLASH.iter()
+        .chain(TOOL_PREFIXES_UNDERSCORE.iter())
         .map(|p| regex::escape(p))
         .collect::<Vec<_>>()
-        .join("|");
+        .join("|")
+}
+
+static RE_BARE: Lazy<Regex> = Lazy::new(|| {
+    let prefix_pat = all_prefix_pattern();
+    // Match tool call with optional backticks, optional trailing </function>
     Regex::new(&format!(
-        r"`?(?:{})[a-zA-Z0-9/_-]+`?\s*\{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}",
+        r"`?(?:{})[a-zA-Z0-9/_-]+`?\s*\{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}\s*(?:</function>)?",
         prefix_pat
     )).unwrap()
 });
 
 static RE_BARE_PARSE: Lazy<Regex> = Lazy::new(|| {
-    let prefix_pat = TOOL_PREFIXES.iter()
-        .map(|p| regex::escape(p))
-        .collect::<Vec<_>>()
-        .join("|");
+    let prefix_pat = all_prefix_pattern();
     Regex::new(&format!(
-        r"(?s)`?((?:{})[a-zA-Z0-9/_-]+)`?\s*(\{{.+\}})",
+        r"(?s)`?((?:{})[a-zA-Z0-9/_-]+)`?\s*(\{{.+?\}})\s*(?:</function>)?",
         prefix_pat
     )).unwrap()
 });
+
+/// Unsanitize a tool name: convert underscore-based names back to slash-based.
+/// e.g. "code_tree" → "code/tree", "collaboration_chat_send" → "collaboration/chat/send"
+///
+/// Tool names in this system use camelCase within segments (never snake_case),
+/// so all underscores in a sanitized name are path separators.
+fn unsanitize_tool_name(name: &str) -> String {
+    // Already uses slashes — canonical form
+    if name.contains('/') {
+        return name.to_string();
+    }
+    // Check if name starts with a known prefix root
+    let prefix_roots: &[&str] = &[
+        "collaboration", "code", "data", "ai", "voice", "search",
+        "workspace", "file", "interface", "genome", "adapter",
+        "persona", "runtime", "session", "user", "logs", "media",
+    ];
+    for root in prefix_roots {
+        if name.starts_with(root) && name.len() > root.len() && name.as_bytes()[root.len()] == b'_' {
+            // Replace ALL underscores with slashes (tool segments use camelCase, not snake_case)
+            return name.replace('_', "/");
+        }
+    }
+    // No known prefix — return as-is
+    name.to_string()
+}
 
 fn parse_bare(text: &str) -> Vec<RawToolMatch> {
     RE_BARE.find_iter(text).filter_map(|m| {
         let full = m.as_str();
         let cap = RE_BARE_PARSE.captures(full)?;
-        let name = cap.get(1)?.as_str().trim().to_string();
+        let raw_name = cap.get(1)?.as_str().trim();
+        let name = unsanitize_tool_name(raw_name);
         let json_str = cap.get(2)?.as_str().trim();
         let parameters = parse_json_params(json_str);
         Some(RawToolMatch {
@@ -131,6 +176,33 @@ fn parse_bare(text: &str) -> Vec<RawToolMatch> {
             format: "bare-tool-call",
             start: m.start(),
             end: m.end(),
+        })
+    }).collect()
+}
+
+// ─── JSON Object ───────────────────────────────────────────────────
+
+// Matches tool calls in JSON object format (two variants):
+//   {"name": "code_tree", "parameters": {"path": "."}}
+//   {"type": "function", "name": "code_git", "parameters": {"operation": "status"}}
+// Used by Fireworks and some OpenAI-compatible models
+static RE_JSON_TOOL: Lazy<Regex> = Lazy::new(||
+    Regex::new(r#"\{(?:\s*"type"\s*:\s*"[^"]*"\s*,)?\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\}"#).unwrap()
+);
+
+fn parse_json_object(text: &str) -> Vec<RawToolMatch> {
+    RE_JSON_TOOL.captures_iter(text).filter_map(|cap| {
+        let raw_name = cap.get(1)?.as_str().trim();
+        let name = unsanitize_tool_name(raw_name);
+        let json_str = cap.get(2)?.as_str().trim();
+        let parameters = parse_json_params(json_str);
+        let full_match = cap.get(0)?;
+        Some(RawToolMatch {
+            tool_name: name,
+            parameters,
+            format: "json-object",
+            start: full_match.start(),
+            end: full_match.end(),
         })
     }).collect()
 }
@@ -410,6 +482,73 @@ Then:
         assert_eq!(matches.len(), 0, "Should not match unknown prefix");
     }
 
+    #[test]
+    fn bare_sanitized_underscore_name() {
+        // Groq outputs sanitized names (code_tree instead of code/tree) with optional </function>
+        let text = r#"code_tree {"maxDepth": 1, "path": "."}</function>"#;
+        let matches = parse_bare(text);
+        assert_eq!(matches.len(), 1, "Should match underscore-based tool name");
+        assert_eq!(matches[0].tool_name, "code/tree", "Should unsanitize back to slash-based name");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), ".");
+    }
+
+    #[test]
+    fn bare_sanitized_deep_name() {
+        // Multi-level sanitized name: collaboration_chat_send → collaboration/chat/send
+        let text = r#"collaboration_chat_send {"room": "general", "message": "hello"}"#;
+        let matches = parse_bare(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "collaboration/chat/send");
+        assert_eq!(matches[0].parameters.get("room").unwrap(), "general");
+    }
+
+    #[test]
+    fn bare_sanitized_without_function_tag() {
+        let text = r#"code_read {"filePath": "main.ts"}"#;
+        let matches = parse_bare(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/read");
+    }
+
+    // ─── JSON Object ────────────────────────────────────────────
+
+    #[test]
+    fn json_object_basic() {
+        let text = r#"I'll check that. {"name": "code_tree", "parameters": {"path": "."}}"#;
+        let matches = parse_json_object(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/tree");
+        assert_eq!(matches[0].parameters.get("path").unwrap(), ".");
+        assert_eq!(matches[0].format, "json-object");
+    }
+
+    #[test]
+    fn json_object_with_slash_name() {
+        let text = r#"{"name": "collaboration/chat/send", "parameters": {"message": "hello", "room": "general"}}"#;
+        let matches = parse_json_object(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "collaboration/chat/send");
+        assert_eq!(matches[0].parameters.get("message").unwrap(), "hello");
+    }
+
+    #[test]
+    fn json_object_with_type_field() {
+        // Fireworks format with "type": "function" prefix
+        let text = r#"{"type": "function", "name": "code_git", "parameters": {"operation": "status"}}"#;
+        let matches = parse_json_object(text);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].tool_name, "code/git");
+        assert_eq!(matches[0].parameters.get("operation").unwrap(), "status");
+    }
+
+    #[test]
+    fn json_object_no_match_for_normal_json() {
+        // Should not match arbitrary JSON objects
+        let text = r#"{"status": "ok", "count": 5}"#;
+        let matches = parse_json_object(text);
+        assert_eq!(matches.len(), 0, "Should not match JSON without name+parameters fields");
+    }
+
     // ─── Markdown backtick ──────────────────────────────────────
 
     #[test]
@@ -514,5 +653,52 @@ Then also:
     #[test]
     fn json_params_empty() {
         assert!(parse_json_params("").is_empty());
+    }
+
+    // ─── Unsanitize ─────────────────────────────────────────────
+
+    #[test]
+    fn unsanitize_simple() {
+        assert_eq!(unsanitize_tool_name("code_tree"), "code/tree");
+        assert_eq!(unsanitize_tool_name("data_list"), "data/list");
+    }
+
+    #[test]
+    fn unsanitize_deep() {
+        assert_eq!(unsanitize_tool_name("collaboration_chat_send"), "collaboration/chat/send");
+        assert_eq!(unsanitize_tool_name("collaboration_decision_vote"), "collaboration/decision/vote");
+    }
+
+    #[test]
+    fn unsanitize_already_slash() {
+        assert_eq!(unsanitize_tool_name("code/tree"), "code/tree");
+        assert_eq!(unsanitize_tool_name("collaboration/chat/send"), "collaboration/chat/send");
+    }
+
+    #[test]
+    fn unsanitize_unknown_prefix() {
+        // Unknown prefix stays as-is
+        assert_eq!(unsanitize_tool_name("foobar_baz"), "foobar_baz");
+    }
+
+    // ─── Full parse_all_formats with sanitized names ────────────
+
+    #[test]
+    fn all_formats_catches_groq_output() {
+        // Real Groq Llama output: sanitized tool name + JSON + stray </function>
+        let text = r#"code_tree {"maxDepth": 1, "path": "."}</function>"#;
+        let matches = parse_all_formats(text);
+        assert!(matches.len() >= 1, "Should catch Groq's sanitized tool call");
+        assert_eq!(matches[0].tool_name, "code/tree");
+    }
+
+    #[test]
+    fn all_formats_catches_fireworks_json_object() {
+        let text = r#"Let me check. {"name": "code_tree", "parameters": {"path": "."}}"#;
+        let matches = parse_all_formats(text);
+        assert!(matches.len() >= 1, "Should catch Fireworks JSON object tool call");
+        // Find the json-object match specifically
+        let json_match = matches.iter().find(|m| m.format == "json-object").unwrap();
+        assert_eq!(json_match.tool_name, "code/tree");
     }
 }

@@ -294,9 +294,14 @@ export class AiAgentServerCommand extends AiAgentCommand {
         }
 
         // ── Regenerate ──────────────────────────────────────────
+        // After 3 consecutive iterations, disable tools to force a text summary.
+        // Small models loop on tools indefinitely without summarizing.
+        const forceText = iterations >= 3 || iterations >= safetyMax - 1;
         const regenerated = await AIProviderDaemon.generateText({
           ...request,
           messages,
+          tools: forceText ? undefined : request.tools,
+          toolChoice: forceText ? undefined : request.toolChoice,
         });
 
         if (!regenerated.text && !regenerated.toolCalls?.length) {
@@ -307,11 +312,18 @@ export class AiAgentServerCommand extends AiAgentCommand {
         }
 
         response = regenerated;
+
+        // If we forced text (tools disabled), break — don't let the parser
+        // re-detect tool-call-like text and continue the loop
+        if (forceText) break;
       }
 
-      // If we hit the safety cap, strip any remaining tool blocks
-      if (iterations >= safetyMax) {
-        response.text = (await executor.parseResponse(response.text)).cleanedText;
+      // Always strip any remaining tool call text from the final response
+      if (iterations > 0 && response.text) {
+        const finalCleaned = await executor.parseResponse(response.text);
+        if (finalCleaned.toolCalls.length > 0) {
+          response.text = finalCleaned.cleanedText;
+        }
       }
 
       // ── 7. Return result ─────────────────────────────────────────

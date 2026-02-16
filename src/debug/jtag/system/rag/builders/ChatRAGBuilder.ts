@@ -32,7 +32,7 @@ import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
-import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
+import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed, MODEL_CONTEXT_WINDOWS } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
@@ -233,7 +233,7 @@ export class ChatRAGBuilder extends RAGBuilder {
   async buildContext(
     contextId: UUID,  // Room ID
     personaId: UUID,
-    options?: RAGBuildOptions
+    options: RAGBuildOptions
   ): Promise<RAGContext> {
     const startTime = Date.now();
 
@@ -260,6 +260,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolDefinitionsPrompt: string | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
+    let totalBudget = 8000;  // Default cap, overridden below for local models
 
     if (this.useModularSources) {
       // NEW PATH: Use RAGComposer for modular, parallelized source loading
@@ -271,13 +272,19 @@ export class ChatRAGBuilder extends RAGBuilder {
       //   - Output tokens (model's response)
       //   - Token estimation error margin (chars/4 is approximate)
       //   - Numerical stability margin (Q4_K_M quantization degrades at high utilization)
-      let totalBudget = 8000;  // Default cap for cloud models
+      totalBudget = 8000;  // Default cap for cloud models
       if (options?.modelId) {
-        const contextWindow = getContextWindow(options.modelId);
+        // For local providers (candle/ollama), use the static map directly to avoid
+        // ModelRegistry returning a cloud context window for the same model ID.
+        // e.g. meta-llama/Llama-3.1-8B-Instruct is 131072 on Together but 1400 on Candle.
+        const isLocal = options?.provider === 'candle' || options?.provider === 'ollama';
+        const contextWindow = isLocal
+          ? (MODEL_CONTEXT_WINDOWS[options.modelId] || getContextWindow(options.modelId))
+          : getContextWindow(options.modelId);
         const maxInput = Math.floor(contextWindow * 0.75);
         totalBudget = Math.min(totalBudget, maxInput);
-        if (isSlowLocalModel(options.modelId)) {
-          this.log(`📊 ChatRAGBuilder: Local model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.modelId}`);
+        if (isLocal || isSlowLocalModel(options.modelId)) {
+          this.log(`📊 ChatRAGBuilder: ${isLocal ? 'Local' : 'Slow'} model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
         }
       }
 
@@ -401,10 +408,16 @@ export class ChatRAGBuilder extends RAGBuilder {
     const processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
     const preprocessMs = performance.now() - preprocessStart;
 
+    // SMALL-CONTEXT GUARD: For models with tiny context windows (Candle ~1400 tokens),
+    // skip all non-essential injections. The system prompt from PersonaIdentitySource
+    // already used progressive budget allocation — don't bloat it.
+    // totalBudget is 75% of contextWindow, so 1500 = ~2000 token model.
+    const isSmallContext = totalBudget < 1500;
+
     // 2.4. Inject widget context into system prompt if available
     // This enables AI to be aware of what the user is currently viewing
     const finalIdentity = { ...identity };
-    if (widgetContext) {
+    if (!isSmallContext && widgetContext) {
       finalIdentity.systemPrompt = identity.systemPrompt +
         `\n\n## CURRENT USER CONTEXT (What they're viewing)\n${widgetContext}\n\nUse this context to provide more relevant assistance. If they're configuring AI providers, you can proactively help with that. If they're viewing settings, anticipate configuration questions.`;
       this.log('🧠 ChatRAGBuilder: Injected widget context into system prompt');
@@ -412,7 +425,7 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     // 2.4.5. Inject cross-context awareness into system prompt (NO SEVERANCE!)
     // This gives AIs unified knowledge that flows between rooms/contexts
-    if (globalAwareness) {
+    if (!isSmallContext && globalAwareness) {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${globalAwareness}\n\nIMPORTANT: You DO have access to information from other channels/rooms. Use the "Relevant Knowledge From Other Contexts" section above when answering questions. This information is from your own experiences in other conversations.`;
       this.log('🌐 ChatRAGBuilder: Injected cross-context awareness into system prompt');
@@ -420,36 +433,40 @@ export class ChatRAGBuilder extends RAGBuilder {
 
     // 2.4.6. Inject social media HUD into system prompt (engagement awareness)
     // This gives AIs awareness of their social media presence and engagement duty
-    if (socialAwareness) {
+    if (!isSmallContext && socialAwareness) {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${socialAwareness}`;
       this.log('📱 ChatRAGBuilder: Injected social media HUD into system prompt');
     }
 
     // 2.4.7. Inject code tool workflow guidance (coding capabilities)
-    if (codeToolGuidance) {
+    if (!isSmallContext && codeToolGuidance) {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${codeToolGuidance}`;
       this.log('💻 ChatRAGBuilder: Injected code tool guidance into system prompt');
     }
 
     // 2.4.8. Inject project workspace context (git status, team activity, build info)
-    if (projectContext) {
+    if (!isSmallContext && projectContext) {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt +
         `\n\n${projectContext}`;
       this.log('📦 ChatRAGBuilder: Injected project workspace context into system prompt');
     }
 
     // 2.4.9. Inject consolidated memories (budget-aware via SemanticMemorySource)
-    if (consolidatedMemories) {
+    if (!isSmallContext && consolidatedMemories) {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt + consolidatedMemories;
       this.log(`🧠 ChatRAGBuilder: Injected ${privateMemories.length} consolidated memories into system prompt`);
     }
 
     // 2.4.10. Inject XML tool definitions for text-based providers (budget-aware via ToolDefinitionsSource)
-    if (toolDefinitionsPrompt) {
+    if (!isSmallContext && toolDefinitionsPrompt) {
       finalIdentity.systemPrompt = finalIdentity.systemPrompt + toolDefinitionsPrompt;
       this.log(`🔧 ChatRAGBuilder: Injected tool definitions into system prompt (XML format)`);
+    }
+
+    if (isSmallContext) {
+      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — skipped injections to fit ${options?.modelId}`);
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -579,7 +596,7 @@ export class ChatRAGBuilder extends RAGBuilder {
    * Load widget context for AI awareness
    * Returns formatted string describing what the user is currently viewing
    */
-  private async loadWidgetContext(options?: RAGBuildOptions): Promise<string | null> {
+  private async loadWidgetContext(options: RAGBuildOptions): Promise<string | null> {
     // Ensure service is initialized (lazy init pattern)
     WidgetContextService.initialize();
 
@@ -612,7 +629,7 @@ export class ChatRAGBuilder extends RAGBuilder {
   /**
    * Load persona identity from UserEntity
    */
-  private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options?: RAGBuildOptions): Promise<PersonaIdentity> {
+  private async loadPersonaIdentity(personaId: UUID, roomId: UUID, options: RAGBuildOptions): Promise<PersonaIdentity> {
     try {
       const user = await ORM.read<UserEntity>(UserEntity.collection, personaId);
 
@@ -913,10 +930,10 @@ LIMITS:
    */
   private async preprocessArtifactsForModel(
     artifacts: RAGArtifact[],
-    options?: RAGBuildOptions
+    options: RAGBuildOptions
   ): Promise<RAGArtifact[]> {
     // If model has vision capability, return artifacts as-is (they can see images)
-    if (options?.modelCapabilities?.supportsImages) {
+    if (options.modelCapabilities?.supportsImages) {
       return artifacts;
     }
 
@@ -1290,7 +1307,7 @@ LIMITS:
    * Calculate safe message count based on model context window (Bug #5 fix)
    * Uses same logic as RAGBudgetServerCommand to prevent context overflow
    */
-  private calculateSafeMessageCount(options?: RAGBuildOptions): number {
+  private calculateSafeMessageCount(options: RAGBuildOptions): number {
     // If maxMessages explicitly provided, use it (allows manual override)
     if (options?.maxMessages !== undefined) {
       return options.maxMessages;
@@ -1304,13 +1321,17 @@ LIMITS:
 
     // Use centralized ModelContextConfig (single source of truth)
     const modelId = options.modelId;
-    const maxTokens = options.maxTokens ?? 3000;
+    const maxTokens = options.maxTokens;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const targetUtilization = 0.8;  // 80% target, 20% safety margin
     const avgTokensPerMessage = 250;  // Conservative estimate
 
-    // Get context window from centralized config
-    const contextWindow = getContextWindow(modelId);
+    // Get context window — provider-aware for local models to avoid
+    // ModelRegistry collision (cloud 131K vs local 1.4K for same model ID)
+    const isLocal = options?.provider === 'candle' || options?.provider === 'ollama';
+    const contextWindow = isLocal
+      ? (MODEL_CONTEXT_WINDOWS[modelId] || getContextWindow(modelId))
+      : getContextWindow(modelId);
 
     // LATENCY-AWARE BUDGETING: For slow local models, apply latency constraint
     // This prevents timeouts from massive prompts (e.g., 20K tokens at 10ms/token = 200s!)
@@ -1338,8 +1359,9 @@ LIMITS:
     // Calculate safe message count
     const safeMessageCount = Math.floor(targetTokens / avgTokensPerMessage);
 
-    // Clamp between 5 and 50
-    const clampedMessageCount = Math.max(5, Math.min(50, safeMessageCount));
+    // Clamp between 2 and 50 — small models (< 2K context) need fewer messages
+    const minMessages = contextWindow < 2000 ? 2 : 5;
+    const clampedMessageCount = Math.max(minMessages, Math.min(50, safeMessageCount));
 
     // Log with latency info for slow models
     const latencyInfo = isSlowModel
@@ -1350,11 +1372,11 @@ LIMITS:
       : '';
 
     this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
-  Context Window: ${contextWindow} tokens
+  Context Window: ${contextWindow} tokens (${isLocal ? 'local provider' : 'cloud/registry'})
   Context Budget: ${contextWindowBudget} tokens (after output + system reservation)${latencyInfo}
   Latency Budget: ${latencyBudget} tokens
   Available for Messages: ${availableForMessages}${limitingFactor}
-  Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
+  Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped, min=${minMessages})`);
 
     return clampedMessageCount;
   }
@@ -1373,21 +1395,24 @@ LIMITS:
    */
   private calculateAdjustedMaxTokens(
     conversationHistory: LLMMessage[],
-    options?: RAGBuildOptions
+    options: RAGBuildOptions
   ): { adjustedMaxTokens: number; inputTokenCount: number } {
-    // If no modelId, can't calculate - return original maxTokens
-    if (!options?.modelId) {
-      const defaultMaxTokens = options?.maxTokens ?? 3000;
-      this.log('⚠️ ChatRAGBuilder: No modelId for maxTokens adjustment, using default:', defaultMaxTokens);
-      return { adjustedMaxTokens: defaultMaxTokens, inputTokenCount: 0 };
+    const requestedMaxTokens = options.maxTokens;
+
+    // If no modelId, can't calculate context window — use config as-is
+    if (!options.modelId) {
+      this.log('⚠️ ChatRAGBuilder: No modelId for maxTokens adjustment, using config:', requestedMaxTokens);
+      return { adjustedMaxTokens: requestedMaxTokens, inputTokenCount: 0 };
     }
 
-    // Use centralized ModelContextConfig (single source of truth)
+    // Provider-aware context window — avoids ModelRegistry collision
     const modelId = options.modelId;
-    const requestedMaxTokens = options.maxTokens ?? 3000;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const safetyMargin = 100;  // Extra buffer for formatting/metadata
-    const contextWindow = getContextWindow(modelId);
+    const isLocalModel = options?.provider === 'candle' || options?.provider === 'ollama';
+    const contextWindow = isLocalModel
+      ? (MODEL_CONTEXT_WINDOWS[modelId] || getContextWindow(modelId))
+      : getContextWindow(modelId);
 
     // Estimate input tokens (conversationHistory + system prompt)
     // Using 250 tokens per message average (same as calculateSafeMessageCount)
@@ -1398,9 +1423,11 @@ LIMITS:
     // Calculate available tokens for completion
     const availableForCompletion = contextWindow - inputTokenCount - safetyMargin;
 
-    // Adjust maxTokens to fit within available space
+    // Adjust maxTokens to fit within available space.
+    // Never exceed the config value — it exists for a reason (e.g. Candle models at 200).
+    // Minimum 50 tokens so the model can at least produce something.
     const adjustedMaxTokens = Math.max(
-      500,  // Minimum 500 tokens for meaningful response
+      50,
       Math.min(requestedMaxTokens, availableForCompletion)
     );
 

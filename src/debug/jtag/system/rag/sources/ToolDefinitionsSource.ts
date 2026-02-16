@@ -236,8 +236,9 @@ export class ToolDefinitionsSource implements RAGSource {
           'collaboration/chat/',     // Communication is #1
           'code/',                   // Code abilities are #2
           'collaboration/decision/', // Decision making #3
-          'data/',                   // Data access #4
-          'ai/',                     // AI meta-tools #5 (least important essential)
+          'collaboration/wall/',     // Shared documents #4
+          'data/',                   // Data access #5
+          'ai/',                     // AI meta-tools #6 (least important essential)
         ];
 
     const recipe: ToolDefinition[] = [];

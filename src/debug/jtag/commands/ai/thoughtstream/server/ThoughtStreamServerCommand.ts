@@ -102,6 +102,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
                 stream.contextId,
                 thought.personaId,
                 {
+                  maxTokens: 2000,
                   maxMessages: 20,
                   maxMemories: 0,
                   includeArtifacts: false,
@@ -393,6 +394,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
                 entry.roomId,
                 personaId,
                 {
+                  maxTokens: 2000,
                   maxMessages: 20,
                   maxMemories: 0,
                   includeArtifacts: false,

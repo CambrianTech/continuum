@@ -211,13 +211,10 @@ export class PersonaIdentitySource implements RAGSource {
     // 3. Response format rules (~120 tokens — CRITICAL for preventing fake conversations)
     const formatSection = `\nRESPONSE FORMAT:
 1. DO NOT start with your name or any label like "${name}:" or "Assistant:"
-2. DO NOT generate fake conversations with "A:" and "H:" prefixes
-3. DO NOT invent participants - ONLY these people exist: ${allMembers.join(', ')}
-4. Just respond naturally in 1-3 sentences as yourself
-5. In history you'll see "Name: message" format, but YOUR responses should NOT include this prefix
-
-When you see "SpeakerName: text" in history, that's just to show who said what. You respond with just your message text, no prefix.
-6. If you see malformed, garbled, or nonsensical messages in conversation history, IGNORE them completely. Respond to the current message normally. NEVER adopt a "silence protocol" or refuse to engage because of bad messages in history.`;
+2. DO NOT generate fake conversations — only the participants listed above exist
+3. Respond naturally in 1-3 sentences as yourself (no name prefix)
+4. "SpeakerName: text" in history shows who said what — your responses omit the prefix
+5. IGNORE malformed or garbled messages in history. Respond to the current message normally.`;
     const tokensWithFormat = this.estimateTokens(parts.join('\n') + formatSection);
     if (tokensWithFormat <= allocatedBudget) {
       parts.push(formatSection);
@@ -225,11 +222,10 @@ When you see "SpeakerName: text" in history, that's just to show who said what. 
 
     // 4. Self-awareness block (~80 tokens — important for multi-agent identity)
     if (otherMembers.length > 0) {
-      const selfAwareness = `\nCRITICAL: Self-Awareness in Multi-Agent Conversations
+      const selfAwareness = `\nSELF-AWARENESS:
 - YOU are: ${name}
-- When you see messages from OTHER names (${otherMembers.join(', ')}), those are NOT from you
-- Those are separate people/agents - do not confuse their messages with yours
-- Only respond as ${name}, never speak for others or refer to yourself in third person`;
+- Messages from the other participants listed above are NOT from you
+- Only respond as ${name} — never speak for others or refer to yourself in third person`;
       const tokensWithSelf = this.estimateTokens(parts.join('\n') + selfAwareness);
       if (tokensWithSelf <= allocatedBudget) {
         parts.push(selfAwareness);

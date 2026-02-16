@@ -17,7 +17,7 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
-import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
+import type { ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
 // DataCreateParams/DataCreateResult imports removed — response posting now uses ORM.store() directly
@@ -289,6 +289,7 @@ export class PersonaResponseGenerator {
           this.personaId,
           {
             modelId: this.modelConfig.model,
+            maxTokens: this.modelConfig.maxTokens,
             maxMemories: 5,
             includeArtifacts: true,
             includeMemories: true,
@@ -547,8 +548,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       this.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
 
       // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
-      // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
-      let effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
+      // RAG budget can only REDUCE maxTokens (protect against context overflow),
+      // never INCREASE beyond what the model config specifies.
+      const configMaxTokens = this.modelConfig.maxTokens;
+      const ragAdjusted = fullRAGContext.metadata.adjustedMaxTokens;
+      let effectiveMaxTokens = ragAdjusted && ragAdjusted < configMaxTokens
+        ? ragAdjusted
+        : configMaxTokens;
 
       // VOICE MODE: Allow reasonable response length for natural conversation
       // DON'T artificially truncate - that's robotic and cuts off mid-sentence
@@ -648,7 +654,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         model: request.model || this.modelConfig.model || 'unknown',
         provider: request.provider || 'candle',
         temperature: request.temperature ?? 0.7,
-        maxTokens: request.maxTokens ?? 256,
+        maxTokens: effectiveMaxTokens,
         messages: messages.map(m => ({
           role: m.role,
           content: m.content,
@@ -744,8 +750,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               stage: 'generate',
               durationMs: generateDuration,
               resourceUsed: aiResponse.text.length,
-              maxResource: this.modelConfig.maxTokens ?? 150,
-              percentCapacity: (aiResponse.text.length / (this.modelConfig.maxTokens ?? 150)) * 100,
+              maxResource: this.modelConfig.maxTokens,
+              percentCapacity: (aiResponse.text.length / this.modelConfig.maxTokens) * 100,
               percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
               status: getStageStatus(generateDuration, 'generate'),
               metadata: {
@@ -991,14 +997,22 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             messages.push({ role: 'user' as const, content: toolResultContent });
           }
 
-          // Regenerate — tools stay enabled, model decides when to stop
-          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools enabled)`);
+          // Regenerate — force text response after 3 tool iterations.
+          // Small/medium models loop on tools indefinitely without summarizing.
+          // After 3 iterations (or at safety cap - 1), disable tools to force text.
+          const forceText = toolIterations >= 3 || toolIterations >= SAFETY_MAX - 1;
+          const regenerationTools = forceText ? undefined : request.tools;
+          const regenerationToolChoice = forceText ? undefined : request.toolChoice;
+
+          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools ${forceText ? 'DISABLED — forcing text response' : 'enabled'})`);
 
           try {
             const regenerateStartTime = Date.now();
             const regeneratedResponse = await AIProviderDaemon.generateText({
               ...request,
-              messages, // Tools NOT stripped — model decides when to stop
+              messages,
+              tools: regenerationTools,
+              toolChoice: regenerationToolChoice,
             });
             const regenerateDuration = Date.now() - regenerateStartTime;
 
@@ -1021,6 +1035,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             aiResponse.finishReason = regeneratedResponse.finishReason;
 
             this.log(`✅ ${this.personaName}: [AGENT-LOOP] Got response (${aiResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
+
+            // If we forced text (tools disabled), break — don't let the parser
+            // re-detect tool-call-like text and continue the loop
+            if (forceText) {
+              this.log(`✅ ${this.personaName}: [AGENT-LOOP] Forced text response after ${toolIterations} iteration(s), stopping`);
+              break;
+            }
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
             this.log(`❌ ${this.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
@@ -1031,7 +1052,15 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         if (toolIterations >= SAFETY_MAX) {
           this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
-          aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
+        }
+        // Always strip any remaining tool call text from the final response.
+        // Models may embed tool calls in text even after forced-text regeneration.
+        if (toolIterations > 0 && aiResponse.text) {
+          const finalCleaned = await this.toolExecutor.parseResponse(aiResponse.text);
+          if (finalCleaned.toolCalls.length > 0) {
+            this.log(`🧹 ${this.personaName}: [AGENT-LOOP] Stripped ${finalCleaned.toolCalls.length} residual tool call(s) from final response`);
+            aiResponse.text = finalCleaned.cleanedText;
+          }
         }
         pipelineTiming['3.4_agent_loop'] = Date.now() - agentLoopStart;
         if (toolIterations > 0) {

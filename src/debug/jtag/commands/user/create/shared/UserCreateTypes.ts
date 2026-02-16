@@ -13,41 +13,13 @@
 import type { CommandParams, JTAGPayload, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
-import type { UserEntity, UserCapabilities } from '../../../../system/data/entities/UserEntity';
+import type { UserEntity, UserCapabilities, ModelConfig } from '../../../../system/data/entities/UserEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 /**
  * User type discriminated union
  */
 export type UserType = 'human' | 'agent' | 'persona';
-
-/**
- * Prompt format types - defines how different model families expect prompts
- */
-export type PromptFormat =
-  | 'base'           // Base models (GPT-2, Llama base): "User: ...\n\nAssistant:"
-  | 'chatml'         // ChatML format: "<|im_start|>user\n...<|im_end|>"
-  | 'llama2'         // Llama-2 chat: "[INST] ... [/INST]"
-  | 'alpaca'         // Alpaca format: "### Instruction:\n...\n\n### Response:"
-  | 'openai'         // OpenAI native messages array
-  | 'anthropic';     // Anthropic native messages array
-
-/**
- * Model configuration for AI users
- */
-export interface ModelConfig {
-  readonly model?: string;
-  readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, candle)
-  readonly temperature?: number;
-  readonly maxTokens?: number;          // Maximum output tokens
-  readonly contextWindow?: number;      // Maximum input tokens (context length)
-  readonly systemPrompt?: string;       // Custom system prompt for persona
-  readonly capabilities?: readonly string[];  // Model capabilities
-  readonly promptFormat?: PromptFormat; // How this model expects prompts formatted
-  readonly requiresExplicitMention?: boolean;  // If true, persona only responds when explicitly mentioned (e.g., @sentinel)
-  readonly ragCertified?: boolean;      // Has this model been tested/certified with our complex RAG system?
-  readonly toolCapability?: 'native' | 'xml' | 'none';  // Override provider-based tool capability detection
-}
 
 /**
  * User create command parameters

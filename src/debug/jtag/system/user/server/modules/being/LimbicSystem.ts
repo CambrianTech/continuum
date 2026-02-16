@@ -21,7 +21,7 @@ import type { GenomeEntity } from '../../../../genome/entities/GenomeEntity';
 import type { GenomeLayerEntity } from '../../../../genome/entities/GenomeLayerEntity';
 import { SubsystemLogger } from './logging/SubsystemLogger';
 import type { UserEntity } from '../../../../data/entities/UserEntity';
-import type { ModelConfig } from '../../../../../commands/user/create/shared/UserCreateTypes';
+import type { ModelConfig } from '../../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { UserStateEntity } from '../../../../data/entities/UserStateEntity';
 import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';

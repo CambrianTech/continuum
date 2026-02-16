@@ -319,7 +319,7 @@ impl AIProviderAdapter for CandleAdapter {
             supports_audio: false,
             supports_image_generation: false,
             is_local: true,
-            max_context_window: 8192, // Llama 3.2 default
+            max_context_window: 1400, // Candle quantized attention breaks at ~1000 input tokens
         }
     }
 
@@ -378,35 +378,10 @@ impl AIProviderAdapter for CandleAdapter {
         log.info(&format!("generate_text called, use_quantized={}, self_ptr={:p}", self.use_quantized, self as *const _));
 
         // Build prompt from messages
-        let mut prompt = build_prompt_from_messages(&request.messages);
+        let prompt = build_prompt_from_messages(&request.messages);
 
-        let mut max_tokens = request.max_tokens.unwrap_or(1024) as usize;
-        // Clamp temperature to prevent numerical instability in quantized models
-        // High temperatures (>0.5) can cause NaN/Inf in logits
-        let requested_temp = request.temperature.unwrap_or(0.7) as f64;
-        let temperature = requested_temp.min(0.3);
-
-        // Limit max_tokens for context window (4096 total - 2000 input leaves 2000 for output)
-        // and for stability (quantized models can become unstable with very long generations)
-        const MAX_OUTPUT_TOKENS: usize = 1000;
-        if max_tokens > MAX_OUTPUT_TOKENS {
-            log.info(&format!("Capping max_tokens from {} to {} for stability", max_tokens, MAX_OUTPUT_TOKENS));
-            max_tokens = MAX_OUTPUT_TOKENS;
-        }
-
-        // Emergency safety truncation - RAG should already limit context via contextWindow,
-        // but if something goes wrong, prevent OOM/NaN by hard-limiting at 16K chars (~4K tokens)
-        const EMERGENCY_MAX_CHARS: usize = 16000;
-        if prompt.len() > EMERGENCY_MAX_CHARS {
-            let original_len = prompt.len();
-            // Keep start (system) and end (recent messages)
-            let keep_start = EMERGENCY_MAX_CHARS * 30 / 100;
-            let keep_end = EMERGENCY_MAX_CHARS * 65 / 100;
-            let start = &prompt[..keep_start];
-            let end = &prompt[prompt.len() - keep_end..];
-            prompt = format!("{}\n\n[... emergency truncation - check RAG contextWindow ...]\n\n{}", start, end);
-            log.error(&format!("EMERGENCY truncation: {} -> {} chars - RAG contextWindow may be misconfigured!", original_len, prompt.len()));
-        }
+        let max_tokens = request.max_tokens.unwrap_or(1024) as usize;
+        let temperature = request.temperature.unwrap_or(0.7) as f64;
 
         log.info(&format!("Prompt length: {} chars, max_tokens: {}", prompt.len(), max_tokens));
 
@@ -431,57 +406,12 @@ impl AIProviderAdapter for CandleAdapter {
                 "Model not loaded".to_string()
             })?;
 
-            // For quantized models, limit input tokens to prevent NaN
-            // Based on testing: NaN occurs at ~1400+ tokens, safe threshold is ~800
-            // This token-based limiting is more accurate than char-based EMERGENCY_MAX_CHARS
-            let final_prompt = match model {
-                ModelVariant::Quantized(state) => {
-                    const SAFE_INPUT_TOKENS: usize = 800;
-                    let tokens = state.tokenizer.encode(prompt.as_str(), true)
-                        .map_err(|e| format!("Tokenization failed: {e}"))?;
-                    let token_count = tokens.len();
-
-                    if token_count > SAFE_INPUT_TOKENS {
-                        // Truncate by keeping first ~30% and last ~60% of tokens
-                        // (system prompt at start, recent messages at end)
-                        let keep_start = SAFE_INPUT_TOKENS * 30 / 100; // 240 tokens
-                        let keep_end = SAFE_INPUT_TOKENS * 60 / 100;   // 480 tokens
-
-                        let token_ids = tokens.get_ids();
-                        let mut truncated_ids: Vec<u32> = Vec::with_capacity(SAFE_INPUT_TOKENS + 10);
-
-                        // Keep first N tokens (system prompt)
-                        truncated_ids.extend_from_slice(&token_ids[..keep_start]);
-
-                        // Add truncation marker (just use newlines, don't add extra tokens)
-                        // The model will understand context was cut
-
-                        // Keep last N tokens (recent messages)
-                        let end_start = token_ids.len().saturating_sub(keep_end);
-                        truncated_ids.extend_from_slice(&token_ids[end_start..]);
-
-                        let truncated_prompt = state.tokenizer.decode(&truncated_ids, true)
-                            .map_err(|e| format!("Decode failed: {e}"))?;
-
-                        log.warn(&format!(
-                            "TOKEN LIMIT: {} -> {} tokens (RAG sent too much context for quantized model)",
-                            token_count, truncated_ids.len()
-                        ));
-
-                        truncated_prompt
-                    } else {
-                        prompt.clone()
-                    }
-                }
-                ModelVariant::Regular(_) => prompt.clone(),
-            };
-
             let (output_text, completion_tokens) = match model {
                 ModelVariant::Regular(state) => {
-                    generate_text(state, &final_prompt, max_tokens, temperature)?
+                    generate_text(state, &prompt, max_tokens, temperature)?
                 }
                 ModelVariant::Quantized(state) => {
-                    generate_text_quantized(state, &final_prompt, max_tokens, temperature)?
+                    generate_text_quantized(state, &prompt, max_tokens, temperature)?
                 }
             };
 
@@ -553,7 +483,7 @@ impl AIProviderAdapter for CandleAdapter {
                 name: "Llama 3.2 3B Instruct (Q4)".to_string(),
                 provider: "candle".to_string(),
                 capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
-                context_window: 8192,
+                context_window: 1400,
                 max_output_tokens: Some(4096),
                 cost_per_1k_tokens: None, // Local is free
                 supports_streaming: false,
@@ -564,7 +494,7 @@ impl AIProviderAdapter for CandleAdapter {
                 name: "Llama 3.2 3B Instruct".to_string(),
                 provider: "candle".to_string(),
                 capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
-                context_window: 8192,
+                context_window: 1400,
                 max_output_tokens: Some(4096),
                 cost_per_1k_tokens: None,
                 supports_streaming: false,
