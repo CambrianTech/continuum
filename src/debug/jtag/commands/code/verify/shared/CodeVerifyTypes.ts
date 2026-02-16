@@ -7,6 +7,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -46,6 +47,7 @@ export const createCodeVerifyParams = (
     cwd?: string;
   }
 ): CodeVerifyParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   typeCheck: data.typeCheck ?? true,
   testFiles: data.testFiles ?? [],
   cwd: data.cwd ?? '',
@@ -98,6 +100,7 @@ export const createCodeVerifyResult = (
     error?: JTAGError;
   }
 ): CodeVerifyResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   durationMs: data.durationMs ?? 0,
   output: data.output ?? '',
   ...data

@@ -6,6 +6,7 @@
 
 import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
@@ -33,8 +34,8 @@ export interface DataClearResult extends JTAGPayload {
 export const createDataClearParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataClearParams, 'context' | 'sessionId'> = {}
-): DataClearParams => createPayload(context, sessionId, data);
+  data: Omit<DataClearParams, 'context' | 'sessionId' | 'userId'> = {}
+): DataClearParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM, ...data });
 
 /**
  * Transform params to result

@@ -1,4 +1,5 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -22,6 +23,7 @@ export const createScrollParams = (
     behavior?: 'auto' | 'smooth' | 'instant';
   }
 ): ScrollParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   x: data.x ?? 0,
   y: data.y ?? 0,
   selector: data.selector,
@@ -51,6 +53,7 @@ export const createScrollResult = (
     error?: JTAGError;
   }
 ): ScrollResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   scrollX: data.scrollX ?? 0,
   scrollY: data.scrollY ?? 0,
   selector: data.selector,

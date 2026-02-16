@@ -6,6 +6,7 @@
  */
 
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -39,6 +40,7 @@ export const createProxyNavigateParams = (
     timeout?: number;
   }
 ): ProxyNavigateParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   target: data.target || 'proxy-iframe',
   rewriteUrls: data.rewriteUrls ?? true,
   userAgent: data.userAgent || 'Continuum-Training-Bot/1.0',
@@ -58,6 +60,7 @@ export const createProxyNavigateResult = (
     error?: JTAGError;
   }
 ): ProxyNavigateResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   proxyUrl: data.proxyUrl || '',
   originalUrl: data.originalUrl || '',
   ...data

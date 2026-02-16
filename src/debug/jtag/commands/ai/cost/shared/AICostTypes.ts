@@ -17,7 +17,7 @@ export interface AICostParams extends CommandParams {
   // Entity filtering
   provider?: string;               // Filter by provider: "openai", "anthropic", "candle", "deepseek"
   model?: string;                  // Filter by model: "gpt-4", "claude-3-opus", etc.
-  userId?: UUID;                   // Filter by user (human or AI)
+  filterUserId?: UUID;             // Filter by user (human or AI)
   roomId?: UUID;                   // Filter by room
   purpose?: string;                // Filter by purpose: "chat", "should-respond", "rag", etc.
 

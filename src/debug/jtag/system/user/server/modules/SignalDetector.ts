@@ -227,7 +227,7 @@ export class SignalDetector {
       const params: Partial<AIGenerateParams> = {
         messages: [{ role: 'user', content: prompt }],
         model: 'llama-3.1-8b-instant',  // Fast cloud model - don't block local inference queue
-        preferredProvider: 'groq',       // Cloud API - fast (<1s) vs local (~10s)
+        provider: 'groq',                // Cloud API - fast (<1s) vs local (~10s)
         temperature: 0.1,                // Low temperature for consistent classification
         maxTokens: 200,
         systemPrompt: 'You are a signal classifier. Output ONLY valid JSON, no other text.'

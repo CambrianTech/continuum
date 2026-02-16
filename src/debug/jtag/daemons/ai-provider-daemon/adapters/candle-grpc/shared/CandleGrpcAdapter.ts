@@ -65,7 +65,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       return {
         status: 'healthy',
         apiAvailable: true,
-        responseTime: Date.now() - start,
+        responseTimeMs: Date.now() - start,
         errorRate: 0,
         lastChecked: Date.now(),
       };
@@ -73,7 +73,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
       return {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime: 0,
+        responseTimeMs: 0,
         errorRate: 1,
         lastChecked: Date.now(),
         message: err instanceof Error ? err.message : String(err),
@@ -90,7 +90,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         capabilities: ['text-generation', 'chat'],
         contextWindow: 8192,
         supportsStreaming: false,
-        supportsFunctions: false,
+        supportsTools: false,
       },
     ];
   }
@@ -162,7 +162,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         model: result.model,
         provider: this.providerId,
         usage,
-        responseTime,
+        responseTimeMs: responseTime,
         requestId: result.requestId,
         routing,
         // Note: Local Candle models don't support tool calling, so toolCalls is always undefined

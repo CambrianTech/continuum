@@ -95,13 +95,14 @@ export class JTAGSystemServer extends JTAGSystem {
 
       // Register this process 
       const result = await processRegistryCommand.registerProcess({
+        userId: SYSTEM_SCOPES.SYSTEM,
         context: this.context,
         sessionId: 'system-registration' as any,
         processType: 'server',
         description: `JTAG System Server (${this.context.uuid})`,
         capabilities: [
           'websocket-server',
-          'command-execution', 
+          'command-execution',
           'file-operations',
           'console-logging',
           'screenshot',

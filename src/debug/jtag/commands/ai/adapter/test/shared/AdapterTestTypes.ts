@@ -49,7 +49,7 @@ export interface CapabilityTestResult {
   supported: boolean;
   tested: boolean;
   success?: boolean;
-  responseTime?: number;
+  responseTimeMs?: number;
   error?: string;
   details?: unknown;
 }

@@ -115,8 +115,8 @@ export class ProviderEntry {
     if (!this.testResult || this.testResult.status === 'idle') return '';
 
     const { icon, label } = STATUS_MESSAGES[this.testResult.status];
-    const responseTimeHtml = this.testResult.responseTime
-      ? `<span class="response-time">(${this.testResult.responseTime}ms)</span>`
+    const responseTimeHtml = this.testResult.responseTimeMs
+      ? `<span class="response-time">(${this.testResult.responseTimeMs}ms)</span>`
       : '';
 
     const actionHtml = this.renderStatusAction();

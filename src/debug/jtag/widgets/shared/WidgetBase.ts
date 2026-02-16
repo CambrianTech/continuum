@@ -10,7 +10,7 @@ import type { CommandParams, CommandResult } from '../../system/core/types/JTAGT
 declare global {
   interface Window {
     widgetDaemon?: {
-      executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId'>): Promise<CommandResult>;
+      executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId' | 'userId'>): Promise<CommandResult>;
       isConnected(): boolean;
     };
   }
@@ -57,7 +57,7 @@ export abstract class WidgetBase extends HTMLElement {
   /**
    * Execute command via WidgetDaemon
    */
-  protected async executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId'> = {}): Promise<CommandResult> {
+  protected async executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId' | 'userId'> = {}): Promise<CommandResult> {
     const widgetDaemon = window.widgetDaemon;
     if (!widgetDaemon) {
       throw new Error('WidgetDaemon not available - ensure JTAG system is running');

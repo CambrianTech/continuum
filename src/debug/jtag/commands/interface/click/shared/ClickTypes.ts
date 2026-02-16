@@ -1,6 +1,7 @@
 // ISSUES: 0 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -27,6 +28,7 @@ export const createClickParams = (
     innerSelector?: string;
   }
 ): ClickParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   button: data.button ?? 'left',
   timeout: data.timeout ?? 30000,
   ...data  // selector is required, so it's in data
@@ -50,6 +52,7 @@ export const createClickResult = (
     error?: JTAGError;
   }
 ): ClickResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   selector: data.selector ?? '',
   clicked: data.clicked ?? false,
   timestamp: new Date().toISOString(),

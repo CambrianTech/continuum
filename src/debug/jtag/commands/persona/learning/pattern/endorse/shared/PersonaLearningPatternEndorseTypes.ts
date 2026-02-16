@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../../system/core/shared/Commands';
@@ -37,6 +38,7 @@ export const createPersonaLearningPatternEndorseParams = (
     notes?: string;
   }
 ): PersonaLearningPatternEndorseParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   notes: data.notes ?? '',
   ...data
 });
@@ -88,6 +90,7 @@ export const createPersonaLearningPatternEndorseResult = (
     error?: JTAGError;
   }
 ): PersonaLearningPatternEndorseResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   patternId: data.patternId ?? '',
   previousConfidence: data.previousConfidence ?? 0,
   newConfidence: data.newConfidence ?? 0,

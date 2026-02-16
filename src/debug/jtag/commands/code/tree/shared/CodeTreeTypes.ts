@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -38,6 +39,7 @@ export const createCodeTreeParams = (
     includeHidden?: boolean;
   }
 ): CodeTreeParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   path: data.path ?? '',
   maxDepth: data.maxDepth ?? 0,
   includeHidden: data.includeHidden ?? false,
@@ -75,6 +77,7 @@ export const createCodeTreeResult = (
     error?: JTAGError;
   }
 ): CodeTreeResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   root: data.root ?? null,
   totalFiles: data.totalFiles ?? 0,
   totalDirectories: data.totalDirectories ?? 0,

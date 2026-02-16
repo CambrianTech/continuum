@@ -393,9 +393,9 @@ export class PersonaToolExecutor {
     for (let i = 0; i < nativeToolCalls.length; i++) {
       if (!filteredSet.has(executorCalls[i])) {
         results.push({
-          tool_use_id: nativeToolCalls[i].id,
+          toolUseId: nativeToolCalls[i].id,
           content: 'Tool call blocked by loop detection.',
-          is_error: true,
+          isError: true,
         });
         continue;
       }
@@ -410,9 +410,9 @@ export class PersonaToolExecutor {
       }
 
       results.push({
-        tool_use_id: nativeToolCalls[i].id,
+        toolUseId: nativeToolCalls[i].id,
         content,
-        is_error: !exec.result.success || undefined,
+        isError: !exec.result.success || undefined,
       });
     }
 

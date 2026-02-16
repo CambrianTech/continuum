@@ -140,6 +140,7 @@ export class CommandRouterServer {
         const fullParams = {
           context: system.context,
           sessionId,
+          userId: SYSTEM_SCOPES.SYSTEM,
           ...request.params
         };
 

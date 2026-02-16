@@ -6,6 +6,7 @@
 import { CommandBase } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { WidgetCSSDebugParams, WidgetCSSDebugResult } from '../shared/WidgetCSSDebugTypes';
 import { createWidgetCSSDebugResult } from '../shared/WidgetCSSDebugTypes';
 import type { ScreenshotResult } from '@commands/interface/screenshot/shared/ScreenshotTypes';
@@ -77,6 +78,7 @@ export class WidgetCSSServerCommand extends CommandBase<WidgetCSSDebugParams, Wi
         const screenshotResult = await this.remoteExecute({
           context: this.context,
           sessionId: this.context.uuid,
+          userId: cssParams.userId ?? SYSTEM_SCOPES.SYSTEM,
           querySelector: cssParams.widgetSelector,
           filename
         }, 'screenshot') as ScreenshotResult;

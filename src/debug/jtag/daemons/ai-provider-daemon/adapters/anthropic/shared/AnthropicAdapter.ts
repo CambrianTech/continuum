@@ -154,12 +154,12 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
       // Add native tools if provided (Anthropic's JSON tool format)
       if (hasNativeTools) {
         requestBody.tools = request.tools;
-        if (request.tool_choice) {
+        if (request.toolChoice) {
           // Anthropic tool_choice format: 'auto', 'any', 'none', or { type: 'tool', name: 'tool_name' }
-          if (typeof request.tool_choice === 'object' && 'name' in request.tool_choice) {
-            requestBody.tool_choice = { type: 'tool', name: request.tool_choice.name };
+          if (typeof request.toolChoice === 'object' && 'name' in request.toolChoice) {
+            requestBody.tool_choice = { type: 'tool', name: request.toolChoice.name };
           } else {
-            requestBody.tool_choice = { type: request.tool_choice };
+            requestBody.tool_choice = { type: request.toolChoice };
           }
         }
       }
@@ -217,7 +217,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
           totalTokens: (response.usage?.input_tokens || 0) + (response.usage?.output_tokens || 0),
           estimatedCost: this.calculateCost(response.usage, model),
         },
-        responseTime,
+        responseTimeMs: responseTime,
         requestId,
         ...(hasToolCalls && { toolCalls }),
       };
@@ -242,7 +242,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 8192,
         costPer1kTokens: { input: 0.003, output: 0.015 },
         supportsStreaming: true,
-        supportsFunctions: true,  // Native tool_use support enabled
+        supportsTools: true,  // Native tool_use support enabled
       },
       {
         id: MODEL_IDS.ANTHROPIC.OPUS_4,
@@ -253,7 +253,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.015, output: 0.075 },
         supportsStreaming: true,
-        supportsFunctions: true,  // Native tool_use support enabled
+        supportsTools: true,  // Native tool_use support enabled
       },
       {
         id: MODEL_IDS.ANTHROPIC.HAIKU_3_5,
@@ -264,7 +264,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.00025, output: 0.00125 },
         supportsStreaming: true,
-        supportsFunctions: true,  // Native tool_use support enabled
+        supportsTools: true,  // Native tool_use support enabled
       },
     ];
   }
@@ -295,7 +295,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
       return {
         status: response.ok ? 'healthy' : 'unhealthy',
         apiAvailable: response.ok,
-        responseTime,
+        responseTimeMs: responseTime,
         errorRate: response.ok ? 0 : 1,
         lastChecked: Date.now(),
         message: response.ok
@@ -306,7 +306,7 @@ export class AnthropicAdapter extends BaseAIProviderAdapter {
       return {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime: Date.now() - startTime,
+        responseTimeMs: Date.now() - startTime,
         errorRate: 1,
         lastChecked: Date.now(),
         message: `${this.providerName} API is not accessible: ${error instanceof Error ? error.message : String(error)}`,

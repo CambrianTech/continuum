@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 // Simple error type for result transport
 export interface AdapterTryError {
   type: string;
@@ -45,6 +46,7 @@ export const createAdapterTryParams = (
     maxTokens?: number;
   }
 ): AdapterTryParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   scale: data.scale ?? 0,
   maxTokens: data.maxTokens ?? 0,
   ...data
@@ -93,6 +95,7 @@ export const createAdapterTryResult = (
     error?: AdapterTryError;
   }
 ): AdapterTryResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   adapterId: data.adapterId ?? '',
   baselineOutput: data.baselineOutput ?? '',
   adapterOutput: data.adapterOutput ?? '',

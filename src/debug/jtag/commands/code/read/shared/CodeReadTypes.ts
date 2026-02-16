@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -37,6 +38,7 @@ export const createCodeReadParams = (
     endLine?: number;
   }
 ): CodeReadParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   startLine: data.startLine ?? 0,
   endLine: data.endLine ?? 0,
   ...data
@@ -89,6 +91,7 @@ export const createCodeReadResult = (
     error?: JTAGError;
   }
 ): CodeReadResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   content: data.content ?? '',
   filePath: data.filePath ?? '',
   totalLines: data.totalLines ?? 0,

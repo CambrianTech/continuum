@@ -15,7 +15,6 @@ import { Commands } from '@system/core/shared/Commands';
 import { Events } from '@system/core/shared/Events';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { getVoiceOrchestrator } from '@system/voice/server/VoiceOrchestrator';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
@@ -23,8 +22,8 @@ import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
 export class LiveLeaveServerCommand extends LiveLeaveCommand {
 
   protected async executeLeave(params: LiveLeaveParams): Promise<LiveLeaveResult> {
-    // 1. Get current user
-    const user = await this.resolveCurrentUser(params);
+    // 1. Get current user from params.userId (auto-injected by infrastructure)
+    const user = await this.findUserById(params.userId, params);
     if (!user) {
       return transformPayload(params, {
         success: false,
@@ -88,62 +87,19 @@ export class LiveLeaveServerCommand extends LiveLeaveCommand {
   }
 
   /**
-   * Resolve current user - prefers context.userId (for PersonaUsers)
-   *
-   * Priority:
-   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
-   * 2. Legacy callerId/personaId - Deprecated, for backwards compatibility
-   * 3. UserIdentityResolver - Fallback for CLI calls
+   * Find user by ID from database
    */
-  private async resolveCurrentUser(params: LiveLeaveParams): Promise<UserEntity | null> {
-    // FIRST: Check context.userId (PersonaUsers set this)
-    if (params.context?.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: params.context.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
+  private async findUserById(userId: UUID, params: LiveLeaveParams): Promise<UserEntity | null> {
+    const result = await DataList.execute<UserEntity>({
+      collection: UserEntity.collection,
+      filter: { id: userId },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId
+    });
 
-      if (result.success && result.items && result.items.length > 0) {
-        console.log('🔧 LiveLeaveServerCommand.resolveCurrentUser USING CONTEXT userId', { userId: params.context.userId });
-        return result.items[0];
-      }
-    }
-
-    // SECOND: Check legacy callerId/personaId (deprecated)
-    const callerIdFromParams = (params as any).callerId || (params as any).personaId;
-
-    if (callerIdFromParams) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: callerIdFromParams },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
-
-      if (result.success && result.items && result.items.length > 0) {
-        return result.items[0];
-      }
-    }
-
-    // FALLBACK: Use UserIdentityResolver (CLI calls)
-    const identity = await UserIdentityResolver.resolve();
-
-    if (identity.exists && identity.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: identity.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
-
-      if (result.success && result.items && result.items.length > 0) {
-        return result.items[0];
-      }
+    if (result.success && result.items && result.items.length > 0) {
+      return result.items[0];
     }
 
     return null;

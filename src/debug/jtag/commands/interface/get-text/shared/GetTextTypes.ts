@@ -1,4 +1,5 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -20,6 +21,7 @@ export const createGetTextParams = (
     innerText?: boolean;
   }
 ): GetTextParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   trim: data.trim ?? true,
   innerText: data.innerText ?? true,
   ...data  // selector is required, so it's in data
@@ -47,6 +49,7 @@ export const createGetTextResult = (
     shadowDOMData?: any;
   }
 ): GetTextResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   selector: data.selector ?? '',
   text: data.text ?? '',
   found: data.found ?? false,

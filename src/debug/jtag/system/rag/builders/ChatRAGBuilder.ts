@@ -943,11 +943,11 @@ LIMITS:
               type: 'image_description',
               result: description.description,
               confidence: 0.85,
-              processingTime: description.responseTime,
+              processingTime: description.responseTimeMs,
               model: `${description.provider}/${description.modelId}`
             }
           });
-          this.log(`👁️ ChatRAGBuilder: Described image (${description.responseTime}ms) via ${description.modelId}`);
+          this.log(`👁️ ChatRAGBuilder: Described image (${description.responseTimeMs}ms) via ${description.modelId}`);
         } else {
           // Description failed - return artifact as-is
           processedArtifacts.push(artifact);

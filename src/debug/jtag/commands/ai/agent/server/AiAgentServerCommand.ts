@@ -157,9 +157,9 @@ export class AiAgentServerCommand extends AiAgentCommand {
         model,
         temperature: params.temperature ?? 0.7,
         maxTokens: params.maxTokens ?? 4096,
-        preferredProvider: provider,
+        provider,
         tools: nativeToolSpecs,
-        tool_choice: nativeToolSpecs && nativeToolSpecs.length > 0 ? 'auto' : undefined,
+        toolChoice: nativeToolSpecs && nativeToolSpecs.length > 0 ? 'auto' : undefined,
       };
 
       // ── 5. Initial generation ────────────────────────────────────
@@ -171,10 +171,10 @@ export class AiAgentServerCommand extends AiAgentCommand {
       const executor = new AgentToolExecutor();
 
       // Build execution context for tool calls
-      // callerId: sentinel handle or explicit caller, sessionId for session scope,
+      // callerId: sentinel handle or caller userId, sessionId for session scope,
       // contextId: generated per-invocation (no persistent room/conversation scope)
       const callCtx: ToolCallContext = {
-        callerId: params.sentinelHandle ?? params.callerId ?? params.sessionId ?? generateUUID(),
+        callerId: params.sentinelHandle ?? params.userId ?? params.sessionId ?? generateUUID(),
         sessionId: params.sessionId ?? generateUUID(),
         contextId: generateUUID(),
         context: params.context,
@@ -207,9 +207,9 @@ export class AiAgentServerCommand extends AiAgentCommand {
             allToolCallRecords.push({
               toolName: nc.name,
               params: nc.input as Record<string, string>,
-              success: !nr.is_error,
-              content: !nr.is_error ? nr.content : undefined,
-              error: nr.is_error ? nr.content : undefined,
+              success: !nr.isError,
+              content: !nr.isError ? nr.content : undefined,
+              error: nr.isError ? nr.content : undefined,
               durationMs: Date.now() - toolStart,
             });
           }
@@ -229,9 +229,9 @@ export class AiAgentServerCommand extends AiAgentCommand {
           // Push tool results as user message
           const toolResultContent: ContentPart[] = batchResult.results.map(r => ({
             type: 'tool_result' as const,
-            tool_use_id: r.tool_use_id,
+            tool_use_id: r.toolUseId,
             content: r.content,
-            ...(r.is_error && { is_error: true }),
+            is_error: r.isError ?? null,
           }));
           messages.push({ role: 'user', content: toolResultContent });
 

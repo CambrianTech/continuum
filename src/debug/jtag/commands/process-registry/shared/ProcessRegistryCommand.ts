@@ -8,8 +8,8 @@
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import type { 
-  RegisterProcessParams, 
+import type {
+  RegisterProcessParams,
   RegisterProcessResult,
   ListProcessesParams,
   ListProcessesResult,
@@ -19,6 +19,7 @@ import type {
   ProcessCapability,
   ProcessRegistryEntry
 } from './ProcessRegistryTypes';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 /**
  * Process Registry Command Base Class
@@ -64,6 +65,7 @@ export abstract class ProcessRegistryCommand extends CommandBase<RegisterProcess
    */
   public getDefaultParams(sessionId: UUID, context: JTAGContext): RegisterProcessParams {
     return {
+      userId: SYSTEM_SCOPES.SYSTEM,
       context,
       sessionId,
       processType: 'server',

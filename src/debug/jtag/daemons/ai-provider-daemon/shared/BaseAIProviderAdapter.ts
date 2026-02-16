@@ -185,7 +185,7 @@ export abstract class BaseAIProviderAdapter implements AIProviderAdapter {
           lastStatus: {
             status: 'unhealthy' as const,
             apiAvailable: false,
-            responseTime: elapsed,
+            responseTimeMs: elapsed,
             errorRate: 1.0,
             lastChecked: Date.now(),
             message: `Circuit breaker opened: ${errorMessage}`,

@@ -11,6 +11,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -56,6 +57,7 @@ export const createSocialCommentParams = (
     personaId?: UUID;
   }
 ): SocialCommentParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   parentId: data.parentId ?? '',
   personaId: data.personaId ?? undefined,
   ...data
@@ -90,6 +92,7 @@ export const createSocialCommentResult = (
     error?: JTAGError;
   }
 ): SocialCommentResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   message: data.message ?? '',
   ...data
 });

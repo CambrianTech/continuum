@@ -13,6 +13,7 @@
 
 import type { CommandParams, JTAGPayload, CommandInput } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { ChatMessage } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -52,9 +53,6 @@ export interface AiAgentParams extends CommandParams {
   maxIterations?: number;
 
   // ─── Attribution ───────────────────────────────────────────────
-
-  /** Caller identity (persona ID, sentinel handle, test harness) */
-  callerId?: string;
 
   /** Sentinel handle for log correlation */
   sentinelHandle?: string;

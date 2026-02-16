@@ -7,6 +7,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
@@ -89,6 +90,7 @@ export const createWidgetInteractResult = (
   sessionId: UUID,
   data: Omit<Partial<WidgetInteractResult>, 'context' | 'sessionId'>
 ): WidgetInteractResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   success: false,
   action: 'click',
   widgetFound: false,

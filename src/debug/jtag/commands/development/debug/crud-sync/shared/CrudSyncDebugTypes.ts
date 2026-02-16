@@ -9,6 +9,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
@@ -81,6 +82,7 @@ export const createCrudSyncDebugResult = (
   sessionId: UUID,
   data: Omit<Partial<CrudSyncDebugResult>, 'context' | 'sessionId'>
 ): CrudSyncDebugResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   success: false,
   widgets: {
     roomList: { widgetName: 'room-list-widget', found: false, path: '', itemCount: 0, items: [] },

@@ -7,6 +7,7 @@
 
 import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import { Commands } from '../../../system/core/shared/Commands';
 
 export type ProcessType = 'server' | 'browser' | 'test' | 'client';
@@ -124,6 +125,7 @@ export function createRegisterProcessParams(
   return {
     context,
     sessionId,
+    userId: SYSTEM_SCOPES.SYSTEM,
     processType,
     description,
     ports: options.ports || [],
@@ -144,6 +146,7 @@ export function createListProcessesParams(
   return {
     context,
     sessionId,
+    userId: SYSTEM_SCOPES.SYSTEM,
     filterByPorts: options.filterByPorts,
     filterByType: options.filterByType,
     includeStale: options.includeStale ?? false,
@@ -162,6 +165,7 @@ export function createCleanupProcessesParams(
   return {
     context,
     sessionId,
+    userId: SYSTEM_SCOPES.SYSTEM,
     forceAll: options.forceAll ?? false,
     preserveActive: options.preserveActive ?? true,
     targetProcessId: options.targetProcessId,

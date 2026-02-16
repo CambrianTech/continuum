@@ -12,7 +12,7 @@ import type{ CommandBase, CommandEntry } from './CommandBase';
 import type { CommandResponse } from './CommandResponseTypes';
 import { createCommandErrorResponse, createCommandSuccessResponse } from './CommandResponseTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { globalSessionContext } from '../../../system/core/types/SystemScopes';
+import { globalSessionContext, SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import { JTAGClient } from '../../../system/core/client/shared/JTAGClient';
 import type { CommandErrorResponse, CommandSuccessResponse } from './CommandResponseTypes';
 
@@ -123,7 +123,7 @@ export abstract class CommandDaemon extends DaemonBase {
 
       // Execute command with session context for dual logging
       const executionPromise = globalSessionContext.withSession(requestSessionId, async () => {
-        return await command.execute(message.payload);
+        return await command.execute({ userId: SYSTEM_SCOPES.SYSTEM, ...message.payload } as CommandParams);
       });
 
       // Apply timeout if specified

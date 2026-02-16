@@ -10,14 +10,12 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { DecisionVoteParams, DecisionVoteResult } from '../shared/DecisionVoteTypes';
 import { createDecisionVoteResultFromParams } from '../shared/DecisionVoteTypes';
 
-// Caller identity now comes from context.userId - no need for callerId/personaId injection
 import type { DecisionProposalEntity } from '@system/data/entities/DecisionProposalEntity';
 import { COLLECTIONS } from '@system/shared/Constants';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { UserEntity } from '@system/data/entities/UserEntity';
 
 import { DataUpdate } from '../../../../data/update/shared/DataUpdateTypes';
@@ -29,8 +27,8 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
   }
 
   async execute(params: DecisionVoteParams): Promise<DecisionVoteResult> {
-    // 1. Get voter identity (auto-detect caller)
-    const voter = await this.findCallerIdentity(params);
+    // 1. Get voter from params.userId (auto-injected by infrastructure)
+    const voter = await this.findUserById(params.userId, params);
 
     // 2. Parse rankedChoices if passed as JSON string (common from AI tool calls)
     let rankedChoices = params.rankedChoices;
@@ -163,52 +161,22 @@ export class DecisionVoteServerCommand extends CommandBase<DecisionVoteParams, D
   }
 
   /**
-   * Find caller identity - prefers context.userId (for PersonaUsers), falls back to process detection
-   *
-   * Priority:
-   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
-   * 2. UserIdentityResolver.resolve() - Detects Claude Code, Joel, etc. based on process info
+   * Find user by ID from database
    */
-  private async findCallerIdentity(params: DecisionVoteParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // FIRST: Check context.userId (PersonaUsers set this)
-    if (params.context?.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: params.context.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
+  private async findUserById(userId: UUID, params: DecisionVoteParams): Promise<{ id: UUID; entity: UserEntity }> {
+    const result = await DataList.execute<UserEntity>({
+      collection: UserEntity.collection,
+      filter: { id: userId },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId
+    });
 
-      if (result.success && result.items && result.items.length > 0) {
-        const user = result.items[0];
-        console.log('🔧 DecisionVoteServerCommand.findCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
-        return { id: user.id, entity: user };
-      }
+    if (!result.success || !result.items || result.items.length === 0) {
+      throw new Error(`User not found: ${userId}`);
     }
 
-    // FALLBACK: Use UserIdentityResolver to detect calling process (CLI calls)
-    const identity = await UserIdentityResolver.resolve();
-
-    if (identity.exists && identity.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: identity.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
-
-      if (result.success && result.items && result.items.length > 0) {
-        const user = result.items[0];
-        return { id: user.id, entity: user };
-      }
-    }
-
-    // User doesn't exist - throw error with helpful message
-    throw new Error(
-      `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. ` +
-      `Run seed script to create users.`
-    );
+    const user = result.items[0];
+    return { id: user.id, entity: user };
   }
 }

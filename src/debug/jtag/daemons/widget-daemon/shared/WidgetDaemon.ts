@@ -22,13 +22,14 @@ export abstract class WidgetDaemon extends DaemonBase {
   /**
    * Execute command from widget - routes through JTAG CommandDaemon
    */
-  async executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId'> = {}): Promise<CommandResult> {
+  async executeCommand(command: string, params: Omit<CommandParams, 'context' | 'sessionId' | 'userId'> = {}): Promise<CommandResult> {
     try {
       // Create command payload with session ID
       const payload = {
         ...params,
         context: this.context,
-        sessionId: SYSTEM_SCOPES.SYSTEM // Use system session for now
+        sessionId: SYSTEM_SCOPES.SYSTEM, // Use system session for now
+        userId: SYSTEM_SCOPES.SYSTEM
       };
 
       // Create JTAG message for command routing

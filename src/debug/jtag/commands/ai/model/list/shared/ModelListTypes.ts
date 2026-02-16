@@ -22,8 +22,7 @@ export interface ModelCapabilities {
 
   // Feature requirements
   supportsJSON?: boolean;            // Structured output
-  supportsToolCalling?: boolean;     // Function calling
-  supportsFunctionCalling?: boolean; // Same as tool calling
+  supportsToolCalling?: boolean;     // Tool/function calling
   supportsStreaming?: boolean;       // Streaming responses
 
   // Context requirements

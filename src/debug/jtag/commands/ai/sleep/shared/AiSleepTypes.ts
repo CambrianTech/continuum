@@ -14,6 +14,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -50,6 +51,7 @@ export const createAiSleepParams = (
     personaId?: string;
   }
 ): AiSleepParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   reason: data.reason ?? '',
   durationMinutes: data.durationMinutes ?? 0,
   personaId: data.personaId ?? '',
@@ -93,6 +95,7 @@ export const createAiSleepResult = (
     error?: JTAGError;
   }
 ): AiSleepResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   previousMode: data.previousMode ?? 'active',
   newMode: data.newMode ?? 'active',
   wakesAt: data.wakesAt ?? null,

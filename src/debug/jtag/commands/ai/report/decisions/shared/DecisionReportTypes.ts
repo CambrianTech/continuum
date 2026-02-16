@@ -9,6 +9,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../../../system/core/types/SystemScopes';
 import type { DecisionAction } from '../../../../../system/data/entities/CoordinationDecisionEntity';
 import type { JTAGError } from '../../../../../system/core/types/ErrorTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
@@ -95,6 +96,7 @@ export const createDecisionReportParams = (
     groupByActor?: boolean;
   }
 ): DecisionReportParams => ({
+  userId: SYSTEM_SCOPES.SYSTEM,
   context,
   sessionId,
   startDate: data.startDate,

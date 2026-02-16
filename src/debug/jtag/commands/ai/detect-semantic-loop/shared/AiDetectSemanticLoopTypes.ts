@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '../../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -49,6 +50,7 @@ export const createAiDetectSemanticLoopParams = (
     roomId?: string;
   }
 ): AiDetectSemanticLoopParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   lookbackCount: data.lookbackCount ?? 0,
   similarityThreshold: data.similarityThreshold ?? 0,
   timeWindowMinutes: data.timeWindowMinutes ?? 0,
@@ -95,6 +97,7 @@ export const createAiDetectSemanticLoopResult = (
     error?: JTAGError;
   }
 ): AiDetectSemanticLoopResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   isLoop: data.isLoop ?? false,
   maxSimilarity: data.maxSimilarity ?? 0,
   matches: data.matches ?? [],

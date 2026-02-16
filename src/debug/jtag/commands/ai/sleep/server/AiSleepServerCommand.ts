@@ -9,7 +9,6 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { AiSleepParams, AiSleepResult, SleepMode } from '../shared/AiSleepTypes';
 import { createAiSleepResultFromParams } from '../shared/AiSleepTypes';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
 /**
  * Sleep state for a persona
@@ -174,33 +173,8 @@ export class AiSleepServerCommand extends CommandBase<AiSleepParams, AiSleepResu
       });
     }
 
-    // Resolve WHO to put to sleep:
-    // 1. Explicit personaId param — when targeting a specific persona (admin/CLI)
-    // 2. params.userId — standard identity (tool executor injects caller's ID)
-    // 3. params.context?.userId — enriched JTAGContext from PersonaResponseGenerator
-    // 4. UserIdentityResolver — fallback for external CLI calls
-    let targetPersonaId = personaId || params.userId || params.context?.userId;
-
-    if (!targetPersonaId) {
-      // FALLBACK: Use UserIdentityResolver for external callers (CLI, Claude Code, etc.)
-      const identity = await UserIdentityResolver.resolve();
-      if (identity.exists && identity.userId) {
-        targetPersonaId = identity.userId;
-        console.log(`😴 ai/sleep: Resolved caller via UserIdentityResolver: ${identity.displayName} (${identity.userId})`);
-      }
-    }
-
-    if (!targetPersonaId) {
-      return createAiSleepResultFromParams(params, {
-        success: false,
-        previousMode: 'active',
-        newMode: 'active',
-        wakesAt: null,
-        acknowledged: false,
-        personaId: '',
-        message: 'No personaId provided, no callerId injected, and could not auto-detect caller identity',
-      });
-    }
+    // Target: explicit personaId (admin targeting another persona) or params.userId (self)
+    const targetPersonaId = personaId || params.userId;
 
     const manager = PersonaSleepManager.getInstance();
     const previousMode = manager.getMode(targetPersonaId);

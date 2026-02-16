@@ -1,156 +1,84 @@
 /**
- * AI Provider Types V2 - Multimodal Support
+ * AI Provider Types V2 - Unified Type Layer
  * ==========================================
  *
- * Unified interface for text, audio, video, image, and multimodal AI providers.
- * Supports both local inference (Candle, MLX) and API providers (OpenAI, Anthropic, etc.)
+ * Wire types come from Rust (via ts-rs generated types in shared/generated/ai/).
+ * This file re-exports those types and adds TS-only infrastructure types
+ * (adapter interface, error class, helpers, audio/image request/response types
+ * not yet in Rust).
  *
- * Capabilities:
- * - Text generation (LLMs)
- * - Audio generation/transcription (TTS, STT)
- * - Image generation/analysis (DALL-E, Stable Diffusion, vision models)
- * - Video generation/analysis
- * - Multimodal (text + image input, etc.)
- * - Embeddings
+ * ARCHITECTURE:
+ * - Rust ai/types.rs is the single source of truth for wire types
+ * - ts-rs generates TypeScript types at compile time
+ * - This file re-exports generated types + defines TS-only extensions
+ * - All 67+ consumers continue importing from this file (no import path changes)
  */
 
 import type { JTAGContext, UUID } from '../../../system/core/types/JTAGTypes';
 import type { ModelTier, ModelTags, ModelResolution } from './ModelTiers';
 
-// ========================
-// Model Capabilities
-// ========================
+// ============================================================================
+// WIRE TYPES (from Rust via ts-rs) — single source of truth
+// ============================================================================
 
-export type ModelCapability =
-  | 'text-generation'      // LLMs (GPT, Claude, Llama)
-  | 'text-completion'      // Completion-only models
-  | 'chat'                 // Chat-optimized models
-  | 'audio-generation'     // TTS (text-to-speech)
-  | 'audio-transcription'  // STT (speech-to-text)
-  | 'image-generation'     // DALL-E, Stable Diffusion
-  | 'image-analysis'       // Vision models (GPT-4V, Claude 3)
-  | 'video-generation'     // Sora, etc.
-  | 'video-analysis'       // Video understanding
-  | 'embeddings'           // Text/image embeddings
-  | 'multimodal';          // Combines multiple modalities
+export type {
+  ChatMessage,
+  MessageContent,
+  ContentPart,
+  ImageInput,
+  AudioInput,
+  VideoInput,
+} from '../../../shared/generated/ai';
 
-export interface ModelInfo {
-  id: string;
-  name: string;
-  provider: string;
-  capabilities: ModelCapability[];
-  contextWindow: number;
-  maxOutputTokens?: number;
-  costPer1kTokens?: { input: number; output: number };
-  supportsStreaming: boolean;
-  supportsFunctions: boolean;
-}
+export type {
+  NativeToolSpec,
+  ToolCall,
+  ToolResult,
+  ToolChoice,
+  ToolInputSchema,
+} from '../../../shared/generated/ai';
 
-// ========================
-// Universal Request Types
-// ========================
+export type {
+  FinishReason,
+  UsageMetrics,
+  RoutingInfo,
+} from '../../../shared/generated/ai';
 
-export type ContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'image'; image: ImageInput }
-  | { type: 'audio'; audio: AudioInput }
-  | { type: 'video'; video: VideoInput }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+export type {
+  ModelCapability,
+  ModelInfo,
+  CostPer1kTokens,
+} from '../../../shared/generated/ai';
 
-export interface ImageInput {
-  url?: string;
-  base64?: string;
-  mimeType?: string;
-}
+export type {
+  HealthState,
+} from '../../../shared/generated/ai';
 
-export interface AudioInput {
-  url?: string;
-  base64?: string;
-  mimeType?: string;
-  format?: 'mp3' | 'wav' | 'opus' | 'flac';
-}
+export type {
+  EmbeddingInput,
+} from '../../../shared/generated/ai';
 
-export interface VideoInput {
-  url?: string;
-  base64?: string;
-  mimeType?: string;
-}
+// ============================================================================
+// TextGenerationRequest: Generated wire type + TS-only fields
+// ============================================================================
 
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string | ContentPart[];  // Simple string or rich multimodal content
-  name?: string;
-  timestamp?: number;
-}
-
-// ========================
-// Native Tool Support (for providers like Anthropic that support JSON tools)
-// ========================
+import type { TextGenerationRequest as WireTextGenerationRequest } from '../../../shared/generated/ai';
+import type { ModelCapability } from '../../../shared/generated/ai';
 
 /**
- * Native tool specification for providers with JSON tool support
- * (Anthropic, OpenAI, etc.)
+ * TextGenerationRequest extends the Rust wire type with TS-only fields
+ * that are consumed by the TypeScript adapter layer (not sent over IPC).
+ *
+ * Wire fields (from Rust): messages, systemPrompt, model, provider,
+ *   temperature, maxTokens, topP, topK, stopSequences, tools, toolChoice,
+ *   requestId, userId, roomId, purpose
+ *
+ * TS-only fields: intelligenceLevel, stream, context, preferredCapabilities,
+ *   personaContext, activeAdapters
  */
-export interface NativeToolSpec {
-  name: string;
-  description: string;
-  input_schema: {
-    type: 'object';
-    properties: Record<string, {
-      type: string;
-      description?: string;
-      enum?: string[];
-    }>;
-    required?: string[];
-  };
-}
-
-/**
- * Tool call from AI response (when AI wants to use a tool)
- */
-export interface ToolCall {
-  id: string;         // Unique ID for this tool use (e.g., "toolu_01A...")
-  name: string;       // Tool name
-  input: Record<string, unknown>;  // Tool parameters
-}
-
-/**
- * Tool result to send back to AI after execution
- */
-export interface ToolResult {
-  tool_use_id: string;  // Matches ToolCall.id
-  content: string;       // Tool execution result (or error message)
-  is_error?: boolean;    // True if tool execution failed
-}
-
-// ========================
-// Request Types by Capability
-// ========================
-
-export interface TextGenerationRequest {
-  messages: ChatMessage[];
-  systemPrompt?: string;
-
-  // Model config
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-  topP?: number;
-  topK?: number;
-  stopSequences?: string[];
-
-  // Native tool support (for Anthropic, OpenAI JSON tools)
-  // When provided, adapter should use native tool calling instead of XML
-  tools?: NativeToolSpec[];
-  tool_choice?: 'auto' | 'any' | 'none' | { name: string };
-
+export interface TextGenerationRequest extends WireTextGenerationRequest {
   // Model intelligence level (PersonaUser property)
-  // Determines prompt format and capabilities
-  // 1-30: Simple base models (GPT-2, DistilGPT-2) - pattern matching only
-  // 31-60: Capable instruction-tuned models (Llama 7B, Phi-2) - basic reasoning
-  // 61-85: Advanced models (Claude Haiku, GPT-3.5) - strong reasoning
-  // 86-100: Frontier models (Claude Sonnet/Opus, GPT-4) - exceptional reasoning
+  // 1-30: Simple base models — 31-60: Capable — 61-85: Advanced — 86-100: Frontier
   intelligenceLevel?: number;
 
   // Streaming
@@ -158,46 +86,75 @@ export interface TextGenerationRequest {
 
   // Context
   context?: JTAGContext;
-  requestId?: string;
 
-  // Provider preference
-  preferredProvider?: string;
+  // Capability preference for adapter selection
   preferredCapabilities?: ModelCapability[];
 
-  // Cost tracking metadata (optional)
-  userId?: UUID;
-  roomId?: UUID;
-  purpose?: string;  // 'chat', 'should-respond', 'rag', 'embedding', etc.
-
   // Persona context for logging (optional)
-  // When provided, adapters can log to persona-specific log files
   personaContext?: {
-    logDir: string;      // e.g., '.continuum/personas/helper-ai-12345678/logs'
-    displayName: string; // e.g., 'Helper AI'
-    uniqueId: string;    // e.g., 'helper-ai-12345678'
+    logDir: string;
+    displayName: string;
+    uniqueId: string;
   };
 
   /**
    * Active LoRA adapters to apply during generation (PersonaGenome integration)
-   *
-   * When provided, CandleAdapter will ensure these adapters are loaded and applied
-   * before generation. This enables the "genome vision" - personas can have
-   * skill-specific fine-tuned weights that modify base model behavior.
-   *
-   * Example: persona with typescript-expertise and code-review adapters active
-   * will generate responses using those specialized weights.
-   *
-   * NOTE: Only supported by CandleAdapter. Other adapters will ignore this field.
+   * Only supported by CandleAdapter. Other adapters ignore this field.
    */
   activeAdapters?: Array<{
-    /** Adapter name (e.g., 'typescript-expertise') */
     name: string;
-    /** Path to adapter weights */
     path: string;
-    /** Domain this adapter specializes in */
     domain: string;
   }>;
 }
+
+// ============================================================================
+// TextGenerationResponse: Re-export generated type directly
+// ============================================================================
+
+export type { TextGenerationResponse } from '../../../shared/generated/ai';
+
+// ============================================================================
+// HealthStatus: Re-export generated type directly
+// ============================================================================
+
+export type { HealthStatus } from '../../../shared/generated/ai';
+
+// ============================================================================
+// Embedding types: Re-export generated wire types
+// ============================================================================
+
+export type { EmbeddingRequest as WireEmbeddingRequest } from '../../../shared/generated/ai';
+export type { EmbeddingResponse as WireEmbeddingResponse } from '../../../shared/generated/ai';
+
+/**
+ * TS EmbeddingRequest extends the wire type with TS-only context fields.
+ * Note: The wire type uses `input: EmbeddingInput` (string | string[]),
+ * and has `provider` not `preferredProvider`.
+ */
+export interface EmbeddingRequest {
+  input: string | string[];
+  model?: string;
+
+  context?: JTAGContext;
+  requestId?: string;
+  preferredProvider?: string;
+}
+
+export interface EmbeddingResponse {
+  embeddings: number[][];
+  model: string;
+  provider: string;
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost?: number };
+  responseTimeMs: number;
+  requestId: string;
+
+  error?: string;
+}
+
+// ============================================================================
+// TS-ONLY TYPES: Audio/Image requests (not yet in Rust)
+// ============================================================================
 
 export interface AudioGenerationRequest {
   text: string;
@@ -212,7 +169,7 @@ export interface AudioGenerationRequest {
 }
 
 export interface AudioTranscriptionRequest {
-  audio: AudioInput;
+  audio: { url?: string; base64?: string; mimeType?: string; format?: 'mp3' | 'wav' | 'opus' | 'flac' };
   model?: string;
   language?: string;
   prompt?: string;
@@ -238,7 +195,7 @@ export interface ImageGenerationRequest {
 }
 
 export interface ImageAnalysisRequest {
-  images: ImageInput[];
+  images: { url?: string; base64?: string; mimeType?: string }[];
   prompt: string;
   model?: string;
   maxTokens?: number;
@@ -248,85 +205,9 @@ export interface ImageAnalysisRequest {
   preferredProvider?: string;
 }
 
-export interface EmbeddingRequest {
-  input: string | string[];
-  model?: string;
-
-  context?: JTAGContext;
-  requestId?: string;
-  preferredProvider?: string;
-}
-
-// ========================
-// Response Types
-// ========================
-
-/**
- * Routing observability - see exactly what happened during inference
- * without grep'ing through logs
- */
-export interface RoutingInfo {
-  /** Which adapter actually handled this request */
-  provider: string;           // 'candle' | 'anthropic' | 'openai' | 'groq' | etc.
-
-  /** Was this local inference (Candle) vs cloud API? */
-  isLocal: boolean;
-
-  /** Why was this adapter selected? */
-  routingReason:
-    | 'explicit_provider'      // preferredProvider was specified
-    | 'provider_aliasing'      // Legacy 'local' requests aliased to 'candle'
-    | 'model_detection'        // Model name matched local pattern (DEPRECATED - to be removed)
-    | 'default_priority'       // Selected by priority order
-    | 'fallback';              // Primary failed, used fallback
-
-  /** LoRA adapters that were active during generation */
-  adaptersApplied: string[];   // e.g., ['typescript-expertise', 'code-review']
-
-  /** If model was remapped (e.g., llama3.2:3b → Qwen/Qwen2-1.5B-Instruct) */
-  modelMapped?: string;
-
-  /** Original model requested (before any mapping) */
-  modelRequested?: string;
-}
-
-export interface TextGenerationResponse {
-  text: string;
-  finishReason: 'stop' | 'length' | 'error' | 'tool_use';
-
-  /**
-   * Full content blocks from the model response.
-   * Contains text blocks, tool_use blocks, etc. in the order the model produced them.
-   * When finishReason is 'tool_use', this will contain both text and tool_use blocks.
-   * Adapters MUST populate this for the canonical agent loop to work.
-   */
-  content?: ContentPart[];
-
-  model: string;
-  provider: string;
-  usage: UsageMetrics;
-  responseTime: number;
-  requestId: string;
-
-  /**
-   * Routing observability - ALWAYS populated by AIProviderDaemon
-   * Shows exactly how this request was handled:
-   * - Which provider was used and why
-   * - Whether local or cloud
-   * - Which LoRA adapters were applied
-   * - Any model mapping that occurred
-   *
-   * Optional at adapter level (adapter can provide additional info like adaptersApplied),
-   * but AIProviderDaemon ALWAYS ensures this field is populated in the final response.
-   */
-  routing?: RoutingInfo;
-
-  // Native tool calls (when AI wants to use tools)
-  // Present when finishReason is 'tool_use'
-  toolCalls?: ToolCall[];
-
-  error?: string;
-}
+// ============================================================================
+// TS-ONLY RESPONSE TYPES: Audio/Image (not yet in Rust)
+// ============================================================================
 
 export interface AudioGenerationResponse {
   audio: {
@@ -337,7 +218,7 @@ export interface AudioGenerationResponse {
 
   model: string;
   provider: string;
-  responseTime: number;
+  responseTimeMs: number;
   requestId: string;
 
   error?: string;
@@ -354,7 +235,7 @@ export interface AudioTranscriptionResponse {
 
   model: string;
   provider: string;
-  responseTime: number;
+  responseTimeMs: number;
   requestId: string;
 
   error?: string;
@@ -369,7 +250,7 @@ export interface ImageGenerationResponse {
 
   model: string;
   provider: string;
-  responseTime: number;
+  responseTimeMs: number;
   requestId: string;
 
   error?: string;
@@ -381,27 +262,16 @@ export interface ImageAnalysisResponse {
 
   model: string;
   provider: string;
-  usage: UsageMetrics;
-  responseTime: number;
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number; estimatedCost?: number };
+  responseTimeMs: number;
   requestId: string;
 
   error?: string;
 }
 
-export interface EmbeddingResponse {
-  embeddings: number[][];
-  model: string;
-  provider: string;
-  usage: UsageMetrics;
-  responseTime: number;
-  requestId: string;
-
-  error?: string;
-}
-
-// ========================
-// Provider Adapter Interface
-// ========================
+// ============================================================================
+// PROVIDER ADAPTER INTERFACE (TS-only — not a wire type)
+// ============================================================================
 
 export interface AIProviderAdapter {
   readonly providerId: string;
@@ -409,93 +279,47 @@ export interface AIProviderAdapter {
   readonly supportedCapabilities: ModelCapability[];
 
   // Core operations (only implement what the provider supports)
-  generateText?(request: TextGenerationRequest): Promise<TextGenerationResponse>;
+  generateText?(request: TextGenerationRequest): Promise<import('../../../shared/generated/ai').TextGenerationResponse>;
   generateAudio?(request: AudioGenerationRequest): Promise<AudioGenerationResponse>;
   transcribeAudio?(request: AudioTranscriptionRequest): Promise<AudioTranscriptionResponse>;
   generateImage?(request: ImageGenerationRequest): Promise<ImageGenerationResponse>;
   analyzeImage?(request: ImageAnalysisRequest): Promise<ImageAnalysisResponse>;
   createEmbedding?(request: EmbeddingRequest): Promise<EmbeddingResponse>;
 
-  // Skill management (optional - only providers that support skill modification)
-  // Examples:
-  // - Candle: Load LoRA adapter weights
-  // - Claude/GPT: Inject RAG context or modify system prompt
-  // - Any provider: Add few-shot examples or tools
+  // Skill management (optional)
   applySkill?(skillImplementation: unknown): Promise<void>;
   removeSkill?(skillId: string): Promise<void>;
   enableSkillTraining?(skillId: string): Promise<void>;
   disableSkillTraining?(skillId: string): Promise<void>;
 
   // Metadata
-  getAvailableModels(): Promise<ModelInfo[]>;
-  healthCheck(): Promise<HealthStatus>;
+  getAvailableModels(): Promise<import('../../../shared/generated/ai').ModelInfo[]>;
+  healthCheck(): Promise<import('../../../shared/generated/ai').HealthStatus>;
 
   // Queue monitoring (for load-aware PersonaInbox consolidation)
-  // Returns current queue state for feedback-driven load management
   getQueueStats?(): {
-    queueSize: number;      // Number of requests waiting
-    activeRequests: number; // Number currently being processed
-    maxConcurrent: number;  // Maximum allowed concurrent requests
-    load: number;           // Queue pressure (0.0-1.0, calculated as (queueSize + activeRequests) / maxConcurrent)
+    queueSize: number;
+    activeRequests: number;
+    maxConcurrent: number;
+    load: number;
   };
 
-  // Health monitoring (called by AdapterHealthMonitor when adapter is unhealthy)
+  // Health monitoring
   handleRestartRequest?(): Promise<void>;
 
-  // Semantic Model Tier Resolution (NEW)
-  // Bidirectional mapping: tier ↔ model ID
-  // User requirement: "turn api results into these terms"
-
-  /**
-   * Resolve semantic tier to actual model ID
-   * Example: tier='balanced' → 'claude-3-5-sonnet-20250122'
-   */
+  // Semantic Model Tier Resolution
   resolveModelTier?(tier: ModelTier): Promise<ModelResolution>;
-
-  /**
-   * Classify model ID back into semantic tier (BIDIRECTIONAL)
-   * Example: 'claude-3-5-sonnet-20250122' → { tier: 'balanced', costTier: 'medium', ... }
-   */
   classifyModel?(modelId: string): Promise<ModelTags | null>;
-
-  /**
-   * Get all models grouped by tier
-   * Useful for UI showing "fast", "balanced", "premium", "free" options
-   */
-  getModelsByTier?(): Promise<Map<ModelTier, ModelInfo[]>>;
+  getModelsByTier?(): Promise<Map<ModelTier, import('../../../shared/generated/ai').ModelInfo[]>>;
 
   // Lifecycle
   initialize(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
-// ========================
-// Supporting Types
-// ========================
-
-export interface UsageMetrics {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  estimatedCost?: number;
-}
-
-export interface HealthStatus {
-  /**
-   * Adapter health status:
-   * - healthy: Working normally
-   * - degraded: Slow but functional
-   * - unhealthy: Not responding
-   * - insufficient_funds: API quota/credits exhausted (💰❌)
-   * - rate_limited: Too many requests (⏳)
-   */
-  status: 'healthy' | 'degraded' | 'unhealthy' | 'insufficient_funds' | 'rate_limited';
-  apiAvailable: boolean;
-  responseTime: number;
-  errorRate: number;
-  lastChecked: number;
-  message?: string;
-}
+// ============================================================================
+// SUPPORTING TS-ONLY TYPES
+// ============================================================================
 
 export interface ProviderConfiguration {
   apiKey?: string;
@@ -506,7 +330,7 @@ export interface ProviderConfiguration {
   defaultModel: string;
   defaultTemperature: number;
   logRequests: boolean;
-  maxConcurrent?: number;  // For request queue management
+  maxConcurrent?: number;
 }
 
 export interface ProviderRegistration {
@@ -517,9 +341,9 @@ export interface ProviderRegistration {
   enabled: boolean;
 }
 
-// ========================
-// Helper Functions
-// ========================
+// ============================================================================
+// HELPER FUNCTIONS & CLASSES (TS-only)
+// ============================================================================
 
 export class AIProviderError extends Error {
   constructor(
@@ -533,7 +357,7 @@ export class AIProviderError extends Error {
   }
 }
 
-export function chatMessagesToPrompt(messages: ChatMessage[]): { prompt: string; systemPrompt?: string } {
+export function chatMessagesToPrompt(messages: import('../../../shared/generated/ai').ChatMessage[]): { prompt: string; systemPrompt?: string } {
   let systemPrompt: string | undefined;
   const conversationParts: string[] = [];
 

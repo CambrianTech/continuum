@@ -21,6 +21,7 @@ import type { CommandInput } from '../../../../system/core/types/JTAGTypes';
  */
 
 import { CommandParams, CommandResult, createPayload, type JTAGContext } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -44,6 +45,7 @@ export const createCompileTypescriptParams = (
     target?: 'es5' | 'es2015' | 'es2020' | 'esnext';
   }
 ): CompileTypescriptParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   source: data.source ?? '',
   filename: data.filename ?? 'code.ts',
   outputPath: data.outputPath ?? './dist',
@@ -74,6 +76,7 @@ export const createCompileTypescriptResult = (
     compilationTime?: number;
   }
 ): CompileTypescriptResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   output: data.output,
   outputPath: data.outputPath,
   errors: data.errors ?? [],

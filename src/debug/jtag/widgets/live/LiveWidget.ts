@@ -432,7 +432,7 @@ export class LiveWidget extends ReactiveWidget {
       console.log('LiveWidget: Joining with entityId:', this.entityId, 'userId:', userId);
       const result = await Commands.execute<LiveJoinParams, LiveJoinResult>(COMMANDS.COLLABORATION_LIVE_JOIN, {
         entityId: this.entityId,
-        callerId: userId  // Pass current user's ID so server knows WHO is joining
+        // userId is auto-injected by Commands.execute() from jtagClient
       });
 
       if (result.success && result.callId) {

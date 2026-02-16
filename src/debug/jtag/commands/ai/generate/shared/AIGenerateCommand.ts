@@ -52,7 +52,7 @@ export abstract class AIGenerateCommand extends CommandBase<AIGenerateParams, AI
     lines.push(`     model: "${request.model}",`);
     lines.push(`     temperature: ${request.temperature},`);
     lines.push(`     maxTokens: ${request.maxTokens},`);
-    lines.push(`     preferredProvider: "${request.preferredProvider}"`);
+    lines.push(`     provider: "${request.provider}"`);
     lines.push('   }');
     lines.push('');
 

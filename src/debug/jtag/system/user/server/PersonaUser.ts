@@ -1506,7 +1506,7 @@ export class PersonaUser extends AIUser {
         model: this.modelConfig.model || LOCAL_MODELS.DEFAULT,
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens ?? 150,
-        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
+        provider: this.modelConfig.provider || 'candle',
         intelligenceLevel: this.entity.intelligenceLevel,
         personaContext: {
           uniqueId: this.entity.uniqueId,
@@ -1810,6 +1810,7 @@ export class PersonaUser extends AIUser {
     try {
       // Query the sender's UserEntity to check their type
       const result = await this.client.daemons.commands.execute<DataReadParams, DataReadResult<UserEntity>>(DATA_COMMANDS.READ, {
+        userId: this.client.userId,
         collection: COLLECTIONS.USERS,
         id: senderId,
         context: this.client.context,

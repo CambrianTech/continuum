@@ -8,6 +8,7 @@
 
 import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { TextGenerationRequest, TextGenerationResponse } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -40,7 +41,7 @@ export interface AIGenerateParams extends CommandParams {
 
   // Provider selection
   // 'local' and 'candle' route to native Rust inference (Candle)
-  preferredProvider?: 'openai' | 'anthropic' | 'local' | 'candle' | 'groq' | 'deepseek';
+  provider?: 'openai' | 'anthropic' | 'local' | 'candle' | 'groq' | 'deepseek';
 }
 
 // AI Generate Result
@@ -56,7 +57,7 @@ export interface AIGenerateResult extends JTAGPayload {
     outputTokens: number;
     totalTokens: number;
   };
-  readonly responseTime?: number;
+  readonly responseTimeMs?: number;
   readonly requestId?: string;
 
   // Preview result (when preview=true)
@@ -99,7 +100,7 @@ export function paramsToRequest(params: AIGenerateParams): TextGenerationRequest
     model: params.model,
     temperature: params.temperature,
     maxTokens: params.maxTokens,
-    preferredProvider: params.preferredProvider,
+    provider: params.provider,
     context: params.context,
   };
 }
@@ -115,7 +116,7 @@ export function responseToResult(
     model: response.model,
     provider: response.provider,
     usage: response.usage,
-    responseTime: response.responseTime,
+    responseTimeMs: response.responseTimeMs,
     requestId: response.requestId,
   });
 }

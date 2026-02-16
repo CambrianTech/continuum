@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -25,6 +26,7 @@ export const createInterfaceBrowserCapabilitiesParams = (
   sessionId: UUID,
   data: Record<string, never>
 ): InterfaceBrowserCapabilitiesParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
 
   ...data
 });
@@ -80,6 +82,7 @@ export const createInterfaceBrowserCapabilitiesResult = (
     error?: JTAGError;
   }
 ): InterfaceBrowserCapabilitiesResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   webmcp: data.webmcp ?? false,
   webmcpReason: data.webmcpReason ?? '',
   puppeteer: data.puppeteer ?? false,

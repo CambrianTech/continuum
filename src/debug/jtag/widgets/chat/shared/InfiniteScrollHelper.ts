@@ -7,6 +7,7 @@
 
 import { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { DataListParams, DataListResult } from '../../../commands/data/list/shared/DataListTypes';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && (window as any).JTAG_VERBOSE === true;
@@ -228,7 +229,8 @@ export class InfiniteScrollHelper {
         direction: 'before' // Load messages older than cursor
       } : undefined,
       context: {} as any,
-      sessionId: '' as any // These will be filled by the widget
+      sessionId: '' as any, // These will be filled by the widget
+      userId: SYSTEM_SCOPES.SYSTEM
     };
   }
 

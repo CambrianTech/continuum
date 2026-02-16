@@ -37,14 +37,8 @@ export class ActivityCreateServerCommand extends CommandBase<ActivityCreateParam
       });
     }
 
-    // Get owner ID from params (CLI injects userId at top level)
-    const ownerUserId = ownerId || params.userId || params.context?.userId;
-    if (!ownerUserId) {
-      return transformPayload(params, {
-        success: false,
-        error: 'Owner ID is required (provide ownerId or ensure context has userId)'
-      });
-    }
+    // Owner: explicit ownerId param or params.userId (auto-injected by infrastructure)
+    const ownerUserId = ownerId || params.userId;
 
     // Verify recipe exists
     const recipeResult = await DataList.execute({

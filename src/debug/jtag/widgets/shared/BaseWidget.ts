@@ -682,7 +682,7 @@ export abstract class BaseWidget extends HTMLElement {
 
   protected async executeCommand<P extends CommandParams, R extends CommandResult>(
     command: string,
-    params?: Omit<P, 'context' | 'sessionId'> | P
+    params?: Omit<P, 'context' | 'sessionId' | 'userId'> | P
   ): Promise<R> {
     try {
       // FIXED: Use window.jtag directly like other parts of the system

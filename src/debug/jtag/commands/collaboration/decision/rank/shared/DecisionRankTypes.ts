@@ -6,7 +6,7 @@ import { Commands } from '../../../../../system/core/shared/Commands';
 export interface DecisionRankParams extends CommandParams {
   proposalId: UUID;
   rankedChoices: string[]; // Array of option IDs in preference order (first = most preferred)
-  // Voter identity comes from context.userId - no need for explicit voterId param
+  // Voter identity comes from params.userId - no need for explicit voterId param
 }
 
 export interface DecisionRankResult extends CommandResult {

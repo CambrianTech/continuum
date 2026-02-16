@@ -7,6 +7,7 @@
 
 import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '@system/core/types/JTAGTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
@@ -88,6 +89,7 @@ export function createTestErrorParams(
   return {
     context,
     sessionId,
+    userId: SYSTEM_SCOPES.SYSTEM,
     errorType,
     level: options.level || 'command',
     environment: options.environment || (context.environment === 'remote' ? 'server' : context.environment),

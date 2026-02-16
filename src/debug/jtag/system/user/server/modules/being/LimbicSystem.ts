@@ -202,6 +202,7 @@ export class LimbicSystem {
         const layerResult = await client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeLayerEntity>>(
           DATA_COMMANDS.READ,
           {
+            userId: client.userId,
             collection: 'genome_layers',
             id: layerRef.layerId,
             context: client.context,

@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -41,6 +42,7 @@ export const createSkillListParams = (
     limit?: number;
   }
 ): SkillListParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   status: data.status ?? '',
   scope: data.scope ?? '',
   createdById: data.createdById ?? '',
@@ -79,6 +81,7 @@ export const createSkillListResult = (
     error?: JTAGError;
   }
 ): SkillListResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   skills: data.skills ?? [],
   total: data.total ?? 0,
   message: data.message ?? '',

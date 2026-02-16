@@ -177,7 +177,7 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
         success: true,
         valid: true,
         provider: params.provider,
-        responseTime,
+        responseTimeMs: responseTime,
         models
       });
     }
@@ -187,7 +187,7 @@ export class AiKeyTestServerCommand extends CommandBase<AiKeyTestParams, AiKeyTe
       success: true,
       valid: false,
       provider: params.provider,
-      responseTime,
+      responseTimeMs: responseTime,
       errorMessage: `${response.status} ${response.statusText}`
     });
   }

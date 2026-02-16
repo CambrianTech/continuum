@@ -40,7 +40,7 @@ export interface ModelCapabilities {
   readonly capabilities: ModelCapability[];
   readonly maxContextTokens: number;
   readonly supportsImages: boolean;
-  readonly supportsFunctionCalling: boolean;
+  readonly supportsToolUse: boolean;
   readonly supportsStreaming: boolean;
 }
 

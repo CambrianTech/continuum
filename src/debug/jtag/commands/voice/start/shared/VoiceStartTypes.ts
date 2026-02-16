@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -37,6 +38,7 @@ export const createVoiceStartParams = (
     voice?: string;
   }
 ): VoiceStartParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   room: data.room ?? '',
   model: data.model ?? '',
   voice: data.voice ?? '',
@@ -74,6 +76,7 @@ export const createVoiceStartResult = (
     error?: JTAGError;
   }
 ): VoiceStartResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   handle: data.handle ?? '',
   wsUrl: data.wsUrl ?? '',
   roomId: data.roomId ?? '',

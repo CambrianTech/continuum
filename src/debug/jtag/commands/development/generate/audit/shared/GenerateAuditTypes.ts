@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { AuditReport } from '@generator/audit/AuditTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
@@ -30,8 +31,8 @@ export interface GenerateAuditParams extends CommandParams {
 export const createGenerateAuditParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<Partial<GenerateAuditParams>, 'context' | 'sessionId'>
-): GenerateAuditParams => createPayload(context, sessionId, data);
+  data: Omit<Partial<GenerateAuditParams>, 'context' | 'sessionId' | 'userId'>
+): GenerateAuditParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM, ...data });
 
 /**
  * Generate/Audit Command Result
@@ -58,6 +59,7 @@ export const createGenerateAuditResult = (
   sessionId: UUID,
   data: Omit<Partial<GenerateAuditResult>, 'context' | 'sessionId'>
 ): GenerateAuditResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   success: false,
   reports: [],
   summary: {

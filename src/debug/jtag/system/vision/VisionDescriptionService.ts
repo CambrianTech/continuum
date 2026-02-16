@@ -49,7 +49,7 @@ export interface VisionDescription {
   text?: string;
 
   /** Response time in ms */
-  responseTime: number;
+  responseTimeMs: number;
 }
 
 /**
@@ -176,7 +176,7 @@ export class VisionDescriptionService {
       const response = await AIProviderDaemon.generateText({
         messages: [message],
         model: selectedModel.modelId,
-        preferredProvider: selectedModel.providerId as 'ollama' | 'openai' | 'anthropic',
+        provider: selectedModel.providerId as 'ollama' | 'openai' | 'anthropic',
         maxTokens: options.maxLength ? Math.ceil(options.maxLength / 4) : 500,
         temperature: 0.3  // More deterministic for descriptions
       });
@@ -201,7 +201,7 @@ export class VisionDescriptionService {
         objects: parsedResponse.objects,
         colors: parsedResponse.colors,
         text: parsedResponse.text,
-        responseTime,
+        responseTimeMs: responseTime,
       };
     } catch (error) {
       console.error('[VisionDescription] Error:', error);

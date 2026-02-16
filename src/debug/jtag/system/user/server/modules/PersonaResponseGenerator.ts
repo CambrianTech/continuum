@@ -703,7 +703,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
-        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
+        provider: this.modelConfig.provider || 'candle',
         intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
         // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
         personaContext: {
@@ -782,8 +782,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         }
 
         request.tools = convertToNativeToolSpecs(prioritizedTools);
-        request.tool_choice = 'auto';
-        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format, tool_choice=auto)`);
+        request.toolChoice = 'auto';
+        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format, toolChoice=auto)`);
       }
       pipelineTiming['3.2_format'] = Date.now() - phase32Start;
       this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
@@ -1036,9 +1036,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
               this.log(`❌ ${this.personaName}: [AGENT-LOOP] Tool execution failed: ${errMsg}`);
               toolResults = nativeToolCalls.map(tc => ({
-                tool_use_id: tc.id,
+                toolUseId: tc.id,
                 content: `Tool execution error: ${errMsg}`,
-                is_error: true as const,
+                isError: true as const,
               }));
             }
 
@@ -1057,9 +1057,9 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             // Push tool results as user message with tool_result content blocks (FULL results)
             const toolResultContent: ContentPart[] = toolResults.map(r => ({
               type: 'tool_result' as const,
-              tool_use_id: r.tool_use_id,
+              tool_use_id: r.toolUseId,
               content: r.content,
-              ...(r.is_error && { is_error: true }),
+              is_error: r.isError ?? null,
             }));
 
             // Include media if present (screenshots, etc.)

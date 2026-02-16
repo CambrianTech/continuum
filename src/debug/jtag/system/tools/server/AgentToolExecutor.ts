@@ -431,9 +431,9 @@ export class AgentToolExecutor {
       if (!allowedEntry) {
         // Blocked by loop detection
         results.push({
-          tool_use_id: nativeCalls[i].id,
+          toolUseId: nativeCalls[i].id,
           content: 'Tool call blocked by loop detection.',
-          is_error: true,
+          isError: true,
         });
         continue;
       }
@@ -447,9 +447,9 @@ export class AgentToolExecutor {
       }
 
       results.push({
-        tool_use_id: nativeCalls[i].id,
+        toolUseId: nativeCalls[i].id,
         content,
-        is_error: !exec.success || undefined,
+        isError: !exec.success || undefined,
       });
     }
 

@@ -6,6 +6,7 @@
 
 import type { JTAGContext, JTAGPayload, CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 /** Tear down a user session and clean up all associated resources, optionally recording the reason for destruction. */

@@ -10,6 +10,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -48,6 +49,7 @@ export const createSocialSignupParams = (
     metadata?: Record<string, unknown>;
   }
 ): SocialSignupParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   description: data.description ?? '',
   personaId: data.personaId ?? undefined,
   metadata: data.metadata ?? undefined,
@@ -96,6 +98,7 @@ export const createSocialSignupResult = (
     error?: JTAGError;
   }
 ): SocialSignupResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   message: data.message ?? '',
   ...data
 });

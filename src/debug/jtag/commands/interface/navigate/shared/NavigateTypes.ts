@@ -1,6 +1,7 @@
 // ISSUES: 0 open, last updated 2025-07-25 - See middle-out/development/code-quality-scouting.md#file-level-issue-tracking
 
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -25,6 +26,7 @@ export const createNavigateParams = (
     waitForSelector?: string;
   }
 ): NavigateParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   url: data.url ?? '',
   timeout: data.timeout ?? 30000,
   waitForSelector: data.waitForSelector,
@@ -51,6 +53,7 @@ export const createNavigateResult = (
     error?: JTAGError;
   }
 ): NavigateResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   url: data.url ?? '',
   title: data.title,
   loadTime: data.loadTime,

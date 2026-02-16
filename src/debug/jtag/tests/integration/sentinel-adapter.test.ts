@@ -219,7 +219,7 @@ async function testHealthCheck(): Promise<void> {
 
     console.log(`Status: ${health.status === 'healthy' ? '✅' : '❌'} ${health.status}`);
     console.log(`API Available: ${health.apiAvailable ? '✅' : '❌'}`);
-    console.log(`Response Time: ${health.responseTime}ms`);
+    console.log(`Response Time: ${health.responseTimeMs}ms`);
     console.log(`Error Rate: ${health.errorRate}`);
 
   } catch (error) {

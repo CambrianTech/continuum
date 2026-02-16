@@ -844,6 +844,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
         const destroyParams: SessionDestroyParams = {
           context: this.context,
           sessionId: this._session.sessionId,
+          userId: this.userId,
           reason: 'client_disconnect'
         };
         const destroyResult = await this.commands['session/destroy'](destroyParams) as SessionDestroyResult;

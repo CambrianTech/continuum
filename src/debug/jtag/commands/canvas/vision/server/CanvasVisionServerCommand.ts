@@ -103,7 +103,7 @@ export class CanvasVisionServerCommand extends CommandBase<CanvasVisionParams, C
       messages: [{ role: 'user', content }],
       model,
       maxTokens: 1024,
-      preferredProvider: 'anthropic'  // Use Anthropic for vision - supports multimodal
+      provider: 'anthropic'  // Use Anthropic for vision - supports multimodal
     });
 
     if (response.error || response.finishReason === 'error') {
@@ -166,7 +166,7 @@ Only respond with the JSON, no other text.`;
       messages: [{ role: 'user', content }],
       model,
       maxTokens: 1024,
-      preferredProvider: 'anthropic'  // Use Anthropic for vision - supports multimodal
+      provider: 'anthropic'  // Use Anthropic for vision - supports multimodal
     });
 
     if (response.error || response.finishReason === 'error') {

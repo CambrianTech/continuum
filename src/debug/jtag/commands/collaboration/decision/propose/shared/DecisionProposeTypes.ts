@@ -37,7 +37,7 @@ export interface DecisionProposeParams extends CommandParams {
   /** How urgent is this? Determines response window */
   significanceLevel?: SignificanceLevel; // Default: 'medium'
 
-  // Proposer identity comes from context.userId - no need for explicit proposerId param
+  // Proposer identity comes from params.userId - no need for explicit proposerId param
 
   /** Chat room context where proposal originated */
   contextId?: UUID; // Default: inferred from session

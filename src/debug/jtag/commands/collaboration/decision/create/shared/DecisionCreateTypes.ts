@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { DecisionOption } from '@system/data/entities/DecisionEntity';
@@ -62,6 +63,7 @@ export const createDecisionCreateParams = (
     visibility: string;
   }
 ): DecisionCreateParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
 
   ...data
 });
@@ -103,6 +105,7 @@ export const createDecisionCreateResult = (
     error?: JTAGError;
   }
 ): DecisionCreateResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   ...data,
   success: data.success ?? false,
   proposalId: data.proposalId ?? '',

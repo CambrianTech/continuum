@@ -434,7 +434,7 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
         action: e.action as 'POSTED' | 'ERROR' | 'SILENT',
         responseText: e.action === 'POSTED' ? e.messageContent : undefined,
         error: e.action === 'ERROR' ? e.reason : undefined,
-        responseTime: e.timestamp.getTime()
+        responseTimeMs: e.timestamp.getTime()
       }));
 
       const decision: ThoughtStreamDecision = {

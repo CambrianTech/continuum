@@ -20,7 +20,7 @@ import { COLLECTIONS } from '@system/shared/Constants';
 import { DecisionProposeCommand } from '../shared/DecisionProposeCommand';
 import type { DecisionProposeParams, DecisionProposeResult } from '../shared/DecisionProposeTypes';
 
-// Caller identity now comes from context.userId - no need for callerId/personaId injection
+// Caller identity now comes from params.userId - no need for callerId/personaId injection
 import type { DecisionProposalEntity, DecisionOption } from '@system/data/entities/DecisionProposalEntity';
 import type { UserEntity } from '@system/data/entities/UserEntity';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
@@ -28,7 +28,6 @@ import type { DataReadParams, DataReadResult } from '@commands/data/read/shared/
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { ChatSendParams, ChatSendResult } from '@commands/collaboration/chat/send/shared/ChatSendTypes';
 import { Logger } from '@system/core/logging/Logger';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataRead } from '../../../../data/read/shared/DataReadTypes';
@@ -291,46 +290,18 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
       }
     }
 
-    // Get proposer info - auto-detect caller identity
-    // Priority: 1) context.userId (PersonaUsers), 2) UserIdentityResolver (CLI)
-    let proposerId: UUID;
-    let proposerName: string;
+    // Get proposer info from params.userId (auto-injected by infrastructure)
+    const proposerResult = await DataRead.execute<UserEntity>({
+      collection: COLLECTIONS.USERS,
+      id: params.userId
+    });
 
-    if (params.context?.userId) {
-      // FIRST: Check context.userId (PersonaUsers set this)
-      const proposerResult = await DataRead.execute<UserEntity>({
-        collection: COLLECTIONS.USERS,
-        id: params.context.userId
-      });
-
-      if (!proposerResult.success || !proposerResult.data) {
-        return transformPayload(params, { success: false, error: 'Could not find proposer user from context' });
-      }
-
-      proposerId = params.context.userId;
-      proposerName = proposerResult.data.displayName;
-      this.log.debug('Using context.userId for proposer', { proposerId, proposerName });
-    } else {
-      // FALLBACK: Auto-detect caller identity using UserIdentityResolver (CLI calls)
-      const identity = await UserIdentityResolver.resolve();
-
-      this.log.debug('Auto-detected proposer identity', {
-        uniqueId: identity.uniqueId,
-        displayName: identity.displayName,
-        type: identity.type,
-        exists: identity.exists
-      });
-
-      if (!identity.exists || !identity.userId) {
-        return transformPayload(params, {
-          success: false,
-          error: `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. Run seed script to create users.`
-        });
-      }
-
-      proposerId = identity.userId;
-      proposerName = identity.displayName;
+    if (!proposerResult.success || !proposerResult.data) {
+      return transformPayload(params, { success: false, error: `User not found: ${params.userId}` });
     }
+
+    const proposerId: UUID = params.userId;
+    const proposerName: string = proposerResult.data.displayName;
     const scope = params.scope || 'all';
     const significanceLevel = params.significanceLevel || 'medium';
     const proposalId = generateUUID();

@@ -223,6 +223,7 @@ pub struct TextGenerationResponse {
     pub model: String,
     pub provider: String,
     pub usage: UsageMetrics,
+    #[ts(type = "number")]
     pub response_time_ms: u64,
     pub request_id: String,
 
@@ -306,8 +307,10 @@ pub struct RoutingInfo {
 pub struct HealthStatus {
     pub status: HealthState,
     pub api_available: bool,
+    #[ts(type = "number")]
     pub response_time_ms: u64,
     pub error_rate: f32,
+    #[ts(type = "number")]
     pub last_checked: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -403,6 +406,7 @@ pub struct EmbeddingResponse {
     pub model: String,
     pub provider: String,
     pub usage: UsageMetrics,
+    #[ts(type = "number")]
     pub response_time_ms: u64,
 }
 

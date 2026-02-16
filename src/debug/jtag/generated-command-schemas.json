@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-15T23:04:07.491Z",
+  "generated": "2026-02-16T03:27:44.305Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -733,11 +733,6 @@
           "type": "object",
           "required": true,
           "description": "data parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         }
       }
     },
@@ -764,11 +759,6 @@
           "type": "object",
           "required": false,
           "description": "orderBy parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         }
       }
     },
@@ -790,11 +780,6 @@
           "type": "string",
           "required": false,
           "description": "id parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         }
       }
     },
@@ -1484,11 +1469,6 @@
           "type": "string",
           "required": true,
           "description": "displayName parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         },
         "isShared": {
           "type": "boolean",
@@ -5116,11 +5096,6 @@
           "type": "string",
           "required": true,
           "description": "entityId parameter"
-        },
-        "callerId": {
-          "type": "string",
-          "required": false,
-          "description": "callerId parameter"
         }
       }
     },
@@ -5644,10 +5619,10 @@
           "required": true,
           "description": "activityId parameter"
         },
-        "userId": {
+        "targetUserId": {
           "type": "string",
           "required": false,
-          "description": "userId parameter"
+          "description": "targetUserId parameter"
         },
         "role": {
           "type": "string",
@@ -6829,10 +6804,10 @@
           "required": false,
           "description": "persona parameter"
         },
-        "userId": {
+        "targetUserId": {
           "type": "string",
           "required": false,
-          "description": "userId parameter"
+          "description": "targetUserId parameter"
         },
         "reason": {
           "type": "string",
@@ -7064,10 +7039,10 @@
           "required": false,
           "description": "maxTokens parameter"
         },
-        "preferredProvider": {
+        "provider": {
           "type": "string",
           "required": false,
-          "description": "preferredProvider parameter"
+          "description": "provider parameter"
         }
       }
     },
@@ -7204,10 +7179,10 @@
           "required": false,
           "description": "model parameter"
         },
-        "userId": {
+        "filterUserId": {
           "type": "string",
           "required": false,
-          "description": "userId parameter"
+          "description": "filterUserId parameter"
         },
         "roomId": {
           "type": "string",
@@ -7432,11 +7407,6 @@
           "type": "number",
           "required": false,
           "description": "maxIterations parameter"
-        },
-        "callerId": {
-          "type": "string",
-          "required": false,
-          "description": "callerId parameter"
         },
         "sentinelHandle": {
           "type": "string",

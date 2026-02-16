@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
@@ -46,6 +47,7 @@ export const createAdapterAdoptParams = (
     personaId?: string;
   }
 ): AdapterAdoptParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   scale: data.scale ?? 0,
   traitType: data.traitType ?? '',
   personaId: data.personaId ?? '',
@@ -95,6 +97,7 @@ export const createAdapterAdoptResult = (
     error?: AdapterAdoptError;
   }
 ): AdapterAdoptResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   adapterId: data.adapterId ?? '',
   layerId: data.layerId ?? '',
   personaId: data.personaId ?? '',

@@ -32,14 +32,8 @@ export class ActivityJoinServerCommand extends CommandBase<ActivityJoinParams, A
       });
     }
 
-    // Get user ID from params or context
-    const userId = params.userId || params.context?.userId;
-    if (!userId) {
-      return transformPayload(params, {
-        success: false,
-        error: 'User ID is required (provide userId or ensure context has userId)'
-      });
-    }
+    // Use targetUserId if joining someone else, otherwise the caller
+    const userId = params.targetUserId ?? params.userId;
 
     // Detect if activityId is UUID or uniqueId
     const isUUID = typeof activityId === 'string' && activityId.includes('-') && activityId.length === 36;

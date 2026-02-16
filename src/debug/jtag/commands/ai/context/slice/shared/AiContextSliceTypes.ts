@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import type { CollectionName } from '../../../context/search/shared/AiContextSearchTypes';
@@ -69,6 +70,7 @@ export const createAiContextSliceParams = (
     relatedLimit?: number;
   }
 ): AiContextSliceParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   personaId: data.personaId ?? '',
   includeRelated: data.includeRelated ?? false,
   relatedLimit: data.relatedLimit ?? 0,
@@ -102,6 +104,7 @@ export const createAiContextSliceResult = (
     error?: JTAGError;
   }
 ): AiContextSliceResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   item: data.item ?? null,
   durationMs: data.durationMs ?? 0,
   ...data

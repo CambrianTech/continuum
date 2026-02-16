@@ -24,7 +24,7 @@ export function createDataExecutor<T extends BaseEntity>(
         orderBy: params.orderBy ? [...params.orderBy] : [],
         limit: params.limit ?? 50,
         ...(params.cursor && { cursor: params.cursor })
-      } satisfies Omit<DataListParams, 'context' | 'sessionId'>;
+      } satisfies Omit<DataListParams, 'context' | 'sessionId' | 'userId'>;
 
       const result = await executeCommand<DataListParams, DataListResult<T>>(
         DATA_COMMANDS.LIST,

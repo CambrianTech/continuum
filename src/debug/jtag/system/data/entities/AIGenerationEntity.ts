@@ -52,7 +52,7 @@ export class AIGenerationEntity extends BaseEntity {
   estimatedCost!: number;         // USD
 
   @NumberField()
-  responseTime!: number;          // milliseconds
+  responseTimeMs!: number;          // milliseconds
 
   // Context (optional)
   @TextField({ nullable: true })
@@ -109,7 +109,7 @@ export class AIGenerationEntity extends BaseEntity {
         totalTokens: number;
         estimatedCost?: number;
       };
-      responseTime: number;
+      responseTimeMs: number;
       requestId: string;
       error?: string;
     },
@@ -130,7 +130,7 @@ export class AIGenerationEntity extends BaseEntity {
       outputTokens: response.usage.outputTokens,
       totalTokens: response.usage.totalTokens,
       estimatedCost: response.usage.estimatedCost || 0,
-      responseTime: response.responseTime,
+      responseTimeMs: response.responseTimeMs,
       userId: context.userId,
       roomId: context.roomId,
       purpose: context.purpose,

@@ -31,7 +31,7 @@ export interface DataCreateResult<T extends BaseEntity = BaseEntity> extends Bas
 export const createDataCreateParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataCreateParams, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
+  data: Omit<DataCreateParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
 ): DataCreateParams => {
   // Use base factory to ensure backend defaults are applied
   const baseParams = createBaseDataParams(context, sessionId, {
