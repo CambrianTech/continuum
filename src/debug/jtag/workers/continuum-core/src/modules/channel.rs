@@ -13,6 +13,8 @@ use crate::persona::{
     PersonaCognitionEngine, InboxMessage, SenderType, Modality,
 };
 use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
+use crate::persona::channel_items::TaskQueueItem;
+use crate::persona::self_task_generator::SelfTaskGenerator;
 use crate::logging::TimingGuard;
 use crate::utils::params::Params;
 use crate::log_info;
@@ -21,6 +23,7 @@ use dashmap::DashMap;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Shared state for channel module — per-persona registries and states.
@@ -29,6 +32,8 @@ pub struct ChannelState {
     pub registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
     /// Reference to cognition engines for service-cycle-full fast-path decision.
     pub cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
+    /// Per-persona self-task generators (lazily created on first tick).
+    pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
 }
 
 impl ChannelState {
@@ -36,6 +41,7 @@ impl ChannelState {
         Self {
             registries: Arc::new(DashMap::new()),
             cognition_engines,
+            self_task_generators: DashMap::new(),
         }
     }
 
@@ -44,7 +50,11 @@ impl ChannelState {
         registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
         cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
     ) -> Self {
-        Self { registries, cognition_engines }
+        Self {
+            registries,
+            cognition_engines,
+            self_task_generators: DashMap::new(),
+        }
     }
 }
 
@@ -68,6 +78,7 @@ impl ServiceModule for ChannelModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
+            tick_interval: Some(Duration::from_secs(60)),
         }
     }
 
@@ -286,5 +297,205 @@ impl ServiceModule for ChannelModule {
         }
     }
 
+    /// Periodic tick: runs ALL background work for ALL personas in one batch.
+    /// Replaces 30+ TypeScript setIntervals (10 personas × 3 timers each) with ONE Rust tick.
+    ///
+    /// Work performed per tick:
+    /// 1. Poll pending tasks from DB → enqueue into channel registries
+    /// 2. Self-task generation (memory consolidation, skill audit, resume work, learning)
+    /// 3. Training readiness checks (threshold → trigger genome/job-create via TS)
+    ///
+    /// Runs every 60s (configured via tick_interval in ModuleConfig).
+    async fn tick(&self) -> Result<(), String> {
+        let log = crate::runtime::logger("channel-tick");
+
+        // Resolve db_path once per tick (HOME-relative, same as TypeScript ServerConfig)
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let db_path = format!("{home}/.continuum/data/database.sqlite");
+
+        // Collect persona IDs to avoid holding DashMap ref across await
+        let persona_ids: Vec<Uuid> = self.state.registries.iter()
+            .map(|entry| *entry.key())
+            .collect();
+
+        if persona_ids.is_empty() {
+            return Ok(());
+        }
+
+        let executor = crate::runtime::command_executor::executor();
+        let mut total_enqueued = 0u32;
+        let mut total_self_tasks = 0u32;
+
+        for persona_id in &persona_ids {
+            // ── 1. Poll pending tasks ──────────────────────────────────────
+            let query_result = executor.execute_json("data/query", serde_json::json!({
+                "dbPath": db_path,
+                "collection": "tasks",
+                "filter": {
+                    "assigneeId": { "$eq": persona_id.to_string() },
+                    "status": { "$eq": "pending" }
+                },
+                "limit": 10
+            })).await;
+
+            if let Ok(result_json) = query_result {
+                if let Some(records) = result_json.get("data").and_then(|d| d.as_array()) {
+                    for record in records {
+                        if let Some(item) = Self::record_to_task_queue_item(record, persona_id) {
+                            if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
+                                let (registry, _state) = entry.value_mut();
+                                if registry.route(Box::new(item)).is_ok() {
+                                    total_enqueued += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 2. Self-task generation ────────────────────────────────────
+            // Ensure generator exists (lazy init)
+            if !self.state.self_task_generators.contains_key(persona_id) {
+                self.state.self_task_generators.insert(
+                    *persona_id,
+                    tokio::sync::Mutex::new(SelfTaskGenerator::new(*persona_id)),
+                );
+            }
+
+            if let Some(gen_entry) = self.state.self_task_generators.get(persona_id) {
+                let mut gen = gen_entry.lock().await;
+                match gen.generate_and_persist(&db_path, &executor).await {
+                    Ok(tasks) => {
+                        let count = tasks.len() as u32;
+                        if count > 0 {
+                            // Enqueue generated self-tasks into channel registry
+                            for task_json in &tasks {
+                                if let Some(item) = Self::json_to_task_queue_item(task_json, persona_id) {
+                                    if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
+                                        let (registry, _state) = entry.value_mut();
+                                        let _ = registry.route(Box::new(item));
+                                    }
+                                }
+                            }
+                            total_self_tasks += count;
+                        }
+                    }
+                    Err(e) => log.warn(&format!("Self-task gen failed for {}: {}", persona_id, e)),
+                }
+            }
+
+            // ── 3. Training readiness check ────────────────────────────────
+            // Check accumulated training data count → trigger training if threshold met.
+            // This queries the training_data collection and triggers genome/job-create via TS.
+            // The actual training pipeline stays in TypeScript (file I/O, JSONL, Ollama).
+            let training_result = executor.execute_json("data/count", serde_json::json!({
+                "dbPath": db_path,
+                "collection": "training_data",
+                "filter": {
+                    "personaId": { "$eq": persona_id.to_string() },
+                    "consumed": { "$eq": false }
+                }
+            })).await;
+
+            if let Ok(count_json) = training_result {
+                let count = count_json.get("data")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                // Threshold: 50 unconsumed training examples → trigger training
+                if count >= 50 {
+                    log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
+                    let _ = crate::runtime::command_executor::execute_ts_json(
+                        "genome/job-create",
+                        serde_json::json!({
+                            "personaId": persona_id.to_string(),
+                            "trainingExamples": count,
+                        }),
+                    ).await;
+                }
+            }
+        }
+
+        if total_enqueued > 0 || total_self_tasks > 0 {
+            log.info(&format!(
+                "Tick: {} personas, polled {} tasks, generated {} self-tasks",
+                persona_ids.len(), total_enqueued, total_self_tasks
+            ));
+        }
+
+        Ok(())
+    }
+
     fn as_any(&self) -> &dyn Any { self }
+}
+
+impl ChannelModule {
+    /// Convert a DB record (from data/query result) to a TaskQueueItem.
+    fn record_to_task_queue_item(record: &Value, persona_id: &Uuid) -> Option<TaskQueueItem> {
+        let record_id = record.get("id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+        let data = record.get("data")?;
+        Self::data_to_task_queue_item(data, record_id, persona_id)
+    }
+
+    /// Convert a self-task JSON (from SelfTaskGenerator) to a TaskQueueItem.
+    fn json_to_task_queue_item(task_json: &Value, persona_id: &Uuid) -> Option<TaskQueueItem> {
+        let task_id = task_json.get("id")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Uuid::parse_str(s).ok());
+        Self::data_to_task_queue_item(task_json, task_id, persona_id)
+    }
+
+    /// Shared conversion logic: task data JSON → TaskQueueItem.
+    fn data_to_task_queue_item(
+        data: &Value,
+        task_id: Option<Uuid>,
+        persona_id: &Uuid,
+    ) -> Option<TaskQueueItem> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        Some(TaskQueueItem {
+            id: Uuid::new_v4(),
+            task_id: task_id.unwrap_or_else(Uuid::new_v4),
+            assignee_id: *persona_id,
+            created_by: data.get("createdBy")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or(*persona_id),
+            task_domain: data.get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("self")
+                .to_string(),
+            task_type: data.get("taskType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            context_id: data.get("contextId")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .unwrap_or(*persona_id),
+            description: data.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            priority: data.get("priority")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.5) as f32,
+            status: "pending".to_string(),
+            timestamp: data.get("timestamp")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(now_ms),
+            enqueued_at: now_ms,
+            due_date: data.get("dueDate").and_then(|v| v.as_u64()),
+            estimated_duration: data.get("estimatedDuration").and_then(|v| v.as_u64()),
+            depends_on: Vec::new(),
+            blocked_by: Vec::new(),
+            related_task_ids: Vec::new(),
+            consolidated_count: 1,
+        })
+    }
 }

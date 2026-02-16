@@ -80,10 +80,7 @@ import { PersonaStateManager } from './modules/PersonaState';
 import type { InboxMessage } from './modules/PersonaInbox';
 import type { InboxTask, TaskStatus, ProcessableMessage } from './modules/QueueItemTypes';
 import { TrainingDataAccumulator } from './modules/TrainingDataAccumulator';
-import { SelfTaskGenerator } from './modules/SelfTaskGenerator';
 import { PersonaGenome, type PersonaGenomeConfig } from './modules/PersonaGenome';
-import type { PersonaCentralNervousSystem } from './modules/central-nervous-system/PersonaCentralNervousSystem';
-import { CNSFactory } from './modules/central-nervous-system/CNSFactory';
 import type { QueueItem } from './modules/PersonaInbox';
 import type { FastPathDecision } from './modules/central-nervous-system/CNSTypes';
 import { PersonaMemory } from './modules/cognitive/memory/PersonaMemory';
@@ -175,7 +172,7 @@ export class PersonaUser extends AIUser {
   }
 
   // PHASE 5: Self-task generation (autonomous work creation)
-  readonly taskGenerator: SelfTaskGenerator;
+  // taskGenerator removed — self-task generation now runs in Rust (ChannelModule.tick())
 
   // Tool result tracking (prevents infinite loops from re-processing tool results)
   readonly taskTracker: PersonaTaskTracker;
@@ -184,7 +181,7 @@ export class PersonaUser extends AIUser {
   private limbic: LimbicSystem | null = null;
 
   // NEUROANATOMY: Prefrontal cortex (cognition, evaluation, planning)
-  public prefrontal: PrefrontalCortex | null = null;  // Public for CNS and Hippocampus access
+  public prefrontal: PrefrontalCortex | null = null;  // Public for Hippocampus access
 
   // NEUROANATOMY: Motor cortex (action, execution, output)
   private motorCortex: MotorCortex | null = null;
@@ -226,7 +223,7 @@ export class PersonaUser extends AIUser {
   }
 
   /**
-   * Nullable accessor for Rust bridge (used by CNSFactory during construction).
+   * Nullable accessor for Rust bridge (used during construction before bridge is ready).
    * Unlike rustCognition getter, this returns null instead of throwing.
    */
   public get rustCognitionBridge(): RustCognitionBridge | null {
@@ -287,8 +284,7 @@ export class PersonaUser extends AIUser {
   // NOTE: DecisionAdapterChain removed - Rust cognition handles fast-path decisions
   // See: workers/continuum-core/src/persona/cognition.rs (PersonaCognitionEngine)
 
-  // CNS: Central Nervous System orchestrator
-  readonly cns: PersonaCentralNervousSystem;
+  // CNS removed — scheduling inlined into PersonaAutonomousLoop (service loop calls Rust directly)
 
   // Task execution module (extracted from PersonaUser for modularity)
   readonly taskExecutor: PersonaTaskExecutor;
@@ -441,13 +437,7 @@ export class PersonaUser extends AIUser {
       return { queueSize: 0, activeRequests: 0, maxConcurrent: 1, load: 0.0 };
     });
 
-    // PHASE 5: Self-task generation for autonomous work creation
-    this.taskGenerator = new SelfTaskGenerator(this.id, this.displayName, {
-      enabled: true,  // Enable self-task generation
-      memoryReviewInterval: 3600000,      // 1 hour
-      skillAuditInterval: 21600000,       // 6 hours
-      unfinishedWorkThreshold: 1800000    // 30 minutes
-    });
+    // Self-task generation now runs in Rust (ChannelModule.tick() → SelfTaskGenerator)
 
     // Tool result tracking (prevents infinite response loops)
     this.taskTracker = new PersonaTaskTracker();
@@ -558,9 +548,7 @@ export class PersonaUser extends AIUser {
       cognitionLogger
     );
 
-    // CNS: Central Nervous System orchestrator (capability-based)
-    // Note: mind/soul/body are non-null at this point (initialized above)
-    this.cns = CNSFactory.create(this);
+    // CNS scheduling inlined into PersonaAutonomousLoop (calls Rust serviceCycleFull directly)
 
     // Message evaluation module (pass PersonaUser reference for dependency injection)
     this.messageEvaluator = new PersonaMessageEvaluator(this);
@@ -568,7 +556,7 @@ export class PersonaUser extends AIUser {
     // Autonomous servicing loop module (pass PersonaUser reference for dependency injection)
     this.autonomousLoop = new PersonaAutonomousLoop(this, cognitionLogger);
 
-    this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, taskGenerator, memory (genome + RAG), CNS, trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
+    this.log.info(`🔧 ${this.displayName}: Initialized inbox, personaState, memory (genome + RAG), trainingAccumulator, toolExecutor, responseGenerator, messageEvaluator, autonomousLoop, and cognition system (workingMemory, selfState, planFormulator)`);
 
     // Initialize worker thread for this persona
     // Worker uses fast small model for gating decisions (should-respond check)
@@ -1981,34 +1969,6 @@ export class PersonaUser extends AIUser {
     this.autonomousLoop.startAutonomousServicing();
   }
 
-
-  /**
-   * CNS callback: Poll tasks from database
-   *
-   * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
-   */
-  public async pollTasksFromCNS(): Promise<void> {
-    await this.autonomousLoop.pollTasksFromCNS();
-  }
-
-  /**
-   * CNS callback: Generate self-tasks for autonomous work
-   *
-   * Called by PersonaCentralNervousSystem.serviceCycle() via callback pattern.
-   */
-  public async generateSelfTasksFromCNS(): Promise<void> {
-    await this.autonomousLoop.generateSelfTasksFromCNS();
-  }
-
-  /**
-   * CNS callback: Handle chat message from CNS orchestrator
-   *
-   * This is called by PersonaCentralNervousSystem.serviceChatDomain() via callback pattern.
-   * Preserves existing message handling logic (evaluation, RAG, AI response, posting).
-   */
-  public async handleChatMessageFromCNS(item: QueueItem, decision?: FastPathDecision): Promise<void> {
-    await this.autonomousLoop.handleChatMessageFromCNS(item, decision);
-  }
 
   /**
    * PHASE 5: Execute a task based on its type

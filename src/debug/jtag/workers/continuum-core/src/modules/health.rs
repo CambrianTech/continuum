@@ -32,6 +32,7 @@ impl ServiceModule for HealthModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 

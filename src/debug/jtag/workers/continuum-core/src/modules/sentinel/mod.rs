@@ -355,6 +355,7 @@ impl ServiceModule for SentinelModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 8,
+            tick_interval: None,
         }
     }
 

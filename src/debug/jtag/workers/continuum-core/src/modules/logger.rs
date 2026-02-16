@@ -614,6 +614,7 @@ impl ServiceModule for LoggerModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false, // Writer thread is internal
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 

@@ -693,6 +693,13 @@ pub fn start_server(
         }
     });
 
+    // Start periodic tick loops for modules that declare a tick_interval.
+    // Replaces TypeScript's per-persona setIntervals (task polling, self-task gen, training checks).
+    // Tick loops run as tokio tasks — they're lightweight and don't block the IPC thread.
+    let _tick_handles = rt_handle.block_on(async {
+        runtime.start_tick_loops()
+    });
+
     // Verify all expected modules are registered (fails server if any missing)
     if let Err(e) = runtime.verify_registration() {
         log_error!("ipc", "server", "{}", e);

@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
+use std::time::Duration;
 use ts_rs::TS;
 
 // ============================================================================
@@ -90,6 +91,11 @@ pub struct ModuleConfig {
 
     /// Maximum concurrent requests. 0 = unlimited (module manages own concurrency).
     pub max_concurrency: usize,
+
+    /// Optional periodic tick interval. When set, the runtime spawns a tokio task
+    /// that calls `tick()` at this cadence. Overrides the default priority-based cadence.
+    /// None = no periodic tick (module is purely reactive to commands).
+    pub tick_interval: Option<Duration>,
 }
 
 /// Result of handling a command.

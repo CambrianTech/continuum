@@ -244,6 +244,7 @@ impl ServiceModule for AIProviderModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 10, // Allow parallel inference requests
+            tick_interval: None,
         }
     }
 
