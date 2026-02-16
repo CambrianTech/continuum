@@ -657,6 +657,16 @@ export class PersonaUser extends AIUser {
         this.inbox.setRustBridge(this._rustCognition);
       }
       this.log.info(`🦀 ${this.displayName}: Rust cognition bridge connected (inbox routing enabled)`);
+
+      // Sync rate limiter config to Rust (mirrors TS RateLimiter config)
+      if (this._rustCognition) {
+        const rlConfig = this.rateLimiter.getConfig();
+        await this._rustCognition.configureRateLimiter(
+          rlConfig.minSecondsBetweenResponses,
+          rlConfig.maxResponsesPerSession
+        );
+        this.log.info(`🦀 ${this.displayName}: Rate limiter synced to Rust (min=${rlConfig.minSecondsBetweenResponses}s, max=${rlConfig.maxResponsesPerSession})`);
+      }
     } catch (error) {
       this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);
       // Don't throw - let persona initialize, but message handling will fail loudly

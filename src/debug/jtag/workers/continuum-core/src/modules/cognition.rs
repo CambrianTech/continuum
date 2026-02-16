@@ -3,10 +3,17 @@
 //! Stateful per-persona DashMap isolation for cognition engines and inboxes,
 //! plus stateless text analysis commands (similarity, validation, mentions, cleaning).
 //!
+//! Phase 1 additions:
+//! - `cognition/full-evaluate`: Unified evaluation gate (replaces 5 TS gates)
+//! - `cognition/track-response`: Track response for rate limiting
+//! - `cognition/set-sleep-mode`: Set voluntary sleep mode
+//!
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
+use crate::persona::{RateLimiterState, SleepState, SleepMode};
+use crate::persona::evaluator;
 use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
 use crate::rag::RagEngine;
@@ -26,6 +33,10 @@ pub struct CognitionState {
     pub inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
     pub rag_engine: Arc<RagEngine>,
     pub loop_detector: LoopDetector,
+    /// Per-persona rate limiter state (Phase 1: unified evaluation)
+    pub rate_limiters: Arc<DashMap<Uuid, RateLimiterState>>,
+    /// Per-persona sleep mode (Phase 1: unified evaluation)
+    pub sleep_states: Arc<DashMap<Uuid, SleepState>>,
 }
 
 impl CognitionState {
@@ -35,6 +46,8 @@ impl CognitionState {
             inboxes: Arc::new(DashMap::new()),
             rag_engine,
             loop_detector: LoopDetector::new(),
+            rate_limiters: Arc::new(DashMap::new()),
+            sleep_states: Arc::new(DashMap::new()),
         }
     }
 
@@ -44,7 +57,12 @@ impl CognitionState {
         inboxes: Arc<DashMap<Uuid, PersonaInbox>>,
         rag_engine: Arc<RagEngine>,
     ) -> Self {
-        Self { engines, inboxes, rag_engine, loop_detector: LoopDetector::new() }
+        Self {
+            engines, inboxes, rag_engine,
+            loop_detector: LoopDetector::new(),
+            rate_limiters: Arc::new(DashMap::new()),
+            sleep_states: Arc::new(DashMap::new()),
+        }
     }
 }
 
@@ -260,6 +278,169 @@ impl ServiceModule for CognitionModule {
                 };
                 Ok(CommandResult::Json(serde_json::to_value(&result)
                     .map_err(|e| format!("Serialize error: {e}"))?))
+            }
+
+            // ================================================================
+            // Unified Evaluation (Phase 1: replaces 5 TS gates + fast-path)
+            // ================================================================
+
+            "cognition/full-evaluate" => {
+                let _timer = TimingGuard::new("module", "cognition_full_evaluate");
+                let persona_uuid = p.uuid("persona_id")?;
+
+                let engine = self.state.engines.get(&persona_uuid)
+                    .ok_or_else(|| format!("No cognition engine for {persona_uuid}"))?;
+
+                // Build request from params
+                let request = evaluator::FullEvaluateRequest {
+                    persona_id: persona_uuid,
+                    persona_name: p.str("persona_name")?.to_string(),
+                    persona_unique_id: p.str_or("persona_unique_id", "").to_string(),
+                    message_id: p.uuid("message_id")?,
+                    room_id: p.uuid("room_id")?,
+                    sender_id: p.uuid("sender_id")?,
+                    sender_name: p.str("sender_name")?.to_string(),
+                    sender_type: parse_sender_type(p.str("sender_type")?)?,
+                    content: p.str("content")?.to_string(),
+                    timestamp: p.u64("timestamp")?,
+                    is_voice: p.bool_or("is_voice", false),
+                    voice_session_id: p.uuid_opt("voice_session_id"),
+                    sender_is_human: p.bool_or("sender_is_human", false),
+                    topic_similarity: p.f32_opt("topic_similarity"),
+                    recent_room_texts: p.json_opt("recent_room_texts"),
+                };
+
+                // Get or create rate limiter + sleep state
+                let rate_limiter = self.state.rate_limiters
+                    .entry(persona_uuid)
+                    .or_insert_with(RateLimiterState::default);
+                let sleep_state = self.state.sleep_states
+                    .entry(persona_uuid)
+                    .or_insert_with(SleepState::default);
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let result = evaluator::full_evaluate(
+                    &request,
+                    &rate_limiter,
+                    &sleep_state,
+                    &engine,
+                    now_ms,
+                );
+
+                log_info!(
+                    "module", "cognition",
+                    "full-evaluate {}: respond={}, gate={}, confidence={:.2} ({:.2}ms)",
+                    persona_uuid, result.should_respond, result.gate, result.confidence, result.decision_time_ms
+                );
+
+                Ok(CommandResult::Json(serde_json::to_value(&result)
+                    .map_err(|e| format!("Serialize error: {e}"))?))
+            }
+
+            "cognition/track-response" => {
+                let _timer = TimingGuard::new("module", "cognition_track_response");
+                let persona_uuid = p.uuid("persona_id")?;
+                let room_uuid = p.uuid("room_id")?;
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let mut rate_limiter = self.state.rate_limiters
+                    .entry(persona_uuid)
+                    .or_insert_with(RateLimiterState::default);
+                rate_limiter.track_response(room_uuid, now_ms);
+
+                let count = rate_limiter.response_count(room_uuid);
+                log_info!(
+                    "module", "cognition",
+                    "track-response {}: room={}, count={}",
+                    persona_uuid, room_uuid, count
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "tracked": true,
+                    "response_count": count,
+                })))
+            }
+
+            "cognition/set-sleep-mode" => {
+                let _timer = TimingGuard::new("module", "cognition_set_sleep_mode");
+                let persona_uuid = p.uuid("persona_id")?;
+                let mode_str = p.str("mode")?;
+                let reason = p.str_or("reason", "").to_string();
+                let duration_minutes = p.f64_opt("duration_minutes");
+
+                let mode = match mode_str {
+                    "active" => SleepMode::Active,
+                    "mentioned_only" => SleepMode::MentionedOnly,
+                    "human_only" => SleepMode::HumanOnly,
+                    "sleeping" => SleepMode::Sleeping,
+                    "until_topic" => SleepMode::UntilTopic,
+                    _ => return Err(format!("Invalid sleep mode: {mode_str}")),
+                };
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let wake_at_ms = duration_minutes.map(|d| now_ms + (d * 60_000.0) as u64);
+
+                let previous = self.state.sleep_states
+                    .get(&persona_uuid)
+                    .map(|s| format!("{:?}", s.mode))
+                    .unwrap_or_else(|| "Active".into());
+
+                self.state.sleep_states.insert(persona_uuid, SleepState {
+                    mode,
+                    reason: reason.clone(),
+                    set_at_ms: now_ms,
+                    wake_at_ms,
+                });
+
+                log_info!(
+                    "module", "cognition",
+                    "set-sleep-mode {}: {:?} → {:?} (reason: {})",
+                    persona_uuid, previous, mode, reason
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "set": true,
+                    "previous_mode": previous,
+                    "new_mode": mode_str,
+                    "wake_at_ms": wake_at_ms,
+                })))
+            }
+
+            "cognition/configure-rate-limiter" => {
+                let _timer = TimingGuard::new("module", "cognition_configure_rate_limiter");
+                let persona_uuid = p.uuid("persona_id")?;
+                let min_seconds = p.f64_or("min_seconds_between_responses", 10.0);
+                let max_responses = p.u64_or("max_responses_per_session", 50) as u32;
+
+                let mut rate_limiter = self.state.rate_limiters
+                    .entry(persona_uuid)
+                    .or_insert_with(RateLimiterState::default);
+                rate_limiter.min_seconds_between_responses = min_seconds;
+                rate_limiter.max_responses_per_session = max_responses;
+
+                log_info!(
+                    "module", "cognition",
+                    "configure-rate-limiter {}: min_seconds={}, max_responses={}",
+                    persona_uuid, min_seconds, max_responses
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "configured": true,
+                    "min_seconds_between_responses": min_seconds,
+                    "max_responses_per_session": max_responses,
+                })))
             }
 
             _ => Err(format!("Unknown cognition command: {command}")),

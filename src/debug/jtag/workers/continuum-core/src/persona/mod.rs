@@ -4,6 +4,7 @@
 //! - PersonaInbox: Priority queue for messages/tasks (flat, legacy)
 //! - PersonaCognitionEngine: Fast decision making
 //! - PersonaState: Energy, mood, attention tracking
+//! - Evaluator: Unified pre-response gate (replaces 5 sequential TS gates)
 //! - Channel system: Multi-channel queue with item polymorphism (replaces flat inbox)
 //!   - channel_types: ActivityDomain enum + QueueItemBehavior trait
 //!   - channel_items: Voice, Chat, Task concrete item structs
@@ -15,6 +16,7 @@ pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
+pub mod evaluator;
 pub mod inbox;
 pub mod self_task_generator;
 pub mod text_analysis;
@@ -24,5 +26,8 @@ pub use channel_items::ChannelEnqueueRequest;
 pub use channel_registry::ChannelRegistry;
 pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};
 pub use cognition::{CognitionDecision, PersonaCognitionEngine, PriorityFactors, PriorityScore};
+pub use evaluator::{
+    FullEvaluateRequest, FullEvaluateResult, GateDetails, SleepMode, SleepState, RateLimiterState,
+};
 pub use inbox::PersonaInbox;
 pub use types::*;

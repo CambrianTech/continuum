@@ -31,6 +31,9 @@ import type {
   ValidationResult,
   MentionCheckResult,
   CleanedResponse,
+  FullEvaluateRequest,
+  FullEvaluateResult,
+  SleepMode,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -672,6 +675,109 @@ export class RustCognitionBridge {
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`cleanResponse FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Unified Evaluation Gate — ALL pre-response gates in 1 IPC call
+  // Replaces 5 sequential TS gates: response_cap, rate_limit, sleep, mention, fast_path
+  // ========================================================================
+
+  /**
+   * Full evaluation: ONE Rust IPC call replaces 5 sequential TS gates.
+   * Gate order: response_cap → mention → rate_limit → sleep_mode → directed_mention → fast_path
+   * THROWS on failure
+   */
+  async fullEvaluate(request: FullEvaluateRequest): Promise<FullEvaluateResult> {
+    this.assertReady('fullEvaluate');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionFullEvaluate(request);
+      const elapsed = performance.now() - start;
+
+      if (result.should_respond) {
+        this.logger.info(`FullEvaluate: RESPOND, gate=${result.gate}, confidence=${result.confidence.toFixed(2)}, reason="${result.reason}" (${elapsed.toFixed(2)}ms, rust=${result.decision_time_ms.toFixed(2)}ms)`);
+      } else {
+        this.logger.info(`FullEvaluate: SILENT, gate=${result.gate}, reason="${result.reason}" (${elapsed.toFixed(2)}ms, rust=${result.decision_time_ms.toFixed(2)}ms)`);
+      }
+
+      if (elapsed > 5) {
+        this.logger.warn(`fullEvaluate SLOW: ${elapsed.toFixed(2)}ms (target <2ms)`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`fullEvaluate FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Request: persona=${request.persona_name}, message_id=${request.message_id}, sender=${request.sender_name}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Track a response for Rust-side rate limiting.
+   * Called after successful response posting.
+   * THROWS on failure
+   */
+  async trackResponse(roomId: string): Promise<{ tracked: boolean; response_count: number }> {
+    this.assertReady('trackResponse');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionTrackResponse(this.personaId, roomId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`TrackResponse: room=${roomId}, count=${result.response_count} (${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`trackResponse FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Set voluntary sleep mode for this persona in Rust.
+   * THROWS on failure
+   */
+  async setSleepMode(mode: SleepMode, reason?: string, durationMinutes?: number): Promise<void> {
+    this.assertReady('setSleepMode');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSetSleepMode(this.personaId, mode, reason, durationMinutes);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SetSleepMode: ${result.previous_mode} → ${result.new_mode}, reason="${reason ?? ''}" (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`setSleepMode FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Configure rate limiter parameters for this persona in Rust.
+   * THROWS on failure
+   */
+  async configureRateLimiter(minSeconds?: number, maxResponses?: number): Promise<void> {
+    this.assertReady('configureRateLimiter');
+    const start = performance.now();
+
+    try {
+      await this.client.cognitionConfigureRateLimiter(this.personaId, minSeconds, maxResponses);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`ConfigureRateLimiter: minSeconds=${minSeconds}, maxResponses=${maxResponses} (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`configureRateLimiter FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

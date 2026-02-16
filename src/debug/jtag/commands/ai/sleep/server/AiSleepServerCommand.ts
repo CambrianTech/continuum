@@ -9,6 +9,8 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { AiSleepParams, AiSleepResult, SleepMode } from '../shared/AiSleepTypes';
 import { createAiSleepResultFromParams } from '../shared/AiSleepTypes';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { SleepMode as RustSleepMode } from '../../../../shared/generated';
 
 /**
  * Sleep state for a persona
@@ -193,6 +195,12 @@ export class AiSleepServerCommand extends CommandBase<AiSleepParams, AiSleepResu
       : `Entering ${mode} mode: ${modeDescriptions[mode]}${reason ? ` (reason: ${reason})` : ''}`;
 
     console.log(`😴 ai/sleep: ${targetPersonaId} → ${mode}${reason ? ` (${reason})` : ''}`);
+
+    // Sync to Rust cognition state (fire-and-forget — TS state is already set)
+    RustCoreIPCClient.getInstanceAsync().then(client => {
+      client.cognitionSetSleepMode(targetPersonaId, mode as RustSleepMode, reason, durationMinutes)
+        .catch(err => console.warn(`⚠️ ai/sleep: Rust sync failed (non-fatal): ${err}`));
+    }).catch(() => { /* Rust not available yet — will sync on next fullEvaluate */ });
 
     return createAiSleepResultFromParams(params, {
       success: true,

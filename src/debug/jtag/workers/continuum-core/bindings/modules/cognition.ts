@@ -15,6 +15,9 @@ import type {
 	ValidationResult,
 	MentionCheckResult,
 	CleanedResponse,
+	FullEvaluateRequest,
+	FullEvaluateResult,
+	SleepMode,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -49,6 +52,10 @@ export interface CognitionMixin {
 		personaUniqueId: string
 	): Promise<MentionCheckResult>;
 	cognitionCleanResponse(responseText: string): Promise<CleanedResponse>;
+	cognitionFullEvaluate(request: FullEvaluateRequest): Promise<FullEvaluateResult>;
+	cognitionTrackResponse(personaId: string, roomId: string): Promise<{ tracked: boolean; response_count: number }>;
+	cognitionSetSleepMode(personaId: string, mode: SleepMode, reason?: string, durationMinutes?: number): Promise<{ set: boolean; previous_mode: string; new_mode: string; wake_at_ms: number | null }>;
+	cognitionConfigureRateLimiter(personaId: string, minSeconds?: number, maxResponses?: number): Promise<{ configured: boolean }>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -267,6 +274,89 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as ValidationResult;
+		}
+
+		/**
+		 * Unified evaluation gate — ONE IPC call replaces 5 sequential TS gates.
+		 * Gates: response_cap → mention → rate_limit → sleep_mode → directed_mention → fast_path
+		 */
+		async cognitionFullEvaluate(request: FullEvaluateRequest): Promise<FullEvaluateResult> {
+			const response = await this.request({
+				command: 'cognition/full-evaluate',
+				...request,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to run full evaluate');
+			}
+
+			return response.result as FullEvaluateResult;
+		}
+
+		/**
+		 * Track a response for rate limiting state in Rust.
+		 */
+		async cognitionTrackResponse(
+			personaId: string,
+			roomId: string
+		): Promise<{ tracked: boolean; response_count: number }> {
+			const response = await this.request({
+				command: 'cognition/track-response',
+				persona_id: personaId,
+				room_id: roomId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to track response');
+			}
+
+			return response.result as { tracked: boolean; response_count: number };
+		}
+
+		/**
+		 * Set voluntary sleep mode for a persona.
+		 */
+		async cognitionSetSleepMode(
+			personaId: string,
+			mode: SleepMode,
+			reason?: string,
+			durationMinutes?: number
+		): Promise<{ set: boolean; previous_mode: string; new_mode: string; wake_at_ms: number | null }> {
+			const response = await this.request({
+				command: 'cognition/set-sleep-mode',
+				persona_id: personaId,
+				mode,
+				reason,
+				duration_minutes: durationMinutes,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to set sleep mode');
+			}
+
+			return response.result as { set: boolean; previous_mode: string; new_mode: string; wake_at_ms: number | null };
+		}
+
+		/**
+		 * Configure rate limiter parameters for a persona.
+		 */
+		async cognitionConfigureRateLimiter(
+			personaId: string,
+			minSeconds?: number,
+			maxResponses?: number
+		): Promise<{ configured: boolean }> {
+			const response = await this.request({
+				command: 'cognition/configure-rate-limiter',
+				persona_id: personaId,
+				min_seconds_between_responses: minSeconds,
+				max_responses_per_session: maxResponses,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to configure rate limiter');
+			}
+
+			return response.result as { configured: boolean };
 		}
 	};
 }
