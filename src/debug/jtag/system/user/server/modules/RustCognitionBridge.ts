@@ -36,6 +36,9 @@ import type {
   SleepMode,
   ModelSelectionResult,
   AdapterInfo,
+  GenomeAdapterInfo,
+  ActivateSkillResult,
+  GenomePagingState,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -833,6 +836,83 @@ export class RustCognitionBridge {
     } catch (error) {
       const elapsed = performance.now() - start;
       this.logger.error(`syncAdapters FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 4: Genome Paging — LRU eviction + memory budget decisions
+  // ========================================================================
+
+  /**
+   * Genome paging: decide what to evict/load for a skill activation.
+   * Rust makes the decision, TypeScript executes the GPU ops.
+   * THROWS on failure
+   */
+  async genomeActivateSkill(skillName: string, memoryBudgetMb?: number): Promise<ActivateSkillResult> {
+    this.assertReady('genomeActivateSkill');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeActivateSkill(
+        this.personaId, skillName, memoryBudgetMb
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`GenomeActivateSkill: ${skillName} activated=${result.activated}, evicted=${result.evicted.length > 0 ? result.evicted.join(',') : 'none'}, to_load=${result.to_load || 'cache_hit'} (${elapsed.toFixed(2)}ms, rust=${result.decision_time_us}μs)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`genomeActivateSkill FAILED for ${skillName} after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync full genome adapter state from TypeScript to Rust.
+   * Call during initialization and after adapter changes.
+   * THROWS on failure
+   */
+  async genomeSync(adapters: GenomeAdapterInfo[], memoryBudgetMb?: number): Promise<void> {
+    this.assertReady('genomeSync');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeSync(
+        this.personaId, adapters, memoryBudgetMb
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`GenomeSync: ${result.adapter_count} adapters (${result.active_count} active), memory=${result.memory_used_mb.toFixed(1)}/${memoryBudgetMb || '?'}MB, pressure=${(result.memory_pressure * 100).toFixed(0)}% (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`genomeSync FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get current genome paging state from Rust.
+   * THROWS on failure
+   */
+  async genomeState(): Promise<GenomePagingState> {
+    this.assertReady('genomeState');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeState(this.personaId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`GenomeState: active=${result.active_adapters.length}, available=${result.available_adapters.length}, memory=${result.memory_used_mb.toFixed(1)}/${result.memory_budget_mb.toFixed(1)}MB (${elapsed.toFixed(2)}ms)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`genomeState FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

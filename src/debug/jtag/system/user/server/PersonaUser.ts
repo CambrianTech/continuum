@@ -682,6 +682,11 @@ export class PersonaUser extends AIUser {
           await this._rustCognition.syncAdapters(adapters as any);
           this.log.info(`🦀 ${this.displayName}: ${adapters.length} adapters synced to Rust for model selection`);
         }
+
+        // Wire Rust bridge into genome for LRU eviction decisions
+        this.memory.genome.setRustBridge(this._rustCognition);
+        await this.memory.genome.syncToRust();
+        this.log.info(`🦀 ${this.displayName}: Genome paging engine synced to Rust`);
       }
     } catch (error) {
       this.log.error(`🦀 ${this.displayName}: Rust cognition init failed (messages will error):`, error);

@@ -13,12 +13,18 @@
 //! - `cognition/select-model`: 4-tier model priority chain (trait → current → any → base)
 //! - `cognition/sync-adapters`: Sync adapter registry from TypeScript genome state
 //!
+//! Phase 4: Genome paging
+//! - `cognition/genome-activate-skill`: LRU eviction + skill activation decision
+//! - `cognition/genome-sync`: Sync full adapter state from TypeScript
+//! - `cognition/genome-state`: Get current genome paging state
+//!
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::persona::{PersonaCognitionEngine, PersonaInbox, InboxMessage, SenderType, Modality};
 use crate::persona::{RateLimiterState, SleepState, SleepMode};
 use crate::persona::{AdapterInfo, AdapterRegistry, ModelSelectionRequest};
+use crate::persona::{GenomeAdapterInfo, GenomePagingEngine};
 use crate::persona::evaluator;
 use crate::persona::model_selection;
 use crate::persona::text_analysis;
@@ -46,6 +52,8 @@ pub struct CognitionState {
     pub sleep_states: Arc<DashMap<Uuid, SleepState>>,
     /// Per-persona adapter registries (Phase 2: model selection)
     pub adapter_registries: Arc<DashMap<Uuid, AdapterRegistry>>,
+    /// Per-persona genome paging engines (Phase 4: LRU eviction + memory budget)
+    pub genome_engines: Arc<DashMap<Uuid, GenomePagingEngine>>,
 }
 
 impl CognitionState {
@@ -58,6 +66,7 @@ impl CognitionState {
             rate_limiters: Arc::new(DashMap::new()),
             sleep_states: Arc::new(DashMap::new()),
             adapter_registries: Arc::new(DashMap::new()),
+            genome_engines: Arc::new(DashMap::new()),
         }
     }
 
@@ -73,6 +82,7 @@ impl CognitionState {
             rate_limiters: Arc::new(DashMap::new()),
             sleep_states: Arc::new(DashMap::new()),
             adapter_registries: Arc::new(DashMap::new()),
+            genome_engines: Arc::new(DashMap::new()),
         }
     }
 }
@@ -513,6 +523,88 @@ impl ServiceModule for CognitionModule {
                     "synced": true,
                     "adapter_count": count,
                 })))
+            }
+
+            // =================================================================
+            // Phase 4: Genome Paging (LRU eviction + memory budget decisions)
+            // =================================================================
+
+            "cognition/genome-activate-skill" => {
+                let _timer = TimingGuard::new("module", "cognition_genome_activate_skill");
+                let persona_uuid = p.uuid("persona_id")?;
+                let skill_name = p.str("skill_name")?.to_string();
+                let memory_budget_mb = p.f32_or("memory_budget_mb", 200.0);
+
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+
+                let mut engine = self.state.genome_engines
+                    .entry(persona_uuid)
+                    .or_insert_with(|| GenomePagingEngine::new(memory_budget_mb));
+
+                let result = engine.activate_skill(&skill_name, now_ms);
+
+                log_info!(
+                    "module", "cognition",
+                    "genome-activate-skill {}: {} activated={}, evicted={:?}, to_load={:?} ({:.0}μs)",
+                    persona_uuid, skill_name, result.activated,
+                    result.evicted, result.to_load, result.decision_time_us
+                );
+
+                Ok(CommandResult::Json(serde_json::to_value(&result)
+                    .map_err(|e| format!("Serialize error: {e}"))?))
+            }
+
+            "cognition/genome-sync" => {
+                let _timer = TimingGuard::new("module", "cognition_genome_sync");
+                let persona_uuid = p.uuid("persona_id")?;
+                let memory_budget_mb = p.f32_or("memory_budget_mb", 200.0);
+                let adapters_json = params.get("adapters")
+                    .and_then(|v| v.as_array())
+                    .ok_or("Missing adapters array")?;
+
+                let adapters: Vec<GenomeAdapterInfo> = adapters_json.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+
+                let adapter_count = adapters.len();
+                let active_count = adapters.iter().filter(|a| a.is_loaded).count();
+
+                let mut engine = self.state.genome_engines
+                    .entry(persona_uuid)
+                    .or_insert_with(|| GenomePagingEngine::new(memory_budget_mb));
+
+                engine.memory_budget_mb = memory_budget_mb;
+                engine.sync_state(adapters);
+
+                log_info!(
+                    "module", "cognition",
+                    "genome-sync {}: {} adapters ({} active), budget={}MB, used={}MB",
+                    persona_uuid, adapter_count, active_count,
+                    engine.memory_budget_mb, engine.memory_used_mb
+                );
+
+                Ok(CommandResult::Json(serde_json::json!({
+                    "synced": true,
+                    "adapter_count": adapter_count,
+                    "active_count": active_count,
+                    "memory_used_mb": engine.memory_used_mb,
+                    "memory_pressure": engine.memory_pressure(),
+                })))
+            }
+
+            "cognition/genome-state" => {
+                let _timer = TimingGuard::new("module", "cognition_genome_state");
+                let persona_uuid = p.uuid("persona_id")?;
+
+                let engine = self.state.genome_engines.get(&persona_uuid)
+                    .ok_or_else(|| format!("No genome engine for {persona_uuid}"))?;
+
+                let state = engine.state();
+                Ok(CommandResult::Json(serde_json::to_value(&state)
+                    .map_err(|e| format!("Serialize error: {e}"))?))
             }
 
             _ => Err(format!("Unknown cognition command: {command}")),

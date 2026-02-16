@@ -20,6 +20,9 @@ import type {
 	SleepMode,
 	ModelSelectionResult,
 	AdapterInfo,
+	GenomeAdapterInfo,
+	GenomePagingState,
+	ActivateSkillResult,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -60,6 +63,9 @@ export interface CognitionMixin {
 	cognitionConfigureRateLimiter(personaId: string, minSeconds?: number, maxResponses?: number): Promise<{ configured: boolean }>;
 	cognitionSelectModel(personaId: string, baseModel: string, taskDomain?: string): Promise<ModelSelectionResult>;
 	cognitionSyncAdapters(personaId: string, adapters: AdapterInfo[]): Promise<{ synced: boolean; adapter_count: number }>;
+	cognitionGenomeActivateSkill(personaId: string, skillName: string, memoryBudgetMb?: number): Promise<ActivateSkillResult>;
+	cognitionGenomeSync(personaId: string, adapters: GenomeAdapterInfo[], memoryBudgetMb?: number): Promise<{ synced: boolean; adapter_count: number; active_count: number; memory_used_mb: number; memory_pressure: number }>;
+	cognitionGenomeState(personaId: string): Promise<GenomePagingState>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -405,6 +411,67 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			}
 
 			return response.result as { synced: boolean; adapter_count: number };
+		}
+
+		/**
+		 * Genome paging: decide what to evict/load for a skill activation.
+		 * Rust makes the decision, TypeScript executes the GPU ops.
+		 */
+		async cognitionGenomeActivateSkill(
+			personaId: string,
+			skillName: string,
+			memoryBudgetMb?: number
+		): Promise<ActivateSkillResult> {
+			const response = await this.request({
+				command: 'cognition/genome-activate-skill',
+				persona_id: personaId,
+				skill_name: skillName,
+				...(memoryBudgetMb !== undefined && { memory_budget_mb: memoryBudgetMb }),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to activate skill');
+			}
+
+			return response.result as ActivateSkillResult;
+		}
+
+		/**
+		 * Sync full genome adapter state from TypeScript to Rust.
+		 */
+		async cognitionGenomeSync(
+			personaId: string,
+			adapters: GenomeAdapterInfo[],
+			memoryBudgetMb?: number
+		): Promise<{ synced: boolean; adapter_count: number; active_count: number; memory_used_mb: number; memory_pressure: number }> {
+			const response = await this.request({
+				command: 'cognition/genome-sync',
+				persona_id: personaId,
+				adapters,
+				...(memoryBudgetMb !== undefined && { memory_budget_mb: memoryBudgetMb }),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to sync genome');
+			}
+
+			return response.result as { synced: boolean; adapter_count: number; active_count: number; memory_used_mb: number; memory_pressure: number };
+		}
+
+		/**
+		 * Get current genome paging state from Rust.
+		 */
+		async cognitionGenomeState(personaId: string): Promise<GenomePagingState> {
+			const response = await this.request({
+				command: 'cognition/genome-state',
+				persona_id: personaId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to get genome state');
+			}
+
+			return response.result as GenomePagingState;
 		}
 	};
 }

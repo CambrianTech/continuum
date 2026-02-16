@@ -17,6 +17,7 @@ pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
 pub mod evaluator;
+pub mod genome_paging;
 pub mod inbox;
 pub mod model_selection;
 pub mod self_task_generator;
@@ -31,6 +32,9 @@ pub use evaluator::{
     FullEvaluateRequest, FullEvaluateResult, GateDetails, SleepMode, SleepState, RateLimiterState,
 };
 pub use inbox::PersonaInbox;
+pub use genome_paging::{
+    GenomeAdapterInfo, GenomePagingEngine, GenomePagingState, ActivateSkillResult,
+};
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,
 };
