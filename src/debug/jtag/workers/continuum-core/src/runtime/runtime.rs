@@ -106,22 +106,24 @@ impl Runtime {
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
                 let config = module.config();
-                if let Some(interval) = config.tick_interval {
+                if let Some(initial_interval) = config.tick_interval {
                     let module_name = config.name;
                     let module = module.clone();
-                    info!("Starting tick loop for '{}' (interval: {:?})", module_name, interval);
+                    info!("Starting tick loop for '{}' (interval: {:?})", module_name, initial_interval);
 
                     let handle = tokio::spawn(async move {
-                        let mut ticker = tokio::time::interval(interval);
-                        // First tick fires immediately — skip it so we don't
-                        // tick before the system is fully warmed up
-                        ticker.tick().await;
+                        // Initial delay — don't tick before system is warmed up
+                        tokio::time::sleep(initial_interval).await;
 
                         loop {
-                            ticker.tick().await;
                             if let Err(e) = module.tick().await {
                                 error!("Tick error in '{}': {}", module_name, e);
                             }
+                            // Re-read interval from module config each iteration.
+                            // This allows dynamic cadence changes (e.g. via channel/tick-config).
+                            let interval = module.config().tick_interval
+                                .unwrap_or(initial_interval);
+                            tokio::time::sleep(interval).await;
                         }
                     });
 

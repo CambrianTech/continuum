@@ -20,11 +20,49 @@ use crate::utils::params::Params;
 use crate::log_info;
 use async_trait::async_trait;
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
 use std::time::Duration;
+use ts_rs::TS;
 use uuid::Uuid;
+
+/// Configuration for the channel tick loop — exposed to TypeScript via ts-rs.
+///
+/// Controls how often the background tick fires and which responsibilities are enabled.
+/// Adjustable at runtime via `channel/tick-config` command, allowing TypeScript to
+/// tune scheduling for different scenarios (gaming = fast tick, idle = slow tick).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/runtime/ChannelTickConfig.ts")]
+pub struct ChannelTickConfig {
+    /// Tick interval in milliseconds (default: 60000 = 60s).
+    /// Lower values = more responsive task polling, higher CPU.
+    /// Gaming: 1000-5000ms. Background: 60000-120000ms.
+    #[ts(type = "number")]
+    pub tick_interval_ms: u64,
+    /// Whether to poll pending tasks from the database each tick.
+    pub task_poll_enabled: bool,
+    /// Whether to generate self-tasks (memory consolidation, skill audit, etc).
+    pub self_task_enabled: bool,
+    /// Whether to check training data readiness each tick.
+    pub training_check_enabled: bool,
+    /// Training data threshold before triggering genome/job-create (default: 50).
+    #[ts(type = "number")]
+    pub training_threshold: u64,
+}
+
+impl Default for ChannelTickConfig {
+    fn default() -> Self {
+        Self {
+            tick_interval_ms: 60_000,
+            task_poll_enabled: true,
+            self_task_enabled: true,
+            training_check_enabled: true,
+            training_threshold: 50,
+        }
+    }
+}
 
 /// Shared state for channel module — per-persona registries and states.
 pub struct ChannelState {
@@ -34,6 +72,8 @@ pub struct ChannelState {
     pub cognition_engines: Arc<DashMap<Uuid, PersonaCognitionEngine>>,
     /// Per-persona self-task generators (lazily created on first tick).
     pub self_task_generators: DashMap<Uuid, tokio::sync::Mutex<SelfTaskGenerator>>,
+    /// Tick configuration — adjustable at runtime via channel/tick-config command.
+    pub tick_config: std::sync::RwLock<ChannelTickConfig>,
 }
 
 impl ChannelState {
@@ -42,6 +82,7 @@ impl ChannelState {
             registries: Arc::new(DashMap::new()),
             cognition_engines,
             self_task_generators: DashMap::new(),
+            tick_config: std::sync::RwLock::new(ChannelTickConfig::default()),
         }
     }
 
@@ -54,6 +95,7 @@ impl ChannelState {
             registries,
             cognition_engines,
             self_task_generators: DashMap::new(),
+            tick_config: std::sync::RwLock::new(ChannelTickConfig::default()),
         }
     }
 }
@@ -71,6 +113,9 @@ impl ChannelModule {
 #[async_trait]
 impl ServiceModule for ChannelModule {
     fn config(&self) -> ModuleConfig {
+        let tick_ms = self.state.tick_config.read()
+            .map(|c| c.tick_interval_ms)
+            .unwrap_or(60_000);
         ModuleConfig {
             name: "channel",
             priority: ModulePriority::High,
@@ -78,7 +123,7 @@ impl ServiceModule for ChannelModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
-            tick_interval: Some(Duration::from_secs(60)),
+            tick_interval: Some(Duration::from_millis(tick_ms)),
         }
     }
 
@@ -293,6 +338,45 @@ impl ServiceModule for ChannelModule {
                 Ok(CommandResult::Json(serde_json::json!({ "cleared": true })))
             }
 
+            "channel/tick-config" => {
+                let _timer = TimingGuard::new("module", "channel_tick_config");
+
+                // If params include config fields, update the tick config
+                let has_updates = params.get("tick_interval_ms").is_some()
+                    || params.get("task_poll_enabled").is_some()
+                    || params.get("self_task_enabled").is_some()
+                    || params.get("training_check_enabled").is_some()
+                    || params.get("training_threshold").is_some();
+
+                if has_updates {
+                    if let Ok(mut config) = self.state.tick_config.write() {
+                        if let Some(v) = params.get("tick_interval_ms").and_then(|v| v.as_u64()) {
+                            config.tick_interval_ms = v.max(100); // Floor: 100ms
+                        }
+                        if let Some(v) = params.get("task_poll_enabled").and_then(|v| v.as_bool()) {
+                            config.task_poll_enabled = v;
+                        }
+                        if let Some(v) = params.get("self_task_enabled").and_then(|v| v.as_bool()) {
+                            config.self_task_enabled = v;
+                        }
+                        if let Some(v) = params.get("training_check_enabled").and_then(|v| v.as_bool()) {
+                            config.training_check_enabled = v;
+                        }
+                        if let Some(v) = params.get("training_threshold").and_then(|v| v.as_u64()) {
+                            config.training_threshold = v;
+                        }
+                        log_info!("module", "channel", "Tick config updated: {:?}", *config);
+                    }
+                }
+
+                // Return current config
+                let config = self.state.tick_config.read()
+                    .map(|c| c.clone())
+                    .unwrap_or_default();
+                Ok(CommandResult::Json(serde_json::to_value(&config)
+                    .unwrap_or_else(|_| serde_json::json!({}))))
+            }
+
             _ => Err(format!("Unknown channel command: {command}")),
         }
     }
@@ -305,9 +389,14 @@ impl ServiceModule for ChannelModule {
     /// 2. Self-task generation (memory consolidation, skill audit, resume work, learning)
     /// 3. Training readiness checks (threshold → trigger genome/job-create via TS)
     ///
-    /// Runs every 60s (configured via tick_interval in ModuleConfig).
+    /// Cadence controlled by ChannelTickConfig (adjustable via channel/tick-config).
     async fn tick(&self) -> Result<(), String> {
         let log = crate::runtime::logger("channel-tick");
+
+        // Read config snapshot (cheap: std::sync::RwLock read, no contention)
+        let config = self.state.tick_config.read()
+            .map(|c| c.clone())
+            .unwrap_or_default();
 
         // Resolve db_path once per tick (HOME-relative, same as TypeScript ServerConfig)
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -328,24 +417,26 @@ impl ServiceModule for ChannelModule {
 
         for persona_id in &persona_ids {
             // ── 1. Poll pending tasks ──────────────────────────────────────
-            let query_result = executor.execute_json("data/query", serde_json::json!({
-                "dbPath": db_path,
-                "collection": "tasks",
-                "filter": {
-                    "assigneeId": { "$eq": persona_id.to_string() },
-                    "status": { "$eq": "pending" }
-                },
-                "limit": 10
-            })).await;
+            if config.task_poll_enabled {
+                let query_result = executor.execute_json("data/query", serde_json::json!({
+                    "dbPath": db_path,
+                    "collection": "tasks",
+                    "filter": {
+                        "assigneeId": { "$eq": persona_id.to_string() },
+                        "status": { "$eq": "pending" }
+                    },
+                    "limit": 10
+                })).await;
 
-            if let Ok(result_json) = query_result {
-                if let Some(records) = result_json.get("data").and_then(|d| d.as_array()) {
-                    for record in records {
-                        if let Some(item) = Self::record_to_task_queue_item(record, persona_id) {
-                            if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
-                                let (registry, _state) = entry.value_mut();
-                                if registry.route(Box::new(item)).is_ok() {
-                                    total_enqueued += 1;
+                if let Ok(result_json) = query_result {
+                    if let Some(records) = result_json.get("data").and_then(|d| d.as_array()) {
+                        for record in records {
+                            if let Some(item) = Self::record_to_task_queue_item(record, persona_id) {
+                                if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
+                                    let (registry, _state) = entry.value_mut();
+                                    if registry.route(Box::new(item)).is_ok() {
+                                        total_enqueued += 1;
+                                    }
                                 }
                             }
                         }
@@ -354,64 +445,63 @@ impl ServiceModule for ChannelModule {
             }
 
             // ── 2. Self-task generation ────────────────────────────────────
-            // Ensure generator exists (lazy init)
-            if !self.state.self_task_generators.contains_key(persona_id) {
-                self.state.self_task_generators.insert(
-                    *persona_id,
-                    tokio::sync::Mutex::new(SelfTaskGenerator::new(*persona_id)),
-                );
-            }
+            if config.self_task_enabled {
+                // Ensure generator exists (lazy init)
+                if !self.state.self_task_generators.contains_key(persona_id) {
+                    self.state.self_task_generators.insert(
+                        *persona_id,
+                        tokio::sync::Mutex::new(SelfTaskGenerator::new(*persona_id)),
+                    );
+                }
 
-            if let Some(gen_entry) = self.state.self_task_generators.get(persona_id) {
-                let mut gen = gen_entry.lock().await;
-                match gen.generate_and_persist(&db_path, &executor).await {
-                    Ok(tasks) => {
-                        let count = tasks.len() as u32;
-                        if count > 0 {
-                            // Enqueue generated self-tasks into channel registry
-                            for task_json in &tasks {
-                                if let Some(item) = Self::json_to_task_queue_item(task_json, persona_id) {
-                                    if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
-                                        let (registry, _state) = entry.value_mut();
-                                        let _ = registry.route(Box::new(item));
+                if let Some(gen_entry) = self.state.self_task_generators.get(persona_id) {
+                    let mut gen = gen_entry.lock().await;
+                    match gen.generate_and_persist(&db_path, &executor).await {
+                        Ok(tasks) => {
+                            let count = tasks.len() as u32;
+                            if count > 0 {
+                                for task_json in &tasks {
+                                    if let Some(item) = Self::json_to_task_queue_item(task_json, persona_id) {
+                                        if let Some(mut entry) = self.state.registries.get_mut(persona_id) {
+                                            let (registry, _state) = entry.value_mut();
+                                            let _ = registry.route(Box::new(item));
+                                        }
                                     }
                                 }
+                                total_self_tasks += count;
                             }
-                            total_self_tasks += count;
                         }
+                        Err(e) => log.warn(&format!("Self-task gen failed for {}: {}", persona_id, e)),
                     }
-                    Err(e) => log.warn(&format!("Self-task gen failed for {}: {}", persona_id, e)),
                 }
             }
 
             // ── 3. Training readiness check ────────────────────────────────
-            // Check accumulated training data count → trigger training if threshold met.
-            // This queries the training_data collection and triggers genome/job-create via TS.
-            // The actual training pipeline stays in TypeScript (file I/O, JSONL, Ollama).
-            let training_result = executor.execute_json("data/count", serde_json::json!({
-                "dbPath": db_path,
-                "collection": "training_data",
-                "filter": {
-                    "personaId": { "$eq": persona_id.to_string() },
-                    "consumed": { "$eq": false }
-                }
-            })).await;
+            if config.training_check_enabled {
+                let training_result = executor.execute_json("data/count", serde_json::json!({
+                    "dbPath": db_path,
+                    "collection": "training_data",
+                    "filter": {
+                        "personaId": { "$eq": persona_id.to_string() },
+                        "consumed": { "$eq": false }
+                    }
+                })).await;
 
-            if let Ok(count_json) = training_result {
-                let count = count_json.get("data")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+                if let Ok(count_json) = training_result {
+                    let count = count_json.get("data")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
 
-                // Threshold: 50 unconsumed training examples → trigger training
-                if count >= 50 {
-                    log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
-                    let _ = crate::runtime::command_executor::execute_ts_json(
-                        "genome/job-create",
-                        serde_json::json!({
-                            "personaId": persona_id.to_string(),
-                            "trainingExamples": count,
-                        }),
-                    ).await;
+                    if count >= config.training_threshold {
+                        log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
+                        let _ = crate::runtime::command_executor::execute_ts_json(
+                            "genome/job-create",
+                            serde_json::json!({
+                                "personaId": persona_id.to_string(),
+                                "trainingExamples": count,
+                            }),
+                        ).await;
+                    }
                 }
             }
         }
