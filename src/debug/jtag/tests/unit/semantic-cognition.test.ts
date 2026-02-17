@@ -7,15 +7,18 @@
  * - RAGBudgetManager allocation
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { isEmbeddable, needsEmbedding, type IEmbeddable } from '../../system/data/interfaces/IEmbeddable';
 import {
   getContextWindow,
+  getInferenceSpeed,
   isLargeContextModel,
+  isSlowLocalModel,
   getRecommendedMaxOutputTokens,
   MODEL_CONTEXT_WINDOWS,
   DEFAULT_CONTEXT_WINDOW
 } from '../../system/shared/ModelContextWindows';
+import { ModelRegistry } from '../../system/shared/ModelRegistry';
 import {
   RAGBudgetManager,
   allocateChatBudget,
@@ -105,7 +108,7 @@ describe('ModelContextWindows', () => {
     it('should have reasonable values for all models', () => {
       for (const [model, size] of Object.entries(MODEL_CONTEXT_WINDOWS)) {
         expect(size).toBeGreaterThan(0);
-        expect(size).toBeLessThanOrEqual(1000000); // Max 1M tokens
+        expect(size).toBeLessThanOrEqual(1100000); // Max ~1M tokens (Gemini 2.0 Flash is 1048576)
       }
     });
   });
@@ -132,6 +135,205 @@ describe('ModelContextWindows', () => {
       const tokens = getRecommendedMaxOutputTokens('claude-3-opus');
       expect(tokens).toBeLessThanOrEqual(4096); // Capped at 4K
     });
+  });
+});
+
+describe('ModelRegistry - Provider-Scoped Lookups', () => {
+  let registry: ModelRegistry;
+
+  beforeEach(() => {
+    registry = ModelRegistry.sharedInstance();
+    registry.clear();
+  });
+
+  it('should store same model under different providers without collision', () => {
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    // Scoped lookups return correct values
+    expect(registry.contextWindow('meta-llama/Llama-3.1-8B-Instruct', 'candle')).toBe(1400);
+    expect(registry.contextWindow('meta-llama/Llama-3.1-8B-Instruct', 'together')).toBe(131072);
+  });
+
+  it('should return largest context window for unscoped lookup with multiple providers', () => {
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    // Unscoped returns largest (cloud wins for backward compat)
+    expect(registry.contextWindow('meta-llama/Llama-3.1-8B-Instruct')).toBe(131072);
+  });
+
+  it('should return single provider entry for unscoped lookup with one provider', () => {
+    registry.register({
+      modelId: 'claude-sonnet-4-5-20250929',
+      contextWindow: 200000,
+      provider: 'anthropic',
+      discoveredAt: Date.now()
+    });
+
+    expect(registry.contextWindow('claude-sonnet-4-5-20250929')).toBe(200000);
+  });
+
+  it('should return undefined for unknown provider', () => {
+    registry.register({
+      modelId: 'gpt-4o',
+      contextWindow: 128000,
+      provider: 'openai',
+      discoveredAt: Date.now()
+    });
+
+    expect(registry.contextWindow('gpt-4o', 'candle')).toBeUndefined();
+  });
+
+  it('getAll should return all providers for a model', () => {
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    const all = registry.getAll('meta-llama/Llama-3.1-8B-Instruct');
+    expect(all.length).toBe(2);
+    const providers = all.map(m => m.provider).sort();
+    expect(providers).toEqual(['candle', 'together']);
+  });
+
+  it('should apply date-suffix normalization within provider scope', () => {
+    registry.register({
+      modelId: 'claude-sonnet-4-5',
+      contextWindow: 200000,
+      provider: 'anthropic',
+      discoveredAt: Date.now()
+    });
+
+    // Date-suffix stripped lookup should find it
+    expect(registry.contextWindow('claude-sonnet-4-5-20250929', 'anthropic')).toBe(200000);
+  });
+
+  it('discoveredCount should reflect provider-scoped entries', () => {
+    registry.register({
+      modelId: 'llama-8b',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+    registry.register({
+      modelId: 'llama-8b',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    // Two entries (one per provider), not one
+    expect(registry.discoveredCount).toBe(2);
+  });
+});
+
+describe('Provider-Scoped ModelContextWindows', () => {
+  beforeEach(() => {
+    ModelRegistry.sharedInstance().clear();
+  });
+
+  it('getContextWindow should return provider-scoped value from registry', () => {
+    const registry = ModelRegistry.sharedInstance();
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    expect(getContextWindow('meta-llama/Llama-3.1-8B-Instruct', 'candle')).toBe(1400);
+    expect(getContextWindow('meta-llama/Llama-3.1-8B-Instruct', 'together')).toBe(131072);
+  });
+
+  it('getContextWindow should fall back to static map when provider not in registry', () => {
+    // No registry entries — should use static map
+    expect(getContextWindow('meta-llama/Llama-3.1-8B-Instruct', 'candle')).toBe(1400);
+  });
+
+  it('getInferenceSpeed should return local TPS for local provider in registry', () => {
+    const registry = ModelRegistry.sharedInstance();
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+
+    // Bug fix verification: should return 40 TPS (static map), not 1000 TPS (cloud assumption)
+    const speed = getInferenceSpeed('meta-llama/Llama-3.1-8B-Instruct', 'candle');
+    expect(speed).toBe(40);  // From MODEL_INFERENCE_SPEEDS static map
+  });
+
+  it('getInferenceSpeed should return 1000 TPS for cloud provider in registry', () => {
+    const registry = ModelRegistry.sharedInstance();
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    const speed = getInferenceSpeed('meta-llama/Llama-3.1-8B-Instruct', 'together');
+    expect(speed).toBe(1000);  // Cloud API speed
+  });
+
+  it('isSlowLocalModel should be true for candle models', () => {
+    const registry = ModelRegistry.sharedInstance();
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 1400,
+      provider: 'candle',
+      discoveredAt: Date.now()
+    });
+
+    expect(isSlowLocalModel('meta-llama/Llama-3.1-8B-Instruct', 'candle')).toBe(true);
+  });
+
+  it('isSlowLocalModel should be false for cloud models', () => {
+    const registry = ModelRegistry.sharedInstance();
+    registry.register({
+      modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+      contextWindow: 131072,
+      provider: 'together',
+      discoveredAt: Date.now()
+    });
+
+    expect(isSlowLocalModel('meta-llama/Llama-3.1-8B-Instruct', 'together')).toBe(false);
   });
 });
 

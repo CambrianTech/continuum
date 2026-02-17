@@ -32,7 +32,7 @@ import { RecipeLoader } from '../../recipes/server/RecipeLoader';
 import type { StageCompleteEvent } from '../../conversation/shared/CognitionEventTypes';
 import { calculateSpeedScore, getStageStatus, COGNITION_EVENTS } from '../../conversation/shared/CognitionEventTypes';
 import { Events } from '../../core/shared/Events';
-import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed, MODEL_CONTEXT_WINDOWS } from '../../shared/ModelContextWindows';
+import { getContextWindow, getLatencyAwareTokenLimit, isSlowLocalModel, getInferenceSpeed } from '../../shared/ModelContextWindows';
 import { WidgetContextService } from '../services/WidgetContextService';
 import { VisionDescriptionService } from '../../vision/VisionDescriptionService';
 
@@ -274,17 +274,11 @@ export class ChatRAGBuilder extends RAGBuilder {
       //   - Numerical stability margin (Q4_K_M quantization degrades at high utilization)
       totalBudget = 8000;  // Default cap for cloud models
       if (options?.modelId) {
-        // For local providers (candle/ollama), use the static map directly to avoid
-        // ModelRegistry returning a cloud context window for the same model ID.
-        // e.g. meta-llama/Llama-3.1-8B-Instruct is 131072 on Together but 1400 on Candle.
-        const isLocal = options?.provider === 'candle' || options?.provider === 'ollama';
-        const contextWindow = isLocal
-          ? (MODEL_CONTEXT_WINDOWS[options.modelId] || getContextWindow(options.modelId))
-          : getContextWindow(options.modelId);
+        const contextWindow = getContextWindow(options.modelId, options?.provider);
         const maxInput = Math.floor(contextWindow * 0.75);
         totalBudget = Math.min(totalBudget, maxInput);
-        if (isLocal || isSlowLocalModel(options.modelId)) {
-          this.log(`📊 ChatRAGBuilder: ${isLocal ? 'Local' : 'Slow'} model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
+        if (isSlowLocalModel(options.modelId, options?.provider)) {
+          this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
         }
       }
 
@@ -1326,18 +1320,14 @@ LIMITS:
     const targetUtilization = 0.8;  // 80% target, 20% safety margin
     const avgTokensPerMessage = 250;  // Conservative estimate
 
-    // Get context window — provider-aware for local models to avoid
-    // ModelRegistry collision (cloud 131K vs local 1.4K for same model ID)
-    const isLocal = options?.provider === 'candle' || options?.provider === 'ollama';
-    const contextWindow = isLocal
-      ? (MODEL_CONTEXT_WINDOWS[modelId] || getContextWindow(modelId))
-      : getContextWindow(modelId);
+    // Provider-scoped context window lookup — prevents cross-provider collisions
+    const contextWindow = getContextWindow(modelId, options?.provider);
 
     // LATENCY-AWARE BUDGETING: For slow local models, apply latency constraint
     // This prevents timeouts from massive prompts (e.g., 20K tokens at 10ms/token = 200s!)
-    const latencyInputLimit = getLatencyAwareTokenLimit(modelId);
-    const isSlowModel = isSlowLocalModel(modelId);
-    const inferenceSpeed = getInferenceSpeed(modelId);
+    const latencyInputLimit = getLatencyAwareTokenLimit(modelId, undefined, options?.provider);
+    const isSlowModel = isSlowLocalModel(modelId, options?.provider);
+    const inferenceSpeed = getInferenceSpeed(modelId, options?.provider);
 
     // Calculate context window constraint (total context - output reservation)
     const contextWindowBudget = contextWindow - maxTokens - systemPromptTokens;
@@ -1372,7 +1362,7 @@ LIMITS:
       : '';
 
     this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
-  Context Window: ${contextWindow} tokens (${isLocal ? 'local provider' : 'cloud/registry'})
+  Context Window: ${contextWindow} tokens (provider=${options?.provider ?? 'unscoped'})
   Context Budget: ${contextWindowBudget} tokens (after output + system reservation)${latencyInfo}
   Latency Budget: ${latencyBudget} tokens
   Available for Messages: ${availableForMessages}${limitingFactor}
@@ -1405,14 +1395,11 @@ LIMITS:
       return { adjustedMaxTokens: requestedMaxTokens, inputTokenCount: 0 };
     }
 
-    // Provider-aware context window — avoids ModelRegistry collision
+    // Provider-scoped context window lookup — prevents cross-provider collisions
     const modelId = options.modelId;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const safetyMargin = 100;  // Extra buffer for formatting/metadata
-    const isLocalModel = options?.provider === 'candle' || options?.provider === 'ollama';
-    const contextWindow = isLocalModel
-      ? (MODEL_CONTEXT_WINDOWS[modelId] || getContextWindow(modelId))
-      : getContextWindow(modelId);
+    const contextWindow = getContextWindow(modelId, options?.provider);
 
     // Estimate input tokens (conversationHistory + system prompt)
     // Using 250 tokens per message average (same as calculateSafeMessageCount)

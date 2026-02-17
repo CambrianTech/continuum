@@ -69,7 +69,7 @@ export class GovernanceSource implements RAGSource {
     // Skip entirely for very limited models (< 2000 tokens)
     const modelId = context.options?.modelId;
     if (modelId) {
-      const contextWindow = getContextWindow(modelId);
+      const contextWindow = getContextWindow(modelId, context.provider);
       if (contextWindow < 2000) {
         return false;
       }
@@ -82,7 +82,7 @@ export class GovernanceSource implements RAGSource {
 
     // Determine which version to use based on budget and model capability
     const modelId = context.options?.modelId;
-    const isLimited = modelId && (isSlowLocalModel(modelId) || getContextWindow(modelId) < 8000);
+    const isLimited = modelId && (isSlowLocalModel(modelId, context.provider) || getContextWindow(modelId, context.provider) < 8000);
 
     // Estimate tokens: ~4 chars per token
     const fullTokens = Math.ceil(FULL_GOVERNANCE_SECTION.length / 4);

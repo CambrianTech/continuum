@@ -64,7 +64,7 @@ export class ActivityContextSource implements RAGSource {
 
       // Check if model is limited
       const modelId = context.options?.modelId;
-      const isLimited = modelId && isSlowLocalModel(modelId);
+      const isLimited = modelId && isSlowLocalModel(modelId, context.provider);
 
       // Extract strategy from recipe (RecipeDefinition has strategy property)
       const strategy: RecipeStrategy | undefined = recipe.strategy;

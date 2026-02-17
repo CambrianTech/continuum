@@ -41,6 +41,9 @@ export interface MediaResizeParams extends CommandParams {
   /** Model name for automatic dimension calculation (e.g., 'llama3.2:3b') */
   modelName?: string;
 
+  /** Provider for scoped registry lookup (e.g., "candle", "ollama") */
+  providerName?: string;
+
   /** Target percentage of model's context window to use for image (default: 0.12 = 12%) */
   targetPercentage?: number;
 

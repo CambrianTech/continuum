@@ -72,8 +72,9 @@ export class RAGLoadServerCommand extends CommandBase<RAGLoadParams, RAGLoadResu
       const targetUtilization = ragParams.targetUtilization ?? 0.8;
       const showMessageContent = ragParams.showMessageContent ?? false;
 
-      // Get context window from centralized configuration
-      const contextWindow = getContextWindow(model);
+      // Get context window from centralized configuration (provider-scoped)
+      const provider = ragParams.provider;
+      const contextWindow = getContextWindow(model, provider);
       const availableForMessages = contextWindow - maxTokens - systemPromptTokens;
       const tokenBudget = Math.floor(availableForMessages * targetUtilization);
 

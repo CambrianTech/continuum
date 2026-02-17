@@ -13,6 +13,7 @@ export interface RAGLoadParams extends CommandParams {
   roomId?: UUID;               // Room UUID (if known)
   room?: string;               // Room unique ID (like "general") - will be resolved to UUID
   model: string;               // Model to calculate budget for
+  provider?: string;           // Provider for scoped registry lookup (e.g., "candle", "together")
   maxTokens?: number;          // Max tokens for completion (default: 3000)
   systemPromptTokens?: number; // Estimated system prompt size (default: 500)
   targetUtilization?: number;  // Target % of available tokens (default: 0.8)

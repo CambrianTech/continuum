@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-16T23:24:49.782Z",
+  "generated": "2026-02-16T23:55:14.456Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1899,6 +1899,11 @@
           "required": true,
           "description": "model parameter"
         },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
         "maxTokens": {
           "type": "number",
           "required": false,
@@ -1929,6 +1934,11 @@
           "type": "string",
           "required": true,
           "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
         },
         "maxTokens": {
           "type": "number",
@@ -2435,6 +2445,11 @@
           "type": "string",
           "required": false,
           "description": "modelName parameter"
+        },
+        "providerName": {
+          "type": "string",
+          "required": false,
+          "description": "providerName parameter"
         },
         "targetPercentage": {
           "type": "number",
