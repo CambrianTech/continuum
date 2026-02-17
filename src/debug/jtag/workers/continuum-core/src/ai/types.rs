@@ -94,18 +94,23 @@ pub struct VideoInput {
 
 /// Native tool specification for providers with JSON tool support
 /// (Anthropic, OpenAI, DeepSeek, etc.)
+///
+/// Field names match the Anthropic API wire format (snake_case):
+/// - `input_schema` NOT `inputSchema`
+/// This must NOT use rename_all = "camelCase" because the wire format
+/// from TypeScript AND the Anthropic API both use snake_case for this struct.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/ai/NativeToolSpec.ts")]
-#[serde(rename_all = "camelCase")]
 pub struct NativeToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: ToolInputSchema,
 }
 
+/// JSON Schema for tool input parameters.
+/// Matches Anthropic API wire format (snake_case field names).
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/ai/ToolInputSchema.ts")]
-#[serde(rename_all = "camelCase")]
 pub struct ToolInputSchema {
     #[serde(rename = "type")]
     pub schema_type: String, // Always "object"
@@ -218,6 +223,7 @@ pub struct TextGenerationResponse {
     pub model: String,
     pub provider: String,
     pub usage: UsageMetrics,
+    #[ts(type = "number")]
     pub response_time_ms: u64,
     pub request_id: String,
 
@@ -301,8 +307,10 @@ pub struct RoutingInfo {
 pub struct HealthStatus {
     pub status: HealthState,
     pub api_available: bool,
+    #[ts(type = "number")]
     pub response_time_ms: u64,
     pub error_rate: f32,
+    #[ts(type = "number")]
     pub last_checked: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -398,6 +406,7 @@ pub struct EmbeddingResponse {
     pub model: String,
     pub provider: String,
     pub usage: UsageMetrics,
+    #[ts(type = "number")]
     pub response_time_ms: u64,
 }
 

@@ -1,33 +1,24 @@
 /**
- * Adapter Types - Shared interfaces for AI provider adapters
+ * Adapter Types - Re-exports from unified AI type system
  *
- * Small, focused interfaces following single responsibility principle.
- * All providers implement these, no god objects.
+ * Wire types come from Rust (via ts-rs). This file re-exports them
+ * plus defines adapter-specific types not in the wire protocol.
  */
 
-import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+// Re-export wire types from unified source
+export type { ModelCapability, ModelInfo, HealthStatus } from '../../AIProviderTypesV2';
+export type { TextGenerationRequest, TextGenerationResponse, UsageMetrics } from '../../AIProviderTypesV2';
 
 /**
- * Model capabilities
- */
-export type ModelCapability =
-  | 'text'
-  | 'vision'
-  | 'function-calling'
-  | 'streaming'
-  | 'embeddings'
-  | 'multimodal';
-
-/**
- * Model capability profile
+ * Model capability profile (adapter-specific, not a wire type)
  */
 export interface ModelCapabilities {
   readonly modelId: string;
   readonly providerId: string;
-  readonly capabilities: ModelCapability[];
+  readonly capabilities: import('../../../../../shared/generated/ai').ModelCapability[];
   readonly maxContextTokens: number;
   readonly supportsImages: boolean;
-  readonly supportsFunctionCalling: boolean;
+  readonly supportsToolUse: boolean;
   readonly supportsStreaming: boolean;
 }
 
@@ -56,65 +47,18 @@ export interface LoadedModelHandle {
 }
 
 /**
- * Health status
- */
-export interface HealthStatus {
-  readonly status: 'healthy' | 'degraded' | 'unhealthy';
-  readonly apiAvailable: boolean;
-  readonly responseTime: number;
-  readonly errorRate?: number;
-  readonly lastChecked: number;
-  readonly message?: string;
-}
-
-/**
- * Text generation request (provider-agnostic)
- */
-export interface TextGenerationRequest {
-  readonly messages: Array<{
-    role: 'system' | 'user' | 'assistant';
-    content: string;
-    name?: string;
-    images?: string[];  // Base64 or URLs
-  }>;
-  readonly model?: string;
-  readonly temperature?: number;
-  readonly maxTokens?: number;
-  readonly systemPrompt?: string;
-  readonly preferredProvider?: string;
-  readonly requestId?: UUID;
-}
-
-/**
- * Text generation response (provider-agnostic)
- */
-export interface TextGenerationResponse {
-  readonly text: string;
-  readonly finishReason: 'stop' | 'length' | 'error';
-  readonly model: string;
-  readonly provider: string;
-  readonly usage?: {
-    readonly inputTokens: number;
-    readonly outputTokens: number;
-    readonly totalTokens: number;
-  };
-  readonly responseTime: number;
-  readonly requestId?: UUID;
-}
-
-/**
  * Model recommendation
  */
 export interface ModelRecommendation {
   readonly modelId: string;
   readonly name: string;
   readonly description: string;
-  readonly size: string;  // "2GB", "7GB"
+  readonly size: string;
   readonly quality: 'excellent' | 'good' | 'fair';
   readonly speed: 'fast' | 'medium' | 'slow';
   readonly free: boolean;
   readonly requiresAPIKey: boolean;
-  readonly capabilities: ModelCapability[];
+  readonly capabilities: import('../../../../../shared/generated/ai').ModelCapability[];
 }
 
 /**

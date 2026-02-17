@@ -19,26 +19,24 @@ import { Events } from '../../../core/shared/Events';
 import { COLLECTIONS } from '../../../shared/Constants';
 import type { ChatMessageEntity } from '../../../data/entities/ChatMessageEntity';
 import type { ProcessableMessage } from './QueueItemTypes';
-import type { UserEntity } from '../../../data/entities/UserEntity';
-import type { RoomEntity } from '../../../data/entities/RoomEntity';
+// UserEntity and RoomEntity imports removed — isSenderHuman() moved to Rust
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { SignalDetector, getSignalDetector } from './SignalDetector';
 import { getTrainingBuffer } from './TrainingBuffer';
 import type { Task } from './cognition/reasoning/types';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
+import { getToolCapability } from './ToolFormatAdapter';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import type { RAGContext } from '../../../data/entities/CoordinationDecisionEntity';
 import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
-import type { AIDecisionContext } from '../../../ai/server/AIDecisionService';
-import { AIDecisionService } from '../../../ai/server/AIDecisionService';
 import { contentPreview, truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
 import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
-import type { SenderType } from '../../../../shared/generated';
+import type { SenderType, FullEvaluateResult } from '../../../../shared/generated';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
-import { personaSleepManager } from '@commands/ai/sleep/server/AiSleepServerCommand';
+// personaSleepManager no longer needed — sleep mode gating moved to Rust evaluator
 import {
   AI_DECISION_EVENTS,
   type AIEvaluatingEventData,
@@ -272,15 +270,32 @@ export class PersonaMessageEvaluator {
     // Evaluator pipeline timing — tracks every phase before generation
     const evalTiming: Record<string, number> = {};
 
-    // EARLY GATE: Directed message filter — when someone @mentions a specific persona, others stay silent.
+    // EARLY GATE: Unified evaluation — ALL pre-response gates in ONE Rust IPC call.
+    // Replaces: response_cap → mention → rate_limit → sleep_mode → directed_mention → fast_path
     // Must run BEFORE expensive cognition work (plan formulation, working memory, state snapshots).
-    const isMentionedEarly = this.isPersonaMentioned(safeMessageText);
-    if (!isMentionedEarly && this.messageHasDirectedMention(safeMessageText)) {
-      this.log(`🎯 ${this.personaUser.displayName}: Message directed at another persona via @mention, staying silent (early gate)`);
-      this.personaUser.logAIDecision('SILENT', 'Message directed at another persona via @mention', {
+    const earlyGateStart = Date.now();
+    const earlyResult = await this.personaUser.rustCognition.fullEvaluate({
+      persona_id: this.personaUser.id,
+      persona_name: this.personaUser.displayName,
+      persona_unique_id: this.personaUser.entity?.uniqueId ?? '',
+      message_id: messageEntity.id,
+      room_id: messageEntity.roomId,
+      sender_id: messageEntity.senderId,
+      sender_name: messageEntity.senderName,
+      sender_type: messageEntity.senderType as SenderType ?? (senderIsHuman ? 'human' : 'persona'),
+      content: safeMessageText,
+      timestamp: this.personaUser.timestampToNumber(messageEntity.timestamp),
+      is_voice: false,
+      sender_is_human: senderIsHuman,
+    });
+    evalTiming['early_gate'] = Date.now() - earlyGateStart;
+
+    if (!earlyResult.should_respond) {
+      this.log(`🚫 ${this.personaUser.displayName}: Early gate SILENT — gate=${earlyResult.gate}, reason="${earlyResult.reason}" (${earlyResult.decision_time_ms.toFixed(2)}ms)`);
+      this.personaUser.logAIDecision('SILENT', `${earlyResult.gate}: ${earlyResult.reason}`, {
         message: safeMessageText.slice(0, 100),
         sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
+        roomId: messageEntity.roomId,
       });
       return;
     }
@@ -490,71 +505,12 @@ export class PersonaMessageEvaluator {
     safeMessageText: string,
     preComputedDecision?: FastPathDecision
   ): Promise<void> {
-    // STEP 2: Check response cap (prevent infinite loops)
-    if (this.personaUser.rateLimiter.hasReachedResponseCap(messageEntity.roomId)) {
-      const currentCount = this.personaUser.rateLimiter.getResponseCount(messageEntity.roomId);
-      const config = this.personaUser.rateLimiter.getConfig();
-      this.personaUser.logAIDecision('SILENT', `Response cap reached (${currentCount}/${config.maxResponsesPerSession})`, {
-        message: safeMessageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-      return;
-    }
-
-    // STEP 3: Check if mentioned
-    const isMentioned = this.isPersonaMentioned(safeMessageText);
-
-    // STEP 4: Check rate limiting (before expensive LLM call)
-    if (this.personaUser.rateLimiter.isRateLimited(messageEntity.roomId)) {
-      const info = this.personaUser.rateLimiter.getRateLimitInfo(messageEntity.roomId);
-      this.personaUser.logAIDecision('SILENT', `Rate limited, wait ${info.waitTimeSeconds?.toFixed(1)}s more`, {
-        message: safeMessageText,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-      return;
-    }
-
-    // STEP 5: Check voluntary sleep mode (before expensive LLM call)
-    // AIs can put themselves to sleep to manage attention autonomously
-    const sleepMode = personaSleepManager.getMode(this.personaUser.id);
-    if (sleepMode !== 'active') {
-      // Detect if this is a new topic (enables until_topic sleep mode)
-      const isNewTopic = await this.detectNewTopic(safeMessageText, messageEntity.roomId);
-
-      const shouldRespondInSleepMode = personaSleepManager.shouldRespond(this.personaUser.id, {
-        isHuman: senderIsHuman,
-        isMention: isMentioned,
-        isNewTopic
-      });
-
-      if (!shouldRespondInSleepMode) {
-        this.log(`😴 ${this.personaUser.displayName}: In ${sleepMode} mode, skipping message from ${messageEntity.senderName}`);
-        this.personaUser.logAIDecision('SILENT', `Voluntary sleep mode: ${sleepMode} (isHuman=${senderIsHuman}, isMention=${isMentioned})`, {
-          message: safeMessageText,
-          sender: messageEntity.senderName,
-          roomId: messageEntity.roomId,
-          humanSender: senderIsHuman,
-          mentioned: isMentioned
-        });
-        return;
-      }
-
-      this.log(`😴 ${this.personaUser.displayName}: In ${sleepMode} mode but responding (isHuman=${senderIsHuman}, isMention=${isMentioned})`);
-    }
-
-    // STEP 6: Directed message filter — when someone @mentions a specific persona, others stay silent.
-    // This prevents dog-piling where 5+ AIs all respond to "@deepseek fix the bug".
-    if (!isMentioned && this.messageHasDirectedMention(safeMessageText)) {
-      this.log(`🎯 ${this.personaUser.displayName}: Message directed at another persona via @mention, staying silent`);
-      this.personaUser.logAIDecision('SILENT', 'Message directed at another persona via @mention', {
-        message: safeMessageText.slice(0, 100),
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-      return;
-    }
+    // ALL pre-response gates are now handled by Rust via fullEvaluate() in the
+    // evaluateAndPossiblyRespondWithCognition() wrapper. By the time we get here,
+    // the early gate already passed. We extract mention info from gate_details.
+    const isMentioned = preComputedDecision
+      ? true  // If pre-computed, Rust already verified we should respond
+      : false; // Default — the early gate already filtered directed mentions
 
     // === EVALUATE: Use LLM-based intelligent gating to decide if should respond ===
     // Emit EVALUATING event for real-time feedback (fire-and-forget — UI indicator)
@@ -723,7 +679,7 @@ export class PersonaMessageEvaluator {
 
       if (otherAIResponses.length > 0) {
         // Check if any response is adequate (substantial and related)
-        const adequacyResult = this.checkResponseAdequacy(
+        const adequacyResult = await this.checkResponseAdequacy(
           messageEntity,
           otherAIResponses  // Already flat ChatMessageEntity objects from cache
         );
@@ -810,8 +766,9 @@ export class PersonaMessageEvaluator {
     // Signal conversation activity (warms room — active conversation stays alive)
     getChatCoordinator().onMessageServiced(messageEntity.roomId, this.personaUser.id);
 
-    // Track response for rate limiting
-    this.personaUser.rateLimiter.trackResponse(messageEntity.roomId);
+    // Track response for rate limiting (Rust is sole authority)
+    this.personaUser.rustCognition.trackResponse(messageEntity.roomId)
+      .catch(err => this.log(`⚠️ Rust trackResponse failed (non-fatal): ${err}`));
 
     // PHASE 2: Track activity in PersonaState (energy depletion, mood calculation)
     // Recalculate priority to estimate complexity (higher priority = more engaging conversation)
@@ -886,301 +843,30 @@ export class PersonaMessageEvaluator {
   }
 
   /**
-   * Check if this persona is mentioned in a message
-   * Supports @username mentions and channel directives
+   * Check if existing AI responses are adequate (no need for another response).
    *
-   * TODO Phase 2: Use dedicated mention/directive events instead of text parsing
+   * ONE Rust IPC call checks all responses in batch — replaces N individual
+   * textSimilarity calls. Rust handles length filtering (>100 chars) and
+   * Jaccard n-gram similarity (>0.2 threshold) internally.
    */
-  private isPersonaMentioned(safeMessageText: string): boolean {
-    const safeMessageTextLower = safeMessageText.toLowerCase();
-    const displayNameLower = this.personaUser.displayName.toLowerCase();
-    const uniqueIdLower = this.personaUser.entity.uniqueId?.toLowerCase() || '';
-
-    // Check for @mentions ANYWHERE in message: "@PersonaName" or "@uniqueid"
-    // Works like Discord/Slack - @ can be at start, middle, or end
-    if (safeMessageTextLower.includes(`@${displayNameLower}`) ||
-        safeMessageTextLower.includes(`@${uniqueIdLower}`)) {
-      return true;
-    }
-
-    // Check for direct address at START: "PersonaName," or "PersonaName:"
-    // e.g. "Teacher AI, explain closures" or "teacher-ai: what's up"
-    if (safeMessageTextLower.startsWith(displayNameLower + ',') ||
-        safeMessageTextLower.startsWith(displayNameLower + ':') ||
-        safeMessageTextLower.startsWith(uniqueIdLower + ',') ||
-        safeMessageTextLower.startsWith(uniqueIdLower + ':')) {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Detect if a message contains @mentions directed at someone (any persona).
-   * Used to prevent dog-piling: if someone @mentions a specific AI, others stay silent.
-   */
-  private messageHasDirectedMention(text: string): boolean {
-    // Match @word patterns — the standard mention format in this system.
-    // Excludes email-like patterns (word@word) by requiring @ at start or after whitespace.
-    return /(?:^|\s)@[a-zA-Z][\w\s-]*/.test(text);
-  }
-
-  /**
-   * Get domain keywords for this persona
-   * Reads from UserEntity.personaConfig if available, otherwise infers from name
-   */
-  private getPersonaDomainKeywords(): string[] {
-    // Read from entity configuration if available
-    if (this.personaUser.entity?.personaConfig?.domainKeywords?.length) {
-      return [...this.personaUser.entity.personaConfig.domainKeywords];
-    }
-
-    // Fallback: infer from persona name (temporary until all personas configured)
-    const nameLower = this.personaUser.displayName.toLowerCase();
-
-    if (nameLower.includes('teacher') || nameLower.includes('academy')) {
-      return ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson'];
-    }
-    if (nameLower.includes('code') || nameLower.includes('dev') || nameLower.includes('review')) {
-      return ['code', 'programming', 'function', 'bug', 'typescript', 'javascript'];
-    }
-    if (nameLower.includes('plan') || nameLower.includes('architect')) {
-      return ['plan', 'architecture', 'design', 'structure', 'organize'];
-    }
-
-    // Default: general AI assistant keywords
-    return ['help', 'question', 'what', 'how', 'why', 'explain'];
-  }
-
-  /**
-   * Calculate heuristics for response decision (Phase 2)
-   * NO API calls - pure logic based on conversation history
-   */
-  private async calculateResponseHeuristics(messageEntity: ProcessableMessage): Promise<{
-    containsQuestion: boolean;
-    conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD';
-    myParticipationRatio: number;
-    secondsSinceMyLastMessage: number;
-    appearsToBeMyTurn: boolean;
-  }> {
-    // 1. Question detection (simple)
-    const containsQuestion = messageEntity.content?.text?.includes('?') || false;
-
-    // 2. Get recent messages for context
-    const recentMessages = await ORM.query<ChatMessageEntity>({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: { roomId: messageEntity.roomId },
-      sort: [{ field: 'timestamp', direction: 'desc' }],
-      limit: 10
-    });
-
-    const messages: ChatMessageEntity[] = recentMessages.success && recentMessages.data
-      ? recentMessages.data.map(record => record.data)
-      : [];
-
-    // 3. Calculate conversation temperature (time between recent messages)
-    let conversationTemp: 'HOT' | 'WARM' | 'COOL' | 'COLD' = 'COLD';
-    if (messages.length >= 2) {
-      const timeDiffs: number[] = [];
-      for (let i = 0; i < messages.length - 1; i++) {
-        const t1 = new Date(messages[i].timestamp).getTime();
-        const t2 = new Date(messages[i + 1].timestamp).getTime();
-        const diff = t1 - t2;
-        timeDiffs.push(diff / 1000); // Convert to seconds
-      }
-      const avgTimeBetween = timeDiffs.reduce((a, b) => a + b, 0) / timeDiffs.length;
-
-      if (avgTimeBetween < 10) conversationTemp = 'HOT';      // <10s between messages
-      else if (avgTimeBetween < 30) conversationTemp = 'WARM'; // <30s
-      else if (avgTimeBetween < 60) conversationTemp = 'COOL'; // <60s
-      else conversationTemp = 'COLD';                           // >60s
-    }
-
-    // 4. Calculate my participation ratio
-    const myMessages = messages.filter(m => m.senderId === this.personaUser.id);
-    const myParticipationRatio = messages.length > 0 ? myMessages.length / messages.length : 0;
-
-    // 5. Time since my last message
-    const myLastMessage = myMessages[0];
-    const secondsSinceMyLastMessage = myLastMessage
-      ? (Date.now() - new Date(myLastMessage.timestamp).getTime()) / 1000
-      : 999;
-
-    // 6. Turn-taking pattern - is it my turn?
-    // My turn if: last message wasn't mine AND I haven't spoken recently
-    const lastMessage = messages[0];
-    const appearsToBeMyTurn =
-      lastMessage?.senderId !== this.personaUser.id &&
-      secondsSinceMyLastMessage > 30;
-
-    return {
-      containsQuestion,
-      conversationTemp,
-      myParticipationRatio,
-      secondsSinceMyLastMessage,
-      appearsToBeMyTurn
-    };
-  }
-
-  /**
-   * Check if a sender is a human user (not AI/persona/agent)
-   * CRITICAL for preventing infinite response loops between AI users
-   */
-  private async isSenderHuman(senderId: UUID): Promise<boolean> {
-    if (!this.personaUser.client) {
-      this.log(`⚠️  PersonaUser ${this.personaUser.displayName}: Cannot check sender type - no client, BLOCKING response`);
-      return false; // Fail CLOSED - don't respond if we can't verify (prevents startup loops)
-    }
-
-    try {
-      // Query the sender's UserEntity to check their type using DataDaemon directly
-      const sender = await ORM.read<UserEntity>(COLLECTIONS.USERS, senderId);
-
-      if (!sender) {
-        this.log(`⚠️  PersonaUser ${this.personaUser.displayName}: Could not read sender ${senderId}, BLOCKING response`);
-        return false; // Fail CLOSED - don't respond if database fails (prevents loops)
-      }
-
-      return sender.type === 'human';
-
-    } catch (error: any) {
-      this.log(`❌ PersonaUser ${this.personaUser.displayName}: Error checking sender type, BLOCKING response:`, error);
-      return false; // Fail CLOSED on error (prevents loops)
-    }
-  }
-
-  /**
-   * Detect if current message is a new topic vs continuation of existing conversation
-   * Uses fast n-gram text similarity (no embeddings needed)
-   *
-   * @param currentText - The incoming message text
-   * @param roomId - Room to query recent messages from
-   * @param threshold - Similarity threshold (below = new topic). Default 0.3
-   * @returns True if this appears to be a new topic
-   */
-  private async detectNewTopic(
-    currentText: string,
-    roomId: UUID,
-    threshold: number = 0.3
-  ): Promise<boolean> {
-    // Query recent messages from this room
-    const recentMessages = await ORM.query<ChatMessageEntity>({
-      collection: COLLECTIONS.CHAT_MESSAGES,
-      filter: { roomId },
-      sort: [{ field: 'timestamp', direction: 'desc' }],
-      limit: 5
-    });
-
-    const messages = recentMessages.data || [];
-    if (messages.length === 0) {
-      return true; // No history = definitely new topic
-    }
-
-    // Combine recent message texts
-    const recentTexts = messages
-      .map(m => m.data.content?.text || '')
-      .filter(t => t.length > 0)
-      .join(' ');
-
-    if (recentTexts.length === 0) {
-      return true; // No text content = new topic
-    }
-
-    // Fast text similarity using n-gram Jaccard
-    const similarity = this.computeTextSimilarity(currentText, recentTexts);
-
-    // Below threshold = new topic
-    const isNewTopic = similarity < threshold;
-
-    if (isNewTopic) {
-      this.log(`🔄 ${this.personaUser.displayName}: New topic detected (similarity=${similarity.toFixed(2)} < ${threshold})`);
-    }
-
-    return isNewTopic;
-  }
-
-  /**
-   * Compute text similarity using n-gram Jaccard coefficient
-   * Fast O(n) algorithm - no embeddings or API calls needed
-   *
-   * Uses unigrams + bigrams for better phrase detection
-   */
-  private computeTextSimilarity(text1: string, text2: string): number {
-    // Tokenize into words (filter short words as noise)
-    const tokenize = (text: string): string[] => {
-      return text
-        .toLowerCase()
-        .split(/\W+/)
-        .filter(word => word.length > 2);
-    };
-
-    const tokens1 = tokenize(text1);
-    const tokens2 = tokenize(text2);
-
-    if (tokens1.length === 0 || tokens2.length === 0) {
-      return 0;
-    }
-
-    // Generate unigrams + bigrams for better phrase matching
-    const generateNgrams = (tokens: string[]): Set<string> => {
-      const ngrams = new Set<string>();
-
-      // Unigrams
-      tokens.forEach(t => ngrams.add(t));
-
-      // Bigrams
-      for (let i = 0; i < tokens.length - 1; i++) {
-        ngrams.add(`${tokens[i]}_${tokens[i + 1]}`);
-      }
-
-      return ngrams;
-    };
-
-    const ngrams1 = generateNgrams(tokens1);
-    const ngrams2 = generateNgrams(tokens2);
-
-    // Jaccard coefficient = |intersection| / |union|
-    const intersection = [...ngrams1].filter(n => ngrams2.has(n)).length;
-    const union = new Set([...ngrams1, ...ngrams2]).size;
-
-    return union > 0 ? intersection / union : 0;
-  }
-
-  /**
-   * Check if existing AI responses are adequate (no need for another response)
-   *
-   * Used for post-inference re-evaluation to prevent redundant responses
-   * when another AI already answered during our inference time.
-   */
-  private checkResponseAdequacy(
+  private async checkResponseAdequacy(
     originalMessage: ProcessableMessage,
     otherResponses: ChatMessageEntity[]
-  ): { isAdequate: boolean; confidence: number; reason: string } {
+  ): Promise<{ isAdequate: boolean; confidence: number; reason: string }> {
     const originalText = originalMessage.content?.text || '';
 
-    for (const response of otherResponses) {
-      const responseText = response.content?.text || '';
+    // Build response array for Rust — single IPC call handles all comparisons
+    const responses = otherResponses.map(r => ({
+      sender_name: r.senderName ?? 'Unknown',
+      text: r.content?.text || '',
+    }));
 
-      // Skip short responses (likely not adequate)
-      if (responseText.length < 100) continue;
-
-      // Check if response is related to original question
-      const similarity = this.computeTextSimilarity(originalText, responseText);
-
-      // Substantial response (>100 chars) that's related to the question (>0.2 similarity)
-      if (similarity > 0.2) {
-        return {
-          isAdequate: true,
-          confidence: Math.min(similarity + 0.5, 1.0), // Boost confidence for related responses
-          reason: `${response.senderName} already provided a substantial response (${responseText.length} chars, ${(similarity * 100).toFixed(0)}% related)`
-        };
-      }
-    }
+    const result = await this.personaUser.rustCognition.checkAdequacy(originalText, responses);
 
     return {
-      isAdequate: false,
-      confidence: 0,
-      reason: 'No adequate responses found'
+      isAdequate: result.is_adequate,
+      confidence: result.confidence,
+      reason: result.reason,
     };
   }
 
@@ -1263,15 +949,19 @@ export class PersonaMessageEvaluator {
       // eliminating the redundant second RAG build that previously happened there.
       const ragStart = performance.now();
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
+      const provider = this.personaUser.modelConfig.provider || 'candle';
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,
         {
           modelId: this.personaUser.modelConfig.model,
+          maxTokens: this.personaUser.modelConfig.maxTokens,
           maxMemories: 5,           // Full context: include memories for LLM prompt
           includeArtifacts: true,    // Full context: include vision artifacts
           includeMemories: true,     // Full context: include Hippocampus LTM
           excludeMessageIds: this.personaUser.taskTracker.getProcessedToolResults(),
+          provider,
+          toolCapability: getToolCapability(provider, this.personaUser.modelConfig),
           currentMessage: {
             role: 'user',
             content: message.content.text,

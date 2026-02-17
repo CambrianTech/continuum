@@ -112,18 +112,11 @@ export interface ModelConfig {
  * - capabilities: What the caller can process (vision, audio, parsing)
  * - Enables commands to return output optimized for the caller
  *
- * ANDROID CONTEXT PATTERN (NEW):
- * - homeDir: Home directory for this context (like Android Context)
- * - System contexts → `.continuum/jtag`
- * - Persona contexts → `.continuum/personas/{uniqueId}`
- * - Enables sandboxing and per-context resource isolation
- *
  * @param uuid - Unique identifier for this context instance
  * @param environment - Execution environment (server/browser/remote)
  * @param getConfig - Environment-appropriate configuration accessor
  * @param callerType - Optional explicit caller type hint
  * @param capabilities - Optional caller capability information
- * @param homeDir - Optional home directory for sandboxed operations
  *
  * @see docs/CALLER-ADAPTIVE-OUTPUTS.md for architecture details
  */
@@ -132,9 +125,6 @@ export interface JTAGContext {
   environment: JTAGEnvironment;
   readonly config: import('../../shared/SecureConfigTypes').JTAGConfig;
   getConfig(): JTAGContextConfig;
-
-  /** Optional user ID of the calling user (enables caller-adaptive output when known) */
-  userId?: UUID;
 
   /** Optional explicit caller type hint (enables caller-adaptive output) */
   callerType?: CallerType;
@@ -145,8 +135,6 @@ export interface JTAGContext {
   /** Optional model configuration (for PersonaUsers, used to determine appropriate resource sizing) */
   modelConfig?: ModelConfig;
 
-  /** Optional home directory for context-specific operations (Android Context pattern) */
-  homeDir?: string;
 }
 
 /**
@@ -551,10 +539,14 @@ export interface CommandParams extends JTAGPayload {
   // Base command parameters - specific commands add specific fields
 
   /**
-   * User ID of the calling user (auto-injected from session by Commands.execute())
-   * REQUIRED for all commands - infrastructure injects from jtagClient.userId
+   * User ID of the calling user — the ONE canonical identity field.
+   * Always present at runtime: auto-injected by Commands.execute() (browser: jtagClient.userId)
+   * or by AgentToolExecutor (tool calls: ToolCallContext.callerId → params.userId).
+   *
+   * Commands MUST use this directly — no fallback chains, no context?.userId, no callerId.
+   * Optional in type only because callers rely on infrastructure injection.
    */
-  readonly userId?: UUID;
+  readonly userId: UUID;
 
   /**
    * Optional execution timeout in milliseconds.
@@ -603,9 +595,10 @@ export interface CommandResult extends JTAGPayload {
  * context/sessionId are optional — Commands.execute() auto-injects them if missing.
  * Server commands that forward context from a parent command can still pass them explicitly.
  */
-export type CommandInput<T extends CommandParams> = Omit<T, 'context' | 'sessionId'> & {
+export type CommandInput<T extends CommandParams> = Omit<T, 'context' | 'sessionId' | 'userId'> & {
   context?: JTAGContext;
   sessionId?: UUID;
+  userId?: UUID;
 };
 
 /**

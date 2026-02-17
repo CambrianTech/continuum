@@ -9,9 +9,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { CommandParams, CommandResult, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 
-/**
- * Parameters for genome/batch-micro-tune command
- */
+/** Perform a fast, in-memory LoRA micro-tune on accumulated training examples during recipe execution, without persisting weights to disk. */
 export interface GenomeBatchMicroTuneParams extends CommandParams {
   /**
    * Learning domain to train

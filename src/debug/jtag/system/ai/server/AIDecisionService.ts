@@ -150,7 +150,7 @@ export class AIDecisionService {
         model,
         temperature: options.temperature ?? 0.3,
         maxTokens: 200,
-        preferredProvider: 'groq'
+        provider: 'groq'
       };
 
       const response = await AIProviderDaemon.generateText(request);
@@ -310,7 +310,7 @@ ${generatedText}
         model,
         temperature: 0.1,
         maxTokens: 100,
-        preferredProvider: 'groq'
+        provider: 'groq'
       };
 
       const response = await AIProviderDaemon.generateText(request);
@@ -409,7 +409,7 @@ ${generatedText}
         model,
         temperature: options.temperature ?? 0.7,
         maxTokens: options.maxTokens ?? 150,
-        preferredProvider: 'candle'
+        provider: 'candle'
       };
 
       // Wrap with timeout

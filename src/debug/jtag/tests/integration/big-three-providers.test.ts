@@ -254,7 +254,7 @@ async function testHealthChecks(): Promise<void> {
         health.status === 'healthy' ? '✅' : health.status === 'degraded' ? '⚠️' : '❌';
 
       console.log(
-        `${statusIcon} ${provider.name}: ${health.status} (${health.responseTime}ms) - ${health.message}`
+        `${statusIcon} ${provider.name}: ${health.status} (${health.responseTimeMs}ms) - ${health.message}`
       );
     } catch (error) {
       console.log(

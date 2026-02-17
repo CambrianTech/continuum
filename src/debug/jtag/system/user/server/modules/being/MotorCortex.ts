@@ -10,7 +10,7 @@ import { PersonaToolExecutor } from '../PersonaToolExecutor';
 import { PersonaToolRegistry } from '../PersonaToolRegistry';
 import { PersonaResponseGenerator } from '../PersonaResponseGenerator';
 import type { UserEntity } from '../../../../data/entities/UserEntity';
-import type { ModelConfig } from '../../../../../commands/user/create/shared/UserCreateTypes';
+import type { ModelConfig } from '../../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../../core/client/shared/JTAGClient';
 import type { PersonaMediaConfig } from '../PersonaMediaConfig';
 import { SubsystemLogger } from './logging/SubsystemLogger';

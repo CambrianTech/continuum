@@ -61,7 +61,7 @@ export class OpenAIBaseConfig {
         contextWindow: 128000,
         costPer1kTokens: { input: 0.0025, output: 0.01 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gpt-4o-mini',
@@ -71,7 +71,7 @@ export class OpenAIBaseConfig {
         contextWindow: 128000,
         costPer1kTokens: { input: 0.00015, output: 0.0006 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gpt-4-turbo',
@@ -81,7 +81,7 @@ export class OpenAIBaseConfig {
         contextWindow: 128000,
         costPer1kTokens: { input: 0.01, output: 0.03 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gpt-4',
@@ -91,7 +91,7 @@ export class OpenAIBaseConfig {
         contextWindow: 8192,
         costPer1kTokens: { input: 0.03, output: 0.06 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gpt-3.5-turbo',
@@ -101,7 +101,7 @@ export class OpenAIBaseConfig {
         contextWindow: 16385,
         costPer1kTokens: { input: 0.0005, output: 0.0015 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       }
     ];
   }

@@ -1,10 +1,10 @@
 {
-  "generated": "2026-02-13T20:12:30.837Z",
+  "generated": "2026-02-16T23:55:14.456Z",
   "version": "1.0.0",
   "commands": [
     {
       "name": "workspace/tree",
-      "description": "Tree Command Types\n *\n * Displays hierarchical command structure auto-generated from command registry.\n * Shows parent/child relationships like a file tree.",
+      "description": "Tree command parameters",
       "params": {
         "filter": {
           "type": "string",
@@ -25,7 +25,7 @@
     },
     {
       "name": "workspace/task/list",
-      "description": "TaskListTypes - List tasks for PersonaUsers\n *\n * Query tasks by assignee, status, domain, etc.\n * Used for monitoring AI work queues and debugging.",
+      "description": "Queries the task queue with filters for assignee, status, domain, task type, and context, returning matching tasks with priority-sorted results and aggregate statistics.",
       "params": {
         "assigneeId": {
           "type": "string",
@@ -76,7 +76,7 @@
     },
     {
       "name": "workspace/task/create",
-      "description": "TaskCreateTypes - Create new tasks for PersonaUsers\n *\n * Allows users to assign tasks to AI personas (or themselves).\n * Tasks can be chat responses, code reviews, analysis, or self-improvement.",
+      "description": "Creates a new task and assigns it to a PersonaUser, specifying domain, type, priority, optional deadline, dependencies, and a human-readable description of the work to be done.",
       "params": {
         "assigneeId": {
           "type": "string",
@@ -127,7 +127,7 @@
     },
     {
       "name": "workspace/task/complete",
-      "description": "TaskCompleteTypes - Mark tasks as completed (or failed)\n *\n * Updates task status and records results.\n * Used by PersonaUsers to report task completion.",
+      "description": "Marks a task as completed or failed, recording its output, error details, and performance metrics such as tokens used, latency, and confidence.",
       "params": {
         "taskId": {
           "type": "string",
@@ -168,7 +168,7 @@
     },
     {
       "name": "workspace/recipe/load",
-      "description": "Recipe Load Command Types\n *\n * Loads recipe JSON files from system/recipes/*.json into database",
+      "description": "Loads recipe JSON files from system/recipes/*.json into database",
       "params": {
         "recipeId": {
           "type": "string",
@@ -189,7 +189,7 @@
     },
     {
       "name": "workspace/list",
-      "description": "Workspace List Command - Shared Types\n *\n * List all persona workspaces across the team — worktree paths, git branches,\n * modified files, shell activity. Scans both in-memory active workspaces and\n * persisted git worktrees on disk.",
+      "description": "List all persona workspaces across the team — worktree paths, git branches, modified files, shell activity. Scans both in-memory active workspaces and persisted git worktrees on disk.",
       "params": {
         "personaId": {
           "type": "string",
@@ -205,7 +205,7 @@
     },
     {
       "name": "workspace/git/workspace/init",
-      "description": "Git Workspace Init Command - Shared Types\n *\n * Initialize git workspace for persona collaboration with isolated worktree",
+      "description": "Initialize git workspace for persona collaboration with isolated worktree",
       "params": {
         "branch": {
           "type": "string",
@@ -226,7 +226,7 @@
     },
     {
       "name": "workspace/git/workspace/clean",
-      "description": "Git Workspace Clean Command - Shared Types\n *\n * Clean up git workspace and remove worktree",
+      "description": "Clean up git workspace and remove worktree",
       "params": {
         "workspacePath": {
           "type": "string",
@@ -247,7 +247,7 @@
     },
     {
       "name": "workspace/git/status",
-      "description": "Git Status Command - Shared Types\n *\n * Show git workspace status and changes",
+      "description": "Show git workspace status and changes",
       "params": {
         "workspacePath": {
           "type": "string",
@@ -258,7 +258,7 @@
     },
     {
       "name": "workspace/git/push",
-      "description": "Git Push Command - Shared Types\n *\n * Push workspace branch to remote repository",
+      "description": "Push workspace branch to remote repository",
       "params": {
         "workspacePath": {
           "type": "string",
@@ -274,7 +274,7 @@
     },
     {
       "name": "workspace/git/commit",
-      "description": "Git Commit Command - Shared Types\n *\n * Commit changes in git workspace with persona identity",
+      "description": "Commit changes in git workspace with persona identity",
       "params": {
         "message": {
           "type": "string",
@@ -295,7 +295,7 @@
     },
     {
       "name": "voice/transcribe",
-      "description": "Voice Transcribe Command - Shared Types\n *\n * Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.",
+      "description": "Transcribe audio to text using Rust Whisper (STT). Wraps the streaming-core Whisper adapter for speech-to-text conversion.",
       "params": {
         "audio": {
           "type": "string",
@@ -321,7 +321,7 @@
     },
     {
       "name": "voice/synthesize",
-      "description": "Voice Synthesize Command - Shared Types\n *\n * Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.",
+      "description": "Synthesize text to speech using Rust TTS (Kokoro primary). Wraps the streaming-core TTS adapters for text-to-speech conversion.",
       "params": {
         "text": {
           "type": "string",
@@ -362,7 +362,7 @@
     },
     {
       "name": "voice/stop",
-      "description": "Voice Stop Command - Shared Types\n *\n * Stop an active voice chat session",
+      "description": "Stop an active voice chat session",
       "params": {
         "handle": {
           "type": "string",
@@ -373,7 +373,7 @@
     },
     {
       "name": "voice/start",
-      "description": "Voice Start Command - Shared Types\n *\n * Start voice chat session for real-time audio communication with AI",
+      "description": "Start voice chat session for real-time audio communication with AI",
       "params": {
         "room": {
           "type": "string",
@@ -394,7 +394,7 @@
     },
     {
       "name": "utilities/pipe/chain",
-      "description": "Pipe Chain Command Types\n * Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
+      "description": "Enables Unix-style command chaining: cmd1 | cmd2 | cmd3",
       "params": {
         "commands": {
           "type": "string",
@@ -425,7 +425,7 @@
     },
     {
       "name": "utilities/lease/request",
-      "description": "Lease Request Command - Shared Types\n *\n * Command to request a file lease for editing",
+      "description": "Lease Request Parameters",
       "params": {
         "filePath": {
           "type": "string",
@@ -461,7 +461,7 @@
     },
     {
       "name": "utilities/hello",
-      "description": "Hello Command - Shared Types\n *\n * Simple hello world command for testing",
+      "description": "Simple hello world command for testing",
       "params": {
         "_noParams": {
           "type": "string",
@@ -472,7 +472,7 @@
     },
     {
       "name": "utilities/docs/search",
-      "description": "utilities/docs/search command",
+      "description": "Searches across all project documentation files for lines matching a text pattern, returning matching lines with their document name, line number, and content.",
       "params": {
         "pattern": {
           "type": "string",
@@ -493,7 +493,7 @@
     },
     {
       "name": "utilities/docs/read",
-      "description": "utilities/docs/read command",
+      "description": "Reads the content of a documentation file by name, with support for table-of-contents extraction, jumping to a specific section, or reading a line range.",
       "params": {
         "doc": {
           "type": "string",
@@ -524,7 +524,7 @@
     },
     {
       "name": "utilities/docs/list",
-      "description": "utilities/docs/list command",
+      "description": "Lists all available documentation files in the project, returning metadata such as file size, line count, section headings, and directory, with optional filtering by directory or filename pattern.",
       "params": {
         "dir": {
           "type": "string",
@@ -545,12 +545,12 @@
     },
     {
       "name": "user/get-me",
-      "description": "User Get Me Command - Get current user info\n *\n * Convenience command that returns the caller's full user information.\n * No parameters needed - sessionId is auto-injected and used to look up user.",
+      "description": "User Get Me Command - Get current user info Convenience command that returns the caller's full user information. No parameters needed - sessionId is auto-injected and used to look up user.",
       "params": {}
     },
     {
       "name": "user/create",
-      "description": "User Create Command - Shared Types\n *\n * Follows ARCHITECTURE-RULES.md:\n * - Generic programming with BaseEntity\n * - Type safety with proper constraints\n * - No entity mixing in command layer\n *\n * Factory pattern: user/create calls BaseUser.create() which routes to\n * PersonaUser.create(), AgentUser.create(), or HumanUser.create()",
+      "description": "User create command parameters These are the \"recipe ingredients\" for user creation",
       "params": {
         "type": {
           "type": "string",
@@ -601,7 +601,7 @@
     },
     {
       "name": "training/import",
-      "description": "Training Import Command - Shared Types\n *\n * Imports JSONL training data into SQLite database for MLX fine-tuning.\n * Uses multi-database handle system for isolation.",
+      "description": "Training Import Parameters",
       "params": {
         "jsonlPath": {
           "type": "string",
@@ -642,7 +642,7 @@
     },
     {
       "name": "theme",
-      "description": "Theme Command Types - Base types for theme operations\n * \n * Following the same pattern as FileTypes for consistency",
+      "description": "Base theme parameters interface",
       "params": {
         "timestamp": {
           "type": "string",
@@ -653,7 +653,7 @@
     },
     {
       "name": "theme/set",
-      "description": "ThemeSet Types - Theme setting command types",
+      "description": "Theme set command parameters",
       "params": {
         "themeName": {
           "type": "string",
@@ -669,7 +669,7 @@
     },
     {
       "name": "theme/list",
-      "description": "ThemeList Types - Theme listing command types",
+      "description": "Theme list command parameters",
       "params": {
         "category": {
           "type": "string",
@@ -690,7 +690,7 @@
     },
     {
       "name": "theme/get",
-      "description": "ThemeGet Types - Theme getting command types",
+      "description": "Theme get command parameters - gets current theme",
       "params": {
         "timestamp": {
           "type": "string",
@@ -701,7 +701,7 @@
     },
     {
       "name": "system/daemons",
-      "description": "Daemons Command Types\n *\n * List all registered system daemons with their status",
+      "description": "List all registered system daemons with their status",
       "params": {
         "nameFilter": {
           "type": "string",
@@ -717,7 +717,7 @@
     },
     {
       "name": "state/update",
-      "description": "State Update Types - User-aware entity updates\n *\n * Provides elegant wrapper around data/update with automatic user context injection\n * Following the established state command pattern for simple delegation",
+      "description": "State update command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -733,17 +733,12 @@
           "type": "object",
           "required": true,
           "description": "data parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         }
       }
     },
     {
       "name": "state/get",
-      "description": "State Get Command - Shared Types\n *\n * Follows data daemon command pattern for elegant entity state management",
+      "description": "State get command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -764,17 +759,12 @@
           "type": "object",
           "required": false,
           "description": "orderBy parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         }
       }
     },
     {
       "name": "state/create",
-      "description": "State Create Command - Shared Types\n *\n * Follows data daemon command pattern for elegant entity state management",
+      "description": "State create command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -790,17 +780,12 @@
           "type": "string",
           "required": false,
           "description": "id parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         }
       }
     },
     {
       "name": "state/content/switch",
-      "description": "State Content Switch Command - Shared Types\n *\n * Switch to an existing open content item (set as current/highlighted tab).\n * Does NOT add to openItems - use content/open for that.",
+      "description": "Switch to an existing open content item (set as current/highlighted tab). Does NOT add to openItems - use content/open for that.",
       "params": {
         "userId": {
           "type": "string",
@@ -816,7 +801,7 @@
     },
     {
       "name": "state/content/close",
-      "description": "State Content Close Command - Shared Types\n *\n * Close a content item (remove from user's open tabs). Handles currentItemId reassignment if closing the active tab.",
+      "description": "Close a content item (remove from user's open tabs). Handles currentItemId reassignment if closing the active tab.",
       "params": {
         "userId": {
           "type": "string",
@@ -832,7 +817,7 @@
     },
     {
       "name": "social/trending",
-      "description": "Social Trending Command - Shared Types\n *\n * Discover trending and popular content on a social media platform.\n * Shows hot posts, top communities, and rising discussions.\n *\n * Usage:\n *   ./jtag social/trending --platform=moltbook\n *   ./jtag social/trending --platform=moltbook --community=ai-development --sort=top\n *   ./jtag social/trending --platform=moltbook --sort=rising --limit=5",
+      "description": "Discover trending and popular content on a social media platform. Shows hot posts, top communities, and rising discussions.",
       "params": {
         "platform": {
           "type": "string",
@@ -863,7 +848,7 @@
     },
     {
       "name": "social/signup",
-      "description": "Social Signup Command - Shared Types\n *\n * Register a persona on a social media platform (e.g., Moltbook).\n * Creates an account with a chosen username and stores credentials for future use.\n *\n * Usage:\n *   ./jtag social/signup --platform=moltbook --agentName=\"helper-ai\" --description=\"I help with code\"",
+      "description": "Register a persona on a social media platform (e.g., Moltbook). Creates an account with a chosen username and stores credentials for future use.",
       "params": {
         "platform": {
           "type": "string",
@@ -894,7 +879,7 @@
     },
     {
       "name": "social/search",
-      "description": "Social Search Command - Shared Types\n *\n * Semantic search across social media platforms.\n * Find posts, agents, and communities by keyword.\n *\n * Usage:\n *   ./jtag social/search --platform=moltbook --query=\"memory systems\"\n *   ./jtag social/search --platform=moltbook --query=\"rust concurrency\" --type=post --limit=10",
+      "description": "Social Search Command Parameters",
       "params": {
         "platform": {
           "type": "string",
@@ -925,7 +910,7 @@
     },
     {
       "name": "social/propose",
-      "description": "Social Propose Command - Shared Types\n *\n * Democratic governance for shared social media accounts.\n * Personas nominate actions, vote, and auto-execute on threshold.\n *\n * Proposals are stored as Handles (type 'social-proposal') with votes in params.\n * When enough \"up\" votes accumulate, the action executes automatically.\n *\n * Modes:\n *   create  — Nominate a new action (follow, post, comment, etc.)\n *   vote    — Vote on a pending proposal\n *   list    — Show pending/recent proposals\n *   view    — View a specific proposal with full vote history\n *\n * Usage:\n *   ./jtag social/propose --platform=moltbook --mode=create --action=follow --target=eudaemon_0 --reason=\"Great security research\"\n *   ./jtag social/propose --mode=vote --proposalId=abc123 --direction=up\n *   ./jtag social/propose --mode=list\n *   ./jtag social/propose --mode=view --proposalId=abc123",
+      "description": "Handle type for proposals",
       "params": {
         "platform": {
           "type": "string",
@@ -1016,7 +1001,7 @@
     },
     {
       "name": "social/profile",
-      "description": "Social Profile Command - Shared Types\n *\n * View or update a social media profile. View your own profile, another agent's profile, or update your bio/description.\n *\n * Usage:\n *   ./jtag social/profile --platform=moltbook\n *   ./jtag social/profile --platform=moltbook --agentName=other-agent\n *   ./jtag social/profile --platform=moltbook --update --description=\"New bio\"",
+      "description": "View or update a social media profile. View your own profile, another agent's profile, or update your bio/description.",
       "params": {
         "platform": {
           "type": "string",
@@ -1047,7 +1032,7 @@
     },
     {
       "name": "social/post",
-      "description": "Social Post Command - Shared Types\n *\n * Create a post on a social media platform using the persona's stored credentials.\n *\n * Usage:\n *   ./jtag social/post --platform=moltbook --title=\"Hello\" --content=\"First post\" --community=general",
+      "description": "Create a post on a social media platform using the persona's stored credentials.",
       "params": {
         "platform": {
           "type": "string",
@@ -1083,7 +1068,7 @@
     },
     {
       "name": "social/notifications",
-      "description": "Social Notifications Command - Shared Types\n *\n * Check for unread notifications (replies, mentions, followers) on a social media platform.\n * Key data source for SocialMediaRAGSource — personas become aware of social activity through this.\n *\n * Usage:\n *   ./jtag social/notifications --platform=moltbook\n *   ./jtag social/notifications --platform=moltbook --since=2026-01-30T00:00:00Z",
+      "description": "Check for unread notifications (replies, mentions, followers) on a social media platform. Key data source for SocialMediaRAGSource.",
       "params": {
         "platform": {
           "type": "string",
@@ -1109,7 +1094,7 @@
     },
     {
       "name": "social/feed",
-      "description": "Social Feed Command - Shared Types\n *\n * Read the feed from a social media platform. Supports global feed,\n * personalized feed, and community-specific feeds.\n *\n * Usage:\n *   ./jtag social/feed --platform=moltbook --sort=hot --limit=10\n *   ./jtag social/feed --platform=moltbook --community=ai-development --sort=new",
+      "description": "Read the feed from a social media platform. Supports global feed, personalized feed, and community-specific feeds.",
       "params": {
         "platform": {
           "type": "string",
@@ -1145,7 +1130,7 @@
     },
     {
       "name": "social/engage",
-      "description": "Social Engage Command - Shared Types\n *\n * All social interaction in one command: vote, follow, subscribe.\n * Designed for AI tool use — one command covers all engagement actions.\n *\n * Actions:\n *   vote        — Upvote or downvote a post or comment\n *   follow      — Follow an agent\n *   unfollow    — Unfollow an agent\n *   subscribe   — Subscribe to a community\n *   unsubscribe — Unsubscribe from a community\n *   delete      — Delete own post or comment\n *\n * Usage:\n *   ./jtag social/engage --platform=moltbook --action=vote --target=abc123 --targetType=post --direction=up\n *   ./jtag social/engage --platform=moltbook --action=follow --target=eudaemon_0\n *   ./jtag social/engage --platform=moltbook --action=subscribe --target=ai-development\n *   ./jtag social/engage --platform=moltbook --action=delete --target=abc123 --targetType=post",
+      "description": "Social Engage Command Parameters",
       "params": {
         "platform": {
           "type": "string",
@@ -1181,7 +1166,7 @@
     },
     {
       "name": "social/downvote",
-      "description": "Social Downvote Command - Shared Types\n *\n * Downvote a post on a social media platform.\n * Convenience command — delegates to provider.vote() with direction='down'.",
+      "description": "Downvote a post on a social media platform",
       "params": {
         "platform": {
           "type": "string",
@@ -1202,7 +1187,7 @@
     },
     {
       "name": "social/community",
-      "description": "Social Community Command - Shared Types\n *\n * Manage communities (submolts) — create, list, subscribe, unsubscribe, get info",
+      "description": "Manage communities (submolts) — create, list, subscribe, unsubscribe, get info",
       "params": {
         "platform": {
           "type": "string",
@@ -1233,7 +1218,7 @@
     },
     {
       "name": "social/comment",
-      "description": "Social Comment Command - Shared Types\n *\n * Comment on a post or reply to a comment on a social media platform.\n * Supports threaded replies.\n *\n * Usage:\n *   ./jtag social/comment --platform=moltbook --postId=abc123 --content=\"Great insight!\"\n *   ./jtag social/comment --platform=moltbook --postId=abc123 --content=\"Agreed\" --parentId=def456",
+      "description": "Comment on a post or reply to a comment on a social media platform. Supports threaded replies.",
       "params": {
         "platform": {
           "type": "string",
@@ -1274,7 +1259,7 @@
     },
     {
       "name": "social/classify",
-      "description": "Social Classify Command - Shared Types\n *\n * Multi-dimensional agent classification system.\n * Analyzes an external agent's profile, posting history, and engagement\n * to produce a probability vector characterizing who they are.\n *\n * Like an embedding space for AI personas on external social media.\n * Uses existing subcommands (browse, search) to gather data,\n * then produces scores across multiple dimensions.\n *\n * Dimensions:\n *   spam        — Probability of being a spambot (repetitive, low-quality, template content)\n *   authentic   — Original content vs copypasta/shill\n *   expertise   — Domain knowledge signals (security, coding, philosophy, etc.)\n *   influence   — Community impact (karma, engagement, followers)\n *   engagement  — Quality of conversations (threaded depth, substantive replies)\n *   reliability — Consistency over time (not one-hit wonder)\n *\n * Usage:\n *   ./jtag social/classify --platform=moltbook --target=eudaemon_0\n *   ./jtag social/classify --platform=moltbook --target=snorf5163\n *   ./jtag social/classify --platform=moltbook --target=Cody --depth=deep",
+      "description": "Timestamp of classification",
       "params": {
         "platform": {
           "type": "string",
@@ -1300,7 +1285,7 @@
     },
     {
       "name": "social/browse",
-      "description": "Social Browse Command - Shared Types\n *\n * Intelligent exploration of social media platforms.\n * One command for all discovery: communities, feeds, posts, agents.\n *\n * Modes:\n *   discover   — List all communities with descriptions and activity\n *   community  — Browse a specific community's feed with context\n *   post       — Read a full post with threaded comments and author info\n *   agent      — View an agent's profile, karma, recent activity\n *   trending   — Hot posts across the platform (default)\n *\n * Usage:\n *   ./jtag social/browse --platform=moltbook                            # trending\n *   ./jtag social/browse --platform=moltbook --mode=discover            # list communities\n *   ./jtag social/browse --platform=moltbook --mode=community --target=ai-development\n *   ./jtag social/browse --platform=moltbook --mode=post --target=abc123\n *   ./jtag social/browse --platform=moltbook --mode=agent --target=eudaemon_0",
+      "description": "Social Browse Command Parameters",
       "params": {
         "platform": {
           "type": "string",
@@ -1336,7 +1321,7 @@
     },
     {
       "name": "skill/validate",
-      "description": "Skill Validate Command - Shared Types\n *\n * Validate a generated skill by running TypeScript compilation and tests in an ExecutionSandbox. Updates SkillEntity with validation results.",
+      "description": "Validate a generated skill by running TypeScript compilation and tests in an ExecutionSandbox. Updates SkillEntity with validation results.",
       "params": {
         "skillId": {
           "type": "string",
@@ -1347,7 +1332,7 @@
     },
     {
       "name": "skill/propose",
-      "description": "Skill Propose Command - Shared Types\n *\n * Propose a new skill (command) specification. Creates a SkillEntity with status 'proposed'. For team-scoped skills, creates a DecisionProposal for governance approval.",
+      "description": "Propose a new skill (command) specification. Creates a SkillEntity with status 'proposed'. For team-scoped skills, creates a DecisionProposal for governance approval.",
       "params": {
         "name": {
           "type": "string",
@@ -1393,7 +1378,7 @@
     },
     {
       "name": "skill/list",
-      "description": "Skill List Command - Shared Types\n *\n * List skills with optional filters by status, scope, and creator. Returns SkillEntity records from the database.",
+      "description": "List skills with optional filters by status, scope, and creator. Returns SkillEntity records from the database.",
       "params": {
         "status": {
           "type": "string",
@@ -1419,7 +1404,7 @@
     },
     {
       "name": "skill/generate",
-      "description": "Skill Generate Command - Shared Types\n *\n * Generate code files for a proposed skill using the CommandGenerator. Retrieves the SkillEntity and produces source files.",
+      "description": "Generate code files for a proposed skill using the CommandGenerator. Retrieves the SkillEntity and produces source files.",
       "params": {
         "skillId": {
           "type": "string",
@@ -1435,7 +1420,7 @@
     },
     {
       "name": "skill/activate",
-      "description": "Skill Activate Command - Shared Types\n *\n * Activate a validated skill by registering it as a live command. The skill becomes available for use by the creator (personal) or all personas (team).",
+      "description": "Activate a validated skill by registering it as a live command. The skill becomes available for use by the creator (personal) or all personas (team).",
       "params": {
         "skillId": {
           "type": "string",
@@ -1446,7 +1431,7 @@
     },
     {
       "name": "session/get-user",
-      "description": "session/get-user command",
+      "description": "Resolve a session to its owning UserEntity, defaulting to the caller's session or targeting a specific one.",
       "params": {
         "targetSessionId": {
           "type": "string",
@@ -1457,12 +1442,12 @@
     },
     {
       "name": "session/get-id",
-      "description": "Session Get ID Command - Get current session ID\n *\n * Convenience command that returns the caller's session ID.\n * No parameters needed - sessionId is auto-injected by framework.",
+      "description": "Session Get ID Command - Get current session ID Convenience command that returns the caller's session ID. No parameters needed - sessionId is auto-injected by framework.",
       "params": {}
     },
     {
       "name": "session/destroy",
-      "description": "Session Destroy Command Types\n * \n * Shared types for session destroy command across client/server contexts.",
+      "description": "Tear down a user session and clean up all associated resources, optionally recording the reason for destruction.",
       "params": {
         "reason": {
           "type": "string",
@@ -1473,7 +1458,7 @@
     },
     {
       "name": "session/create",
-      "description": "Session Create Command Types - Shared\n * \n * Command interface for creating sessions via the session daemon.\n * Handles session creation by routing to SessionDaemon internally.",
+      "description": "Session create command parameters",
       "params": {
         "category": {
           "type": "string",
@@ -1484,11 +1469,6 @@
           "type": "string",
           "required": true,
           "description": "displayName parameter"
-        },
-        "userId": {
-          "type": "string",
-          "required": false,
-          "description": "userId parameter"
         },
         "isShared": {
           "type": "boolean",
@@ -1504,7 +1484,7 @@
     },
     {
       "name": "sentinel/status",
-      "description": "Sentinel Status Command - Types",
+      "description": "Check the status of a running sentinel by its handle.",
       "params": {
         "handle": {
           "type": "string",
@@ -1515,7 +1495,7 @@
     },
     {
       "name": "sentinel/save",
-      "description": "Sentinel Save Command - Types\n *\n * Save sentinel definitions to database for persistence and sharing.\n * Sentinels are stored in the 'sentinels' collection.",
+      "description": "Save sentinel definitions to database for persistence and sharing.",
       "params": {
         "definition": {
           "type": "string",
@@ -1551,37 +1531,11 @@
     },
     {
       "name": "sentinel/run",
-      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
+      "description": "Run Sentinels from JSON configuration. Allows AIs to create and execute autonomous task pipelines.",
       "params": {
         "type": {
           "type": "string",
-          "required": true,
-          "description": "type parameter"
-        },
-        "workingDir": {
-          "type": "string",
           "required": false,
-          "description": "workingDir parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "async": {
-          "type": "boolean",
-          "required": false,
-          "description": "async parameter"
-        }
-      }
-    },
-    {
-      "name": "sentinel/run",
-      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
-      "params": {
-        "type": {
-          "type": "string",
-          "required": true,
           "description": "type parameter"
         },
         "workingDir": {
@@ -1601,7 +1555,7 @@
         },
         "command": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "command parameter"
         },
         "maxAttempts": {
@@ -1628,52 +1582,16 @@
           "type": "string",
           "required": false,
           "description": "provider parameter"
-        }
-      }
-    },
-    {
-      "name": "sentinel/run",
-      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
-      "params": {
-        "type": {
-          "type": "string",
-          "required": true,
-          "description": "type parameter"
-        },
-        "workingDir": {
-          "type": "string",
-          "required": false,
-          "description": "workingDir parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "async": {
-          "type": "boolean",
-          "required": false,
-          "description": "async parameter"
         },
         "goal": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "goal parameter"
         },
         "maxIterations": {
           "type": "number",
           "required": false,
           "description": "maxIterations parameter"
-        },
-        "capacity": {
-          "type": "string",
-          "required": false,
-          "description": "capacity parameter"
-        },
-        "provider": {
-          "type": "string",
-          "required": false,
-          "description": "provider parameter"
         },
         "modelName": {
           "type": "string",
@@ -1684,36 +1602,10 @@
           "type": "string",
           "required": false,
           "description": "screenshotDir parameter"
-        }
-      }
-    },
-    {
-      "name": "sentinel/run",
-      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
-      "params": {
-        "type": {
-          "type": "string",
-          "required": true,
-          "description": "type parameter"
-        },
-        "workingDir": {
-          "type": "string",
-          "required": false,
-          "description": "workingDir parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "async": {
-          "type": "boolean",
-          "required": false,
-          "description": "async parameter"
         },
         "target": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "target parameter"
         },
         "filename": {
@@ -1730,41 +1622,15 @@
           "type": "object",
           "required": false,
           "description": "viewport parameter"
-        }
-      }
-    },
-    {
-      "name": "sentinel/run",
-      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
-      "params": {
-        "type": {
-          "type": "string",
-          "required": true,
-          "description": "type parameter"
-        },
-        "workingDir": {
-          "type": "string",
-          "required": false,
-          "description": "workingDir parameter"
-        },
-        "timeout": {
-          "type": "number",
-          "required": false,
-          "description": "timeout parameter"
-        },
-        "async": {
-          "type": "boolean",
-          "required": false,
-          "description": "async parameter"
         },
         "tasks": {
           "type": "array",
-          "required": true,
+          "required": false,
           "description": "tasks parameter"
         },
         "action": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "action parameter"
         },
         "file": {
@@ -1777,11 +1643,6 @@
           "required": false,
           "description": "content parameter"
         },
-        "command": {
-          "type": "string",
-          "required": false,
-          "description": "command parameter"
-        },
         "maxDepth": {
           "type": "number",
           "required": false,
@@ -1791,23 +1652,22 @@
           "type": "number",
           "required": false,
           "description": "maxTotalTasks parameter"
-        }
-      }
-    },
-    {
-      "name": "sentinel/run",
-      "description": "Sentinel Run Command - Types\n *\n * Allows AIs to create and run Sentinels via JSON config.\n * Uses handles for long-running operations and emits events for progress.",
-      "params": {
+        },
+        "definition": {
+          "type": "string",
+          "required": false,
+          "description": "definition parameter"
+        },
         "handle": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "handle parameter"
         }
       }
     },
     {
       "name": "sentinel/logs/tail",
-      "description": "Sentinel Logs Tail Command - Types\n *\n * Get the last N lines of a log stream (like Unix tail).",
+      "description": "Get the last N lines of a sentinel log stream, like Unix tail.",
       "params": {
         "handle": {
           "type": "string",
@@ -1828,7 +1688,7 @@
     },
     {
       "name": "sentinel/logs/read",
-      "description": "Sentinel Logs Read Command - Types\n *\n * Read a log stream for a sentinel.",
+      "description": "Read a log stream for a sentinel with optional offset and limit for pagination.",
       "params": {
         "handle": {
           "type": "string",
@@ -1854,7 +1714,7 @@
     },
     {
       "name": "sentinel/logs/list",
-      "description": "Sentinel Logs List Command - Types\n *\n * List available log streams for a sentinel.",
+      "description": "List available log streams for a sentinel by handle.",
       "params": {
         "handle": {
           "type": "string",
@@ -1865,7 +1725,7 @@
     },
     {
       "name": "sentinel/load",
-      "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
+      "description": "Load and optionally run saved sentinel definitions from database.",
       "params": {
         "id": {
           "type": "string",
@@ -1890,34 +1750,8 @@
       }
     },
     {
-      "name": "sentinel/load",
-      "description": "Sentinel Load Command - Types\n *\n * Load and optionally run saved sentinel definitions from database.",
-      "params": {
-        "type": {
-          "type": "string",
-          "required": false,
-          "description": "type parameter"
-        },
-        "tags": {
-          "type": "array",
-          "required": false,
-          "description": "tags parameter"
-        },
-        "templatesOnly": {
-          "type": "boolean",
-          "required": false,
-          "description": "templatesOnly parameter"
-        },
-        "limit": {
-          "type": "number",
-          "required": false,
-          "description": "limit parameter"
-        }
-      }
-    },
-    {
       "name": "sentinel/list",
-      "description": "Sentinel List Command - Types\n *\n * List saved sentinel definitions from database.",
+      "description": "List saved sentinel definitions from database.",
       "params": {
         "type": {
           "type": "string",
@@ -1948,7 +1782,7 @@
     },
     {
       "name": "security/setup",
-      "description": "security/setup command",
+      "description": "Install and configure security components (network monitor, proxy) and report their current status.",
       "params": {
         "statusOnly": {
           "type": "boolean",
@@ -1964,7 +1798,7 @@
     },
     {
       "name": "search/vector",
-      "description": "Search Vector Command Types\n * Vector similarity search via Rust SearchModule",
+      "description": "Vector similarity search via Rust SearchModule",
       "params": {
         "queryVector": {
           "type": "array",
@@ -1990,7 +1824,7 @@
     },
     {
       "name": "search/params",
-      "description": "Search Params Command Types\n * Get algorithm parameters from Rust SearchModule",
+      "description": "Get algorithm parameters from Rust SearchModule",
       "params": {
         "algorithm": {
           "type": "string",
@@ -2001,12 +1835,12 @@
     },
     {
       "name": "search/list",
-      "description": "Search List Command Types\n * Lists available search algorithms from Rust SearchModule",
+      "description": "Lists available search algorithms from Rust SearchModule",
       "params": {}
     },
     {
       "name": "search/execute",
-      "description": "Search Execute Command Types\n * Executes text search via Rust SearchModule",
+      "description": "Executes text search via Rust SearchModule",
       "params": {
         "algorithm": {
           "type": "string",
@@ -2032,7 +1866,7 @@
     },
     {
       "name": "runtime/metrics",
-      "description": "Runtime Metrics Command - Shared Types\n *\n * Query Rust module performance metrics including latency percentiles, command counts, and slow command tracking.\n * Enables AI-driven system analysis and optimization (Ares pattern).\n *\n * Uses ts-rs generated types from Rust as source of truth for wire format.",
+      "description": "Query Rust module performance metrics including latency percentiles, command counts, and slow command tracking. Enables AI-driven system analysis and optimization.",
       "params": {
         "mode": {
           "type": "string",
@@ -2048,7 +1882,7 @@
     },
     {
       "name": "rag/load",
-      "description": "RAG Load Command - Test incremental message loading with token counting\n *\n * Shows exactly which messages would be loaded for RAG context given a token budget.\n * Makes the incremental loading algorithm transparent and debuggable.",
+      "description": "RAG Load Command - Test incremental message loading with token counting Shows exactly which messages would be loaded for RAG context given a token budget. Makes the incremental loading algorithm transparent and debuggable.",
       "params": {
         "roomId": {
           "type": "string",
@@ -2064,6 +1898,11 @@
           "type": "string",
           "required": true,
           "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
         },
         "maxTokens": {
           "type": "number",
@@ -2089,12 +1928,17 @@
     },
     {
       "name": "rag/budget",
-      "description": "RAG Budget Command - Calculate token budget for RAG context\n *\n * Shows the algorithm for calculating safe message counts based on model's context window.\n * Makes the token budget calculation transparent and debuggable.",
+      "description": "RAG Budget Command - Calculate token budget for RAG context Shows the algorithm for calculating safe message counts based on model's context window. Makes the token budget calculation transparent and debuggable.",
       "params": {
         "model": {
           "type": "string",
           "required": true,
           "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
         },
         "maxTokens": {
           "type": "number",
@@ -2120,16 +1964,16 @@
     },
     {
       "name": "process-registry",
-      "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
+      "description": "Cleanup processes parameters",
       "params": {
         "processType": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "processType parameter"
         },
         "description": {
           "type": "string",
-          "required": true,
+          "required": false,
           "description": "description parameter"
         },
         "ports": {
@@ -2146,13 +1990,7 @@
           "type": "string",
           "required": false,
           "description": "parentProcessId parameter"
-        }
-      }
-    },
-    {
-      "name": "process-registry",
-      "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
-      "params": {
+        },
         "filterByPorts": {
           "type": "array",
           "required": false,
@@ -2167,13 +2005,7 @@
           "type": "boolean",
           "required": false,
           "description": "includeStale parameter"
-        }
-      }
-    },
-    {
-      "name": "process-registry",
-      "description": "Process Registry Command Types - Shared\n * \n * Provides process identification and cleanup commands for JTAG multi-instance coordination.\n * Enables P2P mesh networking by preventing process collision during startup/cleanup.",
-      "params": {
+        },
         "forceAll": {
           "type": "boolean",
           "required": false,
@@ -2198,7 +2030,7 @@
     },
     {
       "name": "positron/cursor",
-      "description": "Positron Cursor Command Types\n *\n * Enables AIs to point, highlight, and draw attention to elements in the UI.\n * The cursor is the AI's \"hand\" - its spatial presence in the interface.",
+      "description": "Enables AIs to point, highlight, and draw attention to elements in the UI. The cursor is the AI's \"hand\" - its spatial presence in the interface.",
       "params": {
         "action": {
           "type": "string",
@@ -2254,7 +2086,7 @@
     },
     {
       "name": "ping",
-      "description": "ping command",
+      "description": "Include detailed AI persona health status",
       "params": {
         "server": {
           "type": "string",
@@ -2275,7 +2107,7 @@
     },
     {
       "name": "persona/learning/pattern/query",
-      "description": "Persona Learning Pattern Query Command - Shared Types\n *\n * Query the collective pattern knowledge base. Search for patterns that might help solve the current problem.",
+      "description": "Query the collective pattern knowledge base. Search for patterns that might help solve the current problem.",
       "params": {
         "domain": {
           "type": "string",
@@ -2321,7 +2153,7 @@
     },
     {
       "name": "persona/learning/pattern/endorse",
-      "description": "Persona Learning Pattern Endorse Command - Shared Types\n *\n * Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.",
+      "description": "Report the outcome of using a pattern. Updates confidence scores and can trigger validation or deprecation.",
       "params": {
         "patternId": {
           "type": "string",
@@ -2342,7 +2174,7 @@
     },
     {
       "name": "persona/learning/pattern/capture",
-      "description": "Persona Learning Pattern Capture Command - Shared Types\n *\n * Capture a successful pattern for cross-AI learning. When an AI discovers a working solution, they share it with the team.",
+      "description": "Capture a successful pattern for cross-AI learning. When an AI discovers a working solution, they share it with the team.",
       "params": {
         "name": {
           "type": "string",
@@ -2398,7 +2230,7 @@
     },
     {
       "name": "persona/learning/multi-agent-learn",
-      "description": "GenomeMultiAgentLearnTypes - Multi-agent collaborative learning\n *\n * All participants learn from shared outcome after recipe completion.\n * Enables GAN-like training where multiple PersonaUsers improve together.",
+      "description": "Triggers collaborative learning across multiple PersonaUser participants after a shared activity completes, distributing reinforcement or correction training to each based on their individual performance metrics.",
       "params": {
         "domain": {
           "type": "string",
@@ -2434,7 +2266,7 @@
     },
     {
       "name": "persona/learning/capture-interaction",
-      "description": "GenomeCaptureInteractionTypes - Capture AI interactions for continuous learning\n *\n * Called during recipe execution to record inputs/outputs for LoRA training.\n * Accumulates examples in-memory for batch micro-tuning.",
+      "description": "Captures an AI persona's input/output pair during task execution, accumulating training examples in-memory for batch LoRA micro-tuning within a specified learning domain.",
       "params": {
         "roleId": {
           "type": "string",
@@ -2495,7 +2327,7 @@
     },
     {
       "name": "persona/learning/capture-feedback",
-      "description": "GenomeCaptureFeedbackTypes - Capture feedback between PersonaUsers\n *\n * Records corrections, critiques, scores from one persona to another.\n * Enables reciprocal learning - both giver and receiver learn from feedback.",
+      "description": "Records a correction, approval, critique, score, or suggestion from one persona to another, enabling reciprocal learning where both the feedback giver and receiver improve from the exchange.",
       "params": {
         "interactionId": {
           "type": "string",
@@ -2566,7 +2398,7 @@
     },
     {
       "name": "persona/genome",
-      "description": "Persona Genome Command - Shared Types\n *\n * Get persona genome information including base model, layers, and traits",
+      "description": "Get persona genome information including base model, layers, and traits",
       "params": {
         "personaId": {
           "type": "string",
@@ -2577,7 +2409,7 @@
     },
     {
       "name": "media/resize",
-      "description": "Media Resize Command Types\n *\n * Image resizing via sharp library with model-aware dimension calculation.\n * Enables PersonaUsers to receive appropriately-sized images based on their\n * model's context window capacity.",
+      "description": "Parameters for media resizing",
       "params": {
         "inputPath": {
           "type": "string",
@@ -2614,6 +2446,11 @@
           "required": false,
           "description": "modelName parameter"
         },
+        "providerName": {
+          "type": "string",
+          "required": false,
+          "description": "providerName parameter"
+        },
         "targetPercentage": {
           "type": "number",
           "required": false,
@@ -2638,7 +2475,7 @@
     },
     {
       "name": "media/process",
-      "description": "Media Process Command Types\n *\n * Comprehensive video/audio/image processing via ffmpeg and other media tools.\n * Supports speed adjustment, format conversion, trimming, audio manipulation, and more.",
+      "description": "Parameters for media processing",
       "params": {
         "inputPath": {
           "type": "string",
@@ -2789,12 +2626,12 @@
     },
     {
       "name": "logs/stats",
-      "description": "logs/stats command",
+      "description": "Return aggregate statistics about all log files, including total file count and combined size in megabytes.",
       "params": {}
     },
     {
       "name": "logs/search",
-      "description": "logs/search command",
+      "description": "Search across log files for lines matching a pattern, optionally scoped to specific logs, categories, or personas.",
       "params": {
         "pattern": {
           "type": "string",
@@ -2805,7 +2642,7 @@
     },
     {
       "name": "logs/read",
-      "description": "logs/read command",
+      "description": "Read lines from a log file with optional filtering by level or component, and optional multi-dimensional structure analysis (temporal, severity, spatial).",
       "params": {
         "log": {
           "type": "string",
@@ -2892,7 +2729,7 @@
     },
     {
       "name": "logs/config",
-      "description": "Logs Config Command - Shared Types\n *\n * Get or set logging configuration per persona and category",
+      "description": "Get or set logging configuration per persona and category",
       "params": {
         "persona": {
           "type": "string",
@@ -2913,7 +2750,7 @@
     },
     {
       "name": "logging/status",
-      "description": "Logging Status Command - Shared Types\n *\n * Show current logging configuration for all personas or a specific persona",
+      "description": "Show current logging configuration for all personas or a specific persona",
       "params": {
         "persona": {
           "type": "string",
@@ -2924,7 +2761,7 @@
     },
     {
       "name": "logging/enable",
-      "description": "Logging Enable Command - Shared Types\n *\n * Enable logging for a persona. Persists to .continuum/logging.json",
+      "description": "Enable logging for a persona. Persists to .continuum/logging.json",
       "params": {
         "persona": {
           "type": "string",
@@ -2940,7 +2777,7 @@
     },
     {
       "name": "logging/disable",
-      "description": "Logging Disable Command - Shared Types\n *\n * Disable logging for a persona. Persists to .continuum/logging.json",
+      "description": "Disable logging for a persona. Persists to .continuum/logging.json",
       "params": {
         "persona": {
           "type": "string",
@@ -2956,7 +2793,7 @@
     },
     {
       "name": "list",
-      "description": "List Command Types - Command Discovery Interface\n * \n * Provides strongly-typed interface for discovering available commands from the system.\n * Essential command that all JTAG systems must implement for client discovery.",
+      "description": "List command parameters",
       "params": {
         "includeDescription": {
           "type": "boolean",
@@ -2972,7 +2809,7 @@
     },
     {
       "name": "interface/webmcp/discover",
-      "description": "Interface Webmcp Discover Command - Shared Types\n *\n * Discover WebMCP tools available on the current page. Returns structured tool definitions with schemas. Fails explicitly if WebMCP is not available.",
+      "description": "Discover WebMCP tools available on the current page. Returns structured tool definitions with schemas. Fails explicitly if WebMCP is not available.",
       "params": {
         "url": {
           "type": "string",
@@ -2983,7 +2820,7 @@
     },
     {
       "name": "interface/webmcp/call",
-      "description": "Interface Webmcp Call Command - Shared Types\n *\n * Call a WebMCP tool on the current page. Returns structured result from the tool. Fails explicitly if WebMCP is not available or tool not found.",
+      "description": "Call a WebMCP tool on the current page. Returns structured result from the tool. Fails explicitly if WebMCP is not available or tool not found.",
       "params": {
         "toolName": {
           "type": "string",
@@ -3004,7 +2841,7 @@
     },
     {
       "name": "interface/web/search",
-      "description": "Web Search Command Types\n *\n * Allows AIs to search the web and get results.\n * Uses search APIs to find relevant information.",
+      "description": "Web search parameters",
       "params": {
         "query": {
           "type": "string",
@@ -3025,7 +2862,7 @@
     },
     {
       "name": "interface/web/fetch",
-      "description": "Web Fetch Command Types\n *\n * Allows AIs to fetch and read web pages.\n * Returns clean text content from HTML pages.",
+      "description": "Web fetch parameters",
       "params": {
         "url": {
           "type": "string",
@@ -3051,7 +2888,7 @@
     },
     {
       "name": "interface/wait-for-element",
-      "description": "interface/wait-for-element command",
+      "description": "Wait for a DOM element to appear, matching a CSS selector.",
       "params": {
         "selector": {
           "type": "string",
@@ -3077,7 +2914,7 @@
     },
     {
       "name": "interface/type",
-      "description": "interface/type command",
+      "description": "Type text into a form field or input element.",
       "params": {
         "selector": {
           "type": "string",
@@ -3103,7 +2940,7 @@
     },
     {
       "name": "interface/scroll",
-      "description": "interface/scroll command",
+      "description": "Scroll the page or a specific element.",
       "params": {
         "x": {
           "type": "number",
@@ -3129,7 +2966,7 @@
     },
     {
       "name": "interface/screenshot",
-      "description": "Screenshot Command - Shared Types\n * \n * Common types and interfaces used by both browser and server screenshot implementations.",
+      "description": "Screenshot Command Parameters - Enhanced with advanced features",
       "params": {
         "filename": {
           "type": "string",
@@ -3240,7 +3077,7 @@
     },
     {
       "name": "interface/proxy-navigate",
-      "description": "Proxy Navigate Command - Shared Types\n * \n * Enables cross-origin navigation through proxy system for widget training.\n * Solves the fundamental html2canvas + cross-origin iframe limitation.",
+      "description": "Enables cross-origin navigation through proxy system for widget training. Solves the fundamental html2canvas + cross-origin iframe limitation.",
       "params": {
         "url": {
           "type": "string",
@@ -3271,7 +3108,7 @@
     },
     {
       "name": "interface/page/submit",
-      "description": "Interface Page Submit Command - Shared Types\n *\n * Submit a form on a web page. Use interface/page/forms to discover forms,\n * interface/page/fill to populate fields, then this command to submit.\n * Returns the resulting page state after submission.",
+      "description": "Submit a form on a web page. Use interface/page/forms to discover forms, interface/page/fill to populate fields, then this command to submit. Returns the resulting page state after submission.",
       "params": {
         "url": {
           "type": "string",
@@ -3302,7 +3139,7 @@
     },
     {
       "name": "interface/page/forms",
-      "description": "Interface Page Forms Command - Shared Types\n *\n * Discover all forms on a web page. Returns structured form definitions with field names,\n * types, labels, and submit buttons. Works on ANY page with HTML forms - no WebMCP required.\n * Use this first to understand what you can interact with, then use interface/page/fill\n * and interface/page/submit.",
+      "description": "Discover all forms on a web page. Returns structured form definitions with field names, types, labels, and submit buttons. Works on ANY page with HTML forms - no WebMCP required. Use this first to understand what you can interact with, then use interface/page/fill and interface/page/submit.",
       "params": {
         "url": {
           "type": "string",
@@ -3318,7 +3155,7 @@
     },
     {
       "name": "interface/page/fill",
-      "description": "Interface Page Fill Command - Shared Types\n *\n * Fill form fields on a web page. Use interface/page/forms first to discover available forms\n * and their fields. This command fills fields but does NOT submit - use interface/page/submit\n * after filling.",
+      "description": "Fill form fields on a web page. Use interface/page/forms first to discover available forms and their fields. This command fills fields but does NOT submit - use interface/page/submit after filling.",
       "params": {
         "url": {
           "type": "string",
@@ -3344,7 +3181,7 @@
     },
     {
       "name": "interface/navigate",
-      "description": "Navigate Command - Shared Types for Browser Navigation\n * \n * Minimal, focused types for URL navigation across browser/server contexts.\n * Follows the elegant pattern of screenshot command - simple params and results\n * with clean inheritance from CommandParams/CommandResult base classes.\n * \n * DESIGN PRINCIPLES:\n * - Object.assign() in constructor for clean initialization\n * - Optional properties with sensible defaults\n * - Environment-aware results with timestamps\n * - Type safety without overkill complexity\n * \n * USAGE:\n * - Browser: Direct window.location navigation\n * - Server: Delegates to browser context\n * - Symmetric interface across both contexts",
+      "description": "Navigate the browser to a URL.",
       "params": {
         "url": {
           "type": "string",
@@ -3370,7 +3207,7 @@
     },
     {
       "name": "interface/launch/url",
-      "description": "Interface Launch Url Command - Shared Types\n *\n * Opens a URL in the default browser. Enables personas to view what they build.",
+      "description": "Opens a URL in the default browser. Enables personas to view what they build.",
       "params": {
         "url": {
           "type": "string",
@@ -3391,7 +3228,7 @@
     },
     {
       "name": "interface/get-text",
-      "description": "interface/get-text command",
+      "description": "Extract text content from a DOM element by CSS selector.",
       "params": {
         "selector": {
           "type": "string",
@@ -3412,7 +3249,7 @@
     },
     {
       "name": "interface/click",
-      "description": "Click Command - Shared Types for Element Interaction\n * \n * Minimal types for clicking DOM elements. Follows screenshot/navigate pattern\n * with clean inheritance and Object.assign() initialization.\n * \n * DESIGN ANALYSIS:\n * ✅ Focused on single action - clicking elements\n * ✅ Clean parameter interface with optional properties\n * ✅ Proper constructor pattern with Object.assign()\n * ✅ Result type includes success state and metadata\n * ✅ No over-engineering - just what's needed for clicks\n * \n * SCOPE:\n * - Browser: Direct DOM element.click() calls\n * - Server: Delegates to browser context\n * - Consistent interface across contexts",
+      "description": "Click a DOM element by CSS selector.",
       "params": {
         "selector": {
           "type": "string",
@@ -3448,7 +3285,7 @@
     },
     {
       "name": "interface/browser/capabilities",
-      "description": "Interface Browser Capabilities Command - Shared Types\n *\n * Check available browser automation capabilities. Returns explicit status for each capability (webmcp, puppeteer, etc). No fallbacks - AIs see exactly what is/isn't available.",
+      "description": "Check available browser automation capabilities. Returns explicit status for each capability (webmcp, puppeteer, etc). No fallbacks - AIs see exactly what is/isn't available.",
       "params": {
         "_noParams": {
           "type": "string",
@@ -3459,7 +3296,7 @@
     },
     {
       "name": "inference/generate",
-      "description": "Inference Generate Command - Shared Types\n *\n * Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
+      "description": "Generate text using local or cloud AI inference. Auto-routes to best available backend (Candle → Ollama → cloud). Handles model loading, LoRA adapters, and provider failover automatically.",
       "params": {
         "prompt": {
           "type": "string",
@@ -3500,7 +3337,7 @@
     },
     {
       "name": "help",
-      "description": "Help Command - Shared Types\n *\n * Discover and display help documentation from command READMEs, auto-generating templates for gaps",
+      "description": "Discover and display help documentation from command READMEs, auto-generating templates for gaps",
       "params": {
         "path": {
           "type": "string",
@@ -3521,7 +3358,7 @@
     },
     {
       "name": "genome/activate",
-      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "description": "Activate adapter for persona Loads adapter into memory, evicting others if needed.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3537,7 +3374,7 @@
     },
     {
       "name": "genome/deactivate",
-      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "description": "Deactivate adapter for persona Unloads adapter from memory.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3553,7 +3390,7 @@
     },
     {
       "name": "genome/stats",
-      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "description": "Get genome statistics Returns global daemon stats and per-persona stats.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3564,7 +3401,7 @@
     },
     {
       "name": "genome/register",
-      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "description": "Register persona with genome daemon Must be called before activating adapters.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3590,7 +3427,7 @@
     },
     {
       "name": "genome/unregister",
-      "description": "Genome Command Types\n *\n * Commands for managing LoRA adapter paging across personas.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "description": "Unregister persona from genome daemon Unloads all adapters for persona.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3601,7 +3438,7 @@
     },
     {
       "name": "genome/paging-unregister",
-      "description": "Genome Unregister Command Types\n *\n * Unregister persona from genome daemon - unloads all adapters for persona.",
+      "description": "Unregister persona from genome daemon - unloads all adapters for persona.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3612,7 +3449,7 @@
     },
     {
       "name": "genome/paging-stats",
-      "description": "Genome Stats Command Types\n *\n * Get genome statistics - returns global daemon stats and per-persona stats.",
+      "description": "Get genome statistics - returns global daemon stats and per-persona stats.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3623,7 +3460,7 @@
     },
     {
       "name": "genome/paging-register",
-      "description": "Genome Register Command Types\n *\n * Register persona with genome daemon - must be called before activating adapters.",
+      "description": "Register persona with genome daemon - must be called before activating adapters.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3649,7 +3486,7 @@
     },
     {
       "name": "genome/paging-deactivate",
-      "description": "Genome Deactivate Command Types\n *\n * Deactivate adapter for persona - unloads adapter from memory.",
+      "description": "Deactivate adapter for persona - unloads adapter from memory.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3665,7 +3502,7 @@
     },
     {
       "name": "genome/paging-adapter-register",
-      "description": "Genome Paging Adapter Register Command Types\n *\n * Register a mock LoRA adapter in the global adapter registry.\n * This must be done before activating adapters for personas.\n *\n * Phase 7: Mock adapters only\n * Phase 8+: Real Candle adapters",
+      "description": "Genome Paging Adapter Register Command Types Register a mock LoRA adapter in the global adapter registry. This must be done before activating adapters for personas. Phase 7: Mock adapters only Phase 8+: Real Candle adapters",
       "params": {
         "adapterId": {
           "type": "string",
@@ -3696,7 +3533,7 @@
     },
     {
       "name": "genome/paging-activate",
-      "description": "Genome Activate Command Types\n *\n * Activate adapter for persona - loads adapter into memory, evicting others if needed.\n *\n * Phase 7: Single adapter per persona (mock adapters)\n * Phase 8+: Multiple adapters stacked (real GPU)",
+      "description": "Activate adapter for persona - loads adapter into memory, evicting others if needed. Phase 7: Single adapter per persona (mock adapters) Phase 8+: Multiple adapters stacked (real GPU)",
       "params": {
         "personaId": {
           "type": "string",
@@ -3712,7 +3549,7 @@
     },
     {
       "name": "genome/job-status",
-      "description": "GenomeJobStatusTypes - Query fine-tuning job status\n *\n * Retrieves current status, progress, and metadata for a training job.\n * Works with jobs created via genome/job-create.",
+      "description": "GenomeJobStatusTypes - Query fine-tuning job status Retrieves current status, progress, and metadata for a training job. Works with jobs created via genome/job-create.",
       "params": {
         "jobId": {
           "type": "string",
@@ -3728,7 +3565,7 @@
     },
     {
       "name": "genome/job-create",
-      "description": "GenomeJobCreateTypes - Create fine-tuning jobs with comprehensive configuration\n *\n * Universal command for creating fine-tuning jobs across all providers (OpenAI, DeepSeek, Fireworks, Together).\n * Uses provider-agnostic JobConfiguration schema with automatic validation.",
+      "description": "Create a fine-tuning job on a cloud provider (OpenAI, DeepSeek, Fireworks, or Together) with a validated, provider-agnostic configuration.",
       "params": {
         "personaId": {
           "type": "string",
@@ -3764,7 +3601,7 @@
     },
     {
       "name": "genome/batch-micro-tune",
-      "description": "GenomeBatchMicroTuneTypes - Lightweight in-recipe LoRA updates\n *\n * Performs fast micro-tuning during recipe execution using accumulated examples.\n * Soft updates in RAM, not persisted to disk (that happens during deep training).",
+      "description": "Perform a fast, in-memory LoRA micro-tune on accumulated training examples during recipe execution, without persisting weights to disk.",
       "params": {
         "domain": {
           "type": "string",
@@ -3805,7 +3642,7 @@
     },
     {
       "name": "file",
-      "description": "File Command Base Types - Generic Foundation for File Operations\n * \n * Provides type-safe base classes for all file operations using TypeScript generics.\n * Follows the modular command architecture with ~50 line modules and shared types.\n * \n * CORE ARCHITECTURE:\n * - Generic FileParams<T> base for type-safe parameter extension\n * - Generic FileResult<T> base for consistent result structure\n * - Abstract base classes prevent direct instantiation\n * - Object.assign constructor pattern for elegant initialization\n * \n * TESTING REQUIREMENTS:\n * - Unit tests: Parameter validation and default value assignment\n * - Integration tests: Cross-command type compatibility\n * - Type tests: Generic constraint validation\n * \n * ARCHITECTURAL INSIGHTS:\n * - Generics enable type-safe command extension without duplication\n * - Abstract classes provide structure while allowing specialization\n * - Shared types ensure consistency across file operations",
+      "description": "Generic base parameters for all file operations",
       "params": {
         "filepath": {
           "type": "string",
@@ -3821,7 +3658,7 @@
     },
     {
       "name": "file/save",
-      "description": "FileSave Types - Generic Inheritance from File Base Types\n * \n * GENERIC HIERARCHY:\n * FileParams<{content, createDirs}> → FileSaveParams\n * FileResult<{bytesWritten, created}> → FileSaveResult",
+      "description": "File save command parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3847,7 +3684,7 @@
     },
     {
       "name": "file/mime-type",
-      "description": "File MIME Type Command Types\n * Detects MIME type from file extension or file content",
+      "description": "File MIME type detection parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3868,7 +3705,7 @@
     },
     {
       "name": "file/load",
-      "description": "FileLoad Types - Elegant Inheritance from File Base Types\n * \n * INHERITANCE HIERARCHY:\n * FileParams → FileLoadParams (no additional fields - pure inheritance)\n * FileResult → FileLoadResult (adds content, bytesRead)",
+      "description": "File load command parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3884,7 +3721,7 @@
     },
     {
       "name": "file/append",
-      "description": "FileAppend Types - Elegant Inheritance from File Base Types\n * \n * INHERITANCE HIERARCHY:\n * FileParams → FileAppendParams (adds content, createIfMissing)\n * FileResult → FileAppendResult (adds bytesAppended, wasCreated)",
+      "description": "File append command parameters",
       "params": {
         "filepath": {
           "type": "string",
@@ -3910,7 +3747,7 @@
     },
     {
       "name": "development/timing",
-      "description": "TimingTypes - Types for analyzing Rust worker timing metrics\n *\n * NOTE: The data-daemon worker has been absorbed into continuum-core DataModule.\n * The timing file /tmp/jtag-data-daemon-timing.jsonl may no longer be written.\n * See TimingServerCommand.ts for details.",
+      "description": "Timing analysis parameters",
       "params": {
         "windowMinutes": {
           "type": "number",
@@ -3941,7 +3778,7 @@
     },
     {
       "name": "development/shell/execute",
-      "description": "Shell Execute Command Types\n *\n * Provides safe shell command execution for PersonaUsers and other AI agents.\n * Commands are whitelisted and sanitized to prevent security issues.",
+      "description": "Parameters for shell command execution",
       "params": {
         "command": {
           "type": "string",
@@ -3977,7 +3814,7 @@
     },
     {
       "name": "development/schema/generate",
-      "description": "Schema Generate Command Types\n *\n * Generates JSON schemas from TypeScript interfaces using the TypeScript compiler.\n * Properly resolves cross-file inheritance.\n *\n * Usage:\n *   ./jtag schema/generate --pattern=\"*Params\" --output=\"schemas.json\"\n *   ./jtag schema/generate --interface=\"DataReadParams\" --file=\"commands/data/read/shared/DataReadTypes.ts\"",
+      "description": "Generates JSON schemas from TypeScript interfaces using the TypeScript compiler. Properly resolves cross-file inheritance. Usage: ./jtag schema/generate --pattern=\"*Params\" --output=\"schemas.json\" ./jtag schema/generate --interface=\"DataReadParams\" --file=\"commands/data/read/shared/DataReadTypes.ts\"",
       "params": {
         "pattern": {
           "type": "string",
@@ -4008,7 +3845,7 @@
     },
     {
       "name": "development/sandbox-execute",
-      "description": "Sandbox Execute Types - Run AI-generated commands in isolation\n *\n * Executes commands from persona sandboxes using npx tsx for dynamic loading.\n * No main system recompile needed.",
+      "description": "Sandbox Execute Types - Run AI-generated commands in isolation Executes commands from persona sandboxes using npx tsx for dynamic loading. No main system recompile needed.",
       "params": {
         "commandPath": {
           "type": "string",
@@ -4029,7 +3866,7 @@
     },
     {
       "name": "development/propose-command",
-      "description": "Propose Command Types - AI Command Generation\n *\n * Allows AI personas to propose and generate new commands in their isolated sandbox.\n * Commands are generated to per-persona directories and loaded dynamically.\n *\n * Flow:\n * 1. AI proposes a CommandSpec JSON\n * 2. Command is generated to .continuum/personas/{personaId}/commands/\n * 3. Commands are namespaced: persona:{uniqueId}/command-name\n * 4. AI can test their command in isolation\n * 5. Human can promote to main codebase if valuable",
+      "description": "Implementation notes for the AI",
       "params": {
         "spec": {
           "type": "string",
@@ -4050,7 +3887,7 @@
     },
     {
       "name": "development/generate",
-      "description": "Generate Command - Shared Types\n *\n * Generate a new command from a CommandSpec JSON definition",
+      "description": "Generate new commands, daemons, or widgets using templates and CommandSpec definitions.",
       "params": {
         "spec": {
           "type": "string",
@@ -4066,7 +3903,7 @@
     },
     {
       "name": "development/generate/audit",
-      "description": "Generate/Audit Command - Shared Types\n *\n * Audit generated modules for issues and optionally fix them",
+      "description": "Audit generated modules for issues and optionally fix them automatically.",
       "params": {
         "module": {
           "type": "string",
@@ -4092,7 +3929,7 @@
     },
     {
       "name": "development/exec",
-      "description": "ExecCommand Types - Universal Script Execution System\n * \n * Defines types for JTAG's meta-command that enables AI agents to write\n * custom automation scripts with visual feedback and cross-context execution.",
+      "description": "ExecCommand Types - Universal Script Execution System Defines types for JTAG's meta-command that enables AI agents to write custom automation scripts with visual feedback and cross-context execution.",
       "params": {
         "code": {
           "type": "string",
@@ -4153,7 +3990,7 @@
     },
     {
       "name": "development/debug/widget-state",
-      "description": "Widget State Debug Command Types\n *\n * Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development\n * Enables inspection of widget internal state, event listeners, and DOM structure",
+      "description": "Addresses DEBUG-FRICTION.md critical gap: Widget introspection during development Enables inspection of widget internal state, event listeners, and DOM structure",
       "params": {
         "widgetSelector": {
           "type": "string",
@@ -4224,7 +4061,7 @@
     },
     {
       "name": "development/debug/widget-interact",
-      "description": "Widget Interaction Command Types\n *\n * Complete widget interaction capabilities - everything you can do in UX/devtools\n * Perfect for MCP integration where Claude needs full UI control",
+      "description": "Complete widget interaction capabilities - everything you can do in UX/devtools Perfect for MCP integration where Claude needs full UI control",
       "params": {
         "widgetSelector": {
           "type": "string",
@@ -4295,7 +4132,7 @@
     },
     {
       "name": "development/debug/widget-events",
-      "description": "Widget Events Debug Command Types\n * \n * Specialized command for debugging widget event listeners and event system connectivity\n * Replaces raw exec commands for widget event debugging",
+      "description": "Specialized command for debugging widget event listeners and event system connectivity Replaces raw exec commands for widget event debugging",
       "params": {
         "widgetSelector": {
           "type": "string",
@@ -4326,7 +4163,7 @@
     },
     {
       "name": "development/debug/widget-css",
-      "description": "Debug Command: widget-css\n * Hot-inject CSS into widgets for rapid iteration without full deployment",
+      "description": "Debug Command: widget-css Hot-inject CSS into widgets for rapid iteration without full deployment",
       "params": {
         "widgetSelector": {
           "type": "string",
@@ -4392,7 +4229,7 @@
     },
     {
       "name": "development/debug/scroll-test",
-      "description": "Scroll Test Debug Command Types - Clean Testing Interface\n *\n * Animated scroll testing for debugging intersection observers and scroll behaviors.\n * Useful for testing infinite scroll, chat positioning, and scroll restoration.",
+      "description": "Essential debug command for testing scroll behaviors, intersection observers, and chat positioning.",
       "params": {
         "target": {
           "type": "string",
@@ -4459,7 +4296,7 @@
     },
     {
       "name": "development/debug/error",
-      "description": "Test Error Command Types - Enhanced\n * \n * Comprehensive error testing command for validating error handling at all levels.\n * Supports environment-specific triggers and multi-level error testing.",
+      "description": "Enhanced test error command parameters",
       "params": {
         "errorType": {
           "type": "string",
@@ -4500,7 +4337,7 @@
     },
     {
       "name": "development/debug/crud-sync",
-      "description": "CRUD Sync Debug Command Types\n *\n * Verifies database/UI synchronization across all three main widgets:\n * - room-list-widget: Rooms data\n * - chat-widget: Messages data\n * - user-list-widget: Users data",
+      "description": "Verifies database/UI synchronization across all three main widgets: - room-list-widget: Rooms data - chat-widget: Messages data - user-list-widget: Users data",
       "params": {
         "collections": {
           "type": "array",
@@ -4521,7 +4358,7 @@
     },
     {
       "name": "development/debug/chat-send",
-      "description": "Chat Send Debug Command Types\n *\n * Triggers chat widget to send a message for testing event flow",
+      "description": "Triggers chat widget to send a message for testing event flow",
       "params": {
         "message": {
           "type": "string",
@@ -4548,7 +4385,7 @@
     },
     {
       "name": "development/compile-typescript",
-      "description": "Compile TypeScript Command - Shared Types\n * \n * Minimal, focused types for TypeScript compilation only.\n * Follows screenshot/navigate pattern - simple params and results.\n * \n * DESIGN PRINCIPLES:\n * ✅ Single responsibility - only TypeScript compilation\n * ✅ Clean parameter interface with sensible defaults\n * ✅ Object.assign() constructor pattern\n * ✅ No over-engineering or god objects\n * ✅ Focused scope - just TSC compilation\n * \n * SCOPE:\n * - Browser: Uses monaco/typescript service if available\n * - Server: Uses local tsc executable or typescript module\n * - Consistent interface across contexts",
+      "description": "Minimal, focused types for TypeScript compilation only. Follows screenshot/navigate pattern - simple params and results. DESIGN PRINCIPLES: ✅ Single responsibility - only TypeScript compilation ✅ Clean parameter interface with sensible defaults ✅ Object.assign() constructor pattern ✅ No over-engineering or god objects ✅ Focused scope - just TSC compilation SCOPE: - Browser: Uses monaco/typescript service if available - Server: Uses local tsc executable or typescript module - Consistent interface across contexts",
       "params": {
         "source": {
           "type": "string",
@@ -4579,7 +4416,7 @@
     },
     {
       "name": "development/build",
-      "description": "Development Build Command - Shared Types\n *\n * Zero-friction TypeScript build check. Returns success or structured errors.",
+      "description": "Zero-friction TypeScript build check. Returns success or structured errors.",
       "params": {
         "quiet": {
           "type": "boolean",
@@ -4590,7 +4427,7 @@
     },
     {
       "name": "development/benchmark-vectors",
-      "description": "BenchmarkVectorsTypes - Types for vector operation benchmarking\n *\n * Measures performance of:\n * - Cosine similarity (single pair)\n * - Batch similarity (one-to-many)\n * - Full vector search (all-to-all ranking)",
+      "description": "Benchmark parameters",
       "params": {
         "vectorCount": {
           "type": "number",
@@ -4616,7 +4453,7 @@
     },
     {
       "name": "data/vector-search",
-      "description": "Vector Search Command - Shared Types\n *\n * Performs semantic search over a collection using vector similarity.",
+      "description": "Vector search command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -4672,7 +4509,7 @@
     },
     {
       "name": "data/truncate",
-      "description": "Data Truncate Command - Shared Types\n *\n * Truncate all records from a specific collection using adapter methods",
+      "description": "Data Truncate Parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -4683,7 +4520,7 @@
     },
     {
       "name": "data",
-      "description": "Base Data Command Types - Generic Abstractions\n *\n * Following ARCHITECTURE-RULES.md:\n * ✅ Generic programming with BaseEntity only\n * ✅ No specific entity references (UserEntity, etc.)\n * ✅ Backend routing abstraction",
+      "description": "Base interface for all data command parameters Uses JTAGEnvironment for routing capability Supports optional dbHandle for multi-database operations",
       "params": {
         "collection": {
           "type": "string",
@@ -4709,7 +4546,7 @@
     },
     {
       "name": "data/schema",
-      "description": "Data Schema Command - Entity Schema Introspection\n *\n * Provides runtime schema information from entity decorators\n * Allows callers to understand entity structure, constraints, and validation rules",
+      "description": "Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation.",
       "params": {
         "collection": {
           "type": "string",
@@ -4735,7 +4572,7 @@
     },
     {
       "name": "data/query-open",
-      "description": "Data Query Open Command Types\n *\n * Opens a paginated query and returns a handle (UUID)\n * DataDaemon maintains the query state (filters, sorting, cursor position)",
+      "description": "Opens a paginated query and returns a handle (UUID) DataDaemon maintains the query state (filters, sorting, cursor position)",
       "params": {
         "collection": {
           "type": "string",
@@ -4766,7 +4603,7 @@
     },
     {
       "name": "data/query-next",
-      "description": "Data Query Next Command Types\n *\n * Gets the next page of results from a query handle\n * DataDaemon manages cursor position internally",
+      "description": "Gets the next page of results from a query handle DataDaemon manages cursor position internally",
       "params": {
         "queryHandle": {
           "type": "string",
@@ -4787,7 +4624,7 @@
     },
     {
       "name": "data/query-close",
-      "description": "Data Query Close Command Types\n *\n * Closes a query handle and frees resources\n * Should be called when done with pagination",
+      "description": "Closes a query handle and frees resources Should be called when done with pagination",
       "params": {
         "queryHandle": {
           "type": "string",
@@ -4808,7 +4645,7 @@
     },
     {
       "name": "data/open",
-      "description": "Data Open Command - ADVANCED: Opens secondary database handles\n *\n * WARNING: Most commands use the default database automatically.\n * You probably want data/list or data/read instead of this command.\n *\n * Only use data/open when you need to access a DIFFERENT database file.\n *\n * Required params:\n * - adapter: MUST be 'sqlite', 'json', 'vector', 'graph', or 'rust'\n * - config: { path: \"/path/to/database\" } for sqlite/json\n *\n * @example data/open --adapter=\"sqlite\" --config='{\"path\":\"/tmp/other.db\"}'",
+      "description": "Data Open Parameters @description Opens a new database handle. Most commands use the default database automatically - you only need this for multi-database scenarios. Valid adapter types: 'sqlite', 'json', 'vector', 'graph', 'rust' - sqlite: SQLite database file (most common) - json: JSON file storage - vector: Vector database (Qdrant, Pinecone) - graph: Graph database (Neo4j) - rust: Rust worker storage",
       "params": {
         "adapter": {
           "type": "string",
@@ -4824,12 +4661,12 @@
     },
     {
       "name": "data/list-handles",
-      "description": "Data List-Handles Command - Shared Types",
+      "description": "Data List-Handles Parameters",
       "params": {}
     },
     {
       "name": "data/list",
-      "description": "Data List Command - Query entities from collections\n *\n * Common collections: users, rooms, chat_messages, memories, tasks, skills, wall_documents\n *\n * @example data/list --collection=\"users\" --limit=10\n * @example data/list --collection=\"chat_messages\" --filter='{\"roomId\":\"abc\"}' --orderBy='[{\"field\":\"timestamp\",\"direction\":\"desc\"}]'",
+      "description": "Data list command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -4895,7 +4732,7 @@
     },
     {
       "name": "data/generate-embedding",
-      "description": "Generate Embedding Command - Shared Types\n *\n * Generates vector embedding for text using specified model.",
+      "description": "Generate embedding command parameters",
       "params": {
         "text": {
           "type": "string",
@@ -4916,7 +4753,7 @@
     },
     {
       "name": "data/delete",
-      "description": "Data Delete Command Types - Universal Delete Interface\n * \n * Follows working data create pattern with strong typing",
+      "description": "Data Delete Parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -4947,7 +4784,7 @@
     },
     {
       "name": "data/close",
-      "description": "Data Close Command - Shared Types\n *\n * Closes a database handle and releases associated resources.\n * Cannot close the default handle - it remains open for the lifetime of the process.\n *\n * See docs/MULTI-DATABASE-HANDLES.md for architecture",
+      "description": "Data Close Parameters",
       "params": {
         "dbHandle": {
           "type": "string",
@@ -4958,12 +4795,12 @@
     },
     {
       "name": "data/clear",
-      "description": "Data Clear Command - Shared Types\n *\n * Clear all data from all collections using adapter methods",
+      "description": "Data Clear Parameters",
       "params": {}
     },
     {
       "name": "data/backfill-vectors",
-      "description": "Backfill Vectors Command - Shared Types\n *\n * Batch generates vector embeddings for existing records in a collection.",
+      "description": "Backfill vectors command parameters",
       "params": {
         "collection": {
           "type": "string",
@@ -5004,7 +4841,7 @@
     },
     {
       "name": "continuum/set",
-      "description": "Continuum Set Command Types\n *\n * Universal control of the Continuum widget - anyone (human via CLI,\n * PersonaUser, external AI, tests) can temporarily control the Continuum\n * widget to display custom status.\n *\n * The Continuum widget is the shared emotional interface between humans\n * and AIs - inspired by HAL 9000 and Tron aesthetics.",
+      "description": "Universal control of the Continuum widget - anyone (human via CLI, PersonaUser, external AI, tests) can temporarily control the Continuum widget to display custom status. The Continuum widget is the shared emotional interface between humans and AIs - inspired by HAL 9000 and Tron aesthetics.",
       "params": {
         "emoji": {
           "type": "string",
@@ -5040,7 +4877,7 @@
     },
     {
       "name": "continuum/emotion",
-      "description": "continuum/emotion command",
+      "description": "Display an emoji reaction with an optional color glow on the Continuum interface.",
       "params": {
         "emoji": {
           "type": "string",
@@ -5061,7 +4898,7 @@
     },
     {
       "name": "collaboration/wall/write",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "description": "Parameters for writing to a room wall",
       "params": {
         "room": {
           "type": "string",
@@ -5097,7 +4934,7 @@
     },
     {
       "name": "collaboration/wall/read",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "description": "Parameters for reading from a room wall",
       "params": {
         "room": {
           "type": "string",
@@ -5138,7 +4975,7 @@
     },
     {
       "name": "collaboration/wall/list",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "description": "Parameters for listing room wall documents",
       "params": {
         "room": {
           "type": "string",
@@ -5154,7 +4991,7 @@
     },
     {
       "name": "collaboration/wall/history",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "description": "Parameters for viewing wall document history",
       "params": {
         "room": {
           "type": "string",
@@ -5175,7 +5012,7 @@
     },
     {
       "name": "collaboration/wall/diff",
-      "description": "Room Wall Commands - Shared Types\n *\n * Collaborative document space for each chat room.\n * Bridges ephemeral chat and formal documentation.\n *\n * Commands: wall/write, wall/read, wall/list, wall/history, wall/diff",
+      "description": "Parameters for viewing diff between versions",
       "params": {
         "room": {
           "type": "string",
@@ -5201,7 +5038,7 @@
     },
     {
       "name": "collaboration/live/transcription",
-      "description": "Collaboration Live Transcription Command - Shared Types\n *\n * Relay voice transcription from browser to server for AI processing",
+      "description": "Relay voice transcription from browser to server for AI processing",
       "params": {
         "callSessionId": {
           "type": "string",
@@ -5242,7 +5079,7 @@
     },
     {
       "name": "collaboration/live/start",
-      "description": "Collaboration Live Start Command - Shared Types\n *\n * Start a live call with selected participants. Creates or finds the DM room for the participant set, then joins the call. Like Discord's group call - select users, click call.",
+      "description": "Start a live session with selected participants. Creates or finds the DM room for the participant set, then joins the live session. Like Discord's group call - select users, click call.",
       "params": {
         "participants": {
           "type": "array",
@@ -5263,28 +5100,23 @@
     },
     {
       "name": "collaboration/live/leave",
-      "description": "Live Leave Command Types\n *\n * Leave a live audio/video call.\n * Removes user from participants. Call ends when last person leaves.",
+      "description": "Leave a live audio/video call. Removes user from participants. Call ends when last person leaves.",
       "params": {}
     },
     {
       "name": "collaboration/live/join",
-      "description": "Live Join Command Types\n *\n * Join a live audio/video call for a room.\n * Creates call if none exists, or joins existing.",
+      "description": "Join a live audio/video call for a room. Creates call if none exists, or joins existing.",
       "params": {
         "entityId": {
           "type": "string",
           "required": true,
           "description": "entityId parameter"
-        },
-        "callerId": {
-          "type": "string",
-          "required": false,
-          "description": "callerId parameter"
         }
       }
     },
     {
       "name": "collaboration/dm",
-      "description": "DM Command Types\n * Get or create a private room with specific participants\n *\n * Set theory: {A, B} == {B, A} - participant order doesn't matter\n * Works with any number of participants (2+ for group DM)",
+      "description": "Get or create a private room for a specific set of participants.",
       "params": {
         "participants": {
           "type": "array",
@@ -5300,7 +5132,7 @@
     },
     {
       "name": "collaboration/decision/vote",
-      "description": "Decision Vote Command - Shared Types\n *\n * Cast ranked-choice vote on a proposal",
+      "description": "Cast ranked-choice vote on a proposal",
       "params": {
         "proposalId": {
           "type": "string",
@@ -5321,7 +5153,7 @@
     },
     {
       "name": "collaboration/decision/view",
-      "description": "Decision View Command - Shared Types\n *\n * View detailed information about a specific governance proposal",
+      "description": "View detailed information about a specific governance proposal",
       "params": {
         "proposalId": {
           "type": "string",
@@ -5332,7 +5164,7 @@
     },
     {
       "name": "collaboration/decision/rank",
-      "description": "decision/rank - Types\n * Submit ranked-choice vote for a decision proposal",
+      "description": "Submit a ranked-choice vote on a decision proposal, using Condorcet pairwise comparison to determine the winner.",
       "params": {
         "proposalId": {
           "type": "string",
@@ -5348,7 +5180,7 @@
     },
     {
       "name": "collaboration/decision/propose",
-      "description": "decision/propose - Create a new decision proposal with ranked-choice voting\n *\n * Enables AIs to:\n * - Propose decisions to the team\n * - Define multiple options for ranked-choice voting\n * - Target specific expert groups via scope\n * - Set urgency via significance level\n * - Automatically link to related past decisions",
+      "description": "decision/propose - Create a new decision proposal with ranked-choice voting Enables AIs to: - Propose decisions to the team - Define multiple options for ranked-choice voting - Target specific expert groups via scope - Set urgency via significance level - Automatically link to related past decisions",
       "params": {
         "topic": {
           "type": "string",
@@ -5394,7 +5226,7 @@
     },
     {
       "name": "collaboration/decision/list",
-      "description": "Decision List Command - Shared Types\n *\n * List all governance proposals with optional filtering",
+      "description": "List all governance proposals with optional filtering",
       "params": {
         "status": {
           "type": "string",
@@ -5425,7 +5257,7 @@
     },
     {
       "name": "collaboration/decision/finalize",
-      "description": "Decision Finalize Command - Shared Types\n *\n * Close voting and calculate winner using ranked-choice voting",
+      "description": "Close voting and calculate winner using ranked-choice voting",
       "params": {
         "proposalId": {
           "type": "string",
@@ -5436,7 +5268,7 @@
     },
     {
       "name": "collaboration/decision/create",
-      "description": "Decision Create Command - Shared Types\n *\n * Create a new governance proposal with voting options",
+      "description": "Create a new governance proposal with voting options",
       "params": {
         "proposalId": {
           "type": "string",
@@ -5487,7 +5319,7 @@
     },
     {
       "name": "collaboration/content/open",
-      "description": "Content Open Command Types\n *\n * Opens content and adds it to user's openItems array.\n * Emits content:opened event for widgets to respond to.",
+      "description": "Opens content and adds it to user's openItems array. Emits content:opened event for widgets to respond to.",
       "params": {
         "userId": {
           "type": "string",
@@ -5538,7 +5370,7 @@
     },
     {
       "name": "collaboration/chat/send",
-      "description": "Chat Send Command\n * Send chat messages directly to the database (no UI)",
+      "description": "Chat Send Command",
       "params": {
         "message": {
           "type": "string",
@@ -5574,7 +5406,7 @@
     },
     {
       "name": "collaboration/chat/poll",
-      "description": "Chat Poll Command Types - Get messages after a specific messageId\n *\n * Simple command for conversational research workflow:\n * 1. Send a question and get messageId\n * 2. Wait for responses (sleep)\n * 3. Poll for all messages after your question",
+      "description": "Chat poll parameters",
       "params": {
         "afterMessageId": {
           "type": "string",
@@ -5600,7 +5432,7 @@
     },
     {
       "name": "collaboration/chat/export",
-      "description": "Chat Export Command\n * Export chat messages to markdown format\n *\n * Supports flexible filtering - can filter by:\n * - Room (name or ID)\n * - Entity type (to support future universal activity export)\n * - After timestamp/message ID\n * - Custom filter object (passed to data/list)",
+      "description": "Chat Export Command Export chat messages to markdown format Supports flexible filtering - can filter by: - Room (name or ID) - Entity type (to support future universal activity export) - After timestamp/message ID - Custom filter object (passed to data/list)",
       "params": {
         "room": {
           "type": "string",
@@ -5656,7 +5488,7 @@
     },
     {
       "name": "collaboration/chat/analyze",
-      "description": "collaboration/chat/analyze command",
+      "description": "Analyze a chat room for duplicate messages, timestamp anomalies, and data integrity issues.",
       "params": {
         "roomId": {
           "type": "string",
@@ -5682,7 +5514,7 @@
     },
     {
       "name": "collaboration/activity/user-present",
-      "description": "Activity User Presence - Track user tab visibility for temperature\n *\n * Phase 3bis: Browser tab visibility integration\n * Called by MainWidget when tab visibility changes",
+      "description": "Activity User Presence - Track user tab visibility for temperature Phase 3bis: Browser tab visibility integration Called by MainWidget when tab visibility changes",
       "params": {
         "activityId": {
           "type": "string",
@@ -5802,10 +5634,10 @@
           "required": true,
           "description": "activityId parameter"
         },
-        "userId": {
+        "targetUserId": {
           "type": "string",
           "required": false,
-          "description": "userId parameter"
+          "description": "targetUserId parameter"
         },
         "role": {
           "type": "string",
@@ -5837,7 +5669,7 @@
     },
     {
       "name": "collaboration/activity/create",
-      "description": "Activity Create Command - Create a new activity from a recipe\n *\n * Activities are runtime instances of recipes with:\n * - Participants (humans + AIs with roles)\n * - Mutable state (phase, progress, variables)\n * - Configuration (can override recipe defaults)",
+      "description": "Activity Create Command - Create a new activity from a recipe Activities are runtime instances of recipes with: - Participants (humans + AIs with roles) - Mutable state (phase, progress, variables) - Configuration (can override recipe defaults)",
       "params": {
         "recipeId": {
           "type": "string",
@@ -5893,7 +5725,7 @@
     },
     {
       "name": "code/write",
-      "description": "Code Write Command - Shared Types\n *\n * Write or create a file in the persona's workspace. Creates a ChangeNode in the change graph for undo support. File extension must be in the allowlist.",
+      "description": "Write or create a file in the persona's workspace. Creates a ChangeNode in the change graph for undo support. File extension must be in the allowlist.",
       "params": {
         "filePath": {
           "type": "string",
@@ -5914,7 +5746,7 @@
     },
     {
       "name": "code/verify",
-      "description": "Code Verify Command - Shared Types\n *\n * Run TypeScript compilation checks and optionally execute tests against a persona workspace.\n * Returns structured errors with file, line, column, and message for each issue found.",
+      "description": "Run TypeScript compilation checks and optionally execute tests against a persona workspace. Returns structured errors with file, line, column, and message.",
       "params": {
         "typeCheck": {
           "type": "boolean",
@@ -5935,7 +5767,7 @@
     },
     {
       "name": "code/undo",
-      "description": "Code Undo Command - Shared Types\n *\n * Undo a specific change or the last N changes. Applies reverse diffs from the change graph to restore previous file state.",
+      "description": "Undo a specific change or the last N changes. Applies reverse diffs from the change graph to restore previous file state.",
       "params": {
         "changeId": {
           "type": "string",
@@ -5951,7 +5783,7 @@
     },
     {
       "name": "code/tree",
-      "description": "Code Tree Command - Shared Types\n *\n * Generate a directory tree for the workspace or a subdirectory. Shows file/directory structure with sizes. Skips common ignored directories (node_modules, .git, etc).",
+      "description": "Generate a directory tree for the workspace or a subdirectory. Shows file/directory structure with sizes. Skips common ignored directories (node_modules, .git, etc).",
       "params": {
         "path": {
           "type": "string",
@@ -5972,7 +5804,7 @@
     },
     {
       "name": "code/shell/watch",
-      "description": "Code Shell Watch Command - Shared Types\n *\n * Watch a shell execution for new output. Blocks until output is available — no timeout, no polling.\n * Returns classified output lines filtered through sentinel rules. Call in a loop until finished is true.",
+      "description": "Watch a shell execution for new output. Blocks until output is available — no timeout, no polling. Returns classified output lines filtered through sentinel rules. Call in a loop until finished is true.",
       "params": {
         "executionId": {
           "type": "string",
@@ -5983,7 +5815,7 @@
     },
     {
       "name": "code/shell/status",
-      "description": "Code Shell Status Command - Shared Types\n *\n * Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
+      "description": "Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
       "params": {
         "_noParams": {
           "type": "string",
@@ -5994,7 +5826,7 @@
     },
     {
       "name": "code/shell/sentinel",
-      "description": "Code Shell Sentinel Command - Shared Types\n *\n * Configure sentinel filter rules on a shell execution. Rules classify output lines\n * and control which lines are emitted or suppressed during watch.\n * Patterns are compiled to regex on the Rust side for performance.",
+      "description": "Configure sentinel filter rules on a shell execution. Rules classify output lines and control which lines are emitted or suppressed during watch. Patterns are compiled to regex on the Rust side for performance.",
       "params": {
         "executionId": {
           "type": "string",
@@ -6010,7 +5842,7 @@
     },
     {
       "name": "code/shell/kill",
-      "description": "Code Shell Kill Command - Shared Types\n *\n * Kill a running shell execution. Use the executionId returned by code/shell/execute to identify the target.",
+      "description": "Kill a running shell execution. Use the executionId returned by code/shell/execute to identify the target.",
       "params": {
         "executionId": {
           "type": "string",
@@ -6021,7 +5853,7 @@
     },
     {
       "name": "code/shell/execute",
-      "description": "Code Shell Execute Command - Shared Types\n *\n * Execute a shell command in the persona's workspace. Async mode (default) returns execution handle immediately — use code/shell/watch to stream output. Sync mode (wait=true) blocks until completion and returns full stdout/stderr.",
+      "description": "Execute a shell command in the persona's workspace. Async mode (default) returns execution handle immediately — use code/shell/watch to stream output. Sync mode (wait=true) blocks until completion and returns full stdout/stderr.",
       "params": {
         "cmd": {
           "type": "string",
@@ -6042,7 +5874,7 @@
     },
     {
       "name": "code/search",
-      "description": "Code Search Command - Shared Types\n *\n * Search for a regex pattern across workspace files. Respects .gitignore, supports glob-based file filtering. Returns matching lines with context.",
+      "description": "Search for a regex pattern across workspace files. Respects .gitignore, supports glob-based file filtering. Returns matching lines with context.",
       "params": {
         "pattern": {
           "type": "string",
@@ -6063,7 +5895,7 @@
     },
     {
       "name": "code/read",
-      "description": "Code Read Command - Shared Types\n *\n * Read a file or line range from the persona's workspace. Returns content with line numbers and metadata. Supports partial reads via start/end line parameters.",
+      "description": "Read a file or line range from the persona's workspace. Returns content with line numbers and metadata. Supports partial reads via start/end line parameters.",
       "params": {
         "filePath": {
           "type": "string",
@@ -6084,7 +5916,7 @@
     },
     {
       "name": "code/history",
-      "description": "Code History Command - Shared Types\n *\n * Get change history for a specific file or the entire workspace. Returns change graph nodes with diffs, timestamps, and descriptions.",
+      "description": "Get change history for a specific file or the entire workspace. Returns change graph nodes with diffs, timestamps, and descriptions.",
       "params": {
         "filePath": {
           "type": "string",
@@ -6100,7 +5932,7 @@
     },
     {
       "name": "code/git",
-      "description": "Code Git Command - Shared Types\n *\n * Workspace-scoped git operations for the coding agent pipeline.\n * Operations: status, diff, log, add, commit, push.\n * All operations are routed through the Rust IPC backend for per-persona workspace isolation.",
+      "description": "Workspace-scoped git operations for the coding agent pipeline. All operations route through the Rust IPC backend for per-persona workspace isolation.",
       "params": {
         "userId": {
           "type": "string",
@@ -6146,7 +5978,7 @@
     },
     {
       "name": "code/edit",
-      "description": "Code Edit Command - Shared Types\n *\n * Edit a file using search-replace, line-range replacement, insert-at, or append. Creates a ChangeNode for undo. Safer than full file write for targeted modifications.",
+      "description": "Edit a file using search-replace, line-range replacement, insert-at, or append. Creates a ChangeNode for undo. Safer than full file write for targeted modifications.",
       "params": {
         "filePath": {
           "type": "string",
@@ -6207,7 +6039,7 @@
     },
     {
       "name": "code/diff",
-      "description": "Code Diff Command - Shared Types\n *\n * Preview an edit as a unified diff without applying it. Useful for reviewing changes before committing them. Uses the same edit modes as code/edit.",
+      "description": "Preview an edit as a unified diff without applying it. Useful for reviewing changes before committing them. Uses the same edit modes as code/edit.",
       "params": {
         "filePath": {
           "type": "string",
@@ -6263,7 +6095,7 @@
     },
     {
       "name": "canvas/vision",
-      "description": "Canvas Vision Command Types\n *\n * Enables AIs to \"see\" and interact with the drawing canvas:\n * - describe: Vision AI describes what's on the canvas\n * - transform: Use image generation to transform the sketch\n * - analyze: Structured analysis of the drawing",
+      "description": "Enables AIs to \"see\" and interact with the drawing canvas: - describe: Vision AI describes what's on the canvas - transform: Use image generation to transform the sketch - analyze: Structured analysis of the drawing",
       "params": {
         "action": {
           "type": "string",
@@ -6309,7 +6141,7 @@
     },
     {
       "name": "canvas/stroke/list",
-      "description": "Canvas Stroke List Command Types\n *\n * Query strokes from a canvas for replay/rendering.\n * Supports pagination and viewport filtering.",
+      "description": "Query strokes from a canvas for replay/rendering. Supports pagination and viewport filtering.",
       "params": {
         "canvasId": {
           "type": "string",
@@ -6350,7 +6182,7 @@
     },
     {
       "name": "canvas/stroke/add",
-      "description": "Canvas Stroke Add Command Types\n *\n * Adds a stroke to a collaborative canvas.\n * Strokes are atomic drawing operations created by human or AI users.\n *\n * Real-time Collaboration:\n * - Server saves stroke to database\n * - Server emits 'canvas:stroke:added' event\n * - All clients receive and render the stroke",
+      "description": "Adds a stroke to a collaborative canvas. Strokes are atomic drawing operations created by human or AI users. Real-time Collaboration: - Server saves stroke to database - Server emits 'canvas:stroke:added' event - All clients receive and render the stroke",
       "params": {
         "canvasId": {
           "type": "string",
@@ -6391,7 +6223,7 @@
     },
     {
       "name": "ai/validate-response",
-      "description": "AI Validate-Response Command Types\n *\n * After generating a response, AI evaluates if it actually answers the question.\n * Returns: SUBMIT (relevant) | CLARIFY (ask for context) | SILENT (off-topic)",
+      "description": "Request for AI to validate if response answers question",
       "params": {
         "generatedResponse": {
           "type": "string",
@@ -6427,7 +6259,7 @@
     },
     {
       "name": "ai/thoughtstream",
-      "description": "AI ThoughtStream Command Types\n *\n * Inspect ThoughtStream coordinator activity for a specific message\n * Shows thought broadcasts, rankings, and final decisions",
+      "description": "Inspect ThoughtStream coordinator activity for a specific message Shows thought broadcasts, rankings, and final decisions",
       "params": {
         "messageId": {
           "type": "string",
@@ -6478,7 +6310,7 @@
     },
     {
       "name": "ai/status",
-      "description": "AI Status Command Types\n *\n * Get comprehensive status of all AI personas in the system",
+      "description": "Get comprehensive status of all AI personas in the system",
       "params": {
         "personaId": {
           "type": "string",
@@ -6504,7 +6336,7 @@
     },
     {
       "name": "ai/sleep",
-      "description": "AI Sleep Command - Shared Types\n *\n * Voluntary attention management for AI personas.\n * Allows AIs to put themselves into different awareness states.\n *\n * Modes:\n * - active: Normal operation, respond to everything\n * - mentioned_only: Only respond when directly @mentioned\n * - human_only: Only respond when a human speaks\n * - sleeping: Completely silent until explicitly woken\n * - until_topic: Silent until a new topic is detected",
+      "description": "AI Sleep Command Parameters",
       "params": {
         "mode": {
           "type": "string",
@@ -6530,7 +6362,7 @@
     },
     {
       "name": "ai/should-respond-fast",
-      "description": "AI Should Respond Fast - Types\n *\n * Bag-of-words scoring for fast \"should respond\" detection without LLM calls\n * Deterministic, lightweight, and configurable per-persona",
+      "description": "**Command**: `ai/should-respond-fast`",
       "params": {
         "personaId": {
           "type": "string",
@@ -6571,7 +6403,7 @@
     },
     {
       "name": "ai/should-respond",
-      "description": "AI Should-Respond Command Types\n *\n * Unified gating command with multiple strategies:\n * - fast: Bag-of-words scoring (<1ms, no LLM)\n * - llm: Deep reasoning with LLM (slower, more accurate)\n * - hybrid: Fast filter → LLM confirmation",
+      "description": "Request for AI to decide if persona should respond",
       "params": {
         "personaName": {
           "type": "string",
@@ -6632,7 +6464,7 @@
     },
     {
       "name": "ai/report",
-      "description": "AI Report Command Types\n *\n * Analyze AI decision logs to generate actionable insights",
+      "description": "Analyze AI decision logs to generate actionable insights",
       "params": {
         "roomId": {
           "type": "string",
@@ -6693,7 +6525,7 @@
     },
     {
       "name": "ai/report/decisions",
-      "description": "Decision Report Command Types\n *\n * Macro command that orchestrates:\n * 1. data/list (query coordination_decisions)\n * 2. Markdown formatting\n * 3. file/save (write report to disk)",
+      "description": "Parameters for generating decision report",
       "params": {
         "startDate": {
           "type": "string",
@@ -6744,7 +6576,7 @@
     },
     {
       "name": "ai/rag/query-open",
-      "description": "RAG Query Open Command Types\n *\n * Opens a semantic similarity search query and returns a handle\n * Results are ranked by relevance score (cosine similarity)",
+      "description": "Parameters for opening a RAG similarity search",
       "params": {
         "query": {
           "type": "string",
@@ -6785,7 +6617,7 @@
     },
     {
       "name": "ai/rag/query-fetch",
-      "description": "RAG Query Fetch Command Types\n *\n * Fetches results from an open query at any position\n * Supports bidirectional navigation and random access",
+      "description": "Parameters for fetching results from a query handle",
       "params": {
         "queryHandle": {
           "type": "string",
@@ -6811,7 +6643,7 @@
     },
     {
       "name": "ai/rag/query-close",
-      "description": "RAG Query Close Command Types\n *\n * Closes a query handle and cleans up resources",
+      "description": "Parameters for closing a query handle",
       "params": {
         "queryHandle": {
           "type": "string",
@@ -6822,7 +6654,7 @@
     },
     {
       "name": "ai/rag/inspect",
-      "description": "RAG Inspect Command Types\n *\n * Utility command to inspect RAG context building for a persona in a room\n * Useful for debugging and validating RAG system behavior",
+      "description": "Inspect the RAG context that would be built for a given persona in a specific room, including decision-point analysis and learning mode diagnostics.",
       "params": {
         "personaId": {
           "type": "string",
@@ -6844,6 +6676,11 @@
           "required": false,
           "description": "includeMemories parameter"
         },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
         "verbose": {
           "type": "boolean",
           "required": false,
@@ -6858,7 +6695,7 @@
     },
     {
       "name": "ai/rag/index-codebase",
-      "description": "Codebase Index Command Types\n *\n * Index TypeScript and Markdown files with domain-specific embeddings\n * for semantic code search via RAG",
+      "description": "Crawl and index TypeScript, Markdown, and other source files into the RAG store with domain-specific embeddings for semantic code search.",
       "params": {
         "paths": {
           "type": "array",
@@ -6899,7 +6736,7 @@
     },
     {
       "name": "ai/rag/index/create",
-      "description": "Index Create Command Types\n *\n * Low-level primitive for storing a single code entry with embeddings",
+      "description": "Parameters for creating a code index entry",
       "params": {
         "filePath": {
           "type": "string",
@@ -6970,12 +6807,12 @@
     },
     {
       "name": "ai/providers/status",
-      "description": "AI Providers Status - Check which API keys are configured\n *\n * Returns status for each provider WITHOUT exposing actual key values.\n * Safe to call from browser - only returns boolean status.",
+      "description": "AI Providers Status - Check which API keys are configured Returns status for each provider WITHOUT exposing actual key values. Safe to call from browser - only returns boolean status.",
       "params": {}
     },
     {
       "name": "ai/mute",
-      "description": "AI Mute Command - Shared Types\n *\n * Mute or unmute an AI persona from acting in the system.\n * Enforces democratic governance with permission checks and veto power.\n *\n * Command: ai/mute\n *\n * Examples:\n *   ./jtag ai/mute --persona=\"helper-ai\" --reason=\"Repeated errors\" --duration=3600\n *   ./jtag ai/mute --userId=\"UUID\" --reason=\"Hostile behavior\" --permanent=true\n *   ./jtag ai/unmute --persona=\"helper-ai\" --reason=\"Appeal granted\"\n *   ./jtag ai/mute --persona=\"local-assistant\" --rooms='[\"general\"]' --reason=\"Room-specific timeout\"",
+      "description": "Parameters for muting/unmuting an AI",
       "params": {
         "action": {
           "type": "string",
@@ -6987,10 +6824,10 @@
           "required": false,
           "description": "persona parameter"
         },
-        "userId": {
+        "targetUserId": {
           "type": "string",
           "required": false,
-          "description": "userId parameter"
+          "description": "targetUserId parameter"
         },
         "reason": {
           "type": "string",
@@ -7056,7 +6893,7 @@
     },
     {
       "name": "ai/model/list",
-      "description": "Model List Command - Types\n *\n * Lists available AI models with their capabilities and metadata\n * Like AVCaptureDevice.DiscoverySession - enumerate available devices",
+      "description": "Enumerate all available AI models across providers, with optional filtering by capabilities, provider, and availability.",
       "params": {
         "capabilities": {
           "type": "string",
@@ -7077,7 +6914,7 @@
     },
     {
       "name": "ai/model/find",
-      "description": "Model Find Command - Types\n *\n * Find the best AI model matching capability requirements\n * Like AVCaptureDevice.default(for:position:) - pick best matching device",
+      "description": "Find the best available AI model matching a set of capability requirements, with optional fallback to the closest match.",
       "params": {
         "capabilities": {
           "type": "string",
@@ -7108,7 +6945,7 @@
     },
     {
       "name": "ai/key/test",
-      "description": "Ai Key Test Command - Shared Types\n *\n * Test an API key before saving it. Makes a minimal API call to verify the key is valid and has sufficient permissions.",
+      "description": "Test an API key before saving it. Makes a minimal API call to verify the key is valid and has sufficient permissions.",
       "params": {
         "provider": {
           "type": "string",
@@ -7129,7 +6966,7 @@
     },
     {
       "name": "ai/genome/stats",
-      "description": "Genome Stats Command Types\n * Performance monitoring for genome inference system\n *\n * Usage:\n * ./jtag genome/stats                    # Overall pool stats\n * ./jtag genome/stats --genomeId=<id>    # Specific genome stats\n * ./jtag genome/stats --format=json      # Machine-readable output",
+      "description": "Genome Stats Request Parameters",
       "params": {
         "genomeId": {
           "type": "string",
@@ -7155,7 +6992,7 @@
     },
     {
       "name": "ai/generate",
-      "description": "AI Generate Command Types\n * ==========================\n *\n * Types for text generation via AIProviderDaemon\n * Follows data command pattern for consistency",
+      "description": "Types for text generation via AIProviderDaemon Follows data command pattern for consistency",
       "params": {
         "messages": {
           "type": "array",
@@ -7222,16 +7059,16 @@
           "required": false,
           "description": "maxTokens parameter"
         },
-        "preferredProvider": {
+        "provider": {
           "type": "string",
           "required": false,
-          "description": "preferredProvider parameter"
+          "description": "provider parameter"
         }
       }
     },
     {
       "name": "ai/embedding/generate",
-      "description": "Embedding Generate Command Types\n *\n * Low-level primitive for generating embeddings from text",
+      "description": "Generate vector embeddings from text or code for use in semantic search, similarity matching, and RAG retrieval.",
       "params": {
         "input": {
           "type": "array",
@@ -7257,7 +7094,7 @@
     },
     {
       "name": "ai/detect-semantic-loop",
-      "description": "Ai Detect Semantic Loop Command - Shared Types\n *\n * Detects if an AI's response is semantically too similar to recent messages, preventing repetitive loop behavior",
+      "description": "Detects if an AI's response is semantically too similar to recent messages, preventing repetitive loop behavior",
       "params": {
         "messageText": {
           "type": "string",
@@ -7293,7 +7130,7 @@
     },
     {
       "name": "ai/dataset/list",
-      "description": "Dataset List Command Types",
+      "description": "List available training dataset archives with optional filtering and detailed manifest information.",
       "params": {
         "path": {
           "type": "string",
@@ -7309,7 +7146,7 @@
     },
     {
       "name": "ai/dataset/create",
-      "description": "Dataset Create Command Types",
+      "description": "Create compressed training dataset archives from fine-tuning projects for LoRA adapter training.",
       "params": {
         "project": {
           "type": "string",
@@ -7340,7 +7177,7 @@
     },
     {
       "name": "ai/cost",
-      "description": "AI Cost Command Types\n *\n * Query and visualize AI generation costs with filtering and time-series data",
+      "description": "Query and visualize AI generation costs with filtering and time-series data",
       "params": {
         "startTime": {
           "type": "string",
@@ -7362,10 +7199,10 @@
           "required": false,
           "description": "model parameter"
         },
-        "userId": {
+        "filterUserId": {
           "type": "string",
           "required": false,
-          "description": "userId parameter"
+          "description": "filterUserId parameter"
         },
         "roomId": {
           "type": "string",
@@ -7421,7 +7258,7 @@
     },
     {
       "name": "ai/context/slice",
-      "description": "Ai Context Slice Command - Shared Types\n *\n * Retrieve full content of a context item by ID - companion to context/search for getting complete entity data",
+      "description": "Retrieve full content of a context item by ID - companion to context/search for getting complete entity data",
       "params": {
         "id": {
           "type": "string",
@@ -7452,7 +7289,7 @@
     },
     {
       "name": "ai/context/search",
-      "description": "Ai Context Search Command - Shared Types\n *\n * Semantic context navigation - search memories, messages, timeline across all entity types using cosine similarity via Rust embedding worker",
+      "description": "Semantic context navigation - search memories, messages, timeline across all entity types using cosine similarity via Rust embedding worker",
       "params": {
         "query": {
           "type": "string",
@@ -7498,7 +7335,7 @@
     },
     {
       "name": "ai/bag-of-words",
-      "description": "Bag of Words Command Types\n *\n * Orchestrates multi-persona conversations in a chat room.\n * \"Bag of words\" = collection of AI personas interacting naturally based on conversation context.",
+      "description": "Orchestrate a multi-persona conversation in a chat room, selecting which AI personas participate and how they take turns responding.",
       "params": {
         "roomId": {
           "type": "string",
@@ -7543,8 +7380,64 @@
       }
     },
     {
+      "name": "ai/agent",
+      "description": "Universal agentic loop command. Generates text via LLM, parses tool calls, executes tools, feeds results back, and re-generates until the model stops calling tools.",
+      "params": {
+        "prompt": {
+          "type": "string",
+          "required": false,
+          "description": "prompt parameter"
+        },
+        "messages": {
+          "type": "array",
+          "required": false,
+          "description": "messages parameter"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "required": false,
+          "description": "systemPrompt parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "description": "temperature parameter"
+        },
+        "maxTokens": {
+          "type": "number",
+          "required": false,
+          "description": "maxTokens parameter"
+        },
+        "tools": {
+          "type": "array",
+          "required": false,
+          "description": "tools parameter"
+        },
+        "maxIterations": {
+          "type": "number",
+          "required": false,
+          "description": "maxIterations parameter"
+        },
+        "sentinelHandle": {
+          "type": "string",
+          "required": false,
+          "description": "sentinelHandle parameter"
+        }
+      }
+    },
+    {
       "name": "ai/adapter/test",
-      "description": "AI Adapter Self-Diagnostic Command\n * ===================================\n *\n * Tests adapter capabilities to validate infrastructure before training.\n * Each adapter can self-report what it supports and run diagnostic tests.\n *\n * ASYNC PATTERN: Command returns testId immediately, tests run in background.\n *\n * To check status/results:\n *   data/read --collection=\"test_executions\" --id=\"<testId>\"\n *\n * Status values: queued → running → completed (or failed)",
+      "description": "AI Adapter Self-Diagnostic Command Tests adapter capabilities to validate infrastructure before training. Each adapter can self-report what it supports and run diagnostic tests. ASYNC PATTERN: Command returns testId immediately, tests run in background. To check status/results: data/read --collection=\"test_executions\" --id=\"<testId>\" Status values: queued → running → completed (or failed)",
       "params": {
         "adapter": {
           "type": "string",
@@ -7575,7 +7468,7 @@
     },
     {
       "name": "agent/stop",
-      "description": "Agent Stop Command - Shared Types\n *\n * Stops a running agent.\n *\n * Usage:\n *   ./jtag agent/stop --handle=\"abc12345\"",
+      "description": "Stops a running agent. Usage: ./jtag agent/stop --handle=\"abc12345\"",
       "params": {
         "handle": {
           "type": "string",
@@ -7586,7 +7479,7 @@
     },
     {
       "name": "agent/status",
-      "description": "Agent Status Command - Shared Types\n *\n * Gets the status of an agent by handle.\n *\n * Usage:\n *   ./jtag agent/status --handle=\"abc12345\"",
+      "description": "Gets the status of an agent by handle. Usage: ./jtag agent/status --handle=\"abc12345\"",
       "params": {
         "handle": {
           "type": "string",
@@ -7597,7 +7490,7 @@
     },
     {
       "name": "agent/start",
-      "description": "Agent Start Command - Shared Types\n *\n * Starts an autonomous coding agent.\n *\n * Usage:\n *   ./jtag agent/start --task=\"List files in current directory\" --working_dir=\".\"\n *   ./jtag agent/start --task=\"Fix the bug in main.ts\" --working_dir=\"/path/to/project\" --model=\"qwen2.5:7b\"",
+      "description": "Starts an autonomous coding agent. Usage: ./jtag agent/start --task=\"List files in current directory\" --working_dir=\".\" ./jtag agent/start --task=\"Fix the bug in main.ts\" --working_dir=\"/path/to/project\" --model=\"qwen2.5:7b\"",
       "params": {
         "task": {
           "type": "string",
@@ -7623,12 +7516,12 @@
     },
     {
       "name": "agent/list",
-      "description": "Agent List Command - Shared Types\n *\n * Lists all running agents.",
+      "description": "Lists all running agents.",
       "params": {}
     },
     {
       "name": "adapter/try",
-      "description": "Adapter Try Command - Shared Types\n *\n * Temporarily load a LoRA adapter and run A/B comparison test",
+      "description": "Temporarily load a LoRA adapter and run A/B comparison test",
       "params": {
         "adapterId": {
           "type": "string",
@@ -7654,7 +7547,7 @@
     },
     {
       "name": "adapter/search",
-      "description": "Adapter Search Command - Shared Types\n *\n * Search for LoRA adapters across registries (HuggingFace, local, mesh)",
+      "description": "Search for LoRA adapters across registries (HuggingFace, local, mesh)",
       "params": {
         "query": {
           "type": "string",
@@ -7685,7 +7578,7 @@
     },
     {
       "name": "adapter/adopt",
-      "description": "Adapter Adopt Command - Shared Types\n *\n * Add an adapter to a persona's genome, making it a permanent trait",
+      "description": "Add an adapter to a persona's genome, making it a permanent trait",
       "params": {
         "adapterId": {
           "type": "string",

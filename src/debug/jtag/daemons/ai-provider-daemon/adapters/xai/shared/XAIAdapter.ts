@@ -46,7 +46,7 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 128000,
           supportsStreaming: true,
-          supportsFunctions: true
+          supportsTools: true
         },
         {
           id: 'grok-vision-4',
@@ -55,7 +55,7 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat', 'image-analysis'],
           contextWindow: 128000,
           supportsStreaming: true,
-          supportsFunctions: true
+          supportsTools: true
         },
         {
           id: 'grok-2-1212',
@@ -64,7 +64,7 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat'],
           contextWindow: 128000,
           supportsStreaming: true,
-          supportsFunctions: true
+          supportsTools: true
         },
         {
           id: 'grok-2-vision-1212',
@@ -73,7 +73,7 @@ export class XAIAdapter extends BaseOpenAICompatibleAdapter {
           capabilities: ['text-generation', 'chat', 'image-analysis'],
           contextWindow: 128000,
           supportsStreaming: true,
-          supportsFunctions: true
+          supportsTools: true
         }
       ]
     });

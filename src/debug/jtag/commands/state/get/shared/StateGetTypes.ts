@@ -6,6 +6,7 @@
 
 import type { JTAGPayload, JTAGContext, CommandParams, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -20,8 +21,6 @@ export interface StateGetParams extends CommandParams {
   readonly filter?: Record<string, any>;
   /** Sort order */
   readonly orderBy?: { field: string; direction: 'asc' | 'desc' }[];
-  /** User ID for context filtering */
-  readonly userId?: UUID;
 }
 
 // Generic version for internal type safety (not exported for schema)

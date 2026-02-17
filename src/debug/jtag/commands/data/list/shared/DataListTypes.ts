@@ -9,6 +9,7 @@
 
 import type { JTAGPayload, JTAGContext, CommandParams, CommandInput } from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '../../../../system/core/shared/Commands';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseEntity } from '../../../../system/data/entities/BaseEntity';
@@ -63,8 +64,8 @@ export interface DataListResult<T extends BaseEntity> extends JTAGPayload {
 export const createDataListParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataListParams, 'context' | 'sessionId'>
-): DataListParams => createPayload(context, sessionId, data);
+  data: Omit<DataListParams, 'context' | 'sessionId' | 'userId'>
+): DataListParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM, ...data });
 
 export const createDataListResultFromParams = <T extends BaseEntity>(
   params: DataListParams,

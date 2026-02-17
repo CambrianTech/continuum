@@ -14,6 +14,7 @@
 //! Migration from: workers/search (258 lines main.rs + algorithms)
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -474,16 +475,15 @@ impl SearchModule {
     }
 
     fn handle_execute(&self, params: Value) -> Result<CommandResult, String> {
-        let algorithm = params.get("algorithm").and_then(|v| v.as_str()).unwrap_or("bm25");
-        let query = params.get("query").and_then(|v| v.as_str()).ok_or("Missing query")?;
-        let corpus: Vec<String> = params.get("corpus")
-            .and_then(|v| v.as_array())
-            .ok_or("Missing corpus")?
+        let p = Params::new(&params);
+        let algorithm = p.str_or("algorithm", "bm25");
+        let query = p.str("query")?;
+        let corpus: Vec<String> = p.array("corpus")?
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
 
-        let algo_params: HashMap<String, Value> = params.get("params")
+        let algo_params: HashMap<String, Value> = p.value("params")
             .and_then(|v| v.as_object())
             .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
@@ -528,7 +528,8 @@ impl SearchModule {
     }
 
     fn handle_params(&self, params: Value) -> Result<CommandResult, String> {
-        let algorithm = params.get("algorithm").and_then(|v| v.as_str()).ok_or("Missing algorithm")?;
+        let p = Params::new(&params);
+        let algorithm = p.str("algorithm")?;
         let algo = self.registry.create(algorithm).ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?;
 
         // Build params with current values using get_param()
@@ -563,6 +564,7 @@ impl ServiceModule for SearchModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 

@@ -158,8 +158,7 @@ fn benchmark_tts_timing() {
             real_time_factor,
         };
 
-        println!("  Avg: {}ms | Min: {}ms | Max: {}ms | Audio: {}ms | RTF: {:.2}x",
-            avg_ms, min_ms, max_ms, audio_duration_ms, real_time_factor);
+        println!("  Avg: {avg_ms}ms | Min: {min_ms}ms | Max: {max_ms}ms | Audio: {audio_duration_ms}ms | RTF: {real_time_factor:.2}x");
 
         results.push(result);
     }
@@ -248,11 +247,10 @@ fn benchmark_tts_scaling() {
                 let synth_ms = elapsed.as_millis();
                 let ms_per_char = synth_ms as f64 / chars as f64;
 
-                println!("{:<10} {:<8} {:<12} {:<12} {:<10.2}",
-                    reps, chars, synth_ms, audio_ms, ms_per_char);
+                println!("{reps:<10} {chars:<8} {synth_ms:<12} {audio_ms:<12} {ms_per_char:<10.2}");
             }
             Err(e) => {
-                println!("{:<10} {:<8} FAILED: {}", reps, chars, e);
+                println!("{reps:<10} {chars:<8} FAILED: {e}");
             }
         }
 

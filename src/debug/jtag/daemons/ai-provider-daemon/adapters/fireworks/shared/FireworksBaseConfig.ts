@@ -62,7 +62,7 @@ export class FireworksBaseConfig {
         contextWindow: 131072,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       // Llama 3.1 models (some may be deprecated - use 3.3 instead)
       {
@@ -73,7 +73,7 @@ export class FireworksBaseConfig {
         contextWindow: 131072,
         costPer1kTokens: { input: 0.003, output: 0.003 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
@@ -83,7 +83,7 @@ export class FireworksBaseConfig {
         contextWindow: 131072,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'accounts/fireworks/models/mixtral-8x7b-instruct',
@@ -93,7 +93,7 @@ export class FireworksBaseConfig {
         contextWindow: 32768,
         costPer1kTokens: { input: 0.0005, output: 0.0005 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'accounts/fireworks/models/qwen2p5-72b-instruct',
@@ -103,7 +103,7 @@ export class FireworksBaseConfig {
         contextWindow: 32768,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       }
     ];
   }

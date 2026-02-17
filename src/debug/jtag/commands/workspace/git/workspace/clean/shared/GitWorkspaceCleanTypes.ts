@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../../system/core/shared/Commands';
@@ -37,6 +38,7 @@ export const createGitWorkspaceCleanParams = (
     deleteBranch?: boolean;
   }
 ): GitWorkspaceCleanParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   workspacePath: data.workspacePath ?? '',
   force: data.force ?? false,
   deleteBranch: data.deleteBranch ?? false,
@@ -70,6 +72,7 @@ export const createGitWorkspaceCleanResult = (
     error?: JTAGError;
   }
 ): GitWorkspaceCleanResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   workspaceRemoved: data.workspaceRemoved ?? false,
   branchDeleted: data.branchDeleted ?? false,
   ...data

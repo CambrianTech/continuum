@@ -204,7 +204,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
 
       // Convert AIProviderTypesV2 messages to PromptFormatters messages
       const formatterMessages: ChatMessage[] = request.messages.map(msg => ({
-        role: msg.role,
+        role: msg.role as ChatMessage['role'],
         content: typeof msg.content === 'string'
           ? msg.content
           : msg.content.map(part => part.type === 'text' ? part.text : `[${part.type}]`).join(' ')
@@ -301,7 +301,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         finishReason: result.done ? 'stop' : 'length',
         model: result.model,
         provider: this.providerId,
-        responseTime,
+        responseTimeMs: responseTime,
         requestId,
         usage: {
           inputTokens,
@@ -339,7 +339,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         const status: HealthStatus = {
           status: 'degraded',
           apiAvailable: false,
-          responseTime,
+          responseTimeMs: responseTime,
           errorRate: 1.0,
           lastChecked: Date.now(),
         };
@@ -352,7 +352,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       const status: HealthStatus = {
         status: 'healthy',
         apiAvailable: true,
-        responseTime,
+        responseTimeMs: responseTime,
         errorRate: 0,
         lastChecked: Date.now(),
       };
@@ -367,7 +367,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
       const status: HealthStatus = {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime,
+        responseTimeMs: responseTime,
         errorRate: 1.0,
         lastChecked: Date.now(),
       };
@@ -402,7 +402,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 2048,
         costPer1kTokens: { input: 0, output: 0 },
         supportsStreaming: false,
-        supportsFunctions: false,
+        supportsTools: false,
       }));
     } catch (error) {
       this.log(null, 'warn', `Failed to fetch Sentinel models: ${error}`);
@@ -421,7 +421,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 1024,
         costPer1kTokens: { input: 0, output: 0 },
         supportsStreaming: false,
-        supportsFunctions: false,
+        supportsTools: false,
       },
       {
         id: 'distilgpt2',
@@ -432,7 +432,7 @@ export class SentinelAdapter extends BaseAIProviderAdapter {
         maxOutputTokens: 1024,
         costPer1kTokens: { input: 0, output: 0 },
         supportsStreaming: false,
-        supportsFunctions: false,
+        supportsTools: false,
       },
     ];
   }

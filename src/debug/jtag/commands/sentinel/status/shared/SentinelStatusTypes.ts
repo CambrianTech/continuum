@@ -1,10 +1,13 @@
 /**
- * Sentinel Status Command - Types
+ * Check the status of a running or completed sentinel by handle ID.
  */
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelType } from '../../run/shared/SentinelRunTypes';
 
+/**
+ * Check the status of a running or completed sentinel by handle ID.
+ */
 export interface SentinelStatusParams extends CommandParams {
   /** Handle ID to check */
   handle: string;
@@ -12,16 +15,10 @@ export interface SentinelStatusParams extends CommandParams {
 
 export interface SentinelStatusResult extends CommandResult {
   handle: string;
-  type?: SentinelType;
-  status: 'running' | 'completed' | 'failed' | 'not_found';
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'not_found';
   progress?: number;
-  duration?: number;
-  data?: {
-    success: boolean;
-    summary?: string;
-    filesCreated?: string[];
-    errors?: string[];
-    screenshot?: string;
-  };
+  exitCode?: number;
+  workingDir?: string;
+  logsDir?: string;
   error?: string;
 }

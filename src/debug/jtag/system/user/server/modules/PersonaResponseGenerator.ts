@@ -17,19 +17,18 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { ChatMessageEntity, type MediaItem } from '../../../data/entities/ChatMessageEntity';
 import { inspect } from 'util';
 import type { UserEntity } from '../../../data/entities/UserEntity';
-import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
+import type { ModelConfig } from '../../../data/entities/UserEntity';
 import type { JTAGClient } from '../../../core/client/shared/JTAGClient';
 import { Commands } from '../../../core/shared/Commands';
 // DataCreateParams/DataCreateResult imports removed — response posting now uses ORM.store() directly
 import { AIProviderDaemon } from '../../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
-import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { TextGenerationRequest, TextGenerationResponse, ChatMessage, ContentPart, NativeToolSpec, ToolCall as NativeToolCall, ToolResult as NativeToolResult } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import { AICapabilityRegistry } from '../../../../daemons/ai-provider-daemon/shared/AICapabilityRegistry';
 import { ChatRAGBuilder } from '../../../rag/builders/ChatRAGBuilder';
 import { CognitionLogger } from './cognition/CognitionLogger';
 import { truncate, getMessageText, messagePreview } from '../../../../shared/utils/StringUtils';
 import { calculateCost as calculateModelCost } from '../../../../daemons/ai-provider-daemon/shared/PricingConfig';
 import { AIDecisionLogger } from '../../../ai/server/AIDecisionLogger';
-import { AIDecisionService, type AIDecisionContext } from '../../../ai/server/AIDecisionService';
 import { CoordinationDecisionLogger, type LogDecisionParams } from '../../../coordination/server/CoordinationDecisionLogger';
 import { Events } from '../../../core/shared/Events';
 import { EVENT_SCOPES } from '../../../events/shared/EventSystemConstants';
@@ -46,18 +45,19 @@ import { COLLECTIONS } from '../../../data/config/DatabaseConfig';
 import type { PersonaToolExecutor, ToolCall as ExecutorToolCall } from './PersonaToolExecutor';
 import type { PersonaMediaConfig } from './PersonaMediaConfig';
 import { PersonaToolRegistry } from './PersonaToolRegistry';
-import { getAllToolDefinitions, getAllToolDefinitionsAsync } from './PersonaToolDefinitions';
-import { getPrimaryAdapter, convertToNativeToolSpecs, supportsNativeTools, unsanitizeToolName, getToolCapability, type ToolDefinition as AdapterToolDefinition } from './ToolFormatAdapter';
+import { supportsNativeTools, unsanitizeToolName, sanitizeToolName, coerceParamsToSchema, getToolCapability } from './ToolFormatAdapter';
 import { InferenceCoordinator } from '../../../coordination/server/InferenceCoordinator';
 import { ContentDeduplicator } from './ContentDeduplicator';
-import { ResponseCleaner } from './ResponseCleaner';
 // AiDetectSemanticLoop command removed from hot path — replaced with inline Jaccard similarity
 // import type { AiDetectSemanticLoopParams, AiDetectSemanticLoopResult } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 import { SystemPaths } from '../../../core/config/SystemPaths';
-import { GarbageDetector } from '../../../ai/server/GarbageDetector';
+// GarbageDetector — moved to Rust (persona/text_analysis/garbage_detection.rs)
 import type { InboxMessage, ProcessableMessage } from './QueueItemTypes';
 import type { RAGContext } from '../../../rag/shared/RAGTypes';
+import { PromptCapture } from '../../../rag/shared/PromptCapture';
 import { LOCAL_MODELS } from '../../../../system/shared/Constants';
+import type { RustCognitionBridge } from './RustCognitionBridge';
+// SemanticLoopResult — now inside ValidationResult, accessed via Rust IPC
 
 // import { AiDetectSemanticLoop } from '../../../../commands/ai/detect-semantic-loop/shared/AiDetectSemanticLoopTypes';
 // DataCreate import removed — response posting now uses ORM.store() directly
@@ -107,201 +107,15 @@ export class PersonaResponseGenerator {
 
   /** Content deduplicator - prevents same content from being posted within time window */
   private contentDeduplicator: ContentDeduplicator;
-  /** Response cleaner - strips unwanted prefixes from AI responses */
-  private responseCleaner: ResponseCleaner;
+  /** Rust cognition bridge — set lazily after PersonaUser creates it */
+  private _rustBridge: RustCognitionBridge | null = null;
 
   /**
-   * RESPONSE-LEVEL LOOP DETECTION
-   *
-   * Tracks recent AI response hashes per persona to detect infinite loops.
-   * This catches loops BEFORE tool parsing, which is critical because:
-   * 1. Truncated responses never reach tool parsing
-   * 2. Tool-level detection only catches tool call loops, not content loops
-   * 3. DeepSeek was stuck repeating the same governance proposal 15+ times
-   *
-   * Map<personaId, Array<{hash: string, timestamp: number}>>
+   * Set Rust cognition bridge (called after PersonaUser creates it).
+   * All validation gates (garbage, loop, truncated tool, semantic loop) are in Rust.
    */
-  private static readonly recentResponseHashes: Map<string, Array<{ hash: string; timestamp: number }>> = new Map();
-  private static readonly RESPONSE_LOOP_WINDOW_MS = 600000; // 10 minutes (DeepSeek generates 34k tokens = slow)
-  private static readonly RESPONSE_LOOP_THRESHOLD = 3; // Block after 3 similar responses
-  private static readonly RESPONSE_HASH_LENGTH = 200; // First 200 chars for comparison
-
-  /**
-   * Create a hash of response content for loop detection
-   * Uses first N characters, normalized (lowercase, trimmed, no whitespace)
-   */
-  private static hashResponse(text: string): string {
-    const normalized = text
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, ' ')  // Normalize whitespace
-      .slice(0, PersonaResponseGenerator.RESPONSE_HASH_LENGTH);
-
-    // Simple hash: just use the normalized string as-is
-    // Could use crypto.createHash('md5') but not needed for loop detection
-    return normalized;
-  }
-
-  /**
-   * Check if response is a loop (appears too frequently in recent history)
-   * Returns true if blocked (is a loop), false if allowed
-   */
-  private isResponseLoop(responseText: string): boolean {
-    const hash = PersonaResponseGenerator.hashResponse(responseText);
-    const now = Date.now();
-
-    // Get or create recent responses list for this persona
-    let recentResponses = PersonaResponseGenerator.recentResponseHashes.get(this.personaId) || [];
-
-    // Clean up old entries outside the window
-    recentResponses = recentResponses.filter(
-      entry => now - entry.timestamp < PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS
-    );
-
-    // Count how many times similar response appears (using similarity threshold)
-    const duplicateCount = recentResponses.filter(entry => {
-      // Check if hashes are similar (allow some variation for minor differences)
-      const similarity = this.calculateSimilarity(entry.hash, hash);
-      return similarity > 0.8; // 80% similar = probable loop
-    }).length;
-
-    // Record this response (even if it will be blocked)
-    recentResponses.push({ hash, timestamp: now });
-    PersonaResponseGenerator.recentResponseHashes.set(this.personaId, recentResponses);
-
-    // Block if threshold exceeded
-    if (duplicateCount >= PersonaResponseGenerator.RESPONSE_LOOP_THRESHOLD) {
-      this.log(`🔁 RESPONSE LOOP DETECTED: "${hash.slice(0, 50)}..." appeared ${duplicateCount + 1}x in ${PersonaResponseGenerator.RESPONSE_LOOP_WINDOW_MS / 1000}s - BLOCKING`);
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Calculate similarity between two strings (0-1 scale)
-   * Uses simple character overlap for speed
-   */
-  private calculateSimilarity(a: string, b: string): number {
-    if (a === b) return 1;
-    if (a.length === 0 || b.length === 0) return 0;
-
-    // Jaccard similarity on character bigrams
-    const getBigrams = (s: string): Set<string> => {
-      const bigrams = new Set<string>();
-      for (let i = 0; i < s.length - 1; i++) {
-        bigrams.add(s.slice(i, i + 2));
-      }
-      return bigrams;
-    };
-
-    const bigramsA = getBigrams(a);
-    const bigramsB = getBigrams(b);
-
-    let intersection = 0;
-    for (const bigram of bigramsA) {
-      if (bigramsB.has(bigram)) intersection++;
-    }
-
-    const union = bigramsA.size + bigramsB.size - intersection;
-    return union === 0 ? 0 : intersection / union;
-  }
-
-  /**
-   * Clear response loop history for this persona
-   * Call this when context changes significantly (e.g., room switch, manual reset)
-   */
-  clearResponseLoopHistory(): void {
-    PersonaResponseGenerator.recentResponseHashes.delete(this.personaId);
-    this.log(`🧹 Cleared response loop history for ${this.personaName}`);
-  }
-
-  /**
-   * SEMANTIC LOOP DETECTION
-   *
-   * Uses embedding-based similarity to detect if proposed response is too similar
-   * to recent messages in the room (from ANY source, not just self).
-   *
-   * This catches cases where multiple AIs post semantically identical content
-   * (e.g., Teacher AI and Local Assistant posting the same explanation).
-   *
-   * AUTONOMY-PRESERVING:
-   * - ALLOW (<0.75): Post normally
-   * - WARN (0.75-0.85): Log warning but allow (preserve autonomy)
-   * - BLOCK (>0.85): Truly redundant, block to prevent spam
-   *
-   * @param responseText - The proposed response text
-   * @param roomId - The room ID for context
-   * @returns true if should BLOCK (>0.85 similarity), false otherwise
-   */
-  /**
-   * Inline Jaccard n-gram similarity — O(n) text comparison, no DB or embedding calls.
-   * Returns 0-1 score (1 = identical).
-   */
-  private jaccardSimilarity(text1: string, text2: string): number {
-    if (!text1 || !text2) return 0;
-    if (text1 === text2) return 1.0;
-
-    const tokenize = (text: string): Set<string> => {
-      const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-      const ngrams = new Set<string>();
-      for (const word of words) ngrams.add(word);
-      for (let i = 0; i < words.length - 1; i++) ngrams.add(`${words[i]} ${words[i + 1]}`);
-      return ngrams;
-    };
-
-    const set1 = tokenize(text1);
-    const set2 = tokenize(text2);
-    let intersection = 0;
-    for (const gram of set1) {
-      if (set2.has(gram)) intersection++;
-    }
-    const union = set1.size + set2.size - intersection;
-    return union === 0 ? 0 : intersection / union;
-  }
-
-  /**
-   * Check semantic loop using in-memory RAG context (0ms, no DB/embedding calls).
-   * Previous implementation called AiDetectSemanticLoop.execute() which did embedding IPC + DB query (~20s).
-   * Now uses inline Jaccard n-gram similarity against already-loaded conversation history.
-   */
-  private checkSemanticLoop(
-    responseText: string,
-    conversationHistory: Array<{ role: string; content: string; name?: string }>
-  ): { shouldBlock: boolean; similarity: number; reason: string } {
-    // Short responses are unlikely to be loops
-    if (responseText.length < 50) {
-      return { shouldBlock: false, similarity: 0, reason: 'Response too short for semantic check' };
-    }
-
-    // Compare against last 10 messages in the already-loaded RAG context
-    const recentMessages = conversationHistory.slice(-10);
-    let maxSimilarity = 0;
-    let mostSimilarExcerpt = '';
-
-    for (const msg of recentMessages) {
-      if (!msg.content || msg.content.length < 20) continue;
-      const similarity = this.jaccardSimilarity(responseText, msg.content);
-      if (similarity > maxSimilarity) {
-        maxSimilarity = similarity;
-        mostSimilarExcerpt = msg.content.slice(0, 100);
-      }
-    }
-
-    // Thresholds (same as AiDetectSemanticLoopServerCommand)
-    const WARN_THRESHOLD = 0.80;
-    const BLOCK_THRESHOLD = 0.95;
-
-    if (maxSimilarity >= BLOCK_THRESHOLD) {
-      this.log(`🚫 SEMANTIC LOOP: ${maxSimilarity.toFixed(2)} similarity - BLOCKING response`);
-      this.log(`   Most similar to: "${mostSimilarExcerpt}"`);
-      return { shouldBlock: true, similarity: maxSimilarity, reason: `${Math.round(maxSimilarity * 100)}% similar to recent message` };
-    } else if (maxSimilarity >= WARN_THRESHOLD) {
-      this.log(`⚠️ SEMANTIC WARNING: ${maxSimilarity.toFixed(2)} similarity - allowing (preserving autonomy)`);
-      return { shouldBlock: false, similarity: maxSimilarity, reason: 'Similar but allowing for autonomy' };
-    }
-
-    return { shouldBlock: false, similarity: maxSimilarity, reason: 'Low similarity' };
+  setRustBridge(bridge: RustCognitionBridge): void {
+    this._rustBridge = bridge;
   }
 
   constructor(config: PersonaResponseGeneratorConfig) {
@@ -319,93 +133,18 @@ export class PersonaResponseGenerator {
 
     // Initialize modular helpers
     this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
-    this.responseCleaner = new ResponseCleaner({ log: this.log.bind(this) });
   }
 
   /**
-   * Get effective model for inference
-   *
-   * Priority:
-   * 1. Trait-specific trained adapter (if context provides task domain)
-   * 2. Current active adapter (most recently used)
-   * 3. Any available trained adapter
-   * 4. Base model configured for this persona
-   *
-   * @param context - Optional context for trait-aware selection
-   * @returns The model name to use for inference
+   * Get effective model for inference via Rust IPC.
+   * 4-tier priority chain: trait adapter → current → any → base model.
+   * Domain-to-trait mapping is canonical in Rust (no TS duplicate).
    */
-  private getEffectiveModel(context?: { taskDomain?: string }): string {
-    if (this.genome) {
-      // 1. Try trait-specific adapter based on task context
-      if (context?.taskDomain) {
-        const relevantTrait = this.determineRelevantTrait(context);
-        const traitAdapter = this.genome.getAdapterByTrait(relevantTrait);
-        if (traitAdapter) {
-          const ollamaModel = traitAdapter.getOllamaModelName();
-          if (ollamaModel) {
-            this.log(`🧬 ${this.personaName}: Using trait-specific model: ${ollamaModel} (trait: ${relevantTrait})`);
-            return ollamaModel;
-          }
-        }
-      }
-
-      // 2. Fall back to current active adapter (most recently used)
-      const currentAdapter = this.genome.getCurrentAdapter();
-      if (currentAdapter) {
-        const ollamaModel = currentAdapter.getOllamaModelName();
-        if (ollamaModel) {
-          this.log(`🧬 ${this.personaName}: Using trained model: ${ollamaModel} (adapter: ${currentAdapter.getName()})`);
-          return ollamaModel;
-        }
-      }
-
-      // 3. Check for any available trained adapter
-      const allAdapters = this.genome.getAllAdapters();
-      for (const adapter of allAdapters) {
-        const ollamaModel = adapter.getOllamaModelName();
-        if (ollamaModel) {
-          this.log(`🧬 ${this.personaName}: Using available trained model: ${ollamaModel} (adapter: ${adapter.getName()})`);
-          return ollamaModel;
-        }
-      }
-    }
-
-    // 4. Fall back to configured base model
-    return this.modelConfig.model || LOCAL_MODELS.DEFAULT;
-  }
-
-  /**
-   * Determine which trait adapter is most relevant for the current context
-   *
-   * Maps task domains to trait types:
-   * - code → reasoning_style
-   * - creative → creative_expression
-   * - support/help → social_dynamics
-   * - default → tone_and_voice
-   */
-  private determineRelevantTrait(context: { taskDomain?: string }): string {
-    const domain = context.taskDomain?.toLowerCase();
-
-    switch (domain) {
-      case 'code':
-      case 'debug':
-      case 'analysis':
-        return 'reasoning_style';
-      case 'creative':
-      case 'art':
-      case 'writing':
-        return 'creative_expression';
-      case 'support':
-      case 'help':
-      case 'social':
-        return 'social_dynamics';
-      case 'facts':
-      case 'knowledge':
-      case 'expertise':
-        return 'domain_expertise';
-      default:
-        return 'tone_and_voice';  // Default trait for general chat
-    }
+  private async getEffectiveModel(taskDomain?: string): Promise<string> {
+    if (!this._rustBridge) throw new Error('Rust bridge not initialized — cannot select model');
+    const baseModel = this.modelConfig.model || LOCAL_MODELS.DEFAULT;
+    const result = await this._rustBridge.selectModel(baseModel, taskDomain);
+    return result.model;
   }
 
   /**
@@ -550,10 +289,13 @@ export class PersonaResponseGenerator {
           this.personaId,
           {
             modelId: this.modelConfig.model,
+            maxTokens: this.modelConfig.maxTokens,
             maxMemories: 5,
             includeArtifacts: true,
             includeMemories: true,
             voiceSessionId,
+            provider: this.modelConfig.provider || 'candle',
+            toolCapability: getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig),
             currentMessage: {
               role: 'user',
               content: originalMessage.content.text,
@@ -573,64 +315,16 @@ export class PersonaResponseGenerator {
       // Adapters will transform based on model capability (raw images vs text descriptions)
       const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string | ChatMessage['content'] }> = [];
 
-      // System prompt from RAG builder (includes room membership!)
-      // NOTE: Budget awareness is now handled by RAGComposer sources (GovernanceSource, ActivityContextSource)
-      // Each source respects its allocated budget and skips/truncates for limited models
+      // System prompt from RAG builder — includes room membership, memories, tool definitions,
+      // widget context, global awareness, etc. ALL injected by budget-aware RAG sources.
+      // No bypasses here — everything flows through the RAG budget system.
       let systemPrompt = fullRAGContext.identity.systemPrompt;
 
-      // Inject consolidated memories from Hippocampus LTM (if available)
-      if (fullRAGContext.privateMemories && fullRAGContext.privateMemories.length > 0) {
-        const memorySection = `\n\n=== YOUR CONSOLIDATED MEMORIES ===\nThese are important things you've learned and consolidated into long-term memory:\n\n${
-          fullRAGContext.privateMemories.map((mem, idx) =>
-            `${idx + 1}. [${mem.type}] ${mem.content} (${new Date(mem.timestamp).toLocaleDateString()})`
-          ).join('\n')
-        }\n\nUse these memories to inform your responses when relevant.\n================================`;
-
-        systemPrompt += memorySection;
-        this.log(`🧠 ${this.personaName}: Injected ${fullRAGContext.privateMemories.length} consolidated memories into context`);
-      }
-
-      // Inject available tools for autonomous tool discovery (Phase 3A)
-      // Use adapter-based formatting for harmony with parser
-      // CRITICAL: Only inject tools for models that can actually emit tool calls.
-      // Models without tool capability narrate instead of calling tools,
-      // wasting tokens and clogging chat with useless "let me use tool X" text.
+      // Tool capability for XML parsing (still needed for response parsing, not injection)
       const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
-      const availableTools = toolCap !== 'none'
-        ? await this.toolRegistry.listToolsForPersonaAsync(this.personaId)
-        : [];
 
-      if (toolCap === 'none') {
-        this.log(`🚫 ${this.personaName}: Tool injection skipped (provider=${this.modelConfig.provider}, toolCapability=none)`);
-      }
-
-      // Convert PersonaToolDefinitions to adapter format (used for both XML injection and native tools)
-      // Hoisted to outer scope so it's available for native tool_use injection later
-      const toolDefinitions: AdapterToolDefinition[] = availableTools.map(t => ({
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-        category: t.category
-      }));
-
-      if (availableTools.length > 0 && !supportsNativeTools(this.modelConfig.provider || 'candle')) {
-        // Text-based tool injection for non-native providers (XML tool callers like DeepSeek).
-        // Native tool providers (Anthropic, OpenAI, Together, Groq) get tools via the JSON
-        // `tools` request parameter instead — injecting text descriptions alongside native specs
-        // confuses Llama models into narrating tool usage rather than calling the native API.
-        const adapter = getPrimaryAdapter();
-        const formattedTools = adapter.formatToolsForPrompt(toolDefinitions);
-
-        const toolsSection = `\n\n=== AVAILABLE TOOLS ===\nYou have access to the following tools that you can use during your responses:\n\n${formattedTools}\n\nThe tool will be executed and results will be provided for you to analyze and respond to.
-================================`;
-
-        systemPrompt += toolsSection;
-        this.log(`🔧 ${this.personaName}: Injected ${availableTools.length} available tools into system prompt (text format)`);
-      }
-
-      // NOTE: Activity context (recipe strategy + tools) is now added by ActivityContextSource in RAGComposer
-      // NOTE: Governance guidance is now added by GovernanceSource in RAGComposer
-      // It's budget-aware and skipped for limited models
+      // Log system prompt size for monitoring
+      this.log(`📋 ${this.personaName}: [RAG] ${systemPrompt.length} chars (~${Math.ceil(systemPrompt.length / 4)} tokens), toolCap=${toolCap}, provider=${this.modelConfig.provider}`);
 
       messages.push({
         role: 'system',
@@ -854,8 +548,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       this.log(`🔧 ${this.personaName}: [PHASE 3.3] Calling AIProviderDaemon.generateText (provider: ${this.modelConfig.provider}, model: ${this.modelConfig.model})...`);
 
       // Bug #5 fix: Use adjusted maxTokens from RAG context (two-dimensional budget)
-      // If ChatRAGBuilder calculated an adjusted value, use it. Otherwise fall back to config.
-      let effectiveMaxTokens = fullRAGContext.metadata.adjustedMaxTokens ?? this.modelConfig.maxTokens ?? 150;
+      // RAG budget can only REDUCE maxTokens (protect against context overflow),
+      // never INCREASE beyond what the model config specifies.
+      const configMaxTokens = this.modelConfig.maxTokens;
+      const ragAdjusted = fullRAGContext.metadata.adjustedMaxTokens;
+      let effectiveMaxTokens = ragAdjusted && ragAdjusted < configMaxTokens
+        ? ragAdjusted
+        : configMaxTokens;
 
       // VOICE MODE: Allow reasonable response length for natural conversation
       // DON'T artificially truncate - that's robotic and cuts off mid-sentence
@@ -883,13 +582,13 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         provider: this.modelConfig.provider
       });
 
-      const effectiveModel = this.getEffectiveModel();
+      const effectiveModel = await this.getEffectiveModel();
       const request: TextGenerationRequest = {
         messages,
         model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
-        preferredProvider: (this.modelConfig.provider || 'candle') as TextGenerationRequest['preferredProvider'],
+        provider: this.modelConfig.provider || 'candle',
         intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
         // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
         personaContext: {
@@ -913,63 +612,12 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // This prevents thundering herd - only N personas can generate simultaneously per provider
       const provider = this.modelConfig.provider || 'candle';
 
-      // Add native tools for providers that support JSON tool calling (Anthropic, OpenAI)
-      // This enables tool_use blocks instead of XML parsing for more reliable tool execution
-      // CRITICAL: Prioritize relevant tools. Sending 200+ tools overwhelms models, causing them
-      // to loop on meta-tools (search_tools) instead of calling the actual tools they need.
-      if (supportsNativeTools(provider) && toolDefinitions.length > 0) {
-        // Exclude meta-tools from native specs — models with native tool calling
-        // don't need discovery tools. search_tools/list_tools cause infinite loops.
-        const META_TOOLS = new Set(['search_tools', 'list_tools', 'working_memory']);
-        let prioritizedTools = toolDefinitions.filter(t => !META_TOOLS.has(t.name));
-
-        // Recipe tools define the activity's core toolset. When present, recipe tools
-        // go FIRST and the cap is tighter — models use early tools and get confused by 64+.
-        const recipeToolNames = new Set(
-          (fullRAGContext.recipeTools || [])
-            .filter(t => t.enabledFor.includes('ai'))
-            .map(t => t.name)
-        );
-        const hasRecipeTools = recipeToolNames.size > 0;
-        const MAX_NATIVE_TOOLS = hasRecipeTools ? 32 : 64;
-
-        if (prioritizedTools.length > MAX_NATIVE_TOOLS) {
-          // Three-tier priority:
-          // 1. Recipe tools (the activity's core tools — go FIRST)
-          // 2. Essentials (bare minimum for coordination)
-          // 3. Everything else (fill remaining slots)
-          const ESSENTIAL_TOOLS = new Set([
-            'collaboration/chat/send', 'collaboration/chat/history',
-            'collaboration/decision/propose', 'collaboration/decision/vote',
-          ]);
-          const essentialPrefixes = hasRecipeTools
-            ? [] // When recipe tools exist, only allow exact essential matches
-            : ['collaboration/chat/', 'collaboration/decision/', 'data/', 'ai/'];
-
-          const recipe: AdapterToolDefinition[] = [];
-          const essential: AdapterToolDefinition[] = [];
-          const rest: AdapterToolDefinition[] = [];
-
-          for (const tool of prioritizedTools) {
-            if (recipeToolNames.has(tool.name)) {
-              recipe.push(tool);
-            } else if (ESSENTIAL_TOOLS.has(tool.name) ||
-                       essentialPrefixes.some(p => tool.name.startsWith(p))) {
-              essential.push(tool);
-            } else {
-              rest.push(tool);
-            }
-          }
-
-          // Recipe tools FIRST, then essentials, then fill from rest
-          const remaining = MAX_NATIVE_TOOLS - recipe.length - essential.length;
-          prioritizedTools = [...recipe, ...essential, ...rest.slice(0, Math.max(0, remaining))];
-          this.log(`🔧 ${this.personaName}: Tool prioritization: ${recipe.length} recipe + ${essential.length} essential + ${Math.max(0, remaining)} general = ${prioritizedTools.length} (from ${toolDefinitions.length} total, cap=${MAX_NATIVE_TOOLS})`);
-        }
-
-        request.tools = convertToNativeToolSpecs(prioritizedTools);
-        request.tool_choice = 'auto';
-        this.log(`🔧 ${this.personaName}: Added ${request.tools.length} native tools for ${provider} (JSON tool_use format, tool_choice=auto)`);
+      // Native tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
+      const toolMeta = fullRAGContext.metadata?.toolDefinitions;
+      if (toolMeta?.nativeToolSpecs && (toolMeta.nativeToolSpecs as unknown[]).length > 0) {
+        request.tools = toolMeta.nativeToolSpecs as any;
+        request.toolChoice = (toolMeta.toolChoice as string) || 'auto';
+        this.log(`🔧 ${this.personaName}: Added ${(toolMeta.nativeToolSpecs as unknown[]).length} native tools from RAG budget (toolChoice=${request.toolChoice})`);
       }
       pipelineTiming['3.2_format'] = Date.now() - phase32Start;
       this.log(`✅ ${this.personaName}: [PHASE 3.2] LLM messages built (${messages.length} messages, ${pipelineTiming['3.2_format']}ms)`);
@@ -995,6 +643,31 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Treat as redundant (another AI will respond)
       }
       this.log(`🎰 ${this.personaName}: [PHASE 3.3a] Inference slot granted (${pipelineTiming['3.3a_slot']}ms)`);
+
+      // ── Prompt capture for replay/debugging ──
+      // Captures the complete prompt (system + messages + tools) in JSONL format.
+      // Read with: PromptCapture.load({ personaName: 'Helper AI', limit: 5 })
+      // Replay with: AIProviderDaemon.generateText(PromptCapture.toReplayRequest(capture))
+      PromptCapture.capture({
+        personaId: this.personaId,
+        personaName: this.personaName,
+        model: request.model || this.modelConfig.model || 'unknown',
+        provider: request.provider || 'candle',
+        temperature: request.temperature ?? 0.7,
+        maxTokens: effectiveMaxTokens,
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          name: undefined  // name is embedded in content as "[HH:MM] Name: text"
+        })),
+        tools: request.tools as unknown[] | undefined,
+        toolChoice: typeof request.toolChoice === 'string' ? request.toolChoice : request.toolChoice ? JSON.stringify(request.toolChoice) : undefined,
+        triggerMessageId: originalMessage.id,
+        triggerMessagePreview: originalMessage.content?.text?.slice(0, 100),
+        ragSourceCount: fullRAGContext.metadata?.messageCount,
+        ragTotalTokens: fullRAGContext.metadata?.inputTokenCount as number | undefined,
+        activeAdapters: request.activeAdapters?.map(a => ({ name: a.name, path: a.path }))
+      });
 
       // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
@@ -1077,8 +750,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               stage: 'generate',
               durationMs: generateDuration,
               resourceUsed: aiResponse.text.length,
-              maxResource: this.modelConfig.maxTokens ?? 150,
-              percentCapacity: (aiResponse.text.length / (this.modelConfig.maxTokens ?? 150)) * 100,
+              maxResource: this.modelConfig.maxTokens,
+              percentCapacity: (aiResponse.text.length / this.modelConfig.maxTokens) * 100,
               percentSpeed: calculateSpeedScore(generateDuration, 'generate'),
               status: getStageStatus(generateDuration, 'generate'),
               metadata: {
@@ -1091,27 +764,47 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           }
         ).catch(err => this.log(`⚠️ Failed to emit stage complete event: ${err}`));
 
-        // 🔧 PHASE 3.3.5: Clean AI response - strip any name prefixes LLM added despite instructions
-        // LLMs sometimes copy the "[HH:MM] Name: message" format they see in conversation history
-        const cleanedResponse = this.responseCleaner.clean(aiResponse.text.trim());
-        if (cleanedResponse !== aiResponse.text.trim()) {
-          aiResponse.text = cleanedResponse;
+        // Clean AI response via Rust IPC — strip name prefixes LLMs add
+        if (!this._rustBridge) {
+          throw new Error('Rust bridge not initialized — cannot validate response');
         }
 
-        // 🔧 PHASE 3.3.5a: GARBAGE DETECTION
-        // Detect and reject garbage output (Unicode garbage, repetition, encoding errors)
-        // This catches model failures that produce gibberish instead of coherent text.
-        // Skip when the response has native tool calls — models with function calling often
-        // return empty text + tool_calls, which is valid (the agent loop will execute them).
-        const hasToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
-        const garbageCheck = hasToolCalls ? { isGarbage: false, reason: '', details: '', score: 0 } : GarbageDetector.isGarbage(aiResponse.text);
-        if (garbageCheck.isGarbage) {
-          this.log(`🗑️ ${this.personaName}: [PHASE 3.3.5a] GARBAGE DETECTED (${garbageCheck.reason}: ${garbageCheck.details})`);
+        const cleaned = await this._rustBridge.cleanResponse(aiResponse.text.trim());
+        if (cleaned.was_cleaned) {
+          aiResponse.text = cleaned.text;
+        }
+
+        // Combined validation gates (1 Rust IPC call)
+        // Runs 4 gates in Rust: garbage detection, response loop, truncated tool call, semantic loop.
+        const hasToolCalls = !!(aiResponse.toolCalls && aiResponse.toolCalls.length > 0);
+
+        const validation = await this._rustBridge.validateResponse(
+          aiResponse.text,
+          hasToolCalls,
+          fullRAGContext.conversationHistory
+        );
+
+        if (!validation.passed) {
+          const gate = validation.gate_failed ?? 'unknown';
+          this.log(`🚫 ${this.personaName}: [PHASE 3.3.5] Validation gate FAILED: ${gate} (${validation.total_time_us}us)`);
 
           // Release inference slot
           InferenceCoordinator.releaseSlot(this.personaId, provider);
 
-          // Emit event to clear UI indicators (fire-and-forget)
+          // Build gate-specific event data
+          const gateConfidence = gate === 'garbage' ? validation.garbage_result.score
+            : gate === 'response_loop' ? 0.9
+            : gate === 'truncated_tool_call' ? 0.95
+            : gate === 'semantic_loop' ? validation.semantic_result.similarity
+            : 0.8;
+
+          const gateReason = gate === 'garbage' ? `Garbage output: ${validation.garbage_result.reason} - ${validation.garbage_result.details}`
+            : gate === 'response_loop' ? `Response loop detected - ${validation.loop_duplicate_count} duplicates`
+            : gate === 'truncated_tool_call' ? 'Truncated tool call detected - response cut off mid-tool-call'
+            : gate === 'semantic_loop' ? validation.semantic_result.reason
+            : `Validation failed: ${gate}`;
+
+          // Emit DECIDED_SILENT event (fire-and-forget)
           if (this.client) {
             Events.emit<AIDecidedSilentEventData>(
               DataDaemon.jtagContext!,
@@ -1123,120 +816,18 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
                 messageId: originalMessage.id,
                 isHumanMessage: originalMessage.senderType === 'human',
                 timestamp: Date.now(),
-                confidence: garbageCheck.score,
-                reason: `Garbage output detected: ${garbageCheck.reason} - ${garbageCheck.details}`,
-                gatingModel: 'garbage-detector'
+                confidence: gateConfidence,
+                reason: gateReason,
+                gatingModel: `rust-${gate}`
               },
               { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
             ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
           }
 
-          // Return failure so caller knows this wasn't successful
-          return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${garbageCheck.reason}` };
-        }
-
-        // 🔧 PHASE 3.3.5b: RESPONSE-LEVEL LOOP DETECTION
-        // Check if this AI is stuck in a loop BEFORE tool parsing
-        // This catches cases where:
-        // - Response is truncated mid-tool-call (DeepSeek's issue)
-        // - AI repeats same content with minor variations
-        // - Tool-level detection would miss it
-        if (!hasToolCalls && this.isResponseLoop(aiResponse.text)) {
-          this.log(`🔁 ${this.personaName}: [PHASE 3.3.5b] Response loop detected - DISCARDING response`);
-
-          // Release inference slot
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-
-          // Emit event to clear UI indicators (fire-and-forget)
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: 0.9,
-                reason: 'Response loop detected - same content repeated 3+ times',
-                gatingModel: 'response-loop-detector'
-              },
-              {
-                scope: EVENT_SCOPES.ROOM,
-                scopeId: originalMessage.roomId
-              }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
+          // Garbage returns failure; loops/truncated return redundant
+          if (gate === 'garbage') {
+            return { success: false, wasRedundant: false, storedToolResultIds: [], error: `garbage_output: ${validation.garbage_result.reason}` };
           }
-
-          // Return early - treat as redundant (don't post this looping response)
-          return { success: true, wasRedundant: true, storedToolResultIds: [] };
-        }
-
-        // 🔧 PHASE 3.3.5c: TRUNCATED TOOL CALL DETECTION
-        // Detect tool calls that were cut off mid-generation (DeepSeek's issue)
-        // If we see <tool_use> or <tool  but no matching closing tag, the response is truncated
-        const hasToolStart = aiResponse.text.includes('<tool_use>') || aiResponse.text.includes('<tool ');
-        const hasToolEnd = aiResponse.text.includes('</tool_use>') || aiResponse.text.includes('</tool>');
-        if (hasToolStart && !hasToolEnd) {
-          this.log(`⚠️ ${this.personaName}: [PHASE 3.3.5c] TRUNCATED TOOL CALL detected - blocking response to prevent loop`);
-          this.log(`   Response ends with: "${(aiResponse.text ?? '').slice(-100)}"`);
-
-          // Treat truncated tool calls the same as loops - they will just repeat forever
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: 0.95,
-                reason: 'Truncated tool call detected - response cut off mid-tool-call',
-                gatingModel: 'truncated-tool-detector'
-              },
-              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-          }
-          return { success: true, wasRedundant: true, storedToolResultIds: [] };
-        }
-
-        // 🔧 PHASE 3.3.5d: SEMANTIC LOOP DETECTION (inline, ~0ms)
-        // Uses Jaccard n-gram similarity against already-loaded RAG context.
-        // Previous: AiDetectSemanticLoop.execute() — embedding IPC + DB query (~20 seconds)
-        // Now: inline text comparison against in-memory conversation history (~0ms)
-        const semanticCheck = this.checkSemanticLoop(aiResponse.text, fullRAGContext.conversationHistory);
-        if (semanticCheck.shouldBlock) {
-          this.log(`🚫 ${this.personaName}: [PHASE 3.3.5d] SEMANTIC LOOP BLOCKED (${semanticCheck.similarity.toFixed(2)} similarity)`);
-
-          // Release inference slot
-          InferenceCoordinator.releaseSlot(this.personaId, provider);
-
-          // Emit event to clear UI indicators (fire-and-forget)
-          if (this.client) {
-            Events.emit<AIDecidedSilentEventData>(
-              DataDaemon.jtagContext!,
-              AI_DECISION_EVENTS.DECIDED_SILENT,
-              {
-                personaId: this.personaId,
-                personaName: this.personaName,
-                roomId: originalMessage.roomId,
-                messageId: originalMessage.id,
-                isHumanMessage: originalMessage.senderType === 'human',
-                timestamp: Date.now(),
-                confidence: semanticCheck.similarity,
-                reason: semanticCheck.reason,
-                gatingModel: 'semantic-loop-detector'
-              },
-              { scope: EVENT_SCOPES.ROOM, scopeId: originalMessage.roomId }
-            ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-          }
-
           return { success: true, wasRedundant: true, storedToolResultIds: [] };
         }
 
@@ -1268,8 +859,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
         while (toolIterations < SAFETY_MAX) {
           // Check for tool calls — native first, then XML fallback
+          // ONE Rust IPC call replaces 3 separate sync TS calls (parse + correct + strip)
           const hasNativeToolCalls = aiResponse.toolCalls && aiResponse.toolCalls.length > 0;
-          const hasXmlToolCalls = !hasNativeToolCalls && this.toolExecutor.parseToolCalls(aiResponse.text).length > 0;
+          const parsed = !hasNativeToolCalls ? await this.toolExecutor.parseResponse(aiResponse.text) : null;
+          const hasXmlToolCalls = parsed !== null && parsed.toolCalls.length > 0;
 
           if (!hasNativeToolCalls && !hasXmlToolCalls) {
             // Model chose to stop — no more tool calls
@@ -1282,11 +875,29 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
           toolIterations++;
           this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Iteration ${toolIterations}/${SAFETY_MAX}`);
 
-          if (useNativeProtocol && hasNativeToolCalls) {
-            // ── Native tool protocol (Anthropic, OpenAI, etc.) ──
-            // Full results go back as tool_result content blocks
-            const nativeToolCalls = aiResponse.toolCalls!;
-            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)`);
+          if (hasNativeToolCalls || (useNativeProtocol && hasXmlToolCalls)) {
+            // ── Native tool protocol (Anthropic, OpenAI, Groq, Together, etc.) ──
+            // Handles both:
+            //   1. Adapter returned structured tool_calls (normal case)
+            //   2. Model output tool calls in text, Rust parsed them (Groq/Llama case)
+            let nativeToolCalls: NativeToolCall[];
+            if (hasNativeToolCalls) {
+              nativeToolCalls = aiResponse.toolCalls!;
+            } else {
+              // Synthesize native format from text-parsed calls
+              // Coerce params to match schema types (e.g. string "true" → boolean true)
+              // so the API doesn't reject tool_use blocks on regeneration
+              const toolSpecs = (request.tools as NativeToolSpec[]) ?? [];
+              nativeToolCalls = parsed!.toolCalls.map((tc, i) => {
+                const name = sanitizeToolName(tc.toolName);
+                return {
+                  id: `synth_${Date.now()}_${i}`,
+                  name,
+                  input: coerceParamsToSchema(tc.parameters, toolSpecs, name),
+                };
+              });
+            }
+            this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${nativeToolCalls.length} native tool call(s)${!hasNativeToolCalls ? ' (synthesized from text)' : ''}`);
 
             let toolResults: NativeToolResult[];
             let toolMedia: MediaItem[] = [];
@@ -1304,30 +915,41 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               const errMsg = toolExecError instanceof Error ? toolExecError.message : String(toolExecError);
               this.log(`❌ ${this.personaName}: [AGENT-LOOP] Tool execution failed: ${errMsg}`);
               toolResults = nativeToolCalls.map(tc => ({
-                tool_use_id: tc.id,
+                toolUseId: tc.id,
                 content: `Tool execution error: ${errMsg}`,
-                is_error: true as const,
+                isError: true as const,
               }));
             }
 
-            // Push assistant message with tool_use content blocks (as the model produced them)
-            const assistantContent: ContentPart[] = aiResponse.content ?? [
-              ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
-              ...nativeToolCalls.map(tc => ({
-                type: 'tool_use' as const,
-                id: tc.id,
-                name: tc.name,
-                input: tc.input,
-              })),
-            ];
+            // Push assistant message with tool_use content blocks
+            // Use adapter's content if native tool calls, synthesize if text-parsed
+            const assistantContent: ContentPart[] = hasNativeToolCalls
+              ? (aiResponse.content ?? [
+                  ...(aiResponse.text ? [{ type: 'text' as const, text: aiResponse.text }] : []),
+                  ...nativeToolCalls.map(tc => ({
+                    type: 'tool_use' as const,
+                    id: tc.id,
+                    name: tc.name,
+                    input: tc.input,
+                  })),
+                ])
+              : [
+                  ...(parsed!.cleanedText ? [{ type: 'text' as const, text: parsed!.cleanedText }] : []),
+                  ...nativeToolCalls.map(tc => ({
+                    type: 'tool_use' as const,
+                    id: tc.id,
+                    name: tc.name,
+                    input: tc.input,
+                  })),
+                ];
             messages.push({ role: 'assistant' as const, content: assistantContent });
 
             // Push tool results as user message with tool_result content blocks (FULL results)
             const toolResultContent: ContentPart[] = toolResults.map(r => ({
               type: 'tool_result' as const,
-              tool_use_id: r.tool_use_id,
+              tool_use_id: r.toolUseId,
               content: r.content,
-              ...(r.is_error && { is_error: true }),
+              is_error: r.isError ?? null,
             }));
 
             // Include media if present (screenshots, etc.)
@@ -1337,17 +959,10 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
             messages.push({ role: 'user' as const, content: toolResultContent });
 
-          } else {
-            // ── XML fallback for non-native providers ──
+          } else if (hasXmlToolCalls) {
+            // ── XML path for non-native providers (DeepSeek, Ollama, Candle) ──
             // Parse XML tool calls, execute, return results as text
-            const xmlToolCalls = hasNativeToolCalls
-              ? aiResponse.toolCalls!.map((tc: NativeToolCall) => ({
-                  toolName: unsanitizeToolName(tc.name),
-                  parameters: Object.fromEntries(
-                    Object.entries(tc.input).map(([k, v]) => [k, String(v)])
-                  ) as Record<string, string>,
-                }))
-              : this.toolExecutor.parseToolCalls(aiResponse.text);
+            const xmlToolCalls = parsed!.toolCalls;
 
             this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Executing ${xmlToolCalls.length} XML tool call(s)`);
 
@@ -1367,8 +982,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
               formattedResults = `<tool_result>\n<status>error</status>\n<error>\n\`\`\`\nTool execution error: ${errMsg}\n\`\`\`\n</error>\n</tool_result>`;
             }
 
-            // Strip tool blocks from response text for the assistant message
-            const explanationText = this.toolExecutor.stripToolBlocks(aiResponse.text);
+            // Use pre-parsed cleaned text from Rust IPC (already stripped)
+            const explanationText = parsed!.cleanedText;
 
             messages.push({ role: 'assistant' as const, content: explanationText });
 
@@ -1382,43 +997,70 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             messages.push({ role: 'user' as const, content: toolResultContent });
           }
 
-          // Regenerate — tools stay enabled, model decides when to stop
-          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools enabled)`);
+          // Regenerate — force text response after 3 tool iterations.
+          // Small/medium models loop on tools indefinitely without summarizing.
+          // After 3 iterations (or at safety cap - 1), disable tools to force text.
+          const forceText = toolIterations >= 3 || toolIterations >= SAFETY_MAX - 1;
+          const regenerationTools = forceText ? undefined : request.tools;
+          const regenerationToolChoice = forceText ? undefined : request.toolChoice;
+
+          this.log(`🔧 ${this.personaName}: [AGENT-LOOP] Regenerating with ${messages.length} messages (tools ${forceText ? 'DISABLED — forcing text response' : 'enabled'})`);
 
           try {
             const regenerateStartTime = Date.now();
             const regeneratedResponse = await AIProviderDaemon.generateText({
               ...request,
-              messages, // Tools NOT stripped — model decides when to stop
+              messages,
+              tools: regenerationTools,
+              toolChoice: regenerationToolChoice,
             });
             const regenerateDuration = Date.now() - regenerateStartTime;
 
             this.log(`⏱️  ${this.personaName}: [AGENT-LOOP] Regeneration took ${regenerateDuration}ms, finishReason: ${regeneratedResponse.finishReason}`);
 
             if (!regeneratedResponse.text && !regeneratedResponse.toolCalls?.length) {
-              this.log(`❌ ${this.personaName}: [AGENT-LOOP] Empty response, using previous text`);
-              aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+              this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Empty response from ${provider}/${effectiveModel} after ${toolIterations} tool iteration(s), using cleaned previous text`);
+              // Regeneration returned nothing — use the model's explanation text from before tool calls
+              // parseResponse strips tool blocks, leaving the natural language (e.g. "Let me check that...")
+              const fallback = await this.toolExecutor.parseResponse(aiResponse.text);
+              aiResponse.text = fallback.cleanedText;
               break;
             }
 
-            // Update full response state
-            aiResponse.text = this.responseCleaner.clean(regeneratedResponse.text?.trim() || '');
+            // Update full response state — clean via Rust IPC
+            const loopCleaned = await this._rustBridge!.cleanResponse(regeneratedResponse.text?.trim() || '');
+            aiResponse.text = loopCleaned.text;
             aiResponse.toolCalls = regeneratedResponse.toolCalls ?? undefined;
             aiResponse.content = regeneratedResponse.content ?? undefined;
             aiResponse.finishReason = regeneratedResponse.finishReason;
 
             this.log(`✅ ${this.personaName}: [AGENT-LOOP] Got response (${aiResponse.text.length} chars, toolCalls: ${aiResponse.toolCalls?.length ?? 0})`);
+
+            // If we forced text (tools disabled), break — don't let the parser
+            // re-detect tool-call-like text and continue the loop
+            if (forceText) {
+              this.log(`✅ ${this.personaName}: [AGENT-LOOP] Forced text response after ${toolIterations} iteration(s), stopping`);
+              break;
+            }
           } catch (regenerateError) {
             const errorMsg = regenerateError instanceof Error ? regenerateError.message : String(regenerateError);
             this.log(`❌ ${this.personaName}: [AGENT-LOOP] Regeneration failed: ${errorMsg}`);
-            aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+            aiResponse.text = (await this.toolExecutor.parseResponse(aiResponse.text)).cleanedText;
             break;
           }
         }
 
         if (toolIterations >= SAFETY_MAX) {
           this.log(`⚠️  ${this.personaName}: [AGENT-LOOP] Hit safety cap (${SAFETY_MAX}), stopping`);
-          aiResponse.text = this.toolExecutor.stripToolBlocks(aiResponse.text);
+        }
+        // Always strip any remaining tool call text from the final response.
+        // Models may embed tool calls in text even after forced-text regeneration.
+        if (toolIterations > 0 && aiResponse.text) {
+          const finalCleaned = await this.toolExecutor.parseResponse(aiResponse.text);
+          if (finalCleaned.toolCalls.length > 0) {
+            this.log(`🧹 ${this.personaName}: [AGENT-LOOP] Stripped ${finalCleaned.toolCalls.length} residual tool call(s) from final response`);
+            aiResponse.text = finalCleaned.cleanedText;
+          }
         }
         pipelineTiming['3.4_agent_loop'] = Date.now() - agentLoopStart;
         if (toolIterations > 0) {
@@ -1497,43 +1139,6 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         // Re-throw to be caught by outer try-catch
         throw error;
       }
-
-      // === SUB-PHASE 3.4: SELF-REVIEW: Check if response is redundant before posting ===
-      // DISABLED: Redundancy checking via LLM is too flaky (false positives like C++ vs JavaScript questions)
-      // It adds AI unreliability on top of AI unreliability, leading to valid responses being discarded
-      // TODO: Replace with simple heuristics (exact text match, time-based deduplication)
-      this.log(`⏭️  ${this.personaName}: [PHASE 3.4] Redundancy check DISABLED (too flaky), proceeding to post`);
-      const isRedundant = false; // Disabled
-
-      if (isRedundant) {
-        this.log(`⚠️ ${this.personaName}: [PHASE 3.4] Response marked as REDUNDANT, discarding`);
-
-        // Emit DECIDED_SILENT event to clear AI status indicator (fire-and-forget)
-        if (this.client) {
-          Events.emit<AIDecidedSilentEventData>(
-            DataDaemon.jtagContext!,
-            AI_DECISION_EVENTS.DECIDED_SILENT,
-            {
-              personaId: this.personaId,
-              personaName: this.personaName,
-              roomId: originalMessage.roomId,
-              messageId: originalMessage.id,
-              isHumanMessage: originalMessage.senderType === 'human',
-              timestamp: Date.now(),
-              confidence: 0.5,
-              reason: 'Response was redundant with previous answers',
-              gatingModel: 'redundancy-check'
-            },
-            {
-              scope: EVENT_SCOPES.ROOM,
-              scopeId: originalMessage.roomId
-            }
-          ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-        }
-
-        return { success: true, wasRedundant: true, storedToolResultIds: [] }; // Discard response
-      }
-      this.log(`✅ ${this.personaName}: [PHASE 3.4] Response not redundant, proceeding to post`);
 
       // 🔧 SUB-PHASE 3.5: Create and post response
       this.log(`🔧 ${this.personaName}: [PHASE 3.5] Creating response message entity...`);
@@ -1642,7 +1247,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             isHumanMessage: originalMessage.senderType === 'human',
             timestamp: Date.now(),
             responseMessageId: postedEntity.id,
-            passedRedundancyCheck: !isRedundant
+            passedRedundancyCheck: true
           },
           {
             scope: EVENT_SCOPES.ROOM,
@@ -1720,72 +1325,6 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       return isNaN(parsed) ? Date.now() : parsed;
     }
     return timestamp; // Already a number
-  }
-
-  async checkResponseRedundancy(
-    myResponse: string,
-    roomId: UUID,
-    conversationHistory: Array<{ role: string; content: string; name?: string; timestamp?: number }>
-  ): Promise<boolean> {
-    try {
-      // Use AIDecisionService for centralized redundancy checking
-      // Create minimal context without needing full trigger message
-      const decisionContext: AIDecisionContext = {
-        personaId: this.personaId,
-        personaName: this.personaName,
-        roomId,
-        triggerMessage: {
-          id: '',
-          roomId,
-          senderId: '',
-          senderName: 'System',
-          senderType: 'system',
-          content: { text: 'redundancy check', attachments: [] },
-          timestamp: new Date(),
-          collection: COLLECTIONS.CHAT_MESSAGES,
-          version: 1,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          status: 'sent',
-          priority: 0,
-          reactions: []
-        } as unknown as ChatMessageEntity,
-        ragContext: {
-          domain: 'chat',
-          contextId: roomId,
-          personaId: this.personaId,
-          identity: {
-            name: this.personaName,
-            systemPrompt: ''
-          },
-          conversationHistory: conversationHistory.map(msg => ({
-            role: msg.role as 'user' | 'assistant',
-            content: msg.content,
-            name: msg.name,
-            timestamp: msg.timestamp
-          })),
-          artifacts: [],
-          privateMemories: [],
-          metadata: {
-            messageCount: conversationHistory.length,
-            artifactCount: 0,
-            memoryCount: 0,
-            builtAt: new Date()
-          }
-        }
-      };
-
-      const result = await AIDecisionService.checkRedundancy(
-        myResponse,
-        decisionContext,
-        { model: LOCAL_MODELS.DEFAULT }
-      );
-
-      return result.isRedundant;
-    } catch (error) {
-      AIDecisionLogger.logError(this.personaName, 'Redundancy check', error instanceof Error ? error.message : String(error));
-      return false; // On error, allow the response (fail open)
-    }
   }
 
 }

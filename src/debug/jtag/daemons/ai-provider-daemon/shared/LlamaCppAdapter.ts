@@ -242,7 +242,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
         model: modelName,
         provider: this.providerId,
         usage,
-        responseTime,
+        responseTimeMs: responseTime,
         requestId,
       };
     } catch (error) {
@@ -285,7 +285,7 @@ export class LlamaCppAdapter implements AIProviderAdapter {
               capabilities: this.supportedCapabilities,
               contextWindow: 4096,
               supportsStreaming: false,
-              supportsFunctions: false
+              supportsTools: false
             });
           }
         }
@@ -304,18 +304,18 @@ export class LlamaCppAdapter implements AIProviderAdapter {
       return {
         status: models.length > 0 ? 'healthy' : 'degraded',
         apiAvailable: this.llama !== null,
-        responseTime: 0,
+        responseTimeMs: 0,
         errorRate: 0,
         lastChecked: Date.now(),
-        message: models.length > 0 
-          ? `${models.length} models available` 
+        message: models.length > 0
+          ? `${models.length} models available`
           : 'No models found',
       };
     } catch (error) {
       return {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime: 0,
+        responseTimeMs: 0,
         errorRate: 1,
         lastChecked: Date.now(),
         message: error instanceof Error ? error.message : 'Health check failed',

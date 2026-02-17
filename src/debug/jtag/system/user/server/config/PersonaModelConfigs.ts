@@ -5,7 +5,7 @@
  * Extracted from PersonaUser.ts for better organization and maintainability.
  */
 
-import type { ModelConfig } from '../../../../commands/user/create/shared/UserCreateTypes';
+import type { ModelConfig } from '../../../data/entities/UserEntity';
 import { MODEL_IDS } from '../../../shared/Constants';
 
 /**

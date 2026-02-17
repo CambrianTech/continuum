@@ -1,13 +1,11 @@
 /**
- * Sentinel Logs List Command - Types
- *
- * List available log streams for a sentinel.
+ * List available log streams for a sentinel by handle.
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 
 /**
- * List params
+ * List available log streams for a sentinel by handle.
  */
 export interface SentinelLogsListParams extends CommandParams {
   /** Sentinel handle (short ID or full ID) */

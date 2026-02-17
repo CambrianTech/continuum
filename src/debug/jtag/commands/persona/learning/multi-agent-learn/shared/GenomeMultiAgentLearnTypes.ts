@@ -74,7 +74,7 @@ export interface ParticipantLearning {
 }
 
 /**
- * Parameters for persona/learning/multi-agent-learn command
+ * Triggers collaborative learning across multiple PersonaUser participants after a shared activity completes, distributing reinforcement or correction training to each based on their individual performance metrics.
  */
 export interface GenomeMultiAgentLearnParams extends CommandParams {
   /**

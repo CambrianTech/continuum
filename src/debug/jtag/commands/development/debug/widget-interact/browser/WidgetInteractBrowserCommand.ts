@@ -8,6 +8,7 @@
 import { CommandBase } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { WidgetInteractParams, WidgetInteractResult } from '../shared/WidgetInteractTypes';
 import { createWidgetInteractResult } from '../shared/WidgetInteractTypes';
 import { WidgetDiscovery } from '@system/core/browser/utils/WidgetIntrospection';
@@ -233,6 +234,7 @@ export class WidgetInteractBrowserCommand extends CommandBase<WidgetInteractPara
       const screenshotResult = await this.remoteExecute({
         context: this.context,
         sessionId: this.context.uuid,
+        userId: SYSTEM_SCOPES.SYSTEM,
         querySelector: 'body',
         filename
       }, 'screenshot', this.context.environment) as any;

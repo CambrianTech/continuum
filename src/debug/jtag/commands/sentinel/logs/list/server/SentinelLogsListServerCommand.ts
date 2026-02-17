@@ -1,18 +1,15 @@
 /**
  * Sentinel Logs List Command - Server Implementation
  *
- * List available log streams for a sentinel.
- * Uses async file operations - NEVER blocks.
+ * Routes to Rust SentinelModule for log listing.
+ * Logs are stored in .continuum/jtag/logs/system/sentinels/{handle}/
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
-import type { SentinelLogsListParams, SentinelLogsListResult, LogStreamInfo } from '../shared/SentinelLogsListTypes';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-
-const BASE_DIR = '.sentinel-workspaces';
+import type { SentinelLogsListParams, SentinelLogsListResult } from '../shared/SentinelLogsListTypes';
+import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class SentinelLogsListServerCommand extends CommandBase<SentinelLogsListParams, SentinelLogsListResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -33,53 +30,21 @@ export class SentinelLogsListServerCommand extends CommandBase<SentinelLogsListP
       });
     }
 
-    const logsDir = path.join(BASE_DIR, handle, 'logs');
-
     try {
-      // Check if directory exists
-      await fs.access(logsDir);
-
-      // List all .log files
-      const files = await fs.readdir(logsDir);
-      const logFiles = files.filter(f => f.endsWith('.log'));
-
-      // Get info for each file
-      const streams: LogStreamInfo[] = await Promise.all(
-        logFiles.map(async (filename) => {
-          const filePath = path.join(logsDir, filename);
-          const stats = await fs.stat(filePath);
-          return {
-            name: filename.replace('.log', ''),
-            path: filePath,
-            size: stats.size,
-            modifiedAt: stats.mtime.toISOString(),
-          };
-        })
-      );
-
-      // Sort by modified time (most recent first)
-      streams.sort((a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime());
+      const rustClient = RustCoreIPCClient.getInstance();
+      const result = await rustClient.sentinelLogsList(handle);
 
       return transformPayload(params, {
         success: true,
         handle,
-        logsDir,
-        streams,
+        logsDir: result.logsDir || '',
+        streams: result.streams || [],
       });
     } catch (error: any) {
-      if (error.code === 'ENOENT') {
-        return transformPayload(params, {
-          success: false,
-          handle,
-          logsDir,
-          streams: [],
-          error: `No logs found for sentinel: ${handle}`,
-        });
-      }
       return transformPayload(params, {
         success: false,
         handle,
-        logsDir,
+        logsDir: '',
         streams: [],
         error: error.message,
       });

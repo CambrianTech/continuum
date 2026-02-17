@@ -70,7 +70,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
         return {
           status: 'healthy',
           apiAvailable: true,
-          responseTime,
+          responseTimeMs: responseTime,
           errorRate: 0,
           lastChecked: Date.now(),
           message: `${this.providerName} server is running`,
@@ -79,7 +79,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
         return {
           status: 'unhealthy',
           apiAvailable: false,
-          responseTime,
+          responseTimeMs: responseTime,
           errorRate: 1,
           lastChecked: Date.now(),
           message: `${this.providerName} server returned ${response.status}`,
@@ -89,7 +89,7 @@ export abstract class BaseLocalAdapter extends BaseAIProviderAdapter {
       return {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime: Date.now() - startTime,
+        responseTimeMs: Date.now() - startTime,
         errorRate: 1,
         lastChecked: Date.now(),
         message: `${this.providerName} server is not reachable: ${error instanceof Error ? error.message : String(error)}`,

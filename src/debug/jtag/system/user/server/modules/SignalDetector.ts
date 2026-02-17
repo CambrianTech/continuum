@@ -227,7 +227,7 @@ export class SignalDetector {
       const params: Partial<AIGenerateParams> = {
         messages: [{ role: 'user', content: prompt }],
         model: 'llama-3.1-8b-instant',  // Fast cloud model - don't block local inference queue
-        preferredProvider: 'groq',       // Cloud API - fast (<1s) vs local (~10s)
+        provider: 'groq',                // Cloud API - fast (<1s) vs local (~10s)
         temperature: 0.1,                // Low temperature for consistent classification
         maxTokens: 200,
         systemPrompt: 'You are a signal classifier. Output ONLY valid JSON, no other text.'
@@ -380,44 +380,6 @@ Output JSON only:
     return contextParts.join('\n\n');
   }
 
-  /**
-   * Check for repeated questions (frustration indicator)
-   */
-  checkForRepetition(
-    userMessage: ProcessableMessage,
-    recentUserMessages: ChatMessageEntity[]
-  ): boolean {
-    const currentText = (userMessage.content?.text || '').toLowerCase().trim();
-    if (currentText.length < 10) return false;
-
-    for (const msg of recentUserMessages) {
-      if (msg.id === userMessage.id || msg.senderId !== userMessage.senderId) continue;
-
-      const previousText = (msg.content?.text || '').toLowerCase().trim();
-      if (this.calculateSimilarity(currentText, previousText) > 0.7) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Jaccard similarity between two texts
-   */
-  private calculateSimilarity(text1: string, text2: string): number {
-    const words1 = new Set(text1.split(/\s+/).filter(w => w.length > 2));
-    const words2 = new Set(text2.split(/\s+/).filter(w => w.length > 2));
-
-    if (words1.size === 0 || words2.size === 0) return 0;
-
-    let intersection = 0;
-    for (const word of words1) {
-      if (words2.has(word)) intersection++;
-    }
-
-    return intersection / (words1.size + words2.size - intersection);
-  }
 }
 
 // Singleton

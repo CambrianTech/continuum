@@ -96,7 +96,7 @@ pub fn ipc_connect_with_timeout(read_timeout: Duration) -> Option<UnixStream> {
             Some(s)
         }
         Err(e) => {
-            println!("Cannot connect to {}: {}", IPC_SOCKET, e);
+            println!("Cannot connect to {IPC_SOCKET}: {e}");
             println!("   Make sure server is running: npm start");
             println!("   Skipping test.\n");
             None

@@ -7,6 +7,7 @@
 import type { JTAGContext, CommandParams } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 /**
  * Base theme parameters interface
@@ -56,6 +57,7 @@ export function createThemeParams(
   } = {}
 ): ThemeParams {
   return {
+    userId: SYSTEM_SCOPES.SYSTEM,
     context,
     sessionId,
     timestamp: data.timestamp || new Date().toISOString()

@@ -4,8 +4,9 @@
  * Browser implementation that routes session destruction to server via remoteExecute.
  */
 
-import type { JTAGContext } from '../../../../system/core/types/JTAGTypes';
+import type { JTAGContext, CommandParams } from '../../../../system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
+import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import { SessionDestroyCommand } from '../shared/SessionDestroyCommand';
 import { type DestroySessionParams, type DestroySessionResult, type SessionErrorResponse } from '../../../../daemons/session-daemon/shared/SessionTypes';
 
@@ -23,10 +24,12 @@ export class SessionDestroyClientCommand extends SessionDestroyCommand {
     
     try {
       // Use remoteExecute to delegate to server command
-      const result = await this.remoteExecute<DestroySessionParams, DestroySessionResult>(
-        params,
+      // DestroySessionParams (daemon-level) doesn't extend CommandParams — bridge with userId
+      const commandParams = { ...params, userId: SYSTEM_SCOPES.SYSTEM } as CommandParams;
+      const result = await this.remoteExecute(
+        commandParams,
         'destroy' // subpath matches this command
-      );
+      ) as DestroySessionResult;
       
       return result;
     } catch (error) {

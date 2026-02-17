@@ -90,9 +90,9 @@ export class RAGBudgetManager {
   private readonly modelId: string;
   private readonly contextWindow: number;
 
-  constructor(modelId: string) {
+  constructor(modelId: string, provider?: string) {
     this.modelId = modelId;
-    this.contextWindow = getContextWindow(modelId);
+    this.contextWindow = getContextWindow(modelId, provider);
   }
 
   /**
@@ -272,8 +272,8 @@ export class RAGBudgetManager {
    * Get recommended budget for chat RAG
    * Pre-configured budgets for common sources
    */
-  static getChatBudget(modelId: string): RAGSourceBudget[] {
-    const contextWindow = getContextWindow(modelId);
+  static getChatBudget(modelId: string, provider?: string): RAGSourceBudget[] {
+    const contextWindow = getContextWindow(modelId, provider);
     const isLargeContext = contextWindow > 32768;
 
     return [
@@ -315,10 +315,10 @@ export class RAGBudgetManager {
   /**
    * Get recommended reserved tokens for a model
    */
-  static getRecommendedReserved(modelId: string): ReservedTokens {
+  static getRecommendedReserved(modelId: string, provider?: string): ReservedTokens {
     return {
       system: 500,  // System prompt estimate
-      completion: getRecommendedMaxOutputTokens(modelId)
+      completion: getRecommendedMaxOutputTokens(modelId, provider)
     };
   }
 }
@@ -327,9 +327,9 @@ export class RAGBudgetManager {
  * Quick allocation for chat context
  * Convenience function that uses default chat budgets
  */
-export function allocateChatBudget(modelId: string): BudgetAllocation {
-  const manager = new RAGBudgetManager(modelId);
-  const sources = RAGBudgetManager.getChatBudget(modelId);
-  const reserved = RAGBudgetManager.getRecommendedReserved(modelId);
+export function allocateChatBudget(modelId: string, provider?: string): BudgetAllocation {
+  const manager = new RAGBudgetManager(modelId, provider);
+  const sources = RAGBudgetManager.getChatBudget(modelId, provider);
+  const reserved = RAGBudgetManager.getRecommendedReserved(modelId, provider);
   return manager.allocate(sources, reserved);
 }

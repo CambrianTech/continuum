@@ -1,25 +1,25 @@
 /**
  * Sentinel Status Command - Server Implementation
  *
- * Check status of a running sentinel by handle.
+ * Queries Rust SentinelModule directly for handle status.
+ * No TypeScript status tracking.
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelStatusParams, SentinelStatusResult } from '../shared/SentinelStatusTypes';
-import { getSentinelStatus } from '../../run/server/SentinelRunServerCommand';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 
 export class SentinelStatusServerCommand extends CommandBase<SentinelStatusParams, SentinelStatusResult> {
-
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('sentinel/status', context, subpath, commander);
   }
 
   async execute(params: JTAGPayload): Promise<SentinelStatusResult> {
-    const statusParams = params as SentinelStatusParams;
+    const handle = (params as SentinelStatusParams).handle;
 
-    if (!statusParams.handle) {
+    if (!handle) {
       return transformPayload(params, {
         success: false,
         handle: '',
@@ -28,26 +28,29 @@ export class SentinelStatusServerCommand extends CommandBase<SentinelStatusParam
       });
     }
 
-    const handle = getSentinelStatus(statusParams.handle);
+    // Query Rust directly
+    const rustClient = RustCoreIPCClient.getInstance();
 
-    if (!handle) {
+    try {
+      const result = await rustClient.sentinelStatus(handle);
+
+      return transformPayload(params, {
+        success: true,
+        handle: result.handle.id,
+        status: result.handle.status,
+        progress: result.handle.progress,
+        exitCode: result.handle.exitCode,
+        error: result.handle.error,
+        workingDir: result.handle.workingDir,
+        logsDir: result.handle.logsDir,
+      });
+    } catch (error: any) {
       return transformPayload(params, {
         success: false,
-        handle: statusParams.handle,
+        handle,
         status: 'not_found',
-        error: 'Handle not found',
+        error: error.message,
       });
     }
-
-    return transformPayload(params, {
-      success: true,
-      handle: handle.id,
-      type: handle.type,
-      status: handle.status,
-      progress: handle.progress,
-      duration: Date.now() - handle.startTime,
-      data: handle.data,
-      error: handle.error,
-    });
   }
 }

@@ -40,7 +40,7 @@ export interface ModelCapabilities {
   readonly capabilities: ModelCapability[];
   readonly maxContextTokens: number;
   readonly supportsImages: boolean;
-  readonly supportsFunctionCalling: boolean;
+  readonly supportsToolUse: boolean;
   readonly supportsStreaming: boolean;
 }
 
@@ -165,6 +165,13 @@ export interface RAGContext {
 
     // Project workspace context (git, team, build)
     hasProjectContext?: boolean;  // Whether project workspace context was included in system prompt
+
+    // Tool definitions (budget-aware via ToolDefinitionsSource)
+    toolDefinitions?: {
+      nativeToolSpecs?: unknown[];  // NativeToolSpec[] for JSON tool_use providers
+      toolChoice?: string;          // Tool choice mode ('auto', 'required', etc.)
+      toolCount?: number;           // Number of tools included
+    };
   };
 }
 
@@ -187,9 +194,9 @@ export interface RAGBuildOptions {
   // NEW: Task completion tracking - prevent infinite loops
   excludeMessageIds?: UUID[];  // Message IDs to exclude from RAG context (e.g., processed tool results)
 
-  // NEW: Model-aware context budgeting (Bug #5 fix)
+  // Model-aware context budgeting (Bug #5 fix)
   modelId?: string;  // Target model ID for calculating safe message count based on context window
-  maxTokens?: number;  // Max completion tokens (default: 3000)
+  maxTokens: number;  // Max completion tokens — REQUIRED, must come from model config
   systemPromptTokens?: number;  // Estimated system prompt tokens (default: 500)
 
   // NEW: Model capability-aware processing
@@ -204,4 +211,8 @@ export interface RAGBuildOptions {
 
   // Voice mode optimization: Skip expensive semantic search for faster responses
   voiceSessionId?: UUID;  // Voice call session ID (if in voice mode)
+
+  // Provider info for tool-aware RAG sources
+  provider?: string;  // AI provider (e.g. 'anthropic', 'candle', 'deepseek')
+  toolCapability?: 'native' | 'xml' | 'none';  // Provider's tool calling capability
 }

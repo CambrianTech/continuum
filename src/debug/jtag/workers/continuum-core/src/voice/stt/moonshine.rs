@@ -293,7 +293,8 @@ impl MoonshineStt {
         let mut current_token = BOS_TOKEN_ID;
 
         // First decode step (uncached — no KV cache input)
-        let token_input = Array2::from_shape_vec((1, 1), vec![current_token]).unwrap();
+        let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
+                .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
         let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
         let uncached_out = model
@@ -325,7 +326,8 @@ impl MoonshineStt {
 
         // Subsequent decode steps (cached — with KV cache)
         for _step in 1..MAX_TOKENS {
-            let token_input = Array2::from_shape_vec((1, 1), vec![current_token]).unwrap();
+            let token_input = Array2::from_shape_vec((1, 1), vec![current_token])
+                .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
             let enc_array = Self::cache_to_array(&encoder_hidden)?;
 
             // Build named inputs: [token, encoder_hidden, kv_0, kv_1, ...]

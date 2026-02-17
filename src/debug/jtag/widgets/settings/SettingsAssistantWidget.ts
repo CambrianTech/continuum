@@ -27,7 +27,7 @@ interface ProviderTestedEvent {
   success: boolean;
   status: string;
   message: string | null;
-  responseTime?: number;
+  responseTimeMs?: number;
   needsHelp: boolean;
 }
 
@@ -178,10 +178,10 @@ export class SettingsAssistantWidget extends ReactiveWidget {
   // === Event Handlers ===
 
   private async handleProviderTested(data: ProviderTestedEvent): Promise<void> {
-    const { provider, success, status, message, responseTime } = data;
+    const { provider, success, status, message, responseTimeMs } = data;
 
     if (success) {
-      this.addMessage('success', `✅ ${provider} is working! Response time: ${responseTime}ms`);
+      this.addMessage('success', `✅ ${provider} is working! Response time: ${responseTimeMs}ms`);
       return;
     }
 

@@ -129,7 +129,7 @@ export class MediaResizeServerCommand extends CommandBase<MediaResizeParams, Med
       let contextWindowPercentage: number | undefined;
       let modelContextWindow: number | undefined;
       if (resizeParams.modelName && estimatedTokens) {
-        modelContextWindow = getContextWindow(resizeParams.modelName);
+        modelContextWindow = getContextWindow(resizeParams.modelName, resizeParams.providerName);
         contextWindowPercentage = (estimatedTokens / modelContextWindow) * 100;
       }
 
@@ -176,7 +176,8 @@ export class MediaResizeServerCommand extends CommandBase<MediaResizeParams, Med
       return this.calculateModelAwareDimensions(
         params.modelName,
         params.targetPercentage ?? 0.12,  // Default: 12% of context window
-        originalDimensions
+        originalDimensions,
+        params.providerName
       );
     }
 
@@ -216,9 +217,10 @@ export class MediaResizeServerCommand extends CommandBase<MediaResizeParams, Med
   private calculateModelAwareDimensions(
     modelName: string,
     targetPercentage: number,
-    originalDimensions: { width: number; height: number }
+    originalDimensions: { width: number; height: number },
+    providerName?: string
   ): { width: number; height: number } {
-    const contextWindow = getContextWindow(modelName);
+    const contextWindow = getContextWindow(modelName, providerName);
 
     // Calculate target tokens for image (with safety margin)
     const safetyMargin = 0.9;  // Use 90% of target to be conservative

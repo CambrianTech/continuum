@@ -43,7 +43,7 @@ export class CodebaseRAGBuilder extends RAGBuilder {
   async buildContext(
     contextId: UUID,  // Query text or scope path
     personaId: UUID,
-    options?: RAGBuildOptions
+    options: RAGBuildOptions
   ): Promise<RAGContext> {
     const startTime = Date.now();
 

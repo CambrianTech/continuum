@@ -67,7 +67,7 @@ export class AICostServerCommand extends AICostCommand {
       const totalTokens = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.totalTokens, 0);
       const inputTokens = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.inputTokens, 0);
       const outputTokens = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.outputTokens, 0);
-      const totalResponseTime = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.responseTime, 0);
+      const totalResponseTime = finalGens.reduce((sum: number, gen: AIGenerationEntity) => sum + gen.responseTimeMs, 0);
 
       const summary = {
         totalCost,
@@ -228,7 +228,7 @@ export class AICostServerCommand extends AICostCommand {
     }
 
     // Sort response times
-    const responseTimes = generations.map(g => g.responseTime).sort((a, b) => a - b);
+    const responseTimes = generations.map(g => g.responseTimeMs).sort((a, b) => a - b);
 
     const sum = responseTimes.reduce((acc, val) => acc + val, 0);
     const avg = Math.round(sum / responseTimes.length);
@@ -284,7 +284,7 @@ export class AICostServerCommand extends AICostCommand {
 
       const cost = bucketGens.reduce((sum, g) => sum + g.estimatedCost, 0);
       const tokens = bucketGens.reduce((sum, g) => sum + g.totalTokens, 0);
-      const totalResponseTime = bucketGens.reduce((sum, g) => sum + g.responseTime, 0);
+      const totalResponseTime = bucketGens.reduce((sum, g) => sum + g.responseTimeMs, 0);
 
       points.push({
         timestamp: new Date(bucketStart).toISOString(),

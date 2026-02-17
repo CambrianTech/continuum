@@ -15,7 +15,6 @@ import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 
 import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
@@ -38,10 +37,8 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
     console.log('🔧 ChatSendServerCommand.executeChatSend ROOM FOUND', { roomId: resolved.id, roomName: resolved.displayName });
 
-    // 2. Get sender - auto-detect caller identity (Claude Code, Joel, etc.)
-    const sender = params.senderId
-      ? await this.findUserById(params.senderId, params)
-      : await this.findCallerIdentity(params);
+    // 2. Get sender — explicit senderId (CLI) or params.userId (auto-injected by infrastructure)
+    const sender = await this.findUserById(params.senderId || params.userId, params);
     console.log('🔧 ChatSendServerCommand.executeChatSend SENDER FOUND', { senderId: sender.id, senderName: sender.entity.displayName });
 
     // 3. Create message entity
@@ -145,54 +142,6 @@ export class ChatSendServerCommand extends ChatSendCommand {
     throw new Error(`User not found: ${userId}`);
   }
 
-  /**
-   * Find caller identity - prefers context.userId (for PersonaUsers), falls back to process detection
-   *
-   * Priority:
-   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
-   * 2. UserIdentityResolver.resolve() - Detects Claude Code, Joel, etc. based on process info
-   */
-  private async findCallerIdentity(params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // FIRST: Check if caller's userId is in the context (PersonaUsers set this)
-    if (params.context?.userId) {
-      console.log('🔧 ChatSendServerCommand.findCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
-      return this.findUserById(params.context.userId, params);
-    }
-
-    // FALLBACK: Use UserIdentityResolver to detect calling process (Claude Code, human, etc.)
-    const identity = await UserIdentityResolver.resolve();
-
-    console.log('🔧 ChatSendServerCommand.findCallerIdentity DETECTED', {
-      uniqueId: identity.uniqueId,
-      displayName: identity.displayName,
-      type: identity.type,
-      exists: identity.exists,
-      agentName: identity.agentInfo.name
-    });
-
-    // If user exists in database, return it
-    if (identity.exists && identity.userId) {
-      const result = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: identity.userId },
-          limit: 1,
-          context: params.context,
-          sessionId: params.sessionId
-        }
-      );
-
-      if (result.success && result.items && result.items.length > 0) {
-        const user = result.items[0];
-        return { id: user.id, entity: user };
-      }
-    }
-
-    // User doesn't exist - throw error with helpful message
-    throw new Error(
-      `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. ` +
-      `Run seed script to create users.`
-    );
-  }
 
   /**
    * Process media file paths into MediaItem objects

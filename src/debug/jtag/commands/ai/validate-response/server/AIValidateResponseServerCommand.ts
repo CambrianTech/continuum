@@ -30,7 +30,7 @@ export class AIValidateResponseServerCommand extends CommandBase<AIValidateRespo
       model: params.model ?? 'llama3.2:3b',
       temperature: 0.1,  // Low temp for consistent decisions
       maxTokens: 10,     // Just need one word
-      preferredProvider: 'candle'
+      provider: 'candle'
     };
 
     const response = await AIProviderDaemon.generateText(request);

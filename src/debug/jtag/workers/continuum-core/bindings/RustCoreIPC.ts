@@ -24,6 +24,17 @@ export type { EmbeddingResult, SimilarityResult, TopKResult, TopKResponse, Clust
 export type { SearchExecuteResult, SearchVectorResult } from './modules/search';
 export type { ChannelEnqueueResult, ChannelDequeueResult, ChannelServiceCycleResult, ChannelServiceCycleFullResult } from './modules/channel';
 export type { ModuleInfo, ModuleMetrics, SlowCommand } from './modules/runtime';
+export type {
+	SentinelHandle,
+	SentinelRunParams,
+	SentinelRunResult,
+	SentinelStatusResult,
+	SentinelListResult,
+	SentinelLogsListResult,
+	SentinelLogsReadResult,
+	SentinelLogsTailResult,
+	LogStreamInfo,
+} from './modules/sentinel';
 
 // Import base and all mixins
 import { RustCoreIPCClientBase, getContinuumCoreSocketPath } from './modules/base';
@@ -38,6 +49,8 @@ import { ModelsMixin } from './modules/models';
 import { AIMixin } from './modules/ai';
 import { EmbeddingMixin } from './modules/embedding';
 import { RuntimeMixin } from './modules/runtime';
+import { SentinelMixin } from './modules/sentinel';
+import { ToolParsingMixin } from './modules/tool_parsing';
 
 // Re-export types from shared/generated (used by consumers)
 export type {
@@ -49,6 +62,11 @@ export type {
 	ChannelRegistryStatus,
 	ChannelEnqueueRequest,
 	ServiceCycleResult,
+	FullEvaluateRequest,
+	FullEvaluateResult,
+	SleepMode,
+	ModelSelectionResult,
+	AdapterInfo,
 	EditMode,
 	ReadResult,
 	WriteResult,
@@ -65,6 +83,9 @@ export type {
 	ShellSessionInfo,
 	ShellWatchResponse,
 	SentinelRule,
+	ToolParseResult,
+	ParsedToolCall,
+	CorrectedToolCall,
 } from '../../../shared/generated';
 
 // Re-export memory types
@@ -82,17 +103,21 @@ export type { RagSourceRequest, RagComposeResult } from '../../../shared/generat
  * Compose all mixins into the full client class.
  * Order matters for TypeScript type inference.
  */
-const ComposedClient = RuntimeMixin(
-	EmbeddingMixin(
-		AIMixin(
-			ModelsMixin(
-				RagMixin(
-					SearchMixin(
-						CodeMixin(
-							MemoryMixin(
-								ChannelMixin(
-									CognitionMixin(
-										VoiceMixin(RustCoreIPCClientBase)
+const ComposedClient = ToolParsingMixin(
+	SentinelMixin(
+		RuntimeMixin(
+			EmbeddingMixin(
+				AIMixin(
+					ModelsMixin(
+						RagMixin(
+							SearchMixin(
+								CodeMixin(
+									MemoryMixin(
+										ChannelMixin(
+											CognitionMixin(
+												VoiceMixin(RustCoreIPCClientBase)
+											)
+										)
 									)
 								)
 							)

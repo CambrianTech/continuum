@@ -31,7 +31,7 @@ const log = Logger.create('ProjectContextSource', 'rag');
 export class ProjectContextSource implements RAGSource {
   readonly name = 'project-context';
   readonly priority = 70;
-  readonly defaultBudgetPercent = 12;
+  readonly defaultBudgetPercent = 5;
 
   /** Cached main repo git check (stable for process lifetime) */
   private static _isMainRepoGit: boolean | null = null;

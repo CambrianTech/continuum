@@ -127,13 +127,82 @@ class CommandSchemaGenerator {
       }
     }
 
-    console.log(`\n✅ Generated ${this.schemas.length} command schemas`);
+    console.log(`\n📊 Raw schemas: ${this.schemas.length}`);
+
+    // Deduplicate: group by name, merge params and pick best description
+    const deduplicated = this.deduplicateSchemas(this.schemas);
+
+    console.log(`✅ After deduplication: ${deduplicated.length} command schemas`);
 
     return {
       generated: new Date().toISOString(),
       version: '1.0.0',
-      commands: this.schemas
+      commands: deduplicated
     };
+  }
+
+  /**
+   * Deduplicate schemas that share the same command name.
+   * Discriminated unions (e.g., SentinelRunTypes with 7 Params interfaces)
+   * produce multiple entries for the same command. This merges them into
+   * one entry with the union of all params and the best description.
+   */
+  private deduplicateSchemas(schemas: CommandSchema[]): CommandSchema[] {
+    const byName = new Map<string, CommandSchema[]>();
+
+    for (const schema of schemas) {
+      const group = byName.get(schema.name) || [];
+      group.push(schema);
+      byName.set(schema.name, group);
+    }
+
+    const result: CommandSchema[] = [];
+    for (const [name, group] of byName) {
+      if (group.length === 1) {
+        result.push(group[0]);
+        continue;
+      }
+
+      // Merge: union of all params, best description
+      const mergedParams: Record<string, CommandParamDef> = {};
+      for (const schema of group) {
+        for (const [paramName, paramDef] of Object.entries(schema.params)) {
+          if (!mergedParams[paramName]) {
+            mergedParams[paramName] = paramDef;
+          }
+          // If param exists in one variant as required but optional in another,
+          // mark as optional (since not all variants need it)
+          if (mergedParams[paramName].required && !paramDef.required) {
+            mergedParams[paramName] = { ...mergedParams[paramName], required: false };
+          }
+        }
+      }
+
+      // Pick the longest non-empty description (usually the most informative)
+      const bestDesc = group
+        .map(s => s.description)
+        .filter(d => d && d !== `${name} command`)
+        .sort((a, b) => b.length - a.length)[0] || `${name} command`;
+
+      // For merged entries, params that only appear in some variants should be optional
+      // (the "type" discriminator field is the key to which variant is used)
+      for (const [paramName, paramDef] of Object.entries(mergedParams)) {
+        const appearsInAll = group.every(s => paramName in s.params);
+        if (!appearsInAll && paramDef.required) {
+          mergedParams[paramName] = { ...paramDef, required: false };
+        }
+      }
+
+      console.log(`  🔀 Merged ${group.length} variants of "${name}" → ${Object.keys(mergedParams).length} params`);
+
+      result.push({
+        name,
+        description: bestDesc,
+        params: mergedParams
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -197,8 +266,10 @@ class CommandSchemaGenerator {
         allParams = { ...parentParams };
       }
 
-      // Extract description from JSDoc comment before the interface
-      const description = this.extractDescription(content, index);
+      // Extract description: prefer README first paragraph, fall back to cleaned JSDoc
+      const readmeDesc = this.readReadmeDescription(basePath);
+      const jsdocDesc = this.extractDescription(content, index);
+      const description = readmeDesc || jsdocDesc;
 
       // Extract parameters from this interface body and merge with parent
       const params = this.extractParams(interfaceBody, content, index);
@@ -340,15 +411,96 @@ class CommandSchemaGenerator {
   }
 
   /**
-   * Extract description from JSDoc comment
+   * Extract description from the NEAREST JSDoc comment before the interface.
+   * Parses multi-line JSDoc properly: strips * prefixes, skips title-pattern
+   * lines like "Foo Command - Types", joins remaining lines into clean prose.
    */
   private extractDescription(content: string, interfaceStart: number): string {
     const before = content.substring(0, interfaceStart);
-    const jsdocMatch = before.match(/\/\*\*\s*\n\s*\*\s*(.+?)\n\s*\*\//s);
-    if (jsdocMatch) {
-      return jsdocMatch[1].trim();
+
+    // Find the LAST (nearest) JSDoc block before the interface
+    // Matches both multi-line /** \n ... */ and single-line /** text */
+    const jsdocBlocks = [...before.matchAll(/\/\*\*([\s\S]*?)\*\//g)];
+    if (jsdocBlocks.length === 0) return '';
+
+    const lastBlock = jsdocBlocks[jsdocBlocks.length - 1];
+    const rawBody = lastBlock[1];
+
+    // Parse JSDoc lines: strip leading whitespace and * prefix
+    const lines = rawBody
+      .split('\n')
+      .map(line => line.replace(/^\s*\*\s?/, '').trim())
+      .filter(line => line.length > 0);
+
+    if (lines.length === 0) return '';
+
+    // Skip title-pattern lines: "Foo Command - Types", "Foo Command - Shared Types",
+    // "FooTypes - Description", "Foo Command Types", lines of just "===..."
+    const filteredLines: string[] = [];
+    for (const line of lines) {
+      // Skip separator lines (=== or ---)
+      if (/^[=\-]{3,}$/.test(line)) continue;
+      // Skip title patterns: "Something - Types", "Something - Shared Types"
+      if (/^[\w\s]+ - (Shared )?Types$/i.test(line)) continue;
+      // Skip lines that are just "Something Types" or "Something Shared Types"
+      if (/^\w[\w\s]+ (Shared )?Types$/i.test(line) && !line.includes('.') && line.split(' ').length <= 5) continue;
+      filteredLines.push(line);
     }
-    return '';
+
+    if (filteredLines.length === 0) return '';
+
+    // Join into clean prose, collapsing multi-line descriptions
+    return filteredLines.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Read the first paragraph from a command's README.md as the description.
+   * The first paragraph is the text between the `# Title` heading and the first `##` heading.
+   * Returns empty string if no README or no suitable paragraph found.
+   */
+  private readReadmeDescription(basePath: string): string {
+    const readmePath = join(this.rootPath, 'commands', basePath, 'README.md');
+    if (!existsSync(readmePath)) return '';
+
+    try {
+      const content = readFileSync(readmePath, 'utf-8');
+      const lines = content.split('\n');
+
+      // Find first line after `# Title` that isn't blank
+      let pastTitle = false;
+      const paragraphLines: string[] = [];
+
+      for (const line of lines) {
+        if (line.startsWith('# ')) {
+          pastTitle = true;
+          continue;
+        }
+        if (!pastTitle) continue;
+
+        // Stop at next heading
+        if (line.startsWith('## ')) break;
+
+        const trimmed = line.trim();
+        if (trimmed.length === 0) {
+          // If we already have paragraph content, a blank line ends it
+          if (paragraphLines.length > 0) break;
+          continue;
+        }
+
+        paragraphLines.push(trimmed);
+      }
+
+      if (paragraphLines.length === 0) return '';
+      const result = paragraphLines.join(' ').replace(/\s+/g, ' ').trim();
+
+      // Skip if the paragraph is just a title pattern (e.g., "Screenshot Command - Shared Types")
+      if (/^[\w\s]+ - (Shared )?Types$/i.test(result)) return '';
+      if (/^\w[\w\s]+ (Shared )?Types$/i.test(result) && !result.includes('.') && result.split(' ').length <= 5) return '';
+
+      return result;
+    } catch {
+      return '';
+    }
   }
 
   /**

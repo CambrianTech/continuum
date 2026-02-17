@@ -51,7 +51,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
         model: params.model ?? LOCAL_MODELS.DEFAULT,  // Candle uses pre-loaded model
         temperature: 0.3,
         maxTokens: 200,
-        preferredProvider: 'candle'
+        provider: 'candle'
       };
 
       const response = await AIProviderDaemon.generateText(request);
@@ -75,7 +75,7 @@ export class AIShouldRespondServerCommand extends AIShouldRespondCommand {
           model: LOCAL_MODELS.DEFAULT,  // Candle uses pre-loaded model
           temperature: 0.1,  // Low temp for structured output
           maxTokens: 200,
-          preferredProvider: 'candle'
+          provider: 'candle'
         };
 
         const fixedResponse = await AIProviderDaemon.generateText(fixRequest);

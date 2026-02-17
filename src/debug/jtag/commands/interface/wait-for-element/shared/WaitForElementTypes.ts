@@ -1,9 +1,11 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Wait for a DOM element to appear, matching a CSS selector. */
 export interface WaitForElementParams extends CommandParams {
   readonly selector: string;
   readonly timeout?: number;
@@ -21,6 +23,7 @@ export const createWaitForElementParams = (
     interval?: number;
   }
 ): WaitForElementParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   timeout: data.timeout ?? 30000,
   visible: data.visible ?? true,
   interval: data.interval ?? 100,
@@ -51,6 +54,7 @@ export const createWaitForElementResult = (
     error?: JTAGError;
   }
 ): WaitForElementResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   found: data.found ?? false,
   visible: data.visible ?? false,
   timeout: data.timeout ?? 30000,

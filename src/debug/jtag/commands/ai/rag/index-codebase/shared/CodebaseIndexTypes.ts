@@ -10,7 +10,7 @@ import type { CodeExportType } from '../../../../../system/data/entities/CodeInd
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for rag/index-codebase command
+ * Crawl and index TypeScript, Markdown, and other source files into the RAG store with domain-specific embeddings for semantic code search.
  */
 export interface CodebaseIndexParams extends CommandParams {
   /** Directories or files to index (relative to repo root) */

@@ -22,8 +22,7 @@ export interface ModelCapabilities {
 
   // Feature requirements
   supportsJSON?: boolean;            // Structured output
-  supportsToolCalling?: boolean;     // Function calling
-  supportsFunctionCalling?: boolean; // Same as tool calling
+  supportsToolCalling?: boolean;     // Tool/function calling
   supportsStreaming?: boolean;       // Streaming responses
 
   // Context requirements
@@ -68,7 +67,7 @@ export interface ModelInfo {
 }
 
 /**
- * Model list params
+ * Enumerate all available AI models across providers, with optional filtering by capabilities, provider, and availability.
  */
 export interface ModelListParams extends CommandParams {
   // Optional filtering

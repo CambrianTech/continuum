@@ -23,11 +23,12 @@ import {
   PROCESS_REGISTRY_PORTS, 
   DEFAULT_NODE_IDS 
 } from '../shared/ProcessRegistryTypes';
-import { 
+import {
   validateRegisterProcessParams,
   getProcessCapabilities,
   generateProcessId
 } from '../shared/ProcessRegistryCommand';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 
 interface ProcessRegistryState {
   registryVersion: string;
@@ -294,6 +295,7 @@ export class ProcessRegistryServerCommand extends ProcessRegistryCommand {
     const context = createServerContext(jtagConfig, 'internal-process-registry');
     
     const result = await this.listProcesses({
+      userId: SYSTEM_SCOPES.SYSTEM,
       context,
       sessionId: 'internal' as any,
       includeStale: false

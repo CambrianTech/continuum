@@ -63,7 +63,7 @@ export class DeepSeekBaseConfig {
         contextWindow: 32768,
         costPer1kTokens: { input: 0.0001, output: 0.0002 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'deepseek-coder',
@@ -73,7 +73,7 @@ export class DeepSeekBaseConfig {
         contextWindow: 16384,
         costPer1kTokens: { input: 0.0001, output: 0.0002 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'deepseek-reasoner',
@@ -83,7 +83,7 @@ export class DeepSeekBaseConfig {
         contextWindow: 32768,
         costPer1kTokens: { input: 0.00055, output: 0.0022 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       }
     ];
   }

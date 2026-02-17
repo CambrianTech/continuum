@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -57,8 +58,8 @@ export const createScreenshotParams = (
   context: JTAGContext,
   sessionId: UUID,
   resultType: ResultType = 'file',
-  data: Omit<Partial<ScreenshotParams>, 'context' | 'sessionId' | 'resultType' >
-): ScreenshotParams => createPayload(context, sessionId, { resultType, ...data });
+  data: Omit<Partial<ScreenshotParams>, 'context' | 'sessionId' | 'resultType' | 'userId'>
+): ScreenshotParams => createPayload(context, sessionId, { userId: SYSTEM_SCOPES.SYSTEM, resultType, ...data });
 
 /**
  * HTML2Canvas Configuration Options
@@ -196,6 +197,7 @@ export const createScreenshotResult = (
   sessionId: UUID,
   data: Omit<Partial<ScreenshotResult>, 'context' | 'sessionId'>
 ): ScreenshotResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   success: false,
   filepath: '',
   filename: '',
@@ -242,6 +244,7 @@ export const createScreenshotResponse = (
   executionTime: number | undefined,
   sessionId: UUID
 ): ScreenshotResponse => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   success: true,
   timestamp: new Date().toISOString(),
   filepath,

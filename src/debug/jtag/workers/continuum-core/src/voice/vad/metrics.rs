@@ -235,7 +235,7 @@ impl VADEvaluator {
             .map(|i| i as f32 / num_points as f32)
             .collect();
 
-        thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         thresholds
             .into_iter()

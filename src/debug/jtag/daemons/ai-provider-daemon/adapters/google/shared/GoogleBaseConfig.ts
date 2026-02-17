@@ -65,7 +65,7 @@ export class GoogleBaseConfig {
         contextWindow: 1048576, // 1M tokens context
         costPer1kTokens: { input: 0.00015, output: 0.0006 }, // Free tier available
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gemini-2.0-flash',
@@ -75,7 +75,7 @@ export class GoogleBaseConfig {
         contextWindow: 1048576,
         costPer1kTokens: { input: 0.0001, output: 0.0004 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gemini-1.5-flash',
@@ -85,7 +85,7 @@ export class GoogleBaseConfig {
         contextWindow: 1048576,
         costPer1kTokens: { input: 0.000075, output: 0.0003 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       {
         id: 'gemini-1.5-pro',
@@ -95,7 +95,7 @@ export class GoogleBaseConfig {
         contextWindow: 2097152, // 2M tokens context
         costPer1kTokens: { input: 0.00125, output: 0.005 },
         supportsStreaming: true,
-        supportsFunctions: true
+        supportsTools: true
       },
       // Audio-native models (handled by GeminiLiveAdapter, listed for discovery)
       // Note: multimodal with audio capabilities, but text adapter skips this
@@ -107,7 +107,7 @@ export class GoogleBaseConfig {
         contextWindow: 1048576,
         costPer1kTokens: { input: 0.00015, output: 0.0006 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsTools: false,
         // Custom flag: this model is audio-native (not in ModelCapability enum)
         // @ts-expect-error - isAudioNative is a custom extension
         isAudioNative: true

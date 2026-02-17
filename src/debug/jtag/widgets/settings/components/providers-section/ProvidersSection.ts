@@ -183,8 +183,8 @@ export class ProvidersSection extends ReactiveWidget {
     if (!testResult || testResult.status === 'idle') return html``;
 
     const { icon, label } = STATUS_MESSAGES[testResult.status];
-    const responseTimeHtml = testResult.responseTime
-      ? html`<span class="response-time">(${testResult.responseTime}ms)</span>`
+    const responseTimeHtml = testResult.responseTimeMs
+      ? html`<span class="response-time">(${testResult.responseTimeMs}ms)</span>`
       : '';
 
     return html`

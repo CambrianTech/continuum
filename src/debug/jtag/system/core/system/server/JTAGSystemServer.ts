@@ -95,13 +95,14 @@ export class JTAGSystemServer extends JTAGSystem {
 
       // Register this process 
       const result = await processRegistryCommand.registerProcess({
+        userId: SYSTEM_SCOPES.SYSTEM,
         context: this.context,
         sessionId: 'system-registration' as any,
         processType: 'server',
         description: `JTAG System Server (${this.context.uuid})`,
         capabilities: [
           'websocket-server',
-          'command-execution', 
+          'command-execution',
           'file-operations',
           'console-logging',
           'screenshot',
@@ -224,10 +225,8 @@ export class JTAGSystemServer extends JTAGSystem {
     const { ServerCommands } = await import('../../server/ServerCommands');
     ServerCommands.initialize();
 
-    // Initialize tool result → persona memory capture (captures ALL tool results)
-    const { initToolResultMemoryCapture } = await import('../../../sentinel/ToolResultMemoryCapture');
-    initToolResultMemoryCapture();
-    console.log(`🧠 JTAG System: Tool result memory capture initialized`);
+    // Tool result memory capture - moved to Rust sentinel module
+    console.log(`🧠 JTAG System: Tool result memory capture handled by Rust SentinelModule`);
 
     return system;
   }

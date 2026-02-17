@@ -55,6 +55,7 @@ export class PersonaGenomeManager {
 
     try {
       const result = await client.daemons.commands.execute<DataReadParams, DataReadResult<GenomeEntity>>(DATA_COMMANDS.READ, {
+        userId: client.userId,
         collection: 'genomes',
         id: entity.genomeId,
         context: client.context,
@@ -93,6 +94,7 @@ export class PersonaGenomeManager {
 
       // Persist to database
       const result = await client.daemons.commands.execute<DataUpdateParams, DataUpdateResult<UserEntity>>(DATA_COMMANDS.UPDATE, {
+        userId: client.userId,
         collection: COLLECTIONS.USERS,
         id: entity.id,
         data: { genomeId },

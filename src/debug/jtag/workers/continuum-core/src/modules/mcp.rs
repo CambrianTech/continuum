@@ -11,6 +11,7 @@
 //! - mcp/search-tools: Search tools by keyword
 //! - mcp/tool-help: Get detailed help for a specific tool
 
+use crate::utils::params::Params;
 use crate::runtime::{
     CommandResult, ModuleConfig, ModulePriority, ServiceModule, ModuleContext,
     CommandSchema, ParamSchema,
@@ -398,6 +399,7 @@ impl ServiceModule for MCPModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 
@@ -428,13 +430,9 @@ impl ServiceModule for MCPModule {
             }
 
             "mcp/search-tools" => {
-                let query = params.get("query")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing required parameter: query")?;
-
-                let limit = params.get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(10) as usize;
+                let p = Params::new(&params);
+                let query = p.str("query")?;
+                let limit = p.u64_or("limit", 10) as usize;
 
                 let tools = self.tools_cache.read();
                 let tools = tools.as_ref().ok_or("Tools cache not initialized")?;
@@ -450,9 +448,8 @@ impl ServiceModule for MCPModule {
             }
 
             "mcp/tool-help" => {
-                let tool_name = params.get("tool")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing required parameter: tool")?;
+                let p = Params::new(&params);
+                let tool_name = p.str("tool")?;
 
                 let tools = self.tools_cache.read();
                 let tools = tools.as_ref().ok_or("Tools cache not initialized")?;

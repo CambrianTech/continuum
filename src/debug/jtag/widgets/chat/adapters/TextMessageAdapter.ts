@@ -10,6 +10,7 @@
 import { AbstractMessageAdapter } from './AbstractMessageAdapter';
 import type { ChatMessageEntity } from '../../../system/data/entities/ChatMessageEntity';
 import type { TextContentData } from './AdapterTypes';
+import { Events } from '../../../system/core/shared/Events';
 import { marked } from 'marked';
 import hljs from 'highlight.js';
 
@@ -61,6 +62,9 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
 
       // Make long error code blocks collapsible
       htmlContent = this.makeErrorsCollapsible(htmlContent);
+
+      // Make file paths clickable
+      htmlContent = this.linkifyFilePaths(htmlContent);
 
       return `
         <div class="text-message-content markdown-body">
@@ -172,6 +176,21 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
 
       .markdown-body a:hover {
         text-decoration: underline;
+      }
+
+      /* Clickable file path links */
+      .file-path-link {
+        color: #d2a8ff;
+        cursor: pointer;
+        text-decoration: none;
+        border-bottom: 1px dotted rgba(210, 168, 255, 0.4);
+        transition: border-color 0.15s;
+      }
+
+      .file-path-link:hover {
+        color: #e2c0ff;
+        border-bottom-color: rgba(210, 168, 255, 0.8);
+        text-decoration: none;
       }
 
       .markdown-body hr {
@@ -509,5 +528,98 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // File path linkification
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * File extensions we recognize as linkifiable paths.
+   * Only match paths with known code/config extensions to avoid false positives.
+   */
+  private static readonly FILE_EXTENSIONS = new Set([
+    'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+    'rs', 'py', 'go', 'java', 'c', 'cpp', 'h', 'hpp', 'swift', 'rb', 'php',
+    'json', 'toml', 'yaml', 'yml', 'xml', 'csv',
+    'html', 'css', 'scss', 'less', 'svg',
+    'md', 'txt', 'sh', 'bash', 'zsh',
+    'lock', 'env', 'gitignore', 'dockerignore',
+  ]);
+
+  /**
+   * Regex to detect file paths in text content.
+   * Matches patterns like: src/foo/bar.ts, ./config.json, path/to/file.rs
+   * Requires at least one directory separator OR starts with ./ to distinguish from plain words.
+   */
+  private static readonly FILE_PATH_REGEX =
+    /(?<![&"'=\w])(?:\.\/)?(?:[\w@.-]+\/)+[\w.-]+\.(\w+)(?![&"'\w/])/g;
+
+  /**
+   * Post-process rendered HTML to make file paths clickable.
+   * Splits on HTML tags to only process text nodes — preserves
+   * <code>, <a>, <pre> content untouched.
+   */
+  private linkifyFilePaths(html: string): string {
+    // Split HTML into tags and text segments
+    const parts = html.split(/(<[^>]+>)/);
+    let insideCode = 0; // nesting depth for <code>/<pre> elements
+    let insideAnchor = 0;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+
+      // Track whether we're inside code/pre/a elements
+      if (part.startsWith('<')) {
+        const lower = part.toLowerCase();
+        if (lower.startsWith('<code') || lower.startsWith('<pre')) insideCode++;
+        else if (lower.startsWith('</code') || lower.startsWith('</pre')) insideCode = Math.max(0, insideCode - 1);
+        else if (lower.startsWith('<a ')) insideAnchor++;
+        else if (lower.startsWith('</a')) insideAnchor = Math.max(0, insideAnchor - 1);
+        continue;
+      }
+
+      // Skip text inside code blocks or anchors
+      if (insideCode > 0 || insideAnchor > 0) continue;
+
+      // Replace file paths with clickable links
+      parts[i] = part.replace(TextMessageAdapter.FILE_PATH_REGEX, (match, ext) => {
+        if (!TextMessageAdapter.FILE_EXTENSIONS.has(ext)) return match;
+        const escaped = match.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+        return `<a class="file-path-link" data-action="open-file" data-file-path="${escaped}" title="Open ${escaped}">${match}</a>`;
+      });
+    }
+
+    return parts.join('');
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Static action handlers (used by MessageEventDelegator)
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Handle click on a file path link — opens the file in a viewer tab.
+   * Uses code/read to fetch content, then opens via content:opened event.
+   */
+  static handleOpenFile(target: HTMLElement): void {
+    const filePath = target.dataset.filePath;
+    if (!filePath) return;
+
+    // Shorten for display — last 2-3 segments
+    const segments = filePath.split('/');
+    const shortName = segments.length > 2
+      ? '.../' + segments.slice(-2).join('/')
+      : filePath;
+
+    // Open in LogViewerWidget tab via diagnostics-log content type
+    // Uses file: prefix — LogViewerWidget handles this alongside tool: and persona log paths
+    Events.emit('content:opened', {
+      contentType: 'diagnostics-log',
+      entityId: `file:${filePath}`,
+      uniqueId: `file:${filePath}`,
+      title: shortName,
+      setAsCurrent: true,
+      metadata: { filePath, isSourceFile: true },
+    });
   }
 }

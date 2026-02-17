@@ -2,6 +2,9 @@ import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/**
+ * Reads the content of a documentation file by name, with support for table-of-contents extraction, jumping to a specific section, or reading a line range.
+ */
 export interface DocsReadParams extends CommandParams {
   doc: string;           // Simple doc name from docs/list
   toc?: boolean;         // Return table of contents with line ranges

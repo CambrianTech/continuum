@@ -32,7 +32,7 @@ export interface DataReadResult<T extends BaseEntity = BaseEntity> extends BaseD
 export const createDataReadParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataReadParams, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
+  data: Omit<DataReadParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
 ): DataReadParams => {
   const baseParams = createBaseDataParams(context, sessionId, {
     collection: data.collection,

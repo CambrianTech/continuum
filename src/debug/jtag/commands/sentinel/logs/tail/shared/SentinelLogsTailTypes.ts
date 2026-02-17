@@ -1,13 +1,11 @@
 /**
- * Sentinel Logs Tail Command - Types
- *
- * Get the last N lines of a log stream (like Unix tail).
+ * Get the last N lines of a sentinel log stream, like Unix tail.
  */
 
 import type { CommandParams, CommandResult } from '../../../../../system/core/types/JTAGTypes';
 
 /**
- * Tail params
+ * Get the last N lines of a sentinel log stream, like Unix tail.
  */
 export interface SentinelLogsTailParams extends CommandParams {
   /** Sentinel handle (short ID or full ID) */

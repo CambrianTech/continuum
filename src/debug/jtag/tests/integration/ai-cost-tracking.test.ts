@@ -161,7 +161,7 @@ async function testAIGenerationEntityCreation(): Promise<void> {
       inputTokens: entity.inputTokens,
       outputTokens: entity.outputTokens,
       estimatedCost: `$${entity.estimatedCost.toFixed(4)}`,
-      responseTime: `${entity.responseTime}ms`,
+      responseTime: `${entity.responseTimeMs}ms`,
       success: entity.success
     });
 

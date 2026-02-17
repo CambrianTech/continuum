@@ -15,11 +15,6 @@ export interface LiveJoinParams extends CommandParams {
    * Entity (room/activity) to join live call for (UUID or uniqueId)
    */
   entityId: string;
-
-  /**
-   * ID of the user joining the call (browser passes this to identify the logged-in user)
-   */
-  callerId?: UUID;
 }
 
 export interface LiveJoinResult extends CommandResult {

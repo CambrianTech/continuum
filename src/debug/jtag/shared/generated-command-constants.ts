@@ -31,6 +31,7 @@ export const COMMANDS = {
   AGENT_STATUS: 'agent/status',
   AGENT_STOP: 'agent/stop',
   AI_ADAPTER_TEST: 'ai/adapter/test',
+  AI_AGENT: 'ai/agent',
   AI_BAG_OF_WORDS: 'ai/bag-of-words',
   AI_CONTEXT_SEARCH: 'ai/context/search',
   AI_CONTEXT_SLICE: 'ai/context/slice',

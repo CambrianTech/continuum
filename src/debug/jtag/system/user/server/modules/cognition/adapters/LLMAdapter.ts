@@ -31,13 +31,14 @@ export class LLMAdapter implements IDecisionAdapter {
       const chatMessage = context.triggerEvent as any as ChatMessageEntity;
 
       // Build RAG context for LLM gating
-      // Bug #5 fix: Let ChatRAGBuilder use default calculation (no modelId available here yet)
       const ragBuilder = new ChatRAGBuilder();
       const ragContext = await ragBuilder.buildContext(
         chatMessage.roomId,
         context.personaId,
         {
-          // No maxMessages or modelId - uses ChatRAGBuilder's conservative default (10)
+          maxTokens: 2000,
+          modelId: context.modelId,
+          provider: context.provider,
           maxMemories: 0,
           includeArtifacts: false,
           includeMemories: false,

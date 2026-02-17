@@ -24,8 +24,9 @@ export class RAGBudgetServerCommand extends CommandBase<RAGBudgetParams, RAGBudg
       const targetUtilization = ragParams.targetUtilization ?? 0.8;
       const avgTokensPerMessage = ragParams.avgTokensPerMessage ?? 250;
 
-      // Get context window from centralized configuration
-      const contextWindow = getContextWindow(model);
+      // Get context window from centralized configuration (provider-scoped)
+      const provider = ragParams.provider;
+      const contextWindow = getContextWindow(model, provider);
 
       // Calculate available tokens for messages
       const availableForMessages = contextWindow - maxTokens - systemPromptTokens;

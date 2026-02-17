@@ -32,7 +32,7 @@ const TOKENS_PER_MEMORY_ESTIMATE = 80;
 export class SemanticMemorySource implements RAGSource {
   readonly name = 'semantic-memory';
   readonly priority = 60;  // Medium-high - memories inform persona behavior
-  readonly defaultBudgetPercent = 15;
+  readonly defaultBudgetPercent = 12;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
   // Negative cache: when Rust returns "No memory corpus", skip IPC for 60s.
@@ -107,6 +107,7 @@ export class SemanticMemorySource implements RAGSource {
       tokenCount: result.tokens_used,
       loadTimeMs,
       memories,
+      systemPromptSection: this.formatMemoriesSection(memories),
       metadata: {
         memoryCount: memories.length,
         totalCandidates: metadata.total_candidates,
@@ -181,6 +182,7 @@ export class SemanticMemorySource implements RAGSource {
         tokenCount,
         loadTimeMs,
         memories: personaMemories,
+        systemPromptSection: this.formatMemoriesSection(personaMemories),
         metadata: {
           memoryCount: personaMemories.length,
           totalCandidates: result.total_candidates,
@@ -221,6 +223,21 @@ export class SemanticMemorySource implements RAGSource {
       memories: [],
       metadata: error ? { error } : {}
     };
+  }
+
+  /**
+   * Format memories into the system prompt section.
+   * This is the SINGLE AUTHORITY for memory formatting — previously done
+   * as an unbudgeted bypass in PersonaResponseGenerator.
+   */
+  private formatMemoriesSection(memories: PersonaMemory[]): string | undefined {
+    if (memories.length === 0) return undefined;
+
+    return `\n\n=== YOUR CONSOLIDATED MEMORIES ===\nThese are important things you've learned and consolidated into long-term memory:\n\n${
+      memories.map((mem, idx) =>
+        `${idx + 1}. [${mem.type}] ${mem.content} (${new Date(mem.timestamp).toLocaleDateString()})`
+      ).join('\n')
+    }\n\nUse these memories to inform your responses when relevant.\n================================`;
   }
 
   private estimateTokens(text: string): number {

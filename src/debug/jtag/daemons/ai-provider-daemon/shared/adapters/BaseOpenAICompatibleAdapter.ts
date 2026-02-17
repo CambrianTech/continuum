@@ -355,11 +355,11 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
             parameters: tool.input_schema,
           },
         }));
-        if (request.tool_choice) {
-          if (typeof request.tool_choice === 'object' && 'name' in request.tool_choice) {
-            requestBody.tool_choice = { type: 'function', function: { name: request.tool_choice.name } };
+        if (request.toolChoice) {
+          if (typeof request.toolChoice === 'object' && 'name' in request.toolChoice) {
+            requestBody.tool_choice = { type: 'function', function: { name: request.toolChoice.name } };
           } else {
-            requestBody.tool_choice = request.tool_choice;
+            requestBody.tool_choice = request.toolChoice;
           }
         }
       }
@@ -424,7 +424,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
           totalTokens: response.usage?.total_tokens || 0,
           estimatedCost: this.calculateCost(response.usage, model),
         },
-        responseTime,
+        responseTimeMs: responseTime,
         requestId,
         ...(toolCalls.length > 0 && { toolCalls }),
       };
@@ -487,7 +487,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         })),
         model: response.model || model,
         provider: this.providerId,
-        responseTime,
+        responseTimeMs: responseTime,
         requestId,
       };
     } catch (error) {
@@ -539,7 +539,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
           outputTokens: 0,
           totalTokens: response.usage?.total_tokens || 0,
         },
-        responseTime,
+        responseTimeMs: responseTime,
         requestId,
       };
     } catch (error) {
@@ -596,7 +596,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       return {
         status: 'healthy',
         apiAvailable: true,
-        responseTime,
+        responseTimeMs: responseTime,
         errorRate: 0,
         lastChecked: Date.now(),
         message: `${this.providerName} API is accessible`,
@@ -605,7 +605,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
       return {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime: Date.now() - startTime,
+        responseTimeMs: Date.now() - startTime,
         errorRate: 1,
         lastChecked: Date.now(),
         message: `${this.providerName} API is not accessible: ${error instanceof Error ? error.message : String(error)}`,
@@ -674,7 +674,7 @@ export abstract class BaseOpenAICompatibleAdapter extends BaseAIProviderAdapter 
         || 4096,
       maxOutputTokens: modelData.max_tokens,
       supportsStreaming: true,
-      supportsFunctions: false,
+      supportsTools: false,
     };
   }
 

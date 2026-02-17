@@ -27,7 +27,6 @@ import type { DataListParams, DataListResult } from '@commands/data/list/shared/
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
 import { calculateCondorcetWinner } from '@system/shared/CondorcetUtils';
 import { Logger } from '@system/core/logging/Logger';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
 import { DataRead } from '../../../../data/read/shared/DataReadTypes';
 import { DataList } from '../../../../data/list/shared/DataListTypes';
@@ -82,46 +81,18 @@ export class DecisionRankServerCommand extends DecisionRankCommand {
         return transformPayload(params, { success: false, error: 'Ranked choices are required' });
       }
 
-      // Get voter info - auto-detect caller identity
-      // Priority: 1) context.userId (PersonaUsers), 2) UserIdentityResolver (CLI)
-      let voterId: UUID;
-      let voterName: string;
+      // Get voter info from params.userId (auto-injected by infrastructure)
+      const voterResult = await DataRead.execute<UserEntity>({
+        collection: COLLECTIONS.USERS,
+        id: params.userId
+      });
 
-      if (params.context?.userId) {
-        // FIRST: Check context.userId (PersonaUsers set this)
-        const voterResult = await DataRead.execute<UserEntity>({
-          collection: COLLECTIONS.USERS,
-          id: params.context.userId
-        });
-
-        if (!voterResult.success || !voterResult.data) {
-          return transformPayload(params, { success: false, error: 'Could not find voter user from context' });
-        }
-
-        voterId = params.context.userId;
-        voterName = voterResult.data.displayName;
-        this.log.debug('Using context.userId for voter', { voterId, voterName });
-      } else {
-        // FALLBACK: Auto-detect caller identity using UserIdentityResolver (CLI calls)
-        const identity = await UserIdentityResolver.resolve();
-
-        this.log.debug('Auto-detected voter identity', {
-          uniqueId: identity.uniqueId,
-          displayName: identity.displayName,
-          type: identity.type,
-          exists: identity.exists
-        });
-
-        if (!identity.exists || !identity.userId) {
-          return transformPayload(params, {
-            success: false,
-            error: `Detected caller: ${identity.displayName} (${identity.uniqueId}) but user not found in database. Run seed script to create users.`
-          });
-        }
-
-        voterId = identity.userId;
-        voterName = identity.displayName;
+      if (!voterResult.success || !voterResult.data) {
+        return transformPayload(params, { success: false, error: `User not found: ${params.userId}` });
       }
+
+      const voterId: UUID = params.userId;
+      const voterName: string = voterResult.data.displayName;
 
       // Resolve short IDs to full UUIDs using CrossPlatformUUID utilities
       const { isShortId, normalizeShortId } = await import('@system/core/types/CrossPlatformUUID');

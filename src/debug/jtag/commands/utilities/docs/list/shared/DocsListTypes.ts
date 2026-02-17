@@ -2,6 +2,9 @@ import type { CommandParams, JTAGContext, CommandInput} from '@system/core/types
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/**
+ * Lists all available documentation files in the project, returning metadata such as file size, line count, section headings, and directory, with optional filtering by directory or filename pattern.
+ */
 export interface DocsListParams extends CommandParams {
   dir?: string;          // Filter by directory (e.g., "daemons", "system")
   pattern?: string;      // Filter by filename pattern

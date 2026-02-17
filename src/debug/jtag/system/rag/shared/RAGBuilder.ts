@@ -26,13 +26,13 @@ export abstract class RAGBuilder {
    *
    * @param contextId - Room ID, training session ID, game session ID, etc.
    * @param personaId - The persona requesting context
-   * @param options - Optional configuration for context building
+   * @param options - Configuration for context building (maxTokens is required)
    * @returns Complete RAG context ready for LLM inference
    */
   abstract buildContext(
     contextId: UUID,
     personaId: UUID,
-    options?: RAGBuildOptions
+    options: RAGBuildOptions
   ): Promise<RAGContext>;
 
   /**

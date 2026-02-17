@@ -13,9 +13,18 @@
  * ModelRegistry (populated async from provider APIs in initializeDeferred)
  * is checked FIRST. Static maps below are the fallback when the registry
  * hasn't discovered a model yet or the provider API is unavailable.
+ *
+ * Provider-scoped lookups:
+ * All functions accept an optional `provider` parameter. When provided,
+ * ModelRegistry returns only that provider's entry — preventing collisions
+ * where the same modelId exists on multiple providers with different context
+ * windows (e.g., meta-llama/Llama-3.1-8B-Instruct: 131K on Together, 1400 on Candle).
  */
 
 import { ModelRegistry } from './ModelRegistry';
+
+/** Known local provider names for inference speed classification */
+const LOCAL_PROVIDERS = new Set(['candle', 'ollama', 'sentinel']);
 
 /**
  * Model context windows in tokens
@@ -53,7 +62,8 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   // Meta Models (Llama) — cloud API naming (dashes)
   'llama-3.1-8b-instant': 131072,                           // Groq LPU
   'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo': 131072,  // Together.ai
-  'accounts/fireworks/models/llama-v3p1-8b-instruct': 131072,  // Fireworks.ai
+  'accounts/fireworks/models/llama-v3p1-8b-instruct': 131072,  // Fireworks.ai (deprecated)
+  'accounts/fireworks/models/llama-v3p3-70b-instruct': 131072,  // Fireworks.ai Llama 3.3 70B
   // Meta Models (Llama) — Ollama naming (dots + colons)
   'llama3.2': 128000,
   'llama3.2:3b': 128000,
@@ -62,12 +72,15 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'llama3.1:70b': 128000,
   'llama3.1:8b': 128000,
 
-  // HuggingFace IDs (used by Candle adapter directly)
-  // IMPORTANT: Q4_K_M quantization becomes numerically unstable beyond practical limits.
-  'meta-llama/Llama-3.1-8B-Instruct': 8000,  // Q4_K_M practical limit for 8B
-  'unsloth/Llama-3.2-3B-Instruct': 2000,     // Q4_K_M practical limit due to NaN/Inf
-  'Qwen/Qwen2-1.5B-Instruct': 4000,          // Smaller model, more stable
-  'Qwen/Qwen2-0.5B-Instruct': 4000,
+  // HuggingFace IDs (Candle adapter) — FALLBACK only.
+  // Source of truth is CandleAdapter.capabilities().max_context_window in Rust,
+  // which feeds into ModelRegistry at startup via registerLocalModels().
+  // Candle quantized attention breaks at ~1000 input tokens on Metal.
+  // See: https://github.com/huggingface/candle/issues/1566
+  'meta-llama/Llama-3.1-8B-Instruct': 1400,
+  'unsloth/Llama-3.2-3B-Instruct': 1400,
+  'Qwen/Qwen2-1.5B-Instruct': 1400,
+  'Qwen/Qwen2-0.5B-Instruct': 1400,
 
   // Qwen Models via Ollama
   'qwen2.5': 128000,
@@ -198,15 +211,27 @@ export const DEFAULT_INFERENCE_SPEED = 80;
 export const DEFAULT_TARGET_LATENCY_SECONDS = 30;
 
 /**
- * Get inference speed for a model in tokens per second
+ * Get inference speed for a model in tokens per second.
+ *
+ * When provider is specified and the model is found in the registry:
+ *   - Local providers (candle/ollama/sentinel): fall through to static speed map
+ *   - Cloud providers: return 1000 TPS (network-bound)
+ *
+ * Bug fix: Previously, any registry hit assumed cloud (1000 TPS), even for
+ * Candle models registered at 40 TPS. Now checks provider to classify correctly.
  */
-export function getInferenceSpeed(model: string): number {
-  // Check ModelRegistry first (live-discovered data from provider APIs)
+export function getInferenceSpeed(model: string, provider?: string): number {
   const registry = ModelRegistry.sharedInstance();
-  const discovered = registry.get(model);
+  const discovered = registry.get(model, provider);
   if (discovered) {
-    // Cloud APIs are always ~1000 TPS (network-bound)
-    return 1000;
+    // Check if this is a local provider — don't assume cloud speed
+    if (LOCAL_PROVIDERS.has(discovered.provider)) {
+      // Fall through to static speed map for local providers
+      // (registry has context windows, not inference speeds)
+    } else {
+      // Cloud APIs are ~1000 TPS (network-bound)
+      return 1000;
+    }
   }
 
   // Direct match
@@ -246,21 +271,23 @@ export function getInferenceSpeed(model: string): number {
  *
  * @param model - Model identifier
  * @param targetLatencySeconds - Target response time (default: 30s)
+ * @param provider - Optional provider for scoped lookup
  * @returns Maximum input tokens to stay within latency target
  */
 export function getLatencyAwareTokenLimit(
   model: string,
-  targetLatencySeconds: number = DEFAULT_TARGET_LATENCY_SECONDS
+  targetLatencySeconds: number = DEFAULT_TARGET_LATENCY_SECONDS,
+  provider?: string
 ): number {
-  const tokensPerSecond = getInferenceSpeed(model);
+  const tokensPerSecond = getInferenceSpeed(model, provider);
   return Math.floor(targetLatencySeconds * tokensPerSecond);
 }
 
 /**
  * Check if a model is a slow local model (needs latency-aware budgeting)
  */
-export function isSlowLocalModel(model: string): boolean {
-  const speed = getInferenceSpeed(model);
+export function isSlowLocalModel(model: string, provider?: string): boolean {
+  const speed = getInferenceSpeed(model, provider);
   return speed < 500;  // Below 500 TPS = needs latency awareness
 }
 
@@ -271,13 +298,15 @@ export function isSlowLocalModel(model: string): boolean {
  * - Direct model name lookup (e.g., "gpt-4")
  * - Versioned model lookup (e.g., "llama3.2:3b" → "llama3.2")
  * - Prefix matching for similar models
+ * - Provider-scoped lookup to avoid cross-provider collisions
  *
  * @param model - Model identifier (e.g., "gpt-4", "claude-3-sonnet")
+ * @param provider - Optional provider for scoped registry lookup
  * @returns Context window size in tokens, or DEFAULT_CONTEXT_WINDOW if model not found
  */
-export function getContextWindow(model: string): number {
+export function getContextWindow(model: string, provider?: string): number {
   // Check ModelRegistry first (live-discovered data from provider APIs)
-  const discovered = ModelRegistry.sharedInstance().contextWindow(model);
+  const discovered = ModelRegistry.sharedInstance().contextWindow(model, provider);
   if (discovered !== undefined) return discovered;
 
   // Direct match in static map
@@ -311,16 +340,16 @@ export function getContextWindow(model: string): number {
  * Check if a model has a large context window (>32K)
  * Useful for deciding whether to include more context in RAG
  */
-export function isLargeContextModel(modelId: string): boolean {
-  return getContextWindow(modelId) > 32768;
+export function isLargeContextModel(modelId: string, provider?: string): boolean {
+  return getContextWindow(modelId, provider) > 32768;
 }
 
 /**
  * Get recommended output token budget for a model
  * Typically 10-25% of context window, capped at 4K for most use cases
  */
-export function getRecommendedMaxOutputTokens(modelId: string): number {
-  const contextWindow = getContextWindow(modelId);
+export function getRecommendedMaxOutputTokens(modelId: string, provider?: string): number {
+  const contextWindow = getContextWindow(modelId, provider);
 
   // For small context windows, use 25%
   if (contextWindow <= 8192) {
@@ -337,8 +366,9 @@ export function getRecommendedMaxOutputTokens(modelId: string): number {
 export function getAvailableInputTokens(
   modelId: string,
   reservedOutputTokens: number,
-  safetyMargin: number = 500
+  safetyMargin: number = 500,
+  provider?: string
 ): number {
-  const contextWindow = getContextWindow(modelId);
+  const contextWindow = getContextWindow(modelId, provider);
   return Math.max(0, contextWindow - reservedOutputTokens - safetyMargin);
 }

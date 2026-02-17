@@ -21,6 +21,8 @@ import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { LoRAAdapter, type LoRAAdapterState } from './LoRAAdapter';
 import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
+import type { RustCognitionBridge } from './RustCognitionBridge';
+import type { GenomeAdapterInfo } from '../../../../shared/generated';
 
 /**
  * Genome configuration
@@ -101,6 +103,13 @@ export class PersonaGenome {
    */
   private aiProvider: AIProviderAdapter | null = null;
 
+  /**
+   * Rust cognition bridge for LRU eviction decisions.
+   * When set, activateSkill() delegates decisions to Rust (sub-microsecond).
+   * Without this, falls back to local TS logic (for tests/init before bridge is ready).
+   */
+  private rustBridge: RustCognitionBridge | null = null;
+
   constructor(config: PersonaGenomeConfig, logger?: (message: string) => void) {
     this.log = logger || console.log.bind(console);
     this.config = config;
@@ -153,6 +162,65 @@ export class PersonaGenome {
   }
 
   /**
+   * Set Rust cognition bridge for sub-microsecond LRU decisions.
+   * Call after PersonaUser creates the bridge.
+   */
+  setRustBridge(bridge: RustCognitionBridge): void {
+    this.rustBridge = bridge;
+    this.log(`🧬 PersonaGenome: Rust bridge set (LRU decisions delegated to Rust)`);
+  }
+
+  /**
+   * Build GenomeAdapterInfo array for syncing to Rust.
+   */
+  private buildAdapterInfoForRust(): GenomeAdapterInfo[] {
+    const result: GenomeAdapterInfo[] = [];
+
+    for (const [, adapter] of this.activeAdapters) {
+      const state = adapter.getState();
+      result.push({
+        name: state.name,
+        domain: state.domain,
+        size_mb: state.sizeMB,
+        priority: state.priority,
+        is_loaded: true,
+        last_used_ms: state.lastUsed,
+        ollama_model_name: state.ollamaModelName ?? undefined,
+      });
+    }
+
+    for (const [, adapter] of this.availableAdapters) {
+      const state = adapter.getState();
+      result.push({
+        name: state.name,
+        domain: state.domain,
+        size_mb: state.sizeMB,
+        priority: state.priority,
+        is_loaded: false,
+        last_used_ms: state.lastUsed,
+        ollama_model_name: state.ollamaModelName ?? undefined,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Sync current adapter state to Rust.
+   * Call after adapter registration, load, or unload.
+   */
+  async syncToRust(): Promise<void> {
+    if (!this.rustBridge) return;
+
+    try {
+      const adapters = this.buildAdapterInfoForRust();
+      await this.rustBridge.genomeSync(adapters, this.config.memoryBudgetMB);
+    } catch (error) {
+      this.log(`⚠️ PersonaGenome: Rust sync failed: ${error}`);
+    }
+  }
+
+  /**
    * Register a new adapter (adds to available pool, doesn't load)
    *
    * If aiProvider is set, the adapter will be able to do real GPU loading.
@@ -186,15 +254,70 @@ export class PersonaGenome {
   }
 
   /**
-   * Activate a skill adapter for the current task
+   * Activate a skill adapter for the current task.
    *
-   * If already loaded: Just switch to it and update lastUsed
-   * If not loaded: Load from disk (evicting LRU adapters if needed)
+   * When Rust bridge is available: Rust decides what to evict/load (sub-μs),
+   * TypeScript executes the GPU operations.
    *
-   * NOTE: Actual GPU allocation is handled by the Rust inference-worker.
-   * This method just tracks logical state and delegates to the worker via AIProvider.
+   * When no Rust bridge (tests/init): Uses local TS logic.
    */
   async activateSkill(skillName: string): Promise<void> {
+    if (this.rustBridge) {
+      return this.activateSkillViaRust(skillName);
+    }
+    return this.activateSkillLocal(skillName);
+  }
+
+  /**
+   * Rust-backed skill activation: ONE IPC call for the decision,
+   * then execute GPU ops based on Rust's instructions.
+   */
+  private async activateSkillViaRust(skillName: string): Promise<void> {
+    const decision = await this.rustBridge!.genomeActivateSkill(
+      skillName, this.config.memoryBudgetMB
+    );
+
+    if (!decision.activated) {
+      return; // Unknown skill — Rust said no
+    }
+
+    // Cache hit — just update local state
+    if (!decision.to_load) {
+      const adapter = this.activeAdapters.get(skillName);
+      if (adapter) {
+        adapter.markUsed();
+        this.currentAdapter = adapter;
+      }
+      return;
+    }
+
+    // Execute evictions (GPU unload)
+    for (const evictedName of decision.evicted) {
+      const victim = this.activeAdapters.get(evictedName);
+      if (victim) {
+        const freedMB = victim.getSize();
+        this.log(`📤 PersonaGenome: Evicting ${evictedName} (Rust decision) to free ${freedMB}MB...`);
+        await victim.unload();
+        this.activeAdapters.delete(evictedName);
+        this.memoryUsedMB -= freedMB;
+      }
+    }
+
+    // Load the new adapter (GPU load)
+    const adapter = this.availableAdapters.get(skillName);
+    if (!adapter) return;
+
+    await adapter.load(this.config.baseModel);
+    this.activeAdapters.set(skillName, adapter);
+    this.availableAdapters.delete(skillName);
+    this.memoryUsedMB += adapter.getSize();
+    this.currentAdapter = adapter;
+  }
+
+  /**
+   * Local TS skill activation (for tests/init before Rust bridge is ready).
+   */
+  private async activateSkillLocal(skillName: string): Promise<void> {
     // Already active? Just mark as used
     if (this.activeAdapters.has(skillName)) {
       const adapter = this.activeAdapters.get(skillName)!;
@@ -216,13 +339,12 @@ export class PersonaGenome {
       await this.evictLRU();
     }
 
-    // Load adapter - delegates to AIProvider (CandleAdapter → inference-worker)
-    // The worker handles actual GPU allocation
-    // Pass baseModel so CandleAdapter knows which model to attach the adapter to
+    // Load adapter
     await adapter.load(this.config.baseModel);
 
     // Track logical state
     this.activeAdapters.set(skillName, adapter);
+    this.availableAdapters.delete(skillName);
     this.memoryUsedMB += adapterSize;
     this.currentAdapter = adapter;
   }

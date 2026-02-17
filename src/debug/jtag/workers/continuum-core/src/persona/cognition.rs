@@ -187,6 +187,18 @@ impl PersonaCognitionEngine {
             };
         }
 
+        self.fast_path_decision_core(message, start)
+    }
+
+    /// Fast-path decision WITHOUT dedup check.
+    /// Used by full_evaluate() where the service cycle already did dedup.
+    pub fn fast_path_decision_no_dedup(&self, message: &InboxMessage) -> CognitionDecision {
+        let start = Instant::now();
+        self.fast_path_decision_core(message, start)
+    }
+
+    /// Shared fast-path logic (dedup-agnostic).
+    fn fast_path_decision_core(&self, message: &InboxMessage, start: Instant) -> CognitionDecision {
         // Check if sender is self
         if message.sender_id == self.persona_id {
             return CognitionDecision {
@@ -272,6 +284,16 @@ impl PersonaCognitionEngine {
     /// Get persona ID
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
+    }
+
+    /// Check if a message has been evaluated (deduplication).
+    pub fn has_evaluated_message(&self, message_id: Uuid) -> bool {
+        self.evaluated_messages.contains(&message_id)
+    }
+
+    /// Mark a message as evaluated (deduplication).
+    pub fn mark_message_evaluated(&self, message_id: Uuid) {
+        self.evaluated_messages.insert(message_id);
     }
 }
 

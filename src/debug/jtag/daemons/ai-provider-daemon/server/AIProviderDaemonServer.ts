@@ -223,6 +223,10 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
     // Node.js main thread only does Map.set() registration with results.
     this.discoverModelsViaRust();
 
+    // Register local models (Candle adapter) — the adapter is the source of truth
+    // for its own context window and capabilities (not the static map).
+    this.registerLocalModels();
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ AIProviderDaemonServer: DEFERRED init complete (${deferredMs}ms) - health monitoring active`);
   }
@@ -319,6 +323,46 @@ export class AIProviderDaemonServer extends AIProviderDaemon {
       })
       .catch((err) => {
         this.log.warn(`Model discovery via Rust failed: ${err.message}`);
+        client.disconnect();
+      });
+  }
+
+  /**
+   * Register local model capabilities in the ModelRegistry.
+   *
+   * The Candle adapter is the single source of truth for its own context window
+   * and capabilities. This queries the Rust adapter and registers the result
+   * so ModelContextWindows.ts static entries are never used for local models.
+   */
+  private registerLocalModels(): void {
+    const client = new RustCoreIPCClient(getContinuumCoreSocketPath());
+    client.connect()
+      .then(() => client.execute<{ models: Array<{ id: string; context_window: number; max_output_tokens?: number; provider: string }> }>('ai/models/list', {}))
+      .then(async (result) => {
+        if (!result.success || !result.data?.models) return;
+
+        const { ModelRegistry } = await import('../../../system/shared/ModelRegistry');
+        const registry = ModelRegistry.sharedInstance();
+        let count = 0;
+
+        for (const model of result.data.models) {
+          registry.register({
+            modelId: model.id,
+            contextWindow: model.context_window,
+            maxOutputTokens: model.max_output_tokens,
+            provider: model.provider,
+            discoveredAt: Date.now(),
+          });
+          count++;
+        }
+
+        if (count > 0) {
+          this.log.info(`ModelRegistry: ${count} local models registered from Rust adapters`);
+        }
+        client.disconnect();
+      })
+      .catch((err) => {
+        this.log.debug(`Local model registration skipped: ${err.message}`);
         client.disconnect();
       });
   }

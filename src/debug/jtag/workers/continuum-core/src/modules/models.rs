@@ -8,6 +8,7 @@
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext};
 use crate::models::{ProviderConfig, discover_all};
 use crate::logging::TimingGuard;
+use crate::utils::params::Params;
 use crate::log_info;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -31,6 +32,7 @@ impl ServiceModule for ModelsModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 
@@ -46,11 +48,8 @@ impl ServiceModule for ModelsModule {
         match command {
             "models/discover" => {
                 let _timer = TimingGuard::new("module", "models_discover");
-
-                // Parse providers from params
-                let providers: Vec<ProviderConfig> = params.get("providers")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
+                let p = Params::new(&params);
+                let providers: Vec<ProviderConfig> = p.json_or("providers");
 
                 let provider_count = providers.len();
 

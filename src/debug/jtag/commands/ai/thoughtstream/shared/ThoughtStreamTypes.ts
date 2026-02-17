@@ -66,7 +66,7 @@ export interface ThoughtStreamDecision {
     personaName: string;
     action: 'POSTED' | 'TIMEOUT' | 'ERROR' | 'REDUNDANT' | 'SILENT';
     responseText?: string;
-    responseTime?: number;
+    responseTimeMs?: number;
     error?: string;
   }>;
 

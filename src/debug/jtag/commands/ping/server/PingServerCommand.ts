@@ -34,6 +34,7 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
         if (aiStatusCommand) {
           // Call ai/status with 2 second timeout
           const statusParams: AIStatusParams = {
+            userId: pingParams.userId,
             context: params.context,
             sessionId: params.sessionId,
             includeInactive: false,

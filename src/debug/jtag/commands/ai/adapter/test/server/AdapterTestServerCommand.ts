@@ -422,12 +422,12 @@ export class AdapterTestServerCommand extends CommandBase<AdapterTestParams, Asy
       }
 
       result.success = true;
-      result.responseTime = Date.now() - startTime;
-      console.log(`  ✅ Passed (${result.responseTime}ms)`);
+      result.responseTimeMs = Date.now() - startTime;
+      console.log(`  ✅ Passed (${result.responseTimeMs}ms)`);
     } catch (error) {
       result.success = false;
       result.error = error instanceof Error ? error.message : String(error);
-      result.responseTime = Date.now() - startTime;
+      result.responseTimeMs = Date.now() - startTime;
       console.log(`  ❌ Failed: ${result.error}`);
     }
 

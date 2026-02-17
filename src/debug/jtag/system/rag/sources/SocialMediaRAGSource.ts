@@ -56,7 +56,7 @@ interface ResolvedCredential {
 export class SocialMediaRAGSource implements RAGSource {
   readonly name = 'social-media';
   readonly priority = 55;
-  readonly defaultBudgetPercent = 5;
+  readonly defaultBudgetPercent = 3;
 
   // ── Static shared state (singleton across all instances) ────────────
   // Each persona's ChatRAGBuilder creates a new SocialMediaRAGSource instance.

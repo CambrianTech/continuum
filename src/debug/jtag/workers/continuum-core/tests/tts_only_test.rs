@@ -35,7 +35,7 @@ fn test_tts_synthesize_via_ipc() {
     let result = match ipc_request(&mut stream, &request) {
         Ok(r) => r,
         Err(e) => {
-            println!("IPC error: {}", e);
+            println!("IPC error: {e}");
             return;
         }
     };
@@ -63,7 +63,7 @@ fn test_tts_synthesize_via_ipc() {
     let num_samples = meta["num_samples"].as_u64().unwrap_or(0);
     let duration_ms = meta["duration_ms"].as_u64().unwrap_or(0);
 
-    println!("Sample rate: {}Hz", sample_rate);
+    println!("Sample rate: {sample_rate}Hz");
     println!("Samples: {} (header), {} (from PCM bytes)", num_samples, pcm_bytes.len() / 2);
     println!("Duration: {}ms ({:.2}s)", duration_ms, duration_ms as f64 / 1000.0);
     println!("PCM bytes: {}", pcm_bytes.len());
@@ -81,8 +81,8 @@ fn test_tts_synthesize_via_ipc() {
 
     println!("\n--- Audio Analysis ---");
     println!("Non-zero samples: {} / {} ({:.1}%)", non_zero, samples.len(), non_zero as f64 / samples.len().max(1) as f64 * 100.0);
-    println!("Max amplitude: {} (max: 32767)", max_amplitude);
-    println!("RMS: {:.1}", rms);
+    println!("Max amplitude: {max_amplitude} (max: 32767)");
+    println!("RMS: {rms:.1}");
 
     // Verify sample rate is 16kHz
     assert_eq!(sample_rate, 16000, "Sample rate must be 16kHz");
@@ -131,7 +131,7 @@ fn test_tts_audio_quality() {
         let result = match ipc_request(&mut stream, &request) {
             Ok(r) => r,
             Err(e) => {
-                println!("\"{}\" - IPC error: {}", phrase, e);
+                println!("\"{phrase}\" - IPC error: {e}");
                 continue;
             }
         };
@@ -161,11 +161,10 @@ fn test_tts_audio_quality() {
         let non_zero_pct = samples.iter().filter(|&&s| s.abs() > 10).count() as f64 / samples.len().max(1) as f64 * 100.0;
         let max_amp = samples.iter().map(|&s| s.abs()).max().unwrap_or(0);
 
-        println!("\"{}\"", phrase);
-        println!("  Rate: {}Hz, Duration: {}ms, Non-silence: {:.1}%, Max: {}",
-            sample_rate, duration_ms, non_zero_pct, max_amp);
+        println!("\"{phrase}\"");
+        println!("  Rate: {sample_rate}Hz, Duration: {duration_ms}ms, Non-silence: {non_zero_pct:.1}%, Max: {max_amp}");
 
-        assert_eq!(sample_rate, 16000, "Sample rate must be 16kHz for \"{}\"", phrase);
+        assert_eq!(sample_rate, 16000, "Sample rate must be 16kHz for \"{phrase}\"");
     }
 
     println!("\nAudio quality test PASSED");

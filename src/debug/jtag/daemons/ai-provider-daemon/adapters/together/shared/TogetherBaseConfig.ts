@@ -91,7 +91,7 @@ export class TogetherBaseConfig {
         maxOutputTokens: model.max_tokens || 4096,
         costPer1kTokens: { input: 0.0002, output: 0.0002 },
         supportsStreaming: true,
-        supportsFunctions: false
+        supportsTools: false
       }));
 
       this.modelsFetchedAt = now;
@@ -119,7 +119,7 @@ export class TogetherBaseConfig {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.005, output: 0.015 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsTools: false,
       },
       {
         id: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo',
@@ -130,7 +130,7 @@ export class TogetherBaseConfig {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0009, output: 0.0009 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsTools: false,
       },
       {
         id: 'meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo',
@@ -141,7 +141,7 @@ export class TogetherBaseConfig {
         maxOutputTokens: 4096,
         costPer1kTokens: { input: 0.0002, output: 0.0002 },
         supportsStreaming: true,
-        supportsFunctions: false,
+        supportsTools: false,
       },
     ];
   }

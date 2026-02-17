@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -29,6 +30,7 @@ export const createLoggingStatusParams = (
     persona?: string;
   }
 ): LoggingStatusParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   persona: data.persona ?? '',
   ...data
 });
@@ -72,6 +74,7 @@ export const createLoggingStatusResult = (
     error?: JTAGError;
   }
 ): LoggingStatusResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   personas: data.personas ?? [],
   systemEnabled: data.systemEnabled ?? false,
   defaultEnabled: data.defaultEnabled ?? false,

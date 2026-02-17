@@ -62,7 +62,7 @@ export function getConsciousness(personaId: string): boolean {
 export class GlobalAwarenessSource implements RAGSource {
   readonly name = 'global-awareness';
   readonly priority = 85;  // After identity (95), before conversation (80)
-  readonly defaultBudgetPercent = 10;
+  readonly defaultBudgetPercent = 5;
   readonly supportsBatching = true;  // Participate in batched Rust IPC
 
   // Negative cache: when Rust returns "No memory corpus", skip IPC for 60s.

@@ -7,6 +7,7 @@
 
 import { CommandBase, type ICommandDaemon } from '../../../../../daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '../../../../../system/core/types/SystemScopes';
 import type { GenomeStatsParams, GenomeStatsResult } from '../shared/GenomeStatsTypes';
 
 export class GenomeStatsBrowserCommand extends CommandBase<GenomeStatsParams, GenomeStatsResult> {
@@ -16,6 +17,6 @@ export class GenomeStatsBrowserCommand extends CommandBase<GenomeStatsParams, Ge
 
   async execute(params: JTAGPayload): Promise<GenomeStatsResult> {
     // Browser delegates entirely to server
-    return await this.remoteExecute(params);
+    return await this.remoteExecute({ ...params, userId: SYSTEM_SCOPES.SYSTEM });
   }
 }

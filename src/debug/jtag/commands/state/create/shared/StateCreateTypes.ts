@@ -18,8 +18,6 @@ export interface StateCreateParams extends CommandParams {
   readonly data: Record<string, any>;
   /** Optional explicit ID */
   readonly id?: UUID;
-  /** User ID for context */
-  readonly userId?: UUID;
 }
 
 export interface StateCreateResult<T extends BaseEntity> extends JTAGPayload {

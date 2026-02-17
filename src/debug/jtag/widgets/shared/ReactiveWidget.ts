@@ -815,7 +815,7 @@ export abstract class ReactiveWidget extends LitElement {
    */
   protected async executeCommand<P extends CommandParams, R extends CommandResult>(
     command: string,
-    params?: Omit<P, 'context' | 'sessionId'>
+    params?: Omit<P, 'context' | 'sessionId' | 'userId'>
   ): Promise<R> {
     if (!this.config.enableCommands) {
       throw new Error('Commands not enabled for this widget');
@@ -849,7 +849,7 @@ export abstract class ReactiveWidget extends LitElement {
    */
   protected async cachedCommand<P extends CommandParams, R extends CommandResult>(
     command: string,
-    params?: Omit<P, 'context' | 'sessionId'>,
+    params?: Omit<P, 'context' | 'sessionId' | 'userId'>,
     ttl?: number
   ): Promise<R> {
     const cacheKey = `${command}:${JSON.stringify(params)}`;

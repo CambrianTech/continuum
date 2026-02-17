@@ -26,6 +26,7 @@
 
 import { JTAGClient } from '../client/shared/JTAGClient';
 import type { CommandParams, CommandResult } from '../types/JTAGTypes';
+import { SYSTEM_SCOPES } from '../types/SystemScopes';
 
 import { Screenshot } from '../../../commands/interface/screenshot/shared/ScreenshotTypes';
 import { FileSave } from '../../../commands/file/save/shared/FileSaveTypes';
@@ -163,7 +164,7 @@ export class Commands {
       const finalParams: CommandParams = {
         context: params?.context || globalWithJTAG.__JTAG_CONTEXT__ || 'unknown',
         sessionId: params?.sessionId || globalWithJTAG.__JTAG_SESSION_ID__ || 'unknown',
-        userId: params?.userId,
+        userId: params?.userId ?? SYSTEM_SCOPES.SYSTEM,
         ...(params || {})
       } as T;
 

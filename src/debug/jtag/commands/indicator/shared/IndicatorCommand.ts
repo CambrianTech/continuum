@@ -4,9 +4,9 @@
  */
 
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
-import type { JTAGContext, JTAGPayload, CommandResult } from '../../../system/core/types/JTAGTypes';
+import type { JTAGContext, JTAGPayload, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
 
-export interface IndicatorParams extends JTAGPayload {
+export interface IndicatorParams extends CommandParams {
   message: string;
   title?: string;
   type?: 'info' | 'success' | 'warning' | 'error';

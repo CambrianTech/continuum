@@ -16,7 +16,7 @@
  *   endpoint: '/ai-provider',
  *   payload: {
  *     type: 'generate-text',
- *     request: { messages: [...], preferredProvider: 'candle' }
+ *     request: { messages: [...], provider: 'candle' }
  *   }
  * });
  */
@@ -139,7 +139,7 @@ export class AIProviderDaemon extends DaemonBase {
    */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
     const timer = TimingHarness.start('ai/generate-text', 'ai');
-    timer.setMeta('preferredProvider', request.preferredProvider || 'auto');
+    timer.setMeta('provider', request.provider || 'auto');
     timer.setMeta('model', request.model || 'default');
     timer.setMeta('userId', request.userId || 'unknown');
 
@@ -153,8 +153,8 @@ export class AIProviderDaemon extends DaemonBase {
       );
     }
 
-    // Select provider (considers both preferredProvider AND model name)
-    const selection = this.selectAdapter(request.preferredProvider, request.model);
+    // Select provider (considers both provider AND model name)
+    const selection = this.selectAdapter(request.provider, request.model);
     timer.mark('select_adapter');
 
     if (!selection) {
@@ -164,7 +164,7 @@ export class AIProviderDaemon extends DaemonBase {
         'No suitable AI provider available',
         'daemon',
         'NO_PROVIDER_AVAILABLE',
-        { preferredProvider: request.preferredProvider }
+        { provider: request.provider }
       );
     }
 
@@ -217,7 +217,7 @@ export class AIProviderDaemon extends DaemonBase {
             totalTokens: 0,
             estimatedCost: 0,
           },
-          responseTime: record.totalMs,
+          responseTimeMs: record.totalMs,
           requestId: request.requestId || `req-${Date.now()}`,
           routing: baseRouting,
         };
@@ -307,7 +307,7 @@ export class AIProviderDaemon extends DaemonBase {
         outputTokens: response.usage.outputTokens,
         totalTokens: response.usage.totalTokens,
         estimatedCost: response.usage.estimatedCost || 0,
-        responseTime: response.responseTime,
+        responseTimeMs: response.responseTimeMs,
         userId: request.userId,
         roomId: request.roomId,
         purpose: request.purpose || 'chat',
@@ -355,7 +355,7 @@ export class AIProviderDaemon extends DaemonBase {
         outputTokens: 0,
         totalTokens: 0,
         estimatedCost: 0,
-        responseTime: 0,
+        responseTimeMs: 0,
         userId: request.userId,
         roomId: request.roomId,
         purpose: request.purpose || 'chat',
@@ -469,7 +469,7 @@ export class AIProviderDaemon extends DaemonBase {
           healthMap.set(providerId, {
             status: 'unhealthy',
             apiAvailable: false,
-            responseTime: 0,
+            responseTimeMs: 0,
             errorRate: 1.0,
             lastChecked: Date.now(),
             message: `Health check failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -578,24 +578,24 @@ export class AIProviderDaemon extends DaemonBase {
    * Cloud providers use their own adapters. This prevents queue bottlenecks.
    *
    * ROUTING PRIORITY (in order):
-   * 1. Explicit preferredProvider (if specified and available)
+   * 1. Explicit provider (if specified and available)
    * 2. Local provider aliasing (legacy 'local'/'llamacpp' → candle)
    * 3. Default by priority (highest priority enabled adapter)
    *
    * @returns AdapterSelection with routing metadata for observability
    */
-  private selectAdapter(preferredProvider?: string, model?: string): AdapterSelection | null {
-    // 1. EXPLICIT PROVIDER: Honor preferredProvider first (most specific)
+  private selectAdapter(provider?: string, model?: string): AdapterSelection | null {
+    // 1. EXPLICIT PROVIDER: Honor provider first (most specific)
     // This MUST be checked BEFORE model detection to avoid routing Groq's
     // 'llama-3.1-8b-instant' to Candle just because it starts with 'llama'
-    if (preferredProvider) {
+    if (provider) {
       // LOCAL PROVIDER ALIASING: Route local providers to Candle
       // Candle is the ONLY local inference path
       const localProviders = ['local', 'llamacpp'];
-      if (localProviders.includes(preferredProvider)) {
+      if (localProviders.includes(provider)) {
         const candleReg = this.adapters.get('candle');
         if (candleReg && candleReg.enabled) {
-          this.log.info(`🔄 AIProviderDaemon: Routing '${preferredProvider}' → 'candle' (provider_aliasing)`);
+          this.log.info(`🔄 AIProviderDaemon: Routing '${provider}' → 'candle' (provider_aliasing)`);
           return {
             adapter: candleReg.adapter,
             routingReason: 'provider_aliasing',
@@ -604,17 +604,17 @@ export class AIProviderDaemon extends DaemonBase {
         }
         // NO FALLBACK: If candle not available, FAIL - don't silently use something else
         throw new AIProviderError(
-          `Local provider '${preferredProvider}' requested but Candle adapter not available`,
+          `Local provider '${provider}' requested but Candle adapter not available`,
           'daemon',
           'CANDLE_NOT_AVAILABLE'
         );
       }
 
       // Try to use the explicit provider
-      const registration = this.adapters.get(preferredProvider);
+      const registration = this.adapters.get(provider);
       if (registration && registration.enabled) {
-        const isLocal = ['candle', 'local', 'llamacpp'].includes(preferredProvider);
-        this.log.info(`🎯 AIProviderDaemon: Using explicit provider '${preferredProvider}' (explicit_provider)`);
+        const isLocal = ['candle', 'local', 'llamacpp'].includes(provider);
+        this.log.info(`🎯 AIProviderDaemon: Using explicit provider '${provider}' (explicit_provider)`);
         return {
           adapter: registration.adapter,
           routingReason: 'explicit_provider',
@@ -622,12 +622,12 @@ export class AIProviderDaemon extends DaemonBase {
         };
       }
 
-      // preferredProvider specified but not available - FAIL, don't silently use something else
+      // Provider specified but not available - FAIL, don't silently use something else
       throw new AIProviderError(
-        `Preferred provider '${preferredProvider}' not available`,
+        `Provider '${provider}' not available`,
         'daemon',
         'PROVIDER_NOT_AVAILABLE',
-        { preferredProvider }
+        { provider }
       );
     }
 
@@ -775,7 +775,7 @@ export class AIProviderDaemon extends DaemonBase {
    * const response = await AIProviderDaemon.generateText({
    *   messages: [{ role: 'user', content: 'Hello!' }],
    *   model: 'llama3.2:1b',
-   *   preferredProvider: 'candle'
+   *   provider: 'candle'
    * });
    */
   static async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
@@ -804,7 +804,7 @@ export class AIProviderDaemon extends DaemonBase {
         request.model || 'unknown',
         error,
         request,
-        request.preferredProvider || 'unknown'
+        request.provider || 'unknown'
       ).catch(() => {});
       throw error;
     }
@@ -817,7 +817,7 @@ export class AIProviderDaemon extends DaemonBase {
    * const response = await AIProviderDaemon.createEmbedding({
    *   input: 'Hello, world!',
    *   model: 'nomic-embed-text',
-   *   preferredProvider: 'candle'
+   *   provider: 'candle'
    * });
    */
   static async createEmbedding(request: EmbeddingRequest): Promise<EmbeddingResponse> {

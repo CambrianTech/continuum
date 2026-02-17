@@ -426,7 +426,7 @@ export class SettingsWidget extends ReactiveWidget {
       success,
       status: testResult?.status || 'unknown',
       message: message || null,
-      responseTime: testResult?.responseTime,
+      responseTimeMs: testResult?.responseTimeMs,
       needsHelp: !success
     });
 

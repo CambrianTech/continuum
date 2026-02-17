@@ -1,6 +1,4 @@
 /**
- * Sentinel List Command - Types
- *
  * List saved sentinel definitions from database.
  */
 
@@ -8,7 +6,7 @@ import type { CommandParams, CommandResult } from '../../../../system/core/types
 import type { SentinelDefinition } from '../../../../system/sentinel';
 
 /**
- * List params
+ * List saved sentinel definitions from database with optional filters.
  */
 export interface SentinelListParams extends CommandParams {
   /** Filter by type */

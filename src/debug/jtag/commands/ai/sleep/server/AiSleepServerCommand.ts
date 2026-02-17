@@ -9,7 +9,8 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { AiSleepParams, AiSleepResult, SleepMode } from '../shared/AiSleepTypes';
 import { createAiSleepResultFromParams } from '../shared/AiSleepTypes';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { SleepMode as RustSleepMode } from '../../../../shared/generated';
 
 /**
  * Sleep state for a persona
@@ -174,38 +175,8 @@ export class AiSleepServerCommand extends CommandBase<AiSleepParams, AiSleepResu
       });
     }
 
-    // Get persona ID - priority: context.userId, then explicit personaId, then callerId, then UserIdentityResolver
-    // Priority:
-    // 1. params.context?.userId - When a PersonaUser executes, their ID is in context
-    // 2. Explicit personaId param - For backwards compatibility
-    // 3. callerId (injected) - Legacy PersonaToolExecutor injection
-    // 4. UserIdentityResolver - Fallback for CLI calls
-    let targetPersonaId = params.context?.userId || personaId || (params as any).callerId;
-
-    if (params.context?.userId) {
-      console.log(`😴 ai/sleep: Using context.userId: ${params.context.userId}`);
-    }
-
-    if (!targetPersonaId) {
-      // FALLBACK: Use UserIdentityResolver for external callers (CLI, Claude Code, etc.)
-      const identity = await UserIdentityResolver.resolve();
-      if (identity.exists && identity.userId) {
-        targetPersonaId = identity.userId;
-        console.log(`😴 ai/sleep: Resolved caller via UserIdentityResolver: ${identity.displayName} (${identity.userId})`);
-      }
-    }
-
-    if (!targetPersonaId) {
-      return createAiSleepResultFromParams(params, {
-        success: false,
-        previousMode: 'active',
-        newMode: 'active',
-        wakesAt: null,
-        acknowledged: false,
-        personaId: '',
-        message: 'No personaId provided, no callerId injected, and could not auto-detect caller identity',
-      });
-    }
+    // Target: explicit personaId (admin targeting another persona) or params.userId (self)
+    const targetPersonaId = personaId || params.userId;
 
     const manager = PersonaSleepManager.getInstance();
     const previousMode = manager.getMode(targetPersonaId);
@@ -224,6 +195,12 @@ export class AiSleepServerCommand extends CommandBase<AiSleepParams, AiSleepResu
       : `Entering ${mode} mode: ${modeDescriptions[mode]}${reason ? ` (reason: ${reason})` : ''}`;
 
     console.log(`😴 ai/sleep: ${targetPersonaId} → ${mode}${reason ? ` (${reason})` : ''}`);
+
+    // Sync to Rust cognition state (fire-and-forget — TS state is already set)
+    RustCoreIPCClient.getInstanceAsync().then(client => {
+      client.cognitionSetSleepMode(targetPersonaId, mode as RustSleepMode, reason, durationMinutes)
+        .catch(err => console.warn(`⚠️ ai/sleep: Rust sync failed (non-fatal): ${err}`));
+    }).catch(() => { /* Rust not available yet — will sync on next fullEvaluate */ });
 
     return createAiSleepResultFromParams(params, {
       success: true,

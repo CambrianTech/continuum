@@ -22,6 +22,7 @@
 
 use crate::runtime::{ServiceModule, ModuleConfig, ModulePriority, CommandResult, ModuleContext, MessageBus};
 use crate::logging::TimingGuard;
+use crate::utils::params::Params;
 use crate::log_info;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -590,14 +591,17 @@ async fn call_llm(conversation: &[Value], model: &str, _working_dir: &Path) -> R
     Ok(response.text)
 }
 
+/// Static regexes for tool call parsing (compiled once)
+static TOOL_BLOCK_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap());
+static INLINE_TOOL_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap());
+
 /// Parse tool calls from LLM response
 fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
     let mut calls = Vec::new();
 
-    // Look for ```tool ... ``` blocks
-    let re = regex::Regex::new(r"```tool\s*\n?([\s\S]*?)```").unwrap();
-
-    for cap in re.captures_iter(response) {
+    for cap in TOOL_BLOCK_RE.captures_iter(response) {
         if let Some(json_str) = cap.get(1) {
             if let Ok(parsed) = serde_json::from_str::<ToolCall>(json_str.as_str().trim()) {
                 calls.push(parsed);
@@ -605,9 +609,7 @@ fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
         }
     }
 
-    // Also try inline JSON tool calls
-    let inline_re = regex::Regex::new(r#"\{"name":\s*"(\w+)",\s*"arguments":\s*(\{[^}]+\})\}"#).unwrap();
-    for cap in inline_re.captures_iter(response) {
+    for cap in INLINE_TOOL_RE.captures_iter(response) {
         if let (Some(name), Some(args)) = (cap.get(1), cap.get(2)) {
             if let Ok(arguments) = serde_json::from_str::<Value>(args.as_str()) {
                 let call = ToolCall {
@@ -1080,6 +1082,7 @@ impl ServiceModule for AgentModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 
@@ -1097,20 +1100,12 @@ impl ServiceModule for AgentModule {
         match command {
             "agent/start" => {
                 let _timer = TimingGuard::new("module", "agent_start");
-
-                let task = params.get("task")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing task")?;
-                let working_dir = params.get("working_dir")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing working_dir")?;
-                let max_iterations = params.get("max_iterations")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50) as u32;
-                // Model is required - no hardcoded defaults
-                let model = params.get("model")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing required parameter: model. Use 'deepseek-chat', 'claude-sonnet-4-5-20250929', 'gpt-4', etc.")?
+                let p = Params::new(&params);
+                let task = p.str("task")?;
+                let working_dir = p.str("working_dir")?;
+                let max_iterations = p.u64_or("max_iterations", 50) as u32;
+                let model = p.str("model")
+                    .map_err(|_| "Missing required parameter: model. Use 'deepseek-chat', 'claude-sonnet-4-5-20250929', 'gpt-4', etc.".to_string())?
                     .to_string();
 
                 // Generate handle
@@ -1136,10 +1131,8 @@ impl ServiceModule for AgentModule {
 
             "agent/status" => {
                 let _timer = TimingGuard::new("module", "agent_status");
-
-                let handle = params.get("handle")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing handle")?;
+                let p = Params::new(&params);
+                let handle = p.str("handle")?;
 
                 if let Some(entry) = self.agents.get(handle) {
                     if let Ok(state) = entry.lock() {
@@ -1155,10 +1148,8 @@ impl ServiceModule for AgentModule {
 
             "agent/stop" => {
                 let _timer = TimingGuard::new("module", "agent_stop");
-
-                let handle = params.get("handle")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing handle")?;
+                let p = Params::new(&params);
+                let handle = p.str("handle")?;
 
                 if let Some(entry) = self.agents.get(handle) {
                     if let Ok(mut state) = entry.lock() {
@@ -1196,13 +1187,9 @@ impl ServiceModule for AgentModule {
 
             "agent/wait" => {
                 let _timer = TimingGuard::new("module", "agent_wait");
-
-                let handle = params.get("handle")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing handle")?;
-                let timeout_ms = params.get("timeout_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(300000); // 5 min default
+                let p = Params::new(&params);
+                let handle = p.str("handle")?;
+                let timeout_ms = p.u64_or("timeout_ms", 300000);
 
                 // Get completion notify
                 let notify = {

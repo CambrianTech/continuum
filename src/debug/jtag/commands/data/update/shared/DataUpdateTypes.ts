@@ -43,7 +43,7 @@ export interface DataUpdateResult<T extends BaseEntity = BaseEntity> extends Bas
 export const createDataUpdateParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<DataUpdateParams, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
+  data: Omit<DataUpdateParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
 ): DataUpdateParams => {
   const baseParams = createBaseDataParams(context, sessionId, {
     collection: data.collection,

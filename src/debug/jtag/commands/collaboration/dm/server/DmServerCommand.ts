@@ -16,7 +16,6 @@ import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import type { DataUpdateParams, DataUpdateResult } from '@commands/data/update/shared/DataUpdateTypes';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { RoomResolver } from '@system/core/server/RoomResolver';
 
 import { DataList } from '../../../data/list/shared/DataListTypes';
@@ -26,8 +25,8 @@ export class DmServerCommand extends DmCommand {
 
 
   protected async executeDm(params: DmParams): Promise<DmResult> {
-    // 1. Get current user (the one initiating the DM)
-    const caller = await this.resolveCallerIdentity(params);
+    // 1. Get current user from params.userId (auto-injected by infrastructure)
+    const caller = await this.findUserById(params.userId, params);
 
     // 2. Normalize participants to array
     const otherParticipants = Array.isArray(params.participants)
@@ -83,68 +82,23 @@ export class DmServerCommand extends DmCommand {
   }
 
   /**
-   * Resolve caller identity (who's initiating the DM)
-   *
-   * Priority:
-   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
-   * 2. params.callerId/personaId - Legacy persona tool execution context (deprecated)
-   * 3. UserIdentityResolver - Human/CLI context fallback
+   * Find user by ID from database
    */
-  private async resolveCallerIdentity(params: DmParams): Promise<{ id: UUID; entity: UserEntity }> {
-    // FIRST: Check if caller's userId is in the context (PersonaUsers set this)
-    if (params.context?.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: params.context.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
+  private async findUserById(userId: UUID, params: DmParams): Promise<{ id: UUID; entity: UserEntity }> {
+    const result = await DataList.execute<UserEntity>({
+      collection: UserEntity.collection,
+      filter: { id: userId },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId
+    });
 
-      if (result.success && result.items && result.items.length > 0) {
-        const user = result.items[0];
-        console.log('🔧 DmServerCommand.resolveCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
-        return { id: user.id, entity: user };
-      }
+    if (result.success && result.items && result.items.length > 0) {
+      const user = result.items[0];
+      return { id: user.id, entity: user };
     }
 
-    // SECOND: Check legacy callerId/personaId (deprecated)
-    const callerIdFromParams = (params as any).callerId || (params as any).personaId;
-
-    if (callerIdFromParams) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: callerIdFromParams },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
-
-      if (result.success && result.items && result.items.length > 0) {
-        const user = result.items[0];
-        return { id: user.id, entity: user };
-      }
-    }
-
-    // FALLBACK: Use UserIdentityResolver (human/CLI context)
-    const identity = await UserIdentityResolver.resolve();
-
-    if (identity.exists && identity.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: identity.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
-
-      if (result.success && result.items && result.items.length > 0) {
-        const user = result.items[0];
-        return { id: user.id, entity: user };
-      }
-    }
-
-    throw new Error(`Could not resolve caller identity: ${identity.displayName}`);
+    throw new Error(`User not found: ${userId}`);
   }
 
   /**

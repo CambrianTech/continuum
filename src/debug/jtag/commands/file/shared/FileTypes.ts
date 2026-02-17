@@ -25,6 +25,7 @@
  */
 
 import { CommandParams, CommandResult, createPayload } from '../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGError } from '../../../system/core/types/ErrorTypes';
 import { CommandBase, type ICommandDaemon } from '../../../daemons/command-daemon/shared/CommandBase';
@@ -43,6 +44,7 @@ export const createFileParams = <T extends Partial<FileParams> = FileParams>(
   sessionId: UUID,
   data: T & { filepath?: string }
 ): FileParams & T => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   filepath: data.filepath ?? '',
   encoding: data.encoding ?? 'utf8',
   ...data
@@ -64,6 +66,7 @@ export const createFileResult = <T extends Partial<FileResult> = FileResult>(
   sessionId: UUID,
   data: T & { success: boolean; filepath: string }
 ): FileResult & T => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   exists: data.exists ?? false,
   timestamp: data.timestamp ?? new Date().toISOString(),
   ...data

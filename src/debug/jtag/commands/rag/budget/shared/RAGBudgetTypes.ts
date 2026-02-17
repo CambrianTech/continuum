@@ -10,6 +10,7 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../syst
 
 export interface RAGBudgetParams extends CommandParams {
   model: string;              // Model name (e.g., "gpt-4", "claude-3-sonnet")
+  provider?: string;          // Provider for scoped registry lookup (e.g., "candle", "together")
   maxTokens?: number;         // Max tokens for completion (default: 3000)
   systemPromptTokens?: number; // Estimated system prompt size (default: 500)
   targetUtilization?: number;  // Target % of available tokens (default: 0.8 = 80%)

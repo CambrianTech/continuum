@@ -25,6 +25,21 @@ import type {
   ActivityDomain,
   ChannelRegistryStatus,
   ChannelEnqueueRequest,
+  TextSimilarityResult,
+  SemanticLoopResult,
+  ConversationMessage,
+  ValidationResult,
+  MentionCheckResult,
+  CleanedResponse,
+  FullEvaluateRequest,
+  FullEvaluateResult,
+  SleepMode,
+  ModelSelectionResult,
+  AdapterInfo,
+  GenomeAdapterInfo,
+  ActivateSkillResult,
+  GenomePagingState,
+  AdequacyResult,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -54,6 +69,7 @@ export class RustCognitionBridge {
   private readonly client: RustCoreIPCClient;
   private readonly personaId: UUID;
   private readonly personaName: string;
+  private readonly personaUniqueId: string;
   private readonly logger: SubsystemLogger;
   private connected = false;
   private engineCreated = false;
@@ -74,6 +90,7 @@ export class RustCognitionBridge {
   constructor(personaUser: PersonaUserForRustCognition) {
     this.personaId = personaUser.id;
     this.personaName = personaUser.displayName;
+    this.personaUniqueId = personaUser.entity.uniqueId;
     this.client = new RustCoreIPCClient(SOCKET_PATH);
 
     // Logger writes to persona's logs directory: .continuum/personas/{uniqueId}/logs/rust-cognition.log
@@ -549,6 +566,475 @@ export class RustCognitionBridge {
       const elapsed = performance.now() - start;
       this.logger.error(`memoryConsciousnessContext FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`roomId=${roomId}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Text Analysis — Unified similarity + semantic loop checking in Rust
+  // Replaces 3 duplicate Jaccard implementations in TS
+  // ========================================================================
+
+  /**
+   * Compute text similarity using Rust's unified Jaccard implementation.
+   * Returns both character-bigram and word-ngram similarity in one IPC call.
+   * THROWS on failure
+   */
+  async textSimilarity(text1: string, text2: string): Promise<TextSimilarityResult> {
+    this.assertReady('textSimilarity');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionTextSimilarity(text1, text2);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`TextSimilarity: ngram=${result.ngram_similarity.toFixed(3)}, char=${result.char_similarity.toFixed(3)}, compute=${result.compute_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`textSimilarity FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a response is semantically looping against conversation history.
+   * Uses word-ngram Jaccard: blocks at 95%, warns at 80%.
+   * THROWS on failure
+   */
+  async checkSemanticLoop(
+    responseText: string,
+    history: ConversationMessage[],
+    maxHistory?: number
+  ): Promise<SemanticLoopResult> {
+    this.assertReady('checkSemanticLoop');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCheckSemanticLoop(responseText, history, maxHistory);
+      const elapsed = performance.now() - start;
+
+      if (result.should_block) {
+        this.logger.warn(`SemanticLoop BLOCKED: ${result.reason} (similarity=${result.similarity.toFixed(3)}, ${elapsed.toFixed(2)}ms)`);
+      } else {
+        this.logger.info(`SemanticLoop: pass, similarity=${result.similarity.toFixed(3)} (${elapsed.toFixed(2)}ms)`);
+      }
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`checkSemanticLoop FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 3: Mention Detection + Response Cleaning — 2 combined IPC calls
+  // ========================================================================
+
+  /**
+   * Combined mention detection: checks both is_persona_mentioned and has_directed_mention
+   * in ONE IPC call. Replaces two inline TS string checks.
+   * THROWS on failure
+   */
+  async checkMentions(messageText: string): Promise<MentionCheckResult> {
+    this.assertReady('checkMentions');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCheckMentions(
+        messageText,
+        this.personaName,
+        this.personaUniqueId
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`Mentions: persona=${result.is_persona_mentioned}, directed=${result.has_directed_mention}, compute=${result.compute_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`checkMentions FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Clean AI response by stripping unwanted prefixes (timestamps, names, markdown).
+   * Replaces ResponseCleaner.clean() in TypeScript.
+   * THROWS on failure
+   */
+  async cleanResponse(responseText: string): Promise<CleanedResponse> {
+    this.assertReady('cleanResponse');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCleanResponse(responseText);
+      const elapsed = performance.now() - start;
+
+      if (result.was_cleaned) {
+        this.logger.info(`Response cleaned: compute=${result.compute_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      }
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`cleanResponse FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Unified Evaluation Gate — ALL pre-response gates in 1 IPC call
+  // Replaces 5 sequential TS gates: response_cap, rate_limit, sleep, mention, fast_path
+  // ========================================================================
+
+  /**
+   * Full evaluation: ONE Rust IPC call replaces 5 sequential TS gates.
+   * Gate order: response_cap → mention → rate_limit → sleep_mode → directed_mention → fast_path
+   * THROWS on failure
+   */
+  async fullEvaluate(request: FullEvaluateRequest): Promise<FullEvaluateResult> {
+    this.assertReady('fullEvaluate');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionFullEvaluate(request);
+      const elapsed = performance.now() - start;
+
+      if (result.should_respond) {
+        this.logger.info(`FullEvaluate: RESPOND, gate=${result.gate}, confidence=${result.confidence.toFixed(2)}, reason="${result.reason}" (${elapsed.toFixed(2)}ms, rust=${result.decision_time_ms.toFixed(2)}ms)`);
+      } else {
+        this.logger.info(`FullEvaluate: SILENT, gate=${result.gate}, reason="${result.reason}" (${elapsed.toFixed(2)}ms, rust=${result.decision_time_ms.toFixed(2)}ms)`);
+      }
+
+      if (elapsed > 5) {
+        this.logger.warn(`fullEvaluate SLOW: ${elapsed.toFixed(2)}ms (target <2ms)`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`fullEvaluate FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Request: persona=${request.persona_name}, message_id=${request.message_id}, sender=${request.sender_name}`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Track a response for Rust-side rate limiting.
+   * Called after successful response posting.
+   * THROWS on failure
+   */
+  async trackResponse(roomId: string): Promise<{ tracked: boolean; response_count: number }> {
+    this.assertReady('trackResponse');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionTrackResponse(this.personaId, roomId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`TrackResponse: room=${roomId}, count=${result.response_count} (${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`trackResponse FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a message has already been evaluated (Rust-side deduplication).
+   * Sole authority for chat message dedup — TS rateLimiter no longer tracks this.
+   */
+  async hasEvaluatedMessage(messageId: string): Promise<boolean> {
+    this.assertReady('hasEvaluatedMessage');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionHasEvaluated(this.personaId, messageId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`HasEvaluated: ${messageId.slice(0, 8)}... → ${result} (${elapsed.toFixed(2)}ms)`);
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`hasEvaluatedMessage FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Mark a message as evaluated in Rust (deduplication).
+   * Sole authority for chat message dedup — TS rateLimiter no longer tracks this.
+   */
+  async markMessageEvaluated(messageId: string): Promise<void> {
+    this.assertReady('markMessageEvaluated');
+    const start = performance.now();
+
+    try {
+      await this.client.cognitionMarkEvaluated(this.personaId, messageId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`MarkEvaluated: ${messageId.slice(0, 8)}... (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`markMessageEvaluated FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Set voluntary sleep mode for this persona in Rust.
+   * THROWS on failure
+   */
+  async setSleepMode(mode: SleepMode, reason?: string, durationMinutes?: number): Promise<void> {
+    this.assertReady('setSleepMode');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSetSleepMode(this.personaId, mode, reason, durationMinutes);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SetSleepMode: ${result.previous_mode} → ${result.new_mode}, reason="${reason ?? ''}" (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`setSleepMode FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Configure rate limiter parameters for this persona in Rust.
+   * THROWS on failure
+   */
+  async configureRateLimiter(minSeconds?: number, maxResponses?: number): Promise<void> {
+    this.assertReady('configureRateLimiter');
+    const start = performance.now();
+
+    try {
+      await this.client.cognitionConfigureRateLimiter(this.personaId, minSeconds, maxResponses);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`ConfigureRateLimiter: minSeconds=${minSeconds}, maxResponses=${maxResponses} (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`configureRateLimiter FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 2: Model Selection — 4-tier priority chain in Rust
+  // ========================================================================
+
+  /**
+   * Select the best model using 4-tier priority chain:
+   * 1. Trait-specific adapter (domain → trait mapping)
+   * 2. Current active adapter
+   * 3. Any available trained adapter
+   * 4. Base model fallback
+   * THROWS on failure
+   */
+  async selectModel(baseModel: string, taskDomain?: string): Promise<ModelSelectionResult> {
+    this.assertReady('selectModel');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSelectModel(this.personaId, baseModel, taskDomain);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SelectModel: model=${result.model}, source=${result.source}${result.adapter_name ? `, adapter=${result.adapter_name}` : ''}${result.trait_used ? `, trait=${result.trait_used}` : ''} (${elapsed.toFixed(2)}ms, rust=${result.decision_time_us.toFixed(1)}μs)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`selectModel FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync adapter registry from TypeScript genome state to Rust.
+   * Call during initialization and after adapter load/unload.
+   * THROWS on failure
+   */
+  async syncAdapters(adapters: AdapterInfo[]): Promise<void> {
+    this.assertReady('syncAdapters');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSyncAdapters(this.personaId, adapters);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SyncAdapters: ${result.adapter_count} adapters synced (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`syncAdapters FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 4: Genome Paging — LRU eviction + memory budget decisions
+  // ========================================================================
+
+  /**
+   * Genome paging: decide what to evict/load for a skill activation.
+   * Rust makes the decision, TypeScript executes the GPU ops.
+   * THROWS on failure
+   */
+  async genomeActivateSkill(skillName: string, memoryBudgetMb?: number): Promise<ActivateSkillResult> {
+    this.assertReady('genomeActivateSkill');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeActivateSkill(
+        this.personaId, skillName, memoryBudgetMb
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`GenomeActivateSkill: ${skillName} activated=${result.activated}, evicted=${result.evicted.length > 0 ? result.evicted.join(',') : 'none'}, to_load=${result.to_load || 'cache_hit'} (${elapsed.toFixed(2)}ms, rust=${result.decision_time_us}μs)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`genomeActivateSkill FAILED for ${skillName} after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync full genome adapter state from TypeScript to Rust.
+   * Call during initialization and after adapter changes.
+   * THROWS on failure
+   */
+  async genomeSync(adapters: GenomeAdapterInfo[], memoryBudgetMb?: number): Promise<void> {
+    this.assertReady('genomeSync');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeSync(
+        this.personaId, adapters, memoryBudgetMb
+      );
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`GenomeSync: ${result.adapter_count} adapters (${result.active_count} active), memory=${result.memory_used_mb.toFixed(1)}/${memoryBudgetMb || '?'}MB, pressure=${(result.memory_pressure * 100).toFixed(0)}% (${elapsed.toFixed(2)}ms)`);
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`genomeSync FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get current genome paging state from Rust.
+   * THROWS on failure
+   */
+  async genomeState(): Promise<GenomePagingState> {
+    this.assertReady('genomeState');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeState(this.personaId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`GenomeState: active=${result.active_adapters.length}, available=${result.available_adapters.length}, memory=${result.memory_used_mb.toFixed(1)}/${result.memory_budget_mb.toFixed(1)}MB (${elapsed.toFixed(2)}ms)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`genomeState FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Phase 5: Post-Inference Adequacy Check — batch check in 1 IPC call
+  // ========================================================================
+
+  /**
+   * Batch check if other AIs already answered a question.
+   * ONE IPC call replaces N individual textSimilarity calls.
+   * THROWS on failure
+   */
+  async checkAdequacy(
+    originalText: string,
+    responses: Array<{ sender_name: string; text: string }>
+  ): Promise<AdequacyResult> {
+    this.assertReady('checkAdequacy');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionCheckAdequacy(originalText, responses);
+      const elapsed = performance.now() - start;
+
+      if (result.is_adequate) {
+        this.logger.info(`CheckAdequacy: ADEQUATE — ${result.reason} (${elapsed.toFixed(2)}ms, rust=${result.check_time_us}μs)`);
+      } else {
+        this.logger.info(`CheckAdequacy: no adequate response (${responses.length} checked, ${elapsed.toFixed(2)}ms, rust=${result.check_time_us}μs)`);
+      }
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`checkAdequacy FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Combined Validation — 4 gates in 1 IPC call
+  // ========================================================================
+
+  /**
+   * Run ALL response validation gates in a single Rust IPC call:
+   * 1. Garbage detection (8 checks)
+   * 2. Response loop detection (per-persona DashMap state)
+   * 3. Truncated tool call detection
+   * 4. Semantic loop detection
+   * THROWS on failure
+   */
+  async validateResponse(
+    responseText: string,
+    hasToolCalls: boolean,
+    conversationHistory?: ConversationMessage[]
+  ): Promise<ValidationResult> {
+    this.assertReady('validateResponse');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionValidateResponse(
+        this.personaId,
+        responseText,
+        hasToolCalls,
+        conversationHistory
+      );
+      const elapsed = performance.now() - start;
+
+      if (!result.passed) {
+        this.logger.warn(`Validation FAILED: gate=${result.gate_failed}, compute=${result.total_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      } else {
+        this.logger.info(`Validation passed: compute=${result.total_time_us}us (ipc=${elapsed.toFixed(2)}ms)`);
+      }
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`validateResponse FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
       throw error;
     }

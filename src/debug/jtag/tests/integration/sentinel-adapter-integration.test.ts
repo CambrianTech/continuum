@@ -35,7 +35,7 @@ async function runTests() {
     }
 
     console.log(`✅ Health check passed: ${health.status}`);
-    console.log(`   Response time: ${health.responseTime}ms\n`);
+    console.log(`   Response time: ${health.responseTimeMs}ms\n`);
     testsPassed++;
   } catch (error) {
     console.error(`❌ Health check failed: ${error}`);

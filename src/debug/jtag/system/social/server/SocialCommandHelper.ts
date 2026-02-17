@@ -24,7 +24,6 @@ import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { SystemPaths } from '@system/core/config/SystemPaths';
 import { UserEntity } from '@system/data/entities/UserEntity';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import { Logger } from '@system/core/logging/Logger';
 
 const log = Logger.create('social/helper');
@@ -62,7 +61,7 @@ export async function loadSocialContext(
   }
 
   // Resolve persona using standard priority pattern (shared across all social commands)
-  const resolvedPersonaId = await resolvePersonaId(personaId, params);
+  const resolvedPersonaId = resolvePersonaId(personaId, params);
 
   // Look up persona for their uniqueId (needed for SystemPaths)
   const userResult = await DataList.execute<UserEntity>({
@@ -159,35 +158,18 @@ export async function storeCredential(
 }
 
 /**
- * Resolve the calling persona's userId using the standard priority pattern.
- * Shared by all social commands — identity resolution should never be duplicated.
- *
- * Priority:
- * 1. Explicit personaId parameter
- * 2. Injected callerId (from PersonaToolExecutor)
- * 3. Injected senderId
- * 4. Auto-detect via UserIdentityResolver (CLI, agent context)
+ * Resolve the target persona ID.
+ * Explicit personaId param (admin targeting a specific persona) or params.userId (self).
  */
-export async function resolvePersonaId(
+export function resolvePersonaId(
   personaId: UUID | undefined,
   params: CommandParams,
-): Promise<UUID> {
-  const injected = params as unknown as Record<string, unknown>;
-  const resolved = personaId
-    || injected.callerId as UUID
-    || injected.senderId as UUID;
-
-  if (resolved) return resolved;
-
-  const identity = await UserIdentityResolver.resolve();
-  if (!identity.exists || !identity.userId) {
-    throw new Error(
-      `Could not determine caller identity. ` +
-      `Provide --personaId or run from a known persona/user context. ` +
-      `Detected: ${identity.displayName} (${identity.uniqueId})`
-    );
+): UUID {
+  const resolved = personaId || params.userId;
+  if (!resolved) {
+    throw new Error('Could not determine persona identity: no personaId and no params.userId');
   }
-  return identity.userId as UUID;
+  return resolved;
 }
 
 /**

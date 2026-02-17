@@ -221,26 +221,25 @@ async fn test_orchestrator_performance_target() {
     let min = *durations.iter().min().unwrap();
 
     println!("🔬 Orchestrator Performance (100 iterations, 5 AIs):");
-    println!("   Average: {}µs", avg);
-    println!("   Min: {}µs", min);
-    println!("   Max: {}µs", max);
+    println!("   Average: {avg}µs");
+    println!("   Min: {min}µs");
+    println!("   Max: {max}µs");
 
     // User's target: < 10µs on M1
     // NOTE: This may fail on slower machines or under heavy load
     // The target is aggressive but achievable with optimized Rust
     if avg > 10 {
-        println!("⚠️ WARNING: Average latency {}µs exceeds 10µs target", avg);
+        println!("⚠️ WARNING: Average latency {avg}µs exceeds 10µs target");
         println!("   This is acceptable for now, but should be optimized");
     } else {
-        println!("✅ PERFORMANCE TARGET MET: {}µs < 10µs", avg);
+        println!("✅ PERFORMANCE TARGET MET: {avg}µs < 10µs");
     }
 
     // Fail if > 100µs — target is <10µs on M1.
     // Run tests with --release for meaningful results.
     assert!(
         avg < 100,
-        "Orchestrator too slow: {}µs (should be < 10µs, failing at > 100µs)",
-        avg
+        "Orchestrator too slow: {avg}µs (should be < 10µs, failing at > 100µs)"
     );
 }
 

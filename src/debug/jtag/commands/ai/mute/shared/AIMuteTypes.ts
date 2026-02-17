@@ -26,7 +26,7 @@ export interface AIMuteParams extends CommandParams {
 
   /** Target AI (by persona uniqueId or UUID) */
   readonly persona?: string;  // uniqueId (e.g., "helper-ai")
-  readonly userId?: UUID;     // Or by UUID
+  readonly targetUserId?: UUID;     // Or by UUID
 
   /** Mute details */
   readonly reason: string;

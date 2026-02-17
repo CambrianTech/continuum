@@ -21,7 +21,6 @@ import { generateUUID } from '@system/core/types/CrossPlatformUUID';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
 import type { DataCreateParams, DataCreateResult } from '@commands/data/create/shared/DataCreateTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 
 import { DataList } from '../../../../data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../data/create/shared/DataCreateTypes';
@@ -50,30 +49,18 @@ export class CanvasStrokeAddServerCommand extends CommandBase<CanvasStrokeAddPar
     }
 
     try {
-      // Get creator info - priority: context.userId (PersonaUsers), then UserIdentityResolver (CLI)
-      let creatorId: string;
-      let creatorName: string;
-
-      if (strokeParams.context?.userId) {
-        // FIRST: Check context.userId (PersonaUsers set this)
-        creatorId = strokeParams.context.userId;
-        // We need to look up the name from the database
-        const userResult = await DataList.execute<UserEntity>({
-          collection: UserEntity.collection,
-          filter: { id: creatorId },
-          limit: 1,
-          context: strokeParams.context,
-          sessionId: strokeParams.sessionId
-        });
-        creatorName = userResult.success && userResult.items && userResult.items.length > 0
-          ? userResult.items[0].displayName
-          : 'Unknown';
-      } else {
-        // FALLBACK: Use UserIdentityResolver (CLI, Claude Code, Joel, etc.)
-        const identity = await UserIdentityResolver.resolve();
-        creatorId = identity.userId || strokeParams.sessionId;
-        creatorName = identity.displayName;
-      }
+      // Get creator info from params.userId (auto-injected by infrastructure)
+      const creatorId: string = strokeParams.userId;
+      const userResult = await DataList.execute<UserEntity>({
+        collection: UserEntity.collection,
+        filter: { id: creatorId },
+        limit: 1,
+        context: strokeParams.context,
+        sessionId: strokeParams.sessionId
+      });
+      const creatorName = userResult.success && userResult.items && userResult.items.length > 0
+        ? userResult.items[0].displayName
+        : 'Unknown';
 
       // Create stroke entity
       const stroke = new CanvasStrokeEntity();

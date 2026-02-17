@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 // Note: Using simple error string like ai/generate for consistency
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
@@ -53,6 +54,7 @@ export const createInferenceGenerateParams = (
     adapters?: string[];
   }
 ): InferenceGenerateParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   model: data.model ?? '',
   provider: data.provider ?? '',
   maxTokens: data.maxTokens ?? 0,
@@ -115,6 +117,7 @@ export const createInferenceGenerateResult = (
     error?: string;
   }
 ): InferenceGenerateResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   text: data.text ?? '',
   model: data.model ?? '',
   provider: data.provider ?? '',

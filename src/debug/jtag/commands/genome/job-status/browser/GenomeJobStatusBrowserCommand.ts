@@ -21,7 +21,7 @@ export class GenomeJobStatusBrowserCommand extends CommandBase<
   }
 
   async execute(params: JTAGPayload): Promise<GenomeJobStatusResult> {
-    // Delegate to server
-    return this.remoteExecute(params);
+    // Delegate to server — params has userId at runtime (injected by infrastructure)
+    return this.remoteExecute(params as GenomeJobStatusParams);
   }
 }

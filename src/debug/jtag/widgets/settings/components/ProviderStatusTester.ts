@@ -13,7 +13,7 @@ export type TestStatus = 'idle' | 'testing' | 'operational' | 'invalid' | 'out-o
 export interface ProviderTestResult {
   status: TestStatus;
   message?: string;
-  responseTime?: number;
+  responseTimeMs?: number;
 }
 
 export interface TestKeyParams {
@@ -57,12 +57,12 @@ export class ProviderStatusTester {
       const testResult: ProviderTestResult = result?.valid
         ? {
             status: 'operational',
-            responseTime: result.responseTime,
+            responseTimeMs: result.responseTimeMs,
             message: result.models?.length ? `${result.models.length} models available` : undefined
           }
         : {
             status: this.parseErrorStatus(result?.errorMessage || ''),
-            responseTime: result?.responseTime,
+            responseTimeMs: result?.responseTimeMs,
             message: result?.errorMessage
           };
 

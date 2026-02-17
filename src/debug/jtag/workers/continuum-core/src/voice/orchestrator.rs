@@ -27,11 +27,11 @@ impl VoiceOrchestrator {
 
     pub fn register_session(&self, session_id: Uuid, room_id: Uuid, participants: Vec<VoiceParticipant>) {
         {
-            let mut sessions = self.session_participants.lock().unwrap();
+            let mut sessions = self.session_participants.lock().unwrap_or_else(|e| e.into_inner());
             sessions.insert(session_id, participants.clone());
         }
         {
-            let mut contexts = self.session_contexts.lock().unwrap();
+            let mut contexts = self.session_contexts.lock().unwrap_or_else(|e| e.into_inner());
             contexts.insert(session_id, ConversationContext::new(session_id, room_id));
         }
         clog_info!("Registered session {} with {} participants",
@@ -39,9 +39,9 @@ impl VoiceOrchestrator {
     }
 
     pub fn unregister_session(&self, session_id: Uuid) {
-        self.session_participants.lock().unwrap().remove(&session_id);
-        self.session_contexts.lock().unwrap().remove(&session_id);
-        self.voice_responders.lock().unwrap().remove(&session_id);
+        self.session_participants.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_id);
+        self.session_contexts.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_id);
+        self.voice_responders.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_id);
         clog_info!("Unregistered session {}", &session_id.to_string()[..8]);
     }
 
@@ -52,7 +52,7 @@ impl VoiceOrchestrator {
                  event.speaker_name, crate::voice::tts::truncate_str(&event.transcript, 50));
 
         // Get context
-        let mut contexts = self.session_contexts.lock().unwrap();
+        let mut contexts = self.session_contexts.lock().unwrap_or_else(|e| e.into_inner());
         let context = match contexts.get_mut(&event.session_id) {
             Some(ctx) => ctx,
             None => {
@@ -65,7 +65,7 @@ impl VoiceOrchestrator {
         context.add_utterance(event.clone());
 
         // Get participants
-        let participants = self.session_participants.lock().unwrap();
+        let participants = self.session_participants.lock().unwrap_or_else(|e| e.into_inner());
         let session_participants = match participants.get(&event.session_id) {
             Some(p) => p,
             None => {
@@ -104,7 +104,7 @@ impl VoiceOrchestrator {
     }
 
     pub fn clear_voice_responder(&self, session_id: Uuid) {
-        self.voice_responders.lock().unwrap().remove(&session_id);
+        self.voice_responders.lock().unwrap_or_else(|e| e.into_inner()).remove(&session_id);
     }
 }
 
@@ -130,7 +130,7 @@ mod old_tests {
 
         orchestrator.register_session(session_id, room_id, vec![participant]);
 
-        let participants = orchestrator.session_participants.lock().unwrap();
+        let participants = orchestrator.session_participants.lock().unwrap_or_else(|e| e.into_inner());
         assert!(participants.contains_key(&session_id));
     }
 

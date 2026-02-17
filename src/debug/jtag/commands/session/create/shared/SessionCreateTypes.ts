@@ -7,6 +7,7 @@
 
 import type { JTAGContext, CommandParams, JTAGPayload, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../../system/core/types/SystemScopes';
 import type { SessionCategory, SessionMetadata, EnhancedConnectionContext } from '../../../../daemons/session-daemon/shared/SessionTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 
@@ -18,8 +19,6 @@ export interface SessionCreateParams extends CommandParams {
   category: SessionCategory;
   /** Display name for the session */
   displayName: string;
-  /** Optional user ID - server resolves from connectionContext.identity for browser-ui clients */
-  userId?: UUID;
   /** Whether this should be a shared session */
   isShared?: boolean;
   /** REQUIRED: Enhanced connection context with clientType and identity - determines user resolution */
@@ -54,7 +53,7 @@ export function createSessionCreateParams(
     connectionContext,
     category: options.category || 'user',
     displayName: options.displayName || 'Default Session',
-    userId: options.userId,
+    userId: options.userId ?? SYSTEM_SCOPES.SYSTEM,
     isShared: options.isShared ?? true,
     ...options
   };

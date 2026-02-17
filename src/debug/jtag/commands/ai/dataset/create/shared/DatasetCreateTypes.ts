@@ -7,6 +7,9 @@ import { createPayload, type JTAGContext } from '../../../../../system/core/type
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/**
+ * Create compressed training dataset archives from fine-tuning projects for LoRA adapter training.
+ */
 export interface DatasetCreateParams extends CommandParams {
   /** Project ID to archive (if omitted, archives all enabled projects) */
   project?: string;

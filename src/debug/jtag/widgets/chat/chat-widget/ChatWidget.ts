@@ -28,6 +28,7 @@ import { MessageEventDelegator } from '../adapters/MessageEventDelegator';
 import { ImageMessageAdapter } from '../adapters/ImageMessageAdapter';
 import { URLCardAdapter } from '../adapters/URLCardAdapter';
 import { ToolOutputAdapter } from '../adapters/ToolOutputAdapter';
+import { TextMessageAdapter } from '../adapters/TextMessageAdapter';
 import { MessageInputEnhancer } from '../message-input/MessageInputEnhancer';
 import { AIStatusIndicator } from './AIStatusIndicator';
 import {
@@ -983,6 +984,9 @@ export class ChatWidget extends EntityScrollerWidget<ChatMessageEntity> {
       // Register ToolOutputAdapter action handlers
       this.eventDelegator.onAction('tool-copy', (target) => ToolOutputAdapter.handleCopy(target));
       this.eventDelegator.onAction('tool-open-tab', (target) => ToolOutputAdapter.handleOpenInTab(target));
+
+      // Register TextMessageAdapter action handlers (clickable file paths)
+      this.eventDelegator.onAction('open-file', (target) => TextMessageAdapter.handleOpenFile(target));
 
       verbose() && console.log('✅ ChatWidget: Event delegator attached with action handlers');
     }

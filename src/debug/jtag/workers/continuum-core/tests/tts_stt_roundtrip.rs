@@ -115,7 +115,7 @@ fn test_tts_stt_roundtrip_via_ipc() {
     let mut failed = 0;
 
     for phrase in TEST_PHRASES {
-        println!("Testing: \"{}\"", phrase);
+        println!("Testing: \"{phrase}\"");
 
         // Fresh connection per phrase
         let mut stream = match ipc_connect() {
@@ -133,7 +133,7 @@ fn test_tts_stt_roundtrip_via_ipc() {
         let synth_result = match ipc_request(&mut stream, &synth_request) {
             Ok(r) => r,
             Err(e) => {
-                println!("IPC error: {}", e);
+                println!("IPC error: {e}");
                 failed += 1;
                 continue;
             }
@@ -164,10 +164,10 @@ fn test_tts_stt_roundtrip_via_ipc() {
         let num_samples = result["num_samples"].as_u64().unwrap_or(0);
         let duration_ms = result["duration_ms"].as_u64().unwrap_or(0);
 
-        println!("{} samples at {}Hz ({}ms)", num_samples, sample_rate, duration_ms);
+        println!("{num_samples} samples at {sample_rate}Hz ({duration_ms}ms)");
 
         if sample_rate != 16000 {
-            println!("  WARNING: Sample rate is {}Hz, expected 16000Hz", sample_rate);
+            println!("  WARNING: Sample rate is {sample_rate}Hz, expected 16000Hz");
         }
 
         // Step 2: Transcribe via IPC — encode raw PCM as base64 for STT input
@@ -188,7 +188,7 @@ fn test_tts_stt_roundtrip_via_ipc() {
         let transcribe_result = match ipc_request(&mut stream, &transcribe_request) {
             Ok(r) => r,
             Err(e) => {
-                println!("IPC error: {}", e);
+                println!("IPC error: {e}");
                 failed += 1;
                 continue;
             }
@@ -206,7 +206,7 @@ fn test_tts_stt_roundtrip_via_ipc() {
         let transcription = result["text"].as_str().unwrap_or("");
         let confidence = result["confidence"].as_f64().unwrap_or(0.0);
 
-        println!("\"{}\" (confidence: {:.2})", transcription, confidence);
+        println!("\"{transcription}\" (confidence: {confidence:.2})");
 
         // Step 3: Compare
         let similarity = word_similarity(phrase, transcription);
@@ -217,8 +217,8 @@ fn test_tts_stt_roundtrip_via_ipc() {
             passed += 1;
         } else {
             println!("  FAILED - transcription mismatch");
-            println!("     Expected: \"{}\"", phrase);
-            println!("     Got:      \"{}\"\n", transcription);
+            println!("     Expected: \"{phrase}\"");
+            println!("     Got:      \"{transcription}\"\n");
             failed += 1;
         }
     }
@@ -261,9 +261,9 @@ fn test_tts_sample_rate_via_ipc() {
         "PCM byte count should be 2 * num_samples"
     );
 
-    println!("Sample rate: {}Hz", sample_rate);
-    println!("Samples: {}", num_samples);
-    println!("Duration: {}ms", duration_ms);
+    println!("Sample rate: {sample_rate}Hz");
+    println!("Samples: {num_samples}");
+    println!("Duration: {duration_ms}ms");
     println!("PCM bytes: {}", pcm_bytes.len());
 
     // Verify sample rate is 16kHz
@@ -273,9 +273,7 @@ fn test_tts_sample_rate_via_ipc() {
     let expected_duration = (num_samples * 1000) / 16000;
     assert!(
         (duration_ms as i64 - expected_duration as i64).abs() < 100,
-        "Duration {}ms doesn't match sample count (expected ~{}ms)",
-        duration_ms,
-        expected_duration
+        "Duration {duration_ms}ms doesn't match sample count (expected ~{expected_duration}ms)"
     );
 
     // Verify PCM data is not silence
@@ -284,9 +282,9 @@ fn test_tts_sample_rate_via_ipc() {
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
     let max_amp = samples.iter().map(|s| s.abs()).max().unwrap_or(0);
-    assert!(max_amp > 100, "Audio should not be silence, max amplitude: {}", max_amp);
+    assert!(max_amp > 100, "Audio should not be silence, max amplitude: {max_amp}");
 
-    println!("Max amplitude: {}", max_amp);
+    println!("Max amplitude: {max_amp}");
     println!("Sample rate test PASSED");
 }
 
@@ -319,7 +317,7 @@ fn test_stt_whisper_via_ipc() {
     let result = match ipc_request(&mut stream, &request) {
         Ok(r) => r,
         Err(e) => {
-            println!("IPC error: {}", e);
+            println!("IPC error: {e}");
             println!("   This may indicate the STT model is not loaded.");
             return;
         }

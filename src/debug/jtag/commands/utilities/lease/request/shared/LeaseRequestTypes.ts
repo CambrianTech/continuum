@@ -64,6 +64,7 @@ export const createLeaseRequestParams = (
   sessionId: UUID,
   data: Omit<LeaseRequestParams, 'context' | 'sessionId'>
 ): LeaseRequestParams => ({
+  userId: data.userId,
   context,
   sessionId,
   filePath: data.filePath,

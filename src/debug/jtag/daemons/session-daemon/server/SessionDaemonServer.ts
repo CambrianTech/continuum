@@ -44,7 +44,7 @@ import { generateUUID } from '../../../system/core/types/CrossPlatformUUID';
 import { createPayload } from '../../../system/core/types/JTAGTypes';
 import { type JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
-import { isBootstrapSession } from '../../../system/core/types/SystemScopes';
+import { isBootstrapSession, SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
 import { SessionStateHelper } from './SessionStateHelper';
 import fs from 'fs/promises';
@@ -533,6 +533,7 @@ export class SessionDaemonServer extends SessionDaemon {
      */
     private async createAnonymousHuman(params: CreateSessionParams, deviceId?: string): Promise<BaseUser> {
       const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
+        userId: SYSTEM_SCOPES.SYSTEM,
         type: 'human',
         displayName: 'Anonymous User',
         uniqueId: `anon-${generateUUID().slice(0, 8)}`,  // Unique but not meant for lookup
@@ -560,6 +561,7 @@ export class SessionDaemonServer extends SessionDaemon {
       // User doesn't exist - create new one with resolved identity
 
       const createParams: UserCreateParams = createPayload(this.context, generateUUID(), {
+        userId: SYSTEM_SCOPES.SYSTEM,
         type: resolvedIdentity.type,
         displayName: resolvedIdentity.displayName,
         uniqueId: resolvedIdentity.uniqueId, // Stable uniqueId from resolver

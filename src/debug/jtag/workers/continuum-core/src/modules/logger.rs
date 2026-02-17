@@ -218,7 +218,7 @@ type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 /// - `system/{component}` → .continuum/jtag/logs/system/{component}.log
 /// - `modules/{module}` → .continuum/jtag/logs/modules/{module}.log
 /// - `personas/{uniqueId}/{subsystem}` → .continuum/personas/{uniqueId}/logs/{subsystem}.log
-/// - `sentinels/{handle}/{stream}` → .sentinel-workspaces/{handle}/logs/{stream}.log
+/// - `sentinels/{handle}/{stream}` → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
 /// - `daemons/{name}` → .continuum/jtag/logs/system/daemons/{name}.log
 /// - Anything else → .continuum/jtag/logs/system/{category}.log (legacy fallback)
 fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
@@ -233,13 +233,13 @@ fn resolve_log_path(category: &str, log_dir: &str) -> PathBuf {
         ["personas", unique_id] => {
             PathBuf::from(format!(".continuum/personas/{unique_id}/logs/general.log"))
         }
-        // sentinels/{handle}/{stream} → .sentinel-workspaces/{handle}/logs/{stream}.log
+        // sentinels/{handle}/{stream} → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
         ["sentinels", handle, stream] => {
-            PathBuf::from(format!(".sentinel-workspaces/{handle}/logs/{stream}.log"))
+            PathBuf::from(format!(".continuum/jtag/logs/system/sentinels/{handle}/{stream}.log"))
         }
-        // sentinels/{handle} → .sentinel-workspaces/{handle}/logs/execution.log
+        // sentinels/{handle} → .continuum/jtag/logs/system/sentinels/{handle}/execution.log
         ["sentinels", handle] => {
-            PathBuf::from(format!(".sentinel-workspaces/{handle}/logs/execution.log"))
+            PathBuf::from(format!(".continuum/jtag/logs/system/sentinels/{handle}/execution.log"))
         }
         // modules/{module} → {log_dir}/modules/{module}.log
         ["modules", module] => {
@@ -268,17 +268,17 @@ fn ensure_file_handle(
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
 ) -> std::io::Result<()> {
-    let mut cache = file_cache.lock().unwrap();
+    let mut cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
 
     // Check if cached file was deleted
     if let Some(existing) = cache.get(category) {
         let file_deleted = {
-            let file = existing.lock().unwrap();
+            let file = existing.lock().unwrap_or_else(|e| e.into_inner());
             file.metadata().is_err()
         };
         if file_deleted {
             cache.remove(category);
-            headers_written.lock().unwrap().remove(category);
+            headers_written.lock().unwrap_or_else(|e| e.into_inner()).remove(category);
         }
     }
 
@@ -308,7 +308,7 @@ fn write_log_message(
     ensure_file_handle(&payload.category, &log_file_path, file_cache, headers_written)?;
 
     let mut total_bytes = 0;
-    let needs_header = !headers_written.lock().unwrap().contains(&payload.category);
+    let needs_header = !headers_written.lock().unwrap_or_else(|e| e.into_inner()).contains(&payload.category);
 
     if needs_header {
         total_bytes += write_header(
@@ -363,27 +363,31 @@ fn write_header(
     let bytes = header.len();
 
     let locked_file = {
-        let cache = file_cache.lock().unwrap();
-        cache.get(category).unwrap().clone()
+        let cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get(category)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("No file handle for {category}")))?
+            .clone()
     };
 
     {
-        let mut file = locked_file.lock().unwrap();
+        let mut file = locked_file.lock().unwrap_or_else(|e| e.into_inner());
         file.write_all(header.as_bytes())?;
     }
 
-    headers_written.lock().unwrap().insert(category.to_string());
+    headers_written.lock().unwrap_or_else(|e| e.into_inner()).insert(category.to_string());
     Ok(bytes)
 }
 
 fn write_entry(category: &str, log_entry: &str, file_cache: &FileCache) -> std::io::Result<usize> {
     let locked_file = {
-        let cache = file_cache.lock().unwrap();
-        cache.get(category).unwrap().clone()
+        let cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get(category)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("No file handle for {category}")))?
+            .clone()
     };
 
     {
-        let mut file = locked_file.lock().unwrap();
+        let mut file = locked_file.lock().unwrap_or_else(|e| e.into_inner());
         file.write_all(log_entry.as_bytes())?;
     }
 
@@ -408,12 +412,12 @@ fn format_log_entry(payload: &WriteLogPayload, timestamp: &str) -> String {
 
 fn flush_all(file_cache: &FileCache) {
     let handles: Vec<LockedFile> = {
-        let cache = file_cache.lock().unwrap();
+        let cache = file_cache.lock().unwrap_or_else(|e| e.into_inner());
         cache.values().cloned().collect()
     };
 
     for locked_file in handles {
-        let mut file = locked_file.lock().unwrap();
+        let mut file = locked_file.lock().unwrap_or_else(|e| e.into_inner());
         let _ = file.flush();
     }
 }
@@ -560,8 +564,16 @@ impl LoggerModule {
     }
 
     fn handle_write(&self, params: Value) -> Result<CommandResult, String> {
+        // WorkerClient sends data nested under "payload" field, extract it
+        // ORMRustClient sends data at top level - support both patterns
+        let payload_value = if let Some(nested) = params.get("payload") {
+            nested.clone()
+        } else {
+            params.clone()
+        };
+
         let payload: WriteLogPayload =
-            serde_json::from_value(params).map_err(|e| format!("Invalid payload: {e}"))?;
+            serde_json::from_value(payload_value).map_err(|e| format!("Invalid payload: {e}"))?;
 
         self.log_tx
             .send(payload)
@@ -569,20 +581,20 @@ impl LoggerModule {
 
         self.requests_processed.fetch_add(1, Ordering::Relaxed);
 
-        Ok(CommandResult::Json(serde_json::to_value(WriteLogResult {
+        CommandResult::json(&WriteLogResult {
             bytes_written: 0, // Actual write happens in background
-        }).unwrap()))
+        })
     }
 
     fn handle_ping(&self) -> Result<CommandResult, String> {
-        let active_categories = self.file_cache.lock().unwrap().len();
+        let active_categories = self.file_cache.lock().unwrap_or_else(|e| e.into_inner()).len();
 
-        Ok(CommandResult::Json(serde_json::to_value(LoggerPingResult {
+        CommandResult::json(&LoggerPingResult {
             uptime_ms: self.started_at.elapsed().as_millis() as u64,
             requests_processed: self.requests_processed.load(Ordering::Relaxed),
             active_categories,
             pending_writes: self.pending_writes.load(Ordering::Relaxed) as usize,
-        }).unwrap()))
+        })
     }
 }
 
@@ -602,6 +614,7 @@ impl ServiceModule for LoggerModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false, // Writer thread is internal
             max_concurrency: 0,
+            tick_interval: None,
         }
     }
 

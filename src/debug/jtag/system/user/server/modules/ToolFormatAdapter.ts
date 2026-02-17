@@ -429,8 +429,12 @@ export class FunctionStyleToolAdapter extends ToolFormatAdapter {
 
   matches(text: string): ToolCallMatch[] {
     const matches: ToolCallMatch[] = [];
-    // Match <function=name>...</function> or <function=name> {...} </function>
-    const regex = /<function=([^>\s]+)>\s*([\s\S]*?)\s*<\/function>/gi;
+
+    // Match both proper XML and Groq's variant:
+    //   <function=name>{json}</function>   — standard
+    //   function=name>{json}               — Groq variant (no < prefix, no closing tag)
+    // The regex uses optional < and optional </function> closing.
+    const regex = /<?function=([^>\s]+)>\s*(\{[\s\S]*?\})(?:\s*<\/function>)?/gi;
 
     let match: RegExpExecArray | null;
     while ((match = regex.exec(text)) !== null) {
@@ -445,8 +449,8 @@ export class FunctionStyleToolAdapter extends ToolFormatAdapter {
   }
 
   parse(match: ToolCallMatch): ToolCall | null {
-    // Extract tool name from <function=NAME>
-    const nameMatch = match.fullMatch.match(/<function=([^>\s]+)>/i);
+    // Extract tool name from <function=NAME> or function=NAME>
+    const nameMatch = match.fullMatch.match(/<?function=([^>\s]+)>/i);
     if (!nameMatch) {
       return null;
     }
@@ -454,10 +458,10 @@ export class FunctionStyleToolAdapter extends ToolFormatAdapter {
     const toolName = nameMatch[1].trim();
     const parameters: Record<string, string> = {};
 
-    // Extract JSON body between the tags
-    const bodyMatch = match.fullMatch.match(/<function=[^>]+>\s*([\s\S]*?)\s*<\/function>/i);
-    if (bodyMatch && bodyMatch[1]) {
-      const jsonStr = bodyMatch[1].trim();
+    // Extract JSON body — find the first { ... } block after the >
+    const jsonMatch = match.fullMatch.match(/>\s*(\{[\s\S]*\})/);
+    if (jsonMatch && jsonMatch[1]) {
+      const jsonStr = jsonMatch[1].trim();
       if (jsonStr) {
         try {
           const parsed = JSON.parse(jsonStr);
@@ -745,18 +749,56 @@ export function convertToNativeToolSpecs(tools: ToolDefinition[]): NativeToolSpe
 }
 
 /**
+ * Coerce text-parsed tool parameters to match JSON Schema types from NativeToolSpec.
+ * When models output tool calls in text (e.g. Groq's `<function=name>{json}</function>`),
+ * values may be strings where booleans/numbers are expected. Native APIs validate
+ * tool_use blocks against the schema and reject type mismatches (400 Bad Request).
+ */
+export function coerceParamsToSchema(
+  params: Record<string, unknown>,
+  toolSpecs: NativeToolSpec[],
+  sanitizedToolName: string,
+): Record<string, unknown> {
+  const spec = toolSpecs.find(s => s.name === sanitizedToolName);
+  if (!spec?.input_schema?.properties) return params;
+
+  const coerced: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    const propSchema = spec.input_schema.properties[key] as { type?: string } | undefined;
+    if (!propSchema?.type || typeof value !== 'string') {
+      coerced[key] = value;
+      continue;
+    }
+    switch (propSchema.type) {
+      case 'boolean':
+        coerced[key] = value === 'true' || value === '1';
+        break;
+      case 'number':
+      case 'integer': {
+        const num = Number(value);
+        coerced[key] = isNaN(num) ? value : num;
+        break;
+      }
+      default:
+        coerced[key] = value;
+    }
+  }
+  return coerced;
+}
+
+/**
  * Check if a provider supports native JSON tool calling.
- * Together AI and Groq both implement the OpenAI-compatible function calling spec
- * (tools parameter + tool_calls in response).
+ * OpenAI-compatible providers (Together, Groq, Fireworks, xAI) implement
+ * the function calling spec (tools parameter + tool_calls in response).
  */
 export function supportsNativeTools(provider: string): boolean {
-  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq'];
+  const nativeToolProviders = ['anthropic', 'openai', 'azure', 'together', 'groq', 'fireworks', 'xai'];
   return nativeToolProviders.includes(provider.toLowerCase());
 }
 
 /**
  * Tool capability tier for a given provider/model combination.
- * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq)
+ * - 'native': JSON tool_use blocks (Anthropic, OpenAI, Azure, Together, Groq, Fireworks, xAI)
  * - 'xml': XML tool calls parsed by ToolCallParser (DeepSeek — proven to work)
  * - 'none': Model narrates instead of calling tools — don't inject tools
  */
@@ -765,6 +807,11 @@ export type ToolCapability = 'native' | 'xml' | 'none';
 /**
  * Determine a model's tool-calling capability.
  * Provider-based auto-detection with per-persona override via modelConfig.toolCapability.
+ *
+ * IMPORTANT: Default to 'xml' not 'none'. A Candle model could be a powerful
+ * fine-tuned model with LoRA. Returning 'none' leaves it completely powerless.
+ * XML tool definitions are budget-aware via ToolDefinitionsSource and will be
+ * truncated if the model's context is tight.
  */
 export function getToolCapability(
   provider: string,
@@ -774,10 +821,10 @@ export function getToolCapability(
 
   if (supportsNativeTools(provider)) return 'native';
 
-  // Proven XML-capable providers (model emits well-formed tool call blocks)
-  const xmlCapable = ['deepseek'];
-  if (xmlCapable.includes(provider.toLowerCase())) return 'xml';
-
-  // Everything else: xai, fireworks, candle, sentinel, ollama
-  return 'none';
+  // All other providers get XML tool definitions in the system prompt.
+  // Models that can't use them will ignore them; models that can (DeepSeek,
+  // fine-tuned Candle, Ollama) benefit from having tools available.
+  // Budget-aware: ToolDefinitionsSource truncates for tight context windows.
+  return 'xml';
 }
+

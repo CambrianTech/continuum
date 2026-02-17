@@ -22,10 +22,8 @@ import path from 'path';
 import { SOCKETS } from '../../../shared/config';
 import type {
   TextGenerationRequest,
-  TextGenerationResponse,
-  ToolCall,
-  NativeToolSpec,
 } from '../shared/AIProviderTypesV2';
+import type { TextGenerationResponse, RoutingInfo } from '../../../shared/generated/ai';
 
 // Socket path for continuum-core
 const SOCKET_PATH = path.isAbsolute(SOCKETS.CONTINUUM_CORE)
@@ -40,42 +38,6 @@ interface RustIPCResponse<T = unknown> {
   result?: T;
   error?: string;
   requestId?: number;
-}
-
-/**
- * Rust AI generation response
- */
-interface RustAIResponse {
-  success: boolean;
-  text: string;
-  finishReason: 'stop' | 'length' | 'tool_use' | 'error';
-  model: string;
-  provider: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    estimatedCost?: number;
-  };
-  responseTimeMs: number;
-  requestId: string;
-  content?: Array<{
-    type: string;
-    text?: string;
-    id?: string;
-    name?: string;
-    input?: Record<string, unknown>;
-  }>;
-  toolCalls?: Array<{
-    id: string;
-    name: string;
-    input: Record<string, unknown>;
-  }>;
-  routing?: {
-    provider: string;
-    isLocal: boolean;
-    routingReason: string;
-  };
 }
 
 /**
@@ -272,21 +234,24 @@ export class AIProviderRustClient {
   /**
    * Generate text using Rust AI provider
    * Supports tool calling via native JSON format
+   *
+   * Types are unified via ts-rs: Rust TextGenerationResponse === TS TextGenerationResponse.
+   * Wire fields pass through directly — no manual mapping needed.
    */
   async generateText(request: TextGenerationRequest): Promise<TextGenerationResponse> {
-    // Convert request to Rust format (camelCase → snake_case handled by Rust)
-    const response = await this.request<RustAIResponse>({
+    // Send wire-compatible fields to Rust (TS-only fields like intelligenceLevel are stripped)
+    const response = await this.request<TextGenerationResponse>({
       command: 'ai/generate',
       messages: request.messages,
       systemPrompt: request.systemPrompt,
       model: request.model,
-      provider: request.preferredProvider, // TypeScript uses preferredProvider
+      provider: request.provider,
       temperature: request.temperature,
       maxTokens: request.maxTokens,
       topP: request.topP,
       stopSequences: request.stopSequences,
       tools: request.tools,
-      tool_choice: request.tool_choice,
+      toolChoice: request.toolChoice,
       requestId: request.requestId,
       userId: request.userId,
       roomId: request.roomId,
@@ -297,64 +262,15 @@ export class AIProviderRustClient {
       throw new Error(response.error || 'AI generation failed');
     }
 
+    // Rust returns TextGenerationResponse directly — types match, no conversion needed
     const result = response.result;
 
-    // Convert Rust response to TypeScript format
-    const tsResponse: TextGenerationResponse = {
-      text: result.text,
-      finishReason: result.finishReason,
-      model: result.model,
-      provider: result.provider,
-      usage: {
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.outputTokens,
-        totalTokens: result.usage.totalTokens,
-        estimatedCost: result.usage.estimatedCost,
-      },
-      responseTime: result.responseTimeMs,
-      requestId: result.requestId,
-    };
-
-    // Add content blocks if present - convert to TypeScript ContentPart format
-    if (result.content && result.content.length > 0) {
-      tsResponse.content = result.content.map(block => {
-        if (block.type === 'text' && block.text) {
-          return { type: 'text' as const, text: block.text };
-        } else if (block.type === 'tool_use' && block.id && block.name && block.input) {
-          return { type: 'tool_use' as const, id: block.id, name: block.name, input: block.input };
-        } else if (block.type === 'tool_result' && block.id && block.name) {
-          // This is actually tool_result content
-          return { type: 'tool_result' as const, tool_use_id: block.id, content: block.name };
-        }
-        // Default to text type
-        return { type: 'text' as const, text: block.text || '' };
-      });
+    // Ensure routing.adaptersApplied is always an array (Rust may omit it)
+    if (result.routing && !result.routing.adaptersApplied) {
+      result.routing.adaptersApplied = [];
     }
 
-    // Add tool calls if present
-    if (result.toolCalls && result.toolCalls.length > 0) {
-      tsResponse.toolCalls = result.toolCalls.map(tc => ({
-        id: tc.id,
-        name: tc.name,
-        input: tc.input,
-      }));
-    }
-
-    // Add routing info if present
-    if (result.routing) {
-      // Map Rust routing reason to TypeScript expected values
-      const routingReason: 'explicit_provider' | 'provider_aliasing' | 'model_detection' | 'default_priority' | 'fallback' =
-        result.routing.routingReason === 'adapter_selected' ? 'default_priority' : 'default_priority';
-
-      tsResponse.routing = {
-        provider: result.routing.provider,
-        isLocal: result.routing.isLocal,
-        routingReason,
-        adaptersApplied: [],
-      };
-    }
-
-    return tsResponse;
+    return result;
   }
 
   /**

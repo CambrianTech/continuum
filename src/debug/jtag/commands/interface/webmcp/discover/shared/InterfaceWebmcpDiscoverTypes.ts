@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -38,6 +39,7 @@ export const createInterfaceWebmcpDiscoverParams = (
     url?: string;
   }
 ): InterfaceWebmcpDiscoverParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   url: data.url ?? '',
   ...data
 });
@@ -77,6 +79,7 @@ export const createInterfaceWebmcpDiscoverResult = (
     error?: JTAGError;
   }
 ): InterfaceWebmcpDiscoverResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   available: data.available ?? false,
   reason: data.reason ?? '',
   tools: data.tools ?? [],

@@ -1,20 +1,20 @@
 /**
- * Sentinel Run Command - Types
- *
- * Allows AIs to create and run Sentinels via JSON config.
+ * Run sentinels for builds, orchestration, screenshots, tasks, or declarative pipelines.
  * Uses handles for long-running operations and emits events for progress.
  */
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { ModelCapacity, ModelProvider } from '../../../../system/sentinel/ModelProvider';
 
+import type { PipelineSentinelDefinition } from '../../../../system/sentinel/SentinelDefinition';
+
 /**
  * Sentinel types available
  */
-export type SentinelType = 'build' | 'orchestrate' | 'screenshot' | 'task';
+export type SentinelType = 'build' | 'orchestrate' | 'screenshot' | 'task' | 'pipeline';
 
 /**
- * Base params for all sentinel runs
+ * Run sentinels for builds, orchestration, screenshots, tasks, or declarative pipelines.
  */
 export interface SentinelRunParams extends CommandParams {
   /** Type of sentinel to run */
@@ -122,13 +122,24 @@ export interface TaskSentinelParams extends SentinelRunParams {
 }
 
 /**
+ * PipelineSentinel params (declarative step-based execution)
+ */
+export interface PipelineSentinelParams extends SentinelRunParams {
+  type: 'pipeline';
+
+  /** Pipeline definition (JSON) */
+  definition: PipelineSentinelDefinition;
+}
+
+/**
  * Union of all sentinel param types
  */
 export type AnySentinelParams =
   | BuildSentinelParams
   | OrchestrateSentinelParams
   | ScreenshotSentinelParams
-  | TaskSentinelParams;
+  | TaskSentinelParams
+  | PipelineSentinelParams;
 
 /**
  * Sentinel result data (internal, without JTAGPayload fields)
@@ -153,6 +164,12 @@ export interface SentinelResultData {
     screenshot?: string;
     attempts?: number;
     iterations?: number;
+    // Pipeline-specific fields
+    stepResults?: unknown[];
+    stepsCompleted?: number;
+    stepsTotal?: number;
+    durationMs?: number;
+    error?: string;
   };
 }
 

@@ -12,6 +12,7 @@ use super::shared_compute::SharedCompute;
 use super::module_context::ModuleContext;
 use super::service_module::{ServiceModule, CommandResult};
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 use tracing::{info, warn, error};
 
 /// Expected modules that MUST be registered for a complete runtime.
@@ -93,6 +94,48 @@ impl Runtime {
 
         info!("All {} modules initialized", modules.len());
         Ok(())
+    }
+
+    /// Start periodic tick loops for modules that declare a tick_interval.
+    /// Each module with a tick_interval gets its own tokio task that calls tick()
+    /// at the specified cadence. This replaces TypeScript's per-persona setIntervals.
+    pub fn start_tick_loops(&self) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
+        let modules = self.registry.list_modules();
+
+        for name in &modules {
+            if let Some(module) = self.registry.get_by_name(name) {
+                let config = module.config();
+                if let Some(initial_interval) = config.tick_interval {
+                    let module_name = config.name;
+                    let module = module.clone();
+                    info!("Starting tick loop for '{}' (interval: {:?})", module_name, initial_interval);
+
+                    let handle = tokio::spawn(async move {
+                        // Initial delay — don't tick before system is warmed up
+                        tokio::time::sleep(initial_interval).await;
+
+                        loop {
+                            if let Err(e) = module.tick().await {
+                                error!("Tick error in '{}': {}", module_name, e);
+                            }
+                            // Re-read interval from module config each iteration.
+                            // This allows dynamic cadence changes (e.g. via channel/tick-config).
+                            let interval = module.config().tick_interval
+                                .unwrap_or(initial_interval);
+                            tokio::time::sleep(interval).await;
+                        }
+                    });
+
+                    handles.push(handle);
+                }
+            }
+        }
+
+        if !handles.is_empty() {
+            info!("Started {} tick loops", handles.len());
+        }
+        handles
     }
 
     /// Route a command through the registry (async version).

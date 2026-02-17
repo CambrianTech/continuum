@@ -7,13 +7,12 @@
 
 import type { CommandParams, JTAGPayload, JTAGContext, CommandInput} from '../../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { FieldMetadata } from '../../../../system/data/decorators/FieldDecorators';
 import { Commands } from '../../../../system/core/shared/Commands';
 
-/**
- * Request parameters for data/schema command
- */
+/** Introspect an entity collection's schema at runtime, returning field types, constraints, indexes, optional examples, SQL, and data validation. */
 export interface DataSchemaParams extends CommandParams {
   readonly collection: string; // Entity collection name to get schema for
   readonly examples?: boolean; // Include example JSON objects

@@ -50,7 +50,7 @@
  *   only valid formats are used.
  */
 
-import type { PromptFormat } from '../../../commands/user/create/shared/UserCreateTypes';
+import type { PromptFormat } from '../../../system/data/entities/UserEntity';
 
 /**
  * Message interface compatible with AIProviderTypesV2.TextGenerationMessage

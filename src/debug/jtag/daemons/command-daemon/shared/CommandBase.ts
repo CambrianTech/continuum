@@ -9,6 +9,7 @@ import { JTAGModule } from '../../../system/core/shared/JTAGModule';
 import type { JTAGContext, CommandParams, CommandResult } from '../../../system/core/types/JTAGTypes';
 import { JTAG_ENVIRONMENTS, JTAGMessageFactory } from '../../../system/core/types/JTAGTypes';
 import { type UUID } from '../../../system/core/types/CrossPlatformUUID';
+import { SYSTEM_SCOPES } from '../../../system/core/types/SystemScopes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { isRequestResult } from '../../../system/core/router/shared/RouterTypes';
 
@@ -44,7 +45,7 @@ export interface CommandConstructor {
   readonly commandName: string;
   executeIn<TParams extends CommandParams, TResult extends CommandResult>(
     environment: 'browser' | 'server',
-    params: Omit<TParams, 'context' | 'sessionId'>
+    params: Omit<TParams, 'context' | 'sessionId' | 'userId'>
   ): Promise<TResult>;
 }
 
@@ -114,7 +115,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
   static async executeIn<TParams extends CommandParams, TResult extends CommandResult>(
     this: CommandConstructor,
     environment: 'browser' | 'server',
-    params: Omit<TParams, 'context' | 'sessionId'>
+    params: Omit<TParams, 'context' | 'sessionId' | 'userId'>
   ): Promise<TResult> {
     const { Commands } = await import('../../../system/core/shared/Commands');
     return await Commands.execute<TParams, TResult>(
@@ -128,7 +129,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    */
   static async executeOnServer<TParams extends CommandParams, TResult extends CommandResult>(
     this: CommandConstructor,
-    params: Omit<TParams, 'context' | 'sessionId'>
+    params: Omit<TParams, 'context' | 'sessionId' | 'userId'>
   ): Promise<TResult> {
     return this.executeIn<TParams, TResult>('server', params);
   }
@@ -138,7 +139,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    */
   static async executeOnBrowser<TParams extends CommandParams, TResult extends CommandResult>(
     this: CommandConstructor,
-    params: Omit<TParams, 'context' | 'sessionId'>
+    params: Omit<TParams, 'context' | 'sessionId' | 'userId'>
   ): Promise<TResult> {
     return this.executeIn<TParams, TResult>('browser', params);
   }
@@ -153,7 +154,7 @@ export abstract class CommandBase<TParams extends CommandParams = CommandParams,
    * @param sessionId - Current session ID from the active request
    */
   public getDefaultParams(sessionId: UUID, context: JTAGContext): TParams {
-    return {sessionId, context} as TParams;
+    return {sessionId, context, userId: SYSTEM_SCOPES.SYSTEM} as TParams;
   }
 
   /**

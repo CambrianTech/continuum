@@ -9,6 +9,7 @@
 
 import type { CommandParams, JTAGPayload, JTAGContext, JTAGEnvironment } from '../../../system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '../../../system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 import type { DbHandle } from '../../../daemons/data-daemon/server/DatabaseHandleRegistry';
 
@@ -49,8 +50,9 @@ export type DataBackend = 'server' | 'local';
 export const createBaseDataParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Omit<BaseDataParams, 'context' | 'sessionId' | 'backend'> & { backend?: JTAGEnvironment }
+  data: Omit<BaseDataParams, 'context' | 'sessionId' | 'backend' | 'userId'> & { backend?: JTAGEnvironment }
 ): BaseDataParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   ...data,
   backend: data.backend ?? 'server'
 });
@@ -61,10 +63,11 @@ export const createBaseDataParams = (
  * Server commands that forward context from a parent command can still pass them explicitly.
  */
 export type DataCommandInput<T extends BaseDataParams> =
-  Omit<T, 'context' | 'sessionId' | 'backend'> & {
+  Omit<T, 'context' | 'sessionId' | 'backend' | 'userId'> & {
     context?: JTAGContext;
     sessionId?: UUID;
     backend?: JTAGEnvironment;
+    userId?: UUID;
   };
 
 /**

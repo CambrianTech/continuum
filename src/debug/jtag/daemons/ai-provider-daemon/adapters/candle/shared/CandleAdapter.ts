@@ -239,7 +239,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       model: modelId,
       provider: this.providerId,
       usage,
-      responseTime,
+      responseTimeMs: responseTime,
       requestId,
       routing,
     };
@@ -262,7 +262,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       contextWindow: 4096,
       maxOutputTokens: 2048,
       supportsStreaming: false,
-      supportsFunctions: false,
+      supportsTools: false,
     }];
   }
 
@@ -275,7 +275,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       return {
         status: 'healthy',
         apiAvailable: true,
-        responseTime: Date.now() - startTime,
+        responseTimeMs: Date.now() - startTime,
         errorRate: 0,
         lastChecked: Date.now(),
         message: pingResult.message,
@@ -284,7 +284,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
       return {
         status: 'unhealthy',
         apiAvailable: false,
-        responseTime: Date.now() - startTime,
+        responseTimeMs: Date.now() - startTime,
         errorRate: 1.0,
         lastChecked: Date.now(),
         message: error instanceof Error ? error.message : 'Health check failed',

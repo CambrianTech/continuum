@@ -8,6 +8,7 @@
 
 import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
@@ -71,6 +72,7 @@ export const createWorkspaceListParams = (
     includeGitStatus?: boolean;
   }
 ): WorkspaceListParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   personaId: data.personaId ?? '',
   includeGitStatus: data.includeGitStatus ?? true,
   ...data
@@ -104,6 +106,7 @@ export const createWorkspaceListResult = (
     error?: JTAGError;
   }
 ): WorkspaceListResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   workspaces: data.workspaces ?? [],
   totalCount: data.totalCount ?? 0,
   activeCount: data.activeCount ?? 0,

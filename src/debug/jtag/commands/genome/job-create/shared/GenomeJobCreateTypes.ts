@@ -10,9 +10,7 @@ import type { CommandParams, CommandResult, CommandInput} from '../../../../syst
 import type { JobConfiguration } from '../../../../daemons/data-daemon/shared/entities/FineTuningTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 
-/**
- * Parameters for genome/job-create command
- */
+/** Create a fine-tuning job on a cloud provider (OpenAI, DeepSeek, Fireworks, or Together) with a validated, provider-agnostic configuration. */
 export interface GenomeJobCreateParams extends CommandParams {
   /**
    * PersonaUser ID that will own this fine-tuning job

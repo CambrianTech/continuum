@@ -11,7 +11,7 @@ import type { RAGContext } from '../../../../../system/rag/shared/RAGTypes';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
 /**
- * Parameters for rag/inspect command
+ * Inspect the RAG context that would be built for a given persona in a specific room, including decision-point analysis and learning mode diagnostics.
  */
 export interface RAGInspectParams extends CommandParams {
   /** Room/context ID to build RAG for */
@@ -30,6 +30,8 @@ export interface RAGInspectParams extends CommandParams {
   includeMemories?: boolean;
 
   /** Optional: Show full RAG content (like ping --verbose) */
+  /** Optional: Max tokens for context building */
+  maxTokens?: number;
   verbose?: boolean;
 
   /** Optional: Message ID that triggered evaluation (for decision-point analysis) */

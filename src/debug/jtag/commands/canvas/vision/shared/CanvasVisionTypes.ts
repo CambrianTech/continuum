@@ -9,6 +9,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
@@ -87,6 +88,7 @@ export const createCanvasVisionResult = (
   action: VisionAction,
   data: Omit<Partial<CanvasVisionResult>, 'context' | 'sessionId' | 'action'>
 ): CanvasVisionResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   success: true,
   action,
   ...data

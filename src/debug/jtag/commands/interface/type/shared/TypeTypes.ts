@@ -1,9 +1,11 @@
 import { CommandParams, CommandResult, createPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../system/core/shared/Commands';
 
+/** Type text into a form field or input element. */
 export interface TypeParams extends CommandParams {
   readonly selector: string;
   readonly text: string;
@@ -21,6 +23,7 @@ export const createTypeParams = (
     delay?: number;
   }
 ): TypeParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   text: data.text ?? '',
   clearFirst: data.clearFirst ?? true,
   delay: data.delay ?? 0,
@@ -47,6 +50,7 @@ export const createTypeResult = (
     error?: JTAGError;
   }
 ): TypeResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   typed: data.typed ?? false,
   text: data.text ?? '',
   timestamp: new Date().toISOString(),

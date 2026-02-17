@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
+use std::time::Duration;
 use ts_rs::TS;
 
 // ============================================================================
@@ -90,6 +91,11 @@ pub struct ModuleConfig {
 
     /// Maximum concurrent requests. 0 = unlimited (module manages own concurrency).
     pub max_concurrency: usize,
+
+    /// Optional periodic tick interval. When set, the runtime spawns a tokio task
+    /// that calls `tick()` at this cadence. Overrides the default priority-based cadence.
+    /// None = no periodic tick (module is purely reactive to commands).
+    pub tick_interval: Option<Duration>,
 }
 
 /// Result of handling a command.
@@ -106,6 +112,16 @@ pub enum CommandResult {
         metadata: Value,
         data: Vec<u8>,
     },
+}
+
+impl CommandResult {
+    /// Create a Json result from any Serialize type.
+    /// Eliminates the `serde_json::to_value(x).unwrap()` anti-pattern.
+    pub fn json(value: &impl serde::Serialize) -> Result<Self, String> {
+        serde_json::to_value(value)
+            .map(CommandResult::Json)
+            .map_err(|e| format!("Serialization error: {e}"))
+    }
 }
 
 /// The ONE trait. Implement this and register — done.

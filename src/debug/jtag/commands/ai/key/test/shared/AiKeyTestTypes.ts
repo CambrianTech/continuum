@@ -6,6 +6,7 @@
 
 import type { CommandParams, CommandResult, JTAGContext, CommandInput} from '@system/core/types/JTAGTypes';
 import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '../../../../../system/core/shared/Commands';
@@ -35,6 +36,7 @@ export const createAiKeyTestParams = (
     key: string;
   }
 ): AiKeyTestParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
 
   ...data
 });
@@ -49,7 +51,7 @@ export interface AiKeyTestResult extends CommandResult {
   // Provider that was tested
   provider: string;
   // Response time in milliseconds
-  responseTime: number;
+  responseTimeMs: number;
   // Error message if key is invalid (optional)
   errorMessage?: string;
   // Available models for this key (optional)
@@ -66,14 +68,15 @@ export const createAiKeyTestResult = (
     success: boolean;
     valid?: boolean;
     provider?: string;
-    responseTime?: number;
+    responseTimeMs?: number;
     errorMessage?: string;
     models?: string[];
   }
 ): AiKeyTestResult => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
   valid: data.valid ?? false,
   provider: data.provider ?? '',
-  responseTime: data.responseTime ?? 0,
+  responseTimeMs: data.responseTimeMs ?? 0,
   ...data
 });
 

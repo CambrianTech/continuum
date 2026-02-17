@@ -14,9 +14,9 @@ export interface ActivityJoinParams extends CommandParams {
   activityId: UUID | string;
 
   /**
-   * User ID to add (defaults to current user)
+   * Target user ID to add (defaults to params.userId, the current caller)
    */
-  userId?: UUID;
+  targetUserId?: UUID;
 
   /**
    * Role for the participant

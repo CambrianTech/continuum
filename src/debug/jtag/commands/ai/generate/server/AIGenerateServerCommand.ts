@@ -69,7 +69,8 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
             maxMessages: params.maxMessages || 20,
             includeArtifacts: params.includeArtifacts ?? true,
             includeMemories: params.includeMemories ?? true,
-            triggeringTimestamp: Date.now()  // Preview shows current state (no race filtering for manual preview)
+            triggeringTimestamp: Date.now(),  // Preview shows current state (no race filtering for manual preview)
+            maxTokens: params.maxTokens ?? 2000,
           }
         );
 
@@ -121,7 +122,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           model: params.model || LOCAL_MODELS.DEFAULT,
           temperature: params.temperature ?? 0.7,
           maxTokens: params.maxTokens ?? 150,
-          preferredProvider: params.preferredProvider || 'candle',
+          provider: params.provider || 'candle',
           personaContext: {
             uniqueId: targetPersonaId,
             displayName: ragContext.identity?.name || personaDisplayName,
@@ -157,7 +158,7 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
       const response = await AIProviderDaemon.generateText(request);
 
       const result = responseToResult(response, params);
-      console.log(`✅ AI Generate: Generated ${result.usage?.outputTokens} tokens in ${result.responseTime}ms`);
+      console.log(`✅ AI Generate: Generated ${result.usage?.outputTokens} tokens in ${result.responseTimeMs}ms`);
 
       return result;
     } catch (error) {

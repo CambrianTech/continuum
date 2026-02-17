@@ -112,7 +112,7 @@ pub fn generate_text(
         let input_tokens = if i == 0 {
             all_tokens.clone()
         } else {
-            vec![*all_tokens.last().unwrap()]
+            vec![*all_tokens.last().ok_or("Empty token sequence")?]
         };
 
         let input = Tensor::new(&input_tokens[..], &state.device)

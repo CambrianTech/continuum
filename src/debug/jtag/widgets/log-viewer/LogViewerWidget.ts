@@ -107,6 +107,23 @@ export class LogViewerWidget extends BasePanelWidget {
       }
     }
 
+    // Check for source file content (opened from clickable file path in chat)
+    if (logPath.startsWith('file:')) {
+      const filePath = logPath.slice(5); // strip "file:" prefix
+      try {
+        const result = await Commands.execute('code/read', { filePath } as Record<string, unknown>) as { content?: string; filePath?: string; totalLines?: number };
+        if (result?.content) {
+          const fileName = filePath.split('/').pop() || filePath;
+          this.renderInlineContent(result.content, fileName);
+          return;
+        }
+      } catch (err) {
+        console.warn(`📜 LogViewer: Failed to read file ${filePath}`, err);
+        this.renderInlineContent(`Error reading file: ${filePath}\n${err}`, filePath);
+        return;
+      }
+    }
+
     this.logData.logPath = logPath;
     this.logData.logName = logPath.split('/').pop() || 'log';
 

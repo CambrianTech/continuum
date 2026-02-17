@@ -8,6 +8,9 @@ import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import type { DatasetArchiveInfo } from '../../shared/DatasetConfig';
 import { Commands } from '../../../../../system/core/shared/Commands';
 
+/**
+ * List available training dataset archives with optional filtering and detailed manifest information.
+ */
 export interface DatasetListParams extends CommandParams {
   /** Filter by output path */
   path?: string;

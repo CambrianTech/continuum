@@ -18,8 +18,6 @@ export interface StateUpdateParams extends CommandParams {
   readonly id: UUID;
   /** Update data */
   readonly data: Record<string, any>;
-  /** User ID for context */
-  readonly userId?: UUID;
 }
 
 export interface StateUpdateResult<T extends BaseEntity> extends JTAGPayload {

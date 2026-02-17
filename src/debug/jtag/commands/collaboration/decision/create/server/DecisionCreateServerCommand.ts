@@ -12,7 +12,6 @@ import type { DecisionCreateParams, DecisionCreateResult } from '../shared/Decis
 import { createDecisionCreateResultFromParams } from '../shared/DecisionCreateTypes';
 import { DecisionEntity } from '@system/data/entities/DecisionEntity';
 import type { DecisionOption } from '@system/data/entities/DecisionEntity';
-import { UserIdentityResolver } from '@system/user/shared/UserIdentityResolver';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Commands } from '@system/core/shared/Commands';
 import { UserEntity } from '@system/data/entities/UserEntity';
@@ -90,8 +89,8 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
       throw new ValidationError('options', 'Option IDs must be unique');
     }
 
-    // Detect caller identity (Claude Code, Joel, etc.)
-    const callerIdentity = await this.findCallerIdentity(params);
+    // Look up caller from params.userId (auto-injected by infrastructure)
+    const callerIdentity = await this.findUserById(params.userId, params);
 
     // Create DecisionEntity
     const decision = new DecisionEntity();
@@ -144,44 +143,19 @@ export class DecisionCreateServerCommand extends CommandBase<DecisionCreateParam
   }
 
   /**
-   * Find the user identity of the caller - prefers context.userId (for PersonaUsers)
-   *
-   * Priority:
-   * 1. params.context?.userId - When a PersonaUser executes a command, their ID is in context
-   * 2. UserIdentityResolver.resolve() - Detects Claude Code, Joel, etc. based on process info
+   * Find user by ID from database
    */
-  private async findCallerIdentity(params: DecisionCreateParams): Promise<{ id: UUID; displayName: string }> {
-    // FIRST: Check if caller's userId is in the context (PersonaUsers set this)
-    if (params.context?.userId) {
-      const result = await DataList.execute<UserEntity>({
-        collection: UserEntity.collection,
-        filter: { id: params.context.userId },
-        limit: 1,
-        context: params.context,
-        sessionId: params.sessionId
-      });
-
-      if (result.success && result.items && result.items.length > 0) {
-        console.log('🔧 DecisionCreateServerCommand.findCallerIdentity USING CONTEXT userId', { userId: params.context.userId });
-        return result.items[0];
-      }
-    }
-
-    // FALLBACK: Resolve caller identity via process detection (async)
-    const identity = await UserIdentityResolver.resolve();
-    const uniqueId = identity.uniqueId;
-
-    // Find user by uniqueId in database
+  private async findUserById(userId: UUID, params: DecisionCreateParams): Promise<{ id: UUID; displayName: string }> {
     const result = await DataList.execute<UserEntity>({
       collection: UserEntity.collection,
-      filter: { uniqueId },
+      filter: { id: userId },
       limit: 1,
       context: params.context,
       sessionId: params.sessionId
     });
 
     if (!result.success || !result.items || result.items.length === 0) {
-      throw new Error(`Caller identity not found in database: ${identity.displayName} (uniqueId: ${uniqueId})`);
+      throw new Error(`User not found: ${userId}`);
     }
 
     return result.items[0];

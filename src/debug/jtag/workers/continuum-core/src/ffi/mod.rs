@@ -247,8 +247,14 @@ pub unsafe extern "C" fn continuum_voice_on_utterance(
     }
 
     // Serialize Vec<Uuid> to JSON array
-    let json_array = serde_json::to_string(&responder_ids).unwrap();
-    let c_string = CString::new(json_array).unwrap();
+    let json_array = match serde_json::to_string(&responder_ids) {
+        Ok(j) => j,
+        Err(_) => return -1,
+    };
+    let c_string = match CString::new(json_array) {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
     let bytes = c_string.as_bytes_with_nul();
 
     unsafe {
@@ -437,8 +443,14 @@ pub unsafe extern "C" fn continuum_get_stats(category: *const c_char) -> *mut c_
         "note": "Performance stats tracking not yet implemented"
     });
 
-    let json = serde_json::to_string(&stats).unwrap();
-    let c_string = CString::new(json).unwrap();
+    let json = match serde_json::to_string(&stats) {
+        Ok(j) => j,
+        Err(_) => return ptr::null_mut(),
+    };
+    let c_string = match CString::new(json) {
+        Ok(c) => c,
+        Err(_) => return ptr::null_mut(),
+    };
 
     c_string.into_raw()
 }

@@ -71,7 +71,7 @@ const CODE_TOOL_GROUPS: readonly CodeToolGroup[] = [
 export class CodeToolSource implements RAGSource {
   readonly name = 'code-tools';
   readonly priority = 50;  // Medium — below conversation/widget, above learning config
-  readonly defaultBudgetPercent = 8;
+  readonly defaultBudgetPercent = 5;
 
   private static _cachedPrompt: string | null = null;
   private static _cacheGeneratedAt = 0;
@@ -140,6 +140,10 @@ export class CodeToolSource implements RAGSource {
   /**
    * Full coding methodology prompt — injected into system prompt.
    * Only includes workflow steps for tool groups the persona has access to.
+   *
+   * Inspired by Claude Code, Aider, SWE-Agent, and OpenCode system prompts.
+   * These tools achieve 75-85% on SWE-bench because their workflow guidance
+   * is extremely specific about HOW to use tools, not just WHAT tools exist.
    */
   private buildFullPrompt(context: RAGSourceContext): string {
     const registry = PersonaToolRegistry.sharedInstance();
@@ -149,49 +153,89 @@ export class CodeToolSource implements RAGSource {
     // Determine which capabilities are available
     const hasDiscovery = codeTools.some(t => t.name === 'code/tree' || t.name === 'code/search');
     const hasRead = codeTools.some(t => t.name === 'code/read');
-    const hasWrite = codeTools.some(t => t.name === 'code/write' || t.name === 'code/edit');
+    const hasWrite = codeTools.some(t => t.name === 'code/write');
+    const hasEdit = codeTools.some(t => t.name === 'code/edit');
     const hasVerify = codeTools.some(t => t.name === 'code/verify');
     const hasDiff = codeTools.some(t => t.name === 'code/diff');
     const hasUndo = codeTools.some(t => t.name === 'code/undo');
     const hasGit = codeTools.some(t => t.name === 'code/git');
+    const hasShell = codeTools.some(t => t.name === 'code/shell/execute');
+    const hasHistory = codeTools.some(t => t.name === 'code/history');
 
-    // Build available tool listing
-    const toolNames = codeTools.map(t => t.name).join(', ');
+    const sections: string[] = [];
 
-    // Build workflow steps based on available tools
+    // ── Core workflow ─────────────────────────────────────────
+    sections.push(`## Code Editing Methodology
+
+### Workflow: Orient → Read → Edit → Verify → Iterate`);
+
     const steps: string[] = [];
-    if (hasDiscovery) steps.push('1. **Understand first**: code/tree to see structure, code/search for patterns across files');
-    if (hasRead) steps.push(`${steps.length + 1}. **Read before editing**: ALWAYS code/read a file before modifying it`);
-    if (hasWrite) steps.push(`${steps.length + 1}. **Make targeted changes**: code/edit for surgical modifications, code/write for new files`);
-    if (hasVerify) steps.push(`${steps.length + 1}. **Verify every change**: code/verify after EVERY edit — if it fails, read errors, fix, verify again`);
-    if (hasDiff || hasGit) steps.push(`${steps.length + 1}. **Review**: ${hasDiff ? 'code/diff to see changes' : ''}${hasDiff && hasGit ? ', ' : ''}${hasGit ? 'code/git status before committing' : ''}`);
+    if (hasDiscovery) steps.push('1. **Orient** — code/tree to see project structure, code/search to find relevant files and patterns');
+    if (hasRead) steps.push(`${steps.length + 1}. **Read** — code/read the file you want to change. Understand context around the target lines`);
+    if (hasEdit) steps.push(`${steps.length + 1}. **Edit** — code/edit with search_replace for surgical changes. Match text EXACTLY as it appears in code/read output`);
+    else if (hasWrite) steps.push(`${steps.length + 1}. **Write** — code/write for new files or full replacements`);
+    if (hasVerify) steps.push(`${steps.length + 1}. **Verify** — code/verify after EVERY change. If it fails: read errors, fix, verify again. Never move on with broken code`);
+    if (hasDiff || hasGit) {
+      const parts = [];
+      if (hasDiff) parts.push('code/diff to preview changes');
+      if (hasGit) parts.push('code/git status before committing');
+      steps.push(`${steps.length + 1}. **Review** — ${parts.join(', ')}`);
+    }
+    sections.push(steps.join('\n'));
 
-    const workflowSteps = steps.join('\n');
-
-    // Build rules section
+    // ── Critical rules ────────────────────────────────────────
     const rules: string[] = [];
-    if (hasRead && hasWrite) rules.push('- NEVER edit a file you haven\'t read — always code/read first');
-    if (hasWrite && hasVerify) rules.push('- After code/write or code/edit, ALWAYS run code/verify');
-    if (hasVerify) rules.push('- When verify fails: read the error output, code/read the failing file, fix it, verify again');
-    if (hasDiscovery) rules.push('- Use code/search to find all references before renaming or refactoring');
-    if (hasUndo) rules.push('- code/undo if something goes wrong — every change is tracked');
 
-    const rulesSection = rules.length > 0 ? `\n### Rules\n${rules.join('\n')}` : '';
+    if (hasRead && (hasWrite || hasEdit)) {
+      rules.push('- **ALWAYS read before editing.** You MUST code/read a file before using code/edit or code/write on it. Editing without reading leads to wrong assumptions and broken code');
+    }
 
-    // Anti-patterns section (only if they have write tools)
-    const antiPatterns = hasWrite ? `\n### Anti-Patterns
-- Writing a file without reading the existing content first
-- Skipping verification after changes
-- Making multiple edits before verifying any of them
-- Guessing at file paths — use code/tree and code/search` : '';
+    if (hasEdit) {
+      rules.push(`- **code/edit search_replace rules:**
+  - The \`search\` text must match EXACTLY — character for character, including whitespace and indentation
+  - Include enough surrounding context to make the search text unique in the file
+  - If the edit fails (search text not found), code/read the file again — it may have changed
+  - Use code/edit for modifications. Only use code/write for NEW files that don't exist yet
+  - Prefer small, focused edits over rewriting entire files`);
+    }
 
-    return `## Coding Methodology
+    if (hasWrite && hasEdit) {
+      rules.push('- **Prefer code/edit over code/write** for existing files. code/write replaces the ENTIRE file — one mistake and all content is lost. code/edit is surgical');
+    }
 
-Tools: ${toolNames}
+    if (hasDiscovery) {
+      rules.push('- **Use code/search, not shell grep.** code/search is optimized for codebase search with regex. Use it to find patterns, references, and definitions');
+      rules.push('- **Understand existing patterns first.** Before creating something new, code/search for similar implementations. Follow existing conventions');
+    }
 
-### Workflow: Read → Edit → Verify → Iterate
-${workflowSteps}
-${rulesSection}${antiPatterns}`.trim();
+    if (hasVerify) {
+      rules.push('- **Fix errors immediately.** When code/verify fails, READ the error output carefully. code/read the failing file, understand the issue, fix it, verify again. Never leave broken code');
+    }
+
+    if (hasUndo) {
+      rules.push('- **code/undo is your safety net.** Every edit is tracked. If something goes wrong, undo it');
+    }
+
+    if (hasShell) {
+      rules.push('- **Use code tools for file operations.** Use code/read instead of shell cat/head. Use code/search instead of shell grep. Use code/tree instead of shell ls/find. Reserve code/shell/execute for build, test, and system commands');
+    }
+
+    if (rules.length > 0) {
+      sections.push(`\n### Critical Rules\n${rules.join('\n')}`);
+    }
+
+    // ── Anti-patterns ─────────────────────────────────────────
+    if (hasWrite || hasEdit) {
+      sections.push(`\n### What NOT To Do
+- Editing a file you haven't read — your search text won't match
+- Rewriting entire files with code/write when code/edit would suffice
+- Making multiple edits before verifying — verify after EACH change
+- Guessing at file paths — use code/tree and code/search to find them
+- Leaving code that doesn't compile — always verify
+- Using shell commands for file reading/searching when code tools exist`);
+    }
+
+    return sections.join('\n');
   }
 
   /**
