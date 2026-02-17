@@ -23,6 +23,7 @@ import type {
   LoRATrainingResult
 } from '../../../genome/fine-tuning/shared/FineTuningTypes';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
+import { Commands } from '../../../core/shared/Commands';
 
 /**
  * PersonaTaskExecutor - Executes various task types for autonomous PersonaUsers
@@ -76,6 +77,13 @@ export class PersonaTaskExecutor {
 
         case 'fine-tune-lora':
           outcome = await this.executeFineTuneLora(task);
+          break;
+
+        case 'sentinel-complete':
+        case 'sentinel-failed':
+        case 'sentinel-escalation':
+        case 'sentinel-approval':
+          outcome = await this.executeSentinelTask(task);
           break;
 
         case 'write-feature':
@@ -692,5 +700,102 @@ export class PersonaTaskExecutor {
         totalExamples: examples.length
       }
     };
+  }
+
+  /**
+   * Handle sentinel lifecycle tasks (escalated from SentinelEscalationService)
+   *
+   * When a sentinel completes, fails, or needs approval, the persona processes
+   * the notification. This enables the persona to:
+   * - Acknowledge completion ("my training sentinel finished")
+   * - React to failures ("the build sentinel failed, should I retry?")
+   * - Recall similar past sentinel patterns for learning
+   */
+  private async executeSentinelTask(task: InboxTask): Promise<string> {
+    const metadata = task.metadata ?? {};
+    const sentinelName = metadata.sentinelName ?? 'unknown';
+    const sentinelStatus = metadata.sentinelStatus ?? task.taskType;
+    const error = metadata.error as string | undefined;
+
+    this.log(`🤖 ${this.displayName}: Sentinel notification — "${sentinelName}" ${sentinelStatus}`);
+
+    // Recall similar sentinel memories for context
+    const relevantMemories = await this.recallSentinelPatterns(sentinelName);
+    if (relevantMemories.length > 0) {
+      this.log(`🧠 ${this.displayName}: Recalled ${relevantMemories.length} similar sentinel executions`);
+    }
+
+    switch (task.taskType) {
+      case 'sentinel-complete':
+        return `Sentinel "${sentinelName}" completed successfully. ` +
+          (relevantMemories.length > 0
+            ? `This is execution #${relevantMemories.length + 1} of similar sentinels.`
+            : 'First execution of this sentinel type.');
+
+      case 'sentinel-failed':
+        return `Sentinel "${sentinelName}" failed: ${error ?? 'unknown error'}. ` +
+          (relevantMemories.length > 0
+            ? `${relevantMemories.filter(m => m.context?.status === 'failed').length} previous failures recorded.`
+            : 'No prior execution history.');
+
+      case 'sentinel-escalation':
+        return `Sentinel "${sentinelName}" requires attention: ${task.description}`;
+
+      case 'sentinel-approval':
+        return `Sentinel "${sentinelName}" awaiting approval: ${task.description}`;
+
+      default:
+        return `Sentinel task: ${task.description}`;
+    }
+  }
+
+  /**
+   * Recall sentinel memories relevant to a given sentinel name or pattern.
+   *
+   * Queries the global memories collection for type='sentinel' memories
+   * belonging to this persona, filtered by sentinel name tags.
+   * Returns most recent first, limited to 10.
+   */
+  async recallSentinelPatterns(sentinelName?: string): Promise<Array<{
+    content: string;
+    context: Record<string, any>;
+    importance: number;
+    timestamp: any;
+  }>> {
+    try {
+      const filter: Record<string, any> = {
+        personaId: this.personaId,
+        type: 'sentinel',
+      };
+
+      const result = await Commands.execute('data/list', {
+        collection: 'memories',
+        filter,
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 10,
+      } as any) as any;
+
+      const memories = (result?.items ?? []) as Array<{
+        content: string;
+        context: Record<string, any>;
+        importance: number;
+        timestamp: any;
+        tags: string[];
+      }>;
+
+      // If a sentinel name is given, prioritize matching memories
+      if (sentinelName && memories.length > 0) {
+        const nameMatches = memories.filter(m =>
+          m.tags?.includes(sentinelName) ||
+          m.context?.sentinelName === sentinelName
+        );
+        if (nameMatches.length > 0) return nameMatches;
+      }
+
+      return memories;
+    } catch (err) {
+      this.log(`⚠️ ${this.displayName}: Failed to recall sentinel patterns: ${err}`);
+      return [];
+    }
   }
 }

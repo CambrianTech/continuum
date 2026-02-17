@@ -24,6 +24,7 @@ import type { InboxTask } from '../user/server/modules/QueueItemTypes';
 import type { SentinelEntity, SentinelExecutionResult } from './SentinelDefinition';
 import type { EscalationRule, EscalationPriority } from './entities/SentinelEntity';
 import { DEFAULT_ESCALATION_RULES } from './entities/SentinelEntity';
+import type { MemoryEntity } from '../user/server/modules/MemoryTypes';
 
 /**
  * Priority mapping: escalation priority → numeric inbox priority
@@ -154,7 +155,21 @@ async function handleSentinelLifecycle(
       );
     }
 
-    // 4. Cleanup tracking
+    // 4. Store sentinel execution as persona memory (for pattern recall)
+    if (tracking.parentPersonaId) {
+      await storeSentinelMemory(
+        tracking.parentPersonaId,
+        tracking.sentinelName,
+        tracking.entityId,
+        status,
+        payload.durationMs,
+        payload.stepsCompleted,
+        payload.totalSteps,
+        payload.error,
+      );
+    }
+
+    // 5. Cleanup tracking
     handleToEntityMap.delete(handle);
   } catch (err) {
     console.error(`[SentinelEscalation] Error handling lifecycle for ${handle}: ${err}`);
@@ -242,10 +257,77 @@ async function escalateToPersonaInbox(
       sentinelHandle: handle,
       sentinelStatus: status,
       error,
-    } as any,
+    },
   };
 
   // Emit the task event — PersonaUser's event listener will pick it up
   // and enqueue it into the persona's inbox
   Events.emit(`task:${parentPersonaId}:created`, task);
+}
+
+/**
+ * Store a sentinel execution as a MemoryEntity for the owning persona.
+ *
+ * This enables pattern recall: when the persona faces a similar task,
+ * it can recall past sentinel executions that worked (or failed) and
+ * re-use or avoid those patterns.
+ */
+async function storeSentinelMemory(
+  parentPersonaId: string,
+  sentinelName: string,
+  entityId: string,
+  status: 'completed' | 'failed' | 'cancelled',
+  durationMs?: number,
+  stepsCompleted?: number,
+  totalSteps?: number,
+  error?: string,
+): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+    const durationStr = durationMs ? `${(durationMs / 1000).toFixed(1)}s` : 'unknown';
+    const stepsStr = totalSteps ? `${stepsCompleted ?? '?'}/${totalSteps}` : '';
+
+    const content = status === 'completed'
+      ? `Sentinel "${sentinelName}" completed successfully in ${durationStr}${stepsStr ? ` (${stepsStr} steps)` : ''}`
+      : status === 'failed'
+      ? `Sentinel "${sentinelName}" failed after ${durationStr}: ${error ?? 'unknown error'}`
+      : `Sentinel "${sentinelName}" was cancelled after ${durationStr}`;
+
+    // Importance: successful executions are more worth remembering than failures
+    // (we learn patterns from success; errors are already tracked in entity history)
+    const importance = status === 'completed' ? 0.7 : status === 'failed' ? 0.5 : 0.3;
+
+    const memory: Partial<MemoryEntity> = {
+      id: generateUUID(),
+      personaId: parentPersonaId,
+      sessionId: 'sentinel-lifecycle',
+      type: 'sentinel' as any,
+      content,
+      context: {
+        sentinelName,
+        sentinelEntityId: entityId,
+        status,
+        durationMs,
+        stepsCompleted,
+        totalSteps,
+        error,
+      },
+      timestamp: now as any,
+      importance,
+      accessCount: 0,
+      relatedTo: [entityId],
+      tags: ['sentinel', sentinelName, status],
+      source: 'sentinel-escalation',
+    };
+
+    await Commands.execute('data/create', {
+      collection: 'memories',
+      data: memory,
+    } as any);
+
+    console.log(`[SentinelEscalation] Stored sentinel memory for persona ${parentPersonaId}: ${content.slice(0, 80)}`);
+  } catch (err) {
+    // Non-critical — don't let memory storage failure break escalation flow
+    console.error(`[SentinelEscalation] Failed to store sentinel memory: ${err}`);
+  }
 }

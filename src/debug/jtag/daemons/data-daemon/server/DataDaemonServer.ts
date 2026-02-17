@@ -135,6 +135,11 @@ export class DataDaemonServer extends DataDaemonBase {
     initializeSentinelEscalation();
     this.log.debug('Sentinel escalation service initialized');
 
+    // Initialize sentinel trigger service (auto-execute sentinels on event/cron/immediate)
+    const { initializeSentinelTriggers } = await import('../../../system/sentinel/SentinelTriggerService');
+    await initializeSentinelTriggers();
+    this.log.debug('Sentinel trigger service initialized');
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ DataDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
   }

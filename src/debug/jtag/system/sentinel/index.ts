@@ -53,3 +53,12 @@ export {
   registerSentinelHandle,
   unregisterSentinelHandle,
 } from './SentinelEscalationService';
+
+// Trigger service (automatic sentinel execution: event, cron, immediate)
+export {
+  initializeSentinelTriggers,
+  shutdownSentinelTriggers,
+  getActiveTriggerCount,
+  listActiveTriggers,
+  parseCronSchedule,
+} from './SentinelTriggerService';

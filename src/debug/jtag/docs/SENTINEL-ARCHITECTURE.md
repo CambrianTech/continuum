@@ -374,9 +374,9 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 | Uniform step signatures (PipelineContext) | ✅ Implemented | All steps receive `PipelineContext` |
 | **Persona ownership** | ❌ Needed | TypeScript + data layer |
 | **Escalation → inbox** | ❌ Needed | TypeScript integration |
-| **SentinelEntity persistence** | ❌ Needed | TypeScript data layer |
-| **Memory/recall integration** | ❌ Needed | TypeScript integration |
-| **Triggers (event, schedule)** | ❌ Needed | Rust or TypeScript |
+| **SentinelEntity persistence** | ✅ Done | `SentinelEntity` class + EntityRegistry |
+| **Memory/recall integration** | ✅ Done | `MemoryType.SENTINEL` + `recallSentinelPatterns()` |
+| **Triggers (event, schedule)** | ✅ Done | `SentinelTriggerService` (immediate/event/cron/manual) |
 
 The Rust pipeline engine is ~90% complete. 9 step types implemented across all composition patterns (sequential, conditional, looping, parallel, event-driven, nested). The remaining work is the lifecycle/integration layer (persona ownership, persistence, triggers).
 
@@ -2622,9 +2622,9 @@ Wire sentinels into the persona cognitive cycle.
 - [x] **Escalation → persona inbox** — `SentinelEscalationService` routes sentinel lifecycle events to `InboxTask` for owning persona
 - [x] **Escalation rules** — Configurable per-sentinel: `{ condition, action, priority }` with defaults for error/timeout/complete
 - [x] **Execution tracking** — `registerSentinelHandle()` links ephemeral Rust handles to durable entities, persists execution results
-- [ ] **Memory integration** — Successful sentinels stored as memories (`memory/store` with type `sentinel`)
-- [ ] **Memory recall** — Persona recalls sentinel patterns when facing similar tasks
-- [ ] **Triggers** — `immediate`, `event`, `schedule` (cron), `manual` trigger types
+- [x] **Memory integration** — Sentinel completions stored as `MemoryType.SENTINEL` memories via `SentinelEscalationService.storeSentinelMemory()`
+- [x] **Memory recall** — `PersonaTaskExecutor.recallSentinelPatterns()` queries sentinel memories for pattern matching when processing sentinel tasks
+- [x] **Triggers** — `SentinelTriggerService`: `immediate`, `event` (debounce-aware), `cron` (interval scheduling), `manual` trigger types. Auto-loads from database on startup.
 - [ ] **Live step CRUD** — Add/update/remove steps on a running sentinel (next iteration picks up changes)
 
 ### Phase C: Genome Integration

@@ -43,6 +43,10 @@ import { AdapterPackage } from '../../system/genome/server/AdapterPackage';
 import type { AdapterPackageManifest } from '../../system/genome/shared/AdapterPackageTypes';
 import { GenomeLayerEntity } from '../../system/genome/entities/GenomeLayerEntity';
 import { SentinelEntity as SentinelEntityClass, DEFAULT_ESCALATION_RULES, VALID_SENTINEL_STATUSES } from '../../system/sentinel/entities/SentinelEntity';
+import { parseCronSchedule } from '../../system/sentinel/SentinelTriggerService';
+import { MemoryType } from '../../system/data/entities/MemoryEntity';
+import { MemoryType as MemoryTypeHippocampus } from '../../system/user/server/modules/MemoryTypes';
+import type { SentinelTrigger } from '../../system/sentinel/SentinelDefinition';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1541,5 +1545,113 @@ describe('Escalation Rules', () => {
     expect(VALID_SENTINEL_STATUSES).toContain('paused');
     expect(VALID_SENTINEL_STATUSES).toContain('cancelled');
     expect(VALID_SENTINEL_STATUSES).toHaveLength(6);
+  });
+});
+
+describe('Sentinel Memory Integration', () => {
+  it('should include SENTINEL in MemoryType enum (entity)', () => {
+    expect(MemoryType.SENTINEL).toBe('sentinel');
+  });
+
+  it('should include SENTINEL in MemoryType enum (hippocampus)', () => {
+    expect(MemoryTypeHippocampus.SENTINEL).toBe('sentinel');
+  });
+
+  it('should have consistent MemoryType values between entity and hippocampus', () => {
+    // Both enums should have the same values for all types
+    const entityValues = Object.values(MemoryType);
+    const hippocampusValues = Object.values(MemoryTypeHippocampus);
+    expect(entityValues.sort()).toEqual(hippocampusValues.sort());
+  });
+
+  it('MemoryType should have 8 values including sentinel', () => {
+    const values = Object.values(MemoryType);
+    expect(values).toHaveLength(8);
+    expect(values).toContain('chat');
+    expect(values).toContain('observation');
+    expect(values).toContain('task');
+    expect(values).toContain('decision');
+    expect(values).toContain('tool-use');
+    expect(values).toContain('error');
+    expect(values).toContain('insight');
+    expect(values).toContain('sentinel');
+  });
+});
+
+describe('Sentinel Trigger Service', () => {
+  describe('parseCronSchedule', () => {
+    it('should parse plain milliseconds', () => {
+      expect(parseCronSchedule('60000')).toBe(60000);
+      expect(parseCronSchedule('1000')).toBe(1000);
+    });
+
+    it('should parse "every Ns" format', () => {
+      expect(parseCronSchedule('every 30s')).toBe(30000);
+      expect(parseCronSchedule('every 5s')).toBe(5000);
+      expect(parseCronSchedule('every 1 sec')).toBe(1000);
+      expect(parseCronSchedule('every 10 seconds')).toBe(10000);
+    });
+
+    it('should parse "every Nm" format', () => {
+      expect(parseCronSchedule('every 5m')).toBe(300000);
+      expect(parseCronSchedule('every 1m')).toBe(60000);
+      expect(parseCronSchedule('every 30 min')).toBe(1800000);
+      expect(parseCronSchedule('every 2 minutes')).toBe(120000);
+    });
+
+    it('should parse "every Nh" format', () => {
+      expect(parseCronSchedule('every 1h')).toBe(3600000);
+      expect(parseCronSchedule('every 2h')).toBe(7200000);
+      expect(parseCronSchedule('every 1 hr')).toBe(3600000);
+      expect(parseCronSchedule('every 24 hours')).toBe(86400000);
+    });
+
+    it('should return null for invalid schedules', () => {
+      expect(parseCronSchedule('invalid')).toBeNull();
+      expect(parseCronSchedule('')).toBeNull();
+      expect(parseCronSchedule('every')).toBeNull();
+      expect(parseCronSchedule('every 5x')).toBeNull();
+    });
+
+    it('should return null for zero or negative values', () => {
+      expect(parseCronSchedule('0')).toBeNull();
+      expect(parseCronSchedule('-1000')).toBeNull();
+    });
+  });
+
+  describe('SentinelTrigger types', () => {
+    it('should support immediate trigger', () => {
+      const trigger: SentinelTrigger = { type: 'immediate' };
+      expect(trigger.type).toBe('immediate');
+    });
+
+    it('should support event trigger with debounce', () => {
+      const trigger: SentinelTrigger = {
+        type: 'event',
+        event: 'data:users:created',
+        debounceMs: 5000,
+        allowConcurrent: false,
+      };
+      expect(trigger.type).toBe('event');
+      expect(trigger.event).toBe('data:users:created');
+      expect(trigger.debounceMs).toBe(5000);
+      expect(trigger.allowConcurrent).toBe(false);
+    });
+
+    it('should support cron trigger', () => {
+      const trigger: SentinelTrigger = {
+        type: 'cron',
+        schedule: 'every 5m',
+        allowConcurrent: true,
+      };
+      expect(trigger.type).toBe('cron');
+      expect(trigger.schedule).toBe('every 5m');
+      expect(trigger.allowConcurrent).toBe(true);
+    });
+
+    it('should support manual trigger', () => {
+      const trigger: SentinelTrigger = { type: 'manual' };
+      expect(trigger.type).toBe('manual');
+    });
   });
 });
