@@ -86,6 +86,7 @@ import { SkillEntity } from '../../../system/data/entities/SkillEntity';
 import { AcademySessionEntity } from '../../../system/genome/entities/AcademySessionEntity';
 import { AcademyCurriculumEntity } from '../../../system/genome/entities/AcademyCurriculumEntity';
 import { AcademyExaminationEntity } from '../../../system/genome/entities/AcademyExaminationEntity';
+import { CompetitionEntity } from '../../../system/genome/entities/CompetitionEntity';
 import { SentinelEntity } from '../../../system/sentinel/entities/SentinelEntity';
 
 /**
@@ -146,6 +147,7 @@ export function initializeEntityRegistry(): void {
   new AcademySessionEntity();
   new AcademyCurriculumEntity();
   new AcademyExaminationEntity();
+  new CompetitionEntity();
   new SentinelEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
@@ -198,6 +200,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(AcademySessionEntity.collection, AcademySessionEntity);
   registerEntity(AcademyCurriculumEntity.collection, AcademyCurriculumEntity);
   registerEntity(AcademyExaminationEntity.collection, AcademyExaminationEntity);
+  registerEntity(CompetitionEntity.collection, CompetitionEntity);
   registerEntity(SentinelEntity.collection, SentinelEntity);
 
   log.info('All entities registered');

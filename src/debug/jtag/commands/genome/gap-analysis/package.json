@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/gap-analysis",
+  "version": "1.0.0",
+  "description": "Analyze performance gaps across competitors in an Academy competition — identifies weak areas per persona",
+  "main": "server/GenomeGapAnalysisServerCommand.ts",
+  "types": "shared/GenomeGapAnalysisTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeGapAnalysisIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/gap-analysis"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

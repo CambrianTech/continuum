@@ -2651,10 +2651,10 @@ The selection pressure that drives genome evolution.
 - [x] **Inter-sentinel coordination** — emit/watch events scoped by session: `academy:{sessionId}:{action}`
 - [x] **Curriculum design** — Teacher LLM researches skill domain, designs 3-5 progressive topics
 - [x] **Remediation loop** — Inner exam retry loop in teacher pipeline: on failure, synthesizes targeted remedial data based on `weakAreas` feedback, re-emits `dataset:ready` for student re-training, up to `maxTopicAttempts` attempts per topic.
-- [ ] **Multi-persona competition** — Multiple students train on same curriculum in parallel (N:M support)
-- [ ] **Performance gap analysis** — Identify specific skill gaps from exam results, drive targeted retraining
-- [ ] **Evolution tournament** — Multi-round competition with training between rounds
-- [ ] **Competitive ranking** — Track persona rankings across competitions
+- [x] **Multi-persona competition** — `genome/academy-competition` spawns 1 teacher + N student sentinels on shared curriculum. `CompetitionEntity` tracks per-competitor scores, handles, and rankings. Supports duplicate detection and parallel student spawning.
+- [x] **Performance gap analysis** — `genome/gap-analysis` reads competition state, computes per-topic `TopicGap` (gap from field best/average), identifies weakest/strongest topics, produces prioritized `remediationPriorities` for targeted retraining.
+- [x] **Evolution tournament** — `TournamentRound` tracks multi-round competitions with `TournamentRanking` snapshots per round. `scoreDelta`/`rankDelta` track improvement between rounds. `CompetitionConfig.tournamentRounds` controls number of rounds.
+- [x] **Competitive ranking** — `CompetitorEntry` tracks per-persona `topicScores[]`, `averageScore`, `rank`, `layerIds[]`. Rankings computed from exam scores across all topics. `CompetitionRankingPayload` event broadcasts rankings.
 - [x] **Inference demos** — Student pipeline emits `inference:demo` event with sample Q&A comparison (baseline vs adapted) after quality gate passes. `InferenceDemoPayload` includes scores, improvement, and sample answers.
 
 ### Phase E: Marketplace & Distribution

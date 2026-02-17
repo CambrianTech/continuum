@@ -53,6 +53,27 @@ import { academyEvent, DEFAULT_ACADEMY_CONFIG } from '../../system/genome/shared
 import { buildStudentPipeline } from '../../system/sentinel/pipelines/StudentPipeline';
 import { buildTeacherPipeline } from '../../system/sentinel/pipelines/TeacherPipeline';
 import type { GenomeComposeParams, ComposeLayerRef } from '../../commands/genome/compose/shared/GenomeComposeTypes';
+import type { GenomeAcademyCompetitionParams, CompetitorDef, CompetitorHandle } from '../../commands/genome/academy-competition/shared/GenomeAcademyCompetitionTypes';
+import type { GenomeGapAnalysisParams, GenomeGapAnalysisResult } from '../../commands/genome/gap-analysis/shared/GenomeGapAnalysisTypes';
+import { CompetitionEntity } from '../../system/genome/entities/CompetitionEntity';
+import type {
+  CompetitionStatus,
+  CompetitorEntry,
+  CompetitionConfig,
+  TopicGap,
+  GapAnalysis,
+  TournamentRound,
+  TournamentRanking,
+  CompetitionEventAction,
+  CompetitionStartedPayload,
+  CompetitionRankingPayload,
+  CompetitionCompletePayload,
+} from '../../system/genome/shared/CompetitionTypes';
+import {
+  VALID_COMPETITION_STATUSES,
+  DEFAULT_COMPETITION_CONFIG,
+  competitionEvent,
+} from '../../system/genome/shared/CompetitionTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -2000,5 +2021,370 @@ describe('Academy Remediation Types', () => {
     expect(payload.isRemediation).toBe(true);
     expect(payload.round).toBe(2);
     expect(payload.datasetPath).toBe('/tmp/remedial.jsonl');
+  });
+});
+
+// ============================================================================
+// Competition Types
+// ============================================================================
+
+describe('Competition Types', () => {
+  it('should define all valid competition statuses', () => {
+    expect(VALID_COMPETITION_STATUSES).toContain('pending');
+    expect(VALID_COMPETITION_STATUSES).toContain('curriculum');
+    expect(VALID_COMPETITION_STATUSES).toContain('training');
+    expect(VALID_COMPETITION_STATUSES).toContain('examining');
+    expect(VALID_COMPETITION_STATUSES).toContain('ranking');
+    expect(VALID_COMPETITION_STATUSES).toContain('complete');
+    expect(VALID_COMPETITION_STATUSES).toContain('failed');
+    expect(VALID_COMPETITION_STATUSES).toHaveLength(7);
+  });
+
+  it('should provide default competition config extending academy config', () => {
+    expect(DEFAULT_COMPETITION_CONFIG.tournamentRounds).toBe(1);
+    expect(DEFAULT_COMPETITION_CONFIG.remediateBetweenRounds).toBe(true);
+    // Inherits academy defaults
+    expect(DEFAULT_COMPETITION_CONFIG.passingScore).toBe(70);
+    expect(DEFAULT_COMPETITION_CONFIG.maxTopicAttempts).toBe(3);
+    expect(DEFAULT_COMPETITION_CONFIG.epochs).toBe(3);
+    expect(DEFAULT_COMPETITION_CONFIG.rank).toBe(32);
+  });
+
+  it('should generate scoped competition events', () => {
+    const event = competitionEvent('comp-123', 'started');
+    expect(event).toBe('competition:comp-123:started');
+
+    const rankEvent = competitionEvent('comp-456', 'ranking:computed');
+    expect(rankEvent).toBe('competition:comp-456:ranking:computed');
+  });
+
+  it('should define CompetitorEntry with all tracking fields', () => {
+    const entry: CompetitorEntry = {
+      personaId: 'persona-1' as UUID,
+      personaName: 'Helper AI',
+      studentHandle: 'handle-abc',
+      sessionId: 'session-1' as UUID,
+      topicScores: [85, 72, 90],
+      topicsPassed: 3,
+      totalAttempts: 4,
+      averageScore: 82.3,
+      rank: 1,
+      totalTrainingTimeMs: 45000,
+      layerIds: ['layer-1' as UUID, 'layer-2' as UUID],
+    };
+    expect(entry.topicScores).toHaveLength(3);
+    expect(entry.rank).toBe(1);
+    expect(entry.layerIds).toHaveLength(2);
+  });
+
+  it('should define TopicGap with gap calculations', () => {
+    const gap: TopicGap = {
+      topicIndex: 0,
+      topicName: 'Type Guards',
+      personaScore: 65,
+      fieldBest: 90,
+      fieldAverage: 78.5,
+      gapFromBest: -25,
+      gapFromAverage: -13.5,
+      weakAreas: ['narrowing', 'discriminated unions'],
+    };
+    expect(gap.gapFromBest).toBeLessThan(0);
+    expect(gap.gapFromAverage).toBeLessThan(0);
+    expect(gap.weakAreas).toHaveLength(2);
+  });
+
+  it('should define GapAnalysis with prioritized remediation', () => {
+    const analysis: GapAnalysis = {
+      personaId: 'persona-1' as UUID,
+      personaName: 'Helper AI',
+      competitionId: 'comp-1' as UUID,
+      topicGaps: [],
+      overallRank: 2,
+      overallAverage: 75,
+      weakestTopics: ['Advanced Generics'],
+      strongestTopics: ['Basic Types'],
+      remediationPriorities: ['Advanced Generics'],
+    };
+    expect(analysis.weakestTopics).toContain('Advanced Generics');
+    expect(analysis.remediationPriorities).toHaveLength(1);
+  });
+
+  it('should define TournamentRound with rankings snapshot', () => {
+    const round: TournamentRound = {
+      round: 1,
+      competitionId: 'comp-1' as UUID,
+      rankings: [
+        { personaId: 'p1' as UUID, personaName: 'AI-1', rank: 1, score: 88, scoreDelta: null, rankDelta: null },
+        { personaId: 'p2' as UUID, personaName: 'AI-2', rank: 2, score: 75, scoreDelta: null, rankDelta: null },
+      ],
+      remediationApplied: false,
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T01:00:00Z',
+    };
+    expect(round.rankings).toHaveLength(2);
+    expect(round.rankings[0].rank).toBe(1);
+    expect(round.rankings[0].scoreDelta).toBeNull();
+  });
+
+  it('should define TournamentRanking with deltas for subsequent rounds', () => {
+    const ranking: TournamentRanking = {
+      personaId: 'p1' as UUID,
+      personaName: 'AI-1',
+      rank: 1,
+      score: 92,
+      scoreDelta: 4,     // Improved from 88
+      rankDelta: 1,      // Moved up 1 rank
+    };
+    expect(ranking.scoreDelta).toBe(4);
+    expect(ranking.rankDelta).toBe(1);
+  });
+});
+
+// ============================================================================
+// Competition Entity
+// ============================================================================
+
+describe('CompetitionEntity', () => {
+  it('should have correct collection name', () => {
+    expect(CompetitionEntity.collection).toBe('academy_competitions');
+  });
+
+  it('should initialize with sensible defaults', () => {
+    const entity = new CompetitionEntity();
+    expect(entity.skill).toBe('');
+    expect(entity.baseModel).toBe('smollm2:135m');
+    expect(entity.status).toBe('pending');
+    expect(entity.competitors).toEqual([]);
+    expect(entity.currentRound).toBe(0);
+    expect(entity.rounds).toEqual([]);
+    expect(entity.totalTopics).toBe(0);
+    expect(entity.config.tournamentRounds).toBe(1);
+  });
+
+  it('should validate required fields', () => {
+    const entity = new CompetitionEntity();
+    const result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('skill');
+  });
+
+  it('should require at least 2 competitors', () => {
+    const entity = new CompetitionEntity();
+    entity.skill = 'typescript';
+    entity.competitors = [{
+      personaId: 'p1' as UUID,
+      personaName: 'AI-1',
+      studentHandle: '',
+      sessionId: '' as UUID,
+      topicScores: [],
+      topicsPassed: 0,
+      totalAttempts: 0,
+      averageScore: 0,
+      rank: 0,
+      totalTrainingTimeMs: 0,
+      layerIds: [],
+    }];
+    const result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('at least 2 competitors');
+  });
+
+  it('should validate with 2+ competitors', () => {
+    const entity = new CompetitionEntity();
+    entity.skill = 'typescript';
+    const makeCompetitor = (id: string, name: string): CompetitorEntry => ({
+      personaId: id as UUID,
+      personaName: name,
+      studentHandle: '',
+      sessionId: '' as UUID,
+      topicScores: [],
+      topicsPassed: 0,
+      totalAttempts: 0,
+      averageScore: 0,
+      rank: 0,
+      totalTrainingTimeMs: 0,
+      layerIds: [],
+    });
+    entity.competitors = [makeCompetitor('p1', 'AI-1'), makeCompetitor('p2', 'AI-2')];
+    const result = entity.validate();
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject invalid status', () => {
+    const entity = new CompetitionEntity();
+    entity.skill = 'typescript';
+    entity.status = 'invalid' as any;
+    const makeCompetitor = (id: string, name: string): CompetitorEntry => ({
+      personaId: id as UUID,
+      personaName: name,
+      studentHandle: '',
+      sessionId: '' as UUID,
+      topicScores: [],
+      topicsPassed: 0,
+      totalAttempts: 0,
+      averageScore: 0,
+      rank: 0,
+      totalTrainingTimeMs: 0,
+      layerIds: [],
+    });
+    entity.competitors = [makeCompetitor('p1', 'AI-1'), makeCompetitor('p2', 'AI-2')];
+    const result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('status must be one of');
+  });
+
+  it('should reject invalid tournament rounds', () => {
+    const entity = new CompetitionEntity();
+    entity.skill = 'typescript';
+    entity.config = { ...DEFAULT_COMPETITION_CONFIG, tournamentRounds: 0 };
+    const makeCompetitor = (id: string, name: string): CompetitorEntry => ({
+      personaId: id as UUID,
+      personaName: name,
+      studentHandle: '',
+      sessionId: '' as UUID,
+      topicScores: [],
+      topicsPassed: 0,
+      totalAttempts: 0,
+      averageScore: 0,
+      rank: 0,
+      totalTrainingTimeMs: 0,
+      layerIds: [],
+    });
+    entity.competitors = [makeCompetitor('p1', 'AI-1'), makeCompetitor('p2', 'AI-2')];
+    const result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('tournamentRounds');
+  });
+
+  it('should return collection from instance getter', () => {
+    const entity = new CompetitionEntity();
+    expect(entity.collection).toBe('academy_competitions');
+  });
+});
+
+// ============================================================================
+// Competition Command Types
+// ============================================================================
+
+describe('Competition Command Types', () => {
+  it('should define CompetitorDef with required fields', () => {
+    const def: CompetitorDef = {
+      personaId: 'p1' as UUID,
+      personaName: 'Helper AI',
+    };
+    expect(def.personaId).toBe('p1');
+    expect(def.personaName).toBe('Helper AI');
+  });
+
+  it('should define GenomeAcademyCompetitionParams with competitor array', () => {
+    const params: GenomeAcademyCompetitionParams = {
+      skill: 'typescript-generics',
+      competitors: [
+        { personaId: 'p1' as UUID, personaName: 'AI-1' },
+        { personaId: 'p2' as UUID, personaName: 'AI-2' },
+        { personaId: 'p3' as UUID, personaName: 'AI-3' },
+      ],
+      baseModel: 'smollm2:135m',
+      tournamentRounds: 2,
+    } as any;
+    expect(params.competitors).toHaveLength(3);
+    expect(params.skill).toBe('typescript-generics');
+    expect(params.tournamentRounds).toBe(2);
+  });
+
+  it('should define CompetitorHandle with session and sentinel info', () => {
+    const handle: CompetitorHandle = {
+      personaId: 'p1' as UUID,
+      personaName: 'AI-1',
+      studentHandle: 'sentinel-abc',
+      sessionId: 'session-123' as UUID,
+    };
+    expect(handle.studentHandle).toBe('sentinel-abc');
+    expect(handle.sessionId).toBe('session-123');
+  });
+});
+
+// ============================================================================
+// Gap Analysis Types
+// ============================================================================
+
+describe('Gap Analysis Types', () => {
+  it('should define GenomeGapAnalysisParams', () => {
+    const params: GenomeGapAnalysisParams = {
+      competitionId: 'comp-1' as UUID,
+      personaId: 'p1' as UUID,
+    } as any;
+    expect(params.competitionId).toBe('comp-1');
+    expect(params.personaId).toBe('p1');
+  });
+
+  it('should define GenomeGapAnalysisResult with analyses array', () => {
+    const result: GenomeGapAnalysisResult = {
+      success: true,
+      analyses: [{
+        personaId: 'p1' as UUID,
+        personaName: 'AI-1',
+        competitionId: 'comp-1' as UUID,
+        topicGaps: [],
+        overallRank: 1,
+        overallAverage: 88,
+        weakestTopics: [],
+        strongestTopics: ['Basic Types'],
+        remediationPriorities: [],
+      }],
+      skill: 'typescript',
+      totalTopics: 3,
+    } as any;
+    expect(result.analyses).toHaveLength(1);
+    expect(result.analyses[0].overallRank).toBe(1);
+    expect(result.totalTopics).toBe(3);
+  });
+});
+
+// ============================================================================
+// Competition Event Payloads
+// ============================================================================
+
+describe('Competition Event Payloads', () => {
+  it('should define CompetitionStartedPayload', () => {
+    const payload: CompetitionStartedPayload = {
+      competitionId: 'comp-1' as UUID,
+      skill: 'typescript',
+      competitorCount: 3,
+      competitors: [
+        { personaId: 'p1' as UUID, personaName: 'AI-1' },
+        { personaId: 'p2' as UUID, personaName: 'AI-2' },
+        { personaId: 'p3' as UUID, personaName: 'AI-3' },
+      ],
+    };
+    expect(payload.competitorCount).toBe(3);
+    expect(payload.competitors).toHaveLength(3);
+  });
+
+  it('should define CompetitionRankingPayload', () => {
+    const payload: CompetitionRankingPayload = {
+      competitionId: 'comp-1' as UUID,
+      rankings: [
+        { personaId: 'p1' as UUID, personaName: 'AI-1', rank: 1, score: 90, scoreDelta: 5, rankDelta: 1 },
+        { personaId: 'p2' as UUID, personaName: 'AI-2', rank: 2, score: 78, scoreDelta: -2, rankDelta: -1 },
+      ],
+      round: 2,
+    };
+    expect(payload.rankings).toHaveLength(2);
+    expect(payload.round).toBe(2);
+    expect(payload.rankings[0].scoreDelta).toBe(5);
+  });
+
+  it('should define CompetitionCompletePayload', () => {
+    const payload: CompetitionCompletePayload = {
+      competitionId: 'comp-1' as UUID,
+      skill: 'typescript',
+      finalRankings: [
+        { personaId: 'p1' as UUID, personaName: 'AI-1', rank: 1, score: 92, scoreDelta: 2, rankDelta: 0 },
+      ],
+      totalRounds: 3,
+    };
+    expect(payload.totalRounds).toBe(3);
+    expect(payload.finalRankings[0].rank).toBe(1);
   });
 });
