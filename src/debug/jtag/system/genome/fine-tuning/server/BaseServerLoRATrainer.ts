@@ -15,6 +15,8 @@ import type {
   LoRATrainingRequest,
   TrainingDataset
 } from '../shared/FineTuningTypes';
+import { AdapterPackage, type AdapterPackageManifest } from '../../server/AdapterPackage';
+import type { TrainingMetadata } from '../../entities/GenomeLayerEntity';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -100,17 +102,18 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
    */
   protected async createConfigFile(
     request: LoRATrainingRequest,
-    capabilities: ReturnType<BaseServerLoRATrainer['getFineTuningCapabilities']>
+    capabilities: ReturnType<BaseServerLoRATrainer['getFineTuningCapabilities']>,
+    datasetPath?: string
   ): Promise<string> {
     const config = {
       baseModel: request.baseModel,
-      datasetPath: '', // Will be set by Python script
+      datasetPath: datasetPath ?? '',
       rank: request.rank ?? capabilities.defaultRank,
       alpha: request.alpha ?? capabilities.defaultAlpha,
       epochs: request.epochs ?? capabilities.defaultEpochs,
       learningRate: request.learningRate ?? capabilities.defaultLearningRate,
       batchSize: request.batchSize ?? capabilities.defaultBatchSize,
-      outputDir: '' // Will be set by Python script
+      outputDir: '' // Set by --output CLI arg
     };
 
     const configPath = path.join(os.tmpdir(), `jtag-config-${Date.now()}.json`);
@@ -208,14 +211,19 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
   }
 
   /**
-   * Save trained adapter to genome storage
+   * Save trained adapter to genome storage with manifest
    *
    * @param request Training request (for naming)
    * @param outputDir Directory containing trained adapter files
-   * @returns Path to saved adapter
+   * @param trainingMetadata Training provenance metadata
+   * @returns Adapter path and manifest
    * @protected
    */
-  protected async saveAdapter(request: LoRATrainingRequest, outputDir: string): Promise<string> {
+  protected async saveAdapter(
+    request: LoRATrainingRequest,
+    outputDir: string,
+    trainingMetadata: TrainingMetadata,
+  ): Promise<{ adapterPath: string; manifest: AdapterPackageManifest }> {
     // Create genome adapters directory
     const adaptersDir = path.join('.continuum', 'genome', 'adapters');
     await fs.promises.mkdir(adaptersDir, { recursive: true });
@@ -225,16 +233,48 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     const adapterPath = path.join(adaptersDir, adapterName);
     await fs.promises.mkdir(adapterPath, { recursive: true });
 
-    // Copy all adapter files from output directory
-    const files = await fs.promises.readdir(outputDir);
-    for (const file of files) {
-      const srcPath = path.join(outputDir, file);
-      const destPath = path.join(adapterPath, file);
-      await fs.promises.copyFile(srcPath, destPath);
-    }
+    // Copy all adapter files from output directory (handles both files and subdirectories)
+    await this.copyDirRecursive(outputDir, adapterPath);
+
+    // Calculate real size and content hash
+    const sizeMB = await AdapterPackage.calculateSizeMB(adapterPath);
+    const contentHash = await AdapterPackage.calculateContentHash(adapterPath);
+
+    // Build and write manifest
+    const manifest = AdapterPackage.buildManifest({
+      adapterPath,
+      personaId: request.personaId,
+      personaName: request.personaName,
+      traitType: request.traitType,
+      baseModel: request.baseModel,
+      rank: request.rank ?? 32,
+      sizeMB,
+      contentHash,
+      trainingMetadata,
+    });
+
+    await AdapterPackage.writeManifest(adapterPath, manifest);
 
     console.log(`   Adapter files copied to: ${adapterPath}`);
-    return adapterPath;
+    console.log(`   Manifest written (${sizeMB}MB, hash: ${contentHash.slice(0, 20)}...)`);
+    return { adapterPath, manifest };
+  }
+
+  /**
+   * Recursively copy a directory's contents to a destination
+   */
+  private async copyDirRecursive(src: string, dest: string): Promise<void> {
+    const entries = await fs.promises.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+      if (entry.isDirectory()) {
+        await fs.promises.mkdir(destPath, { recursive: true });
+        await this.copyDirRecursive(srcPath, destPath);
+      } else {
+        await fs.promises.copyFile(srcPath, destPath);
+      }
+    }
   }
 
   /**

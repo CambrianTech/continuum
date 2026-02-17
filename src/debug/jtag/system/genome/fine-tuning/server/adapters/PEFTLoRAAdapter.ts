@@ -174,12 +174,12 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
     // Update request with HuggingFace model name
     const mappedRequest = { ...request, baseModel: hfModelName };
 
-    // 1. Create config JSON (using base class helper with mapped model)
-    const capabilities = this.getFineTuningCapabilities();
-    const configPath = await this.createConfigFile(mappedRequest, capabilities);
-
-    // 2. Export dataset to JSONL (using base class helper)
+    // 1. Export dataset to JSONL first (need path for config)
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
+
+    // 2. Create config JSON with real dataset path
+    const capabilities = this.getFineTuningCapabilities();
+    const configPath = await this.createConfigFile(mappedRequest, capabilities, datasetPath);
 
     // 3. Create output directory
     const outputDir = path.join(os.tmpdir(), `jtag-training-${Date.now()}`);
@@ -189,10 +189,20 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       // 4. Execute Python training script (using base class helper)
       const metrics = await this.executePythonScript('peft-train.py', configPath, outputDir);
 
-      // 5. Copy adapter to genome storage (using base class helper)
-      const adapterPath = await this.saveAdapter(request, outputDir);
-
       const trainingTime = Date.now() - startTime;
+      const epochs = request.epochs ?? 3;
+
+      // 5. Build training metadata for manifest
+      const trainingMetadata = {
+        epochs,
+        loss: metrics.finalLoss,
+        performance: 0,
+        trainingDuration: trainingTime,
+        datasetHash: `examples:${request.dataset.examples.length}`,
+      };
+
+      // 6. Copy adapter to genome storage with manifest (using base class helper)
+      const { adapterPath, manifest } = await this.saveAdapter(request, outputDir, trainingMetadata);
 
       console.log(`✅ Training complete in ${(trainingTime / 1000).toFixed(2)}s`);
       console.log(`   Adapter saved to: ${adapterPath}`);
@@ -200,11 +210,12 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       return {
         success: true,
         modelPath: adapterPath,
+        manifest,
         metrics: {
           trainingTime,
           finalLoss: metrics.finalLoss,
           examplesProcessed: request.dataset.examples.length,
-          epochs: request.epochs ?? 3
+          epochs,
         }
       };
     } finally {

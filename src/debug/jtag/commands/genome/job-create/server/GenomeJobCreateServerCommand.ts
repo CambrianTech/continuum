@@ -25,7 +25,7 @@ import type { UUID } from '../../../../system/core/types/CrossPlatformUUID';
 import type { BaseLoRATrainer } from '../../../../system/genome/fine-tuning/shared/BaseLoRATrainer';
 import type { LoRATrainingRequest, TrainingDataset } from '../../../../system/genome/fine-tuning/shared/FineTuningTypes';
 import { getSecret } from '../../../../system/secrets/SecretManager';
-import * as fs from 'fs';
+import { TrainingDatasetBuilder } from '../../../../system/genome/fine-tuning/server/TrainingDatasetBuilder';
 
 import { DataCreate } from '../../../data/create/shared/DataCreateTypes';
 import { DataUpdate } from '../../../data/update/shared/DataUpdateTypes';
@@ -65,29 +65,15 @@ async function createFineTuningAdapter(provider: string): Promise<BaseLoRATraine
 }
 
 /**
- * Load training dataset from file path
- * Uses fs.promises for proper async file I/O
+ * Load training dataset from file path using shared TrainingDatasetBuilder
  */
 async function loadTrainingDatasetFromFile(filePath: string, personaId: UUID): Promise<TrainingDataset> {
-  const content = await fs.promises.readFile(filePath, 'utf-8');
-  const lines = content.trim().split('\n').filter(line => line.trim());
-
-  const examples = lines.map(line => {
-    const parsed = JSON.parse(line);
-    return parsed;
+  return TrainingDatasetBuilder.loadFromJSONL(filePath, {
+    personaId,
+    personaName: 'PersonaUser', // TODO: Look up from users table via data/read
+    traitType: 'custom',
+    source: 'conversations'
   });
-
-  return {
-    examples,
-    metadata: {
-      personaId,
-      personaName: 'PersonaUser', // TODO: Look up from users table via data/read
-      traitType: 'custom',
-      createdAt: Date.now(),
-      source: 'conversations',
-      totalExamples: examples.length
-    }
-  };
 }
 
 export class GenomeJobCreateServerCommand extends CommandBase<

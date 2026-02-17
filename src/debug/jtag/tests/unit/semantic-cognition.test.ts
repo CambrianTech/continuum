@@ -38,6 +38,14 @@ import {
   allocateChatBudget,
   type RAGSourceBudget
 } from '../../system/rag/shared/RAGBudgetManager';
+import { buildLoRATrainingPipeline, type LoRATrainingConfig } from '../../system/sentinel/pipelines/LoRATrainingPipeline';
+import { AdapterPackage } from '../../system/genome/server/AdapterPackage';
+import type { AdapterPackageManifest } from '../../system/genome/shared/AdapterPackageTypes';
+import { GenomeLayerEntity } from '../../system/genome/entities/GenomeLayerEntity';
+import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 describe('IEmbeddable', () => {
   describe('isEmbeddable', () => {
@@ -705,5 +713,313 @@ describe('ModelCapabilities — Adapter Profile Type System', () => {
       expect(fineTunable[0].provider).toBe('candle');
       expect(loraCapable.length).toBe(1);
     });
+  });
+});
+
+describe('LoRATrainingPipeline — Pipeline Template', () => {
+  const testConfig: LoRATrainingConfig = {
+    personaId: 'test-persona-id-1234' as UUID,
+    personaName: 'Test AI',
+    roomId: 'test-room-id-5678' as UUID,
+  };
+
+  it('should produce a valid pipeline with default config', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+
+    expect(pipeline.name).toBe('lora-training-test-ai');
+    expect(pipeline.steps).toBeDefined();
+    expect(pipeline.steps.length).toBe(2); // dataset-prepare + condition
+    expect(pipeline.inputs).toBeDefined();
+    expect(pipeline.inputs!.personaId).toBe(testConfig.personaId);
+    expect(pipeline.inputs!.personaName).toBe(testConfig.personaName);
+  });
+
+  it('should have dataset-prepare as step 0', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+    const step0 = pipeline.steps[0];
+
+    expect(step0.type).toBe('command');
+    if (step0.type === 'command') {
+      expect(step0.command).toBe('genome/dataset-prepare');
+      expect(step0.params?.personaId).toBe(testConfig.personaId);
+      expect(step0.params?.personaName).toBe(testConfig.personaName);
+      expect(step0.params?.roomId).toBe(testConfig.roomId);
+      expect(step0.params?.traitType).toBe('conversational');
+    }
+  });
+
+  it('should have condition step checking step 0 success', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+    const step1 = pipeline.steps[1];
+
+    expect(step1.type).toBe('condition');
+    if (step1.type === 'condition') {
+      expect(step1.if).toBe('{{steps.0.data.success}}');
+      expect(step1.then).toBeDefined();
+      expect(step1.then.length).toBe(3); // train + register + activate
+    }
+  });
+
+  it('should wire dataset path from step 0 to train step via interpolation', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+    const conditionStep = pipeline.steps[1];
+
+    if (conditionStep.type === 'condition') {
+      const trainStep = conditionStep.then[0];
+      expect(trainStep.type).toBe('command');
+      if (trainStep.type === 'command') {
+        expect(trainStep.command).toBe('genome/train');
+        expect(trainStep.params?.datasetPath).toBe('{{steps.0.data.datasetPath}}');
+      }
+    }
+  });
+
+  it('should include register and activate steps in condition then branch', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+    const conditionStep = pipeline.steps[1];
+
+    if (conditionStep.type === 'condition') {
+      const registerStep = conditionStep.then[1];
+      const activateStep = conditionStep.then[2];
+
+      expect(registerStep.type).toBe('command');
+      expect(activateStep.type).toBe('command');
+
+      if (registerStep.type === 'command') {
+        expect(registerStep.command).toBe('genome/paging-adapter-register');
+        expect(registerStep.params?.domain).toBe('conversational');
+      }
+
+      if (activateStep.type === 'command') {
+        expect(activateStep.command).toBe('genome/paging-activate');
+        expect(activateStep.params?.personaId).toBe(testConfig.personaId);
+      }
+    }
+  });
+
+  it('should wire layerId from train step to register step via interpolation', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+    const conditionStep = pipeline.steps[1];
+
+    if (conditionStep.type === 'condition') {
+      const registerStep = conditionStep.then[1];
+      if (registerStep.type === 'command') {
+        expect(registerStep.params?.layerId).toBe('{{steps.1.0.data.layerId}}');
+      }
+    }
+  });
+
+  it('should respect custom config values', () => {
+    const customConfig: LoRATrainingConfig = {
+      ...testConfig,
+      traitType: 'teaching',
+      baseModel: 'llama3.2:1b',
+      rank: 16,
+      epochs: 5,
+      learningRate: 0.00005,
+      batchSize: 8,
+    };
+
+    const pipeline = buildLoRATrainingPipeline(customConfig);
+    const conditionStep = pipeline.steps[1];
+
+    if (conditionStep.type === 'condition') {
+      const trainStep = conditionStep.then[0];
+      if (trainStep.type === 'command') {
+        expect(trainStep.params?.baseModel).toBe('llama3.2:1b');
+        expect(trainStep.params?.rank).toBe(16);
+        expect(trainStep.params?.epochs).toBe(5);
+        expect(trainStep.params?.learningRate).toBe(0.00005);
+        expect(trainStep.params?.batchSize).toBe(8);
+        expect(trainStep.params?.traitType).toBe('teaching');
+      }
+
+      const registerStep = conditionStep.then[1];
+      if (registerStep.type === 'command') {
+        expect(registerStep.params?.domain).toBe('teaching');
+      }
+    }
+  });
+
+  it('should produce JSON-serializable output compatible with Rust pipeline schema', () => {
+    const pipeline = buildLoRATrainingPipeline(testConfig);
+    const json = JSON.stringify(pipeline);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.name).toBe(pipeline.name);
+    expect(parsed.steps.length).toBe(pipeline.steps.length);
+    expect(parsed.steps[0].type).toBe('command');
+    expect(parsed.steps[1].type).toBe('condition');
+  });
+});
+
+describe('AdapterPackage — Manifest & Entity', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = path.join(os.tmpdir(), `adapter-test-${Date.now()}`);
+    await fs.promises.mkdir(tempDir, { recursive: true });
+  });
+
+  const testManifest: AdapterPackageManifest = {
+    id: '11111111-1111-1111-1111-111111111111' as UUID,
+    name: 'test-ai-conversational',
+    traitType: 'conversational',
+    source: 'trained',
+    baseModel: 'smollm2:135m',
+    rank: 32,
+    sizeMB: 42.5,
+    personaId: '22222222-2222-2222-2222-222222222222' as UUID,
+    personaName: 'Test AI',
+    trainingMetadata: {
+      epochs: 3,
+      loss: 4.03,
+      performance: 0,
+      trainingDuration: 27000,
+      datasetHash: 'sha256:abc123',
+    },
+    contentHash: 'sha256:deadbeef',
+    createdAt: '2026-02-17T02:25:00.000Z',
+    version: 1,
+  };
+
+  it('should write and read manifest roundtrip', async () => {
+    await AdapterPackage.writeManifest(tempDir, testManifest);
+
+    // Verify file exists
+    const manifestPath = path.join(tempDir, 'manifest.json');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+
+    // Read it back
+    const read = await AdapterPackage.readManifest(tempDir);
+    expect(read.id).toBe(testManifest.id);
+    expect(read.name).toBe(testManifest.name);
+    expect(read.traitType).toBe(testManifest.traitType);
+    expect(read.source).toBe('trained');
+    expect(read.baseModel).toBe('smollm2:135m');
+    expect(read.rank).toBe(32);
+    expect(read.sizeMB).toBe(42.5);
+    expect(read.personaId).toBe(testManifest.personaId);
+    expect(read.trainingMetadata.epochs).toBe(3);
+    expect(read.trainingMetadata.loss).toBe(4.03);
+    expect(read.contentHash).toBe('sha256:deadbeef');
+    expect(read.version).toBe(1);
+  });
+
+  it('should calculate directory size in MB', async () => {
+    // Write a test file with known size
+    const testFile = path.join(tempDir, 'test.bin');
+    const buffer = Buffer.alloc(1024 * 100); // 100KB
+    await fs.promises.writeFile(testFile, buffer);
+
+    const sizeMB = await AdapterPackage.calculateSizeMB(tempDir);
+    expect(sizeMB).toBeGreaterThan(0);
+    expect(sizeMB).toBeLessThan(1); // 100KB < 1MB
+  });
+
+  it('should calculate content hash from file', async () => {
+    // Write a test safetensors file
+    const weightsPath = path.join(tempDir, 'adapter_model.safetensors');
+    await fs.promises.writeFile(weightsPath, 'test weights data');
+
+    const hash = await AdapterPackage.calculateContentHash(tempDir);
+    expect(hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('should fallback to directory fingerprint when no weights file', async () => {
+    // Write a non-weights file
+    const otherFile = path.join(tempDir, 'readme.txt');
+    await fs.promises.writeFile(otherFile, 'hello');
+
+    const hash = await AdapterPackage.calculateContentHash(tempDir);
+    expect(hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('should convert manifest to GenomeLayerEntity', () => {
+    const entity = AdapterPackage.toGenomeLayerEntity(testManifest, '/path/to/adapter');
+
+    expect(entity).toBeInstanceOf(GenomeLayerEntity);
+    expect(entity.id).toBe(testManifest.id);
+    expect(entity.name).toBe('test-ai-conversational');
+    expect(entity.traitType).toBe('conversational');
+    expect(entity.source).toBe('trained');
+    expect(entity.modelPath).toBe('/path/to/adapter');
+    expect(entity.sizeMB).toBe(42.5);
+    expect(entity.rank).toBe(32);
+    expect(entity.creatorId).toBe(testManifest.personaId);
+    expect(entity.contentHash).toBe('sha256:deadbeef');
+    expect(entity.tags).toContain('conversational');
+    expect(entity.tags).toContain('smollm2:135m');
+    expect(entity.tags).toContain('test ai');
+    expect(entity.generation).toBe(0);
+    expect(entity.trainingMetadata?.epochs).toBe(3);
+    expect(entity.trainingMetadata?.loss).toBe(4.03);
+    expect(entity.description).toContain('Test AI');
+    expect(entity.description).toContain('conversational');
+    expect(entity.description).toContain('smollm2:135m');
+
+    // Entity should be valid
+    const validation = entity.validate();
+    // sizeMB > 0, rank > 0, modelPath is set — should pass
+    expect(validation.success).toBe(true);
+  });
+
+  it('should build manifest from training params', () => {
+    const manifest = AdapterPackage.buildManifest({
+      adapterPath: '/path/to/adapter',
+      personaId: '33333333-3333-3333-3333-333333333333' as UUID,
+      personaName: 'Helper AI',
+      traitType: 'teaching',
+      baseModel: 'llama3.2:1b',
+      rank: 16,
+      sizeMB: 25.0,
+      contentHash: 'sha256:cafe',
+      trainingMetadata: {
+        epochs: 5,
+        loss: 2.1,
+        performance: 0,
+        trainingDuration: 60000,
+      },
+    });
+
+    expect(manifest.id).toBeDefined();
+    expect(manifest.id.length).toBeGreaterThan(0);
+    expect(manifest.name).toBe('helper-ai-teaching');
+    expect(manifest.traitType).toBe('teaching');
+    expect(manifest.source).toBe('trained');
+    expect(manifest.baseModel).toBe('llama3.2:1b');
+    expect(manifest.rank).toBe(16);
+    expect(manifest.sizeMB).toBe(25.0);
+    expect(manifest.personaId).toBe('33333333-3333-3333-3333-333333333333');
+    expect(manifest.personaName).toBe('Helper AI');
+    expect(manifest.contentHash).toBe('sha256:cafe');
+    expect(manifest.version).toBe(1);
+    expect(manifest.createdAt).toBeDefined();
+  });
+
+  it('should scan directory for adapter packages', async () => {
+    // Create two adapter subdirectories with manifests
+    const adapter1Dir = path.join(tempDir, 'adapter-1');
+    const adapter2Dir = path.join(tempDir, 'adapter-2');
+    const emptyDir = path.join(tempDir, 'empty-dir');
+    await fs.promises.mkdir(adapter1Dir, { recursive: true });
+    await fs.promises.mkdir(adapter2Dir, { recursive: true });
+    await fs.promises.mkdir(emptyDir, { recursive: true });
+
+    const manifest1 = { ...testManifest, id: 'aaaa-1' as UUID, name: 'adapter-1' };
+    const manifest2 = { ...testManifest, id: 'bbbb-2' as UUID, name: 'adapter-2' };
+    await AdapterPackage.writeManifest(adapter1Dir, manifest1);
+    await AdapterPackage.writeManifest(adapter2Dir, manifest2);
+
+    const manifests = await AdapterPackage.scanAdapterDirectory(tempDir);
+    expect(manifests.length).toBe(2);
+
+    const names = manifests.map(m => m.name).sort();
+    expect(names).toEqual(['adapter-1', 'adapter-2']);
+  });
+
+  it('should return empty array for non-existent directory', async () => {
+    const manifests = await AdapterPackage.scanAdapterDirectory('/nonexistent/path');
+    expect(manifests).toEqual([]);
   });
 });

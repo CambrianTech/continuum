@@ -1,7 +1,9 @@
 /**
  * Genome Paging Adapter Register Command - Server Implementation
  *
- * Registers a mock LoRA adapter in the global adapter registry.
+ * Registers a LoRA adapter in the global adapter registry.
+ * Accepts either a layerId (to hydrate from persisted GenomeLayerEntity)
+ * or raw params for mock/legacy adapters.
  */
 
 import { CommandBase } from '../../../../daemons/command-daemon/shared/CommandBase';
@@ -11,6 +13,8 @@ import type { GenomePagingAdapterRegisterParams, GenomePagingAdapterRegisterResu
 import { createGenomePagingAdapterRegisterResultFromParams } from '../shared/GenomePagingAdapterRegisterTypes';
 import { GenomeDaemon } from '../../../../system/genome/server/GenomeDaemon';
 import { MockLoRAAdapter } from '../../../../system/genome/shared/MockLoRAAdapter';
+import { Commands } from '../../../../system/core/shared/Commands';
+import { GenomeLayerEntity } from '../../../../system/genome/entities/GenomeLayerEntity';
 
 function getDaemon(): GenomeDaemon {
   return GenomeDaemon.getInstance({
@@ -32,13 +36,41 @@ export class GenomePagingAdapterRegisterServerCommand extends CommandBase<Genome
       const daemon = getDaemon();
       const registry = daemon.getRegistry();
 
-      // Create mock adapter
+      let adapterId = params.adapterId;
+      let name = params.name;
+      let domain = params.domain;
+      let sizeMB = params.sizeMB;
+      let priority = params.priority ?? 0.5;
+
+      // If layerId is provided, hydrate adapter info from persisted GenomeLayerEntity
+      if (params.layerId) {
+        const readResult = await Commands.execute('data/read', {
+          collection: GenomeLayerEntity.collection,
+          id: params.layerId,
+        } as any) as any;
+
+        if (!readResult?.success || !readResult?.data) {
+          return createGenomePagingAdapterRegisterResultFromParams(params, {
+            success: false,
+            registered: false,
+            error: `GenomeLayerEntity not found for layerId: ${params.layerId}`,
+          });
+        }
+
+        const entity = readResult.data;
+        adapterId = entity.id;
+        name = entity.name;
+        domain = entity.traitType;
+        sizeMB = entity.sizeMB;
+      }
+
+      // Create adapter from resolved params
       const adapter = new MockLoRAAdapter({
-        id: params.adapterId,
-        name: params.name,
-        domain: params.domain,
-        sizeMB: params.sizeMB,
-        priority: params.priority ?? 0.5
+        id: adapterId,
+        name,
+        domain,
+        sizeMB,
+        priority,
       });
 
       // Register in registry
@@ -47,13 +79,13 @@ export class GenomePagingAdapterRegisterServerCommand extends CommandBase<Genome
       return createGenomePagingAdapterRegisterResultFromParams(params, {
         success: true,
         registered: true,
-        adapterId: params.adapterId
+        adapterId,
       });
     } catch (error) {
       return createGenomePagingAdapterRegisterResultFromParams(params, {
         success: false,
         registered: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }

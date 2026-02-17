@@ -97,6 +97,9 @@ export interface LoRATrainingResult {
     examplesProcessed: number;
   };
 
+  // Adapter package manifest (written to adapter directory)
+  manifest?: import('../../shared/AdapterPackageTypes').AdapterPackageManifest;
+
   // Error information
   error?: string;
   errorDetails?: unknown;

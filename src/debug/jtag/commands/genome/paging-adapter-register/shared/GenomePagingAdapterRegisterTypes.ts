@@ -14,6 +14,9 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import { Commands } from '../../../../system/core/shared/Commands';
 
 export interface GenomePagingAdapterRegisterParams extends CommandParams {
+  // Option A: Provide a layerId to load from persisted GenomeLayerEntity
+  layerId?: UUID;
+  // Option B: Provide raw adapter params directly (legacy / mock adapters)
   adapterId: UUID;
   name: string;
   domain: string;

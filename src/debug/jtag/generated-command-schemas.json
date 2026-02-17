@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-16T23:55:14.456Z",
+  "generated": "2026-02-17T02:40:26.891Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3357,6 +3357,108 @@
       }
     },
     {
+      "name": "genome/training-pipeline",
+      "description": "One-command entry point for full LoRA training workflow. Builds a Sentinel pipeline that prepares data, trains adapter, registers it, and activates it for a persona",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": false,
+          "description": "traitType parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "learningRate": {
+          "type": "number",
+          "required": false,
+          "description": "learningRate parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/train",
+      "description": "Execute LoRA fine-tuning on a JSONL dataset using PEFTLoRAAdapter. Wraps trainLoRA() as a command for Sentinel pipeline orchestration",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": true,
+          "description": "traitType parameter"
+        },
+        "datasetPath": {
+          "type": "string",
+          "required": true,
+          "description": "datasetPath parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "learningRate": {
+          "type": "number",
+          "required": false,
+          "description": "learningRate parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        }
+      }
+    },
+    {
       "name": "genome/activate",
       "description": "Activate adapter for persona Loads adapter into memory, evicting others if needed.",
       "params": {
@@ -3504,6 +3606,11 @@
       "name": "genome/paging-adapter-register",
       "description": "Genome Paging Adapter Register Command Types Register a mock LoRA adapter in the global adapter registry. This must be done before activating adapters for personas. Phase 7: Mock adapters only Phase 8+: Real Candle adapters",
       "params": {
+        "layerId": {
+          "type": "string",
+          "required": false,
+          "description": "layerId parameter"
+        },
         "adapterId": {
           "type": "string",
           "required": true,
@@ -3596,6 +3703,42 @@
           "type": "boolean",
           "required": false,
           "description": "skipValidation parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/dataset-prepare",
+      "description": "Collect training data from chat history for a persona and export as JSONL dataset for LoRA fine-tuning",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": false,
+          "description": "traitType parameter"
+        },
+        "minMessages": {
+          "type": "number",
+          "required": false,
+          "description": "minMessages parameter"
+        },
+        "maxMessages": {
+          "type": "number",
+          "required": false,
+          "description": "maxMessages parameter"
         }
       }
     },
