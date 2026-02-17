@@ -20,7 +20,10 @@ import type { AcademyConfig } from '@system/genome/shared/AcademyTypes';
 import { buildTeacherPipeline } from '@system/sentinel/pipelines/TeacherPipeline';
 import { buildStudentPipeline } from '@system/sentinel/pipelines/StudentPipeline';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { PipelineSentinelDefinition } from '@system/sentinel/SentinelDefinition';
+import type { SentinelStep } from '@system/sentinel/SentinelDefinition';
+import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
+import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
+import type { PipelineSentinelParams, SentinelRunResult } from '@commands/sentinel/run/shared/SentinelRunTypes';
 
 export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademySessionParams, GenomeAcademySessionResult> {
 
@@ -77,15 +80,15 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       });
     }
 
-    const createResult = await Commands.execute('data/create', {
+    const createResult = await DataCreate.execute({
       collection: AcademySessionEntity.collection,
       data: entity,
-    } as any);
+    });
 
-    if (!(createResult as any).success) {
+    if (!createResult.success) {
       return createGenomeAcademySessionResultFromParams(params, {
         success: false,
-        error: `Failed to create academy session entity: ${(createResult as any).error ?? 'unknown'}`,
+        error: `Failed to create academy session entity: ${createResult.error ?? 'unknown'}`,
         academySessionId: '' as UUID,
         teacherHandle: '',
         studentHandle: '',
@@ -114,49 +117,50 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     });
 
     // 4. Submit teacher sentinel
-    const teacherDef: PipelineSentinelDefinition = {
-      type: 'pipeline',
-      name: `academy-teacher-${skill}`,
-      description: `Teacher sentinel for Academy session: ${skill}`,
-      version: '1.0',
-      steps: teacherPipeline.steps as any,
-      loop: { type: 'once' },
-      tags: ['academy', 'teacher', skill],
-    };
+    // PipelineStep[] (Rust bindings) → SentinelStep[] (TS definitions) — structurally compatible wire types
+    const teacherSteps = teacherPipeline.steps as unknown as SentinelStep[];
 
-    const teacherResult = await Commands.execute('sentinel/run', {
+    const teacherResult = await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
       type: 'pipeline',
-      definition: teacherDef,
+      definition: {
+        type: 'pipeline',
+        name: `academy-teacher-${skill}`,
+        description: `Teacher sentinel for Academy session: ${skill}`,
+        version: '1.0',
+        steps: teacherSteps,
+        loop: { type: 'once' },
+        tags: ['academy', 'teacher', skill],
+      },
       parentPersonaId: personaId,
       sentinelName: `academy-teacher-${skill}`,
-    } as any);
+    });
 
-    const teacherHandle = (teacherResult as any).handle ?? '';
+    const teacherHandle = teacherResult.handle ?? '';
     console.log(`   Teacher sentinel started: ${teacherHandle}`);
 
     // 5. Submit student sentinel
-    const studentDef: PipelineSentinelDefinition = {
-      type: 'pipeline',
-      name: `academy-student-${skill}`,
-      description: `Student sentinel for Academy session: ${skill} (persona: ${personaName})`,
-      version: '1.0',
-      steps: studentPipeline.steps as any,
-      loop: { type: 'once' },
-      tags: ['academy', 'student', skill],
-    };
+    const studentSteps = studentPipeline.steps as unknown as SentinelStep[];
 
-    const studentResult = await Commands.execute('sentinel/run', {
+    const studentResult = await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
       type: 'pipeline',
-      definition: studentDef,
+      definition: {
+        type: 'pipeline',
+        name: `academy-student-${skill}`,
+        description: `Student sentinel for Academy session: ${skill} (persona: ${personaName})`,
+        version: '1.0',
+        steps: studentSteps,
+        loop: { type: 'once' },
+        tags: ['academy', 'student', skill],
+      },
       parentPersonaId: personaId,
       sentinelName: `academy-student-${skill}`,
-    } as any);
+    });
 
-    const studentHandle = (studentResult as any).handle ?? '';
+    const studentHandle = studentResult.handle ?? '';
     console.log(`   Student sentinel started: ${studentHandle}`);
 
     // 6. Update session with handles
-    await Commands.execute('data/update', {
+    await DataUpdate.execute({
       collection: AcademySessionEntity.collection,
       id: sessionId,
       data: {
@@ -164,7 +168,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
         studentHandle,
         status: 'curriculum',
       },
-    } as any);
+    });
 
     console.log(`✅ ACADEMY SESSION: Both sentinels running for "${skill}"`);
 

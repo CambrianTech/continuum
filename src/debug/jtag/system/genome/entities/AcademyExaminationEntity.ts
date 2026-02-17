@@ -13,6 +13,7 @@ import {
   JsonField,
   ForeignKeyField,
   BooleanField,
+  TEXT_LENGTH,
 } from '../../data/decorators/FieldDecorators';
 import { BaseEntity } from '../../data/entities/BaseEntity';
 import type { ExamQuestion, ExamResponse } from '../shared/AcademyTypes';
@@ -53,7 +54,7 @@ export class AcademyExaminationEntity extends BaseEntity {
   gradedBy?: string;
 
   /** Grading feedback summary */
-  @TextField({ maxLength: 0, nullable: true })
+  @TextField({ maxLength: TEXT_LENGTH.UNLIMITED, nullable: true })
   feedback?: string;
 
   // Index signature for compatibility

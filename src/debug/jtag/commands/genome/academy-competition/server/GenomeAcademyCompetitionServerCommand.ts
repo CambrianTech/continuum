@@ -21,7 +21,6 @@ import type {
   CompetitorHandle,
 } from '../shared/GenomeAcademyCompetitionTypes';
 import { createGenomeAcademyCompetitionResultFromParams } from '../shared/GenomeAcademyCompetitionTypes';
-import { Commands } from '@system/core/shared/Commands';
 import { CompetitionEntity } from '@system/genome/entities/CompetitionEntity';
 import { AcademySessionEntity } from '@system/genome/entities/AcademySessionEntity';
 import {
@@ -36,7 +35,11 @@ import {
 import { buildTeacherPipeline } from '@system/sentinel/pipelines/TeacherPipeline';
 import { buildStudentPipeline } from '@system/sentinel/pipelines/StudentPipeline';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
-import type { PipelineSentinelDefinition } from '@system/sentinel/SentinelDefinition';
+import type { SentinelStep } from '@system/sentinel/SentinelDefinition';
+import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
+import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
+import type { PipelineSentinelParams, SentinelRunResult } from '@commands/sentinel/run/shared/SentinelRunTypes';
+import { Commands } from '@system/core/shared/Commands';
 
 export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAcademyCompetitionParams, GenomeAcademyCompetitionResult> {
 
@@ -125,15 +128,15 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
       });
     }
 
-    const createResult = await Commands.execute('data/create', {
+    const createResult = await DataCreate.execute({
       collection: CompetitionEntity.collection,
       data: entity,
-    } as any);
+    });
 
-    if (!(createResult as any).success) {
+    if (!createResult.success) {
       return createGenomeAcademyCompetitionResultFromParams(params, {
         success: false,
-        error: `Failed to create competition entity: ${(createResult as any).error ?? 'unknown'}`,
+        error: `Failed to create competition entity: ${createResult.error ?? 'unknown'}`,
         competitionId: '' as UUID,
         teacherHandle: '',
         competitorHandles: [],
@@ -162,23 +165,24 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
       config: academyConfig,
     });
 
-    const teacherDef: PipelineSentinelDefinition = {
-      type: 'pipeline',
-      name: `competition-teacher-${skill}`,
-      description: `Shared teacher sentinel for competition: ${skill} (${competitors.length} competitors)`,
-      version: '1.0',
-      steps: teacherPipeline.steps as any,
-      loop: { type: 'once' },
-      tags: ['competition', 'teacher', skill],
-    };
+    // PipelineStep[] (Rust bindings) → SentinelStep[] (TS definitions) — structurally compatible wire types
+    const teacherSteps = teacherPipeline.steps as unknown as SentinelStep[];
 
-    const teacherResult = await Commands.execute('sentinel/run', {
+    const teacherResult = await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
       type: 'pipeline',
-      definition: teacherDef,
+      definition: {
+        type: 'pipeline',
+        name: `competition-teacher-${skill}`,
+        description: `Shared teacher sentinel for competition: ${skill} (${competitors.length} competitors)`,
+        version: '1.0',
+        steps: teacherSteps,
+        loop: { type: 'once' },
+        tags: ['competition', 'teacher', skill],
+      },
       sentinelName: `competition-teacher-${skill}`,
-    } as any);
+    });
 
-    const teacherHandle = (teacherResult as any).handle ?? '';
+    const teacherHandle = teacherResult.handle ?? '';
     console.log(`   Teacher sentinel started: ${teacherHandle}`);
 
     // --- 4. Build and submit student sentinels (one per competitor) ---
@@ -194,10 +198,10 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
       sessionEntity.examRounds = 0;
       sessionEntity.config = academyConfig;
 
-      await Commands.execute('data/create', {
+      await DataCreate.execute({
         collection: AcademySessionEntity.collection,
         data: sessionEntity,
-      } as any);
+      });
 
       const studentSessionId = sessionEntity.id;
 
@@ -211,32 +215,32 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
         config: academyConfig,
       });
 
-      const studentDef: PipelineSentinelDefinition = {
-        type: 'pipeline',
-        name: `competition-student-${skill}-${competitor.personaName}`,
-        description: `Student sentinel for ${competitor.personaName} in competition: ${skill}`,
-        version: '1.0',
-        steps: studentPipeline.steps as any,
-        loop: { type: 'once' },
-        tags: ['competition', 'student', skill, competitor.personaName],
-      };
+      const studentSteps = studentPipeline.steps as unknown as SentinelStep[];
 
-      const studentResult = await Commands.execute('sentinel/run', {
+      const studentResult = await Commands.execute<PipelineSentinelParams, SentinelRunResult>('sentinel/run', {
         type: 'pipeline',
-        definition: studentDef,
+        definition: {
+          type: 'pipeline',
+          name: `competition-student-${skill}-${competitor.personaName}`,
+          description: `Student sentinel for ${competitor.personaName} in competition: ${skill}`,
+          version: '1.0',
+          steps: studentSteps,
+          loop: { type: 'once' },
+          tags: ['competition', 'student', skill, competitor.personaName],
+        },
         parentPersonaId: competitor.personaId,
         sentinelName: `competition-student-${skill}-${competitor.personaName}`,
-      } as any);
+      });
 
-      const studentHandle = (studentResult as any).handle ?? '';
+      const studentHandle = studentResult.handle ?? '';
       console.log(`   Student sentinel started for ${competitor.personaName}: ${studentHandle}`);
 
       // Update session with handle
-      await Commands.execute('data/update', {
+      await DataUpdate.execute({
         collection: AcademySessionEntity.collection,
         id: studentSessionId,
         data: { studentHandle, status: 'curriculum' },
-      } as any);
+      });
 
       competitorHandles.push({
         personaId: competitor.personaId,
@@ -261,9 +265,9 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
     }
 
     // --- 5. Update competition entity with handles ---
-    await Commands.execute('data/update', {
+    await DataUpdate.execute({
       collection: CompetitionEntity.collection,
-      id: competitionId,
+      id: competitionId as UUID,
       data: {
         teacherHandle,
         status: 'curriculum',
@@ -271,7 +275,7 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
         currentRound: 1,
         startedAt: new Date().toISOString(),
       },
-    } as any);
+    });
 
     console.log(`\u{2705} COMPETITION: ${competitors.length} students competing on "${skill}"`);
 

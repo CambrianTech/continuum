@@ -13,7 +13,6 @@ import {
   EnumField,
   JsonField,
   ForeignKeyField,
-  TEXT_LENGTH,
 } from '../../data/decorators/FieldDecorators';
 import { BaseEntity } from '../../data/entities/BaseEntity';
 import type {
