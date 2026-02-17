@@ -48,9 +48,11 @@ import { MemoryType } from '../../system/data/entities/MemoryEntity';
 import { MemoryType as MemoryTypeHippocampus } from '../../system/user/server/modules/MemoryTypes';
 import type { SentinelTrigger } from '../../system/sentinel/SentinelDefinition';
 import type { GenomePhenotypeValidateParams, PhenotypeQuestionResult } from '../../commands/genome/phenotype-validate/shared/GenomePhenotypeValidateTypes';
-import type { AcademyEventAction, InferenceDemoPayload, QualityGateFailedPayload } from '../../system/genome/shared/AcademyTypes';
+import type { AcademyEventAction, InferenceDemoPayload, QualityGateFailedPayload, TopicRemediatePayload, RemediationDatasetReadyPayload } from '../../system/genome/shared/AcademyTypes';
 import { academyEvent, DEFAULT_ACADEMY_CONFIG } from '../../system/genome/shared/AcademyTypes';
 import { buildStudentPipeline } from '../../system/sentinel/pipelines/StudentPipeline';
+import { buildTeacherPipeline } from '../../system/sentinel/pipelines/TeacherPipeline';
+import type { GenomeComposeParams, ComposeLayerRef } from '../../commands/genome/compose/shared/GenomeComposeTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1303,13 +1305,17 @@ describe('TeacherPipeline', () => {
     expect(emitStep).toBeDefined();
   });
 
-  it('should include topic loop with dataset synthesis + exam flow', () => {
+  it('should include topic loop with inner exam retry loop', () => {
     const pipeline = buildTeacherPipeline(testConfig);
     const loopStep = pipeline.steps.find(s => s.type === 'loop');
     expect(loopStep).toBeDefined();
     if (loopStep?.type === 'loop') {
-      // Loop should contain: synthesize, emit dataset, watch training, exam LLM, persist exam, emit exam, watch responses, grade LLM, persist grades, emit graded, condition
-      expect(loopStep.steps.length).toBeGreaterThanOrEqual(10);
+      // Outer loop: synthesize, emit dataset, watch training, inner exam loop
+      expect(loopStep.steps).toHaveLength(4);
+      // Last step is the inner retry loop
+      const innerLoop = loopStep.steps[3] as any;
+      expect(innerLoop.type).toBe('loop');
+      expect(innerLoop.steps.length).toBeGreaterThanOrEqual(8);
     }
   });
 
@@ -1737,7 +1743,7 @@ describe('Student Pipeline with Quality Gate', () => {
   it('should build a valid pipeline', () => {
     const pipeline = buildStudentPipeline(testConfig);
     expect(pipeline.name).toContain('academy-student');
-    expect(pipeline.steps).toHaveLength(2); // watch + loop
+    expect(pipeline.steps).toHaveLength(3); // watch + loop + compose
   });
 
   it('should have pre-test LLM step (loop.1)', () => {
@@ -1777,10 +1783,11 @@ describe('Student Pipeline with Quality Gate', () => {
     const gateStep = loop.steps[10];
 
     // then-branch should have adapter registration + inference demo
-    expect(gateStep.then).toHaveLength(2);
+    expect(gateStep.then).toHaveLength(3);
     expect(gateStep.then[0].command).toBe('genome/paging-adapter-register');
-    expect(gateStep.then[1].type).toBe('emit');
-    expect(gateStep.then[1].event).toContain('inference:demo');
+    expect(gateStep.then[1].command).toBe('genome/paging-activate');
+    expect(gateStep.then[2].type).toBe('emit');
+    expect(gateStep.then[2].event).toContain('inference:demo');
 
     // else-branch should emit quality gate failure
     expect(gateStep.else).toHaveLength(1);
@@ -1788,11 +1795,210 @@ describe('Student Pipeline with Quality Gate', () => {
     expect(gateStep.else[0].event).toContain('quality:gate:failed');
   });
 
-  it('should have 12 steps in the loop body', () => {
+  it('should have 11 steps in the loop body', () => {
     const pipeline = buildStudentPipeline(testConfig);
     const loop = pipeline.steps[1] as any;
     // 0:watch, 1:llm(pretest), 2:emit, 3:train, 4:emit, 5:watch,
     // 6:llm(exam), 7:emit, 8:watch, 9:validate, 10:condition
     expect(loop.steps).toHaveLength(11);
+  });
+
+  it('should have paging-activate in quality gate then-branch', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loop = pipeline.steps[1] as any;
+    const gateStep = loop.steps[10] as any;
+    // then-branch: register, activate, emit inference:demo
+    const activateStep = gateStep.then[1];
+    expect(activateStep.type).toBe('command');
+    expect(activateStep.command).toBe('genome/paging-activate');
+    expect(activateStep.params.personaId).toBe('test-persona-id');
+  });
+
+  it('should have post-loop genome/compose step', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    // Step 0: watch, Step 1: loop, Step 2: compose
+    expect(pipeline.steps).toHaveLength(3);
+    const composeStep = pipeline.steps[2] as any;
+    expect(composeStep.type).toBe('command');
+    expect(composeStep.command).toBe('genome/compose');
+    expect(composeStep.params.personaId).toBe('test-persona-id');
+    expect(composeStep.params.baseModel).toBe('smollm2:135m');
+    expect(composeStep.params.strategy).toBe('weighted-merge');
+    expect(composeStep.params.activate).toBe(true);
+  });
+});
+
+// ============================================================================
+// Genome Compose Command Types
+// ============================================================================
+
+describe('Genome Compose Types', () => {
+  it('should define ComposeLayerRef with optional fields', () => {
+    const ref: ComposeLayerRef = {
+      layerId: 'layer-abc' as UUID,
+    };
+    expect(ref.layerId).toBe('layer-abc');
+    expect(ref.weight).toBeUndefined();
+    expect(ref.ordering).toBeUndefined();
+  });
+
+  it('should define ComposeLayerRef with all fields', () => {
+    const ref: ComposeLayerRef = {
+      layerId: 'layer-abc' as UUID,
+      weight: 0.8,
+      ordering: 2,
+    };
+    expect(ref.weight).toBe(0.8);
+    expect(ref.ordering).toBe(2);
+  });
+
+  it('should define GenomeComposeParams with required fields', () => {
+    const params: GenomeComposeParams = {
+      personaId: 'persona-123' as UUID,
+      layers: [
+        { layerId: 'layer-1' as UUID, weight: 1.0 },
+        { layerId: 'layer-2' as UUID, weight: 0.5 },
+      ],
+      baseModel: 'smollm2:135m',
+    };
+    expect(params.layers).toHaveLength(2);
+    expect(params.strategy).toBeUndefined(); // defaults to weighted-merge
+    expect(params.activate).toBeUndefined(); // defaults to true
+  });
+});
+
+// ============================================================================
+// Teacher Pipeline with Remediation Loop
+// ============================================================================
+
+describe('Teacher Pipeline with Remediation', () => {
+  const teacherConfig = {
+    sessionId: 'session-456' as UUID,
+    skill: 'typescript-generics',
+    personaName: 'Helper AI',
+    baseModel: 'smollm2:135m',
+    config: DEFAULT_ACADEMY_CONFIG,
+  };
+
+  it('should build a valid teacher pipeline', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    expect(pipeline.name).toBe('academy-teacher-typescript-generics');
+    // Step 0: LLM curriculum, 1: persist, 2: emit, 3: outer loop, 4: session:complete
+    expect(pipeline.steps).toHaveLength(5);
+  });
+
+  it('should have outer topic loop with inner exam retry loop', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const outerLoop = pipeline.steps[3] as any;
+    expect(outerLoop.type).toBe('loop');
+    expect(outerLoop.count).toBe(5); // max topics
+
+    // Outer loop: 0:synthesize, 1:emit, 2:watch, 3:inner loop
+    expect(outerLoop.steps).toHaveLength(4);
+
+    const innerLoop = outerLoop.steps[3] as any;
+    expect(innerLoop.type).toBe('loop');
+    expect(innerLoop.count).toBe(teacherConfig.config.maxTopicAttempts);
+  });
+
+  it('should have 8 steps in the inner exam retry loop', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const outerLoop = pipeline.steps[3] as any;
+    const innerLoop = outerLoop.steps[3] as any;
+
+    // inner.0: LLM exam, inner.1: persist, inner.2: emit exam:ready,
+    // inner.3: watch responses, inner.4: LLM grade, inner.5: persist grades,
+    // inner.6: emit graded, inner.7: condition pass/remediate
+    expect(innerLoop.steps).toHaveLength(8);
+  });
+
+  it('should have remediation in the condition else-branch', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const outerLoop = pipeline.steps[3] as any;
+    const innerLoop = outerLoop.steps[3] as any;
+    const conditionStep = innerLoop.steps[7] as any;
+
+    expect(conditionStep.type).toBe('condition');
+
+    // then-branch: emit topic:passed (1 step)
+    expect(conditionStep.then).toHaveLength(1);
+    expect(conditionStep.then[0].event).toContain('topic:passed');
+
+    // else-branch: emit remediate, synthesize remedial data, emit dataset:ready, watch training:complete
+    expect(conditionStep.else).toHaveLength(4);
+    expect(conditionStep.else[0].event).toContain('topic:remediate');
+    expect(conditionStep.else[1].command).toBe('genome/dataset-synthesize');
+    expect(conditionStep.else[2].event).toContain('dataset:ready');
+    expect(conditionStep.else[3].type).toBe('watch');
+  });
+
+  it('should include remediation feedback in synthesize params', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const outerLoop = pipeline.steps[3] as any;
+    const innerLoop = outerLoop.steps[3] as any;
+    const conditionStep = innerLoop.steps[7] as any;
+    const synthesizeStep = conditionStep.else[1] as any;
+
+    expect(synthesizeStep.params.remediationFeedback).toBe('{{loop.4.output.feedback}}');
+    expect(synthesizeStep.params.weakAreas).toBe('{{loop.4.output.weakAreas}}');
+  });
+
+  it('should mark remedial dataset with isRemediation flag', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const outerLoop = pipeline.steps[3] as any;
+    const innerLoop = outerLoop.steps[3] as any;
+    const conditionStep = innerLoop.steps[7] as any;
+    const datasetEmit = conditionStep.else[2] as any;
+
+    expect(datasetEmit.payload.isRemediation).toBe(true);
+  });
+
+  it('should include weakAreas in grading output format', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const outerLoop = pipeline.steps[3] as any;
+    const innerLoop = outerLoop.steps[3] as any;
+    const gradingStep = innerLoop.steps[4] as any;
+
+    expect(gradingStep.type).toBe('llm');
+    expect(gradingStep.prompt).toContain('weakAreas');
+  });
+
+  it('should emit session:complete after outer loop', () => {
+    const pipeline = buildTeacherPipeline(teacherConfig);
+    const lastStep = pipeline.steps[4] as any;
+    expect(lastStep.type).toBe('emit');
+    expect(lastStep.event).toContain('session:complete');
+  });
+});
+
+// ============================================================================
+// Academy Remediation Types
+// ============================================================================
+
+describe('Academy Remediation Types', () => {
+  it('should define TopicRemediatePayload with weakAreas', () => {
+    const payload: TopicRemediatePayload = {
+      sessionId: 'session-123' as UUID,
+      topicIndex: 0,
+      round: 1,
+      feedback: 'Weak on type constraints',
+      weakAreas: ['type narrowing', 'conditional types'],
+    };
+    expect(payload.weakAreas).toHaveLength(2);
+    expect(payload.round).toBe(1);
+  });
+
+  it('should define RemediationDatasetReadyPayload extending DatasetReadyPayload', () => {
+    const payload: RemediationDatasetReadyPayload = {
+      datasetPath: '/tmp/remedial.jsonl',
+      topicIndex: 0,
+      topicName: 'Type Guards',
+      exampleCount: 10,
+      isRemediation: true,
+      round: 2,
+    };
+    expect(payload.isRemediation).toBe(true);
+    expect(payload.round).toBe(2);
+    expect(payload.datasetPath).toBe('/tmp/remedial.jsonl');
   });
 });

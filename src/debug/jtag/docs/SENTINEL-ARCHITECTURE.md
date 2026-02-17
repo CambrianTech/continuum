@@ -2637,8 +2637,8 @@ Sentinels orchestrate the LoRA training pipeline.
 - [x] **Genome layer registration** — Register trained adapters via `genome/paging-adapter-register` in sentinel pipeline
 - [x] **Phenotype validation** — `genome/phenotype-validate` command: LLM-as-judge scores pre-training vs post-training responses. Student pipeline pre-test (loop.1) establishes baseline before training.
 - [x] **Quality gating** — Student pipeline condition step (loop.10): only registers adapter if phenotype improvement >= threshold (default 5pp). Emits `inference:demo` on pass, `quality:gate:failed` on fail.
-- [ ] **Dynamic composition** — Compose multiple layers and activate on persona via `genome/set-active`
-- [ ] **LRU paging integration** — Automatically evict least-used adapters under memory pressure
+- [x] **Dynamic composition** — `genome/compose` command: composes multiple trained LoRA layers into a stacked genome. Student pipeline post-loop step merges all trained adapters via weighted merge.
+- [x] **LRU paging integration** — Student pipeline quality gate calls `genome/paging-activate` after registration, triggering GenomeDaemon LRU eviction under memory pressure.
 
 ### Phase D: Academy (Plato's Training Arena)
 
@@ -2650,7 +2650,7 @@ The selection pressure that drives genome evolution.
 - [x] **Academy result persistence** — `AcademySessionEntity`, `AcademyCurriculumEntity`, `AcademyExaminationEntity` track full lifecycle
 - [x] **Inter-sentinel coordination** — emit/watch events scoped by session: `academy:{sessionId}:{action}`
 - [x] **Curriculum design** — Teacher LLM researches skill domain, designs 3-5 progressive topics
-- [ ] **Remediation loop** — When student fails exam, teacher generates targeted remedial data (pipeline structure exists, needs testing)
+- [x] **Remediation loop** — Inner exam retry loop in teacher pipeline: on failure, synthesizes targeted remedial data based on `weakAreas` feedback, re-emits `dataset:ready` for student re-training, up to `maxTopicAttempts` attempts per topic.
 - [ ] **Multi-persona competition** — Multiple students train on same curriculum in parallel (N:M support)
 - [ ] **Performance gap analysis** — Identify specific skill gaps from exam results, drive targeted retraining
 - [ ] **Evolution tournament** — Multi-round competition with training between rounds

@@ -285,3 +285,16 @@ export interface QualityGateFailedPayload {
   improvement: number;
   summary: string;
 }
+
+export interface TopicRemediatePayload {
+  sessionId: UUID;
+  topicIndex: number;
+  round: number;
+  feedback: string;
+  weakAreas: string[];
+}
+
+export interface RemediationDatasetReadyPayload extends DatasetReadyPayload {
+  isRemediation: true;
+  round: number;
+}

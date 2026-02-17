@@ -7,7 +7,9 @@
  * 2. Watches for exam:ready — takes the exam via LLM step
  * 3. Watches for exam:graded — validates phenotype improvement
  * 4. Quality gate: only registers adapter if improvement exceeds threshold
- * 5. Emits inference demo after successful registration
+ * 5. Activates adapter via LRU paging (evicts old adapters under memory pressure)
+ * 6. Emits inference demo after successful registration
+ * 7. Post-loop: composes all trained adapters into a single stacked genome
  *
  * The pre-test → train → post-test → compare cycle is the phenotype
  * validation loop: it proves training actually improved the model.
@@ -33,8 +35,8 @@ import { academyEvent } from '../../genome/shared/AcademyTypes';
  *     loop.7:  Emit — exam:responses { answers }
  *     loop.8:  Watch — exam:graded (teacher graded responses)
  *     loop.9:  Command — genome/phenotype-validate (compare pre vs post)
- *     loop.10: Condition — quality gate: register adapter only if improved
- *     loop.11: Emit — inference:demo (showcase adapted model capability)
+ *     loop.10: Condition — quality gate: register + activate only if improved
+ *   2: Command — genome/compose (merge all trained adapters into stacked genome)
  */
 export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
   const { sessionId, personaId, personaName, baseModel, config: academyConfig } = config;
@@ -205,7 +207,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           type: 'condition',
           if: '{{loop.9.data.passedQualityGate}}',
           then: [
-            // Register the trained adapter
+            // Register the trained adapter in the paging registry
             {
               type: 'command',
               command: 'genome/paging-adapter-register',
@@ -215,6 +217,15 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
                 name: `${personaName}-${sessionId.slice(0, 8)}-topic-{{input.iteration}}`,
                 domain: '{{loop.0.data.payload.topicName}}',
                 sizeMB: 0,
+              },
+            },
+            // Activate adapter on persona — triggers LRU eviction under memory pressure
+            {
+              type: 'command',
+              command: 'genome/paging-activate',
+              params: {
+                personaId,
+                adapterId: '{{loop.3.data.layerId}}',
               },
             },
             // Emit inference demo — showcase what the adapted model learned
@@ -256,6 +267,27 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           ],
         },
       ],
+    },
+
+    // Step 2: Post-loop composition — merge all successfully trained adapters
+    // into a single stacked genome for the persona.
+    // Uses the layerIds collected from each loop iteration's training step.
+    // The sentinel engine tracks step results across iterations, so we reference
+    // the training results from all loop iterations.
+    {
+      type: 'command',
+      command: 'genome/compose',
+      params: {
+        personaId,
+        baseModel,
+        name: `${personaName}-academy-${sessionId.slice(0, 8)}`,
+        // Layers are collected from all successful training iterations.
+        // Each loop.3.data.layerId contains the trained adapter's UUID.
+        // The Rust engine expands {{steps.1.iterations}} to the loop result array.
+        layers: '{{steps.1.iterations.*.3.data.layerId}}',
+        strategy: 'weighted-merge',
+        activate: true,  // Auto-activate with LRU eviction
+      },
     },
   ];
 

@@ -1,0 +1,18 @@
+{
+  "name": "genome-compose",
+  "displayName": "Genome Compose",
+  "commandPath": "genome/compose",
+  "description": "Compose multiple trained LoRA layers into a single stacked genome for a persona",
+  "category": "genome",
+  "version": "1.0.0",
+  "server": true,
+  "browser": false,
+  "params": [
+    { "name": "personaId", "type": "string", "required": true, "description": "UUID of the persona to compose layers for" },
+    { "name": "layers", "type": "json", "required": true, "description": "Array of {layerId, weight?, ordering?} objects" },
+    { "name": "baseModel", "type": "string", "required": true, "description": "Base model these layers were trained on" },
+    { "name": "name", "type": "string", "required": false, "description": "Name for the composed genome" },
+    { "name": "strategy", "type": "string", "required": false, "description": "Composition strategy: weighted-merge, sequential (default: weighted-merge)" },
+    { "name": "activate", "type": "boolean", "required": false, "description": "Auto-activate composed genome on persona (default: true)" }
+  ]
+}

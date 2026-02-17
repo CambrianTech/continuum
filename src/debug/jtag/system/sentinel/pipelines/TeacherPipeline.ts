@@ -6,7 +6,8 @@
  * 1. Research the skill domain and design a progressive curriculum
  * 2. For each topic: synthesize training data, wait for student to train,
  *    generate exams, grade responses, decide pass/fail/remediate
- * 3. Emit events for inter-sentinel coordination with the student
+ * 3. When student fails: generate targeted remedial data, re-train, re-exam
+ * 4. Emit events for inter-sentinel coordination with the student
  *
  * All intelligence comes from LLM prompts — the pipeline structure is
  * just control flow. The teacher adapts curriculum based on exam results,
@@ -24,18 +25,20 @@ import { academyEvent } from '../../genome/shared/AcademyTypes';
  *   0: LLM — Research skill, design curriculum (3-5 progressive topics)
  *   1: Command — data/create academy_curricula (persist curriculum)
  *   2: Emit — curriculum:ready
- *   3: Loop (over topics, driven by LLM condition evaluation):
- *     3.0: Command — genome/dataset-synthesize (generate JSONL for current topic)
- *     3.1: Emit — dataset:ready { datasetPath, topicIndex }
- *     3.2: Watch — training:complete (student finished training)
- *     3.3: LLM — Generate exam questions for the current topic
- *     3.4: Command — data/create academy_examinations (persist exam)
- *     3.5: Emit — exam:ready { examId, questions }
- *     3.6: Watch — exam:responses (student submitted answers)
- *     3.7: LLM — Grade responses against expected answers
- *     3.8: Command — data/update academy_examinations (persist grades)
- *     3.9: Emit — exam:graded { scores, passed }
- *     3.10: Condition — if passed, emit topic:passed; else emit topic:remediate
+ *   3: Outer Loop (over topics, count=5):
+ *     outer.0: Command — genome/dataset-synthesize (initial training data)
+ *     outer.1: Emit — dataset:ready { datasetPath, topicIndex }
+ *     outer.2: Watch — training:complete (student finished initial training)
+ *     outer.3: Inner Loop (exam attempts, count=maxTopicAttempts, until=passed):
+ *       inner.0: LLM — Generate exam questions
+ *       inner.1: Command — data/create academy_examinations
+ *       inner.2: Emit — exam:ready { examId, questions }
+ *       inner.3: Watch — exam:responses (student answered)
+ *       inner.4: LLM — Grade responses
+ *       inner.5: Command — data/update academy_examinations
+ *       inner.6: Emit — exam:graded { scores, passed }
+ *       inner.7: Condition — if passed: emit topic:passed
+ *                            else: synthesize remedial data, emit dataset:ready, watch training:complete
  *   4: Emit — session:complete
  */
 export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
@@ -98,29 +101,14 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
       },
     },
 
-    // Step 3: Loop over topics
-    // The loop body handles one topic at a time; {{input.iteration}} is set
-    // by the Rust loop executor (0-based). Topic data is accessed via nested
-    // interpolation: {{steps.0.output.topics.{{input.iteration}}.name}}
-    // The Rust engine resolves inner → outer via multi-pass interpolation.
-    //
-    // Intra-loop step references use {{loop.N.field}} for stable referencing:
-    //   loop.0 = genome/dataset-synthesize result
-    //   loop.1 = emit dataset:ready
-    //   loop.2 = watch training:complete
-    //   loop.3 = LLM exam questions
-    //   loop.4 = data/create exam
-    //   loop.5 = emit exam:ready
-    //   loop.6 = watch exam:responses
-    //   loop.7 = LLM grade responses
-    //   loop.8 = data/update exam
-    //   loop.9 = emit exam:graded
-    //   loop.10 = condition pass/remediate
+    // Step 3: Outer loop — iterate over topics
+    // {{input.iteration}} is the topic index (0-based)
+    // Intra-loop references: outer.N for outer loop steps
     {
       type: 'loop',
       count: 5,  // Max topics (safety limit matching curriculum max)
       steps: [
-        // loop.0: Synthesize training data for current topic
+        // outer.0: Synthesize initial training data for current topic
         {
           type: 'command',
           command: 'genome/dataset-synthesize',
@@ -135,7 +123,7 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
           },
         },
 
-        // loop.1: Emit dataset:ready for student
+        // outer.1: Emit dataset:ready for student (initial training)
         {
           type: 'emit',
           event: evt('dataset:ready'),
@@ -148,160 +136,23 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
           },
         },
 
-        // loop.2: Wait for student to finish training
+        // outer.2: Wait for student to finish initial training
         {
           type: 'watch',
           event: evt('training:complete'),
           timeoutSecs: 600,  // 10 minutes for training
         },
 
-        // loop.3: Generate exam questions via LLM
+        // outer.3: Inner loop — exam/grade/remediate cycle
+        // Runs up to maxTopicAttempts times. The `until` condition
+        // evaluates whether the last grading passed.
+        // Each iteration: exam → grade → (if failed) remediate → re-train
         {
-          type: 'llm',
-          prompt: [
-            `Generate ${academyConfig.questionsPerExam} exam questions to test mastery of the topic: "{{steps.0.output.topics.{{input.iteration}}.name}}"`,
-            `This is part of the "${skill}" curriculum for persona "${personaName}".`,
-            `Difficulty: {{steps.0.output.topics.{{input.iteration}}.difficulty}}`,
-            '',
-            'Output ONLY a JSON array of question objects (no markdown, no code fences):',
-            '[',
-            '  {',
-            '    "question": "The question text",',
-            '    "expectedAnswer": "The ideal answer",',
-            '    "category": "Sub-category within the topic"',
-            '  }',
-            ']',
-          ].join('\n'),
-          ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-          ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-          temperature: 0.7,
-          maxTokens: 2048,
-        },
-
-        // loop.4: Persist exam to database
-        {
-          type: 'command',
-          command: 'data/create',
-          params: {
-            collection: 'academy_examinations',
-            data: {
-              sessionId,
-              topicIndex: '{{input.iteration}}',
-              round: 1,
-              questions: '{{loop.3.output}}',
-              responses: [],
-              overallScore: 0,
-              passed: false,
-            },
-          },
-        },
-
-        // loop.5: Emit exam:ready for student
-        {
-          type: 'emit',
-          event: evt('exam:ready'),
-          payload: {
-            sessionId,
-            examId: '{{loop.4.data.data.id}}',
-            topicIndex: '{{input.iteration}}',
-            questions: '{{loop.3.output}}',
-          },
-        },
-
-        // loop.6: Wait for student responses
-        {
-          type: 'watch',
-          event: evt('exam:responses'),
-          timeoutSecs: 300,  // 5 minutes for exam
-        },
-
-        // loop.7: Grade responses via LLM
-        {
-          type: 'llm',
-          prompt: [
-            `Grade the following exam responses for the topic "{{steps.0.output.topics.{{input.iteration}}.name}}".`,
-            `Passing score: ${academyConfig.passingScore}/100`,
-            '',
-            'Questions and expected answers:',
-            '{{loop.3.output}}',
-            '',
-            'Student responses:',
-            '{{loop.6.data.payload.responses}}',
-            '',
-            'For each response, evaluate accuracy and completeness.',
-            'Output ONLY a JSON object (no markdown, no code fences):',
-            '{',
-            '  "overallScore": <0-100>,',
-            '  "passed": <true/false>,',
-            '  "feedback": "Overall feedback summary",',
-            '  "responses": [',
-            '    { "questionIndex": 0, "score": <0-100>, "feedback": "Per-question feedback" }',
-            '  ]',
-            '}',
-          ].join('\n'),
-          ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-          ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-          temperature: 0.3,  // Lower temperature for consistent grading
-          maxTokens: 2048,
-        },
-
-        // loop.8: Persist grades to database
-        // LLM output (loop.7) is a JSON string — use output.field to auto-parse
-        {
-          type: 'command',
-          command: 'data/update',
-          params: {
-            collection: 'academy_examinations',
-            id: '{{loop.4.data.data.id}}',
-            data: {
-              responses: '{{loop.7.output.responses}}',
-              overallScore: '{{loop.7.output.overallScore}}',
-              passed: '{{loop.7.output.passed}}',
-              gradedBy: '{{loop.7.data.model}}',
-              feedback: '{{loop.7.output.feedback}}',
-            },
-          },
-        },
-
-        // loop.9: Emit exam:graded
-        {
-          type: 'emit',
-          event: evt('exam:graded'),
-          payload: {
-            sessionId,
-            examId: '{{loop.4.data.data.id}}',
-            topicIndex: '{{input.iteration}}',
-            overallScore: '{{loop.7.output.overallScore}}',
-            passed: '{{loop.7.output.passed}}',
-            feedback: '{{loop.7.output.feedback}}',
-          },
-        },
-
-        // loop.10: Conditional — pass or remediate
-        {
-          type: 'condition',
-          if: '{{loop.7.output.passed}}',
-          then: [
-            {
-              type: 'emit',
-              event: evt('topic:passed'),
-              payload: {
-                sessionId,
-                topicIndex: '{{input.iteration}}',
-              },
-            },
-          ],
-          else: [
-            {
-              type: 'emit',
-              event: evt('topic:remediate'),
-              payload: {
-                sessionId,
-                topicIndex: '{{input.iteration}}',
-                feedback: '{{loop.7.output.feedback}}',
-              },
-            },
-          ],
+          type: 'loop',
+          count: academyConfig.maxTopicAttempts,
+          steps: buildExamRetrySteps(
+            sessionId, skill, personaName, academyConfig, evt,
+          ),
         },
       ],
     },
@@ -328,4 +179,235 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
       baseModel,
     },
   };
+}
+
+/**
+ * Build the inner exam retry loop steps.
+ *
+ * Each iteration of this inner loop:
+ * 1. Generates exam questions
+ * 2. Emits exam:ready
+ * 3. Watches for student responses
+ * 4. Grades responses
+ * 5. Emits exam:graded
+ * 6. If passed: emits topic:passed (loop will terminate via `until`)
+ *    If failed: synthesizes targeted remedial data, emits dataset:ready,
+ *               waits for re-training to complete
+ *
+ * Inner loop step references use {{loop.N}} within the inner loop context.
+ * The outer loop's topic index is still available via parent context.
+ */
+function buildExamRetrySteps(
+  sessionId: string,
+  skill: string,
+  personaName: string,
+  academyConfig: TeacherPipelineConfig['config'],
+  evt: (action: string) => string,
+): PipelineStep[] {
+  return [
+    // inner.0: Generate exam questions via LLM
+    {
+      type: 'llm',
+      prompt: [
+        `Generate ${academyConfig.questionsPerExam} exam questions to test mastery of the topic: "{{steps.0.output.topics.{{input.parent_iteration}}.name}}"`,
+        `This is part of the "${skill}" curriculum for persona "${personaName}".`,
+        `Difficulty: {{steps.0.output.topics.{{input.parent_iteration}}.difficulty}}`,
+        `This is exam attempt {{input.iteration}} (0-indexed).`,
+        '',
+        // On retry attempts, include feedback from previous grading
+        '{{#if input.iteration}}',
+        'The student failed the previous attempt. Focus questions on weak areas.',
+        '{{/if}}',
+        '',
+        'Output ONLY a JSON array of question objects (no markdown, no code fences):',
+        '[',
+        '  {',
+        '    "question": "The question text",',
+        '    "expectedAnswer": "The ideal answer",',
+        '    "category": "Sub-category within the topic"',
+        '  }',
+        ']',
+      ].join('\n'),
+      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
+      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      temperature: 0.7,
+      maxTokens: 2048,
+    },
+
+    // inner.1: Persist exam to database
+    {
+      type: 'command',
+      command: 'data/create',
+      params: {
+        collection: 'academy_examinations',
+        data: {
+          sessionId,
+          topicIndex: '{{input.parent_iteration}}',
+          round: '{{input.iteration}}',
+          questions: '{{loop.0.output}}',
+          responses: [],
+          overallScore: 0,
+          passed: false,
+        },
+      },
+    },
+
+    // inner.2: Emit exam:ready for student
+    {
+      type: 'emit',
+      event: evt('exam:ready'),
+      payload: {
+        sessionId,
+        examId: '{{loop.1.data.data.id}}',
+        topicIndex: '{{input.parent_iteration}}',
+        questions: '{{loop.0.output}}',
+      },
+    },
+
+    // inner.3: Wait for student responses
+    {
+      type: 'watch',
+      event: evt('exam:responses'),
+      timeoutSecs: 300,  // 5 minutes for exam
+    },
+
+    // inner.4: Grade responses via LLM
+    {
+      type: 'llm',
+      prompt: [
+        `Grade the following exam responses for the topic "{{steps.0.output.topics.{{input.parent_iteration}}.name}}".`,
+        `Passing score: ${academyConfig.passingScore}/100`,
+        `This is attempt {{input.iteration}} (0-indexed).`,
+        '',
+        'Questions and expected answers:',
+        '{{loop.0.output}}',
+        '',
+        'Student responses:',
+        '{{loop.3.data.payload.responses}}',
+        '',
+        'For each response, evaluate accuracy and completeness.',
+        'If the student fails, provide specific feedback on weak areas to guide remediation.',
+        'Output ONLY a JSON object (no markdown, no code fences):',
+        '{',
+        '  "overallScore": <0-100>,',
+        '  "passed": <true/false>,',
+        '  "feedback": "Overall feedback summary with specific weak areas",',
+        '  "weakAreas": ["area1", "area2"],',
+        '  "responses": [',
+        '    { "questionIndex": 0, "score": <0-100>, "feedback": "Per-question feedback" }',
+        '  ]',
+        '}',
+      ].join('\n'),
+      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
+      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+      temperature: 0.3,  // Lower temperature for consistent grading
+      maxTokens: 2048,
+    },
+
+    // inner.5: Persist grades to database
+    {
+      type: 'command',
+      command: 'data/update',
+      params: {
+        collection: 'academy_examinations',
+        id: '{{loop.1.data.data.id}}',
+        data: {
+          responses: '{{loop.4.output.responses}}',
+          overallScore: '{{loop.4.output.overallScore}}',
+          passed: '{{loop.4.output.passed}}',
+          gradedBy: '{{loop.4.data.model}}',
+          feedback: '{{loop.4.output.feedback}}',
+          weakAreas: '{{loop.4.output.weakAreas}}',
+        },
+      },
+    },
+
+    // inner.6: Emit exam:graded
+    {
+      type: 'emit',
+      event: evt('exam:graded'),
+      payload: {
+        sessionId,
+        examId: '{{loop.1.data.data.id}}',
+        topicIndex: '{{input.parent_iteration}}',
+        round: '{{input.iteration}}',
+        overallScore: '{{loop.4.output.overallScore}}',
+        passed: '{{loop.4.output.passed}}',
+        feedback: '{{loop.4.output.feedback}}',
+      },
+    },
+
+    // inner.7: Pass/remediate decision
+    {
+      type: 'condition',
+      if: '{{loop.4.output.passed}}',
+      then: [
+        // Student passed — emit topic:passed
+        {
+          type: 'emit',
+          event: evt('topic:passed'),
+          payload: {
+            sessionId,
+            topicIndex: '{{input.parent_iteration}}',
+            round: '{{input.iteration}}',
+            overallScore: '{{loop.4.output.overallScore}}',
+          },
+        },
+      ],
+      else: [
+        // Student failed — synthesize targeted remedial data
+        {
+          type: 'emit',
+          event: evt('topic:remediate'),
+          payload: {
+            sessionId,
+            topicIndex: '{{input.parent_iteration}}',
+            round: '{{input.iteration}}',
+            feedback: '{{loop.4.output.feedback}}',
+            weakAreas: '{{loop.4.output.weakAreas}}',
+          },
+        },
+
+        // Generate remedial training data targeting the weak areas
+        {
+          type: 'command',
+          command: 'genome/dataset-synthesize',
+          params: {
+            topic: '{{steps.0.output.topics.{{input.parent_iteration}}.name}}',
+            skill,
+            personaName,
+            exampleCount: academyConfig.examplesPerTopic,
+            difficulty: '{{steps.0.output.topics.{{input.parent_iteration}}.difficulty}}',
+            // Include remediation context for targeted synthesis
+            remediationFeedback: '{{loop.4.output.feedback}}',
+            weakAreas: '{{loop.4.output.weakAreas}}',
+            ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
+            ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+          },
+        },
+
+        // Emit remedial dataset:ready for student to re-train
+        {
+          type: 'emit',
+          event: evt('dataset:ready'),
+          payload: {
+            sessionId,
+            datasetPath: '{{loop.7.else.1.data.datasetPath}}',
+            topicIndex: '{{input.parent_iteration}}',
+            topicName: '{{steps.0.output.topics.{{input.parent_iteration}}.name}}',
+            exampleCount: '{{loop.7.else.1.data.exampleCount}}',
+            isRemediation: true,
+            round: '{{input.iteration}}',
+          },
+        },
+
+        // Wait for student to finish remedial training
+        {
+          type: 'watch',
+          event: evt('training:complete'),
+          timeoutSecs: 600,
+        },
+      ],
+    },
+  ];
 }
