@@ -42,6 +42,7 @@ import { buildLoRATrainingPipeline, type LoRATrainingConfig } from '../../system
 import { AdapterPackage } from '../../system/genome/server/AdapterPackage';
 import type { AdapterPackageManifest } from '../../system/genome/shared/AdapterPackageTypes';
 import { GenomeLayerEntity } from '../../system/genome/entities/GenomeLayerEntity';
+import { SentinelEntity as SentinelEntityClass, DEFAULT_ESCALATION_RULES, VALID_SENTINEL_STATUSES } from '../../system/sentinel/entities/SentinelEntity';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1355,14 +1356,17 @@ describe('StudentPipeline', () => {
     }
   });
 
-  it('should use base model for exam answers', () => {
+  it('should use system default model for exam answers (not baseModel)', () => {
+    // baseModel (smollm2:135m) is a local Candle model, unavailable on cloud providers.
+    // The exam LLM step must use system default to avoid "Model Not Exist" errors.
+    // Future: route to Candle local inference to prove training worked.
     const pipeline = buildStudentPipeline(testConfig);
     const loopStep = pipeline.steps.find(s => s.type === 'loop');
     if (loopStep?.type === 'loop') {
       const llmStep = loopStep.steps.find(s => s.type === 'llm');
       expect(llmStep).toBeDefined();
       if (llmStep?.type === 'llm') {
-        expect(llmStep.model).toBe('smollm2:135m');
+        expect(llmStep.model).toBeUndefined();
       }
     }
   });
@@ -1372,5 +1376,170 @@ describe('StudentPipeline', () => {
     expect(pipeline.inputs?.sessionId).toBe('test-session-123');
     expect(pipeline.inputs?.personaId).toBe('persona-456');
     expect(pipeline.inputs?.personaName).toBe('Helper AI');
+  });
+});
+
+// =====================================================
+// Phase B: Sentinel Lifecycle & Persona Integration
+// =====================================================
+
+describe('SentinelEntity', () => {
+  it('should have correct collection name', () => {
+    expect(SentinelEntityClass.collection).toBe('sentinels');
+  });
+
+  it('should create with default values', () => {
+    const entity = new SentinelEntityClass();
+    expect(entity.status).toBe('saved');
+    expect(entity.isTemplate).toBe(false);
+    expect(entity.executionCount).toBe(0);
+    expect(entity.executions).toEqual([]);
+    expect(entity.id).toBeTruthy();
+  });
+
+  it('should validate required fields', () => {
+    const entity = new SentinelEntityClass();
+    // Default empty definition should fail validation
+    expect(entity.validate().success).toBe(false);
+
+    entity.definition = {
+      type: 'pipeline',
+      name: 'test-sentinel',
+      version: '1.0',
+      steps: [],
+      loop: { type: 'once' },
+    } as any;
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should validate status values', () => {
+    const entity = new SentinelEntityClass();
+    entity.definition = {
+      type: 'build',
+      name: 'test',
+      version: '1.0',
+      command: 'npm run build',
+    } as any;
+
+    for (const validStatus of VALID_SENTINEL_STATUSES) {
+      entity.status = validStatus;
+      expect(entity.validate().success).toBe(true);
+    }
+
+    entity.status = 'invalid' as any;
+    expect(entity.validate().success).toBe(false);
+  });
+
+  it('should record execution results', () => {
+    const entity = new SentinelEntityClass();
+    entity.definition = {
+      type: 'build',
+      name: 'test',
+      version: '1.0',
+      command: 'npm run build',
+    } as any;
+
+    entity.recordExecution({
+      handle: 'handle-1',
+      success: true,
+      startedAt: '2026-02-17T10:00:00Z',
+      completedAt: '2026-02-17T10:01:00Z',
+      durationMs: 60000,
+    });
+
+    expect(entity.executionCount).toBe(1);
+    expect(entity.lastSuccess).toBe(true);
+    expect(entity.lastRunAt).toBe('2026-02-17T10:00:00Z');
+    expect(entity.executions).toHaveLength(1);
+    expect(entity.executions[0].handle).toBe('handle-1');
+  });
+
+  it('should limit execution history to 50 entries', () => {
+    const entity = new SentinelEntityClass();
+    entity.definition = {
+      type: 'build',
+      name: 'test',
+      version: '1.0',
+      command: 'npm run build',
+    } as any;
+
+    // Record 60 executions
+    for (let i = 0; i < 60; i++) {
+      entity.recordExecution({
+        handle: `handle-${i}`,
+        success: true,
+        startedAt: `2026-02-17T10:${String(i).padStart(2, '0')}:00Z`,
+      });
+    }
+
+    expect(entity.executions).toHaveLength(50);
+    expect(entity.executionCount).toBe(60);
+    // Most recent should be first
+    expect(entity.executions[0].handle).toBe('handle-59');
+  });
+
+  it('should support persona ownership', () => {
+    const entity = new SentinelEntityClass();
+    entity.definition = {
+      type: 'pipeline',
+      name: 'academy-teacher',
+      version: '1.0',
+      steps: [],
+      loop: { type: 'once' },
+    } as any;
+    entity.parentPersonaId = 'persona-123' as UUID;
+    entity.escalationRules = DEFAULT_ESCALATION_RULES;
+
+    expect(entity.parentPersonaId).toBe('persona-123');
+    expect(entity.escalationRules).toHaveLength(3);
+    expect(entity.escalationRules![0].condition).toBe('error');
+    expect(entity.escalationRules![1].condition).toBe('timeout');
+    expect(entity.escalationRules![2].condition).toBe('complete');
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should expose name and type from definition', () => {
+    const entity = new SentinelEntityClass();
+    entity.definition = {
+      type: 'pipeline',
+      name: 'my-sentinel',
+      version: '1.0',
+      steps: [],
+      loop: { type: 'once' },
+    } as any;
+
+    expect(entity.name).toBe('my-sentinel');
+    expect(entity.type).toBe('pipeline');
+  });
+});
+
+describe('Escalation Rules', () => {
+  it('should have correct default escalation rules', () => {
+    expect(DEFAULT_ESCALATION_RULES).toHaveLength(3);
+
+    const errorRule = DEFAULT_ESCALATION_RULES.find(r => r.condition === 'error');
+    expect(errorRule).toBeDefined();
+    expect(errorRule!.action).toBe('notify');
+    expect(errorRule!.priority).toBe('high');
+
+    const timeoutRule = DEFAULT_ESCALATION_RULES.find(r => r.condition === 'timeout');
+    expect(timeoutRule).toBeDefined();
+    expect(timeoutRule!.action).toBe('notify');
+    expect(timeoutRule!.priority).toBe('normal');
+
+    const completeRule = DEFAULT_ESCALATION_RULES.find(r => r.condition === 'complete');
+    expect(completeRule).toBeDefined();
+    expect(completeRule!.action).toBe('notify');
+    expect(completeRule!.priority).toBe('low');
+  });
+
+  it('should have all valid status values', () => {
+    expect(VALID_SENTINEL_STATUSES).toContain('saved');
+    expect(VALID_SENTINEL_STATUSES).toContain('running');
+    expect(VALID_SENTINEL_STATUSES).toContain('completed');
+    expect(VALID_SENTINEL_STATUSES).toContain('failed');
+    expect(VALID_SENTINEL_STATUSES).toContain('paused');
+    expect(VALID_SENTINEL_STATUSES).toContain('cancelled');
+    expect(VALID_SENTINEL_STATUSES).toHaveLength(6);
   });
 });

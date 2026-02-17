@@ -176,12 +176,61 @@ interface AcademyConfig {
   rank: number;              // Default: 32
   learningRate: number;      // Default: 0.0001
   batchSize: number;         // Default: 4
-  examplesPerTopic: number;  // Default: 20
+  examplesPerTopic: number;  // Default: 10
   questionsPerExam: number;  // Default: 10
   teacherModel?: string;     // LLM for teacher steps
   teacherProvider?: string;  // Provider for teacher LLM
 }
 ```
+
+## Lessons Learned (Live Testing)
+
+The Academy Dojo was tested end-to-end with dual sentinels running through the Rust pipeline engine. Across 8 deployment cycles, these issues were discovered and resolved:
+
+### Sentinel Engine Modifications Required
+
+1. **Multi-pass nested interpolation** — The teacher pipeline needs `{{steps.0.output.topics.{{input.iteration}}.name}}` (inner `{{input.iteration}}` must resolve before the outer path traverses the array). The interpolation engine now runs up to 5 passes with regex `[^{}\n]+` matching innermost `{{}}` first.
+
+2. **JSON path traversal with array indexing** — `traverse_json_path()` supports numeric path parts for array access and auto-parses JSON strings encountered during traversal. This enables `steps.0.output.topics.2.name` to traverse a JSON array within an LLM output string.
+
+3. **Loop-relative referencing** — `{{loop.N.field}}` resolves to `step_results[_loop_base + N]`, enabling stable intra-loop references regardless of where the loop sits in the pipeline. The loop executor injects `_loop_base` into `ctx.inputs` at the start of each iteration.
+
+4. **Command routing bypass** — Pipeline command steps must use `execute_ts_json()` to route directly to the TypeScript Unix socket, bypassing the Rust ModuleRegistry. Otherwise, Rust modules claiming prefixes (e.g., `data/` → DataModule) intercept pipeline commands meant for TypeScript.
+
+### Data Structure Conventions for Pipeline Authors
+
+Understanding where step results store their data is critical:
+
+| Step Type | `data` contains | `output` contains |
+|-----------|----------------|-------------------|
+| **LLM** | API metadata: `model`, `provider`, `responseTimeMs`, `usage` | The LLM text (auto-parses as JSON via `traverse_json_path`) |
+| **Command** | The entire TypeScript response object | Same as `data` |
+| **Watch** | `{ event, payload }` — the event name and its payload | The event name string |
+| **Emit** | `{ event, payload }` | The event name string |
+| **Condition** | Branch result data | Branch result output |
+
+**Common patterns:**
+- Watch step fields: `{{loop.N.data.payload.fieldName}}` (NOT `data.fieldName`)
+- LLM grading scores: `{{loop.N.output.overallScore}}` (NOT `data.overallScore`)
+- Entity IDs from `data/create`: `{{loop.N.data.data.id}}` (entity nested under `data.data`)
+- LLM model used: `{{loop.N.data.model}}` (API metadata IS on `data`)
+
+### Tuning Discoveries
+
+- **Token budget**: `examplesPerTopic` default reduced from 20 → 10, and `maxTokens` increased to 8192. With 20 examples, the LLM consistently exhausted 4096 tokens and produced truncated JSON.
+- **Session-scoped adapter names**: Adapter registration must include `sessionId` fragment to prevent collisions across academy sessions. Pattern: `${personaName}-${sessionId.slice(0,8)}-topic-${iteration}`.
+- **Student exam model**: The student's exam LLM step must NOT use `baseModel` (e.g., smollm2:135m), which is a local Candle model unavailable on cloud providers. Use system default; future: route to Candle local inference to prove training worked.
+- **Transient API errors**: DeepSeek API returns sporadic "error decoding response body" after long sessions. Production needs retry logic with exponential backoff per step.
+
+### Metrics from Test Runs
+
+Across 8 deployment cycles with the Academy running:
+- **11** academy sessions created
+- **9** curricula designed (LLM)
+- **12** synthetic datasets generated (JSONL)
+- **9** genome layers trained (LoRA via PEFT)
+- **7** examinations created and graded
+- **6 of 9** sentinel step types demonstrated: LLM, Command, Emit, Watch, Loop, Condition
 
 ## Key Reuse
 
@@ -202,6 +251,68 @@ The current design is 1:1 (one teacher, one student). The event-scoped architect
 - Multiple teachers could generate data for the same session (parallel topic research)
 - Multiple students could train on the same curriculum (cohort learning)
 - Cross-session teacher sharing (reuse curricula across personas)
+
+## Roadmap: Beyond Text — Multi-Modal Training
+
+The Academy architecture is media-agnostic. The same teacher/student pattern applies to ANY trainable modality:
+
+### Phase 1: Text (Current)
+- Q&A conversation pairs synthesized by teacher LLM
+- LoRA fine-tuning via PEFT on SmolLM2/larger models
+- Exam: student answers text questions, teacher grades via LLM
+
+### Phase 2: Voice
+- Teacher synthesizes text training data for voice characteristics
+- Student trains TTS/STT adapters (voice cloning, speech patterns)
+- Exam: teacher provides text prompts, student generates speech, teacher evaluates naturalness/accuracy
+- New step type or command: `genome/train-voice` (wraps voice model fine-tuning)
+- Events: `academy:{sessionId}:voice:sample:ready`, `voice:evaluation:complete`
+
+### Phase 3: Images
+- Teacher synthesizes image description pairs / style guides
+- Student trains image generation adapters (LoRA on Stable Diffusion or similar)
+- Exam: teacher provides prompts, student generates images, teacher evaluates style/accuracy via vision LLM
+- New command: `genome/train-image` (wraps diffusion model LoRA)
+- Events: `academy:{sessionId}:image:sample:ready`, `image:evaluation:complete`
+
+### Phase 4: Video / Gameplay
+- Teacher synthesizes scenario descriptions, gameplay strategies
+- Student trains behavior models (game AI, video understanding)
+- Exam: teacher provides scenarios, student demonstrates behavior
+- New commands: `genome/train-video`, `genome/train-behavior`
+
+### The Unifying Pattern
+
+All modalities share the same sentinel pipeline structure:
+1. Teacher designs curriculum (LLM step)
+2. Teacher synthesizes training data (Command step → `genome/dataset-synthesize-{modality}`)
+3. Student trains on data (Command step → `genome/train-{modality}`)
+4. Teacher examines student (LLM step + modality-specific evaluation)
+5. Teacher grades and decides remediation (LLM step)
+
+The Academy doesn't need to know about modalities — it just orchestrates the pipeline. The modality-specific logic lives in the training and evaluation commands.
+
+## Long-Running Resilience
+
+Academy sessions are designed for hours-to-days execution:
+
+### Checkpointing
+- Session entity tracks `currentTopic` and `examRounds` — resume after crash
+- Each completed topic emits `topic:passed` event — progress is durable
+- Entity updates persist after every step (curriculum, exam, grades)
+
+### Observability
+- Every step result logged to `steps.jsonl` — full execution trace
+- Events emitted per loop iteration — widgets and persona inbox stay informed
+- Future: inference demo after each training round (prove learning to user/persona)
+- Future: loss curves, exam scores, inference examples streamed as real-time events
+- Future: criteria/thresholds replace hard-coded config (adaptive difficulty)
+
+### Retry & Recovery
+- Watch steps have configurable `timeoutSecs` (300-600s currently)
+- Future: per-step retry with exponential backoff for transient API errors
+- Future: session resume via `sentinel/resume --handle=<handle>`
+- Future: dead-letter queue for failed steps (inspect and retry)
 
 ## Testing
 

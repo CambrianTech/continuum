@@ -11,6 +11,7 @@ import { transformPayload } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelRunParams, SentinelRunResult } from '../shared/SentinelRunTypes';
 import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import type { Pipeline } from '../../../../workers/continuum-core/bindings/modules/sentinel';
+import { registerSentinelHandle } from '../../../../system/sentinel/SentinelEscalationService';
 
 export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, SentinelRunResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
@@ -59,6 +60,18 @@ export class SentinelRunServerCommand extends CommandBase<SentinelRunParams, Sen
         workingDir,
         env: { PIPELINE_JSON: JSON.stringify(pipeline) },
       });
+
+      // Register handle for lifecycle tracking (escalation → persona inbox)
+      const runParams = params as SentinelRunParams;
+      if (result.handle && (runParams.entityId || runParams.parentPersonaId)) {
+        registerSentinelHandle(
+          result.handle,
+          runParams.entityId ?? '',
+          runParams.parentPersonaId,
+          undefined,  // escalation rules — loaded from entity if entityId provided
+          runParams.sentinelName ?? pipeline.name,
+        );
+      }
 
       return transformPayload(params, {
         success: true,

@@ -130,6 +130,11 @@ export class DataDaemonServer extends DataDaemonBase {
     initializeGovernanceNotifications();
     this.log.debug('Governance notifications initialized');
 
+    // Initialize sentinel escalation (sentinel lifecycle → persona inbox)
+    const { initializeSentinelEscalation } = await import('../../../system/sentinel/SentinelEscalationService');
+    initializeSentinelEscalation();
+    this.log.debug('Sentinel escalation service initialized');
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ DataDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
   }

@@ -5,6 +5,7 @@
 
 import type { CommandParams, CommandResult } from '../../../../system/core/types/JTAGTypes';
 import type { SentinelDefinition, SentinelEntity } from '../../../../system/sentinel';
+import type { EscalationRule } from '../../../../system/sentinel';
 
 /**
  * Save params - accepts either:
@@ -29,6 +30,12 @@ export interface SentinelSaveParams extends CommandParams {
 
   /** Mark as template for cloning (optional) */
   isTemplate?: boolean;
+
+  /** Owning persona — every sentinel belongs to a persona */
+  parentPersonaId?: string;
+
+  /** Escalation rules — when to alert the owning persona */
+  escalationRules?: EscalationRule[];
 }
 
 /**

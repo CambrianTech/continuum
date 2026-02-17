@@ -17,6 +17,28 @@ genome/training-pipeline (convenience entry point)
 
 Step-to-step data flows via Rust interpolation: `{{steps.0.data.datasetPath}}` passes the JSONL path from dataset-prepare into train.
 
+### Interpolation Engine Capabilities
+
+The Rust interpolation engine (`interpolation.rs`) supports:
+
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| `{{steps.N.output}}` | Access step N's output | `{{steps.0.data.datasetPath}}` |
+| `{{steps.N.data.field}}` | Traverse step N's data object | `{{steps.0.data.model}}` |
+| `{{loop.N.field}}` | Loop-relative reference (intra-loop) | `{{loop.0.data.payload.datasetPath}}` |
+| `{{input.key}}` | Pipeline input variable | `{{input.iteration}}` (loop counter) |
+| `{{named.label.field}}` | Named output reference | `{{named.build.output}}` |
+| Nested `{{}}` | Multi-pass resolution (5 passes) | `{{steps.0.output.topics.{{input.iteration}}.name}}` |
+| Array indexing | Numeric path parts traverse arrays | `topics.2.name` → third topic's name |
+| JSON auto-parse | Strings parsed during traversal | LLM output string → JSON object → field access |
+
+**Data structure conventions for pipeline authors:**
+- Watch steps: `{{loop.N.data.payload.X}}` (payload nested under `data`)
+- LLM output fields: `{{loop.N.output.fieldName}}` (auto-parsed JSON)
+- LLM metadata: `{{loop.N.data.model}}` (API metadata on `data`)
+- Entity IDs from `data/create`: `{{loop.N.data.data.id}}` (entity nested under `data.data`)
+- Command routing: All pipeline command steps bypass Rust module registry via `execute_ts_json()`
+
 ## Commands
 
 ### `genome/dataset-prepare`

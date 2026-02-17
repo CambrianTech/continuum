@@ -127,6 +127,8 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     const teacherResult = await Commands.execute('sentinel/run', {
       type: 'pipeline',
       definition: teacherDef,
+      parentPersonaId: personaId,
+      sentinelName: `academy-teacher-${skill}`,
     } as any);
 
     const teacherHandle = (teacherResult as any).handle ?? '';
@@ -146,6 +148,8 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
     const studentResult = await Commands.execute('sentinel/run', {
       type: 'pipeline',
       definition: studentDef,
+      parentPersonaId: personaId,
+      sentinelName: `academy-student-${skill}`,
     } as any);
 
     const studentHandle = (studentResult as any).handle ?? '';

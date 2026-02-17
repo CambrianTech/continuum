@@ -28,6 +28,15 @@ export interface SentinelRunParams extends CommandParams {
 
   /** Whether to run async with handle (default true for long operations) */
   async?: boolean;
+
+  /** If this sentinel was saved, its entity ID for lifecycle tracking */
+  entityId?: string;
+
+  /** Owning persona — for escalation routing when sentinel finishes */
+  parentPersonaId?: string;
+
+  /** Sentinel name — for human-readable escalation messages */
+  sentinelName?: string;
 }
 
 /**

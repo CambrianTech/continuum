@@ -86,6 +86,7 @@ import { SkillEntity } from '../../../system/data/entities/SkillEntity';
 import { AcademySessionEntity } from '../../../system/genome/entities/AcademySessionEntity';
 import { AcademyCurriculumEntity } from '../../../system/genome/entities/AcademyCurriculumEntity';
 import { AcademyExaminationEntity } from '../../../system/genome/entities/AcademyExaminationEntity';
+import { SentinelEntity } from '../../../system/sentinel/entities/SentinelEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -145,6 +146,7 @@ export function initializeEntityRegistry(): void {
   new AcademySessionEntity();
   new AcademyCurriculumEntity();
   new AcademyExaminationEntity();
+  new SentinelEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -196,6 +198,7 @@ export function initializeEntityRegistry(): void {
   registerEntity(AcademySessionEntity.collection, AcademySessionEntity);
   registerEntity(AcademyCurriculumEntity.collection, AcademyCurriculumEntity);
   registerEntity(AcademyExaminationEntity.collection, AcademyExaminationEntity);
+  registerEntity(SentinelEntity.collection, SentinelEntity);
 
   log.info('All entities registered');
 }
