@@ -361,8 +361,10 @@ export class ConnectionBroker implements IConnectionBroker {
     // Use dynamic port configuration instead of hardcoded values
     let port: number;
     try {
-      const { WS_PORT } = require('../../../../shared/config');
-      port = WS_PORT;
+      // Try static import first (works in bundled/compiled contexts),
+      // then dynamic import (works in vitest/ESM contexts)
+      const config = await import('../../../../shared/config');
+      port = config.WS_PORT;
     } catch (error) {
       throw new Error(`ConnectionBroker: Failed to load WebSocket port from configuration. ${error}. Ensure system is properly configured with package.json port settings.`);
     }

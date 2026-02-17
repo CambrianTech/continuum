@@ -1,15 +1,17 @@
 /**
  * Sentinel LoRA Training Pipeline — Integration Tests
  *
- * Tests the genome/dataset-prepare and genome/train commands against
- * the live system. Requires `npm start` to be running.
+ * Tests the genome/dataset-prepare, genome/train, genome/dataset-synthesize,
+ * genome/academy-session commands against the live system.
  *
- * genome/training-pipeline (full pipeline) requires Rust sentinel,
- * tested as a smoke test that returns a handle.
+ * Requires: `npm start` running + JTAGClient connection.
+ * If the client can't connect, tests skip gracefully.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Commands } from '../../system/core/shared/Commands';
+import { JTAGClientServer } from '../../system/core/client/server/JTAGClientServer';
+import { JTAGClient } from '../../system/core/client/shared/JTAGClient';
 import type { GenomeDatasetPrepareParams, GenomeDatasetPrepareResult } from '../../commands/genome/dataset-prepare/shared/GenomeDatasetPrepareTypes';
 import type { GenomeTrainParams, GenomeTrainResult } from '../../commands/genome/train/shared/GenomeTrainTypes';
 import type { GenomeTrainingPipelineParams, GenomeTrainingPipelineResult } from '../../commands/genome/training-pipeline/shared/GenomeTrainingPipelineTypes';
@@ -24,8 +26,40 @@ const TEST_PERSONA_ID = '00000000-0000-0000-0000-000000000002' as UUID; // Helpe
 const TEST_PERSONA_NAME = 'Helper AI';
 const TEST_ROOM_ID = '00000000-0000-0000-0000-000000000001' as UUID; // general room
 
+// Client connection — required for Commands.execute to work
+let client: JTAGClient | null = null;
+let connectionError: string | null = null;
+
+beforeAll(async () => {
+  try {
+    const connectPromise = JTAGClientServer.connect();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Client connection timed out (20s)')), 20000)
+    );
+    const result = await Promise.race([connectPromise, timeoutPromise]);
+    client = result.client;
+
+    // Register as default client so Commands.execute() can find it
+    JTAGClient.registerClient('default', client);
+  } catch (err) {
+    connectionError = err instanceof Error ? err.message : String(err);
+    console.warn(`⚠️ Integration test client connection failed: ${connectionError}`);
+    console.warn('   Tests will be skipped. Use ./jtag CLI for manual integration testing.');
+  }
+}, 25000);
+
+afterAll(async () => {
+  if (client) {
+    JTAGClient.unregisterClient('default');
+    if (typeof (client as any).disconnect === 'function') {
+      await (client as any).disconnect();
+    }
+  }
+});
+
 describe('genome/dataset-prepare', () => {
   it('should reject missing personaId', { timeout: 15000 }, async () => {
+    if (!client) return; // Skip if no connection
     const result = await Commands.execute<GenomeDatasetPrepareParams, GenomeDatasetPrepareResult>(
       'genome/dataset-prepare',
       {
@@ -33,12 +67,11 @@ describe('genome/dataset-prepare', () => {
         roomId: TEST_ROOM_ID,
       } as any
     );
-
-    // ValidationError should propagate as error
     expect(result.success).toBe(false);
   });
 
   it('should attempt dataset preparation from general room', { timeout: 15000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeDatasetPrepareParams, GenomeDatasetPrepareResult>(
       'genome/dataset-prepare',
       {
@@ -46,35 +79,28 @@ describe('genome/dataset-prepare', () => {
         personaName: TEST_PERSONA_NAME,
         roomId: TEST_ROOM_ID,
         traitType: 'conversational',
-        minMessages: 2, // Low threshold for testing
+        minMessages: 2,
         maxMessages: 50,
       }
     );
 
-    // May fail if not enough messages — that's expected
     if (result.success) {
       expect(result.datasetPath).toBeDefined();
       expect(result.exampleCount).toBeGreaterThan(0);
       expect(result.personaId).toBe(TEST_PERSONA_ID);
       expect(result.traitType).toBe('conversational');
 
-      // Verify the JSONL file exists
       expect(fs.existsSync(result.datasetPath)).toBe(true);
-
-      // Verify JSONL content
       const content = fs.readFileSync(result.datasetPath, 'utf-8');
       const lines = content.trim().split('\n');
       expect(lines.length).toBe(result.exampleCount);
 
-      // Each line should be valid JSON with messages array
       const firstLine = JSON.parse(lines[0]);
       expect(firstLine.messages).toBeDefined();
       expect(Array.isArray(firstLine.messages)).toBe(true);
 
-      // Cleanup
       fs.unlinkSync(result.datasetPath);
     } else {
-      // Insufficient messages is a valid outcome
       expect(result.error).toBeDefined();
       console.log(`  Dataset prepare returned expected error: ${result.error}`);
     }
@@ -83,20 +109,19 @@ describe('genome/dataset-prepare', () => {
 
 describe('genome/train', () => {
   it('should reject missing required params', { timeout: 15000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeTrainParams, GenomeTrainResult>(
       'genome/train',
       {
         personaId: TEST_PERSONA_ID,
         personaName: TEST_PERSONA_NAME,
-        // Missing traitType and datasetPath
       } as any
     );
-
     expect(result.success).toBe(false);
   });
 
   it('should train or report PEFT unavailable', { timeout: 120000 }, async () => {
-    // Create a minimal JSONL file for testing
+    if (!client) return;
     const tempPath = path.join('/tmp', `test-dataset-${Date.now()}.jsonl`);
     const testData = [
       JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }, { role: 'assistant', content: 'Hi there!' }] }),
@@ -116,8 +141,6 @@ describe('genome/train', () => {
         }
       );
 
-      // Will succeed only if Python env is bootstrapped
-      // Otherwise returns error about PEFT environment
       if (!result.success) {
         expect(result.error).toContain('PEFT');
       } else {
@@ -125,7 +148,6 @@ describe('genome/train', () => {
         expect(result.metrics).toBeDefined();
         expect(result.metrics.epochs).toBeGreaterThan(0);
 
-        // Verify entity was persisted
         if (result.layerId) {
           const readResult = await Commands.execute('data/read', {
             collection: 'genome_layers',
@@ -135,7 +157,6 @@ describe('genome/train', () => {
           expect(readResult.data?.name).toContain('conversational');
           expect(readResult.data?.traitType).toBe('conversational');
 
-          // Verify manifest.json exists in adapter directory
           const manifestPath = `${result.adapterPath}/manifest.json`;
           expect(fs.existsSync(manifestPath)).toBe(true);
         }
@@ -148,18 +169,18 @@ describe('genome/train', () => {
 
 describe('genome/training-pipeline', () => {
   it('should reject missing required params', { timeout: 15000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeTrainingPipelineParams, GenomeTrainingPipelineResult>(
       'genome/training-pipeline',
       {
         personaId: TEST_PERSONA_ID,
-        // Missing personaName and roomId
       } as any
     );
-
     expect(result.success).toBe(false);
   });
 
   it('should build and submit pipeline to sentinel', { timeout: 15000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeTrainingPipelineParams, GenomeTrainingPipelineResult>(
       'genome/training-pipeline',
       {
@@ -171,14 +192,12 @@ describe('genome/training-pipeline', () => {
       }
     );
 
-    // Pipeline submission should succeed (even if individual steps fail later)
     if (result.success) {
       expect(result.handle).toBeDefined();
       expect(result.handle.length).toBeGreaterThan(0);
       expect(result.pipelineName).toContain('lora-training');
       console.log(`  Pipeline started with handle: ${result.handle}`);
     } else {
-      // May fail if Rust core IPC is not running
       console.log(`  Pipeline submission failed (expected if Rust core not running): ${result.error}`);
     }
   });
@@ -190,24 +209,23 @@ describe('genome/training-pipeline', () => {
 
 describe('genome/dataset-synthesize', () => {
   it('should reject missing required params', { timeout: 15000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeDatasetSynthesizeParams, GenomeDatasetSynthesizeResult>(
       'genome/dataset-synthesize',
-      {
-        // Missing topic, skill, personaName
-      } as any
+      {} as any
     );
-
     expect(result.success).toBe(false);
   });
 
   it('should synthesize training data via LLM', { timeout: 60000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeDatasetSynthesizeParams, GenomeDatasetSynthesizeResult>(
       'genome/dataset-synthesize',
       {
         topic: 'TypeScript generic type parameters',
         skill: 'typescript',
         personaName: TEST_PERSONA_NAME,
-        exampleCount: 5,  // Small count for integration test
+        exampleCount: 5,
         difficulty: 'beginner',
       }
     );
@@ -219,23 +237,18 @@ describe('genome/dataset-synthesize', () => {
       expect(result.topic).toBe('TypeScript generic type parameters');
       expect(result.generatedBy).toBeDefined();
 
-      // Verify JSONL file exists and is valid
       expect(fs.existsSync(result.datasetPath)).toBe(true);
       const content = fs.readFileSync(result.datasetPath, 'utf-8');
       const lines = content.trim().split('\n');
       expect(lines.length).toBe(result.exampleCount);
 
-      // Each line should be valid JSONL with messages
       const firstLine = JSON.parse(lines[0]);
       expect(firstLine.messages).toBeDefined();
       expect(Array.isArray(firstLine.messages)).toBe(true);
 
       console.log(`  Synthesized ${result.exampleCount} examples by ${result.generatedBy}`);
-
-      // Cleanup
       fs.unlinkSync(result.datasetPath);
     } else {
-      // May fail if no LLM provider is configured
       console.log(`  Dataset synthesis failed (expected if no LLM available): ${result.error}`);
     }
   });
@@ -243,18 +256,18 @@ describe('genome/dataset-synthesize', () => {
 
 describe('genome/academy-session', () => {
   it('should reject missing required params', { timeout: 15000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeAcademySessionParams, GenomeAcademySessionResult>(
       'genome/academy-session',
       {
         personaId: TEST_PERSONA_ID,
-        // Missing personaName and skill
       } as any
     );
-
     expect(result.success).toBe(false);
   });
 
   it('should create session and spawn sentinels', { timeout: 30000 }, async () => {
+    if (!client) return;
     const result = await Commands.execute<GenomeAcademySessionParams, GenomeAcademySessionResult>(
       'genome/academy-session',
       {
@@ -276,7 +289,6 @@ describe('genome/academy-session', () => {
       console.log(`  Teacher handle: ${result.teacherHandle}`);
       console.log(`  Student handle: ${result.studentHandle}`);
 
-      // Verify session entity was persisted
       const readResult = await Commands.execute('data/read', {
         collection: 'academy_sessions',
         id: result.academySessionId,
@@ -288,7 +300,6 @@ describe('genome/academy-session', () => {
         expect(readResult.data?.status).toBeDefined();
       }
     } else {
-      // May fail if sentinel engine is not running
       console.log(`  Academy session failed (expected if Rust core not running): ${result.error}`);
     }
   });

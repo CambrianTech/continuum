@@ -601,17 +601,38 @@ export abstract class JTAGRouter extends JTAGModule implements TransportEndpoint
       }
     }
 
-    // Route to subscriber and handle response creation
-    const result = await this.routeToSubscriber(message);
+    try {
+      // Route to subscriber and handle response creation
+      const result = await this.routeToSubscriber(message);
 
-    // Create and send response for request messages
-    if (result.success && result.handlerResult) {
-      await this.createAndSendResponse(message, result.handlerResult);
-    } else {
-      console.warn(`⚠️ ${this.toString()}: No response created for ${message.correlationId} - success=${result.success}, handlerResult=${!!result.handlerResult}`);
+      // Create and send response for request messages
+      if (result.success && result.handlerResult) {
+        await this.createAndSendResponse(message, result.handlerResult);
+      } else {
+        console.warn(`⚠️ ${this.toString()}: No response created for ${message.correlationId} - success=${result.success}, handlerResult=${!!result.handlerResult}`);
+      }
+
+      return result;
+    } catch (error) {
+      // CRITICAL: If command execution throws, we MUST still send an error response
+      // back to the client. Without this, external clients hang forever waiting for
+      // a response that never arrives.
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ ${this.toString()}: Command threw for ${message.endpoint} (${message.correlationId}): ${errorMessage}`);
+
+      const errorPayload: JTAGResponsePayload = {
+        success: false,
+        error: errorMessage,
+        timestamp: new Date().toISOString(),
+        context: this.context,
+        sessionId: message.payload?.sessionId ?? this.context.uuid
+      } as JTAGResponsePayload;
+
+      // Still send error response back to the caller
+      await this.createAndSendResponse(message, errorPayload);
+
+      return { success: false, error: errorMessage };
     }
-    
-    return result;
   }
 
   /**

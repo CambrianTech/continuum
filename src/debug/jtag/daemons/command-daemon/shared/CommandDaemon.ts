@@ -109,7 +109,12 @@ export abstract class CommandDaemon extends DaemonBase {
     const requestContext = requestPayload.context ?? this.context;
     
     if (!requestPayload.sessionId) {
-      throw new Error(`SECURITY: All commands require valid sessionId. Missing sessionId for command: ${commandName}`);
+      return createCommandErrorResponse(
+        `SECURITY: All commands require valid sessionId. Missing sessionId for command: ${commandName}`,
+        requestContext,
+        commandName,
+        requestPayload.sessionId ?? 'unknown'
+      );
     }
     const requestSessionId = requestPayload.sessionId;
     
