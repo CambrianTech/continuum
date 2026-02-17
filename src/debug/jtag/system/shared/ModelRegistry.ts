@@ -47,6 +47,8 @@
  *   queries filter/sort across all registered providers.
  */
 
+import type { ModelAdapterProfile } from './ModelCapabilities';
+
 /**
  * Metadata for a discovered model
  */
@@ -58,6 +60,13 @@ export interface ModelMetadata {
   readonly capabilities?: string[];
   readonly costPer1kTokens?: { input: number; output: number };
   readonly discoveredAt: number;
+
+  /**
+   * Fine-tuning, quantization, and adapter capability profile.
+   * Populated by adapters that report detailed model capabilities.
+   * Undefined for cloud APIs or adapters that haven't reported yet.
+   */
+  readonly adapterProfile?: ModelAdapterProfile;
 }
 
 /**

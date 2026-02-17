@@ -20,6 +20,20 @@ import {
 } from '../../system/shared/ModelContextWindows';
 import { ModelRegistry } from '../../system/shared/ModelRegistry';
 import {
+  QuantFormat,
+  WeightFormat,
+  AdapterMethod,
+  AdapterTarget,
+  InferenceRuntime,
+  Accelerator,
+  isFineTunable,
+  supportsLoRA,
+  supportsAdapterStacking,
+  estimateAdapterVramMB,
+  fitsInVram,
+  type ModelAdapterProfile
+} from '../../system/shared/ModelCapabilities';
+import {
   RAGBudgetManager,
   allocateChatBudget,
   type RAGSourceBudget
@@ -442,6 +456,254 @@ describe('RAGBudgetManager', () => {
       expect(result.modelId).toBe('gpt-4o');
       expect(result.allocations.length).toBeGreaterThan(0);
       expect(result.totalAllocated).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('ModelCapabilities — Adapter Profile Type System', () => {
+  // Realistic profile: Llama 3.1 8B on Candle/M1 with QLoRA support
+  const candleLlama8B: ModelAdapterProfile = {
+    runtime: InferenceRuntime.CANDLE,
+    quantization: {
+      format: QuantFormat.Q4_K_M,
+      bitsPerWeight: 4,
+      weightFormat: WeightFormat.GGUF,
+      canDequantizeForTraining: false,
+      canTrainInQuantized: true,  // QLoRA
+    },
+    fineTuning: {
+      supportedMethods: [AdapterMethod.QLORA],
+      lora: {
+        maxRank: 32,
+        recommendedRank: 8,
+        recommendedAlpha: 16,
+        maxConcurrentAdapters: 3,
+        supportsStacking: true,
+        adapterSizeMB: 15,
+        targetableLayers: [AdapterTarget.ATTN_Q, AdapterTarget.ATTN_V],
+        recommendedTargets: [AdapterTarget.ATTN_Q, AdapterTarget.ATTN_V],
+        recommendedDropout: 0.05,
+      },
+      maxTrainingBatchSize: 4,
+      supportsGradientCheckpointing: true,
+      supportsFlashAttention: false,
+    },
+    hardware: {
+      inferenceVramMB: 4500,
+      trainingVramMB: 8000,
+      accelerator: Accelerator.METAL,
+      measuredInputTPS: 40,
+      measuredOutputTPS: 25,
+      fitsInVram: true,
+      cpuOffloadLayers: 0,
+    },
+    architectureFamily: 'llama',
+    parameterCountB: 8,
+    layerCount: 32,
+    hiddenSize: 4096,
+  };
+
+  // Cloud API profile: no fine-tuning, no local execution
+  const cloudLlama: ModelAdapterProfile = {
+    runtime: InferenceRuntime.CLOUD_API,
+    quantization: {
+      format: QuantFormat.NONE,
+      bitsPerWeight: 16,
+      weightFormat: WeightFormat.CLOUD,
+    },
+    fineTuning: {
+      supportedMethods: [],  // Cloud API — no adapter access
+    },
+    hardware: {
+      inferenceVramMB: 0,  // Cloud-managed
+      accelerator: Accelerator.CLOUD,
+    },
+  };
+
+  // Full fine-tune only profile (no PEFT)
+  const fullFinetuneOnly: ModelAdapterProfile = {
+    runtime: InferenceRuntime.TRANSFORMERS,
+    quantization: {
+      format: QuantFormat.FP16,
+      bitsPerWeight: 16,
+      weightFormat: WeightFormat.SAFETENSORS,
+    },
+    fineTuning: {
+      supportedMethods: [AdapterMethod.FULL],
+    },
+  };
+
+  describe('isFineTunable', () => {
+    it('should return true for QLoRA-capable model', () => {
+      expect(isFineTunable(candleLlama8B)).toBe(true);
+    });
+
+    it('should return false for cloud API model', () => {
+      expect(isFineTunable(cloudLlama)).toBe(false);
+    });
+
+    it('should return false for full-fine-tune-only model (not PEFT)', () => {
+      // Full fine-tune is not parameter-efficient — isFineTunable checks for PEFT
+      expect(isFineTunable(fullFinetuneOnly)).toBe(false);
+    });
+
+    it('should return false for undefined profile', () => {
+      expect(isFineTunable(undefined)).toBe(false);
+    });
+  });
+
+  describe('supportsLoRA', () => {
+    it('should return true for QLoRA-capable model', () => {
+      expect(supportsLoRA(candleLlama8B)).toBe(true);
+    });
+
+    it('should return false for cloud API model', () => {
+      expect(supportsLoRA(cloudLlama)).toBe(false);
+    });
+
+    it('should return true for LoRA + QLoRA model', () => {
+      const both: ModelAdapterProfile = {
+        ...candleLlama8B,
+        fineTuning: {
+          supportedMethods: [AdapterMethod.LORA, AdapterMethod.QLORA],
+          lora: candleLlama8B.fineTuning.lora,
+        },
+      };
+      expect(supportsLoRA(both)).toBe(true);
+    });
+  });
+
+  describe('supportsAdapterStacking', () => {
+    it('should return true for multi-adapter model', () => {
+      expect(supportsAdapterStacking(candleLlama8B)).toBe(true);
+    });
+
+    it('should return false for cloud model', () => {
+      expect(supportsAdapterStacking(cloudLlama)).toBe(false);
+    });
+
+    it('should return false when maxConcurrentAdapters is 1', () => {
+      const singleAdapter: ModelAdapterProfile = {
+        ...candleLlama8B,
+        fineTuning: {
+          ...candleLlama8B.fineTuning,
+          lora: {
+            ...candleLlama8B.fineTuning.lora!,
+            maxConcurrentAdapters: 1,
+            supportsStacking: false,
+          },
+        },
+      };
+      expect(supportsAdapterStacking(singleAdapter)).toBe(false);
+    });
+  });
+
+  describe('estimateAdapterVramMB', () => {
+    it('should estimate reasonable VRAM for rank 8 on 8B model', () => {
+      const vram = estimateAdapterVramMB(candleLlama8B);
+      // 2 * 8 * 4096 * 2 targets * 32 layers * 2 bytes / 1MB ≈ 32 MB
+      expect(vram).toBeGreaterThan(0);
+      expect(vram).toBeLessThan(200);  // Should be well under 200MB for rank 8
+    });
+
+    it('should increase with rank', () => {
+      const rank8 = estimateAdapterVramMB(candleLlama8B, 8);
+      const rank32 = estimateAdapterVramMB(candleLlama8B, 32);
+      expect(rank32).toBeGreaterThan(rank8);
+      expect(rank32).toBe(rank8 * 4);  // Linear with rank
+    });
+  });
+
+  describe('fitsInVram', () => {
+    it('should return true when enough VRAM available', () => {
+      expect(fitsInVram(candleLlama8B, 16000)).toBe(true);  // 16GB > 4.5GB
+    });
+
+    it('should return false when insufficient VRAM', () => {
+      expect(fitsInVram(candleLlama8B, 2000)).toBe(false);  // 2GB < 4.5GB
+    });
+
+    it('should return false for undefined profile', () => {
+      expect(fitsInVram(undefined, 16000)).toBe(false);
+    });
+  });
+
+  describe('enum completeness', () => {
+    it('should have all expected quantization formats', () => {
+      expect(QuantFormat.Q4_K_M).toBe('q4_k_m');
+      expect(QuantFormat.FP16).toBe('fp16');
+      expect(QuantFormat.GPTQ).toBe('gptq');
+      expect(QuantFormat.AWQ).toBe('awq');
+    });
+
+    it('should have all expected adapter methods', () => {
+      expect(AdapterMethod.LORA).toBe('lora');
+      expect(AdapterMethod.QLORA).toBe('qlora');
+      expect(AdapterMethod.DORA).toBe('dora');
+      expect(AdapterMethod.IA3).toBe('ia3');
+    });
+
+    it('should have all expected runtimes', () => {
+      expect(InferenceRuntime.CANDLE).toBe('candle');
+      expect(InferenceRuntime.LLAMA_CPP).toBe('llama_cpp');
+      expect(InferenceRuntime.MLX).toBe('mlx');
+      expect(InferenceRuntime.OLLAMA).toBe('ollama');
+    });
+
+    it('should have all expected accelerators', () => {
+      expect(Accelerator.METAL).toBe('metal');
+      expect(Accelerator.CUDA).toBe('cuda');
+      expect(Accelerator.CPU).toBe('cpu');
+    });
+  });
+
+  describe('ModelRegistry integration', () => {
+    beforeEach(() => {
+      ModelRegistry.sharedInstance().clear();
+    });
+
+    it('should store and retrieve adapterProfile via ModelMetadata', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+        contextWindow: 1400,
+        provider: 'candle',
+        discoveredAt: Date.now(),
+        adapterProfile: candleLlama8B,
+      });
+
+      const metadata = registry.get('meta-llama/Llama-3.1-8B-Instruct', 'candle');
+      expect(metadata?.adapterProfile).toBeDefined();
+      expect(metadata?.adapterProfile?.runtime).toBe(InferenceRuntime.CANDLE);
+      expect(supportsLoRA(metadata?.adapterProfile)).toBe(true);
+      expect(metadata?.adapterProfile?.hardware?.accelerator).toBe(Accelerator.METAL);
+    });
+
+    it('should filter models by fine-tunability across providers', () => {
+      const registry = ModelRegistry.sharedInstance();
+      registry.register({
+        modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+        contextWindow: 1400,
+        provider: 'candle',
+        discoveredAt: Date.now(),
+        adapterProfile: candleLlama8B,
+      });
+      registry.register({
+        modelId: 'meta-llama/Llama-3.1-8B-Instruct',
+        contextWindow: 131072,
+        provider: 'together',
+        discoveredAt: Date.now(),
+        adapterProfile: cloudLlama,
+      });
+
+      const all = registry.getAll('meta-llama/Llama-3.1-8B-Instruct');
+      const fineTunable = all.filter(m => isFineTunable(m.adapterProfile));
+      const loraCapable = all.filter(m => supportsLoRA(m.adapterProfile));
+
+      expect(all.length).toBe(2);
+      expect(fineTunable.length).toBe(1);
+      expect(fineTunable[0].provider).toBe('candle');
+      expect(loraCapable.length).toBe(1);
     });
   });
 });
