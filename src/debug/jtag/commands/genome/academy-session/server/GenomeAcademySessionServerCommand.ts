@@ -55,19 +55,31 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       ...(params.provider && { teacherProvider: params.provider }),
     };
 
-    // 1. Create AcademySessionEntity
+    // 1. Create AcademySessionEntity (instantiate for auto-generated id)
+    const entity = new AcademySessionEntity();
+    entity.personaId = personaId;
+    entity.personaName = personaName;
+    entity.skill = skill;
+    entity.baseModel = baseModel;
+    entity.status = 'pending';
+    entity.currentTopic = 0;
+    entity.examRounds = 0;
+    entity.config = config;
+
+    const validation = entity.validate();
+    if (!validation.success) {
+      return createGenomeAcademySessionResultFromParams(params, {
+        success: false,
+        error: `Entity validation failed: ${validation.error}`,
+        academySessionId: '' as UUID,
+        teacherHandle: '',
+        studentHandle: '',
+      });
+    }
+
     const createResult = await Commands.execute('data/create', {
       collection: AcademySessionEntity.collection,
-      data: {
-        personaId,
-        personaName,
-        skill,
-        baseModel,
-        status: 'pending',
-        currentTopic: 0,
-        examRounds: 0,
-        config,
-      },
+      data: entity,
     } as any);
 
     if (!(createResult as any).success) {
@@ -80,7 +92,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
       });
     }
 
-    const sessionId = (createResult as any).data?.id ?? (createResult as any).id;
+    const sessionId = entity.id;
     console.log(`   Session created: ${sessionId}`);
 
     // 2. Build teacher pipeline

@@ -70,6 +70,8 @@ pub async fn execute(
 
         // Set iteration variable for interpolation: {{input.iteration}}
         ctx.inputs.insert("iteration".to_string(), json!(iteration));
+        // Set loop base index for {{loop.N.field}} relative referencing
+        ctx.inputs.insert("_loop_base".to_string(), json!(ctx.step_results.len()));
 
         // Execute sub-steps
         for step in steps {

@@ -69,7 +69,7 @@ export interface AcademyConfig {
   /** Training batch size (default: 4) */
   batchSize: number;
 
-  /** Number of training examples to synthesize per topic (default: 20) */
+  /** Number of training examples to synthesize per topic (default: 10) */
   examplesPerTopic: number;
 
   /** Number of exam questions per topic (default: 10) */
@@ -92,7 +92,7 @@ export const DEFAULT_ACADEMY_CONFIG: AcademyConfig = {
   rank: 32,
   learningRate: 0.0001,
   batchSize: 4,
-  examplesPerTopic: 20,
+  examplesPerTopic: 10,
   questionsPerExam: 10,
 };
 

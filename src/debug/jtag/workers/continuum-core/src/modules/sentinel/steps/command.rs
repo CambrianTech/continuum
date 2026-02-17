@@ -1,4 +1,9 @@
-//! Command step execution — routes to any command via CommandExecutor
+//! Command step execution — routes commands through TypeScript CommandRouterServer
+//!
+//! Pipeline commands are high-level TypeScript commands (e.g., `data/create` with
+//! `collection` + `data`). They MUST go through TypeScript for context injection
+//! (dbPath resolution, sessionId, userId). Routing through the Rust module registry
+//! would hit low-level Rust handlers that expect internal protocol fields (like dbPath).
 
 use serde_json::Value;
 use std::time::Instant;
@@ -6,7 +11,13 @@ use std::time::Instant;
 use crate::modules::sentinel::interpolation;
 use crate::modules::sentinel::types::{ExecutionContext, PipelineContext, StepResult};
 
-/// Execute a command step via global CommandExecutor (routes to Rust OR TypeScript)
+/// Execute a command step via TypeScript CommandRouterServer.
+///
+/// Always routes through TypeScript (bypasses Rust module registry) because:
+/// 1. Pipeline commands are TypeScript-level commands needing context injection
+/// 2. Rust modules (e.g., DataModule) expect internal protocol fields (dbPath)
+///    that TypeScript auto-resolves via DatabaseHandleRegistry
+/// 3. TypeScript CommandRouterServer injects context, sessionId, userId
 pub async fn execute(
     command: &str,
     params: &Value,
@@ -23,7 +34,7 @@ pub async fn execute(
 
     log.info(&format!("[{}] Command step: {}", pipeline_ctx.handle_id, interpolated_command));
 
-    let json = runtime::command_executor::execute_json(&interpolated_command, interpolated_params).await
+    let json = runtime::command_executor::execute_ts_json(&interpolated_command, interpolated_params).await
         .map_err(|e| format!("[{}] Command '{}' failed: {}", pipeline_ctx.handle_id, interpolated_command, e))?;
 
     let duration_ms = start.elapsed().as_millis() as u64;

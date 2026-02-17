@@ -53,7 +53,7 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       ],
       ...(model && { model }),
       ...(provider && { provider: provider as AIGenerateParams['provider'] }),
-      maxTokens: 4096,
+      maxTokens: 8192,
       temperature: 0.8,
     };
 
@@ -159,7 +159,7 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       let cleaned = text.trim();
       const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
-        console.warn('   SYNTHESIZE: Could not find JSON array in LLM output');
+        console.warn(`   SYNTHESIZE: Could not find JSON array in LLM output (${cleaned.length} chars)`);
         return [];
       }
 

@@ -94,59 +94,74 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
       event: evt('curriculum:ready'),
       payload: {
         sessionId,
-        curriculumId: '{{steps.1.data.id}}',
+        curriculumId: '{{steps.1.data.data.id}}',
       },
     },
 
     // Step 3: Loop over topics
-    // Uses 'until' mode — continues until the LLM-evaluated condition is met
-    // The loop body handles one topic at a time, advancing via session state
+    // The loop body handles one topic at a time; {{input.iteration}} is set
+    // by the Rust loop executor (0-based). Topic data is accessed via nested
+    // interpolation: {{steps.0.output.topics.{{input.iteration}}.name}}
+    // The Rust engine resolves inner → outer via multi-pass interpolation.
+    //
+    // Intra-loop step references use {{loop.N.field}} for stable referencing:
+    //   loop.0 = genome/dataset-synthesize result
+    //   loop.1 = emit dataset:ready
+    //   loop.2 = watch training:complete
+    //   loop.3 = LLM exam questions
+    //   loop.4 = data/create exam
+    //   loop.5 = emit exam:ready
+    //   loop.6 = watch exam:responses
+    //   loop.7 = LLM grade responses
+    //   loop.8 = data/update exam
+    //   loop.9 = emit exam:graded
+    //   loop.10 = condition pass/remediate
     {
       type: 'loop',
       count: 5,  // Max topics (safety limit matching curriculum max)
       steps: [
-        // Step 3.0: Synthesize training data for current topic
+        // loop.0: Synthesize training data for current topic
         {
           type: 'command',
           command: 'genome/dataset-synthesize',
           params: {
-            topic: `{{input.currentTopicName}}`,
+            topic: '{{steps.0.output.topics.{{input.iteration}}.name}}',
             skill,
             personaName,
             exampleCount: academyConfig.examplesPerTopic,
-            difficulty: `{{input.currentDifficulty}}`,
+            difficulty: '{{steps.0.output.topics.{{input.iteration}}.difficulty}}',
             ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
             ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
           },
         },
 
-        // Step 3.1: Emit dataset:ready for student
+        // loop.1: Emit dataset:ready for student
         {
           type: 'emit',
           event: evt('dataset:ready'),
           payload: {
             sessionId,
-            datasetPath: '{{steps.3.0.data.datasetPath}}',
+            datasetPath: '{{loop.0.data.datasetPath}}',
             topicIndex: '{{input.iteration}}',
-            topicName: '{{input.currentTopicName}}',
-            exampleCount: '{{steps.3.0.data.exampleCount}}',
+            topicName: '{{steps.0.output.topics.{{input.iteration}}.name}}',
+            exampleCount: '{{loop.0.data.exampleCount}}',
           },
         },
 
-        // Step 3.2: Wait for student to finish training
+        // loop.2: Wait for student to finish training
         {
           type: 'watch',
           event: evt('training:complete'),
           timeoutSecs: 600,  // 10 minutes for training
         },
 
-        // Step 3.3: Generate exam questions via LLM
+        // loop.3: Generate exam questions via LLM
         {
           type: 'llm',
           prompt: [
-            `Generate ${academyConfig.questionsPerExam} exam questions to test mastery of the topic: "{{input.currentTopicName}}"`,
+            `Generate ${academyConfig.questionsPerExam} exam questions to test mastery of the topic: "{{steps.0.output.topics.{{input.iteration}}.name}}"`,
             `This is part of the "${skill}" curriculum for persona "${personaName}".`,
-            `Difficulty: {{input.currentDifficulty}}`,
+            `Difficulty: {{steps.0.output.topics.{{input.iteration}}.difficulty}}`,
             '',
             'Output ONLY a JSON array of question objects (no markdown, no code fences):',
             '[',
@@ -163,7 +178,7 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
           maxTokens: 2048,
         },
 
-        // Step 3.4: Persist exam to database
+        // loop.4: Persist exam to database
         {
           type: 'command',
           command: 'data/create',
@@ -173,7 +188,7 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
               sessionId,
               topicIndex: '{{input.iteration}}',
               round: 1,
-              questions: '{{steps.3.3.output}}',
+              questions: '{{loop.3.output}}',
               responses: [],
               overallScore: 0,
               passed: false,
@@ -181,37 +196,37 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
           },
         },
 
-        // Step 3.5: Emit exam:ready for student
+        // loop.5: Emit exam:ready for student
         {
           type: 'emit',
           event: evt('exam:ready'),
           payload: {
             sessionId,
-            examId: '{{steps.3.4.data.id}}',
+            examId: '{{loop.4.data.data.id}}',
             topicIndex: '{{input.iteration}}',
-            questions: '{{steps.3.3.output}}',
+            questions: '{{loop.3.output}}',
           },
         },
 
-        // Step 3.6: Wait for student responses
+        // loop.6: Wait for student responses
         {
           type: 'watch',
           event: evt('exam:responses'),
           timeoutSecs: 300,  // 5 minutes for exam
         },
 
-        // Step 3.7: Grade responses via LLM
+        // loop.7: Grade responses via LLM
         {
           type: 'llm',
           prompt: [
-            `Grade the following exam responses for the topic "{{input.currentTopicName}}".`,
+            `Grade the following exam responses for the topic "{{steps.0.output.topics.{{input.iteration}}.name}}".`,
             `Passing score: ${academyConfig.passingScore}/100`,
             '',
             'Questions and expected answers:',
-            '{{steps.3.3.output}}',
+            '{{loop.3.output}}',
             '',
             'Student responses:',
-            '{{steps.3.6.data.responses}}',
+            '{{loop.6.data.payload.responses}}',
             '',
             'For each response, evaluate accuracy and completeness.',
             'Output ONLY a JSON object (no markdown, no code fences):',
@@ -230,41 +245,42 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
           maxTokens: 2048,
         },
 
-        // Step 3.8: Persist grades to database
+        // loop.8: Persist grades to database
+        // LLM output (loop.7) is a JSON string — use output.field to auto-parse
         {
           type: 'command',
           command: 'data/update',
           params: {
             collection: 'academy_examinations',
-            id: '{{steps.3.4.data.id}}',
+            id: '{{loop.4.data.data.id}}',
             data: {
-              responses: '{{steps.3.7.output}}',
-              overallScore: '{{steps.3.7.data.overallScore}}',
-              passed: '{{steps.3.7.data.passed}}',
-              gradedBy: '{{steps.3.7.data.model}}',
-              feedback: '{{steps.3.7.data.feedback}}',
+              responses: '{{loop.7.output.responses}}',
+              overallScore: '{{loop.7.output.overallScore}}',
+              passed: '{{loop.7.output.passed}}',
+              gradedBy: '{{loop.7.data.model}}',
+              feedback: '{{loop.7.output.feedback}}',
             },
           },
         },
 
-        // Step 3.9: Emit exam:graded
+        // loop.9: Emit exam:graded
         {
           type: 'emit',
           event: evt('exam:graded'),
           payload: {
             sessionId,
-            examId: '{{steps.3.4.data.id}}',
+            examId: '{{loop.4.data.data.id}}',
             topicIndex: '{{input.iteration}}',
-            overallScore: '{{steps.3.7.data.overallScore}}',
-            passed: '{{steps.3.7.data.passed}}',
-            feedback: '{{steps.3.7.data.feedback}}',
+            overallScore: '{{loop.7.output.overallScore}}',
+            passed: '{{loop.7.output.passed}}',
+            feedback: '{{loop.7.output.feedback}}',
           },
         },
 
-        // Step 3.10: Conditional — pass or remediate
+        // loop.10: Conditional — pass or remediate
         {
           type: 'condition',
-          if: '{{steps.3.7.data.passed}}',
+          if: '{{loop.7.output.passed}}',
           then: [
             {
               type: 'emit',
@@ -282,7 +298,7 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
               payload: {
                 sessionId,
                 topicIndex: '{{input.iteration}}',
-                feedback: '{{steps.3.7.data.feedback}}',
+                feedback: '{{loop.7.output.feedback}}',
               },
             },
           ],
@@ -310,8 +326,6 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
       skill,
       personaName,
       baseModel,
-      currentTopicName: '',  // Set dynamically by curriculum parsing
-      currentDifficulty: 'beginner',
     },
   };
 }

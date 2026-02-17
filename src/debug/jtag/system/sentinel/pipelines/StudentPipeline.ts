@@ -21,15 +21,15 @@ import { academyEvent } from '../../genome/shared/AcademyTypes';
  * Step flow:
  *   0: Watch — curriculum:ready (teacher published curriculum)
  *   1: Loop (driven by topic count):
- *     1.0: Watch — dataset:ready (teacher synthesized training data)
- *     1.1: Emit — training:started
- *     1.2: Command — genome/train { datasetPath from event }
- *     1.3: Command — genome/paging-adapter-register { layerId from train }
- *     1.4: Emit — training:complete { layerId, metrics }
- *     1.5: Watch — exam:ready (teacher generated exam)
- *     1.6: LLM — Answer exam questions as the persona
- *     1.7: Emit — exam:responses { answers }
- *     1.8: Watch — exam:graded (teacher graded responses)
+ *     loop.0: Watch — dataset:ready (teacher synthesized training data)
+ *     loop.1: Emit — training:started
+ *     loop.2: Command — genome/train { datasetPath from event }
+ *     loop.3: Condition — register adapter if training succeeded
+ *     loop.4: Emit — training:complete { layerId, metrics }
+ *     loop.5: Watch — exam:ready (teacher generated exam)
+ *     loop.6: LLM — Answer exam questions as the persona
+ *     loop.7: Emit — exam:responses { answers }
+ *     loop.8: Watch — exam:graded (teacher graded responses)
  */
 export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
   const { sessionId, personaId, personaName, baseModel, config: academyConfig } = config;
@@ -45,18 +45,19 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
     },
 
     // Step 1: Loop over topics (matching teacher's topic count)
+    // Intra-loop references use {{loop.N.field}} for stable referencing
     {
       type: 'loop',
       count: 5,  // Max topics (safety limit)
       steps: [
-        // Step 1.0: Wait for training data from teacher
+        // loop.0: Wait for training data from teacher
         {
           type: 'watch',
           event: evt('dataset:ready'),
           timeoutSecs: 300,  // 5 minutes for data synthesis
         },
 
-        // Step 1.1: Emit training:started
+        // loop.1: Emit training:started
         {
           type: 'emit',
           event: evt('training:started'),
@@ -64,20 +65,20 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             sessionId,
             personaId,
             topicIndex: '{{input.iteration}}',
-            datasetPath: '{{steps.1.0.data.datasetPath}}',
+            datasetPath: '{{loop.0.data.payload.datasetPath}}',
           },
         },
 
-        // Step 1.2: Train on the synthesized dataset
+        // loop.2: Train on the synthesized dataset
         {
           type: 'command',
           command: 'genome/train',
           params: {
             personaId,
             personaName,
-            traitType: '{{steps.1.0.data.topicName}}',
+            traitType: '{{loop.0.data.payload.topicName}}',
             baseModel,
-            datasetPath: '{{steps.1.0.data.datasetPath}}',
+            datasetPath: '{{loop.0.data.payload.datasetPath}}',
             rank: academyConfig.rank,
             epochs: academyConfig.epochs,
             learningRate: academyConfig.learningRate,
@@ -85,26 +86,26 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           },
         },
 
-        // Step 1.3: Register the trained adapter (if training succeeded)
+        // loop.3: Register the trained adapter (if training succeeded)
         {
           type: 'condition',
-          if: '{{steps.1.2.data.success}}',
+          if: '{{loop.2.data.success}}',
           then: [
             {
               type: 'command',
               command: 'genome/paging-adapter-register',
               params: {
-                layerId: '{{steps.1.2.data.layerId}}',
-                adapterId: '{{steps.1.2.data.layerId}}',
-                name: `${personaName}-academy-topic-{{input.iteration}}`,
-                domain: '{{steps.1.0.data.topicName}}',
+                layerId: '{{loop.2.data.layerId}}',
+                adapterId: '{{loop.2.data.layerId}}',
+                name: `${personaName}-${sessionId.slice(0, 8)}-topic-{{input.iteration}}`,
+                domain: '{{loop.0.data.payload.topicName}}',
                 sizeMB: 0,
               },
             },
           ],
         },
 
-        // Step 1.4: Emit training:complete
+        // loop.4: Emit training:complete
         {
           type: 'emit',
           event: evt('training:complete'),
@@ -112,26 +113,26 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             sessionId,
             personaId,
             topicIndex: '{{input.iteration}}',
-            layerId: '{{steps.1.2.data.layerId}}',
+            layerId: '{{loop.2.data.layerId}}',
             metrics: {
-              finalLoss: '{{steps.1.2.data.metrics.finalLoss}}',
-              trainingTime: '{{steps.1.2.data.metrics.trainingTime}}',
-              examplesProcessed: '{{steps.1.2.data.metrics.examplesProcessed}}',
-              epochs: '{{steps.1.2.data.metrics.epochs}}',
+              finalLoss: '{{loop.2.data.metrics.finalLoss}}',
+              trainingTime: '{{loop.2.data.metrics.trainingTime}}',
+              examplesProcessed: '{{loop.2.data.metrics.examplesProcessed}}',
+              epochs: '{{loop.2.data.metrics.epochs}}',
             },
           },
         },
 
-        // Step 1.5: Wait for exam from teacher
+        // loop.5: Wait for exam from teacher
         {
           type: 'watch',
           event: evt('exam:ready'),
           timeoutSecs: 300,
         },
 
-        // Step 1.6: Take the exam via LLM
-        // The student answers as the persona, using whatever knowledge
-        // the base model + trained LoRA adapters provide
+        // loop.6: Take the exam via LLM
+        // Uses the system default model for now; future: use base model +
+        // trained LoRA adapters via Candle local inference to prove training worked
         {
           type: 'llm',
           prompt: [
@@ -140,7 +141,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             'Be thorough but concise in your answers.',
             '',
             'Questions:',
-            '{{steps.1.5.data.questions}}',
+            '{{loop.5.data.payload.questions}}',
             '',
             'Output ONLY a JSON array of response objects (no markdown, no code fences):',
             '[',
@@ -150,24 +151,23 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             '  }',
             ']',
           ].join('\n'),
-          model: baseModel,
           temperature: 0.5,
           maxTokens: 2048,
         },
 
-        // Step 1.7: Emit exam:responses
+        // loop.7: Emit exam:responses
         {
           type: 'emit',
           event: evt('exam:responses'),
           payload: {
             sessionId,
-            examId: '{{steps.1.5.data.examId}}',
+            examId: '{{loop.5.data.payload.examId}}',
             topicIndex: '{{input.iteration}}',
-            responses: '{{steps.1.6.output}}',
+            responses: '{{loop.6.output}}',
           },
         },
 
-        // Step 1.8: Wait for grading results
+        // loop.8: Wait for grading results
         {
           type: 'watch',
           event: evt('exam:graded'),

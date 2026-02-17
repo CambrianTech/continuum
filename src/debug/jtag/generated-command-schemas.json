@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-17T02:40:26.891Z",
+  "generated": "2026-02-17T11:18:53.874Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3707,6 +3707,52 @@
       }
     },
     {
+      "name": "genome/dataset-synthesize",
+      "description": "Genome Dataset Synthesize Command Parameters",
+      "params": {
+        "topic": {
+          "type": "string",
+          "required": true,
+          "description": "topic parameter"
+        },
+        "skill": {
+          "type": "string",
+          "required": true,
+          "description": "skill parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "exampleCount": {
+          "type": "number",
+          "required": false,
+          "description": "exampleCount parameter"
+        },
+        "difficulty": {
+          "type": "string",
+          "required": false,
+          "description": "difficulty parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        }
+      }
+    },
+    {
       "name": "genome/dataset-prepare",
       "description": "Collect training data from chat history for a persona and export as JSONL dataset for LoRA fine-tuning",
       "params": {
@@ -3780,6 +3826,62 @@
           "type": "number",
           "required": false,
           "description": "maxExamples parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/academy-session",
+      "description": "Genome Academy Session Command Parameters",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "skill": {
+          "type": "string",
+          "required": true,
+          "description": "skill parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "maxTopicAttempts": {
+          "type": "number",
+          "required": false,
+          "description": "maxTopicAttempts parameter"
+        },
+        "passingScore": {
+          "type": "number",
+          "required": false,
+          "description": "passingScore parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
         }
       }
     },
