@@ -177,7 +177,7 @@ export function createPathsForBase(baseRoot: string): ContinuumPaths {
 
     genome: {
       root: path.join(baseRoot, 'genome'),
-      adapters: path.join(baseRoot, 'genome', 'lora-adapters'),
+      adapters: path.join(baseRoot, 'genome', 'adapters'),
       training: path.join(baseRoot, 'genome', 'training-data')
     },
 

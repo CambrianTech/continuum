@@ -16,8 +16,11 @@ import { AdapterPackage } from '@system/genome/server/AdapterPackage';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { Logger } from '@system/core/logging/Logger';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 
 export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, GenomeTrainResult> {
+  private readonly log = Logger.create('genome/train', 'genome');
 
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
     super('genome/train', context, subpath, commander);
@@ -25,9 +28,9 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
 
   async execute(params: GenomeTrainParams): Promise<GenomeTrainResult> {
     const { personaId, personaName, traitType, datasetPath } = params;
-    const baseModel = params.baseModel ?? 'smollm2:135m';
+    const baseModel = params.baseModel ?? LOCAL_MODELS.DEFAULT;
 
-    console.log(`🧬 GENOME TRAIN: persona=${personaName}, model=${baseModel}, dataset=${datasetPath}`);
+    this.log.info(`GENOME TRAIN: persona=${personaName}, model=${baseModel}, dataset=${datasetPath}`);
 
     if (!personaId) {
       throw new ValidationError('personaId', 'Missing required parameter. See genome/train README.');
@@ -80,7 +83,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       });
     }
 
-    console.log(`   Loaded ${dataset.examples.length} examples, starting training...`);
+    this.log.info(`Loaded ${dataset.examples.length} examples, starting training...`);
 
     // 4. Build training request and execute
     const result = await adapter.trainLoRA({
@@ -93,6 +96,8 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       epochs: params.epochs ?? 3,
       learningRate: params.learningRate ?? 0.0001,
       batchSize: params.batchSize ?? 4,
+      quantize: params.quantize ?? true,
+      quantizeBits: params.quantizeBits ?? 4,
     });
 
     if (!result.success) {
@@ -105,7 +110,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     }
 
     const adapterPath = result.modelPath ?? '';
-    console.log(`✅ GENOME TRAIN: Adapter saved to ${adapterPath}`);
+    this.log.info(`Adapter saved to ${adapterPath}`);
 
     // Create GenomeLayerEntity and persist to database
     let layerId: UUID | undefined;
@@ -117,9 +122,9 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
           data: entity,
         });
         layerId = entity.id;
-        console.log(`   GenomeLayerEntity created: ${layerId}`);
+        this.log.info(`GenomeLayerEntity created: ${layerId}`);
       } catch (error) {
-        console.warn('   Failed to persist GenomeLayerEntity:', error);
+        this.log.warn(`Failed to persist GenomeLayerEntity: ${error}`);
         // Training succeeded — don't fail the whole operation for persistence issues
       }
     }

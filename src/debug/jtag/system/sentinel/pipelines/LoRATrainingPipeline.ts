@@ -13,6 +13,7 @@
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -47,7 +48,7 @@ export function buildLoRATrainingPipeline(config: LoRATrainingConfig): Pipeline 
     personaName,
     roomId,
     traitType = 'conversational',
-    baseModel = 'smollm2:135m',
+    baseModel = LOCAL_MODELS.DEFAULT,
     rank = 32,
     epochs = 3,
     learningRate = 0.0001,

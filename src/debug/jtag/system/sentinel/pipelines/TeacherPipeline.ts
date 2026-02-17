@@ -144,12 +144,13 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
         },
 
         // outer.3: Inner loop — exam/grade/remediate cycle
-        // Runs up to maxTopicAttempts times. The `until` condition
-        // evaluates whether the last grading passed.
+        // Uses `until` to break when grading says passed=true.
+        // maxIterations is the safety cap (maxTopicAttempts).
         // Each iteration: exam → grade → (if failed) remediate → re-train
         {
           type: 'loop',
-          count: academyConfig.maxTopicAttempts,
+          until: '{{loop.4.output.passed}}',
+          maxIterations: academyConfig.maxTopicAttempts,
           steps: buildExamRetrySteps(
             sessionId, skill, personaName, academyConfig, evt,
           ),
@@ -392,10 +393,10 @@ function buildExamRetrySteps(
           event: evt('dataset:ready'),
           payload: {
             sessionId,
-            datasetPath: '{{loop.7.else.1.data.datasetPath}}',
+            datasetPath: '{{loop.9.data.datasetPath}}',
             topicIndex: '{{input.parent_iteration}}',
             topicName: '{{steps.0.output.topics.{{input.parent_iteration}}.name}}',
-            exampleCount: '{{loop.7.else.1.data.exampleCount}}',
+            exampleCount: '{{loop.9.data.exampleCount}}',
             isRemediation: true,
             round: '{{input.iteration}}',
           },

@@ -33,10 +33,10 @@ pub use adapter::{
 pub use anthropic_adapter::AnthropicAdapter;
 pub use openai_adapter::OpenAICompatibleAdapter;
 pub use types::{
-    ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason,
-    HealthState, HealthStatus, MessageContent, ModelCapability, ModelInfo, NativeToolSpec,
-    RoutingInfo, TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice,
-    ToolInputSchema, ToolResult, UsageMetrics,
+    ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
+    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelCapability,
+    ModelInfo, NativeToolSpec, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    ToolCall, ToolChoice, ToolInputSchema, ToolResult, UsageMetrics,
 };
 
 // Re-export CandleAdapter from inference module

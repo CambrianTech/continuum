@@ -68,6 +68,11 @@ export interface LoRATrainingRequest {
   learningRate?: number;      // Learning rate (default: 0.0001)
   batchSize?: number;         // Batch size (default: 4)
 
+  // QLoRA quantization — quantize base model to fit largest model on hardware.
+  // LoRA weights stay full precision. A 3B model in 4-bit fits ~2GB VRAM.
+  quantize?: boolean;         // Enable QLoRA quantization (default: true)
+  quantizeBits?: 4 | 8;      // Quantization bits (default: 4 for NF4)
+
   // Output configuration
   outputPath?: string;        // Where to save adapter (default: system-generated)
 

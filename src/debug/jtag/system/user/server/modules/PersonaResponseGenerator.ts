@@ -87,6 +87,7 @@ export interface PersonaResponseGeneratorConfig {
   getSessionId: () => UUID | null;  // Function to get PersonaUser's current sessionId
   logger: import('./PersonaLogger').PersonaLogger;  // For persona-specific logging
   genome?: import('./PersonaGenome').PersonaGenome;  // For accessing trained LoRA adapters
+  trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;  // For capturing interactions
 }
 
 /**
@@ -104,6 +105,7 @@ export class PersonaResponseGenerator {
   private getSessionId: () => UUID | null;
   private logger: import('./PersonaLogger').PersonaLogger;
   private genome?: import('./PersonaGenome').PersonaGenome;
+  private trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
 
   /** Content deduplicator - prevents same content from being posted within time window */
   private contentDeduplicator: ContentDeduplicator;
@@ -130,6 +132,7 @@ export class PersonaResponseGenerator {
     this.mediaConfig = config.mediaConfig;
     this.getSessionId = config.getSessionId;
     this.genome = config.genome;
+    this.trainingAccumulator = config.trainingAccumulator;
 
     // Initialize modular helpers
     this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
@@ -1217,6 +1220,20 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         aiResponse.text.trim()
       );
 
+      // 🧬 CONTINUOUS LEARNING: Capture interaction for training data accumulation
+      // Every successful response becomes a training example. When the buffer fills,
+      // PersonaTrainingManager triggers fine-tuning automatically.
+      if (this.trainingAccumulator) {
+        const domain = this.inferTrainingDomain(originalMessage);
+        this.trainingAccumulator.captureInteraction({
+          roleId: this.personaId,
+          personaId: this.personaId,
+          domain,
+          input: originalMessage.content.text,
+          output: aiResponse.text.trim(),
+        }).catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
+      }
+
       // 🐦 COGNITIVE CANARY: Log anomaly if AI responded to system test message
       if (originalMessage.metadata?.isSystemTest === true) {
         const anomalyMessage = `🚨 ANOMALY DETECTED: ${this.personaName} responded to system test message`;
@@ -1312,6 +1329,28 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
    * NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z").
    * Must handle all formats to prevent type mismatch errors when passing to Rust IPC.
    */
+  /**
+   * Infer the training domain from message content.
+   * Used to categorize captured interactions for domain-specific fine-tuning.
+   */
+  private inferTrainingDomain(message: ProcessableMessage): string {
+    const text = message.content.text;
+
+    // Messages containing code blocks → 'code'
+    if (text.includes('```') || text.includes('function ') || text.includes('import ') || text.includes('const ')) {
+      return 'code';
+    }
+
+    // Messages in academy-related rooms → 'teaching'
+    // (Room name isn't directly available, but we can check metadata or keywords)
+    if (text.toLowerCase().includes('teach') || text.toLowerCase().includes('learn') || text.toLowerCase().includes('exam')) {
+      return 'teaching';
+    }
+
+    // Default: conversation
+    return 'conversation';
+  }
+
   private timestampToNumber(timestamp: Date | number | string | undefined): number {
     if (timestamp === undefined) {
       return Date.now(); // Use current time if timestamp missing

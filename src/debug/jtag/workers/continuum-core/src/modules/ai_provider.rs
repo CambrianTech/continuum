@@ -132,7 +132,7 @@ impl AIProviderModule {
             // Priority 8: Local inference is fallback when cloud fails or for LoRA
             // If INFERENCE_MODE=local or candle, make it priority 0 (highest)
             let priority = if inference_mode.eq_ignore_ascii_case("local") || inference_mode.eq_ignore_ascii_case("candle") { 0 } else { 8 };
-            registry.register(Box::new(CandleAdapter::quantized()), priority);
+            registry.register(Box::new(CandleAdapter::new()), priority);
         }
 
         // Initialize all registered adapters
@@ -184,6 +184,7 @@ impl AIProviderModule {
                 .or_else(|| p.json_opt("stopSequences")),
             tools: p.json_opt("tools"),
             tool_choice: p.json_opt("tool_choice"),
+            active_adapters: p.json_opt("activeAdapters"),
             request_id: p.string_opt_alias("request_id", "requestId"),
             user_id: p.string_opt_alias("user_id", "userId"),
             room_id: p.string_opt_alias("room_id", "roomId"),
@@ -287,7 +288,7 @@ impl ServiceModule for AIProviderModule {
                 // Generate text
                 let mut response = adapter.generate_text(request).await?;
 
-                // Add routing info
+                // Add routing info (preserve adapters_applied from adapter response)
                 let prior_routing = response.routing.take();
                 response.routing = Some(RoutingInfo {
                     provider: provider_id.to_string(),
@@ -295,7 +296,9 @@ impl ServiceModule for AIProviderModule {
                     routing_reason: prior_routing.as_ref()
                         .map(|r| r.routing_reason.clone())
                         .unwrap_or_else(|| "adapter_selected".to_string()),
-                    adapters_applied: vec![],
+                    adapters_applied: prior_routing.as_ref()
+                        .map(|r| r.adapters_applied.clone())
+                        .unwrap_or_default(),
                     model_mapped: None,
                     model_requested: prior_routing
                         .and_then(|r| r.model_requested),

@@ -28,7 +28,10 @@ export class GenomePhenotypeValidateServerCommand extends CommandBase<GenomePhen
   }
 
   async execute(params: GenomePhenotypeValidateParams): Promise<GenomePhenotypeValidateResult> {
-    const { questions, baselineResponses, adaptedResponses } = params;
+    // Sentinel interpolation delivers complex objects as JSON strings — parse at boundary
+    const questions = this._parseArrayParam<{ question: string; expectedAnswer: string }>(params.questions, 'questions');
+    const baselineResponses = this._parseArrayParam<{ questionIndex: number; studentAnswer: string }>(params.baselineResponses, 'baselineResponses');
+    const adaptedResponses = this._parseArrayParam<{ questionIndex: number; studentAnswer: string }>(params.adaptedResponses, 'adaptedResponses');
     const improvementThreshold = params.improvementThreshold ?? 5;
 
     console.log(`🧬 PHENOTYPE VALIDATE: ${questions.length} questions, threshold=${improvementThreshold}%`);
@@ -113,6 +116,27 @@ export class GenomePhenotypeValidateServerCommand extends CommandBase<GenomePhen
       summary,
       judgedBy: generateResult.model ?? 'unknown',
     });
+  }
+
+  /**
+   * Parse a parameter that may arrive as a JSON string (from Rust sentinel interpolation)
+   * or as an already-parsed array.
+   */
+  private _parseArrayParam<T>(value: T[] | string | unknown, paramName: string): T[] {
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // Try to extract JSON array from string (LLM output may have surrounding text)
+        const match = (value as string).match(/\[[\s\S]*\]/);
+        if (match) {
+          try { return JSON.parse(match[0]); } catch { /* fall through */ }
+        }
+      }
+    }
+    throw new ValidationError(paramName, `Expected array or JSON string, got ${typeof value}`);
   }
 
   private _buildSystemPrompt(): string {

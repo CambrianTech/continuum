@@ -113,13 +113,15 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       epochs: request.epochs ?? capabilities.defaultEpochs,
       learningRate: request.learningRate ?? capabilities.defaultLearningRate,
       batchSize: request.batchSize ?? capabilities.defaultBatchSize,
+      quantize: request.quantize ?? true,
+      quantizeBits: request.quantizeBits ?? 4,
       outputDir: '' // Set by --output CLI arg
     };
 
     const configPath = path.join(os.tmpdir(), `jtag-config-${Date.now()}.json`);
     await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
-    console.log(`   Config written to: ${configPath}`);
+    this.log('debug', `Config written to: ${configPath}`);
     return configPath;
   }
 
@@ -135,7 +137,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
     await fs.promises.writeFile(tempPath, jsonl, 'utf-8');
 
-    console.log(`   Dataset exported to: ${tempPath}`);
+    this.log('debug', `Dataset exported to: ${tempPath}`);
     return tempPath;
   }
 
@@ -167,9 +169,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       );
     }
 
-    console.log(`   Executing: ${wrapperPath} ${scriptPath}`);
-    console.log(`   Config: ${configPath}`);
-    console.log(`   Output: ${outputDir}`);
+    this.log('info', `Executing training: script=${scriptPath}, config=${configPath}, output=${outputDir}`);
 
     return new Promise((resolve, reject) => {
       // Use wrapper script to run Python in isolated environment
@@ -180,7 +180,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
 
       python.stdout.on('data', (data: Buffer) => {
         const text = data.toString();
-        process.stdout.write(text); // Stream to console
+        this.log('debug', text.trim());
 
         // Parse final loss from output
         const lossMatch = text.match(/Final loss: ([\d.]+)/);
@@ -192,12 +192,12 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       python.stderr.on('data', (data: Buffer) => {
         const text = data.toString();
         stderr += text;
-        process.stderr.write(text); // Stream to console
+        this.log('warn', text.trim());
       });
 
       python.on('close', (code: number | null) => {
         if (code === 0) {
-          console.log(`   Training script completed successfully`);
+          this.log('info', `Training script completed (loss=${finalLoss})`);
           resolve({ finalLoss });
         } else {
           reject(new Error(`Training script failed with exit code ${code}\nStderr: ${stderr}`));
@@ -255,8 +255,7 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
 
     await AdapterPackage.writeManifest(adapterPath, manifest);
 
-    console.log(`   Adapter files copied to: ${adapterPath}`);
-    console.log(`   Manifest written (${sizeMB}MB, hash: ${contentHash.slice(0, 20)}...)`);
+    this.log('info', `Adapter saved: ${adapterPath} (${sizeMB}MB, hash=${contentHash.slice(0, 12)})`);
     return { adapterPath, manifest };
   }
 
@@ -292,9 +291,9 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
         } else {
           await fs.promises.unlink(filePath);
         }
-        console.log(`   Cleaned up: ${filePath}`);
+        this.log('debug', `Cleaned up: ${filePath}`);
       } catch (error) {
-        console.warn(`   Failed to clean up ${filePath}:`, error);
+        this.log('warn', `Failed to clean up ${filePath}: ${error}`);
       }
     }
   }

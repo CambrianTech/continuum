@@ -23,6 +23,7 @@ import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import type { GenomeAdapterInfo } from '../../../../shared/generated';
+import { AdapterStore } from '../../../genome/server/AdapterStore';
 
 /**
  * Genome configuration
@@ -511,17 +512,29 @@ export class PersonaGenome {
    * This is the bridge between PersonaGenome and the AI provider system.
    * Returns adapter info that CandleAdapter can use to load/apply LoRA weights.
    */
-  getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string }> {
-    return Array.from(this.activeAdapters.values())
-      .filter(adapter => adapter.isLoaded())  // Only include loaded adapters
-      .map(adapter => {
-        const state = adapter.getState();
-        return {
-          name: state.name,
-          path: state.path,
-          domain: state.domain,
-        };
+  getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string; scale: number }> {
+    const result: Array<{ name: string; path: string; domain: string; scale: number }> = [];
+
+    for (const adapter of this.activeAdapters.values()) {
+      if (!adapter.isLoaded()) continue;
+
+      const state = adapter.getState();
+
+      // Validate path exists on disk — reject stale/missing adapters at the boundary
+      if (!AdapterStore.isValidAdapterPath(state.path)) {
+        this.log(`⚠️ PersonaGenome: Skipping adapter ${state.name} — path does not exist: ${state.path}`);
+        continue;
+      }
+
+      result.push({
+        name: state.name,
+        path: state.path,
+        domain: state.domain,
+        scale: 1.0,
       });
+    }
+
+    return result;
   }
 
   /**

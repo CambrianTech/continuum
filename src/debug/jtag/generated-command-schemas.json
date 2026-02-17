@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-17T17:18:05.397Z",
+  "generated": "2026-02-17T22:46:08.914Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3480,6 +3480,16 @@
           "type": "number",
           "required": false,
           "description": "batchSize parameter"
+        },
+        "quantize": {
+          "type": "boolean",
+          "required": false,
+          "description": "quantize parameter"
+        },
+        "quantizeBits": {
+          "type": "string",
+          "required": false,
+          "description": "quantizeBits parameter"
         }
       }
     },
@@ -3785,7 +3795,7 @@
     },
     {
       "name": "genome/dataset-synthesize",
-      "description": "Genome Dataset Synthesize Command Parameters",
+      "description": "Uses an LLM to synthesize training data for a given topic/skill. Generates Q&A pairs in the persona's voice, saved as JSONL compatible with genome/train.",
       "params": {
         "topic": {
           "type": "string",
@@ -3944,7 +3954,7 @@
     },
     {
       "name": "genome/academy-session",
-      "description": "Genome Academy Session Command Parameters",
+      "description": "Entry point for the Academy Dojo system. Creates an AcademySessionEntity and spawns dual sentinels (teacher + student) for autonomous skill training.",
       "params": {
         "personaId": {
           "type": "string",
@@ -4000,7 +4010,7 @@
     },
     {
       "name": "genome/academy-competition",
-      "description": "Genome Academy Competition Command Parameters",
+      "description": "Launches a multi-persona competition: 1 shared teacher sentinel generates a curriculum, N student sentinels compete on the same exam questions. Rankings computed from exam scores across all topics.",
       "params": {
         "skill": {
           "type": "string",

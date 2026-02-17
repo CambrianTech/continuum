@@ -105,6 +105,9 @@ export interface AITrainingCompleteEventData extends AILearningEventData {
 
   /** Path to trained adapter */
   adapterPath?: string;
+
+  /** Persisted GenomeLayerEntity ID — used by LimbicSystem to activate the new adapter */
+  layerId?: string;
 }
 
 /**

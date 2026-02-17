@@ -27,6 +27,7 @@ import type { UserStateEntity } from '../../../../data/entities/UserStateEntity'
 import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
+import { AdapterStore } from '../../../../../system/genome/server/AdapterStore';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -88,36 +89,29 @@ export class LimbicSystem {
       this.logger.enqueueLog('genome.log', message);
     };
 
+    // Discover real adapters from filesystem for this persona
+    // AdapterStore is the SINGLE SOURCE OF TRUTH for what adapters exist
+    const discoveredAdapters = AdapterStore.latestByDomainForPersona(personaUser.id);
+    const initialAdapters = Array.from(discoveredAdapters.values()).map(adapter => ({
+      name: adapter.manifest.name,
+      domain: adapter.manifest.traitType,
+      path: adapter.dirPath,
+      sizeMB: adapter.manifest.sizeMB,
+      priority: 0.7,
+    }));
+
+    if (initialAdapters.length > 0) {
+      this.logger.info(`Discovered ${initialAdapters.length} trained adapters on disk: [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
+    }
+
     this.memory = new PersonaMemory(
       personaUser.id,
       personaUser.displayName,
       {
         baseModel: personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT,
         memoryBudgetMB: 200,
-        adaptersPath: './lora-adapters',
-        initialAdapters: [
-          {
-            name: 'conversational',
-            domain: 'chat',
-            path: './lora-adapters/conversational.safetensors',
-            sizeMB: 50,
-            priority: 0.7
-          },
-          {
-            name: 'typescript-expertise',
-            domain: 'code',
-            path: './lora-adapters/typescript-expertise.safetensors',
-            sizeMB: 60,
-            priority: 0.6
-          },
-          {
-            name: 'self-improvement',
-            domain: 'self',
-            path: './lora-adapters/self-improvement.safetensors',
-            sizeMB: 40,
-            priority: 0.5
-          }
-        ]
+        adaptersPath: AdapterStore.storeRoot,
+        initialAdapters,
       },
       personaUser.client,
       genomeLogger
@@ -139,10 +133,14 @@ export class LimbicSystem {
 
     this.trainingAccumulator = new TrainingDataAccumulator(personaUser.id, personaUser.displayName, trainingLogger);
 
-    // PersonaTrainingManager(personaId, displayName, trainingAccumulator, stateGetter, saveStateCallback, logger)
+    // PersonaTrainingManager(personaId, displayName, baseModel, trainingAccumulator, stateGetter, saveStateCallback, logger)
+    // Base model from persona's model config — QLoRA quantizes this to 4-bit for training,
+    // so we can train on the same model used for inference (3B-8B fits on 8GB VRAM).
+    const trainingBaseModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
     this.trainingManager = new PersonaTrainingManager(
       personaUser.id,
       personaUser.displayName,
+      trainingBaseModel,
       this.trainingAccumulator,
       () => personaUser.state,
       async () => {
@@ -151,6 +149,13 @@ export class LimbicSystem {
       },
       trainingLogger  // Pass training logger
     );
+
+    // Wire post-training activation: when training completes, reload genome from DB
+    // This closes the loop: train → persist GenomeLayerEntity → reload → activate → inference uses new weights
+    this.trainingManager.onTrainingComplete = async (layerId: string, domain: string) => {
+      this.logger.info(`Post-training activation: reloading genome for new ${domain} adapter (layerId=${layerId})`);
+      await this.loadGenomeFromDatabase();
+    };
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
     // This is safe because LimbicSystem is only instantiated by PersonaUser

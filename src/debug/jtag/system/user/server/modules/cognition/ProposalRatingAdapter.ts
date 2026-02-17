@@ -66,7 +66,7 @@ export async function rateProposalsWithAI(params: {
     model: modelId,
     temperature: temperature ?? 0.7,
     maxTokens: 500,
-    preferredProvider: modelProvider as TextGenerationRequest['preferredProvider']
+    provider: modelProvider
   };
 
   const response: TextGenerationResponse = await AIProviderDaemon.generateText(request);

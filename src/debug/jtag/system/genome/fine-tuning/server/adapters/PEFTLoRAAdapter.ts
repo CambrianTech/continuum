@@ -24,6 +24,7 @@ import type {
   TrainingStatus
 } from '../../shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -40,45 +41,11 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   readonly providerId = 'peft';
 
   /**
-   * Legacy short name → HuggingFace model name mapping
-   *
-   * Maps common short model names to their HuggingFace equivalents.
-   * PEFT trains on HuggingFace models, but configs may use short names.
-   */
-  private static readonly SHORT_NAME_TO_HF: Record<string, string> = {
-    // Llama 3.2 variants
-    'llama3.2:3b': 'meta-llama/Llama-3.2-3B-Instruct',
-    'llama3.2:1b': 'meta-llama/Llama-3.2-1B-Instruct',
-    'llama3.2': 'meta-llama/Llama-3.2-3B-Instruct',
-    // Llama 3.1 variants
-    'llama3.1:8b': 'meta-llama/Llama-3.1-8B-Instruct',
-    'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
-    'llama3.1': 'meta-llama/Llama-3.1-8B-Instruct',
-    // Phi variants
-    'phi3:mini': 'microsoft/Phi-3-mini-4k-instruct',
-    'phi3': 'microsoft/Phi-3-mini-4k-instruct',
-    'phi-2': 'microsoft/phi-2',
-    // Mistral variants
-    'mistral:7b': 'mistralai/Mistral-7B-Instruct-v0.2',
-    'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
-    // Qwen variants
-    'qwen2.5:7b': 'Qwen/Qwen2.5-7B-Instruct',
-    'qwen2.5:3b': 'Qwen/Qwen2.5-3B-Instruct',
-    'qwen2.5': 'Qwen/Qwen2.5-7B-Instruct',
-    // Small models for testing
-    'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
-    'smollm2:135m': 'HuggingFaceTB/SmolLM2-135M-Instruct',
-    'smollm2:360m': 'HuggingFaceTB/SmolLM2-360M-Instruct',
-    'smollm2:1.7b': 'HuggingFaceTB/SmolLM2-1.7B-Instruct',
-  };
-
-  /**
-   * Map short model name to HuggingFace model name
-   * If no mapping exists, returns the original (might be a HF name already)
+   * Map short model name to HuggingFace model name.
+   * Delegates to LOCAL_MODELS.mapToHuggingFace() — SINGLE SOURCE OF TRUTH.
    */
   private mapModelName(shortName: string): string {
-    const normalized = shortName.toLowerCase().trim();
-    return PEFTLoRAAdapter.SHORT_NAME_TO_HF[normalized] || shortName;
+    return LOCAL_MODELS.mapToHuggingFace(shortName);
   }
 
   /**
@@ -166,10 +133,10 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
     const hfModelName = this.mapModelName(request.baseModel);
     const wasRemapped = hfModelName !== request.baseModel;
 
-    console.log('🧬 Starting PEFT LoRA training...');
-    console.log(`   Model: ${request.baseModel}${wasRemapped ? ` → ${hfModelName}` : ''}`);
-    console.log(`   Examples: ${request.dataset.examples.length}`);
-    console.log(`   Epochs: ${request.epochs}`);
+    const useQLoRA = request.quantize ?? true;
+    const qloraBits = request.quantizeBits ?? 4;
+
+    this.log('info', `Starting PEFT LoRA training: model=${request.baseModel}${wasRemapped ? ` → ${hfModelName}` : ''}, QLoRA=${useQLoRA ? `${qloraBits}-bit` : 'off'}, examples=${request.dataset.examples.length}, epochs=${request.epochs}`);
 
     // Update request with HuggingFace model name
     const mappedRequest = { ...request, baseModel: hfModelName };
@@ -204,8 +171,7 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       // 6. Copy adapter to genome storage with manifest (using base class helper)
       const { adapterPath, manifest } = await this.saveAdapter(request, outputDir, trainingMetadata);
 
-      console.log(`✅ Training complete in ${(trainingTime / 1000).toFixed(2)}s`);
-      console.log(`   Adapter saved to: ${adapterPath}`);
+      this.log('info', `Training complete in ${(trainingTime / 1000).toFixed(2)}s, adapter=${adapterPath}`);
 
       return {
         success: true,

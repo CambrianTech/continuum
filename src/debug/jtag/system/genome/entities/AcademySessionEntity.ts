@@ -23,6 +23,7 @@ import {
   VALID_SESSION_STATUSES,
   DEFAULT_ACADEMY_CONFIG,
 } from '../shared/AcademyTypes';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 
 export class AcademySessionEntity extends BaseEntity {
   static readonly collection = 'academy_sessions';
@@ -39,7 +40,7 @@ export class AcademySessionEntity extends BaseEntity {
   @TextField({ index: true })
   skill: string;
 
-  /** Base model used for training (e.g., "smollm2:135m") */
+  /** Base model used for training (defaults to LOCAL_MODELS.DEFAULT) */
   @TextField()
   baseModel: string;
 
@@ -89,7 +90,7 @@ export class AcademySessionEntity extends BaseEntity {
     this.personaId = '' as UUID;
     this.personaName = '';
     this.skill = '';
-    this.baseModel = 'smollm2:135m';
+    this.baseModel = LOCAL_MODELS.DEFAULT;
     this.status = 'pending';
     this.currentTopic = 0;
     this.examRounds = 0;

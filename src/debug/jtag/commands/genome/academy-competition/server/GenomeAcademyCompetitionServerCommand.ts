@@ -40,6 +40,7 @@ import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
 import type { PipelineSentinelParams, SentinelRunResult } from '@commands/sentinel/run/shared/SentinelRunTypes';
 import { Commands } from '@system/core/shared/Commands';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 
 export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAcademyCompetitionParams, GenomeAcademyCompetitionResult> {
 
@@ -49,7 +50,7 @@ export class GenomeAcademyCompetitionServerCommand extends CommandBase<GenomeAca
 
   async execute(params: GenomeAcademyCompetitionParams): Promise<GenomeAcademyCompetitionResult> {
     const { skill, competitors } = params;
-    const baseModel = params.baseModel ?? 'smollm2:135m';
+    const baseModel = params.baseModel ?? LOCAL_MODELS.DEFAULT;
 
     console.log(`\u{1F3C6} COMPETITION: skill="${skill}", competitors=${competitors?.length ?? 0}, model="${baseModel}"`);
 

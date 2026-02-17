@@ -22,7 +22,7 @@ export interface GenomeTrainingPipelineParams extends CommandParams {
   roomId: UUID;
   // Trait type label (default: 'conversational')
   traitType?: string;
-  // Base model to fine-tune (default: 'smollm2:135m')
+  // Base model to fine-tune (default: LOCAL_MODELS.DEFAULT)
   baseModel?: string;
   // LoRA rank (default: 32)
   rank?: number;
@@ -49,7 +49,7 @@ export const createGenomeTrainingPipelineParams = (
     roomId: UUID;
     // Trait type label (default: 'conversational')
     traitType?: string;
-    // Base model to fine-tune (default: 'smollm2:135m')
+    // Base model to fine-tune (default: LOCAL_MODELS.DEFAULT)
     baseModel?: string;
     // LoRA rank (default: 32)
     rank?: number;

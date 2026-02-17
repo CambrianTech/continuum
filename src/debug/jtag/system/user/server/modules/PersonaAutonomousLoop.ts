@@ -18,6 +18,7 @@ import { RoomEntity } from '../../../data/entities/RoomEntity';
 import { inboxMessageToProcessable, type InboxTask, type QueueItem } from './QueueItemTypes';
 import { fromRustServiceItem } from './QueueItemTypes';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
+import { LearningScheduler } from '../../../genome/server/LearningScheduler';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
@@ -39,6 +40,20 @@ export class PersonaAutonomousLoop {
   startAutonomousServicing(): void {
     this.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
     this.servicingLoopActive = true;
+
+    // Register with system-wide learning scheduler for continuous learning
+    try {
+      const scheduler = LearningScheduler.sharedInstance();
+      scheduler.registerPersona(
+        this.personaUser.id,
+        this.personaUser.displayName,
+        this.personaUser.trainingManager,
+        this.personaUser.trainingAccumulator,
+      );
+    } catch {
+      // Non-fatal — continuous learning is optional
+    }
+
     this.runServiceLoop().catch((error: any) => {
       this.log(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
     });
@@ -97,6 +112,12 @@ export class PersonaAutonomousLoop {
       await this.handleItem(queueItem, result.decision ?? undefined);
       itemsProcessed++;
     }
+
+    // After draining queue, tick the learning scheduler
+    // Low overhead: just increments a counter most cycles, triggers training when ready
+    LearningScheduler.sharedInstance().tick(this.personaUser.id).catch(err => {
+      this.log(`⚠️ ${this.personaUser.displayName}: Learning scheduler tick failed: ${err}`);
+    });
   }
 
   /**
@@ -183,6 +204,14 @@ export class PersonaAutonomousLoop {
    */
   async stopServicing(): Promise<void> {
     this.servicingLoopActive = false;
+
+    // Unregister from learning scheduler
+    try {
+      LearningScheduler.sharedInstance().unregisterPersona(this.personaUser.id);
+    } catch {
+      // Non-fatal
+    }
+
     this.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
   }
 }

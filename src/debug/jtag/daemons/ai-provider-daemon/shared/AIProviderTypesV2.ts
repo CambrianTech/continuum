@@ -52,6 +52,7 @@ export type {
 
 export type {
   HealthState,
+  ActiveAdapterRequest,
 } from '../../../shared/generated/ai';
 
 export type {
@@ -74,7 +75,7 @@ import type { ModelCapability } from '../../../shared/generated/ai';
  *   requestId, userId, roomId, purpose
  *
  * TS-only fields: intelligenceLevel, stream, context, preferredCapabilities,
- *   personaContext, activeAdapters
+ *   personaContext
  */
 export interface TextGenerationRequest extends WireTextGenerationRequest {
   // Model intelligence level (PersonaUser property)
@@ -97,15 +98,6 @@ export interface TextGenerationRequest extends WireTextGenerationRequest {
     uniqueId: string;
   };
 
-  /**
-   * Active LoRA adapters to apply during generation (PersonaGenome integration)
-   * Only supported by CandleAdapter. Other adapters ignore this field.
-   */
-  activeAdapters?: Array<{
-    name: string;
-    path: string;
-    domain: string;
-  }>;
 }
 
 // ============================================================================

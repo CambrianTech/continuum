@@ -75,6 +75,7 @@ import {
   competitionEvent,
 } from '../../system/genome/shared/CompetitionTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
+import { LOCAL_MODELS } from '../../system/shared/Constants';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -1919,7 +1920,7 @@ describe('Teacher Pipeline with Remediation', () => {
 
     const innerLoop = outerLoop.steps[3] as any;
     expect(innerLoop.type).toBe('loop');
-    expect(innerLoop.count).toBe(teacherConfig.config.maxTopicAttempts);
+    expect(innerLoop.maxIterations).toBe(teacherConfig.config.maxTopicAttempts);
   });
 
   it('should have 8 steps in the inner exam retry loop', () => {
@@ -2152,7 +2153,7 @@ describe('CompetitionEntity', () => {
   it('should initialize with sensible defaults', () => {
     const entity = new CompetitionEntity();
     expect(entity.skill).toBe('');
-    expect(entity.baseModel).toBe('smollm2:135m');
+    expect(entity.baseModel).toBe(LOCAL_MODELS.DEFAULT);
     expect(entity.status).toBe('pending');
     expect(entity.competitors).toEqual([]);
     expect(entity.currentRound).toBe(0);

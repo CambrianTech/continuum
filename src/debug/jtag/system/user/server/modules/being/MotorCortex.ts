@@ -26,6 +26,7 @@ export interface PersonaUserForMotorCortex {
   readonly homeDirectory: string;
   readonly logger: import('../PersonaLogger').PersonaLogger;
   readonly memory: { genome: import('../PersonaGenome').PersonaGenome };  // For trained LoRA adapter access
+  readonly trainingAccumulator?: import('../TrainingDataAccumulator').TrainingDataAccumulator;  // For continuous learning
   /** Auto-bootstrap workspace when code/* tools are invoked */
   readonly ensureCodeWorkspace?: () => Promise<void>;
 }
@@ -64,7 +65,8 @@ export class MotorCortex {
       mediaConfig: personaUser.mediaConfig,
       getSessionId: personaUser.getSessionId,
       logger: personaUser.logger,
-      genome: personaUser.memory.genome  // For using trained LoRA adapters during inference
+      genome: personaUser.memory.genome,  // For using trained LoRA adapters during inference
+      trainingAccumulator: personaUser.trainingAccumulator,  // For continuous learning data capture
     });
 
     this.logger.info('Motor cortex initialized', {

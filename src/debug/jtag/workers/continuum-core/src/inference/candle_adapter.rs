@@ -20,9 +20,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::ai::{
-    AdapterCapabilities, AdapterConfig, AIProviderAdapter, ApiStyle,
+    ActiveAdapterRequest, AdapterCapabilities, AdapterConfig, AIProviderAdapter, ApiStyle,
     FinishReason, HealthState, HealthStatus, LoRACapabilities, LoRAAdapterInfo,
-    ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+    ModelCapability, ModelInfo, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    UsageMetrics,
 };
 use crate::runtime;
 
@@ -63,7 +64,9 @@ impl CandleAdapter {
                 name: "Candle Local".to_string(),
                 base_url: String::new(), // Not used for local
                 api_key_env: String::new(), // Not used for local
-                default_model: "meta-llama/Llama-3.1-8B-Instruct".to_string(),
+                // CRITICAL: Must match LOCAL_MODELS.DEFAULT in Constants.ts
+                // LoRA adapters trained on this model only work with this model
+                default_model: "unsloth/Llama-3.2-3B-Instruct".to_string(),
                 timeout_ms: 300_000, // 5 minutes for local generation
                 max_retries: 1,
                 retry_delay_ms: 0,
@@ -209,6 +212,39 @@ impl CandleAdapter {
                 active: a.active,
             })
             .collect()
+    }
+
+    /// Ensure exactly these adapters are loaded and active, rebuilding model once.
+    /// Used by generate_text() to apply request-level LoRA adapters.
+    async fn ensure_adapters(&self, adapters: &[ActiveAdapterRequest]) -> Result<Vec<String>, String> {
+        let log = runtime::logger("candle");
+
+        // Load any adapters not already loaded
+        for adapter in adapters {
+            let needs_load = !self.loaded_adapters.read().contains_key(&adapter.name);
+            if needs_load {
+                log.info(&format!("Loading LoRA adapter: {} from {} (scale={})", adapter.name, adapter.path, adapter.scale));
+                self.load_lora(&adapter.name, &adapter.path, adapter.scale).await?;
+            }
+        }
+
+        // Set active list to exactly what was requested
+        let desired_ids: Vec<String> = adapters.iter().map(|a| a.name.clone()).collect();
+        {
+            let mut active = self.active_adapters.write();
+            *active = desired_ids.clone();
+        }
+        {
+            let mut loaded = self.loaded_adapters.write();
+            for (id, adapter) in loaded.iter_mut() {
+                adapter.active = desired_ids.contains(id);
+            }
+        }
+
+        // Rebuild model once with all active adapters
+        self.rebuild_model_with_active_lora().await?;
+        log.info(&format!("Active LoRA adapters: {:?}", desired_ids));
+        Ok(desired_ids)
     }
 
     /// Rebuild model with currently active LoRA adapters
@@ -383,6 +419,14 @@ impl AIProviderAdapter for CandleAdapter {
         let max_tokens = request.max_tokens.unwrap_or(1024) as usize;
         let temperature = request.temperature.unwrap_or(0.7) as f64;
 
+        // Apply LoRA adapters if requested
+        let mut applied_adapters: Vec<String> = Vec::new();
+        if let Some(adapters) = &request.active_adapters {
+            if !adapters.is_empty() {
+                applied_adapters = self.ensure_adapters(adapters).await?;
+            }
+        }
+
         log.info(&format!("Prompt length: {} chars, max_tokens: {}", prompt.len(), max_tokens));
 
         // Clone Arc for spawn_blocking - this allows the async runtime to continue
@@ -443,7 +487,16 @@ impl AIProviderAdapter for CandleAdapter {
             request_id: uuid::Uuid::new_v4().to_string(),
             content: None,
             tool_calls: None,
-            routing: None,
+            routing: if applied_adapters.is_empty() { None } else {
+                Some(RoutingInfo {
+                    provider: "candle".to_string(),
+                    is_local: true,
+                    routing_reason: "local_with_lora".to_string(),
+                    adapters_applied: applied_adapters,
+                    model_mapped: None,
+                    model_requested: None,
+                })
+            },
             error: None,
         })
     }
@@ -708,6 +761,7 @@ mod tests {
                 request_id: None,
                 user_id: None,
                 room_id: None,
+                active_adapters: None,
                 purpose: None,
             };
 
@@ -759,6 +813,7 @@ mod tests {
                 request_id: None,
                 user_id: None,
                 room_id: None,
+                active_adapters: None,
                 purpose: None,
             };
 

@@ -22,7 +22,10 @@ export interface GenomeTrainParams extends CommandParams {
   traitType: string;
   // Path to JSONL training dataset file
   datasetPath: string;
-  // Base model to fine-tune (default: 'smollm2:135m')
+  // Base model to fine-tune — defaults to LOCAL_MODELS.DEFAULT.
+  // MUST match the persona's inference model (LoRA adapters are architecture-specific).
+  // QLoRA (4-bit quantized) is used automatically when GPU supports it,
+  // allowing training on large models (3B-8B) with minimal VRAM.
   baseModel?: string;
   // LoRA rank (default: 32)
   rank?: number;
@@ -32,6 +35,12 @@ export interface GenomeTrainParams extends CommandParams {
   learningRate?: number;
   // Batch size (default: 4)
   batchSize?: number;
+  // Enable 4-bit QLoRA quantization for training (default: true)
+  // Base model is quantized to 4-bit NF4; LoRA weights stay full precision.
+  // This allows training 3B-8B models on 8GB VRAM.
+  quantize?: boolean;
+  // Quantization bits: 4 or 8 (default: 4 for maximum VRAM efficiency)
+  quantizeBits?: 4 | 8;
 }
 
 /**
@@ -49,7 +58,7 @@ export const createGenomeTrainParams = (
     traitType: string;
     // Path to JSONL training dataset file
     datasetPath: string;
-    // Base model to fine-tune (default: 'smollm2:135m')
+    // Base model to fine-tune — should match persona's inference model
     baseModel?: string;
     // LoRA rank (default: 32)
     rank?: number;
@@ -59,6 +68,10 @@ export const createGenomeTrainParams = (
     learningRate?: number;
     // Batch size (default: 4)
     batchSize?: number;
+    // Enable QLoRA 4-bit quantization (default: true)
+    quantize?: boolean;
+    // Quantization bits (default: 4)
+    quantizeBits?: 4 | 8;
   }
 ): GenomeTrainParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
@@ -67,6 +80,8 @@ export const createGenomeTrainParams = (
   epochs: data.epochs ?? 0,
   learningRate: data.learningRate ?? 0,
   batchSize: data.batchSize ?? 0,
+  quantize: data.quantize ?? true,
+  quantizeBits: data.quantizeBits ?? 4,
   ...data
 });
 

@@ -24,6 +24,7 @@ import type { SentinelStep } from '@system/sentinel/SentinelDefinition';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
 import { DataUpdate } from '@commands/data/update/shared/DataUpdateTypes';
 import type { PipelineSentinelParams, SentinelRunResult } from '@commands/sentinel/run/shared/SentinelRunTypes';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 
 export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademySessionParams, GenomeAcademySessionResult> {
 
@@ -33,7 +34,7 @@ export class GenomeAcademySessionServerCommand extends CommandBase<GenomeAcademy
 
   async execute(params: GenomeAcademySessionParams): Promise<GenomeAcademySessionResult> {
     const { personaId, personaName, skill } = params;
-    const baseModel = params.baseModel ?? 'smollm2:135m';
+    const baseModel = params.baseModel ?? LOCAL_MODELS.DEFAULT;
 
     console.log(`🎓 ACADEMY SESSION: persona="${personaName}", skill="${skill}", model="${baseModel}"`);
 

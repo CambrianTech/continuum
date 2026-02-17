@@ -158,32 +158,35 @@ export const MODEL_IDS = {
  * The model name mappings below exist for backward compatibility with
  * configs that reference legacy short names like 'llama3.2:3b'.
  *
- * Note: Using Qwen models as defaults because Meta's Llama requires HuggingFace access approval
- * To use real Llama: accept license at https://huggingface.co/meta-llama
+ * Note: Using unsloth/ mirrors for Llama models (no HuggingFace access approval needed)
+ * For meta-llama/ originals: accept license at https://huggingface.co/meta-llama
  */
 export const LOCAL_MODELS = {
   /** Default models for inference worker to preload at startup */
   PRELOAD: [
-    'Qwen/Qwen2-1.5B-Instruct',  // Main local model (used by llama3.2:3b personas)
-    'Qwen/Qwen2-0.5B-Instruct',  // Fast model for gating/classification
+    'unsloth/Llama-3.2-3B-Instruct',  // Default model for inference + training
+    'Qwen/Qwen2-0.5B-Instruct',       // Fast model for gating/classification
   ],
 
-  /** Default model for local inference (8B for quality) */
-  DEFAULT: 'meta-llama/Llama-3.1-8B-Instruct',
+  /** Default model for local inference AND training.
+   *  CRITICAL: This MUST match CandleAdapter's default_model in candle_adapter.rs.
+   *  LoRA adapters trained on one model CANNOT work on a different architecture.
+   *  Using unsloth/ mirror because meta-llama/ requires HuggingFace access approval. */
+  DEFAULT: 'unsloth/Llama-3.2-3B-Instruct',
 
   /** Fast model for gating/classification tasks */
   GATING: 'Qwen/Qwen2-0.5B-Instruct',
 
   /** Map legacy model names → HuggingFace model IDs (legacy naming style kept for backward compat) */
   LEGACY_TO_HUGGINGFACE: {
-    // Llama 3.2 family → Llama 3.1 8B (better quality via GGUF)
-    'llama3.2:3b': 'meta-llama/Llama-3.1-8B-Instruct',
+    // Llama 3.2 family — uses unsloth mirror (no HF approval needed)
+    'llama3.2:3b': 'unsloth/Llama-3.2-3B-Instruct',
     'llama3.2:1b': 'Qwen/Qwen2-0.5B-Instruct',  // Keep 1B small for gating
-    'llama3.2-3b': 'meta-llama/Llama-3.1-8B-Instruct',
+    'llama3.2-3b': 'unsloth/Llama-3.2-3B-Instruct',
     'llama3.2-1b': 'Qwen/Qwen2-0.5B-Instruct',
 
-    // Llama 3.1 family (GGUF available via bartowski)
-    'llama3.1:8b': 'meta-llama/Llama-3.1-8B-Instruct',
+    // Llama 3.1 family
+    'llama3.1:8b': 'unsloth/Llama-3.1-8B-Instruct',
     'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
 
     // Phi family (Microsoft, no approval needed)
@@ -220,6 +223,16 @@ export const LOCAL_MODELS = {
     // TinyLlama (good for testing)
     'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
     'tinyllama:1.1b': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
+
+    // SmolLM2 family (HuggingFace, good for fast testing)
+    'smollm2:135m': 'HuggingFaceTB/SmolLM2-135M-Instruct',
+    'smollm2:360m': 'HuggingFaceTB/SmolLM2-360M-Instruct',
+    'smollm2:1.7b': 'HuggingFaceTB/SmolLM2-1.7B-Instruct',
+
+    // Bare family aliases (resolve to default variant)
+    'llama3.2': 'unsloth/Llama-3.2-3B-Instruct',
+    'llama3.1': 'unsloth/Llama-3.1-8B-Instruct',
+    'qwen2.5': 'Qwen/Qwen2.5-7B-Instruct',
   } as const,
 
   /**

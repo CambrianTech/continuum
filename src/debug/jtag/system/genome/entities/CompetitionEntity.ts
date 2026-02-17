@@ -26,6 +26,7 @@ import {
   VALID_COMPETITION_STATUSES,
   DEFAULT_COMPETITION_CONFIG,
 } from '../shared/CompetitionTypes';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 
 export class CompetitionEntity extends BaseEntity {
   static readonly collection = 'academy_competitions';
@@ -84,7 +85,7 @@ export class CompetitionEntity extends BaseEntity {
   constructor() {
     super();
     this.skill = '';
-    this.baseModel = 'smollm2:135m';
+    this.baseModel = LOCAL_MODELS.DEFAULT;
     this.status = 'pending';
     this.competitors = [];
     this.config = { ...DEFAULT_COMPETITION_CONFIG };

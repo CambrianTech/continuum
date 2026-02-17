@@ -6,7 +6,7 @@
  */
 
 import type { ModelConfig } from '../../../data/entities/UserEntity';
-import { MODEL_IDS } from '../../../shared/Constants';
+import { MODEL_IDS, LOCAL_MODELS } from '../../../shared/Constants';
 
 /**
  * SOTA (State-of-the-Art) Providers
@@ -30,7 +30,7 @@ export const SOTA_PROVIDERS = new Set([
 export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
   'candle': {
     provider: 'candle',
-    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model
+    model: LOCAL_MODELS.DEFAULT,  // Must match CandleAdapter default_model
     temperature: 0.7,
     maxTokens: 200,
     // Context window is defined in ModelContextWindows.ts (SINGLE SOURCE OF TRUTH)

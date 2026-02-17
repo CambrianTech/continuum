@@ -30,7 +30,7 @@ export interface GenomeAcademyCompetitionParams extends CommandParams {
   /** Array of competitors (minimum 2) */
   competitors: CompetitorDef[];
 
-  /** Base model for training (default: "smollm2:135m") */
+  /** Base model for training (default: LOCAL_MODELS.DEFAULT) */
   baseModel?: string;
 
   /** Maximum attempts per topic before failure (default: 3) */

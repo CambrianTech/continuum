@@ -583,6 +583,7 @@ async fn call_llm(conversation: &[Value], model: &str, _working_dir: &Path) -> R
         request_id: None,
         user_id: None,
         room_id: None,
+        active_adapters: None,
         purpose: None,
     };
 

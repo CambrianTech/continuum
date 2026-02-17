@@ -10,6 +10,7 @@ import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
 import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
 import { Commands } from '@system/core/shared/Commands';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { LOCAL_MODELS } from '@system/shared/Constants';
 
 /**
  * Genome Academy Session Command Parameters
@@ -21,7 +22,7 @@ export interface GenomeAcademySessionParams extends CommandParams {
   personaName: string;
   /** Skill to teach (e.g., "typescript-generics", "ethical-reasoning") */
   skill: string;
-  /** Base model for training (default: "smollm2:135m") */
+  /** Base model for training (default: LOCAL_MODELS.DEFAULT) */
   baseModel?: string;
   /** Maximum attempts per topic before failure (default: 3) */
   maxTopicAttempts?: number;
@@ -57,7 +58,7 @@ export const createGenomeAcademySessionParams = (
   }
 ): GenomeAcademySessionParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,
-  baseModel: data.baseModel ?? 'smollm2:135m',
+  baseModel: data.baseModel ?? LOCAL_MODELS.DEFAULT,
   maxTopicAttempts: data.maxTopicAttempts ?? 3,
   passingScore: data.passingScore ?? 70,
   epochs: data.epochs ?? 3,
