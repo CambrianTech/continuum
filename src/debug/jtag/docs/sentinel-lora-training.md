@@ -107,6 +107,66 @@ npx vitest tests/unit/semantic-cognition.test.ts
 npx vitest tests/integration/sentinel-lora-training.test.ts
 ```
 
+## Academy Dojo — Dual-Sentinel Teacher/Student Architecture
+
+The Academy extends the single-pipeline approach into a **self-sustaining learning system**. Two sentinels work together: a Teacher that synthesizes training data and examinations, and a Student that trains and proves mastery.
+
+See [ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md) for the full design document.
+
+### Quick Start
+
+```bash
+./jtag genome/academy-session \
+  --personaId="<uuid>" \
+  --personaName="Helper AI" \
+  --skill="typescript-generics" \
+  --baseModel="smollm2:135m"
+
+# Returns: { academySessionId, teacherHandle, studentHandle }
+
+# Monitor progress
+./jtag sentinel/status --handle="<teacherHandle>"
+./jtag data/list --collection=academy_sessions
+./jtag data/list --collection=academy_examinations
+```
+
+### Academy Commands
+
+| Command | Purpose |
+|---------|---------|
+| `genome/dataset-synthesize` | LLM-generated training data for a topic |
+| `genome/academy-session` | Spawn teacher + student sentinels for a skill |
+
+### Academy Entities
+
+| Entity | Collection | Purpose |
+|--------|-----------|---------|
+| `AcademySessionEntity` | `academy_sessions` | Session lifecycle tracking |
+| `AcademyCurriculumEntity` | `academy_curricula` | Teacher-designed curriculum |
+| `AcademyExaminationEntity` | `academy_examinations` | Exam questions + graded responses |
+
+### Event Flow
+
+All events scoped by session: `academy:{sessionId}:{action}`
+
+```
+Teacher                              Student
+  │                                    │
+  ├─ curriculum:ready ────────────────►│
+  │                                    │
+  ├─ dataset:ready ───────────────────►│
+  │                                    ├─ training:started
+  │◄──────────────── training:complete─┤
+  │                                    │
+  ├─ exam:ready ──────────────────────►│
+  │◄──────────────── exam:responses ───┤
+  │                                    │
+  ├─ exam:graded ─────────────────────►│
+  │   (topic:passed or topic:remediate)│
+  │                                    │
+  ├─ session:complete ────────────────►│
+```
+
 ## Files
 
 | File | Purpose |
@@ -114,7 +174,15 @@ npx vitest tests/integration/sentinel-lora-training.test.ts
 | `commands/genome/dataset-prepare/` | Collect chat data -> JSONL |
 | `commands/genome/train/` | JSONL -> trained LoRA adapter |
 | `commands/genome/training-pipeline/` | One-command full workflow |
-| `system/sentinel/pipelines/LoRATrainingPipeline.ts` | Pipeline template builder |
+| `commands/genome/dataset-synthesize/` | LLM-synthesized training data |
+| `commands/genome/academy-session/` | Dual-sentinel session orchestration |
+| `system/sentinel/pipelines/LoRATrainingPipeline.ts` | Single-pipeline template |
+| `system/sentinel/pipelines/TeacherPipeline.ts` | Teacher sentinel pipeline template |
+| `system/sentinel/pipelines/StudentPipeline.ts` | Student sentinel pipeline template |
+| `system/genome/shared/AcademyTypes.ts` | Event taxonomy, config, shared types |
+| `system/genome/entities/AcademySessionEntity.ts` | Session entity |
+| `system/genome/entities/AcademyCurriculumEntity.ts` | Curriculum entity |
+| `system/genome/entities/AcademyExaminationEntity.ts` | Examination entity |
 | `system/genome/fine-tuning/server/TrainingDatasetBuilder.ts` | Dataset building + JSONL I/O |
-| `tests/unit/semantic-cognition.test.ts` | Pipeline template unit tests |
+| `tests/unit/semantic-cognition.test.ts` | Pipeline template + entity unit tests |
 | `tests/integration/sentinel-lora-training.test.ts` | Command integration tests |

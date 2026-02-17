@@ -1023,3 +1023,354 @@ describe('AdapterPackage — Manifest & Entity', () => {
     expect(manifests).toEqual([]);
   });
 });
+
+// ============================================================================
+// Academy Dojo: Entity Validation + Pipeline Templates + Event Taxonomy
+// ============================================================================
+
+import { AcademySessionEntity } from '../../system/genome/entities/AcademySessionEntity';
+import { AcademyCurriculumEntity } from '../../system/genome/entities/AcademyCurriculumEntity';
+import { AcademyExaminationEntity } from '../../system/genome/entities/AcademyExaminationEntity';
+import {
+  academyEvent,
+  DEFAULT_ACADEMY_CONFIG,
+  VALID_SESSION_STATUSES,
+} from '../../system/genome/shared/AcademyTypes';
+import type { CurriculumTopic, ExamQuestion, ExamResponse } from '../../system/genome/shared/AcademyTypes';
+import { buildTeacherPipeline } from '../../system/sentinel/pipelines/TeacherPipeline';
+import { buildStudentPipeline } from '../../system/sentinel/pipelines/StudentPipeline';
+
+describe('Academy Event Taxonomy', () => {
+  it('should generate scoped event names', () => {
+    const sessionId = 'abc-123';
+    expect(academyEvent(sessionId, 'curriculum:ready')).toBe('academy:abc-123:curriculum:ready');
+    expect(academyEvent(sessionId, 'dataset:ready')).toBe('academy:abc-123:dataset:ready');
+    expect(academyEvent(sessionId, 'training:complete')).toBe('academy:abc-123:training:complete');
+    expect(academyEvent(sessionId, 'exam:ready')).toBe('academy:abc-123:exam:ready');
+    expect(academyEvent(sessionId, 'exam:responses')).toBe('academy:abc-123:exam:responses');
+    expect(academyEvent(sessionId, 'exam:graded')).toBe('academy:abc-123:exam:graded');
+    expect(academyEvent(sessionId, 'session:complete')).toBe('academy:abc-123:session:complete');
+    expect(academyEvent(sessionId, 'session:failed')).toBe('academy:abc-123:session:failed');
+  });
+
+  it('should isolate different sessions', () => {
+    const event1 = academyEvent('session-a', 'dataset:ready');
+    const event2 = academyEvent('session-b', 'dataset:ready');
+    expect(event1).not.toBe(event2);
+    expect(event1).toBe('academy:session-a:dataset:ready');
+    expect(event2).toBe('academy:session-b:dataset:ready');
+  });
+});
+
+describe('AcademySessionEntity', () => {
+  it('should validate required fields', () => {
+    const entity = new AcademySessionEntity();
+
+    // Missing personaId
+    let result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('personaId');
+
+    // Fill required fields incrementally
+    entity.personaId = 'test-persona-id' as UUID;
+    result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('personaName');
+
+    entity.personaName = 'Test Persona';
+    result = entity.validate();
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('skill');
+
+    entity.skill = 'typescript-generics';
+    // baseModel has a default ('smollm2:135m') so it passes validation
+    result = entity.validate();
+    expect(result.success).toBe(true);
+  });
+
+  it('should validate status values', () => {
+    const entity = new AcademySessionEntity();
+    entity.personaId = 'id' as UUID;
+    entity.personaName = 'Test';
+    entity.skill = 'test-skill';
+    entity.baseModel = 'smollm2:135m';
+
+    for (const status of VALID_SESSION_STATUSES) {
+      entity.status = status;
+      expect(entity.validate().success).toBe(true);
+    }
+
+    entity.status = 'invalid' as any;
+    expect(entity.validate().success).toBe(false);
+  });
+
+  it('should have correct collection name', () => {
+    expect(AcademySessionEntity.collection).toBe('academy_sessions');
+    const entity = new AcademySessionEntity();
+    expect(entity.collection).toBe('academy_sessions');
+  });
+
+  it('should use default config values', () => {
+    const entity = new AcademySessionEntity();
+    expect(entity.config.maxTopicAttempts).toBe(DEFAULT_ACADEMY_CONFIG.maxTopicAttempts);
+    expect(entity.config.passingScore).toBe(DEFAULT_ACADEMY_CONFIG.passingScore);
+    expect(entity.config.epochs).toBe(DEFAULT_ACADEMY_CONFIG.epochs);
+    expect(entity.config.rank).toBe(DEFAULT_ACADEMY_CONFIG.rank);
+  });
+
+  it('should validate config bounds', () => {
+    const entity = new AcademySessionEntity();
+    entity.personaId = 'id' as UUID;
+    entity.personaName = 'Test';
+    entity.skill = 'test';
+    entity.baseModel = 'smollm2:135m';
+
+    entity.config.passingScore = 150;
+    expect(entity.validate().success).toBe(false);
+
+    entity.config.passingScore = -10;
+    expect(entity.validate().success).toBe(false);
+
+    entity.config.passingScore = 70;
+    entity.config.maxTopicAttempts = 0;
+    expect(entity.validate().success).toBe(false);
+  });
+});
+
+describe('AcademyCurriculumEntity', () => {
+  const validTopic: CurriculumTopic = {
+    name: 'Generic Types',
+    description: 'Understanding TypeScript generic type parameters',
+    difficulty: 'beginner',
+    status: 'pending',
+    attempts: 0,
+    bestScore: 0,
+  };
+
+  it('should validate required fields', () => {
+    const entity = new AcademyCurriculumEntity();
+    expect(entity.validate().success).toBe(false);
+
+    entity.sessionId = 'session-1' as UUID;
+    entity.skill = 'typescript';
+    entity.generatedBy = 'claude-3-opus';
+    entity.topics = [validTopic];
+    entity.totalTopics = 1;
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should validate topic structure', () => {
+    const entity = new AcademyCurriculumEntity();
+    entity.sessionId = 'session-1' as UUID;
+    entity.skill = 'typescript';
+    entity.generatedBy = 'claude';
+    entity.totalTopics = 1;
+
+    // Empty topics array
+    entity.topics = [];
+    expect(entity.validate().success).toBe(false);
+
+    // Topic with missing name
+    entity.topics = [{ ...validTopic, name: '' }];
+    expect(entity.validate().success).toBe(false);
+
+    // Topic with invalid difficulty
+    entity.topics = [{ ...validTopic, difficulty: 'expert' as any }];
+    expect(entity.validate().success).toBe(false);
+
+    // Valid topic
+    entity.topics = [validTopic];
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should validate totalTopics matches array length', () => {
+    const entity = new AcademyCurriculumEntity();
+    entity.sessionId = 'session-1' as UUID;
+    entity.skill = 'typescript';
+    entity.generatedBy = 'claude';
+    entity.topics = [validTopic, { ...validTopic, name: 'Topic 2' }];
+    entity.totalTopics = 3;  // Mismatch
+    expect(entity.validate().success).toBe(false);
+
+    entity.totalTopics = 2;
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should have correct collection name', () => {
+    expect(AcademyCurriculumEntity.collection).toBe('academy_curricula');
+  });
+});
+
+describe('AcademyExaminationEntity', () => {
+  const validQuestion: ExamQuestion = {
+    question: 'What is a generic type constraint?',
+    expectedAnswer: 'A way to restrict the types that can be used as type arguments...',
+    category: 'Type Constraints',
+  };
+
+  it('should validate required fields', () => {
+    const entity = new AcademyExaminationEntity();
+    expect(entity.validate().success).toBe(false);
+
+    entity.sessionId = 'session-1' as UUID;
+    entity.questions = [validQuestion];
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should validate question structure', () => {
+    const entity = new AcademyExaminationEntity();
+    entity.sessionId = 'session-1' as UUID;
+
+    entity.questions = [{ ...validQuestion, question: '' }];
+    expect(entity.validate().success).toBe(false);
+
+    entity.questions = [{ ...validQuestion, expectedAnswer: '' }];
+    expect(entity.validate().success).toBe(false);
+
+    entity.questions = [{ ...validQuestion, category: '' }];
+    expect(entity.validate().success).toBe(false);
+  });
+
+  it('should validate score bounds', () => {
+    const entity = new AcademyExaminationEntity();
+    entity.sessionId = 'session-1' as UUID;
+    entity.questions = [validQuestion];
+
+    entity.overallScore = 150;
+    expect(entity.validate().success).toBe(false);
+
+    entity.overallScore = -5;
+    expect(entity.validate().success).toBe(false);
+
+    entity.overallScore = 85;
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should validate round is >= 1', () => {
+    const entity = new AcademyExaminationEntity();
+    entity.sessionId = 'session-1' as UUID;
+    entity.questions = [validQuestion];
+
+    entity.round = 0;
+    expect(entity.validate().success).toBe(false);
+
+    entity.round = 1;
+    expect(entity.validate().success).toBe(true);
+  });
+
+  it('should have correct collection name', () => {
+    expect(AcademyExaminationEntity.collection).toBe('academy_examinations');
+  });
+});
+
+describe('TeacherPipeline', () => {
+  const testConfig = {
+    sessionId: 'test-session-123' as UUID,
+    skill: 'typescript-generics',
+    personaName: 'Helper AI',
+    baseModel: 'smollm2:135m',
+    config: { ...DEFAULT_ACADEMY_CONFIG },
+  };
+
+  it('should build a valid pipeline with correct name', () => {
+    const pipeline = buildTeacherPipeline(testConfig);
+    expect(pipeline.name).toBe('academy-teacher-typescript-generics');
+    expect(pipeline.steps.length).toBeGreaterThan(0);
+  });
+
+  it('should include curriculum design LLM step first', () => {
+    const pipeline = buildTeacherPipeline(testConfig);
+    const firstStep = pipeline.steps[0];
+    expect(firstStep.type).toBe('llm');
+    if (firstStep.type === 'llm') {
+      expect(firstStep.prompt).toContain('typescript-generics');
+      expect(firstStep.prompt).toContain('Helper AI');
+    }
+  });
+
+  it('should include curriculum:ready emit step', () => {
+    const pipeline = buildTeacherPipeline(testConfig);
+    const emitStep = pipeline.steps.find(s => s.type === 'emit' && (s as any).event.includes('curriculum:ready'));
+    expect(emitStep).toBeDefined();
+  });
+
+  it('should include topic loop with dataset synthesis + exam flow', () => {
+    const pipeline = buildTeacherPipeline(testConfig);
+    const loopStep = pipeline.steps.find(s => s.type === 'loop');
+    expect(loopStep).toBeDefined();
+    if (loopStep?.type === 'loop') {
+      // Loop should contain: synthesize, emit dataset, watch training, exam LLM, persist exam, emit exam, watch responses, grade LLM, persist grades, emit graded, condition
+      expect(loopStep.steps.length).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  it('should include session:complete emit at the end', () => {
+    const pipeline = buildTeacherPipeline(testConfig);
+    const lastStep = pipeline.steps[pipeline.steps.length - 1];
+    expect(lastStep.type).toBe('emit');
+    if (lastStep.type === 'emit') {
+      expect(lastStep.event).toContain('session:complete');
+    }
+  });
+
+  it('should pass inputs through', () => {
+    const pipeline = buildTeacherPipeline(testConfig);
+    expect(pipeline.inputs?.sessionId).toBe('test-session-123');
+    expect(pipeline.inputs?.skill).toBe('typescript-generics');
+    expect(pipeline.inputs?.personaName).toBe('Helper AI');
+  });
+});
+
+describe('StudentPipeline', () => {
+  const testConfig = {
+    sessionId: 'test-session-123' as UUID,
+    personaId: 'persona-456' as UUID,
+    personaName: 'Helper AI',
+    baseModel: 'smollm2:135m',
+    config: { ...DEFAULT_ACADEMY_CONFIG },
+  };
+
+  it('should build a valid pipeline with correct name', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    expect(pipeline.name).toBe('academy-student-helper-ai');
+    expect(pipeline.steps.length).toBeGreaterThan(0);
+  });
+
+  it('should start by watching for curriculum:ready', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const firstStep = pipeline.steps[0];
+    expect(firstStep.type).toBe('watch');
+    if (firstStep.type === 'watch') {
+      expect(firstStep.event).toContain('curriculum:ready');
+    }
+  });
+
+  it('should include topic loop with training + exam flow', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loopStep = pipeline.steps.find(s => s.type === 'loop');
+    expect(loopStep).toBeDefined();
+    if (loopStep?.type === 'loop') {
+      // Loop should contain: watch dataset, emit started, train, register adapter, emit complete, watch exam, LLM answer, emit responses, watch graded
+      expect(loopStep.steps.length).toBeGreaterThanOrEqual(8);
+    }
+  });
+
+  it('should use base model for exam answers', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loopStep = pipeline.steps.find(s => s.type === 'loop');
+    if (loopStep?.type === 'loop') {
+      const llmStep = loopStep.steps.find(s => s.type === 'llm');
+      expect(llmStep).toBeDefined();
+      if (llmStep?.type === 'llm') {
+        expect(llmStep.model).toBe('smollm2:135m');
+      }
+    }
+  });
+
+  it('should pass inputs through', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    expect(pipeline.inputs?.sessionId).toBe('test-session-123');
+    expect(pipeline.inputs?.personaId).toBe('persona-456');
+    expect(pipeline.inputs?.personaName).toBe('Helper AI');
+  });
+});

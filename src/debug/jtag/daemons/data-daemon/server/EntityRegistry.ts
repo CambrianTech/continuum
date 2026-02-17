@@ -83,6 +83,9 @@ import { CallEntity } from '../../../system/data/entities/CallEntity';
 import { SocialCredentialEntity } from '../../../system/social/shared/SocialCredentialEntity';
 import { HandleEntity } from '../../../system/data/entities/HandleEntity';
 import { SkillEntity } from '../../../system/data/entities/SkillEntity';
+import { AcademySessionEntity } from '../../../system/genome/entities/AcademySessionEntity';
+import { AcademyCurriculumEntity } from '../../../system/genome/entities/AcademyCurriculumEntity';
+import { AcademyExaminationEntity } from '../../../system/genome/entities/AcademyExaminationEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -139,6 +142,9 @@ export function initializeEntityRegistry(): void {
   new SocialCredentialEntity();
   new HandleEntity();
   new SkillEntity();
+  new AcademySessionEntity();
+  new AcademyCurriculumEntity();
+  new AcademyExaminationEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -187,6 +193,9 @@ export function initializeEntityRegistry(): void {
   registerEntity(SocialCredentialEntity.collection, SocialCredentialEntity);
   registerEntity(HandleEntity.collection, HandleEntity);
   registerEntity(SkillEntity.collection, SkillEntity);
+  registerEntity(AcademySessionEntity.collection, AcademySessionEntity);
+  registerEntity(AcademyCurriculumEntity.collection, AcademyCurriculumEntity);
+  registerEntity(AcademyExaminationEntity.collection, AcademyExaminationEntity);
 
   log.info('All entities registered');
 }

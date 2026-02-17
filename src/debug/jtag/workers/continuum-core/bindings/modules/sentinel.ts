@@ -116,10 +116,14 @@ export interface SentinelLogsTailResult {
  */
 export type PipelineStep =
 	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string }
-	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string }
+	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string; tools?: string[]; agentMode?: boolean; maxIterations?: number }
 	| { type: 'command'; command: string; params?: Record<string, unknown> }
 	| { type: 'condition'; if: string; then: PipelineStep[]; else?: PipelineStep[] }
-	| { type: 'loop'; count: number; steps: PipelineStep[] };
+	| { type: 'loop'; count?: number; while?: string; until?: string; steps: PipelineStep[]; maxIterations?: number }
+	| { type: 'emit'; event: string; payload?: Record<string, unknown> }
+	| { type: 'watch'; event: string; timeoutSecs?: number }
+	| { type: 'parallel'; branches: PipelineStep[][]; failFast?: boolean }
+	| { type: 'sentinel'; pipeline: Pipeline };
 
 /**
  * Pipeline definition

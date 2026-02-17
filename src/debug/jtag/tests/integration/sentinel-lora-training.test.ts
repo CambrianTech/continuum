@@ -13,6 +13,8 @@ import { Commands } from '../../system/core/shared/Commands';
 import type { GenomeDatasetPrepareParams, GenomeDatasetPrepareResult } from '../../commands/genome/dataset-prepare/shared/GenomeDatasetPrepareTypes';
 import type { GenomeTrainParams, GenomeTrainResult } from '../../commands/genome/train/shared/GenomeTrainTypes';
 import type { GenomeTrainingPipelineParams, GenomeTrainingPipelineResult } from '../../commands/genome/training-pipeline/shared/GenomeTrainingPipelineTypes';
+import type { GenomeDatasetSynthesizeParams, GenomeDatasetSynthesizeResult } from '../../commands/genome/dataset-synthesize/shared/GenomeDatasetSynthesizeTypes';
+import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../../commands/genome/academy-session/shared/GenomeAcademySessionTypes';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -178,6 +180,116 @@ describe('genome/training-pipeline', () => {
     } else {
       // May fail if Rust core IPC is not running
       console.log(`  Pipeline submission failed (expected if Rust core not running): ${result.error}`);
+    }
+  });
+});
+
+// ============================================================================
+// Academy Dojo Integration Tests
+// ============================================================================
+
+describe('genome/dataset-synthesize', () => {
+  it('should reject missing required params', { timeout: 15000 }, async () => {
+    const result = await Commands.execute<GenomeDatasetSynthesizeParams, GenomeDatasetSynthesizeResult>(
+      'genome/dataset-synthesize',
+      {
+        // Missing topic, skill, personaName
+      } as any
+    );
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should synthesize training data via LLM', { timeout: 60000 }, async () => {
+    const result = await Commands.execute<GenomeDatasetSynthesizeParams, GenomeDatasetSynthesizeResult>(
+      'genome/dataset-synthesize',
+      {
+        topic: 'TypeScript generic type parameters',
+        skill: 'typescript',
+        personaName: TEST_PERSONA_NAME,
+        exampleCount: 5,  // Small count for integration test
+        difficulty: 'beginner',
+      }
+    );
+
+    if (result.success) {
+      expect(result.datasetPath).toBeDefined();
+      expect(result.datasetPath.length).toBeGreaterThan(0);
+      expect(result.exampleCount).toBeGreaterThan(0);
+      expect(result.topic).toBe('TypeScript generic type parameters');
+      expect(result.generatedBy).toBeDefined();
+
+      // Verify JSONL file exists and is valid
+      expect(fs.existsSync(result.datasetPath)).toBe(true);
+      const content = fs.readFileSync(result.datasetPath, 'utf-8');
+      const lines = content.trim().split('\n');
+      expect(lines.length).toBe(result.exampleCount);
+
+      // Each line should be valid JSONL with messages
+      const firstLine = JSON.parse(lines[0]);
+      expect(firstLine.messages).toBeDefined();
+      expect(Array.isArray(firstLine.messages)).toBe(true);
+
+      console.log(`  Synthesized ${result.exampleCount} examples by ${result.generatedBy}`);
+
+      // Cleanup
+      fs.unlinkSync(result.datasetPath);
+    } else {
+      // May fail if no LLM provider is configured
+      console.log(`  Dataset synthesis failed (expected if no LLM available): ${result.error}`);
+    }
+  });
+});
+
+describe('genome/academy-session', () => {
+  it('should reject missing required params', { timeout: 15000 }, async () => {
+    const result = await Commands.execute<GenomeAcademySessionParams, GenomeAcademySessionResult>(
+      'genome/academy-session',
+      {
+        personaId: TEST_PERSONA_ID,
+        // Missing personaName and skill
+      } as any
+    );
+
+    expect(result.success).toBe(false);
+  });
+
+  it('should create session and spawn sentinels', { timeout: 30000 }, async () => {
+    const result = await Commands.execute<GenomeAcademySessionParams, GenomeAcademySessionResult>(
+      'genome/academy-session',
+      {
+        personaId: TEST_PERSONA_ID,
+        personaName: TEST_PERSONA_NAME,
+        skill: 'typescript-generics',
+        baseModel: 'smollm2:135m',
+        maxTopicAttempts: 2,
+        passingScore: 60,
+      }
+    );
+
+    if (result.success) {
+      expect(result.academySessionId).toBeDefined();
+      expect(result.teacherHandle).toBeDefined();
+      expect(result.studentHandle).toBeDefined();
+
+      console.log(`  Academy session created: ${result.academySessionId}`);
+      console.log(`  Teacher handle: ${result.teacherHandle}`);
+      console.log(`  Student handle: ${result.studentHandle}`);
+
+      // Verify session entity was persisted
+      const readResult = await Commands.execute('data/read', {
+        collection: 'academy_sessions',
+        id: result.academySessionId,
+      } as any) as any;
+
+      if (readResult.success) {
+        expect(readResult.data?.skill).toBe('typescript-generics');
+        expect(readResult.data?.personaName).toBe(TEST_PERSONA_NAME);
+        expect(readResult.data?.status).toBeDefined();
+      }
+    } else {
+      // May fail if sentinel engine is not running
+      console.log(`  Academy session failed (expected if Rust core not running): ${result.error}`);
     }
   });
 });
