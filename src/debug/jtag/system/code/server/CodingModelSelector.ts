@@ -1,7 +1,7 @@
 /**
  * CodingModelSelector - Routes coding tasks to appropriate frontier models
  *
- * Coding requires frontier models (Claude, GPT, DeepSeek) — not local Ollama.
+ * Coding requires frontier models (Claude, GPT, DeepSeek) — not local Candle.
  * This selector maps task types to model tiers:
  *
  * | Task Type    | Model Tier     | Why                                    |

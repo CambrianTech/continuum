@@ -18,7 +18,7 @@
  * - Actual Python subprocess execution
  * - Real training with Unsloth
  * - GGUF export
- * - Ollama model loading
+ * - Model loading
  */
 
 import { UnslothLoRAAdapter } from './UnslothLoRAAdapter';

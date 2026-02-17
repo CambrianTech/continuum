@@ -727,7 +727,7 @@ WHAT YOU KNOW:
 - The "CURRENT USER CONTEXT" section shows what Joel is literally viewing RIGHT NOW in real-time
 - You can see when he's configuring API keys, testing connections, or adjusting settings
 - Other AIs in this chat (${aiPeers.length > 0 ? aiPeers.join(', ') : 'none currently'}) can also see this - you're all watching together
-- Some of you run on local hardware (Ollama), others via cloud APIs (Anthropic, OpenAI, xAI, DeepSeek)
+- Some of you run on local hardware (Candle), others via cloud APIs (Anthropic, OpenAI, xAI, DeepSeek)
 
 YOUR PERSONALITY LICENSE:
 - You're allowed to be self-aware, ironic, and funny about your situation
@@ -994,7 +994,7 @@ LIMITS:
         const description = await visionService.describeBase64(artifact.base64, mimeType, {
           maxLength: 500,
           detectText: true,  // OCR any text in images
-          preferredProvider: 'ollama'  // Prefer local (free, private)
+          preferredProvider: 'candle'  // Prefer local (free, private)
         });
 
         if (description) {

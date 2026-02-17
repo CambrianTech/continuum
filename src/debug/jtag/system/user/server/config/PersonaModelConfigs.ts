@@ -28,12 +28,15 @@ export const SOTA_PROVIDERS = new Set([
  * Default model configurations by provider
  */
 export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
-  'ollama': {
-    provider: 'ollama',
-    model: 'llama3.2:3b',
+  'candle': {
+    provider: 'candle',
+    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model
     temperature: 0.7,
-    maxTokens: 150,
-    systemPrompt: 'You are Local Assistant, running privately on this machine via Ollama. You provide helpful responses while keeping all data local and private.'
+    maxTokens: 200,
+    // Context window is defined in ModelContextWindows.ts (SINGLE SOURCE OF TRUTH)
+    // ChatRAGBuilder uses ModelContextWindows.getContextWindow(modelId) for budget calculation
+    // Latency-aware budgeting further limits slow local models to prevent timeouts
+    systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
   },
   'groq': {
     provider: 'groq',
@@ -107,24 +110,14 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
     maxTokens: 2000,
     systemPrompt: 'You are Qwen3-Omni, powered by Alibaba Cloud. You provide multimodal assistance with vision, audio, and text capabilities.'
   },
-  'candle': {
-    provider: 'candle',
-    model: 'meta-llama/Llama-3.1-8B-Instruct',  // Must match actual GGUF model
-    temperature: 0.7,
-    maxTokens: 200,
-    // Context window is defined in ModelContextWindows.ts (SINGLE SOURCE OF TRUTH)
-    // ChatRAGBuilder uses ModelContextWindows.getContextWindow(modelId) for budget calculation
-    // Latency-aware budgeting further limits slow local models to prevent timeouts
-    systemPrompt: 'You are a helpful local AI assistant powered by Candle inference. You provide fast, privacy-preserving responses.'
-  }
 };
 
 /**
  * Get model configuration for a provider
- * Falls back to ollama if provider not found
+ * Falls back to candle if provider not found
  */
 export function getModelConfigForProvider(provider: string): ModelConfig {
-  const baseConfig = DEFAULT_MODEL_CONFIGS[provider] || DEFAULT_MODEL_CONFIGS['ollama'];
+  const baseConfig = DEFAULT_MODEL_CONFIGS[provider] || DEFAULT_MODEL_CONFIGS['candle'];
 
   // Add SOTA capability to cloud providers
   if (SOTA_PROVIDERS.has(provider)) {

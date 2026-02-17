@@ -35,7 +35,7 @@ export interface AiAgentParams extends CommandParams {
   /** Model ID (e.g., 'claude-sonnet-4-5-20250929', 'llama-3.1-8b') */
   model?: string;
 
-  /** Provider (e.g., 'anthropic', 'openai', 'together', 'ollama') */
+  /** Provider (e.g., 'anthropic', 'openai', 'together', 'candle') */
   provider?: string;
 
   /** Sampling temperature */

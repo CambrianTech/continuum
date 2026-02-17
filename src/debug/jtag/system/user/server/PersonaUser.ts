@@ -674,7 +674,7 @@ export class PersonaUser extends AIUser {
         const adapters = this.memory.genome.getAllAdapters().map(a => ({
           name: a.getName(),
           domain: a.getDomain(),
-          ollama_model_name: a.getOllamaModelName() ?? undefined,
+          ollama_model_name: a.getTrainedModelName() ?? undefined,
           is_loaded: a.isLoaded(),
           is_current: a === this.memory!.genome.getCurrentAdapter(),
           priority: a.getPriority(),

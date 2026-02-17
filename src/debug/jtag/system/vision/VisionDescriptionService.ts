@@ -116,10 +116,8 @@ export class VisionDescriptionService {
     if (process.env.OPENAI_API_KEY) configuredProviders.add('openai');
     if (process.env.GROQ_API_KEY) configuredProviders.add('groq');
     if (process.env.TOGETHER_API_KEY) configuredProviders.add('together');
-    // Check Ollama availability (local server)
-    if (process.env.OLLAMA_HOST || await this.checkOllamaAvailable()) {
-      configuredProviders.add('ollama');
-    }
+    // Candle is always available (built-in local inference)
+    configuredProviders.add('candle');
 
     // Filter vision models to only those with configured providers
     const availableVisionModels = visionModels.filter(m => configuredProviders.has(m.providerId));
@@ -144,8 +142,8 @@ export class VisionDescriptionService {
       if (preferred) selectedModel = preferred;
     }
 
-    // Prefer local Ollama models (free, private) if available
-    const localModel = availableVisionModels.find(m => m.providerId === 'ollama');
+    // Prefer local Candle models (free, private) if available
+    const localModel = availableVisionModels.find(m => m.providerId === 'candle');
     if (localModel && !options.preferredProvider) {
       selectedModel = localModel;
     }
@@ -176,7 +174,7 @@ export class VisionDescriptionService {
       const response = await AIProviderDaemon.generateText({
         messages: [message],
         model: selectedModel.modelId,
-        provider: selectedModel.providerId as 'ollama' | 'openai' | 'anthropic',
+        provider: selectedModel.providerId,
         maxTokens: options.maxLength ? Math.ceil(options.maxLength / 4) : 500,
         temperature: 0.3  // More deterministic for descriptions
       });
@@ -284,21 +282,6 @@ export class VisionDescriptionService {
     }
 
     return parts.join(' ');
-  }
-
-  /**
-   * Check if Ollama is available locally (even without OLLAMA_HOST set)
-   */
-  private async checkOllamaAvailable(): Promise<boolean> {
-    try {
-      const response = await fetch('http://localhost:11434/api/tags', {
-        method: 'GET',
-        signal: AbortSignal.timeout(2000)  // 2 second timeout
-      });
-      return response.ok;
-    } catch {
-      return false;
-    }
   }
 
   /**

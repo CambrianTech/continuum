@@ -21,7 +21,7 @@ export interface AdapterPackageManifest {
   traitType: string;
   /** How this layer was created */
   source: 'trained' | 'refined' | 'downloaded' | 'inherited' | 'system';
-  /** Base model used for training (Ollama or HuggingFace name) */
+  /** Base model used for training (short name or HuggingFace name) */
   baseModel: string;
   /** LoRA rank used during training */
   rank: number;

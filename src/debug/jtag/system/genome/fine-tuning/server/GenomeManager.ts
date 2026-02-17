@@ -8,11 +8,11 @@
  * - LoRA adapter paging (load/unload genomic layers dynamically)
  * - Training job queue (prevent GPU oversubscription)
  * - Adapter registry (which PersonaUsers have which LoRA layers loaded)
- * - Provider coordination (Ollama, OpenAI, DeepSeek adapters)
+ * - Provider coordination (PEFT, OpenAI, DeepSeek adapters)
  *
  * Architecture:
  * - Singleton pattern (one manager for entire system)
- * - Uses adapter pattern (OllamaLoRAAdapter, OpenAILoRAAdapter, etc.)
+ * - Uses adapter pattern (PEFTLoRAAdapter, OpenAILoRAAdapter, etc.)
  * - RTOS-inspired resource management (never oversubscribe GPU)
  * - Graceful degradation (fall back to base models when GPU full)
  *
@@ -124,7 +124,7 @@ export class GenomeManager {
    * Register LoRA trainer adapter
    *
    * Example:
-   *   GenomeManager.shared().registerAdapter('ollama', new OllamaLoRAAdapter());
+   *   GenomeManager.shared().registerAdapter('peft', new PEFTLoRAAdapter());
    *   GenomeManager.shared().registerAdapter('openai', new OpenAILoRAAdapter());
    */
   registerAdapter(providerId: string, trainer: LoRATrainer): void {

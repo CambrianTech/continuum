@@ -597,7 +597,7 @@ export class ORM {
    * Generate embedding for text via Rust EmbeddingModule
    *
    * Routes to continuum-core's fastembed (ONNX-based) for fast native embeddings.
-   * ~5ms per embedding vs ~80ms via Ollama HTTP.
+   * ~5ms per embedding via native ONNX runtime.
    */
   static async generateEmbedding(
     request: GenerateEmbeddingRequest
@@ -621,7 +621,7 @@ export class ORM {
           model: request.model ?? {
             name: 'all-minilm',
             dimensions: embedding.length,
-            provider: 'ollama' as const,  // fastembed uses ONNX but presents as ollama-compatible
+            provider: 'fastembed' as const,  // ONNX-based native embeddings via Rust
           },
           generationTime,
         },

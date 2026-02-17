@@ -52,7 +52,7 @@ export class TestExecutionEntity extends BaseEntity {
   // Single source of truth for collection name
   static readonly collection = 'test_executions';
 
-  /** Adapter being tested (e.g., 'ollama', 'openai', 'anthropic') */
+  /** Adapter being tested (e.g., 'candle', 'openai', 'anthropic') */
   @TextField()
   adapterName!: string;
 

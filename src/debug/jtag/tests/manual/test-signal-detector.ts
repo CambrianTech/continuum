@@ -114,4 +114,4 @@ for (const senderType of senderTypes) {
 }
 
 console.log('\n✅ Signal detector tests complete!');
-console.log('\nNote: Async AI classification (detectSignalAsync) requires running system with Ollama.');
+console.log('\nNote: Async AI classification (detectSignalAsync) requires running system with Candle.');

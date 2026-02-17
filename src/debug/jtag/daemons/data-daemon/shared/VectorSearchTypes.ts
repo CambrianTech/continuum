@@ -31,7 +31,7 @@ export function toNumberArray(embedding: VectorEmbedding): number[] {
 export interface EmbeddingModel {
   readonly name: string;           // e.g., 'all-minilm-l6-v2', 'nomic-embed-text'
   readonly dimensions: number;     // e.g., 384, 768
-  readonly provider: 'ollama' | 'openai' | 'huggingface';
+  readonly provider: 'fastembed' | 'openai' | 'huggingface';
   readonly maxTokens?: number;
 }
 
@@ -174,7 +174,7 @@ export interface VectorSearchCapabilities {
   readonly supportsEmbeddingGeneration: boolean;
   readonly maxVectorDimensions: number;
   readonly supportedSimilarityMetrics: ('cosine' | 'euclidean' | 'dot-product')[];
-  readonly embeddingProviders: ('ollama' | 'openai' | 'huggingface')[];
+  readonly embeddingProviders: ('fastembed' | 'openai' | 'huggingface')[];
 }
 
 /**
@@ -184,13 +184,13 @@ export const DEFAULT_EMBEDDING_MODELS: Record<string, EmbeddingModel> = {
   'all-minilm': {
     name: 'all-minilm',
     dimensions: 384,
-    provider: 'ollama',
+    provider: 'fastembed',
     maxTokens: 512
   },
   'nomic-embed-text': {
     name: 'nomic-embed-text',
     dimensions: 768,
-    provider: 'ollama',
+    provider: 'fastembed',
     maxTokens: 8192
   },
   'text-embedding-3-small': {

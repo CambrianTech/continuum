@@ -152,8 +152,8 @@ function testAdapterHierarchy(): void {
   console.log('   │   ├── MistralAdapter (20 lines) [TODO]');
   console.log('   │   └── ...9+ more providers (20-30 lines each)');
   console.log('   │');
-  console.log('   ├── BaseLocalAdapter (for Ollama, LM Studio)');
-  console.log('   │   └── OllamaAdapter (implemented)');
+  console.log('   ├── BaseLocalAdapter (for Candle, LM Studio)');
+  console.log('   │   └── CandleAdapter (implemented)');
   console.log('   │');
   console.log('   └── Proprietary Adapters (unique APIs)');
   console.log('       ├── AnthropicAdapter (Claude) [existing]');
@@ -184,14 +184,14 @@ function testFailoverScenarios(): void {
   console.log('');
   console.log('   3. Cost optimization:');
   console.log('      ├── User requests text generation');
-  console.log('      ├── Local Ollama: $0.00 (try first)');
-  console.log('      ├── Ollama down → Together AI: $0.0002/1k tokens');
+  console.log('      ├── Local Candle: $0.00 (try first)');
+  console.log('      ├── Candle down → Together AI: $0.0002/1k tokens');
   console.log('      └── ✅ Cheapest available provider selected');
   console.log('');
   console.log('   4. Latency optimization:');
   console.log('      ├── User requests fast response');
   console.log('      ├── Groq: 50-100ms (ultra-fast)');
-  console.log('      ├── Local Ollama: 200-500ms (fast)');
+  console.log('      ├── Local Candle: 200-500ms (fast)');
   console.log('      └── ✅ Fastest provider selected');
 
   console.log('\n🎯 Routing Strategies Supported:');
@@ -226,7 +226,7 @@ function testScalabilityProjection(): void {
     {
       category: 'Local Inference Servers',
       providers: [
-        'Ollama ✅',
+        'Candle ✅',
         'LM Studio',
         'llama.cpp server',
         'MLX server',

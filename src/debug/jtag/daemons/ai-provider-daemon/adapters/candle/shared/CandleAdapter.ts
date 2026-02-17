@@ -113,7 +113,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.log(request, 'info', `🔧 TRACE-1: generateTextImpl START (requestId=${requestId.slice(0,8)})`);
 
-    // Determine model to use - map Ollama names to HuggingFace via central config
+    // Determine model to use - map legacy names to HuggingFace via central config
     const requestedModel = request.model || this.defaultModel;
     const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModel);
 

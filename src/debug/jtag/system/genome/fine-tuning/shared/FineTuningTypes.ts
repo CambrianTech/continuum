@@ -84,7 +84,7 @@ export interface LoRATrainingResult {
   // Adapter location
   modelPath?: string;         // Local path to .safetensors file (local training)
   modelId?: string;           // Remote model ID (API training)
-  ollamaModelName?: string;   // Ollama model name (if using Ollama)
+  trainedModelName?: string;  // Trained model identifier for inference
 
   // Training metrics
   metrics?: {
@@ -143,7 +143,7 @@ export interface TrainingJob {
  * Fine-tuning strategy (how to train)
  */
 export type FineTuningStrategy =
-  | 'local-llama-cpp'    // Local training via llama.cpp (Ollama)
+  | 'local-llama-cpp'    // Local training via llama.cpp
   | 'local-pytorch'      // Local training via PyTorch + Transformers
   | 'remote-api';        // Remote training via provider API (OpenAI, DeepSeek, etc.)
 

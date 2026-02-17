@@ -5,7 +5,7 @@
  * When adding new models/providers, update THIS file only.
  *
  * Prices are per 1 MILLION tokens (industry standard).
- * Local models (Ollama, Candle) are free.
+ * Local models (Candle) are free.
  *
  * TODO: Make this API-driven when providers expose pricing endpoints.
  */

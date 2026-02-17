@@ -2,7 +2,7 @@
  * AI Provider Stress Test - Performance & Reliability Under Load
  * ==============================================================
  *
- * Configurable stress testing for any AI provider (Ollama, OpenAI, Anthropic, etc.)
+ * Configurable stress testing for any AI provider (Candle, OpenAI, Anthropic, etc.)
  * Tests concurrency limits, timeout rates, response times, and throughput.
  *
  * Usage:
@@ -58,8 +58,8 @@ interface StressTestResults {
 
 // Provider-specific configurations
 const PROVIDER_CONFIGS: Record<string, Partial<StressTestConfig>> = {
-  ollama: {
-    provider: 'ollama',
+  candle: {
+    provider: 'candle',
     model: 'phi3:mini',
     concurrentRequests: 6,
     totalRequests: 12,
@@ -361,7 +361,7 @@ async function runStressTest(): Promise<void> {
       console.log('='.repeat(50));
 
       const config: StressTestConfig = {
-        provider: configDefaults.provider ?? 'ollama',
+        provider: configDefaults.provider ?? 'candle',
         model: configDefaults.model ?? 'phi3:mini',
         concurrentRequests: configDefaults.concurrentRequests ?? 6,
         totalRequests: configDefaults.totalRequests ?? 12,
@@ -409,11 +409,11 @@ async function runStressTest(): Promise<void> {
 
   } else {
     // Single provider test mode
-    const providerName = process.env.TEST_PROVIDER ?? 'ollama';
-    const defaultConfig = PROVIDER_CONFIGS[providerName] ?? PROVIDER_CONFIGS.ollama;
+    const providerName = process.env.TEST_PROVIDER ?? 'candle';
+    const defaultConfig = PROVIDER_CONFIGS[providerName] ?? PROVIDER_CONFIGS.candle;
 
     const config: StressTestConfig = {
-      provider: process.env.TEST_PROVIDER ?? defaultConfig.provider ?? 'ollama',
+      provider: process.env.TEST_PROVIDER ?? defaultConfig.provider ?? 'candle',
       model: process.env.TEST_MODEL ?? defaultConfig.model ?? 'phi3:mini',
       concurrentRequests: parseInt(process.env.TEST_CONCURRENCY ?? String(defaultConfig.concurrentRequests ?? 6)),
       totalRequests: parseInt(process.env.TEST_TOTAL ?? String(defaultConfig.totalRequests ?? 12)),

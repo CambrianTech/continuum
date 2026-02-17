@@ -29,7 +29,7 @@ describe('SemanticCompressionAdapter', () => {
     mockPersona = {
       generateText: vi.fn().mockResolvedValue('Mocked synthesis result'),
       modelConfig: {
-        provider: 'ollama',
+        provider: 'candle',
         model: 'llama3.2:3b',
         temperature: 0.3,
         maxTokens: 200

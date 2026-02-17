@@ -101,9 +101,9 @@ export class SemanticCompressionAdapter extends MemoryConsolidationAdapter {
     let embeddingsSkipped = 0;
 
     for (const memory of memories) {
-      // NOTE: Rust embeddings are fast (~5ms each) and independent of Ollama queue.
-      // Do NOT apply Ollama-based backpressure here - Rust worker handles its own load.
-      // Backpressure was incorrectly blocking embeddings when Ollama was busy.
+      // NOTE: Rust embeddings are fast (~5ms each) and independent of AI inference queue.
+      // Do NOT apply inference-based backpressure here - Rust worker handles its own load.
+      // Backpressure was incorrectly blocking embeddings when inference was busy.
 
       try {
         // Generate embedding directly via Rust worker (fast, ~5ms)

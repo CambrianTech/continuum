@@ -5,7 +5,7 @@
  * enabling intelligent model selection based on real-time complexity assessment.
  *
  * **Purpose**: Democratize AI by routing messages to appropriate model tiers:
- * - Start with cheap/free models (local Ollama)
+ * - Start with cheap/free models (local Candle)
  * - Detect complexity indicators during generation
  * - Upgrade to capable models only when needed
  * - Cost proportional to actual cognitive load required
@@ -21,7 +21,7 @@
  *
  * Determines routing to appropriate model tier:
  * - straightforward → local-fast (qwen2.5:7b, free)
- * - moderate → ollama-capable (llama3.1:70b, free)
+ * - moderate → local-capable (Llama-3.1-70B, free)
  * - nuanced → api-premium (Claude 3.5 Sonnet, $0.003/msg)
  */
 export type ComplexityLevel = 'straightforward' | 'moderate' | 'nuanced';
@@ -31,14 +31,14 @@ export type ComplexityLevel = 'straightforward' | 'moderate' | 'nuanced';
  *
  * Ordered by cost and capability:
  * 1. local-fast: M1+ hardware, 7B models (qwen2.5:7b) - FREE
- * 2. ollama-capable: M1 Pro+ hardware, 70B models (llama3.1:70b) - FREE
+ * 2. local-capable: M1 Pro+ hardware, 70B models (Llama-3.1-70B) - FREE
  * 3. api-cheap: External APIs (deepseek-chat, groq) - $0.0001-0.001/msg
  * 4. api-premium: Premium APIs (Claude, GPT-4) - $0.003-0.005/msg
  *
  * Progressive scoring may trigger upgrades within session:
- * local-fast → ollama-capable → api-cheap → api-premium
+ * local-fast → local-capable → api-cheap → api-premium
  */
-export type ModelTier = 'local-fast' | 'ollama-capable' | 'api-cheap' | 'api-premium';
+export type ModelTier = 'local-fast' | 'local-capable' | 'api-cheap' | 'api-premium';
 
 /**
  * Assessment result from complexity classifier
@@ -200,9 +200,9 @@ export const DEFAULT_PROGRESSIVE_SCORER_CONFIG: ProgressiveScorerConfig = {
  * Ordered by preference (try first option, fallback to next)
  */
 export const ROUTING_MAP: Record<ComplexityLevel, ModelTier[]> = {
-  straightforward: ['local-fast', 'ollama-capable', 'api-cheap'],
-  moderate: ['ollama-capable', 'api-cheap', 'api-premium'],
-  nuanced: ['api-premium', 'api-cheap', 'ollama-capable']
+  straightforward: ['local-fast', 'local-capable', 'api-cheap'],
+  moderate: ['local-capable', 'api-cheap', 'api-premium'],
+  nuanced: ['api-premium', 'api-cheap', 'local-capable']
 };
 
 /**
@@ -223,7 +223,7 @@ export function getRecommendedTiers(level: ComplexityLevel): ModelTier[] {
  * @returns True if upgrade follows valid progression
  */
 export function isValidUpgrade(from: ModelTier, to: ModelTier): boolean {
-  const tierOrder: ModelTier[] = ['local-fast', 'ollama-capable', 'api-cheap', 'api-premium'];
+  const tierOrder: ModelTier[] = ['local-fast', 'local-capable', 'api-cheap', 'api-premium'];
   const fromIndex = tierOrder.indexOf(from);
   const toIndex = tierOrder.indexOf(to);
 
@@ -240,8 +240,8 @@ export function isValidUpgrade(from: ModelTier, to: ModelTier): boolean {
 export function getNextTier(current: ModelTier): ModelTier | null {
   switch (current) {
     case 'local-fast':
-      return 'ollama-capable';
-    case 'ollama-capable':
+      return 'local-capable';
+    case 'local-capable':
       return 'api-cheap';
     case 'api-cheap':
       return 'api-premium';

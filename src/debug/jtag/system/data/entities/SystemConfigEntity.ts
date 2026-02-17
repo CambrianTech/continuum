@@ -13,8 +13,8 @@
  * Examples:
  * - system/scheduling/timings/adapter-health-check = 30000
  * - system/scheduling/policies/ai-count-scaling = 'sqrt'
- * - system/ai/providers/ollama/enabled = true
- * - system/ai/providers/ollama/max-concurrent = 4
+ * - system/ai/providers/candle/enabled = true
+ * - system/ai/providers/candle/max-concurrent = 4
  * - system/ui/theme/dark-mode = true
  * - system/ui/chat/max-history = 100
  *
@@ -73,7 +73,7 @@ export interface SettingMetadata {
  * Hierarchical setting path structure
  * Examples:
  * - "system/scheduling/timings/adapter-health-check"
- * - "system/ai/providers/ollama/enabled"
+ * - "system/ai/providers/candle/enabled"
  */
 export interface SettingNode {
   path: string;                    // Full path (e.g., "system/scheduling/timings/adapter-health-check")

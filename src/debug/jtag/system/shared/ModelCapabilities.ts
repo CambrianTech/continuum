@@ -295,9 +295,6 @@ export enum InferenceRuntime {
   /** Text Generation Inference — HuggingFace serving, optimized */
   TGI = 'tgi',
 
-  /** Ollama — wrapper around llama.cpp with model management */
-  OLLAMA = 'ollama',
-
   /** Cloud API — opaque, no local execution */
   CLOUD_API = 'cloud_api',
 }

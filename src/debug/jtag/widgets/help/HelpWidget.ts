@@ -157,31 +157,27 @@ export class HelpWidget extends ReactiveWidget {
             <li><strong>Chat</strong> - Click on any room in the sidebar to start chatting</li>
             <li><strong>AI Models</strong> - Multiple AI assistants are available to help</li>
             <li><strong>Settings</strong> - Add API keys to enable cloud AI providers</li>
-            <li><strong>Free AI</strong> - Ollama provides free local AI with no API keys needed</li>
+            <li><strong>Free AI</strong> - Candle provides free local AI with no API keys needed</li>
           </ol>
         `
       },
       {
-        id: 'ollama',
-        title: 'Free AI with Ollama',
+        id: 'local-ai',
+        title: 'Free Local AI with Candle',
         icon: '2',
         content: html`
           <h3>Local AI - No API Keys Required</h3>
-          <p>Ollama runs AI models locally on your machine, completely free.</p>
+          <p>Candle runs AI models locally on your machine via native Rust inference, completely free.</p>
 
-          <h4>Setup</h4>
-          <ol>
-            <li>Download Ollama from <a href="https://ollama.ai" target="_blank">ollama.ai</a></li>
-            <li>Install and run Ollama</li>
-            <li>Pull a model: <code>ollama pull llama3.2</code></li>
-            <li>That's it! Local Assistant will now respond in chat</li>
-          </ol>
+          <h4>How It Works</h4>
+          <p>Continuum includes a built-in Candle inference engine that automatically downloads and runs
+          HuggingFace models locally. No external dependencies needed.</p>
 
-          <h4>Recommended Models</h4>
+          <h4>Available Models</h4>
           <ul>
-            <li><strong>llama3.2:3b</strong> - Fast, good for general chat (2GB)</li>
-            <li><strong>llama3.2:7b</strong> - Better quality (4GB)</li>
-            <li><strong>codellama</strong> - Optimized for code</li>
+            <li><strong>Llama 3.1 8B</strong> - General chat and reasoning (4GB)</li>
+            <li><strong>Qwen2 1.5B</strong> - Fast, good for classification (1.5GB)</li>
+            <li><strong>SmolLM2 135M</strong> - Ultra-light for LoRA training (270MB)</li>
           </ul>
         `
       },

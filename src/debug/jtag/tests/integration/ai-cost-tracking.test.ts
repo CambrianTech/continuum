@@ -64,12 +64,12 @@ async function testPricingManagerStaticPricing(): Promise<void> {
     throw new Error('❌ Failed to load DeepSeek R1 pricing');
   }
 
-  // Test Ollama (free, wildcard pricing)
-  const ollamaPricing = pricingManager.getModelPricing('ollama', 'llama-3.2-vision');
-  console.log(`✅ Ollama pricing loaded (wildcard):`, ollamaPricing);
+  // Test Candle (free, wildcard pricing)
+  const candlePricing = pricingManager.getModelPricing('candle', 'llama-3.2-vision');
+  console.log(`✅ Candle pricing loaded (wildcard):`, candlePricing);
 
-  if (!ollamaPricing || ollamaPricing.inputPer1M !== 0 || ollamaPricing.outputPer1M !== 0) {
-    throw new Error('❌ Ollama should have $0 pricing (local inference)');
+  if (!candlePricing || candlePricing.inputPer1M !== 0 || candlePricing.outputPer1M !== 0) {
+    throw new Error('❌ Candle should have $0 pricing (local inference)');
   }
 
   console.log('✅ All static pricing tests passed');

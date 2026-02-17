@@ -4,8 +4,8 @@
  * Communicates with continuum-core over Unix socket.
  * Uses fastembed (ONNX-based) for native embedding generation without HTTP overhead.
  *
- * Performance: ~5ms per embedding (vs ~80ms via Ollama HTTP)
- * Batch: 100 texts in ~100ms (vs ~8s via Ollama HTTP)
+ * Performance: ~5ms per embedding (vs ~80ms via HTTP-based providers)
+ * Batch: 100 texts in ~100ms (vs ~8s via HTTP-based providers)
  *
  * PROTOCOL (continuum-core length-prefixed framing):
  * - Requests: JSON (newline-delimited)
@@ -43,7 +43,7 @@ export type RustEmbeddingModel =
   | 'AllMiniLML6V2Q'    // 384 dims, quantized, fastest
   | 'BGESmallENV15'     // 384 dims, better quality
   | 'BGEBaseENV15'      // 768 dims, high quality
-  | 'NomicEmbedTextV15'; // 768 dims, same as Ollama nomic-embed-text
+  | 'NomicEmbedTextV15'; // 768 dims, same as nomic-embed-text
 
 /** Model info returned by worker */
 export interface RustModelInfo {

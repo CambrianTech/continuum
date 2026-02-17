@@ -40,12 +40,12 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   readonly providerId = 'peft';
 
   /**
-   * Ollama → HuggingFace model name mapping
+   * Legacy short name → HuggingFace model name mapping
    *
-   * Maps common Ollama model names to their HuggingFace equivalents.
-   * PEFT trains on HuggingFace models, but personas may use Ollama names.
+   * Maps common short model names to their HuggingFace equivalents.
+   * PEFT trains on HuggingFace models, but configs may use short names.
    */
-  private static readonly OLLAMA_TO_HF: Record<string, string> = {
+  private static readonly SHORT_NAME_TO_HF: Record<string, string> = {
     // Llama 3.2 variants
     'llama3.2:3b': 'meta-llama/Llama-3.2-3B-Instruct',
     'llama3.2:1b': 'meta-llama/Llama-3.2-1B-Instruct',
@@ -73,12 +73,12 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   };
 
   /**
-   * Map Ollama model name to HuggingFace model name
+   * Map short model name to HuggingFace model name
    * If no mapping exists, returns the original (might be a HF name already)
    */
-  private mapModelName(ollamaName: string): string {
-    const normalized = ollamaName.toLowerCase().trim();
-    return PEFTLoRAAdapter.OLLAMA_TO_HF[normalized] || ollamaName;
+  private mapModelName(shortName: string): string {
+    const normalized = shortName.toLowerCase().trim();
+    return PEFTLoRAAdapter.SHORT_NAME_TO_HF[normalized] || shortName;
   }
 
   /**
@@ -138,7 +138,7 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       estimatedTrainingTime: 25, // 25ms per example per epoch (GPU estimate)
 
       // Model support (PEFT supports any HuggingFace transformers model)
-      // Includes both Ollama names and their HuggingFace equivalents
+      // Includes both legacy short names and their HuggingFace equivalents
       // Validation is disabled - any transformers model works
       supportedBaseModels: undefined, // Accept any model - PEFT supports all transformers models
 
@@ -162,7 +162,7 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
 
     const startTime = Date.now();
 
-    // Map Ollama model name to HuggingFace (PEFT requires HF model names)
+    // Map short model name to HuggingFace (PEFT requires HF model names)
     const hfModelName = this.mapModelName(request.baseModel);
     const wasRemapped = hfModelName !== request.baseModel;
 
@@ -405,17 +405,6 @@ print("Training complete!")
     await fs.promises.copyFile(ggufPath, adapterPath);
 
     return adapterPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Get Ollama model name for loading adapter
-   *
-   * @private
-   */
-  /*
-  private getOllamaModelName(request: LoRATrainingRequest): string {
-    return `${request.personaName}-${request.traitType}`;
   }
   */
 

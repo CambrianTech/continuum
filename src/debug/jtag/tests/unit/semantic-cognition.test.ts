@@ -687,7 +687,7 @@ describe('ModelCapabilities — Adapter Profile Type System', () => {
       expect(InferenceRuntime.CANDLE).toBe('candle');
       expect(InferenceRuntime.LLAMA_CPP).toBe('llama_cpp');
       expect(InferenceRuntime.MLX).toBe('mlx');
-      expect(InferenceRuntime.OLLAMA).toBe('ollama');
+      expect(InferenceRuntime.CANDLE).toBe('candle');
     });
 
     it('should have all expected accelerators', () => {

@@ -37,7 +37,7 @@
  *
  *   3. Selection query: "give me the best model for this recipe on this hardware"
  *      - Filters by capability, ranks by speed/quality/cost tradeoff
- *      - Works across local (Candle/Ollama) and cloud (REST APIs) uniformly
+ *      - Works across local (Candle) and cloud (REST APIs) uniformly
  *
  *   4. Users with varied hardware (M1 vs RTX 4090 vs cloud-only) get automatically
  *      matched to the best available model without manual configuration.

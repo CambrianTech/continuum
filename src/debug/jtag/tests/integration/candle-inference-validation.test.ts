@@ -6,7 +6,7 @@
  * Comprehensive integration tests for Candle (native Rust) inference.
  * Validates inference works correctly across different models and configurations.
  *
- * Candle is the ONLY local inference path - Ollama is removed.
+ * Candle is the ONLY local inference path.
  *
  * Test Coverage:
  * 1. Basic inference with default model (Qwen2-1.5B)
@@ -92,8 +92,8 @@ describe('Candle Inference Validation', () => {
   });
 
   describe('Model Mapping', () => {
-    test('should map Ollama-style model names to HuggingFace IDs', async () => {
-      console.log('\n🧪 TEST: Model name mapping (legacy Ollama -> HuggingFace)');
+    test('should map legacy model names to HuggingFace IDs', async () => {
+      console.log('\n🧪 TEST: Model name mapping (legacy short names -> HuggingFace)');
       console.log('==========================================================');
 
       const adapter = AIProviderDaemon.getAdapter('candle');
@@ -226,33 +226,16 @@ describe('Candle Inference Validation', () => {
   });
 
   describe('Provider Aliasing', () => {
-    test('should route "ollama" provider to "candle" (backward compatibility)', async () => {
-      console.log('\n🧪 TEST: Provider aliasing (ollama -> candle)');
-      console.log('=============================================');
+    test('should have candle adapter available', async () => {
+      console.log('\n🧪 TEST: Candle adapter availability');
+      console.log('====================================');
 
-      // Legacy code might still reference 'ollama' provider
-      // AIProviderDaemon should route it to 'candle'
-      const ollamaAdapter = AIProviderDaemon.getAdapter('ollama');
       const candleAdapter = AIProviderDaemon.getAdapter('candle');
 
-      // Both should work (aliased)
-      console.log(`   ollama adapter: ${ollamaAdapter ? 'available' : 'null'}`);
       console.log(`   candle adapter: ${candleAdapter ? 'available' : 'null'}`);
 
-      // At least candle should be available
+      // Candle should be available
       expect(candleAdapter).toBeDefined();
-
-      // If ollama adapter exists (via aliasing), it should work too
-      if (ollamaAdapter) {
-        const result = await ollamaAdapter.generateText({
-          messages: [{ role: 'user', content: 'Test aliasing' }],
-          model: 'llama3.2:1b',
-          temperature: 0.7,
-          maxTokens: 10,
-        });
-        console.log(`   ✅ ollama alias works: "${result.text.substring(0, 30)}..."`);
-        expect(result.text).toBeDefined();
-      }
     }, 60000);
   });
 });

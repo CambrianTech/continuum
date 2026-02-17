@@ -193,7 +193,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     let modelInfo = '';
     let modelBadge = '';
     if (user.type === 'persona' || user.type === 'agent') {
-      const provider = user.modelConfig?.provider || (user.personaConfig?.responseModel ? 'ollama' : '');
+      const provider = user.modelConfig?.provider || (user.personaConfig?.responseModel ? 'candle' : '');
       const model = user.modelConfig?.model || user.personaConfig?.responseModel || '';
       if (provider && model) {
         modelInfo = `${provider}/${model}`;
@@ -221,7 +221,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
         'persona-xai': 85,
         'persona-together': 77,
         'persona-fireworks': 80,
-        'persona-ollama': 70,
+        'persona-candle': 70,
         'persona-sentinel': 92
       };
       intelligenceLevel = demoLevels[user.uniqueId] ?? 75;
@@ -570,7 +570,7 @@ export class UserListWidget extends ReactiveListWidget<UserEntity> {
     }).join('');
 
     const hasLearning = user.personaConfig?.trainingMode === 'learning';
-    const isCloud = user.modelConfig?.provider !== 'ollama';
+    const isCloud = user.modelConfig?.provider !== 'candle';
     const hasRAG = user.modelConfig?.ragCertified === true;
     const hasGenome = user.genomeId !== undefined;
 

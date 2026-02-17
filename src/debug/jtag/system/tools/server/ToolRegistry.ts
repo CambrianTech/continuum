@@ -428,7 +428,7 @@ export class ToolRegistry {
     try {
       const response = await AIProviderDaemon.createEmbedding({
         input: texts,
-        model: 'nomic-embed-text', // Local Ollama, fast
+        model: 'nomic-embed-text', // Local embedding, fast
       });
 
       // Cache results

@@ -10,7 +10,7 @@
  * - 'native' (Anthropic, OpenAI, Together, Groq): Produces metadata.nativeToolSpecs
  *   for the JSON tools[] request parameter. Budget-aware — drops lowest-priority
  *   tools if they exceed the allocated budget.
- * - 'xml' (DeepSeek, Candle, Ollama, etc.): Produces systemPromptSection with
+ * - 'xml' (DeepSeek, Candle, etc.): Produces systemPromptSection with
  *   XML-formatted tool definitions, prioritized then truncated to budget.
  *   Essential tools (collaboration/chat, code/*) are kept; lowest-priority dropped.
  * - 'none': Not applicable — returns nothing. Must be explicitly set.
@@ -138,7 +138,7 @@ export class ToolDefinitionsSource implements RAGSource {
   }
 
   /**
-   * XML tool providers (DeepSeek, Candle, Ollama, etc.):
+   * XML tool providers (DeepSeek, Candle, etc.):
    * Produce systemPromptSection with formatted tool definitions, budget-truncated.
    *
    * CRITICAL: Prioritize BEFORE truncation. Previously, tools were truncated from

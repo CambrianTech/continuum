@@ -13,8 +13,8 @@
  * - memoryBudget = RAM limit
  * - LRU eviction = page replacement algorithm
  *
- * This is Phase 6 - adapter paging WITHOUT actual Ollama training
- * Phase 7 will add real fine-tuning integration
+ * This is Phase 6 - adapter paging with PEFT/Candle training integration
+ * Phase 7 will add continuous learning
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -47,7 +47,7 @@ export interface PersonaGenomeConfig {
     path: string;
     sizeMB: number;
     priority?: number;
-    ollamaModelName?: string;
+    trainedModelName?: string;
   }>;
 }
 
@@ -97,7 +97,7 @@ export class PersonaGenome {
   private log: (message: string) => void;
 
   /**
-   * AI Provider adapter for actual skill loading (CandleAdapter, OllamaAdapter, etc.)
+   * AI Provider adapter for actual skill loading (CandleAdapter, etc.)
    * When set, LoRAAdapter.load() will call aiProvider.applySkill() for real adapter loading.
    * Without this, adapters run in stub mode (just tracking state, no real GPU loading).
    */
@@ -185,7 +185,7 @@ export class PersonaGenome {
         priority: state.priority,
         is_loaded: true,
         last_used_ms: state.lastUsed,
-        ollama_model_name: state.ollamaModelName ?? undefined,
+        ollama_model_name: state.trainedModelName ?? undefined,
       });
     }
 
@@ -198,7 +198,7 @@ export class PersonaGenome {
         priority: state.priority,
         is_loaded: false,
         last_used_ms: state.lastUsed,
-        ollama_model_name: state.ollamaModelName ?? undefined,
+        ollama_model_name: state.trainedModelName ?? undefined,
       });
     }
 
@@ -232,7 +232,7 @@ export class PersonaGenome {
     path: string;
     sizeMB: number;
     priority?: number;
-    ollamaModelName?: string;
+    trainedModelName?: string;
   }): void {
     const adapter = new LoRAAdapter({
       id: generateUUID() as UUID,
@@ -241,14 +241,14 @@ export class PersonaGenome {
       path: config.path,
       sizeMB: config.sizeMB,
       priority: config.priority,
-      ollamaModelName: config.ollamaModelName,
+      trainedModelName: config.trainedModelName,
       aiProvider: this.aiProvider ?? undefined, // Pass provider for real loading
       logger: this.log
     });
 
     this.availableAdapters.set(config.name, adapter);
 
-    const modelInfo = config.ollamaModelName ? `, ollama=${config.ollamaModelName}` : '';
+    const modelInfo = config.trainedModelName ? `, trained=${config.trainedModelName}` : '';
     const providerInfo = this.aiProvider ? ` [${this.aiProvider.providerId}]` : ' [stub mode]';
     this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB${modelInfo})${providerInfo}`);
   }
@@ -402,7 +402,7 @@ export class PersonaGenome {
    * Enable fine-tuning mode for the current adapter
    *
    * Phase 6: Stubbed - no actual training yet
-   * Phase 7: Will enable gradient accumulation in Ollama
+   * Phase 7: Will enable continuous learning with PEFT
    */
   async enableLearningMode(skillName: string): Promise<void> {
     if (!this.activeAdapters.has(skillName)) {
@@ -421,7 +421,7 @@ export class PersonaGenome {
    * Disable fine-tuning mode for the current adapter
    *
    * Phase 6: Stubbed - no actual training yet
-   * Phase 7: Will save updated weights to disk
+   * Phase 7: Will save updated adapter weights to disk
    */
   async disableLearningMode(skillName: string): Promise<void> {
     if (!this.activeAdapters.has(skillName)) {

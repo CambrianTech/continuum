@@ -823,7 +823,7 @@ export function getToolCapability(
 
   // All other providers get XML tool definitions in the system prompt.
   // Models that can't use them will ignore them; models that can (DeepSeek,
-  // fine-tuned Candle, Ollama) benefit from having tools available.
+  // fine-tuned Candle, local models) benefit from having tools available.
   // Budget-aware: ToolDefinitionsSource truncates for tight context windows.
   return 'xml';
 }

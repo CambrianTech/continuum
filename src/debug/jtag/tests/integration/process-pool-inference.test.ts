@@ -7,7 +7,7 @@
  * ProcessPool.executeInference() -> IPC -> inference-worker.ts -> CandleAdapter -> Response
  *
  * This tests what production actually uses, not just lifecycle management.
- * Candle is the ONLY local inference path (Ollama removed).
+ * Candle is the ONLY local inference path.
  */
 
 import * as path from 'path';

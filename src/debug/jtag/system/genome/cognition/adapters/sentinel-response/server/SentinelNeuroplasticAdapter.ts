@@ -6,7 +6,7 @@
  * ALL cognition tasks, not just response decisions.
  *
  * Architecture:
- * - Sentinel-AI runs as separate server (like Ollama)
+ * - Sentinel-AI runs as separate server
  * - Uses U-Net or other neuroplastic architecture
  * - Continuously learns from feedback without full retraining
  * - Can be fine-tuned per-persona with LoRA layers
@@ -178,7 +178,7 @@ export class SentinelNeuroplasticAdapter implements ISentinelResponseAdapter {
  * INTEGRATION NOTES:
  *
  * 1. Sentinel-AI Server Setup:
- *    - Runs on port 11435 (like Ollama but different service)
+ *    - Runs on port 11435
  *    - Exposes REST API for cognition tasks
  *    - Handles continuous learning internally
  *

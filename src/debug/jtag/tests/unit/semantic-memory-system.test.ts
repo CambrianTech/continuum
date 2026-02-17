@@ -32,7 +32,7 @@ vi.mock('../../daemons/data-daemon/shared/DataDaemon', () => ({
       success: true,
       data: {
         embedding: Array(384).fill(0).map(() => Math.random()), // 384-dim mock embedding
-        model: { name: 'all-minilm', dimensions: 384, provider: 'ollama' }
+        model: { name: 'all-minilm', dimensions: 384, provider: 'fastembed' }
       }
     }),
     vectorSearch: vi.fn().mockResolvedValue({

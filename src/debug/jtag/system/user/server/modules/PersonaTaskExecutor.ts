@@ -42,7 +42,7 @@ export class PersonaTaskExecutor {
     private readonly displayName: string,
     private readonly memory: PersonaMemory,
     private readonly personaState: PersonaStateManager,
-    private readonly provider: string = 'ollama',
+    private readonly provider: string = 'candle',
     logger?: (message: string) => void
   ) {
     this.log = logger || console.log.bind(console);
@@ -534,12 +534,11 @@ export class PersonaTaskExecutor {
       };
 
       // 4. Get the appropriate fine-tuning adapter
-      // PEFT is preferred for local training (ollama, local) as it:
-      // - Supports any HuggingFace model (not just Ollama)
+      // PEFT is preferred for local training (candle, local) as it:
+      // - Supports any HuggingFace model
       // - Enables multi-adapter composition (genome vision)
       // - Works cross-platform (MPS/CUDA/CPU)
-      // - Doesn't require external binaries (llama.cpp finetune)
-      const localProviders = ['ollama', 'local', 'peft'];
+      const localProviders = ['candle', 'local', 'peft'];
       const effectiveProvider = localProviders.includes(this.provider.toLowerCase()) ? 'peft' : this.provider;
       const adapter = getFineTuningAdapter(effectiveProvider);
 
@@ -564,12 +563,10 @@ export class PersonaTaskExecutor {
           path: result.modelPath,
           sizeMB: 50, // Estimate - actual size varies
           priority: 0.5,
-          ollamaModelName: result.ollamaModelName // NEW: Registered Ollama model for inference
         });
 
-        const modelInfo = result.ollamaModelName ? ` → Ollama model: ${result.ollamaModelName}` : '';
-        this.log(`✅ ${this.displayName}: LoRA training complete! Adapter saved: ${result.modelPath}${modelInfo}`);
-        return `Fine-tuning complete for ${loraLayer}: ${result.metrics?.examplesProcessed || 0} examples, loss=${result.metrics?.finalLoss?.toFixed(4) || 'N/A'}${modelInfo}`;
+        this.log(`✅ ${this.displayName}: LoRA training complete! Adapter saved: ${result.modelPath}`);
+        return `Fine-tuning complete for ${loraLayer}: ${result.metrics?.examplesProcessed || 0} examples, loss=${result.metrics?.finalLoss?.toFixed(4) || 'N/A'}`;
       } else {
         this.log(`❌ ${this.displayName}: LoRA training failed: ${result.error}`);
         return `Fine-tuning failed for ${loraLayer}: ${result.error}`;

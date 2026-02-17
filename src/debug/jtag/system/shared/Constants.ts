@@ -154,9 +154,9 @@ export const MODEL_IDS = {
  * ⚠️ All model mappings, preloads, and defaults come from here
  * ⚠️ CandleAdapter reads from here - DO NOT duplicate mappings elsewhere
  *
- * OLLAMA IS REMOVED: Candle is the ONLY local inference path.
+ * Candle is the ONLY local inference path.
  * The model name mappings below exist for backward compatibility with
- * configs that reference Ollama-style names like 'llama3.2:3b'.
+ * configs that reference legacy short names like 'llama3.2:3b'.
  *
  * Note: Using Qwen models as defaults because Meta's Llama requires HuggingFace access approval
  * To use real Llama: accept license at https://huggingface.co/meta-llama

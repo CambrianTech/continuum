@@ -152,7 +152,7 @@ export class TrainingSessionEntity extends BaseEntity {
   baseModel!: string;
 
   /**
-   * Provider name (e.g., 'openai', 'fireworks', 'mistral', 'together', 'ollama')
+   * Provider name (e.g., 'openai', 'fireworks', 'mistral', 'together', 'peft')
    */
   @TextField()
   provider!: string;

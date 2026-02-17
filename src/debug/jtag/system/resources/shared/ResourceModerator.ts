@@ -132,9 +132,9 @@ export abstract class ResourceModerator {
  * - FIFO request queue
  */
 export class MechanicalResourceModerator extends ResourceModerator {
-  private readonly GPU_QUOTA_OLLAMA = 2048;     // 2GB per Ollama adapter
+  private readonly GPU_QUOTA_LOCAL = 2048;      // 2GB per local adapter
   private readonly GPU_QUOTA_API = 0;           // API adapters use no GPU
-  private readonly MAX_WORKERS_OLLAMA = 1;      // 1 worker per Ollama (synchronous)
+  private readonly MAX_WORKERS_LOCAL = 1;       // 1 worker per local model (synchronous)
   private readonly MAX_WORKERS_API = 5;         // 5 concurrent API calls
   private readonly FAILURE_THRESHOLD = 0.5;     // 50% failure rate = throttle
   private readonly THROTTLE_DURATION = 60000;   // 1 minute throttle
@@ -290,22 +290,22 @@ export class MechanicalResourceModerator extends ResourceModerator {
     const adapter = context.adapters.get(adapterId);
     if (!adapter) return 0;
 
-    // Simple heuristic: Ollama adapters get GPU, API adapters don't
-    const isOllama = adapter.displayName.toLowerCase().includes('ollama') ||
-                     adapter.displayName.toLowerCase().includes('local');
+    // Simple heuristic: Local adapters get GPU, API adapters don't
+    const isLocal = adapter.displayName.toLowerCase().includes('candle') ||
+                    adapter.displayName.toLowerCase().includes('local');
 
-    return isOllama ? this.GPU_QUOTA_OLLAMA : this.GPU_QUOTA_API;
+    return isLocal ? this.GPU_QUOTA_LOCAL : this.GPU_QUOTA_API;
   }
 
   calculateMaxWorkers(adapterId: UUID, context: ResourceContext): number {
     const adapter = context.adapters.get(adapterId);
     if (!adapter) return 0;
 
-    // Simple heuristic: Ollama = 1 worker, API = 5 workers
-    const isOllama = adapter.displayName.toLowerCase().includes('ollama') ||
-                     adapter.displayName.toLowerCase().includes('local');
+    // Simple heuristic: Local = 1 worker, API = 5 workers
+    const isLocal = adapter.displayName.toLowerCase().includes('candle') ||
+                    adapter.displayName.toLowerCase().includes('local');
 
-    return isOllama ? this.MAX_WORKERS_OLLAMA : this.MAX_WORKERS_API;
+    return isLocal ? this.MAX_WORKERS_LOCAL : this.MAX_WORKERS_API;
   }
 
   shouldThrottle(adapterId: UUID, context: ResourceContext): {

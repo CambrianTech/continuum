@@ -669,7 +669,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         activeAdapters: request.activeAdapters?.map(a => ({ name: a.name, path: a.path }))
       });
 
-      // Wrap generation call with timeout (180s - generous limit for local Ollama/Sentinel generation)
+      // Wrap generation call with timeout (180s - generous limit for local Candle/Sentinel generation)
       // gpt2 on CPU needs ~60-90s for 100-150 tokens, 180s provides comfortable margin
       // Queue can handle 4 concurrent requests, so 180s allows slower hardware to complete
       const GENERATION_TIMEOUT_MS = 180000;
@@ -960,7 +960,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
             messages.push({ role: 'user' as const, content: toolResultContent });
 
           } else if (hasXmlToolCalls) {
-            // ── XML path for non-native providers (DeepSeek, Ollama, Candle) ──
+            // ── XML path for non-native providers (DeepSeek, Candle, local) ──
             // Parse XML tool calls, execute, return results as text
             const xmlToolCalls = parsed!.toolCalls;
 
