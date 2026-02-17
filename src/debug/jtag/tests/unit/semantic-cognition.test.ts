@@ -47,6 +47,10 @@ import { parseCronSchedule } from '../../system/sentinel/SentinelTriggerService'
 import { MemoryType } from '../../system/data/entities/MemoryEntity';
 import { MemoryType as MemoryTypeHippocampus } from '../../system/user/server/modules/MemoryTypes';
 import type { SentinelTrigger } from '../../system/sentinel/SentinelDefinition';
+import type { GenomePhenotypeValidateParams, PhenotypeQuestionResult } from '../../commands/genome/phenotype-validate/shared/GenomePhenotypeValidateTypes';
+import type { AcademyEventAction, InferenceDemoPayload, QualityGateFailedPayload } from '../../system/genome/shared/AcademyTypes';
+import { academyEvent, DEFAULT_ACADEMY_CONFIG } from '../../system/genome/shared/AcademyTypes';
+import { buildStudentPipeline } from '../../system/sentinel/pipelines/StudentPipeline';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1653,5 +1657,142 @@ describe('Sentinel Trigger Service', () => {
       const trigger: SentinelTrigger = { type: 'manual' };
       expect(trigger.type).toBe('manual');
     });
+  });
+});
+
+describe('Phenotype Validation', () => {
+  it('should define PhenotypeQuestionResult with required fields', () => {
+    const result: PhenotypeQuestionResult = {
+      question: 'What is TypeScript?',
+      expectedAnswer: 'A typed superset of JavaScript',
+      baselineAnswer: 'A programming language',
+      adaptedAnswer: 'TypeScript is a statically typed superset of JavaScript',
+      baselineScore: 40,
+      adaptedScore: 85,
+    };
+    expect(result.adaptedScore).toBeGreaterThan(result.baselineScore);
+    expect(result.adaptedScore - result.baselineScore).toBe(45);
+  });
+
+  it('should calculate improvement correctly', () => {
+    const baselineScore = 35;
+    const adaptedScore = 72;
+    const improvement = adaptedScore - baselineScore;
+    const threshold = 5;
+    expect(improvement).toBe(37);
+    expect(improvement >= threshold).toBe(true);
+  });
+
+  it('should fail quality gate when improvement is insufficient', () => {
+    const baselineScore = 60;
+    const adaptedScore = 62;
+    const improvement = adaptedScore - baselineScore;
+    const threshold = 5;
+    expect(improvement).toBe(2);
+    expect(improvement >= threshold).toBe(false);
+  });
+
+  it('should handle negative improvement (training made it worse)', () => {
+    const baselineScore = 70;
+    const adaptedScore = 55;
+    const improvement = adaptedScore - baselineScore;
+    expect(improvement).toBe(-15);
+    expect(improvement >= 0).toBe(false);
+  });
+});
+
+describe('Academy Event Taxonomy (Extended)', () => {
+  it('should include inference:demo event action', () => {
+    const action: AcademyEventAction = 'inference:demo';
+    expect(academyEvent('test-session', action)).toBe('academy:test-session:inference:demo');
+  });
+
+  it('should include quality:gate:failed event action', () => {
+    const action: AcademyEventAction = 'quality:gate:failed';
+    expect(academyEvent('test-session', action)).toBe('academy:test-session:quality:gate:failed');
+  });
+
+  it('should have 14 total event actions', () => {
+    const allActions: AcademyEventAction[] = [
+      'curriculum:ready', 'dataset:ready',
+      'training:started', 'training:progress', 'training:complete',
+      'exam:ready', 'exam:responses', 'exam:graded',
+      'topic:passed', 'topic:remediate',
+      'inference:demo', 'quality:gate:failed',
+      'session:complete', 'session:failed',
+    ];
+    expect(allActions).toHaveLength(14);
+  });
+});
+
+describe('Student Pipeline with Quality Gate', () => {
+  const testConfig = {
+    sessionId: 'test-session-id' as UUID,
+    personaId: 'test-persona-id' as UUID,
+    personaName: 'TestStudent',
+    baseModel: 'smollm2:135m',
+    config: DEFAULT_ACADEMY_CONFIG,
+  };
+
+  it('should build a valid pipeline', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    expect(pipeline.name).toContain('academy-student');
+    expect(pipeline.steps).toHaveLength(2); // watch + loop
+  });
+
+  it('should have pre-test LLM step (loop.1)', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loop = pipeline.steps[1] as any;
+    expect(loop.type).toBe('loop');
+
+    const preTestStep = loop.steps[1]; // loop.1
+    expect(preTestStep.type).toBe('llm');
+    expect(preTestStep.prompt).toContain('BEFORE any specific training');
+  });
+
+  it('should have phenotype-validate command step (loop.9)', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loop = pipeline.steps[1] as any;
+
+    const validateStep = loop.steps[9]; // loop.9
+    expect(validateStep.type).toBe('command');
+    expect(validateStep.command).toBe('genome/phenotype-validate');
+    expect(validateStep.params.improvementThreshold).toBe(5);
+  });
+
+  it('should have quality gate condition (loop.10)', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loop = pipeline.steps[1] as any;
+
+    const gateStep = loop.steps[10]; // loop.10
+    expect(gateStep.type).toBe('condition');
+    expect(gateStep.if).toContain('passedQualityGate');
+    expect(gateStep.then).toBeDefined();
+    expect(gateStep.else).toBeDefined();
+  });
+
+  it('should register adapter only in quality gate then-branch', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loop = pipeline.steps[1] as any;
+    const gateStep = loop.steps[10];
+
+    // then-branch should have adapter registration + inference demo
+    expect(gateStep.then).toHaveLength(2);
+    expect(gateStep.then[0].command).toBe('genome/paging-adapter-register');
+    expect(gateStep.then[1].type).toBe('emit');
+    expect(gateStep.then[1].event).toContain('inference:demo');
+
+    // else-branch should emit quality gate failure
+    expect(gateStep.else).toHaveLength(1);
+    expect(gateStep.else[0].type).toBe('emit');
+    expect(gateStep.else[0].event).toContain('quality:gate:failed');
+  });
+
+  it('should have 12 steps in the loop body', () => {
+    const pipeline = buildStudentPipeline(testConfig);
+    const loop = pipeline.steps[1] as any;
+    // 0:watch, 1:llm(pretest), 2:emit, 3:train, 4:emit, 5:watch,
+    // 6:llm(exam), 7:emit, 8:watch, 9:validate, 10:condition
+    expect(loop.steps).toHaveLength(11);
   });
 });

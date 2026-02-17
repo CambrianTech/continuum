@@ -40,6 +40,8 @@ export type AcademyEventAction =
   | 'exam:graded'
   | 'topic:passed'
   | 'topic:remediate'
+  | 'inference:demo'
+  | 'quality:gate:failed'
   | 'session:complete'
   | 'session:failed';
 
@@ -257,4 +259,29 @@ export interface ExamGradedPayload {
   passed: boolean;
   round: number;
   feedback: string;
+}
+
+export interface InferenceDemoPayload {
+  sessionId: UUID;
+  personaId: UUID;
+  topicIndex: number;
+  topicName: string;
+  baselineScore: number;
+  adaptedScore: number;
+  improvement: number;
+  summary: string;
+  sampleQuestion: string;
+  sampleBaselineAnswer: string;
+  sampleAdaptedAnswer: string;
+}
+
+export interface QualityGateFailedPayload {
+  sessionId: UUID;
+  personaId: UUID;
+  topicIndex: number;
+  topicName: string;
+  baselineScore: number;
+  adaptedScore: number;
+  improvement: number;
+  summary: string;
 }

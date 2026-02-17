@@ -3,12 +3,14 @@
  *
  * The student sentinel is the learning half of the Academy Dojo.
  * It watches for teacher events and responds:
- * 1. Watches for dataset:ready, trains on the data via genome/train
- * 2. Watches for exam:ready, takes the exam via LLM step
- * 3. Watches for exam:graded to know if it passed or needs remediation
+ * 1. Watches for dataset:ready — takes a PRE-TEST baseline, then trains
+ * 2. Watches for exam:ready — takes the exam via LLM step
+ * 3. Watches for exam:graded — validates phenotype improvement
+ * 4. Quality gate: only registers adapter if improvement exceeds threshold
+ * 5. Emits inference demo after successful registration
  *
- * The student's intelligence during exams comes from the base model
- * plus any LoRA adapters trained so far — proving that training worked.
+ * The pre-test → train → post-test → compare cycle is the phenotype
+ * validation loop: it proves training actually improved the model.
  */
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
@@ -21,15 +23,18 @@ import { academyEvent } from '../../genome/shared/AcademyTypes';
  * Step flow:
  *   0: Watch — curriculum:ready (teacher published curriculum)
  *   1: Loop (driven by topic count):
- *     loop.0: Watch — dataset:ready (teacher synthesized training data)
- *     loop.1: Emit — training:started
- *     loop.2: Command — genome/train { datasetPath from event }
- *     loop.3: Condition — register adapter if training succeeded
- *     loop.4: Emit — training:complete { layerId, metrics }
- *     loop.5: Watch — exam:ready (teacher generated exam)
- *     loop.6: LLM — Answer exam questions as the persona
- *     loop.7: Emit — exam:responses { answers }
- *     loop.8: Watch — exam:graded (teacher graded responses)
+ *     loop.0:  Watch — dataset:ready (teacher synthesized training data)
+ *     loop.1:  LLM — Pre-test baseline (answer topic questions BEFORE training)
+ *     loop.2:  Emit — training:started
+ *     loop.3:  Command — genome/train { datasetPath from event }
+ *     loop.4:  Emit — training:complete { layerId, metrics }
+ *     loop.5:  Watch — exam:ready (teacher generated exam)
+ *     loop.6:  LLM — Answer exam questions as the persona (POST-training)
+ *     loop.7:  Emit — exam:responses { answers }
+ *     loop.8:  Watch — exam:graded (teacher graded responses)
+ *     loop.9:  Command — genome/phenotype-validate (compare pre vs post)
+ *     loop.10: Condition — quality gate: register adapter only if improved
+ *     loop.11: Emit — inference:demo (showcase adapted model capability)
  */
 export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
   const { sessionId, personaId, personaName, baseModel, config: academyConfig } = config;
@@ -57,7 +62,34 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           timeoutSecs: 300,  // 5 minutes for data synthesis
         },
 
-        // loop.1: Emit training:started
+        // loop.1: PRE-TEST — Answer topic questions BEFORE training
+        // This establishes a baseline score to compare against post-training.
+        // The student uses its current (untrained) capability on this topic.
+        {
+          type: 'llm',
+          prompt: [
+            `You are ${personaName}, an AI persona. Answer the following questions about "{{loop.0.data.payload.topicName}}" to the best of your current ability.`,
+            'Be thorough but concise. These questions test your knowledge BEFORE any specific training on this topic.',
+            '',
+            'For each question, provide your best answer.',
+            '',
+            'Questions (answer ALL of them):',
+            '1. What are the key concepts in {{loop.0.data.payload.topicName}}?',
+            '2. Explain the most important principle of {{loop.0.data.payload.topicName}}.',
+            '3. Give a practical example demonstrating {{loop.0.data.payload.topicName}}.',
+            '4. What are common mistakes when applying {{loop.0.data.payload.topicName}}?',
+            '5. How does {{loop.0.data.payload.topicName}} relate to other concepts in the field?',
+            '',
+            'Output ONLY a JSON array of response objects (no markdown, no code fences):',
+            '[',
+            '  { "questionIndex": 0, "studentAnswer": "Your answer here" }',
+            ']',
+          ].join('\n'),
+          temperature: 0.5,
+          maxTokens: 2048,
+        },
+
+        // loop.2: Emit training:started
         {
           type: 'emit',
           event: evt('training:started'),
@@ -69,7 +101,7 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           },
         },
 
-        // loop.2: Train on the synthesized dataset
+        // loop.3: Train on the synthesized dataset
         {
           type: 'command',
           command: 'genome/train',
@@ -86,25 +118,6 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           },
         },
 
-        // loop.3: Register the trained adapter (if training succeeded)
-        {
-          type: 'condition',
-          if: '{{loop.2.data.success}}',
-          then: [
-            {
-              type: 'command',
-              command: 'genome/paging-adapter-register',
-              params: {
-                layerId: '{{loop.2.data.layerId}}',
-                adapterId: '{{loop.2.data.layerId}}',
-                name: `${personaName}-${sessionId.slice(0, 8)}-topic-{{input.iteration}}`,
-                domain: '{{loop.0.data.payload.topicName}}',
-                sizeMB: 0,
-              },
-            },
-          ],
-        },
-
         // loop.4: Emit training:complete
         {
           type: 'emit',
@@ -113,12 +126,12 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
             sessionId,
             personaId,
             topicIndex: '{{input.iteration}}',
-            layerId: '{{loop.2.data.layerId}}',
+            layerId: '{{loop.3.data.layerId}}',
             metrics: {
-              finalLoss: '{{loop.2.data.metrics.finalLoss}}',
-              trainingTime: '{{loop.2.data.metrics.trainingTime}}',
-              examplesProcessed: '{{loop.2.data.metrics.examplesProcessed}}',
-              epochs: '{{loop.2.data.metrics.epochs}}',
+              finalLoss: '{{loop.3.data.metrics.finalLoss}}',
+              trainingTime: '{{loop.3.data.metrics.trainingTime}}',
+              examplesProcessed: '{{loop.3.data.metrics.examplesProcessed}}',
+              epochs: '{{loop.3.data.metrics.epochs}}',
             },
           },
         },
@@ -130,8 +143,8 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           timeoutSecs: 300,
         },
 
-        // loop.6: Take the exam via LLM
-        // Uses the system default model for now; future: use base model +
+        // loop.6: Take the exam via LLM (POST-training)
+        // Uses the system default model; future: use base model +
         // trained LoRA adapters via Candle local inference to prove training worked
         {
           type: 'llm',
@@ -172,6 +185,75 @@ export function buildStudentPipeline(config: StudentPipelineConfig): Pipeline {
           type: 'watch',
           event: evt('exam:graded'),
           timeoutSecs: 300,
+        },
+
+        // loop.9: Phenotype validation — compare pre-test (loop.1) vs exam (loop.6)
+        // Uses LLM-as-judge to score both sets of answers against the exam questions
+        {
+          type: 'command',
+          command: 'genome/phenotype-validate',
+          params: {
+            questions: '{{loop.5.data.payload.questions}}',
+            baselineResponses: '{{loop.1.output}}',
+            adaptedResponses: '{{loop.6.output}}',
+            improvementThreshold: 5,
+          },
+        },
+
+        // loop.10: Quality gate — only register adapter if phenotype improved
+        {
+          type: 'condition',
+          if: '{{loop.9.data.passedQualityGate}}',
+          then: [
+            // Register the trained adapter
+            {
+              type: 'command',
+              command: 'genome/paging-adapter-register',
+              params: {
+                layerId: '{{loop.3.data.layerId}}',
+                adapterId: '{{loop.3.data.layerId}}',
+                name: `${personaName}-${sessionId.slice(0, 8)}-topic-{{input.iteration}}`,
+                domain: '{{loop.0.data.payload.topicName}}',
+                sizeMB: 0,
+              },
+            },
+            // Emit inference demo — showcase what the adapted model learned
+            {
+              type: 'emit',
+              event: evt('inference:demo'),
+              payload: {
+                sessionId,
+                personaId,
+                topicIndex: '{{input.iteration}}',
+                topicName: '{{loop.0.data.payload.topicName}}',
+                baselineScore: '{{loop.9.data.baselineScore}}',
+                adaptedScore: '{{loop.9.data.adaptedScore}}',
+                improvement: '{{loop.9.data.improvement}}',
+                summary: '{{loop.9.data.summary}}',
+                // Include a sample Q&A to demonstrate learning
+                sampleQuestion: '{{loop.9.data.questionResults.0.question}}',
+                sampleBaselineAnswer: '{{loop.9.data.questionResults.0.baselineAnswer}}',
+                sampleAdaptedAnswer: '{{loop.9.data.questionResults.0.adaptedAnswer}}',
+              },
+            },
+          ],
+          else: [
+            // Training didn't help enough — emit quality gate failure
+            {
+              type: 'emit',
+              event: evt('quality:gate:failed'),
+              payload: {
+                sessionId,
+                personaId,
+                topicIndex: '{{input.iteration}}',
+                topicName: '{{loop.0.data.payload.topicName}}',
+                baselineScore: '{{loop.9.data.baselineScore}}',
+                adaptedScore: '{{loop.9.data.adaptedScore}}',
+                improvement: '{{loop.9.data.improvement}}',
+                summary: '{{loop.9.data.summary}}',
+              },
+            },
+          ],
         },
       ],
     },

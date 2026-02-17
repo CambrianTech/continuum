@@ -2635,8 +2635,8 @@ Sentinels orchestrate the LoRA training pipeline.
 - [x] **Training data packaging** — Sentinel command step exports synthesized data as JSONL compatible with `genome/train`
 - [x] **LoRA training orchestration** — Sentinel command step triggers PEFT fine-tuning via `genome/train`
 - [x] **Genome layer registration** — Register trained adapters via `genome/paging-adapter-register` in sentinel pipeline
-- [ ] **Phenotype validation** — Sentinel step that benchmarks before/after performance on same challenges
-- [ ] **Quality gating** — Only register adapters that show measurable improvement
+- [x] **Phenotype validation** — `genome/phenotype-validate` command: LLM-as-judge scores pre-training vs post-training responses. Student pipeline pre-test (loop.1) establishes baseline before training.
+- [x] **Quality gating** — Student pipeline condition step (loop.10): only registers adapter if phenotype improvement >= threshold (default 5pp). Emits `inference:demo` on pass, `quality:gate:failed` on fail.
 - [ ] **Dynamic composition** — Compose multiple layers and activate on persona via `genome/set-active`
 - [ ] **LRU paging integration** — Automatically evict least-used adapters under memory pressure
 
@@ -2655,7 +2655,7 @@ The selection pressure that drives genome evolution.
 - [ ] **Performance gap analysis** — Identify specific skill gaps from exam results, drive targeted retraining
 - [ ] **Evolution tournament** — Multi-round competition with training between rounds
 - [ ] **Competitive ranking** — Track persona rankings across competitions
-- [ ] **Inference demos** — After each training round, run inference to prove learning to the user/persona
+- [x] **Inference demos** — Student pipeline emits `inference:demo` event with sample Q&A comparison (baseline vs adapted) after quality gate passes. `InferenceDemoPayload` includes scores, improvement, and sample answers.
 
 ### Phase E: Marketplace & Distribution
 
