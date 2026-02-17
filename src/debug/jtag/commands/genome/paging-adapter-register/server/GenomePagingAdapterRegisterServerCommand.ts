@@ -13,8 +13,8 @@ import type { GenomePagingAdapterRegisterParams, GenomePagingAdapterRegisterResu
 import { createGenomePagingAdapterRegisterResultFromParams } from '../shared/GenomePagingAdapterRegisterTypes';
 import { GenomeDaemon } from '../../../../system/genome/server/GenomeDaemon';
 import { MockLoRAAdapter } from '../../../../system/genome/shared/MockLoRAAdapter';
-import { Commands } from '../../../../system/core/shared/Commands';
 import { GenomeLayerEntity } from '../../../../system/genome/entities/GenomeLayerEntity';
+import { DataRead } from '@commands/data/read/shared/DataReadTypes';
 
 function getDaemon(): GenomeDaemon {
   return GenomeDaemon.getInstance({
@@ -44,12 +44,12 @@ export class GenomePagingAdapterRegisterServerCommand extends CommandBase<Genome
 
       // If layerId is provided, hydrate adapter info from persisted GenomeLayerEntity
       if (params.layerId) {
-        const readResult = await Commands.execute('data/read', {
+        const readResult = await DataRead.execute<GenomeLayerEntity>({
           collection: GenomeLayerEntity.collection,
           id: params.layerId,
-        } as any) as any;
+        });
 
-        if (!readResult?.success || !readResult?.data) {
+        if (!readResult.success || !readResult.data) {
           return createGenomePagingAdapterRegisterResultFromParams(params, {
             success: false,
             registered: false,

@@ -23,6 +23,11 @@ import { createGenomeComposeResultFromParams } from '../shared/GenomeComposeType
 import { Commands } from '@system/core/shared/Commands';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import type { CompositionStrategy } from '@system/genome/shared/GenomeAssemblyTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { DataRead } from '@commands/data/read/shared/DataReadTypes';
+import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
+import type { GenomeActivateParams, GenomeActivateResult } from '@commands/genome/paging-activate/shared/GenomeActivateTypes';
+import type { GenomePagingAdapterRegisterParams, GenomePagingAdapterRegisterResult } from '@commands/genome/paging-adapter-register/shared/GenomePagingAdapterRegisterTypes';
 
 export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams, GenomeComposeResult> {
 
@@ -62,12 +67,12 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
 
     for (let i = 0; i < layers.length; i++) {
       const layerRef = layers[i];
-      const readResult = await Commands.execute('data/read', {
+      const readResult = await DataRead.execute<GenomeLayerEntity>({
         collection: GenomeLayerEntity.collection,
         id: layerRef.layerId,
-      } as any) as any;
+      });
 
-      if (!readResult?.success || !readResult?.data) {
+      if (!readResult.success || !readResult.data) {
         return createGenomeComposeResultFromParams(params, {
           success: false,
           error: `Layer not found: ${layerRef.layerId} (index ${i})`,
@@ -93,13 +98,14 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
     // Step 2: Register each layer in the paging registry (if not already registered)
     for (const layer of validatedLayers) {
       try {
-        await Commands.execute('genome/paging-adapter-register', {
-          layerId: layer.layerId,
-          adapterId: layer.layerId,
+        await Commands.execute<GenomePagingAdapterRegisterParams, GenomePagingAdapterRegisterResult>(
+          'genome/paging-adapter-register', {
+          layerId: layer.layerId as UUID,
+          adapterId: layer.layerId as UUID,
           name: layer.name,
           domain: layer.domain,
           sizeMB: layer.sizeMB,
-        } as any);
+        });
       } catch (err) {
         // Already registered is OK
         const msg = err instanceof Error ? err.message : String(err);
@@ -128,12 +134,12 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
       composedAt: new Date().toISOString(),
     };
 
-    const createResult = await Commands.execute('data/create', {
+    const createResult = await DataCreate.execute({
       collection: 'composed_genomes',
       data: genomeData,
-    } as any) as any;
+    });
 
-    const genomeId = createResult?.data?.id;
+    const genomeId = (createResult.data as Record<string, unknown>)?.id as string;
     console.log(`   Created composed genome: ${genomeId}`);
 
     // Step 4: Activate on persona if requested
@@ -145,20 +151,21 @@ export class GenomeComposeServerCommand extends CommandBase<GenomeComposeParams,
       // GenomeDaemon handles LRU eviction internally
       for (const layer of validatedLayers) {
         try {
-          const activateResult = await Commands.execute('genome/paging-activate', {
+          const activateResult = await Commands.execute<GenomeActivateParams, GenomeActivateResult>(
+            'genome/paging-activate', {
             personaId,
-            adapterId: layer.layerId,
-          } as any) as any;
+            adapterId: layer.layerId as UUID,
+          });
 
-          if (activateResult?.success && activateResult?.loaded) {
+          if (activateResult.success && activateResult.loaded) {
             console.log(`   Activated ${layer.name} on persona`);
             if (activateResult.evictedAdapters?.length) {
               evictedAdapters = [
                 ...(evictedAdapters ?? []),
-                ...activateResult.evictedAdapters,
+                ...activateResult.evictedAdapters.map(String),
               ];
             }
-          } else if (activateResult?.thrashingDetected) {
+          } else if (activateResult.thrashingDetected) {
             console.warn(`   Thrashing detected for ${layer.name}, skipping activation`);
           }
         } catch (err) {

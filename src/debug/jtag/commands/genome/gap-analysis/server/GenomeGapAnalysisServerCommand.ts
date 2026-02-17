@@ -16,10 +16,12 @@ import type {
   GenomeGapAnalysisResult,
 } from '../shared/GenomeGapAnalysisTypes';
 import { createGenomeGapAnalysisResultFromParams } from '../shared/GenomeGapAnalysisTypes';
-import { Commands } from '@system/core/shared/Commands';
 import { CompetitionEntity } from '@system/genome/entities/CompetitionEntity';
 import type { CompetitorEntry, GapAnalysis, TopicGap } from '@system/genome/shared/CompetitionTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import { DataRead } from '@commands/data/read/shared/DataReadTypes';
+import { DataList } from '@commands/data/list/shared/DataListTypes';
+import type { BaseEntity } from '@system/data/entities/BaseEntity';
 
 export class GenomeGapAnalysisServerCommand extends CommandBase<GenomeGapAnalysisParams, GenomeGapAnalysisResult> {
 
@@ -35,10 +37,10 @@ export class GenomeGapAnalysisServerCommand extends CommandBase<GenomeGapAnalysi
     }
 
     // 1. Load competition entity
-    const readResult = await Commands.execute('data/read', {
+    const readResult = await DataRead.execute<CompetitionEntity>({
       collection: CompetitionEntity.collection,
-      id: competitionId,
-    } as any) as any;
+      id: competitionId as UUID,
+    });
 
     if (!readResult.success || !readResult.data) {
       return createGenomeGapAnalysisResultFromParams(params, {
@@ -94,14 +96,14 @@ export class GenomeGapAnalysisServerCommand extends CommandBase<GenomeGapAnalysi
   /**
    * Load exam results for all sessions in this competition.
    */
-  private async loadExamResults(competitionId: string): Promise<any[]> {
-    const listResult = await Commands.execute('data/list', {
+  private async loadExamResults(competitionId: string): Promise<readonly BaseEntity[]> {
+    const listResult = await DataList.execute<BaseEntity>({
       collection: 'academy_examinations',
       filter: { sessionId: competitionId },
       orderBy: [{ field: 'createdAt', direction: 'asc' }],
-    } as any) as any;
+    });
 
-    return listResult.success ? (listResult.data ?? []) : [];
+    return listResult.success ? (listResult.items ?? []) : [];
   }
 
   /**

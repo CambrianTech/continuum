@@ -14,7 +14,8 @@ import { TrainingDatasetBuilder } from '@system/genome/fine-tuning/server/Traini
 import { PEFTLoRAAdapter } from '@system/genome/fine-tuning/server/adapters/PEFTLoRAAdapter';
 import { AdapterPackage } from '@system/genome/server/AdapterPackage';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
-import { Commands } from '@system/core/shared/Commands';
+import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, GenomeTrainResult> {
 
@@ -107,14 +108,14 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     console.log(`✅ GENOME TRAIN: Adapter saved to ${adapterPath}`);
 
     // Create GenomeLayerEntity and persist to database
-    let layerId: string | undefined;
+    let layerId: UUID | undefined;
     if (result.manifest) {
       try {
         const entity = AdapterPackage.toGenomeLayerEntity(result.manifest, adapterPath);
-        await Commands.execute('data/create', {
+        await DataCreate.execute({
           collection: GenomeLayerEntity.collection,
           data: entity,
-        } as any);
+        });
         layerId = entity.id;
         console.log(`   GenomeLayerEntity created: ${layerId}`);
       } catch (error) {
@@ -126,7 +127,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     return createGenomeTrainResultFromParams(params, {
       success: true,
       adapterPath,
-      layerId: layerId as any,
+      layerId,
       metrics: {
         finalLoss: result.metrics?.finalLoss ?? 0,
         trainingTime: result.metrics?.trainingTime ?? 0,
