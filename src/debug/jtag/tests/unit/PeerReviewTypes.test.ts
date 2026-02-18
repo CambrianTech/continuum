@@ -25,7 +25,7 @@ describe('PeerReviewTypes - Model Intelligence Weights', () => {
 
   it('should return lower weights for smaller models', () => {
     expect(getModelIntelligenceWeight('groq', 'llama-3.1-8b-instant')).toBe(0.5);
-    expect(getModelIntelligenceWeight('ollama', 'llama3.2:3b')).toBe(0.3);
+    expect(getModelIntelligenceWeight('candle', 'llama3.2:3b')).toBe(0.3);
     expect(getModelIntelligenceWeight('sentinel', 'gpt2')).toBe(0.2);
   });
 

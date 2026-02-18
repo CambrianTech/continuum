@@ -16,15 +16,32 @@ use std::sync::LazyLock;
 
 use super::types::ExecutionContext;
 
+/// Matches innermost {{...}} patterns (no { or } inside the braces).
+/// This enables multi-pass resolution for nested interpolation:
+/// `{{steps.0.output.topics.{{input.iteration}}.name}}`
+///   Pass 1: resolves `{{input.iteration}}` → `0`
+///   Pass 2: resolves `{{steps.0.output.topics.0.name}}` → topic name
 static INTERPOLATION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{\{([^}]+)\}\}").unwrap());
+    LazyLock::new(|| Regex::new(r"\{\{([^{}\n]+)\}\}").unwrap());
 
-/// Interpolate {{variable}} references in a template string
+/// Interpolate {{variable}} references in a template string.
+/// Runs multiple passes to resolve nested interpolation.
 pub fn interpolate(template: &str, ctx: &ExecutionContext) -> String {
-    INTERPOLATION_RE.replace_all(template, |caps: &regex::Captures| {
-        let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-        resolve_path(path, ctx)
-    }).to_string()
+    let mut result = template.to_string();
+    // Multi-pass: resolve innermost patterns first, then outer patterns
+    // Safety limit of 5 passes prevents infinite loops
+    for _ in 0..5 {
+        let new_result = INTERPOLATION_RE.replace_all(&result, |caps: &regex::Captures| {
+            let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            resolve_path(path, ctx)
+        }).to_string();
+
+        if new_result == result {
+            break; // No more substitutions
+        }
+        result = new_result;
+    }
+    result
 }
 
 /// Interpolate {{variable}} references in a JSON value recursively
@@ -85,6 +102,7 @@ fn resolve_path(path: &str, ctx: &ExecutionContext) -> String {
         "steps" => resolve_steps_path(&parts[1..], ctx),
         "input" | "inputs" => resolve_input_path(&parts[1..], ctx),
         "named" => resolve_named_path(&parts[1..], ctx),
+        "loop" => resolve_loop_path(&parts[1..], ctx),
         "env" => {
             if parts.len() < 2 {
                 return "".to_string();
@@ -123,6 +141,32 @@ fn resolve_named_path(parts: &[&str], ctx: &ExecutionContext) -> String {
     }
 }
 
+/// Resolve loop.N.field paths — relative step referencing within a loop iteration.
+///
+/// `{{loop.0.data.field}}` resolves to step_results[_loop_base + 0].data.field
+/// where `_loop_base` is set by the loop executor at the start of each iteration.
+/// This enables stable referencing of sub-steps within a loop body regardless
+/// of how many iterations have completed.
+fn resolve_loop_path(parts: &[&str], ctx: &ExecutionContext) -> String {
+    if parts.is_empty() {
+        return "".to_string();
+    }
+
+    let base = ctx.inputs.get("_loop_base")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    let relative_index: usize = parts[0].parse().unwrap_or(usize::MAX);
+    let absolute_index = base + relative_index;
+
+    if absolute_index >= ctx.step_results.len() {
+        return "".to_string();
+    }
+
+    let result = &ctx.step_results[absolute_index];
+    resolve_step_result_field(result, &parts[1..])
+}
+
 /// Resolve input.field paths
 fn resolve_input_path(parts: &[&str], ctx: &ExecutionContext) -> String {
     if parts.is_empty() {
@@ -136,6 +180,40 @@ fn resolve_input_path(parts: &[&str], ctx: &ExecutionContext) -> String {
         .unwrap_or_default()
 }
 
+/// Traverse a JSON value using dot-separated path parts.
+///
+/// Supports:
+/// - Object key access: `data.field.nested`
+/// - Array indexing: `topics.0.name` (numeric path parts index into arrays)
+/// - JSON string auto-parsing: if a value is a string containing JSON,
+///   it's automatically parsed for deeper traversal (enables accessing
+///   structured LLM output like `steps.0.output.topics.0.name`)
+fn traverse_json_path(root: &Value, parts: &[&str]) -> String {
+    let mut current = root.clone();
+
+    for part in parts {
+        // Auto-parse JSON strings during traversal
+        if let Value::String(ref s) = current {
+            if let Ok(parsed) = serde_json::from_str::<Value>(s) {
+                current = parsed;
+            }
+        }
+
+        // Try numeric index for arrays, string key for objects
+        current = if let Ok(idx) = part.parse::<usize>() {
+            current.get(idx).cloned().unwrap_or(Value::Null)
+        } else {
+            current.get(*part).cloned().unwrap_or(Value::Null)
+        };
+    }
+
+    match &current {
+        Value::String(s) => s.clone(),
+        Value::Null => "".to_string(),
+        _ => current.to_string(),
+    }
+}
+
 /// Extract a field from a StepResult given the remaining path parts
 fn resolve_step_result_field(result: &super::types::StepResult, parts: &[&str]) -> String {
     if parts.is_empty() {
@@ -143,21 +221,23 @@ fn resolve_step_result_field(result: &super::types::StepResult, parts: &[&str]) 
     }
 
     match parts[0] {
-        "output" => result.output.clone().unwrap_or_default(),
+        "output" => {
+            if parts.len() > 1 {
+                // Traverse into output (which may be a JSON string from LLM)
+                let output_val = result.output.as_ref()
+                    .map(|s| Value::String(s.clone()))
+                    .unwrap_or(Value::Null);
+                traverse_json_path(&output_val, &parts[1..])
+            } else {
+                result.output.clone().unwrap_or_default()
+            }
+        }
         "success" => result.success.to_string(),
         "error" => result.error.clone().unwrap_or_default(),
         "exitCode" | "exit_code" => result.exit_code.map(|c| c.to_string()).unwrap_or_default(),
         "data" => {
             if parts.len() > 1 {
-                let mut current = &result.data;
-                for part in &parts[1..] {
-                    current = current.get(*part).unwrap_or(&Value::Null);
-                }
-                match current {
-                    Value::String(s) => s.clone(),
-                    Value::Null => "".to_string(),
-                    _ => current.to_string(),
-                }
+                traverse_json_path(&result.data, &parts[1..])
             } else {
                 result.data.to_string()
             }
@@ -448,5 +528,222 @@ mod tests {
         assert!(evaluate_condition("  true  "));
         assert!(!evaluate_condition("  false  "));
         assert!(!evaluate_condition("   "));
+    }
+
+    // ── Array indexing ──
+
+    #[test]
+    fn test_data_array_indexing() {
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "command".to_string(),
+                    success: true,
+                    duration_ms: 10,
+                    output: None,
+                    error: None,
+                    exit_code: None,
+                    data: json!({
+                        "items": ["alpha", "beta", "gamma"],
+                        "topics": [
+                            { "name": "Generics", "difficulty": "beginner" },
+                            { "name": "Constraints", "difficulty": "intermediate" },
+                        ]
+                    }),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // Simple array indexing
+        assert_eq!(interpolate("{{steps.0.data.items.0}}", &ctx), "alpha");
+        assert_eq!(interpolate("{{steps.0.data.items.2}}", &ctx), "gamma");
+
+        // Nested object inside array
+        assert_eq!(interpolate("{{steps.0.data.topics.0.name}}", &ctx), "Generics");
+        assert_eq!(interpolate("{{steps.0.data.topics.1.difficulty}}", &ctx), "intermediate");
+
+        // Out of bounds returns empty
+        assert_eq!(interpolate("{{steps.0.data.items.99}}", &ctx), "");
+    }
+
+    // ── JSON string auto-parsing in output ──
+
+    #[test]
+    fn test_output_json_string_traversal() {
+        let curriculum_json = json!({
+            "skill": "typescript",
+            "topics": [
+                { "name": "Basics", "difficulty": "beginner" },
+                { "name": "Advanced Types", "difficulty": "advanced" },
+            ]
+        }).to_string();
+
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "llm".to_string(),
+                    success: true,
+                    duration_ms: 5000,
+                    output: Some(curriculum_json),
+                    error: None,
+                    exit_code: None,
+                    data: json!({}),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // Traverse into LLM output (JSON string → parsed → path access)
+        assert_eq!(interpolate("{{steps.0.output.skill}}", &ctx), "typescript");
+        assert_eq!(interpolate("{{steps.0.output.topics.0.name}}", &ctx), "Basics");
+        assert_eq!(interpolate("{{steps.0.output.topics.1.difficulty}}", &ctx), "advanced");
+
+        // Bare output still returns raw string
+        assert!(interpolate("{{steps.0.output}}", &ctx).contains("typescript"));
+    }
+
+    // ── Nested interpolation ──
+
+    #[test]
+    fn test_nested_interpolation_with_loop_index() {
+        let curriculum_json = json!({
+            "topics": [
+                { "name": "Basics", "difficulty": "beginner" },
+                { "name": "Advanced", "difficulty": "advanced" },
+            ]
+        }).to_string();
+
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "llm".to_string(),
+                    success: true,
+                    duration_ms: 100,
+                    output: Some(curriculum_json),
+                    error: None,
+                    exit_code: None,
+                    data: json!({}),
+                },
+            ],
+            inputs: {
+                let mut m = HashMap::new();
+                m.insert("iteration".to_string(), json!(1));
+                m
+            },
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // Nested: inner {{input.iteration}} resolves to 1, then outer resolves topic
+        assert_eq!(
+            interpolate("{{steps.0.output.topics.{{input.iteration}}.name}}", &ctx),
+            "Advanced"
+        );
+        assert_eq!(
+            interpolate("{{steps.0.output.topics.{{input.iteration}}.difficulty}}", &ctx),
+            "advanced"
+        );
+
+        // With iteration=0
+        let mut ctx0 = ctx;
+        ctx0.inputs.insert("iteration".to_string(), json!(0));
+        assert_eq!(
+            interpolate("{{steps.0.output.topics.{{input.iteration}}.name}}", &ctx0),
+            "Basics"
+        );
+    }
+
+    // ── Loop-relative step referencing ──
+
+    #[test]
+    fn test_loop_relative_referencing() {
+        let ctx = ExecutionContext {
+            step_results: vec![
+                // Step 0 (before loop): LLM output
+                StepResult {
+                    step_index: 0, step_type: "llm".to_string(),
+                    success: true, duration_ms: 100,
+                    output: Some("curriculum".to_string()),
+                    error: None, exit_code: None, data: json!({}),
+                },
+                // Step 1 (before loop): data/create
+                StepResult {
+                    step_index: 1, step_type: "command".to_string(),
+                    success: true, duration_ms: 5,
+                    output: None, error: None, exit_code: None,
+                    data: json!({ "id": "curr-123" }),
+                },
+                // Step 2 (loop iteration 0, sub-step 0): dataset-synthesize
+                StepResult {
+                    step_index: 2, step_type: "command".to_string(),
+                    success: true, duration_ms: 3000,
+                    output: None, error: None, exit_code: None,
+                    data: json!({ "datasetPath": "/path/to/dataset.jsonl", "exampleCount": 20 }),
+                },
+                // Step 3 (loop iteration 0, sub-step 1): emit
+                StepResult {
+                    step_index: 3, step_type: "emit".to_string(),
+                    success: true, duration_ms: 0,
+                    output: None, error: None, exit_code: None,
+                    data: json!({}),
+                },
+            ],
+            inputs: {
+                let mut m = HashMap::new();
+                m.insert("iteration".to_string(), json!(0));
+                m.insert("_loop_base".to_string(), json!(2)); // Loop starts at index 2
+                m
+            },
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // loop.0 = step_results[2] (the dataset-synthesize result)
+        assert_eq!(interpolate("{{loop.0.data.datasetPath}}", &ctx), "/path/to/dataset.jsonl");
+        assert_eq!(interpolate("{{loop.0.data.exampleCount}}", &ctx), "20");
+
+        // loop.1 = step_results[3] (the emit result)
+        assert_eq!(interpolate("{{loop.1.success}}", &ctx), "true");
+
+        // Can still reference pre-loop steps by global index
+        assert_eq!(interpolate("{{steps.1.data.id}}", &ctx), "curr-123");
+    }
+
+    // ── JSON string auto-parsing in nested data fields ──
+
+    #[test]
+    fn test_data_json_string_auto_parse() {
+        let ctx = ExecutionContext {
+            step_results: vec![
+                StepResult {
+                    step_index: 0,
+                    step_type: "llm".to_string(),
+                    success: true,
+                    duration_ms: 100,
+                    output: None,
+                    error: None,
+                    exit_code: None,
+                    data: json!({
+                        "text": "{\"name\": \"Alice\", \"scores\": [95, 87, 92]}"
+                    }),
+                },
+            ],
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        };
+
+        // data.text is a JSON string → auto-parsed → traverse deeper
+        assert_eq!(interpolate("{{steps.0.data.text.name}}", &ctx), "Alice");
+        assert_eq!(interpolate("{{steps.0.data.text.scores.0}}", &ctx), "95");
+        assert_eq!(interpolate("{{steps.0.data.text.scores.2}}", &ctx), "92");
     }
 }

@@ -445,7 +445,7 @@ export class VectorSearchAdapterBase implements VectorSearchAdapter {
       supportsEmbeddingGeneration: true,
       maxVectorDimensions: 2048,
       supportedSimilarityMetrics: ['cosine', 'euclidean', 'dot-product'],
-      embeddingProviders: ['ollama']
+      embeddingProviders: ['fastembed']
     };
   }
 }

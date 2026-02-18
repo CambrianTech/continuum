@@ -51,8 +51,21 @@ pub fn load_lora_adapter(
 
     info!("Loading LoRA adapter from: {adapter_path}");
 
+    // Resolve path: if directory, find adapter_model.safetensors inside
+    let resolved_path = if std::path::Path::new(adapter_path).is_dir() {
+        let safetensors = std::path::Path::new(adapter_path).join("adapter_model.safetensors");
+        if safetensors.exists() {
+            info!("Resolved directory to: {}", safetensors.display());
+            safetensors.to_string_lossy().to_string()
+        } else {
+            return Err(format!("No adapter_model.safetensors found in directory: {adapter_path}").into());
+        }
+    } else {
+        adapter_path.to_string()
+    };
+
     // Read the safetensor file
-    let data = std::fs::read(adapter_path)?;
+    let data = std::fs::read(&resolved_path)?;
     let tensors = SafeTensors::deserialize(&data)?;
 
     let mut lora_pairs: HashMap<String, LoRAWeights> = HashMap::new();

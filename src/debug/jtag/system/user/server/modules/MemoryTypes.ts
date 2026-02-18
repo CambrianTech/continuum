@@ -17,7 +17,8 @@ export enum MemoryType {
   DECISION = 'decision',            // Decisions made (with reasoning)
   TOOL_USE = 'tool-use',            // Tool invocations and results
   ERROR = 'error',                  // Errors encountered (for learning)
-  INSIGHT = 'insight'               // Self-generated insights/patterns
+  INSIGHT = 'insight',              // Self-generated insights/patterns
+  SENTINEL = 'sentinel'             // Sentinel execution results (for pattern recall)
 }
 
 /**

@@ -293,7 +293,7 @@ export class SettingsWidget extends ReactiveWidget {
 
   private getDefaultConfigEntries(): ConfigEntry[] {
     return [
-      { key: 'OLLAMA_HOST', value: 'http://localhost:11434', isSecret: false, provider: 'Ollama', category: 'local', description: 'Local AI server - completely free, private, no API key needed' },
+      { key: 'CANDLE_ENABLED', value: 'true', isSecret: false, provider: 'Candle', category: 'local', description: 'Local Rust-native AI inference - completely free, private, no API key needed' },
       { key: 'ANTHROPIC_API_KEY', value: '', isSecret: true, provider: 'Anthropic', category: 'cloud', description: 'Claude models - best for complex reasoning' },
       { key: 'OPENAI_API_KEY', value: '', isSecret: true, provider: 'OpenAI', category: 'cloud', description: 'GPT models - widely compatible' },
       { key: 'GROQ_API_KEY', value: '', isSecret: true, provider: 'Groq', category: 'cloud', description: 'Ultra-fast inference' },

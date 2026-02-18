@@ -67,7 +67,7 @@ export const ROUTER_CONSTANTS = {
   // Timeout Values (milliseconds)
   TIMEOUTS: {
     MESSAGE_PROCESSING: 30000,
-    CORRELATION: 60000,
+    CORRELATION: 600000,
     TRANSPORT_CONNECT: 10000
   } as const
 } as const;

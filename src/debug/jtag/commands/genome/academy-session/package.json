@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/academy-session",
+  "version": "1.0.0",
+  "description": "Launch an Academy Dojo session — spawns teacher and student sentinels for autonomous skill training",
+  "main": "server/GenomeAcademySessionServerCommand.ts",
+  "types": "shared/GenomeAcademySessionTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeAcademySessionIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/academy-session"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

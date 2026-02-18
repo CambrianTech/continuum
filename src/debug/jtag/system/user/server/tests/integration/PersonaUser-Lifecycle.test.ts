@@ -30,7 +30,7 @@ describe('PersonaUser Lifecycle (Baseline)', () => {
       displayName: 'Test Persona (Baseline)',
       type: 'persona',
       modelConfig: {
-        provider: 'ollama',
+        provider: 'candle',
         model: 'llama3.2',
         capabilities: ['text']
       },

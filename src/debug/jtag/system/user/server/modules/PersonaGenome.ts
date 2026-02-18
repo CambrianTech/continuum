@@ -13,8 +13,8 @@
  * - memoryBudget = RAM limit
  * - LRU eviction = page replacement algorithm
  *
- * This is Phase 6 - adapter paging WITHOUT actual Ollama training
- * Phase 7 will add real fine-tuning integration
+ * This is Phase 6 - adapter paging with PEFT/Candle training integration
+ * Phase 7 will add continuous learning
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -23,6 +23,7 @@ import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RustCognitionBridge } from './RustCognitionBridge';
 import type { GenomeAdapterInfo } from '../../../../shared/generated';
+import { AdapterStore } from '../../../genome/server/AdapterStore';
 
 /**
  * Genome configuration
@@ -47,7 +48,7 @@ export interface PersonaGenomeConfig {
     path: string;
     sizeMB: number;
     priority?: number;
-    ollamaModelName?: string;
+    trainedModelName?: string;
   }>;
 }
 
@@ -97,7 +98,7 @@ export class PersonaGenome {
   private log: (message: string) => void;
 
   /**
-   * AI Provider adapter for actual skill loading (CandleAdapter, OllamaAdapter, etc.)
+   * AI Provider adapter for actual skill loading (CandleAdapter, etc.)
    * When set, LoRAAdapter.load() will call aiProvider.applySkill() for real adapter loading.
    * Without this, adapters run in stub mode (just tracking state, no real GPU loading).
    */
@@ -110,8 +111,8 @@ export class PersonaGenome {
    */
   private rustBridge: RustCognitionBridge | null = null;
 
-  constructor(config: PersonaGenomeConfig, logger?: (message: string) => void) {
-    this.log = logger || console.log.bind(console);
+  constructor(config: PersonaGenomeConfig, logger: (message: string) => void) {
+    this.log = logger;
     this.config = config;
 
     // Register initial adapters (but don't load them yet)
@@ -185,7 +186,7 @@ export class PersonaGenome {
         priority: state.priority,
         is_loaded: true,
         last_used_ms: state.lastUsed,
-        ollama_model_name: state.ollamaModelName ?? undefined,
+        ollama_model_name: state.trainedModelName ?? undefined,
       });
     }
 
@@ -198,7 +199,7 @@ export class PersonaGenome {
         priority: state.priority,
         is_loaded: false,
         last_used_ms: state.lastUsed,
-        ollama_model_name: state.ollamaModelName ?? undefined,
+        ollama_model_name: state.trainedModelName ?? undefined,
       });
     }
 
@@ -232,7 +233,7 @@ export class PersonaGenome {
     path: string;
     sizeMB: number;
     priority?: number;
-    ollamaModelName?: string;
+    trainedModelName?: string;
   }): void {
     const adapter = new LoRAAdapter({
       id: generateUUID() as UUID,
@@ -241,14 +242,14 @@ export class PersonaGenome {
       path: config.path,
       sizeMB: config.sizeMB,
       priority: config.priority,
-      ollamaModelName: config.ollamaModelName,
+      trainedModelName: config.trainedModelName,
       aiProvider: this.aiProvider ?? undefined, // Pass provider for real loading
       logger: this.log
     });
 
     this.availableAdapters.set(config.name, adapter);
 
-    const modelInfo = config.ollamaModelName ? `, ollama=${config.ollamaModelName}` : '';
+    const modelInfo = config.trainedModelName ? `, trained=${config.trainedModelName}` : '';
     const providerInfo = this.aiProvider ? ` [${this.aiProvider.providerId}]` : ' [stub mode]';
     this.log(`🧬 PersonaGenome: Registered adapter ${config.name} (${config.domain} domain, ${config.sizeMB}MB${modelInfo})${providerInfo}`);
   }
@@ -266,6 +267,26 @@ export class PersonaGenome {
       return this.activateSkillViaRust(skillName);
     }
     return this.activateSkillLocal(skillName);
+  }
+
+  /**
+   * Activate adapter by domain name (not adapter name).
+   * Searches registered adapters for one matching the given domain.
+   * Falls back to activateSkill if an exact match is found.
+   */
+  async activateForDomain(domain: string): Promise<void> {
+    // Search available and active adapters for one matching this domain
+    for (const [name, adapter] of this.availableAdapters) {
+      if (adapter.getDomain() === domain) {
+        return this.activateSkill(name);
+      }
+    }
+    for (const [name, adapter] of this.activeAdapters) {
+      if (adapter.getDomain() === domain) {
+        return this.activateSkill(name);
+      }
+    }
+    // No adapter for this domain — that's OK, it's a gap
   }
 
   /**
@@ -402,7 +423,7 @@ export class PersonaGenome {
    * Enable fine-tuning mode for the current adapter
    *
    * Phase 6: Stubbed - no actual training yet
-   * Phase 7: Will enable gradient accumulation in Ollama
+   * Phase 7: Will enable continuous learning with PEFT
    */
   async enableLearningMode(skillName: string): Promise<void> {
     if (!this.activeAdapters.has(skillName)) {
@@ -421,7 +442,7 @@ export class PersonaGenome {
    * Disable fine-tuning mode for the current adapter
    *
    * Phase 6: Stubbed - no actual training yet
-   * Phase 7: Will save updated weights to disk
+   * Phase 7: Will save updated adapter weights to disk
    */
   async disableLearningMode(skillName: string): Promise<void> {
     if (!this.activeAdapters.has(skillName)) {
@@ -511,17 +532,29 @@ export class PersonaGenome {
    * This is the bridge between PersonaGenome and the AI provider system.
    * Returns adapter info that CandleAdapter can use to load/apply LoRA weights.
    */
-  getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string }> {
-    return Array.from(this.activeAdapters.values())
-      .filter(adapter => adapter.isLoaded())  // Only include loaded adapters
-      .map(adapter => {
-        const state = adapter.getState();
-        return {
-          name: state.name,
-          path: state.path,
-          domain: state.domain,
-        };
+  getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string; scale: number }> {
+    const result: Array<{ name: string; path: string; domain: string; scale: number }> = [];
+
+    for (const adapter of this.activeAdapters.values()) {
+      if (!adapter.isLoaded()) continue;
+
+      const state = adapter.getState();
+
+      // Validate path exists on disk — reject stale/missing adapters at the boundary
+      if (!AdapterStore.isValidAdapterPath(state.path)) {
+        this.log(`⚠️ PersonaGenome: Skipping adapter ${state.name} — path does not exist: ${state.path}`);
+        continue;
+      }
+
+      result.push({
+        name: state.name,
+        path: state.path,
+        domain: state.domain,
+        scale: 1.0,
       });
+    }
+
+    return result;
   }
 
   /**

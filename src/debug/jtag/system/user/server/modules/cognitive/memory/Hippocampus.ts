@@ -598,6 +598,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     if (thoughtType.includes('tool')) return MemoryTypeEnum.TOOL_USE;
     if (thoughtType.includes('error')) return MemoryTypeEnum.ERROR;
     if (thoughtType.includes('insight')) return MemoryTypeEnum.INSIGHT;
+    if (thoughtType.includes('sentinel')) return MemoryTypeEnum.SENTINEL;
     return MemoryTypeEnum.OBSERVATION; // Default
   }
 

@@ -83,6 +83,13 @@ import { CallEntity } from '../../../system/data/entities/CallEntity';
 import { SocialCredentialEntity } from '../../../system/social/shared/SocialCredentialEntity';
 import { HandleEntity } from '../../../system/data/entities/HandleEntity';
 import { SkillEntity } from '../../../system/data/entities/SkillEntity';
+import { AcademySessionEntity } from '../../../system/genome/entities/AcademySessionEntity';
+import { AcademyCurriculumEntity } from '../../../system/genome/entities/AcademyCurriculumEntity';
+import { AcademyExaminationEntity } from '../../../system/genome/entities/AcademyExaminationEntity';
+import { CompetitionEntity } from '../../../system/genome/entities/CompetitionEntity';
+import { SentinelEntity } from '../../../system/sentinel/entities/SentinelEntity';
+import { BenchmarkEntity } from '../../../system/data/entities/BenchmarkEntity';
+import { BenchmarkResultEntity } from '../../../system/data/entities/BenchmarkResultEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -139,6 +146,13 @@ export function initializeEntityRegistry(): void {
   new SocialCredentialEntity();
   new HandleEntity();
   new SkillEntity();
+  new AcademySessionEntity();
+  new AcademyCurriculumEntity();
+  new AcademyExaminationEntity();
+  new CompetitionEntity();
+  new SentinelEntity();
+  new BenchmarkEntity();
+  new BenchmarkResultEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -187,6 +201,13 @@ export function initializeEntityRegistry(): void {
   registerEntity(SocialCredentialEntity.collection, SocialCredentialEntity);
   registerEntity(HandleEntity.collection, HandleEntity);
   registerEntity(SkillEntity.collection, SkillEntity);
+  registerEntity(AcademySessionEntity.collection, AcademySessionEntity);
+  registerEntity(AcademyCurriculumEntity.collection, AcademyCurriculumEntity);
+  registerEntity(AcademyExaminationEntity.collection, AcademyExaminationEntity);
+  registerEntity(CompetitionEntity.collection, CompetitionEntity);
+  registerEntity(SentinelEntity.collection, SentinelEntity);
+  registerEntity(BenchmarkEntity.collection, BenchmarkEntity);
+  registerEntity(BenchmarkResultEntity.collection, BenchmarkResultEntity);
 
   log.info('All entities registered');
 }

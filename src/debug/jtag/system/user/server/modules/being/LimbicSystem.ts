@@ -27,6 +27,7 @@ import type { UserStateEntity } from '../../../../data/entities/UserStateEntity'
 import type { DataReadParams, DataReadResult } from '../../../../../commands/data/read/shared/DataReadTypes';
 import { DATA_COMMANDS } from '@commands/data/shared/DataCommandConstants';
 import { LOCAL_MODELS } from '../../../../../system/shared/Constants';
+import { AdapterStore } from '../../../../../system/genome/server/AdapterStore';
 
 /**
  * Forward declaration of PersonaUser to avoid circular dependencies
@@ -68,12 +69,16 @@ export class LimbicSystem {
   private readonly personaId: UUID;
   private readonly displayName: string;
 
+  // Inference model for compatibility checks
+  private readonly inferenceModel: string;
+
   // Client getter for database access
   private readonly getClient: () => JTAGClient | undefined;
 
   constructor(personaUser: PersonaUserForLimbic) {
     this.personaId = personaUser.id;
     this.displayName = personaUser.displayName;
+    this.inferenceModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
     this.getClient = () => personaUser.client;
 
     // Initialize logger first
@@ -88,36 +93,38 @@ export class LimbicSystem {
       this.logger.enqueueLog('genome.log', message);
     };
 
+    // Discover real adapters from filesystem for this persona
+    // AdapterStore is the SINGLE SOURCE OF TRUTH for what adapters exist
+    // Only include adapters compatible with this persona's inference model
+    const inferenceModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
+    const discoveredAdapters = AdapterStore.latestCompatibleByDomain(personaUser.id, inferenceModel);
+    const initialAdapters = Array.from(discoveredAdapters.values()).map(adapter => ({
+      name: adapter.manifest.name,
+      domain: adapter.manifest.traitType,
+      path: adapter.dirPath,
+      sizeMB: adapter.manifest.sizeMB,
+      priority: 0.7,
+    }));
+
+    // Also log incompatible adapters so the user knows they exist but need retraining
+    const allAdapters = AdapterStore.discoverForPersona(personaUser.id).filter(a => a.hasWeights);
+    const incompatible = allAdapters.length - initialAdapters.length;
+
+    if (initialAdapters.length > 0) {
+      this.logger.info(`Discovered ${initialAdapters.length} compatible adapters (model=${inferenceModel}): [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
+    }
+    if (incompatible > 0) {
+      this.logger.info(`Skipped ${incompatible} incompatible adapters (trained on different base model)`);
+    }
+
     this.memory = new PersonaMemory(
       personaUser.id,
       personaUser.displayName,
       {
         baseModel: personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT,
         memoryBudgetMB: 200,
-        adaptersPath: './lora-adapters',
-        initialAdapters: [
-          {
-            name: 'conversational',
-            domain: 'chat',
-            path: './lora-adapters/conversational.safetensors',
-            sizeMB: 50,
-            priority: 0.7
-          },
-          {
-            name: 'typescript-expertise',
-            domain: 'code',
-            path: './lora-adapters/typescript-expertise.safetensors',
-            sizeMB: 60,
-            priority: 0.6
-          },
-          {
-            name: 'self-improvement',
-            domain: 'self',
-            path: './lora-adapters/self-improvement.safetensors',
-            sizeMB: 40,
-            priority: 0.5
-          }
-        ]
+        adaptersPath: AdapterStore.storeRoot,
+        initialAdapters,
       },
       personaUser.client,
       genomeLogger
@@ -139,10 +146,14 @@ export class LimbicSystem {
 
     this.trainingAccumulator = new TrainingDataAccumulator(personaUser.id, personaUser.displayName, trainingLogger);
 
-    // PersonaTrainingManager(personaId, displayName, trainingAccumulator, stateGetter, saveStateCallback, logger)
+    // PersonaTrainingManager(personaId, displayName, baseModel, trainingAccumulator, stateGetter, saveStateCallback, logger)
+    // Base model from persona's model config — QLoRA quantizes this to 4-bit for training,
+    // so we can train on the same model used for inference (3B-8B fits on 8GB VRAM).
+    const trainingBaseModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
     this.trainingManager = new PersonaTrainingManager(
       personaUser.id,
       personaUser.displayName,
+      trainingBaseModel,
       this.trainingAccumulator,
       () => personaUser.state,
       async () => {
@@ -151,6 +162,13 @@ export class LimbicSystem {
       },
       trainingLogger  // Pass training logger
     );
+
+    // Wire post-training activation: when training completes, reload genome from DB
+    // This closes the loop: train → persist GenomeLayerEntity → reload → activate → inference uses new weights
+    this.trainingManager.onTrainingComplete = async (layerId: string, domain: string) => {
+      this.logger.info(`Post-training activation: reloading genome for new ${domain} adapter (layerId=${layerId})`);
+      await this.loadGenomeFromDatabase();
+    };
 
     // Hippocampus(personaUser) - Note: Hippocampus requires full PersonaUser interface
     // This is safe because LimbicSystem is only instantiated by PersonaUser
@@ -217,6 +235,19 @@ export class LimbicSystem {
         }
 
         const layer = layerResult.data;
+
+        // Validate adapter path exists and is compatible with inference model
+        if (!AdapterStore.isValidAdapterPath(layer.modelPath)) {
+          this.logger.warn(`Skipping layer ${layer.name} — adapter path missing: ${layer.modelPath}`);
+          continue;
+        }
+
+        // Check model compatibility via manifest if available
+        const adapterInfo = AdapterStore.discoverAll().find(a => a.dirPath === layer.modelPath);
+        if (adapterInfo && !AdapterStore.isCompatibleWithModel(adapterInfo, this.inferenceModel)) {
+          this.logger.warn(`Skipping layer ${layer.name} — trained on ${adapterInfo.manifest.baseModel}, incompatible with ${this.inferenceModel}`);
+          continue;
+        }
 
         // Register adapter in PersonaGenome
         this.memory.genome.registerAdapter({

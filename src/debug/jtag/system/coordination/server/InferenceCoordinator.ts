@@ -33,11 +33,10 @@ export interface InferenceSlot {
  * Provider groups that share the same backend.
  * All providers in a group share the same slot pool.
  *
- * CRITICAL: 'ollama', 'sentinel', 'candle', 'local' all route to the same
+ * CRITICAL: 'sentinel', 'candle', 'local' all route to the same
  * gRPC/Candle server which processes requests serially. They MUST share slots.
  */
 const PROVIDER_GROUPS: Record<string, string> = {
-  'ollama': 'local-inference',
   'sentinel': 'local-inference',
   'candle': 'local-inference',
   'local': 'local-inference',
@@ -93,7 +92,7 @@ class InferenceCoordinatorImpl {
    *
    * @param personaId - The persona requesting the slot
    * @param messageId - The message being processed (for tracking/debugging)
-   * @param provider - The inference provider (e.g., 'groq', 'ollama', 'anthropic')
+   * @param provider - The inference provider (e.g., 'groq', 'candle', 'anthropic')
    * @param options - Reserved for future use (isMentioned no longer affects scheduling)
    * @returns true if slot acquired, false if provider at hardware capacity
    */

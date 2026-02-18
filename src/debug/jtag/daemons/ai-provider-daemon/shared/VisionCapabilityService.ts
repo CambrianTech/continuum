@@ -18,7 +18,7 @@
 
 export interface VisionModelEntry {
   modelId: string;           // Exact model ID or pattern with wildcards
-  provider: string;          // Provider ID (ollama, anthropic, openai, etc.)
+  provider: string;          // Provider ID (candle, anthropic, openai, etc.)
   isPattern: boolean;        // True if modelId contains wildcards
   capabilities: VisionCapability[];
   maxImageSize?: number;     // Max image dimension in pixels
@@ -40,12 +40,12 @@ export type VisionCapability =
  *   const vision = VisionCapabilityService.getInstance();
  *
  *   // Check if model supports vision
- *   if (vision.supportsVision('ollama', 'llava:latest')) {
+ *   if (vision.supportsVision('candle', 'llava:latest')) {
  *     // Use vision-enabled code path
  *   }
  *
  *   // Get all vision models for a provider
- *   const ollamaVisionModels = vision.getVisionModels('ollama');
+ *   const localVisionModels = vision.getVisionModels('candle');
  */
 export class VisionCapabilityService {
   private static instance: VisionCapabilityService | null = null;
@@ -196,9 +196,9 @@ export class VisionCapabilityService {
    */
   private initializeBuiltInModels(): void {
     // ================================
-    // Ollama Vision Models
+    // Local Vision Models (Candle)
     // ================================
-    this.registerVisionModels('ollama', [
+    this.registerVisionModels('candle', [
       {
         modelId: 'llava*',
         isPattern: true,

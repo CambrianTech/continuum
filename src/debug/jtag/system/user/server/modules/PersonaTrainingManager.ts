@@ -1,32 +1,34 @@
 /**
  * PersonaTrainingManager - Handles continuous learning for PersonaUser
  *
- * Monitors training data accumulation and triggers LoRA fine-tuning
- * when thresholds are reached. Wires into the genome/job-create command
- * for real training execution via provider-specific adapters.
+ * Monitors training data accumulation and triggers local LoRA fine-tuning
+ * via genome/train. After training completes, triggers genome reload so
+ * the new adapter is activated for inference immediately.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { Events } from '../../../core/shared/Events';
+import { Commands } from '../../../core/shared/Commands';
 import type { TrainingDataAccumulator, TrainingExample as AccumulatorExample } from './TrainingDataAccumulator';
 import type { UserStateEntity } from '../../../data/entities/UserStateEntity';
 import { TrainingDatasetBuilder } from '../../../genome/fine-tuning/server/TrainingDatasetBuilder';
-import { GenomeJobCreate } from '../../../../commands/genome/job-create/shared/GenomeJobCreateTypes';
-import {
-  TrainingMethod,
-  TrainOnInputs,
-  LRSchedulerType,
-} from '../../../../daemons/data-daemon/shared/entities/FineTuningTypes';
 import type { TrainingDataset, TrainingExample } from '../../../genome/fine-tuning/shared/FineTuningTypes';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
+import type { GenomeTrainParams, GenomeTrainResult } from '../../../../commands/genome/train/shared/GenomeTrainTypes';
 import {
   AI_LEARNING_EVENTS,
   type AITrainingStartedEventData,
   type AITrainingCompleteEventData,
   type AITrainingErrorEventData
 } from '../../../events/shared/AILearningEvents';
+
+/**
+ * Callback invoked after training completes successfully.
+ * LimbicSystem uses this to reload genome from database and activate the new adapter.
+ */
+export type OnTrainingCompleteCallback = (layerId: UUID, domain: string) => Promise<void>;
 
 /**
  * PersonaTrainingManager - Monitors training readiness and triggers micro-tuning
@@ -36,13 +38,16 @@ import {
  * - Triggering training when threshold reached
  * - Updating learning state in UserStateEntity
  * - Emitting training lifecycle events
+ * - Post-training genome activation via callback
  */
 export class PersonaTrainingManager {
   private log: (message: string) => void;
+  private _onTrainingComplete: OnTrainingCompleteCallback | null = null;
 
   constructor(
     private readonly personaId: UUID,
     private readonly displayName: string,
+    private readonly baseModel: string,
     private readonly trainingAccumulator: TrainingDataAccumulator,
     private readonly getState: () => UserStateEntity,
     private readonly saveState: () => Promise<{ success: boolean; error?: string }>,
@@ -52,14 +57,18 @@ export class PersonaTrainingManager {
   }
 
   /**
-   * PHASE 7.5.1: Check training readiness and trigger micro-tuning
+   * Set callback for post-training genome activation.
+   * LimbicSystem provides this to reload genome from database after training.
+   */
+  set onTrainingComplete(callback: OnTrainingCompleteCallback) {
+    this._onTrainingComplete = callback;
+  }
+
+  /**
+   * Check training readiness and trigger micro-tuning.
    *
-   * Called periodically (less frequently than serviceInbox) to check if any
-   * domain buffers are ready for training. When threshold reached, automatically
-   * triggers genome/train command for that domain.
-   *
-   * This enables continuous learning: PersonaUsers improve through recipe execution
-   * without manual intervention.
+   * Called periodically to check if any domain buffers are ready for training.
+   * When threshold reached, automatically triggers genome/train for that domain.
    */
   async checkTrainingReadiness(forceDomain?: string): Promise<void> {
     try {
@@ -77,7 +86,7 @@ export class PersonaTrainingManager {
 
           this.log(`🧬 Training buffer ready for ${domain} (${bufferSize}/${threshold})`);
 
-          const provider = 'unsloth'; // Default provider
+          const provider = 'peft'; // Local PEFT training
           const estimatedTime = bufferSize * 25; // 25ms per example estimate
 
           // Update learning state in UserStateEntity
@@ -119,7 +128,7 @@ export class PersonaTrainingManager {
           // Convert accumulator examples to fine-tuning format
           const ftExamples = this.convertAccumulatorExamples(examples);
 
-          // Execute real training via genome/job-create
+          // Execute local training via genome/train
           await this.executeTraining(domain as TraitType, ftExamples, provider);
 
           // Clear learning state after training submitted
@@ -155,9 +164,12 @@ export class PersonaTrainingManager {
   }
 
   /**
-   * Execute real LoRA fine-tuning via genome/job-create.
+   * Execute local LoRA fine-tuning via genome/train command.
    *
-   * Flow: examples → JSONL file on disk → genome/job-create → provider adapter → training job
+   * Flow: examples → JSONL file on disk → genome/train → PEFT adapter → activation
+   *
+   * After training, triggers genome reload via onTrainingComplete callback
+   * so the new adapter is activated for the next inference request.
    */
   private async executeTraining(
     traitType: TraitType,
@@ -203,51 +215,55 @@ export class PersonaTrainingManager {
 
       this.log(`📁 Training data written to ${jsonlPath} (${examples.length} examples)`);
 
-      // Create fine-tuning job via the working command
-      const result = await GenomeJobCreate.execute({
+      // Execute local training via genome/train command
+      // QLoRA enabled by default — quantize base model to 4-bit so we can train
+      // the largest model that fits on hardware. LoRA weights stay full precision.
+      const trainStart = Date.now();
+      const result = await Commands.execute<GenomeTrainParams, GenomeTrainResult>('genome/train', {
         personaId: this.personaId,
-        provider,
-        trainingFileId: jsonlPath,
-        configuration: {
-          model: { baseModel: 'llama3.2' },
-          datasets: { trainingFileId: jsonlPath },
-          method: {
-            type: TrainingMethod.LORA,
-            loraConfig: { rank: 16, alpha: 32, dropout: 0, trainableModules: 'all-linear' },
-          },
-          schedule: {
-            epochs: 3,
-            batchSize: 4,
-            sequenceLength: 2048,
-            gradientAccumulation: 1,
-            checkpoints: 1,
-            evaluations: 1,
-            trainOnInputs: TrainOnInputs.DISABLED,
-          },
-          optimizer: {
-            learningRate: 0.0001,
-            scheduler: { type: LRSchedulerType.COSINE, minLRRatio: 0, warmupRatio: 0.1 },
-            weightDecay: 0,
-            maxGradientNorm: 1,
-          },
-          optimizations: { enabled: [] },
-          output: {},
-          metadata: {},
-        },
+        personaName: this.displayName ?? 'AI Assistant',
+        traitType,
+        datasetPath: jsonlPath,
+        baseModel: this.baseModel,
+        rank: 16,
+        epochs: 3,
+        learningRate: 0.0001,
+        batchSize: 4,
+        quantize: true,
+        quantizeBits: 4,
       });
+      const trainDuration = Date.now() - trainStart;
 
-      if (result.success && result.job) {
-        this.log(`🚀 Training job created: ${result.job.jobId} (provider: ${provider})`);
-        // TRAINING_STARTED already emitted above; completion will be
-        // emitted by the training job when it finishes asynchronously
+      if (result.success) {
+        this.log(`✅ Training completed: ${result.adapterPath} (${trainDuration}ms, loss=${result.metrics.finalLoss})`);
+
+        // Emit training complete event
+        await Events.emit(AI_LEARNING_EVENTS.TRAINING_COMPLETE, {
+          personaId: this.personaId,
+          personaName: this.displayName ?? 'AI Assistant',
+          domain: traitType,
+          provider,
+          examplesProcessed: result.metrics.examplesProcessed,
+          trainingTime: trainDuration,
+          finalLoss: result.metrics.finalLoss,
+          adapterPath: result.adapterPath,
+          layerId: result.layerId,
+          timestamp: Date.now(),
+        } satisfies AITrainingCompleteEventData);
+
+        // Trigger genome reload — activates the new adapter for inference
+        if (result.layerId && this._onTrainingComplete) {
+          this.log(`🧬 Triggering genome reload for new adapter (layerId=${result.layerId})`);
+          await this._onTrainingComplete(result.layerId, traitType);
+        }
       } else {
-        this.log(`❌ Training job creation failed: ${result.error}`);
+        this.log(`❌ Training failed: ${result.error}`);
         await Events.emit(AI_LEARNING_EVENTS.TRAINING_ERROR, {
           personaId: this.personaId,
           personaName: this.displayName ?? 'AI Assistant',
           domain: traitType,
-          error: result.error ?? 'Unknown error creating training job',
-          phase: 'preparation',
+          error: result.error ?? 'Unknown training error',
+          phase: 'training',
           timestamp: Date.now(),
         } satisfies AITrainingErrorEventData);
       }
@@ -259,7 +275,7 @@ export class PersonaTrainingManager {
         personaName: this.displayName ?? 'AI Assistant',
         domain: traitType,
         error: errorMsg,
-        phase: 'preparation',
+        phase: 'training',
         timestamp: Date.now(),
       } satisfies AITrainingErrorEventData);
     }
@@ -267,7 +283,7 @@ export class PersonaTrainingManager {
 
   /**
    * Write JSONL training data to disk.
-   * Returns the file path for genome/job-create.
+   * Returns the file path for genome/train.
    */
   private async writeTrainingFile(traitType: TraitType, jsonlContent: string): Promise<string> {
     const trainingDir = path.resolve('.continuum', 'training', 'auto', this.personaId);

@@ -228,7 +228,7 @@ const adapterCache = new Map<string, AIProviderAdapter>();
 
 /**
  * Load and initialize AI provider adapter using dynamic imports
- * Supports: ollama, claude, openai, etc.
+ * Supports: candle, claude, openai, etc.
  */
 async function loadProviderAdapter(
   provider: string,
@@ -247,32 +247,15 @@ async function loadProviderAdapter(
   let adapter: AIProviderAdapter;
 
   switch (provider.toLowerCase()) {
-    case 'ollama':
-      // Use native llama.cpp bindings for true parallel inference (no HTTP)
-      // Dynamic import to avoid ESM/CJS issues with node-llama-cpp
-      const { LlamaCppAdapter } = await import('../../../daemons/ai-provider-daemon/shared/LlamaCppAdapter.js');
-      adapter = new LlamaCppAdapter(config);
+    case 'candle':
+    case 'local':
+      // Candle adapter for local inference via Rust gRPC worker
+      const { CandleAdapter } = await import('../../../daemons/ai-provider-daemon/adapters/candle/shared/CandleAdapter.js');
+      adapter = new CandleAdapter(config);
       break;
-
-    case 'ollama-http':
-      // Fallback: HTTP-based Ollama adapter (useful for debugging)
-      const { OllamaAdapter } = await import('../../../daemons/ai-provider-daemon/shared/OllamaAdapter.js');
-      adapter = new OllamaAdapter(config);
-      break;
-
-    // TODO: Add when adapters are implemented
-    // case 'claude':
-    //   const { ClaudeAdapter } = await import('../../../daemons/ai-provider-daemon/shared/ClaudeAdapter.js');
-    //   adapter = new ClaudeAdapter(config);
-    //   break;
-    //
-    // case 'openai':
-    //   const { OpenAIAdapter } = await import('../../../daemons/ai-provider-daemon/shared/OpenAIAdapter.js');
-    //   adapter = new OpenAIAdapter(config);
-    //   break;
 
     default:
-      throw new Error(`Unknown AI provider: ${provider} (supported: 'ollama', 'ollama-http')`);
+      throw new Error(`Unknown AI provider: ${provider} (supported: 'candle', 'local')`);
   }
 
   // Initialize adapter (lazy initialization happens here, not at worker startup)

@@ -92,9 +92,19 @@ async function phase1_submitJobs(): Promise<JobRecord[]> {
   console.log('\n📤 PHASE 1: Submitting Training Jobs');
   console.log('=====================================\n');
 
-  // Verify dataset exists
+  // Create dataset if it doesn't exist (10 minimal chat-formatted training examples)
   if (!existsSync(DATASET_PATH)) {
-    throw new Error(`Dataset not found at ${DATASET_PATH}`);
+    const dir = dirname(DATASET_PATH);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const examples = Array.from({ length: 10 }, (_, i) => JSON.stringify({
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: `What is ${i + 1} + ${i + 1}?` },
+        { role: 'assistant', content: `${(i + 1) * 2}` },
+      ],
+    }));
+    writeFileSync(DATASET_PATH, examples.join('\n') + '\n');
+    console.log(`📝 Created test dataset: ${DATASET_PATH} (${examples.length} examples)`);
   }
   console.log(`✅ Dataset verified: ${DATASET_PATH}\n`);
 

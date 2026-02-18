@@ -52,7 +52,7 @@ export interface LoRATrainer {
    * - Training continues on provider's servers/processes
    *
    * Implementation is provider-specific:
-   * - Ollama: Call llama.cpp locally, return process handle
+   * - PEFT: Call PyTorch locally, return process handle
    * - OpenAI: Upload dataset to API, create fine-tuning job, return job ID
    * - DeepSeek: Upload dataset to API, create fine-tuning job, return job ID
    *
@@ -96,7 +96,7 @@ export interface LoRATrainer {
  */
 export abstract class BaseLoRATrainer implements LoRATrainer {
   /**
-   * Provider identifier (e.g., 'ollama', 'openai', 'deepseek')
+   * Provider identifier (e.g., 'peft', 'openai', 'deepseek')
    * Used for logging and metrics only, NOT for if/else chains
    */
   abstract readonly providerId: string;

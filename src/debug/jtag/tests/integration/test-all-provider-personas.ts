@@ -23,7 +23,7 @@ const PROVIDERS: ProviderTest[] = [
   { name: 'Grok', provider: 'xai', model: 'grok-3' },  // Updated from grok-beta (deprecated 2025-09-15)
   { name: 'Together Assistant', provider: 'together', model: 'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo' },
   { name: 'Fireworks AI', provider: 'fireworks', model: 'accounts/fireworks/models/deepseek-v3p1' },
-  { name: 'Local Assistant', provider: 'ollama', model: 'llama3.2:3b' },
+  { name: 'Local Assistant', provider: 'candle', model: 'llama3.2:3b' },
 ];
 
 async function testProvider(config: ProviderTest, daemon: AIProviderDaemon): Promise<void> {

@@ -15,8 +15,7 @@ import type { InferenceGenerateParams, InferenceGenerateResult } from '../shared
 import { createInferenceGenerateResultFromParams } from '../shared/InferenceGenerateTypes';
 import { AIProviderDaemon } from '@daemons/ai-provider-daemon/shared/AIProviderDaemon';
 import { LOCAL_MODELS } from '@system/shared/Constants';
-import { existsSync } from 'fs';
-import { resolve } from 'path';
+import { AdapterStore } from '@system/genome/server/AdapterStore';
 
 export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerateParams, InferenceGenerateResult> {
 
@@ -42,23 +41,22 @@ export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerat
     const isLocalProvider = params.provider && localProviders.includes(params.provider.toLowerCase());
     const requestedModel = params.model || (isLocalProvider ? LOCAL_MODELS.DEFAULT : undefined);
 
-    // Filter adapters to only those with existing files
-    let adaptersToApply: Array<{ name: string; path: string; domain: string }> = [];
+    // Resolve and filter adapters to only those with existing files
+    let adaptersToApply: Array<{ name: string; path: string; domain: string; scale: number }> = [];
     if (params.adapters && params.adapters.length > 0) {
-      // Convert adapter names to full adapter specs
-      // For now, use convention: adapter name -> ./lora-adapters/{name}.safetensors
       adaptersToApply = params.adapters
         .map(name => ({
           name,
-          path: `./lora-adapters/${name}.safetensors`,
-          domain: 'general'
+          path: this._resolveAdapterPath(name),
+          domain: 'general',
+          scale: 1.0,
         }))
-        .filter(adapter => {
-          const absolutePath = resolve(adapter.path);
-          if (!existsSync(absolutePath)) {
-            console.log(`🧬 inference/generate: Skipping adapter ${adapter.name} - file not found at ${absolutePath}`);
+        .filter((adapter): adapter is { name: string; path: string; domain: string; scale: number } => {
+          if (!adapter.path) {
+            console.log(`🧬 inference/generate: Skipping adapter ${adapter.name} - not found in genome adapters or legacy paths`);
             return false;
           }
+          console.log(`🧬 inference/generate: Resolved adapter ${adapter.name} → ${adapter.path}`);
           return true;
         });
     }
@@ -71,7 +69,7 @@ export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerat
       temperature: params.temperature || 0.7,
       systemPrompt: params.systemPrompt,
       activeAdapters: adaptersToApply.length > 0 ? adaptersToApply : undefined,
-      preferredProvider: params.provider,
+      provider: params.provider,
     };
 
     try {
@@ -111,5 +109,21 @@ export class InferenceGenerateServerCommand extends CommandBase<InferenceGenerat
         error: errorMessage,
       });
     }
+  }
+
+  /**
+   * Resolve an adapter name to its filesystem path.
+   * Delegates to AdapterStore — the SINGLE SOURCE OF TRUTH for adapter discovery.
+   */
+  private _resolveAdapterPath(name: string): string | null {
+    // Search all adapters for a name match
+    const all = AdapterStore.discoverAll();
+    const match = all.find(a =>
+      a.manifest.name === name ||
+      a.dirPath.includes(name)
+    );
+
+    if (match && match.hasWeights) return match.dirPath;
+    return null;
   }
 }

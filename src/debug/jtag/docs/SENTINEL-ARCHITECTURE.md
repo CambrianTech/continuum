@@ -354,7 +354,11 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 |-----------|--------|-------|
 | Pipeline steps: Shell, LLM, Command, Condition | ✅ Implemented | Rust `sentinel/steps/` |
 | Variable interpolation (`{{steps.0.output}}`) | ✅ Implemented | Rust `interpolation.rs` |
+| Multi-pass nested interpolation | ✅ Implemented | Rust `interpolation.rs` (5-pass, innermost-first) |
+| JSON path traversal with array indexing | ✅ Implemented | Rust `interpolation.rs` `traverse_json_path()` |
+| Loop-relative referencing (`{{loop.N.field}}`) | ✅ Implemented | Rust `interpolation.rs` + `loop_step.rs` |
 | Named outputs (`{{named.build.output}}`) | ✅ Implemented | Rust `interpolation.rs` + `ExecutionContext` |
+| Cross-sentinel dual-pipeline orchestration | ✅ Demonstrated | Academy teacher/student (6 step types) |
 | Execution trace for debugging | ✅ Implemented | Rust `StepResult[]` in `PipelineResult` |
 | Shell process isolation (`kill_on_drop`) | ✅ Implemented | Rust `steps/shell.rs` |
 | Module-to-module calls (no IPC deadlock) | ✅ Implemented | Rust `ModuleRegistry.route_command()` |
@@ -370,9 +374,9 @@ A Sentinel generalizes both into **one primitive**: a looping pipeline where eac
 | Uniform step signatures (PipelineContext) | ✅ Implemented | All steps receive `PipelineContext` |
 | **Persona ownership** | ❌ Needed | TypeScript + data layer |
 | **Escalation → inbox** | ❌ Needed | TypeScript integration |
-| **SentinelEntity persistence** | ❌ Needed | TypeScript data layer |
-| **Memory/recall integration** | ❌ Needed | TypeScript integration |
-| **Triggers (event, schedule)** | ❌ Needed | Rust or TypeScript |
+| **SentinelEntity persistence** | ✅ Done | `SentinelEntity` class + EntityRegistry |
+| **Memory/recall integration** | ✅ Done | `MemoryType.SENTINEL` + `recallSentinelPatterns()` |
+| **Triggers (event, schedule)** | ✅ Done | `SentinelTriggerService` (immediate/event/cron/manual) |
 
 The Rust pipeline engine is ~90% complete. 9 step types implemented across all composition patterns (sequential, conditional, looping, parallel, event-driven, nested). The remaining work is the lifecycle/integration layer (persona ownership, persistence, triggers).
 
@@ -2491,6 +2495,18 @@ When all 24 tasks pass, the sentinel architecture is validated as a complete evo
 
 ## Implementation Status: Rust-Centric Architecture
 
+### Completion Criteria
+
+| System | Phase | Status | E2E Test | What It Proves |
+|--------|-------|--------|----------|----------------|
+| Pipeline Engine | A | 12/15 | `sentinel-multi-step-pipeline.test.ts` | Shell+LLM+Command chain correctly |
+| Lifecycle | B | 9/10 | `sentinel-adapter-integration.test.ts` | Persistence, ownership, triggers |
+| Genome | C | 8/8 DONE | `genome-fine-tuning-e2e.test.ts` | Training pipeline E2E |
+| Academy | D | 9/9 DONE | `lora-inference-improvement.test.ts` | Student measurably improves |
+| Knowledge Synthesis | D.5 | 7/10 | `knowledge-synthesis-repo.test.ts` | Teacher learns from real data |
+| Benchmarks | D.5 | 1/3 | `benchmark-generation.test.ts` | Auto-generated test suites |
+| Marketplace | E | 0/7 | — | Genome export/import/sharing |
+
 **Design principle**: Rust (`continuum-core`) is where the real execution lives. TypeScript provides wrapping, CLI commands, and portability to browser/server environments.
 
 ### Primary Layer: Rust — Pipeline Execution, Process Isolation, Concurrency
@@ -2601,44 +2617,72 @@ These are the foundation — everything else builds on them.
 - [x] **Named step outputs** — `{{named.label.output}}` via `ExecutionContext.named_outputs`
 - [ ] **Expression evaluator** — Evaluate `{{steps.0.exit_code}} == 0` and `{{buildResult.success}}` in condition/loop checks
 - [x] **Uniform step signatures** — All 9 step types receive `PipelineContext` for consistent access to registry/bus
+- [x] **Multi-pass nested interpolation** — Regex `[^{}\n]+` resolves innermost `{{}}` first, up to 5 passes for `{{steps.0.output.topics.{{input.iteration}}.name}}`
+- [x] **JSON path traversal** — `traverse_json_path()` supports array indexing (numeric path parts) and auto-parses JSON strings during traversal
+- [x] **Loop-relative referencing** — `{{loop.N.field}}` resolves to `step_results[_loop_base + N]` for stable intra-loop references
+- [x] **Command routing bypass** — Pipeline command steps use `execute_ts_json()` to route directly to TypeScript, bypassing Rust module prefix collisions
+- [ ] **Per-step retry** — Configurable retry with exponential backoff for transient API errors
+- [ ] **Step timeout** — Per-step timeout separate from watch event timeout
 
 ### Phase B: Sentinel Lifecycle & Persona Integration
 
 Wire sentinels into the persona cognitive cycle.
 
-- [ ] **SentinelEntity persistence** — Save/load sentinel definitions via `data/create`/`data/list` on `sentinels` collection
-- [ ] **`sentinel/save` and `sentinel/load` integration** — Wire CLI commands to data layer
-- [ ] **Persona ownership** — Every sentinel has a `parentPersonaId`, enforced at creation
-- [ ] **Escalation → persona inbox** — When sentinel hits `unfamiliar`/`approval_needed`, create inbox item
-- [ ] **Memory integration** — Successful sentinels stored as memories (`memory/store` with type `sentinel`)
-- [ ] **Memory recall** — Persona recalls sentinel patterns when facing similar tasks
-- [ ] **Triggers** — `immediate`, `event`, `schedule` (cron), `manual` trigger types
+- [x] **SentinelEntity persistence** — `SentinelEntity` class with field decorators, registered in EntityRegistry, 'sentinels' collection
+- [x] **`sentinel/save` and `sentinel/load` integration** — CLI commands wire to data layer (existed already, now with entity registration)
+- [x] **Persona ownership** — Every sentinel has `parentPersonaId`, set at creation in `sentinel/save` and `sentinel/run`
+- [x] **Escalation → persona inbox** — `SentinelEscalationService` routes sentinel lifecycle events to `InboxTask` for owning persona
+- [x] **Escalation rules** — Configurable per-sentinel: `{ condition, action, priority }` with defaults for error/timeout/complete
+- [x] **Execution tracking** — `registerSentinelHandle()` links ephemeral Rust handles to durable entities, persists execution results
+- [x] **Memory integration** — Sentinel completions stored as `MemoryType.SENTINEL` memories via `SentinelEscalationService.storeSentinelMemory()`
+- [x] **Memory recall** — `PersonaTaskExecutor.recallSentinelPatterns()` queries sentinel memories for pattern matching when processing sentinel tasks
+- [x] **Triggers** — `SentinelTriggerService`: `immediate`, `event` (debounce-aware), `cron` (interval scheduling), `manual` trigger types. Auto-loads from database on startup.
 - [ ] **Live step CRUD** — Add/update/remove steps on a running sentinel (next iteration picks up changes)
 
 ### Phase C: Genome Integration
 
 Sentinels orchestrate the LoRA training pipeline.
 
-- [ ] **Training data packaging** — Sentinel step that exports challenge failures as JSONL training data
-- [ ] **LoRA training orchestration** — Sentinel step that triggers fine-tuning jobs (local PEFT or remote API)
-- [ ] **Phenotype validation** — Sentinel step that benchmarks before/after performance on same challenges
-- [ ] **Quality gating** — Only register adapters that show measurable improvement
-- [ ] **Genome layer registration** — Register validated adapters in `genome_layers` collection
-- [ ] **Dynamic composition** — Compose multiple layers and activate on persona via `genome/set-active`
-- [ ] **LRU paging integration** — Automatically evict least-used adapters under memory pressure
+- [x] **Training data synthesis** — `genome/dataset-synthesize` uses LLM to generate topic-specific JSONL training data
+- [x] **Training data packaging** — Sentinel command step exports synthesized data as JSONL compatible with `genome/train`
+- [x] **LoRA training orchestration** — Sentinel command step triggers PEFT fine-tuning via `genome/train`
+- [x] **Genome layer registration** — Register trained adapters via `genome/paging-adapter-register` in sentinel pipeline
+- [x] **Phenotype validation** — `genome/phenotype-validate` command: LLM-as-judge scores pre-training vs post-training responses. Student pipeline pre-test (loop.1) establishes baseline before training.
+- [x] **Quality gating** — Student pipeline condition step (loop.10): only registers adapter if phenotype improvement >= threshold (default 5pp). Emits `inference:demo` on pass, `quality:gate:failed` on fail.
+- [x] **Dynamic composition** — `genome/compose` command: composes multiple trained LoRA layers into a stacked genome. Student pipeline post-loop step merges all trained adapters via weighted merge.
+- [x] **LRU paging integration** — Student pipeline quality gate calls `genome/paging-activate` after registration, triggering GenomeDaemon LRU eviction under memory pressure.
 
 ### Phase D: Academy (Plato's Training Arena)
 
 The selection pressure that drives genome evolution.
 
-- [ ] **Challenge generation** — LLM generates domain-specific challenges with rubrics
-- [ ] **Multi-persona competition** — Multiple personas solve same challenges in parallel
-- [ ] **AI judging** — LLM evaluates solutions against rubrics, produces scores
-- [ ] **Performance gap analysis** — Identify specific skill gaps from competition results
-- [ ] **Gap-driven training** — Automatically create training sentinels for identified gaps
-- [ ] **Evolution tournament** — Multi-round competition with training between rounds
-- [ ] **Academy result persistence** — Store competition results for historical tracking
-- [ ] **Competitive ranking** — Track persona rankings across competitions
+- [x] **Dual-sentinel teacher/student architecture** — Teacher designs curriculum, synthesizes data, examines; Student trains and proves mastery
+- [x] **Challenge generation** — Teacher LLM generates domain-specific exam questions with expected answers
+- [x] **AI judging** — Teacher LLM grades student responses against rubrics, produces 0-100 scores
+- [x] **Academy result persistence** — `AcademySessionEntity`, `AcademyCurriculumEntity`, `AcademyExaminationEntity` track full lifecycle
+- [x] **Inter-sentinel coordination** — emit/watch events scoped by session: `academy:{sessionId}:{action}`
+- [x] **Curriculum design** — Teacher LLM researches skill domain, designs 3-5 progressive topics
+- [x] **Remediation loop** — Inner exam retry loop in teacher pipeline: on failure, synthesizes targeted remedial data based on `weakAreas` feedback, re-emits `dataset:ready` for student re-training, up to `maxTopicAttempts` attempts per topic.
+- [x] **Multi-persona competition** — `genome/academy-competition` spawns 1 teacher + N student sentinels on shared curriculum. `CompetitionEntity` tracks per-competitor scores, handles, and rankings. Supports duplicate detection and parallel student spawning.
+- [x] **Performance gap analysis** — `genome/gap-analysis` reads competition state, computes per-topic `TopicGap` (gap from field best/average), identifies weakest/strongest topics, produces prioritized `remediationPriorities` for targeted retraining.
+- [x] **Evolution tournament** — `TournamentRound` tracks multi-round competitions with `TournamentRanking` snapshots per round. `scoreDelta`/`rankDelta` track improvement between rounds. `CompetitionConfig.tournamentRounds` controls number of rounds.
+- [x] **Competitive ranking** — `CompetitorEntry` tracks per-persona `topicScores[]`, `averageScore`, `rank`, `layerIds[]`. Rankings computed from exam scores across all topics. `CompetitionRankingPayload` event broadcasts rankings.
+- [x] **Inference demos** — Student pipeline emits `inference:demo` event with sample Q&A comparison (baseline vs adapted) after quality gate passes. `InferenceDemoPayload` includes scores, improvement, and sample answers.
+
+### Phase D.5: Knowledge Synthesis & Benchmarks
+
+The teacher learns from ANY data source — code repos, web, conversations, documents — not just LLM generation.
+
+- [x] **Foundation types** — `KnowledgeTypes.ts`: `SourceKnowledge`, `ExtractedFact`, `DataSourceConfig`, `BenchmarkDefinition`, `BenchmarkResult`
+- [x] **Grounded synthesis** — `genome/dataset-synthesize` accepts optional `groundingContext` — when provided, all generated training data must be traceable to verified facts
+- [x] **KnowledgeExplorationPipeline** — Builds sentinel pipeline to explore data sources and produce `SourceKnowledge`. Source types: `git-repo` (shell: find files, git log, read content), `web-research` (command: search + fetch), `conversation-log`, `document-set`, `pure-generation`
+- [x] **TeacherPipeline knowledge integration** — When `dataSources` provided, prepends knowledge exploration nested sentinel, includes extracted facts in curriculum design, passes `groundingContext` to all synthesis calls. Backward compatible: no dataSources = pure generation.
+- [x] **BenchmarkPipeline** — Generates persistent benchmark (test suite) from `SourceKnowledge`. LLM creates questions with expected answers and rubrics, persists to `academy_benchmarks` collection.
+- [x] **BenchmarkRunnerPipeline** — Runs persona against benchmark: load questions → answer → grade → persist `BenchmarkResult`. Pre/post comparison proves training worked.
+- [x] **Web search rate limiting** — `SearchRateLimiter`: Brave API quota tracking (2000/month), auto-fallback to DuckDuckGo on exhaustion, in-flight request deduplication, 24hr LRU cache
+- [ ] **Headless browser rendering** — `interface/web/render` command using Puppeteer for JS-heavy/Cloudflare sites. Sentinels choose fetch (fast) vs render (JS-capable).
+- [ ] **E2E: knowledge-synthesis-repo** — Teacher explores jtag codebase, extracts facts, synthesizes grounded training data, student trains, answers repo-specific questions, phenotype validates improvement
+- [ ] **E2E: benchmark-generation** — Generate benchmark from Nexaflux knowledge, run against base model (low score), train adapter, re-run (high score)
 
 ### Phase E: Marketplace & Distribution
 
@@ -2652,7 +2696,19 @@ Share evolved capabilities across the community.
 - [ ] **Version control** — Docker-like tags for adapter versions, rollback capability
 - [ ] **Quality metrics** — Community ratings, download counts, performance benchmarks
 
-### Phase F: Advanced Capabilities
+### Phase F: Multi-Modal Training
+
+The Academy's teacher/student pattern is media-agnostic. Same sentinel structure, different training commands.
+
+- [ ] **Voice training** — Teacher synthesizes text for voice characteristics, student trains TTS/STT adapters via `genome/train-voice`
+- [ ] **Voice evaluation** — Teacher evaluates generated speech via audio analysis LLM
+- [ ] **Image training** — Teacher synthesizes style guides, student trains diffusion LoRA adapters via `genome/train-image`
+- [ ] **Image evaluation** — Teacher evaluates generated images via vision LLM
+- [ ] **Video training** — Teacher synthesizes scenarios, student trains video understanding models
+- [ ] **Gameplay/behavior training** — Teacher synthesizes strategy scenarios, student trains behavior models
+- [ ] **Modality-agnostic Academy** — Single orchestrator for all media types via `genome/dataset-synthesize-{modality}` and `genome/train-{modality}`
+
+### Phase G: Advanced Capabilities
 
 Long-term vision items.
 
@@ -2663,6 +2719,9 @@ Long-term vision items.
 - [ ] **Adaptive compute (LoopLM)** — Variable reasoning depth based on task complexity
 - [ ] **Self-task generation** — Personas create tasks for themselves during idle time
 - [ ] **Activity ambient state** — Temperature/pressure-based emergent coordination between personas
+- [ ] **Criteria-driven config** — Replace hard-coded thresholds with learned/adaptive criteria
+- [ ] **Long-running sessions** — Hours/days execution with checkpointing and resume
+- [ ] **Real-time dashboards** — Loss curves, exam scores, inference examples streamed as events to widgets
 
 ---
 
@@ -2684,6 +2743,16 @@ Long-term vision items.
 - [ACADEMY_ARCHITECTURE.md](personas/ACADEMY_ARCHITECTURE.md) — Plato's Academy competitive training
 - [RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) — Recipe→Sentinel unification
 - [SENTINEL-AI-INTEGRATION.md](personas/SENTINEL-AI-INTEGRATION.md) — Sentinel + persona convergence vision
+- [ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student learning system
+
+### Pipeline Templates
+
+- [TeacherPipeline.ts](../system/sentinel/pipelines/TeacherPipeline.ts) — Academy teacher (curriculum, synthesis, exams, grading, remediation)
+- [StudentPipeline.ts](../system/sentinel/pipelines/StudentPipeline.ts) — Academy student (pre-test, train, exam, phenotype validate)
+- [LoRATrainingPipeline.ts](../system/sentinel/pipelines/LoRATrainingPipeline.ts) — Standalone LoRA training pipeline
+- [KnowledgeExplorationPipeline.ts](../system/sentinel/pipelines/KnowledgeExplorationPipeline.ts) — Data source exploration and fact extraction
+- [BenchmarkPipeline.ts](../system/sentinel/pipelines/BenchmarkPipeline.ts) — Benchmark generation and runner pipelines
+- [sentinel-lora-training.md](sentinel-lora-training.md) — LoRA training pipeline commands + Academy quick start
 
 ### External
 

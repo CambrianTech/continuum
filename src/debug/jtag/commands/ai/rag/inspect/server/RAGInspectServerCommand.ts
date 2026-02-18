@@ -29,6 +29,8 @@ export class RAGInspectServerCommand extends RAGInspectCommand {
         params.contextId,
         params.personaId,
         {
+          modelId: params.modelId,
+          provider: params.provider,
           maxMessages: params.maxMessages ?? 20,
           includeArtifacts: params.includeArtifacts ?? true,
           includeMemories: params.includeMemories ?? true,

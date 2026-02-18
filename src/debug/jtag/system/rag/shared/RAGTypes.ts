@@ -194,9 +194,11 @@ export interface RAGBuildOptions {
   // NEW: Task completion tracking - prevent infinite loops
   excludeMessageIds?: UUID[];  // Message IDs to exclude from RAG context (e.g., processed tool results)
 
-  // Model-aware context budgeting (Bug #5 fix)
-  modelId?: string;  // Target model ID for calculating safe message count based on context window
-  maxTokens: number;  // Max completion tokens — REQUIRED, must come from model config
+  // Model-aware context budgeting — model identity is REQUIRED for correct budget.
+  // Without modelId+provider, every token calculation falls back to wrong defaults.
+  modelId: string;    // Target model ID — drives context window, token budget, everything
+  provider: string;   // AI provider (e.g. 'anthropic', 'candle', 'deepseek') — scopes model lookup
+  maxTokens: number;  // Max completion tokens — must come from model config
   systemPromptTokens?: number;  // Estimated system prompt tokens (default: 500)
 
   // NEW: Model capability-aware processing
@@ -212,7 +214,6 @@ export interface RAGBuildOptions {
   // Voice mode optimization: Skip expensive semantic search for faster responses
   voiceSessionId?: UUID;  // Voice call session ID (if in voice mode)
 
-  // Provider info for tool-aware RAG sources
-  provider?: string;  // AI provider (e.g. 'anthropic', 'candle', 'deepseek')
+  // Tool capability for tool-aware RAG sources
   toolCapability?: 'native' | 'xml' | 'none';  // Provider's tool calling capability
 }

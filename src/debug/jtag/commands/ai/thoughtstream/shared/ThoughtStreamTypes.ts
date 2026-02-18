@@ -15,6 +15,10 @@ export interface ThoughtStreamParams extends CommandParams {
   since?: string;                      // Time range (e.g., "5m", "1h")
   limit?: number;                      // Max number of streams to show (default 10)
 
+  // Model context for RAG budget calculation
+  modelId: string;                     // Target model — drives context window budget
+  provider: string;                    // AI provider — scopes model lookup
+
   // Display options
   showContent?: boolean;               // Show actual message content (not "Unknown")
   showRagContext?: boolean;            // Include RAG context for each thought

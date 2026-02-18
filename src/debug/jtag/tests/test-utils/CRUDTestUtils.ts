@@ -7,6 +7,16 @@
 
 import { execSync } from 'child_process';
 
+/** Standard CRUD command names */
+const DATA_COMMANDS = {
+  CREATE: 'data/create',
+  READ: 'data/read',
+  UPDATE: 'data/update',
+  DELETE: 'data/delete',
+  LIST: 'data/list',
+  SCHEMA: 'data/schema',
+} as const;
+
 /**
  * Robust command execution with timeout and JSON parsing
  * Modular utilities to avoid code duplication

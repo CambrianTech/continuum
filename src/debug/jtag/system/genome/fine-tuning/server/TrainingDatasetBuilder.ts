@@ -13,6 +13,7 @@
  * SERVER-ONLY: Uses Node.js and database operations
  */
 
+import * as fs from 'fs';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import type {
@@ -351,6 +352,45 @@ export class TrainingDatasetBuilder {
     return dataset.examples
       .map(example => JSON.stringify({ messages: example.messages }))
       .join('\n');
+  }
+
+  /**
+   * Load dataset from JSONL file
+   *
+   * Reads a JSONL file where each line is {"messages": [...]}
+   * Returns a TrainingDataset with the parsed examples and metadata.
+   */
+  static async loadFromJSONL(
+    filePath: string,
+    metadata: {
+      personaId: UUID;
+      personaName: string;
+      traitType: TraitType;
+      source?: 'conversations' | 'corrections' | 'exercises';
+    }
+  ): Promise<TrainingDataset> {
+    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const lines = content.trim().split('\n').filter(line => line.trim());
+
+    const examples: TrainingExample[] = lines.map(line => {
+      const parsed = JSON.parse(line);
+      return {
+        messages: parsed.messages,
+        metadata: parsed.metadata
+      };
+    });
+
+    return {
+      examples,
+      metadata: {
+        personaId: metadata.personaId,
+        personaName: metadata.personaName,
+        traitType: metadata.traitType,
+        createdAt: Date.now(),
+        source: metadata.source ?? 'conversations',
+        totalExamples: examples.length
+      }
+    };
   }
 
   /**

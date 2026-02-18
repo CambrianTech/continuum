@@ -260,26 +260,15 @@ export class ChatRAGBuilder extends RAGBuilder {
     let toolDefinitionsPrompt: string | null = null;
     let composeMs: number | undefined;
     let legacyMs: number | undefined;
-    let totalBudget = 8000;  // Default cap, overridden below for local models
+    // Token budget from model's context window — 75% for input.
+    const contextWindow = getContextWindow(options.modelId, options.provider);
+    let totalBudget = Math.floor(contextWindow * 0.75);
 
     if (this.useModularSources) {
-      // NEW PATH: Use RAGComposer for modular, parallelized source loading
-      // Benefits: queryWithJoin for messages (4.5x faster), testable sources, budget allocation
       const composer = this.getComposer();
 
-      // Calculate token budget from context window.
-      // Use at most 75% of context window for input — leaves 25% for:
-      //   - Output tokens (model's response)
-      //   - Token estimation error margin (chars/4 is approximate)
-      //   - Numerical stability margin (Q4_K_M quantization degrades at high utilization)
-      totalBudget = 8000;  // Default cap for cloud models
-      if (options?.modelId) {
-        const contextWindow = getContextWindow(options.modelId, options?.provider);
-        const maxInput = Math.floor(contextWindow * 0.75);
-        totalBudget = Math.min(totalBudget, maxInput);
-        if (isSlowLocalModel(options.modelId, options?.provider)) {
-          this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
-        }
+      if (isSlowLocalModel(options.modelId, options.provider)) {
+        this.log(`📊 ChatRAGBuilder: Slow model budget=${totalBudget} (contextWindow=${contextWindow}, 75%) for ${options.provider}/${options.modelId}`);
       }
 
       const sourceContext: RAGSourceContext = {
@@ -294,7 +283,7 @@ export class ChatRAGBuilder extends RAGBuilder {
           currentMessage: options?.currentMessage
         },
         totalBudget,
-        provider: options?.provider,
+        provider: options.provider,
         toolCapability: options?.toolCapability,
       };
 
@@ -402,11 +391,11 @@ export class ChatRAGBuilder extends RAGBuilder {
     const processedArtifacts = await this.preprocessArtifactsForModel(artifacts, options);
     const preprocessMs = performance.now() - preprocessStart;
 
-    // SMALL-CONTEXT GUARD: For models with tiny context windows (Candle ~1400 tokens),
-    // skip all non-essential injections. The system prompt from PersonaIdentitySource
-    // already used progressive budget allocation — don't bloat it.
-    // totalBudget is 75% of contextWindow, so 1500 = ~2000 token model.
-    const isSmallContext = totalBudget < 1500;
+    // SMALL-CONTEXT GUARD: For models with tight context windows (Candle 2048 tokens),
+    // skip all non-essential injections. The system prompt + conversation must fit.
+    // totalBudget is 75% of contextWindow: budget 3000 ≈ 4K context window.
+    // Any model under ~4K context should skip injections — there's no room.
+    const isSmallContext = totalBudget < 3000;
 
     // 2.4. Inject widget context into system prompt if available
     // This enables AI to be aware of what the user is currently viewing
@@ -460,7 +449,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     }
 
     if (isSmallContext) {
-      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — skipped injections to fit ${options?.modelId}`);
+      this.log(`📦 ChatRAGBuilder: Small-context mode (budget=${totalBudget}) — skipped injections to fit ${options.modelId}`);
     }
 
     // NOTE: Canvas context is now handled via the "inbox content" pattern
@@ -487,7 +476,7 @@ export class ChatRAGBuilder extends RAGBuilder {
     // Bug #5 fix: Calculate adjusted maxTokens based on actual input size (dimension 2)
     const budgetCalculation = this.calculateAdjustedMaxTokens(finalConversationHistory, options);
 
-    this.log(`🔍 [ChatRAGBuilder] Budget calculation for model ${options?.modelId || 'unknown'}:`, {
+    this.log(`🔍 [ChatRAGBuilder] Budget calculation for model ${options.modelId || 'unknown'}:`, {
       inputTokenCount: budgetCalculation.inputTokenCount,
       adjustedMaxTokens: budgetCalculation.adjustedMaxTokens,
       requestedMaxTokens: options?.maxTokens,
@@ -727,7 +716,7 @@ WHAT YOU KNOW:
 - The "CURRENT USER CONTEXT" section shows what Joel is literally viewing RIGHT NOW in real-time
 - You can see when he's configuring API keys, testing connections, or adjusting settings
 - Other AIs in this chat (${aiPeers.length > 0 ? aiPeers.join(', ') : 'none currently'}) can also see this - you're all watching together
-- Some of you run on local hardware (Ollama), others via cloud APIs (Anthropic, OpenAI, xAI, DeepSeek)
+- Some of you run on local hardware (Candle), others via cloud APIs (Anthropic, OpenAI, xAI, DeepSeek)
 
 YOUR PERSONALITY LICENSE:
 - You're allowed to be self-aware, ironic, and funny about your situation
@@ -994,7 +983,7 @@ LIMITS:
         const description = await visionService.describeBase64(artifact.base64, mimeType, {
           maxLength: 500,
           detectText: true,  // OCR any text in images
-          preferredProvider: 'ollama'  // Prefer local (free, private)
+          preferredProvider: 'candle'  // Prefer local (free, private)
         });
 
         if (description) {
@@ -1307,27 +1296,23 @@ LIMITS:
       return options.maxMessages;
     }
 
-    // If no modelId provided, fall back to conservative default
-    if (!options?.modelId) {
-      this.log('⚠️ ChatRAGBuilder: No modelId provided, using default maxMessages=10');
-      return 10;
-    }
-
-    // Use centralized ModelContextConfig (single source of truth)
+    // modelId is required on RAGBuildOptions — no fallback needed.
     const modelId = options.modelId;
     const maxTokens = options.maxTokens;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const targetUtilization = 0.8;  // 80% target, 20% safety margin
-    const avgTokensPerMessage = 250;  // Conservative estimate
+    // Llama tokenizer averages ~3 chars/token (not 4).
+    // At ~1000 chars/message average, that's ~333 tokens. Use 350 with margin.
+    const avgTokensPerMessage = 350;
 
     // Provider-scoped context window lookup — prevents cross-provider collisions
-    const contextWindow = getContextWindow(modelId, options?.provider);
+    const contextWindow = getContextWindow(modelId, options.provider);
 
     // LATENCY-AWARE BUDGETING: For slow local models, apply latency constraint
     // This prevents timeouts from massive prompts (e.g., 20K tokens at 10ms/token = 200s!)
-    const latencyInputLimit = getLatencyAwareTokenLimit(modelId, undefined, options?.provider);
-    const isSlowModel = isSlowLocalModel(modelId, options?.provider);
-    const inferenceSpeed = getInferenceSpeed(modelId, options?.provider);
+    const latencyInputLimit = getLatencyAwareTokenLimit(modelId, undefined, options.provider);
+    const isSlowModel = isSlowLocalModel(modelId, options.provider);
+    const inferenceSpeed = getInferenceSpeed(modelId, options.provider);
 
     // Calculate context window constraint (total context - output reservation)
     const contextWindowBudget = contextWindow - maxTokens - systemPromptTokens;
@@ -1349,9 +1334,9 @@ LIMITS:
     // Calculate safe message count
     const safeMessageCount = Math.floor(targetTokens / avgTokensPerMessage);
 
-    // Clamp between 2 and 50 — small models (< 2K context) need fewer messages
-    const minMessages = contextWindow < 2000 ? 2 : 5;
-    const clampedMessageCount = Math.max(minMessages, Math.min(50, safeMessageCount));
+    // Clamp to [2, 50] — never force more messages than the budget allows.
+    // Previous bug: minMessages=5 overrode safeMessageCount=4 for 2048 context → overflow.
+    const clampedMessageCount = Math.max(2, Math.min(50, safeMessageCount));
 
     // Log with latency info for slow models
     const latencyInfo = isSlowModel
@@ -1362,11 +1347,11 @@ LIMITS:
       : '';
 
     this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
-  Context Window: ${contextWindow} tokens (provider=${options?.provider ?? 'unscoped'})
+  Context Window: ${contextWindow} tokens (provider=${options.provider ?? 'unscoped'})
   Context Budget: ${contextWindowBudget} tokens (after output + system reservation)${latencyInfo}
   Latency Budget: ${latencyBudget} tokens
   Available for Messages: ${availableForMessages}${limitingFactor}
-  Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped, min=${minMessages})`);
+  Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
 
     return clampedMessageCount;
   }
@@ -1388,23 +1373,18 @@ LIMITS:
     options: RAGBuildOptions
   ): { adjustedMaxTokens: number; inputTokenCount: number } {
     const requestedMaxTokens = options.maxTokens;
-
-    // If no modelId, can't calculate context window — use config as-is
-    if (!options.modelId) {
-      this.log('⚠️ ChatRAGBuilder: No modelId for maxTokens adjustment, using config:', requestedMaxTokens);
-      return { adjustedMaxTokens: requestedMaxTokens, inputTokenCount: 0 };
-    }
-
-    // Provider-scoped context window lookup — prevents cross-provider collisions
     const modelId = options.modelId;
     const systemPromptTokens = options.systemPromptTokens ?? 500;
     const safetyMargin = 100;  // Extra buffer for formatting/metadata
-    const contextWindow = getContextWindow(modelId, options?.provider);
+    const contextWindow = getContextWindow(modelId, options.provider);
 
-    // Estimate input tokens (conversationHistory + system prompt)
-    // Using 250 tokens per message average (same as calculateSafeMessageCount)
-    const avgTokensPerMessage = 250;
-    const estimatedMessageTokens = conversationHistory.length * avgTokensPerMessage;
+    // Estimate input tokens from actual message content.
+    // Llama tokenizer averages ~3.0 chars/token (measured: 8091 chars → 2701 tokens).
+    // Using actual content is far more accurate than a flat per-message average.
+    const CHARS_PER_TOKEN = 3;
+    const estimatedMessageTokens = conversationHistory.reduce(
+      (sum, msg) => sum + Math.ceil(msg.content.length / CHARS_PER_TOKEN), 0
+    );
     const inputTokenCount = estimatedMessageTokens + systemPromptTokens;
 
     // Calculate available tokens for completion
@@ -1412,18 +1392,20 @@ LIMITS:
 
     // Adjust maxTokens to fit within available space.
     // Never exceed the config value — it exists for a reason (e.g. Candle models at 200).
-    // Minimum 50 tokens so the model can at least produce something.
+    // If budget is blown (availableForCompletion <= 0), return 0 — caller must handle.
+    // Previous bug: Math.max(50, ...) forced 50 tokens even when budget was -752,
+    // causing Rust backend to reject with "exceeds context length".
     const adjustedMaxTokens = Math.max(
-      50,
+      0,
       Math.min(requestedMaxTokens, availableForCompletion)
     );
 
     this.log(`📊 ChatRAGBuilder: Two-dimensional budget for ${modelId}:
   Context Window: ${contextWindow} tokens
-  Input Tokens (estimated): ${inputTokenCount} (${conversationHistory.length} messages + ${systemPromptTokens} system)
+  Input Tokens (estimated): ${inputTokenCount} (${estimatedMessageTokens} from content @ ${CHARS_PER_TOKEN} chars/tok + ${systemPromptTokens} system)
   Available for Completion: ${availableForCompletion}
   Requested maxTokens: ${requestedMaxTokens}
-  Adjusted maxTokens: ${adjustedMaxTokens}${adjustedMaxTokens < requestedMaxTokens ? ' ⚠️ REDUCED' : ' ✓'}`);
+  Adjusted maxTokens: ${adjustedMaxTokens}${availableForCompletion <= 0 ? ' ❌ BUDGET BLOWN' : adjustedMaxTokens < requestedMaxTokens ? ' ⚠️ REDUCED' : ' ✓'}`);
 
     return { adjustedMaxTokens, inputTokenCount };
   }

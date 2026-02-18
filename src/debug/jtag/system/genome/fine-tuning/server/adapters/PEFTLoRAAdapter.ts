@@ -24,6 +24,8 @@ import type {
   TrainingStatus
 } from '../../shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
+import { LOCAL_MODELS } from '@system/shared/Constants';
+import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -40,45 +42,34 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   readonly providerId = 'peft';
 
   /**
-   * Ollama → HuggingFace model name mapping
-   *
-   * Maps common Ollama model names to their HuggingFace equivalents.
-   * PEFT trains on HuggingFace models, but personas may use Ollama names.
+   * Map short model name to HuggingFace model name.
+   * Delegates to LOCAL_MODELS.mapToHuggingFace() — SINGLE SOURCE OF TRUTH.
    */
-  private static readonly OLLAMA_TO_HF: Record<string, string> = {
-    // Llama 3.2 variants
-    'llama3.2:3b': 'meta-llama/Llama-3.2-3B-Instruct',
-    'llama3.2:1b': 'meta-llama/Llama-3.2-1B-Instruct',
-    'llama3.2': 'meta-llama/Llama-3.2-3B-Instruct',
-    // Llama 3.1 variants
-    'llama3.1:8b': 'meta-llama/Llama-3.1-8B-Instruct',
-    'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
-    'llama3.1': 'meta-llama/Llama-3.1-8B-Instruct',
-    // Phi variants
-    'phi3:mini': 'microsoft/Phi-3-mini-4k-instruct',
-    'phi3': 'microsoft/Phi-3-mini-4k-instruct',
-    'phi-2': 'microsoft/phi-2',
-    // Mistral variants
-    'mistral:7b': 'mistralai/Mistral-7B-Instruct-v0.2',
-    'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
-    // Qwen variants
-    'qwen2.5:7b': 'Qwen/Qwen2.5-7B-Instruct',
-    'qwen2.5:3b': 'Qwen/Qwen2.5-3B-Instruct',
-    'qwen2.5': 'Qwen/Qwen2.5-7B-Instruct',
-    // Small models for testing
-    'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
-    'smollm2:135m': 'HuggingFaceTB/SmolLM2-135M-Instruct',
-    'smollm2:360m': 'HuggingFaceTB/SmolLM2-360M-Instruct',
-    'smollm2:1.7b': 'HuggingFaceTB/SmolLM2-1.7B-Instruct',
-  };
+  private mapModelName(shortName: string): string {
+    return LOCAL_MODELS.mapToHuggingFace(shortName);
+  }
 
-  /**
-   * Map Ollama model name to HuggingFace model name
-   * If no mapping exists, returns the original (might be a HF name already)
-   */
-  private mapModelName(ollamaName: string): string {
-    const normalized = ollamaName.toLowerCase().trim();
-    return PEFTLoRAAdapter.OLLAMA_TO_HF[normalized] || ollamaName;
+  // ── Public accessors for async mode (GenomeTrainServerCommand) ────────────
+
+  /** Path to the Python environment wrapper script. */
+  get wrapperPath(): string {
+    return this.getPythonWrapperPath();
+  }
+
+  /** Path to the peft-train.py training script. */
+  get scriptPath(): string {
+    return this.getTrainingScriptPath('peft-train.py');
+  }
+
+  /** Export dataset to temp JSONL for async training. */
+  async exportDatasetForAsync(dataset: import('../../shared/FineTuningTypes').TrainingDataset): Promise<string> {
+    return this.exportDatasetToJSONL(dataset);
+  }
+
+  /** Create config JSON for async training. */
+  async createConfigForAsync(request: import('../../shared/FineTuningTypes').LoRATrainingRequest, datasetPath: string): Promise<string> {
+    const capabilities = this.getFineTuningCapabilities();
+    return this.createConfigFile(request, capabilities, datasetPath);
   }
 
   /**
@@ -138,7 +129,7 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       estimatedTrainingTime: 25, // 25ms per example per epoch (GPU estimate)
 
       // Model support (PEFT supports any HuggingFace transformers model)
-      // Includes both Ollama names and their HuggingFace equivalents
+      // Includes both legacy short names and their HuggingFace equivalents
       // Validation is disabled - any transformers model works
       supportedBaseModels: undefined, // Accept any model - PEFT supports all transformers models
 
@@ -162,49 +153,60 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
 
     const startTime = Date.now();
 
-    // Map Ollama model name to HuggingFace (PEFT requires HF model names)
+    // Map short model name to HuggingFace (PEFT requires HF model names)
     const hfModelName = this.mapModelName(request.baseModel);
     const wasRemapped = hfModelName !== request.baseModel;
 
-    console.log('🧬 Starting PEFT LoRA training...');
-    console.log(`   Model: ${request.baseModel}${wasRemapped ? ` → ${hfModelName}` : ''}`);
-    console.log(`   Examples: ${request.dataset.examples.length}`);
-    console.log(`   Epochs: ${request.epochs}`);
+    const useQLoRA = request.quantize ?? true;
+    const qloraBits = request.quantizeBits ?? 4;
+
+    this.log('info', `Starting PEFT LoRA training: model=${request.baseModel}${wasRemapped ? ` → ${hfModelName}` : ''}, QLoRA=${useQLoRA ? `${qloraBits}-bit` : 'off'}, examples=${request.dataset.examples.length}, epochs=${request.epochs}`);
 
     // Update request with HuggingFace model name
     const mappedRequest = { ...request, baseModel: hfModelName };
 
-    // 1. Create config JSON (using base class helper with mapped model)
-    const capabilities = this.getFineTuningCapabilities();
-    const configPath = await this.createConfigFile(mappedRequest, capabilities);
-
-    // 2. Export dataset to JSONL (using base class helper)
+    // 1. Export dataset to JSONL first (need path for config)
     const datasetPath = await this.exportDatasetToJSONL(request.dataset);
+
+    // 2. Create config JSON with real dataset path
+    const capabilities = this.getFineTuningCapabilities();
+    const configPath = await this.createConfigFile(mappedRequest, capabilities, datasetPath);
 
     // 3. Create output directory
     const outputDir = path.join(os.tmpdir(), `jtag-training-${Date.now()}`);
     await fs.promises.mkdir(outputDir, { recursive: true });
 
     try {
-      // 4. Execute Python training script (using base class helper)
+      // 4. Execute Python training script via Rust sentinel (process isolation + management)
       const metrics = await this.executePythonScript('peft-train.py', configPath, outputDir);
 
-      // 5. Copy adapter to genome storage (using base class helper)
-      const adapterPath = await this.saveAdapter(request, outputDir);
-
       const trainingTime = Date.now() - startTime;
+      const epochs = request.epochs ?? 3;
 
-      console.log(`✅ Training complete in ${(trainingTime / 1000).toFixed(2)}s`);
-      console.log(`   Adapter saved to: ${adapterPath}`);
+      // 5. Build training metadata for manifest
+      const trainingMetadata = {
+        epochs,
+        loss: metrics.finalLoss,
+        performance: 0,
+        trainingDuration: trainingTime,
+        datasetHash: `examples:${request.dataset.examples.length}`,
+      };
+
+      // 6. Copy adapter to genome storage with manifest (using base class helper)
+      const { adapterPath, manifest } = await this.saveAdapter(request, outputDir, trainingMetadata);
+
+      this.log('info', `Training complete in ${(trainingTime / 1000).toFixed(2)}s, adapter=${adapterPath}, sentinel=${metrics.handle}`);
 
       return {
         success: true,
         modelPath: adapterPath,
+        manifest,
+        sentinelHandle: metrics.handle,
         metrics: {
           trainingTime,
           finalLoss: metrics.finalLoss,
           examplesProcessed: request.dataset.examples.length,
-          epochs: request.epochs ?? 3
+          epochs,
         }
       };
     } finally {
@@ -214,11 +216,49 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   }
 
   /**
-   * Check training status - NOT IMPLEMENTED YET
-   * TODO: Implement async handle pattern for this adapter
+   * Check training status via Rust sentinel handle.
+   *
+   * For PEFT local training, the sessionId IS the sentinel handle.
+   * In async mode, GenomeTrainServerCommand stores the handle and callers
+   * pass it here to query progress. In sync mode, this is never called
+   * (trainLoRA blocks until completion).
    */
-  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
-    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
+  async checkStatus(sessionId: UUID): Promise<TrainingStatus> {
+    const rustClient = RustCoreIPCClient.getInstance();
+
+    try {
+      const result = await rustClient.sentinelStatus(sessionId);
+      const sentinelStatus = result.handle.status;
+
+      // Map sentinel status → TrainingStatus
+      const statusMap: Record<string, TrainingStatus['status']> = {
+        'running': 'running',
+        'completed': 'completed',
+        'failed': 'failed',
+        'cancelled': 'cancelled',
+      };
+
+      return {
+        status: statusMap[sentinelStatus] ?? 'failed',
+        progress: result.handle.progress != null ? result.handle.progress / 100 : undefined,
+        modelId: sentinelStatus === 'completed' ? sessionId : undefined,
+        error: result.handle.error,
+        metadata: {
+          sentinelHandle: sessionId,
+          exitCode: result.handle.exitCode,
+          logsDir: result.handle.logsDir,
+        },
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      // Handle not found = training never started or already cleaned up
+      return {
+        status: 'failed',
+        error: `Sentinel handle not found: ${message}`,
+        metadata: { sentinelHandle: sessionId },
+      };
+    }
   }
 
   /**
@@ -255,173 +295,4 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
     return exampleCount * epochs * 25; // 25ms per example per epoch (GPU)
   }
 
-  // ==================== PHASE 7.1 IMPLEMENTATION ====================
-  // All helper methods now inherited from BaseServerLoRATrainer
-
-  /**
-   * TODO Phase 7.1: Create Python training script with Unsloth
-   *
-   * @private
-   */
-  /*
-  private async createTrainingScript(
-    request: LoRATrainingRequest,
-    datasetPath: string
-  ): Promise<string> {
-    const rank = request.rank || this.getFineTuningCapabilities().defaultRank;
-    const alpha = request.alpha || this.getFineTuningCapabilities().defaultAlpha;
-    const epochs = request.epochs || this.getFineTuningCapabilities().defaultEpochs;
-    const learningRate = request.learningRate || this.getFineTuningCapabilities().defaultLearningRate;
-
-    const script = `
-import os
-from unsloth import FastLanguageModel
-import torch
-
-# Load model
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "${request.baseModel}",
-    max_seq_length = 2048,
-    dtype = None,
-    load_in_4bit = True,
-)
-
-# Add LoRA adapters
-model = FastLanguageModel.get_peft_model(
-    model,
-    r = ${rank},
-    lora_alpha = ${alpha},
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
-    lora_dropout = 0,
-    bias = "none",
-    use_gradient_checkpointing = True,
-)
-
-# Load dataset
-from datasets import load_dataset
-dataset = load_dataset("json", data_files="${datasetPath}")
-
-# Training
-from trl import SFTTrainer
-from transformers import TrainingArguments
-
-trainer = SFTTrainer(
-    model = model,
-    tokenizer = tokenizer,
-    train_dataset = dataset["train"],
-    dataset_text_field = "text",
-    max_seq_length = 2048,
-    args = TrainingArguments(
-        per_device_train_batch_size = ${request.batchSize || 4},
-        gradient_accumulation_steps = 4,
-        warmup_steps = 5,
-        num_train_epochs = ${epochs},
-        learning_rate = ${learningRate},
-        fp16 = not torch.cuda.is_bf16_supported(),
-        bf16 = torch.cuda.is_bf16_supported(),
-        logging_steps = 1,
-        output_dir = "outputs",
-    ),
-)
-
-# Train
-trainer.train()
-
-# Save adapter
-model.save_pretrained("lora_model")
-tokenizer.save_pretrained("lora_model")
-
-print("Training complete!")
-`;
-
-    const scriptPath = path.join(os.tmpdir(), `jtag-train-${Date.now()}.py`);
-    await fs.promises.writeFile(scriptPath, script, 'utf-8');
-    return scriptPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Execute Unsloth training via subprocess
-   *
-   * @private
-   */
-  /*
-  private async executeUnslothTraining(scriptPath: string): Promise<TrainingMetrics> {
-    // Execute Python script, monitor output, extract metrics
-    // Use child_process.spawn() for real-time progress
-    return {
-      finalLoss: 0.5,
-      trainingSteps: 100,
-      examplesProcessed: 50
-    };
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Export trained model to GGUF format
-   *
-   * @private
-   */
-  /*
-  private async exportToGGUF(request: LoRATrainingRequest): Promise<string> {
-    // Use llama.cpp convert script to create GGUF
-    // model.save_pretrained_gguf() or llama.cpp/convert.py
-    const ggufPath = path.join(
-      os.tmpdir(),
-      `${request.baseModel}-${request.traitType}-${Date.now()}.gguf`
-    );
-    return ggufPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Save trained adapter to genome storage
-   *
-   * @private
-   */
-  /*
-  private async saveAdapter(request: LoRATrainingRequest, ggufPath: string): Promise<string> {
-    // Copy adapter from temp to genome storage
-    const adapterPath = path.join(
-      '.continuum/genome/adapters',
-      `${request.baseModel}-${request.traitType}-${Date.now()}.gguf`
-    );
-
-    // Ensure directory exists
-    await fs.promises.mkdir(path.dirname(adapterPath), { recursive: true });
-
-    // Copy adapter file
-    await fs.promises.copyFile(ggufPath, adapterPath);
-
-    return adapterPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Get Ollama model name for loading adapter
-   *
-   * @private
-   */
-  /*
-  private getOllamaModelName(request: LoRATrainingRequest): string {
-    return `${request.personaName}-${request.traitType}`;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Clean up temporary files
-   *
-   * @private
-   */
-  /*
-  private async cleanupTempFiles(...paths: string[]): Promise<void> {
-    for (const filePath of paths) {
-      try {
-        await fs.promises.unlink(filePath);
-      } catch (error) {
-        console.warn(`Failed to clean up temp file: ${filePath}`, error);
-      }
-    }
-  }
-  */
 }

@@ -224,16 +224,14 @@ export class SignalDetector {
     const prompt = this.buildClassificationPrompt(userText, aiMessage);
 
     try {
-      const params: Partial<AIGenerateParams> = {
+      const result = await AIGenerate.execute({
         messages: [{ role: 'user', content: prompt }],
-        model: 'llama-3.1-8b-instant',  // Fast cloud model - don't block local inference queue
-        provider: 'groq',                // Cloud API - fast (<1s) vs local (~10s)
-        temperature: 0.1,                // Low temperature for consistent classification
+        model: 'llama-3.1-8b-instant',
+        provider: 'groq',
+        temperature: 0.1,
         maxTokens: 200,
         systemPrompt: 'You are a signal classifier. Output ONLY valid JSON, no other text.'
-      };
-
-      const result = await AIGenerate.execute(params) as AIGenerateResult;
+      }) as AIGenerateResult;
 
       if (!result.success || !result.text) {
         return this.quickClassify(userText);  // Fallback to heuristics

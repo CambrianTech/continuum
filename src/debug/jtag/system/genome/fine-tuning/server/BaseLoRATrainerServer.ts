@@ -3,7 +3,7 @@
  *
  * This class provides universal handle-pattern orchestration for ALL providers:
  * - Remote APIs (OpenAI, Together, Fireworks)
- * - Local training (Ollama, MLX, PEFT)
+ * - Local training (MLX, PEFT)
  * - Weird APIs (provider-specific quirks)
  *
  * Architecture:
@@ -54,7 +54,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
    *
    * Examples:
    * - OpenAI: Upload file, create job, return { jobId, fileId }
-   * - Ollama: Spawn process, return { jobId: pid.toString(), processId: pid }
+   * - PEFT: Spawn process, return { jobId: pid.toString(), processId: pid }
    * - Fireworks: Upload dataset, create job, return { jobId, datasetName }
    *
    * This method should be FAST (< 30 seconds). Don't wait for training to complete!
@@ -75,7 +75,7 @@ export abstract class BaseLoRATrainerServer extends BaseLoRATrainer {
    *
    * Examples:
    * - OpenAI: GET /v1/fine_tuning/jobs/{jobId}, map status
-   * - Ollama: Check process running, read progress file
+   * - PEFT: Check process running, read progress file
    * - Fireworks: GET /v1/accounts/{accountId}/jobs/{jobId}
    *
    * This method should be FAST (< 5 seconds). It's called frequently!

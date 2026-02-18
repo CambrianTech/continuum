@@ -288,19 +288,25 @@ impl AdapterRegistry {
 
     /// Select best adapter based on request
     /// Returns (provider_id, adapter)
+    ///
+    /// When preferred_provider is explicitly set, returns ONLY that provider or None.
+    /// NO silent fallback to another provider — if you ask for candle, you get candle or an error.
     pub fn select<'a>(
         &'a self,
         preferred_provider: Option<&str>,
         model: Option<&str>,
     ) -> Option<(&'a str, &'a dyn AIProviderAdapter)> {
-        // 1. If preferred provider specified, use it
+        // 1. If preferred provider specified, use it — NO FALLBACK
         if let Some(pref) = preferred_provider {
-            // Find the static key that matches
             for (id, adapter) in self.adapters.iter() {
                 if id == pref {
                     return Some((id.as_str(), adapter.as_ref()));
                 }
             }
+            // Explicit provider requested but not found — fail hard, don't silently route elsewhere
+            clog_warn!("Provider '{}' explicitly requested but not available. Available: {:?}",
+                pref, self.available());
+            return None;
         }
 
         // 2. Detect provider from model name

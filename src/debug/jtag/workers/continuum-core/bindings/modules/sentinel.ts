@@ -116,10 +116,14 @@ export interface SentinelLogsTailResult {
  */
 export type PipelineStep =
 	| { type: 'shell'; cmd: string; args?: string[]; timeoutSecs?: number; workingDir?: string }
-	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string }
+	| { type: 'llm'; prompt: string; model?: string; provider?: string; maxTokens?: number; temperature?: number; systemPrompt?: string; tools?: string[]; agentMode?: boolean; maxIterations?: number }
 	| { type: 'command'; command: string; params?: Record<string, unknown> }
 	| { type: 'condition'; if: string; then: PipelineStep[]; else?: PipelineStep[] }
-	| { type: 'loop'; count: number; steps: PipelineStep[] };
+	| { type: 'loop'; count?: number; while?: string; until?: string; steps: PipelineStep[]; maxIterations?: number }
+	| { type: 'emit'; event: string; payload?: Record<string, unknown> }
+	| { type: 'watch'; event: string; timeoutSecs?: number }
+	| { type: 'parallel'; branches: PipelineStep[][]; failFast?: boolean }
+	| { type: 'sentinel'; pipeline: Pipeline };
 
 /**
  * Pipeline definition
@@ -231,12 +235,32 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 
 				const status = await this.sentinelStatus(handle);
 				if (status.handle.status !== 'running') {
-					// Get the combined log output
-					const logs = await this.sentinelLogsTail(handle, 'combined', 10000);
+					// Get output: try combined log first, fall back to last step output for pipelines
+					let output = '';
+					try {
+						const logs = await this.sentinelLogsTail(handle, 'combined', 10000);
+						output = logs.content;
+					} catch {
+						// Pipeline-type sentinels don't produce combined log streams
+					}
+
+					// If combined log was empty, read last step output from steps log
+					if (!output) {
+						try {
+							const stepsLog = await this.sentinelLogsRead(handle, 'steps', undefined, undefined);
+							if (stepsLog.content) {
+								const lines = stepsLog.content.trim().split('\n');
+								const lastStep = JSON.parse(lines[lines.length - 1]);
+								output = lastStep.output || status.handle.error || '';
+							}
+						} catch {
+							output = status.handle.error || '';
+						}
+					}
 					return {
-						success: status.handle.status === 'completed' && status.handle.exitCode === 0,
-						exitCode: status.handle.exitCode ?? -1,
-						output: logs.content,
+						success: status.handle.status === 'completed' && (status.handle.exitCode === 0 || status.handle.exitCode === undefined),
+						exitCode: status.handle.exitCode ?? (status.handle.status === 'completed' ? 0 : -1),
+						output,
 						handle,
 					};
 				}

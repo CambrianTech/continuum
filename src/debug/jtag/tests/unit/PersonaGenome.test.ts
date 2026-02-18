@@ -22,7 +22,7 @@ describe('PersonaGenome', () => {
         { name: 'rust-expertise', domain: 'code', path: './test-adapters/rust.safetensors', sizeMB: 55, priority: 0.6 },
         { name: 'self-improvement', domain: 'self', path: './test-adapters/self.safetensors', sizeMB: 40, priority: 0.5 }
       ]
-    });
+    }, () => {});
   });
 
   describe('Initialization', () => {

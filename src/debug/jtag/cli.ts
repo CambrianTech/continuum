@@ -378,10 +378,11 @@ async function main() {
     
     // Execute command with command-specific timeout
     try {
-      // AI commands need longer timeout due to queue + generation time
-      // Genome commands can take longer for training operations
-      // Interface commands (screenshot) may need to wait for html2canvas rendering
-      // Inference commands (inference/generate) need time for local model generation
+      // Extract --timeout from params (CLI-level override, not a command parameter)
+      const userTimeoutMs = params.timeout ? Number(params.timeout) : undefined;
+      delete params.timeout;
+
+      // Category-based default timeouts
       const isAICommand = command.startsWith('ai/');
       const isGenomeCommand = command.startsWith('genome/');
       const isInterfaceCommand = command.startsWith('interface/');
@@ -390,9 +391,11 @@ async function main() {
       const isCollaborationCommand = command.startsWith('collaboration/');
       const isChallengeCommand = command.startsWith('challenge/');
       const isCodeCommand = command.startsWith('code/');
-      const needsLongerTimeout = isAICommand || isInferenceCommand || isSocialCommand || isInterfaceCommand || isCollaborationCommand || isCodeCommand;
-      const needsLongTimeout = isGenomeCommand || isChallengeCommand;
-      const timeoutMs = needsLongTimeout ? 300000 : needsLongerTimeout ? 60000 : 10000; // 5min for genome/challenge, 60s for AI/inference/social/interface/collaboration/code, 10s for others
+      const isSentinelCommand = command.startsWith('sentinel/');
+      const needsLongerTimeout = isAICommand || isSocialCommand || isInterfaceCommand || isCollaborationCommand || isCodeCommand;
+      const needsLongTimeout = isGenomeCommand || isChallengeCommand || isInferenceCommand || isSentinelCommand;
+      const defaultTimeoutMs = needsLongTimeout ? 300000 : needsLongerTimeout ? 60000 : 10000; // 5min for genome/challenge/inference/sentinel, 60s for AI/social/interface/collaboration/code, 10s for others
+      const timeoutMs = userTimeoutMs ?? defaultTimeoutMs;
       const timeoutSeconds = timeoutMs / 1000;
 
       const commandTimeout = new Promise((_, reject) =>

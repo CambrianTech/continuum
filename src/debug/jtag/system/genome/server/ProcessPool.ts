@@ -302,7 +302,7 @@ export class ProcessPool extends EventEmitter {
    */
   async executeInference(request: {
     prompt: string;
-    provider: string; // 'ollama', 'claude', 'openai', etc.
+    provider: string; // 'candle', 'claude', 'openai', etc.
     model: string;
     temperature?: number;
     maxTokens?: number;

@@ -40,7 +40,7 @@ const FABRICATED_BRACKET_TIME_RE = /^\s*\[\d{1,2}:\d{2}\]\s+[A-Z]/gm;
 // Multi-word speaker prefix: "Teacher AI:", "Helper AI:", "CodeReview AI:"
 const FABRICATED_SPEAKER_RE = /^[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S/gm;
 // Single-word known AI speaker prefix: "Gemini:", "Groq:", "Together:", "Fireworks:"
-const FABRICATED_SINGLE_SPEAKER_RE = /^(?:Gemini|Groq|Together|Fireworks|Claude|GPT|Local|Joel|Anonymous|Qwen|DeepSeek|Grok|Ollama|Helper|Teacher|CodeReview):\s+\S/gm;
+const FABRICATED_SINGLE_SPEAKER_RE = /^(?:Gemini|Groq|Together|Fireworks|Claude|GPT|Local|Joel|Anonymous|Qwen|DeepSeek|Grok|Candle|Helper|Teacher|CodeReview):\s+\S/gm;
 
 /**
  * Check if a message body is a fabricated multi-party conversation.

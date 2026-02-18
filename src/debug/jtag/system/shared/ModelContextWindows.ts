@@ -24,7 +24,7 @@
 import { ModelRegistry } from './ModelRegistry';
 
 /** Known local provider names for inference speed classification */
-const LOCAL_PROVIDERS = new Set(['candle', 'ollama', 'sentinel']);
+const LOCAL_PROVIDERS = new Set(['candle', 'sentinel']);
 
 /**
  * Model context windows in tokens
@@ -64,7 +64,7 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo': 131072,  // Together.ai
   'accounts/fireworks/models/llama-v3p1-8b-instruct': 131072,  // Fireworks.ai (deprecated)
   'accounts/fireworks/models/llama-v3p3-70b-instruct': 131072,  // Fireworks.ai Llama 3.3 70B
-  // Meta Models (Llama) — Ollama naming (dots + colons)
+  // Meta Models (Llama) — legacy short names
   'llama3.2': 128000,
   'llama3.2:3b': 128000,
   'llama3.2:1b': 128000,
@@ -72,17 +72,14 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'llama3.1:70b': 128000,
   'llama3.1:8b': 128000,
 
-  // HuggingFace IDs (Candle adapter) — FALLBACK only.
-  // Source of truth is CandleAdapter.capabilities().max_context_window in Rust,
-  // which feeds into ModelRegistry at startup via registerLocalModels().
-  // Candle quantized attention breaks at ~1000 input tokens on Metal.
-  // See: https://github.com/huggingface/candle/issues/1566
-  'meta-llama/Llama-3.1-8B-Instruct': 1400,
-  'unsloth/Llama-3.2-3B-Instruct': 1400,
-  'Qwen/Qwen2-1.5B-Instruct': 1400,
-  'Qwen/Qwen2-0.5B-Instruct': 1400,
+  // Local Candle models — practical throughput limit (NOT theoretical model max).
+  // BF16 full-batch prefill on Metal is O(n²): 3500 tokens = 55s, unusable.
+  // The Rust backend caps context_length() to BF16_PRACTICAL_CONTEXT.
+  // These entries are safety nets for the window between boot and model discovery.
+  // Once ModelRegistry is populated (from Rust IPC), it takes priority.
+  'unsloth/Llama-3.2-3B-Instruct': 2048,
 
-  // Qwen Models via Ollama
+  // Qwen Models — legacy short names
   'qwen2.5': 128000,
   'qwen2.5:7b': 128000,
   'qwen2.5:14b': 128000,
@@ -163,7 +160,7 @@ export const MODEL_INFERENCE_SPEEDS: Readonly<Record<string, number>> = {
   'gemini-pro': 1000,
   'gemini-1.5-pro': 1000,
 
-  // Local small models via Candle/Ollama (1-3B params)
+  // Local small models via Candle (1-3B params)
   // ~100-200 TPS on Apple Silicon M1/M2
   'llama3.2:1b': 200,
   'llama3.2:3b': 100,  // Conservative for RAG-heavy prompts
@@ -214,7 +211,7 @@ export const DEFAULT_TARGET_LATENCY_SECONDS = 30;
  * Get inference speed for a model in tokens per second.
  *
  * When provider is specified and the model is found in the registry:
- *   - Local providers (candle/ollama/sentinel): fall through to static speed map
+ *   - Local providers (candle/sentinel): fall through to static speed map
  *   - Cloud providers: return 1000 TPS (network-bound)
  *
  * Bug fix: Previously, any registry hit assumed cloud (1000 TPS), even for

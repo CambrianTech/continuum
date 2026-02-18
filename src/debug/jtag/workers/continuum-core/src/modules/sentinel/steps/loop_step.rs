@@ -68,8 +68,16 @@ pub async fn execute(
             }
         }
 
+        // Save parent iteration for nested loop access: {{input.parent_iteration}}
+        // If we're already inside a loop (iteration exists), promote it to parent_iteration
+        if let Some(parent_iter) = ctx.inputs.get("iteration").cloned() {
+            ctx.inputs.insert("parent_iteration".to_string(), parent_iter);
+        }
+
         // Set iteration variable for interpolation: {{input.iteration}}
         ctx.inputs.insert("iteration".to_string(), json!(iteration));
+        // Set loop base index for {{loop.N.field}} relative referencing
+        ctx.inputs.insert("_loop_base".to_string(), json!(ctx.step_results.len()));
 
         // Execute sub-steps
         for step in steps {
@@ -380,5 +388,30 @@ mod tests {
         assert_eq!(result.data["iterationsCompleted"], 2);
         // 2 iterations × 2 steps = 4 step results
         assert_eq!(ctx.step_results.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_parent_iteration_set_for_nested_loops() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Simulate outer loop: set iteration = 2 (as if we're on topic 2)
+        ctx.inputs.insert("iteration".to_string(), json!(2));
+
+        // Inner loop should promote current iteration to parent_iteration
+        let result = execute(
+            Some(1), None, None, None,
+            &[echo_step("inner")],
+            0, &mut ctx, &pipeline_ctx,
+        ).await.unwrap();
+
+        assert!(result.success);
+
+        // After inner loop, parent_iteration should be set to 2 (outer loop value)
+        assert_eq!(ctx.inputs.get("parent_iteration").unwrap(), &json!(2));
+        // iteration should be 0 (inner loop's last value)
+        assert_eq!(ctx.inputs.get("iteration").unwrap(), &json!(0));
     }
 }

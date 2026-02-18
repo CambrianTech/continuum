@@ -2,7 +2,7 @@
  * Adapter Provider Interface
  *
  * Abstracts adapter operations across different backends:
- * - Local (Candle/Ollama) - direct LoRA weight merging
+ * - Local (Candle) - direct LoRA weight merging
  * - Together.ai - cloud LoRA hosting
  * - Fireworks.ai - cloud LoRA hosting
  * - Replicate - custom model deployment

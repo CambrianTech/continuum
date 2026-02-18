@@ -609,7 +609,7 @@ export class PersonaMessageEvaluator {
       confidence: gatingResult.confidence,
       reasoning: gatingResult.reason,
       modelUsed: gatingResult.model,
-      modelProvider: this.personaUser.modelConfig.provider ?? 'candle',
+      modelProvider: this.personaUser.modelConfig.provider,
       sessionId: DataDaemon.jtagContext!.uuid,
       contextId: messageEntity.roomId,
       tags: [
@@ -949,7 +949,7 @@ export class PersonaMessageEvaluator {
       // eliminating the redundant second RAG build that previously happened there.
       const ragStart = performance.now();
       const ragBuilder = new ChatRAGBuilder(this.log.bind(this));
-      const provider = this.personaUser.modelConfig.provider || 'candle';
+      const provider = this.personaUser.modelConfig.provider;
       const ragContext = await ragBuilder.buildContext(
         message.roomId,
         this.personaUser.id,

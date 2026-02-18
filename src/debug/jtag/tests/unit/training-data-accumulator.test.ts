@@ -19,7 +19,7 @@ async function testTrainingDataAccumulator() {
   try {
     // Create test accumulator
     const personaId = generateUUID();
-    const accumulator = new TrainingDataAccumulator(personaId, 'Test AI');
+    const accumulator = new TrainingDataAccumulator(personaId, 'Test AI', () => {});
 
     // TEST 1: Capture interaction
     console.log('📝 TEST 1: Capture interaction...');

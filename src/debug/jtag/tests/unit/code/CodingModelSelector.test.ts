@@ -136,7 +136,7 @@ describe('CodingModelSelector', () => {
     });
 
     it('returns false with only non-frontier providers', () => {
-      const local = new CodingModelSelector(new Set(['ollama', 'candle']));
+      const local = new CodingModelSelector(new Set(['candle', 'local']));
       expect(local.hasFrontierModel).toBe(false);
     });
   });

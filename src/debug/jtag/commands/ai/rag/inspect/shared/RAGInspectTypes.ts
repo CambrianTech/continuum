@@ -20,6 +20,12 @@ export interface RAGInspectParams extends CommandParams {
   /** Persona ID requesting context */
   personaId: UUID;
 
+  /** Model ID — drives context window budget */
+  modelId: string;
+
+  /** Provider — scopes model lookup */
+  provider: string;
+
   /** Optional: Limit number of messages */
   maxMessages?: number;
 

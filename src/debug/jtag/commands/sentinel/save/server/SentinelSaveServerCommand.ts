@@ -11,7 +11,7 @@ import { Commands } from '../../../../system/core/shared/Commands';
 import { v4 as uuid } from 'uuid';
 import type { SentinelSaveParams, SentinelSaveResult } from '../shared/SentinelSaveTypes';
 import type { SentinelDefinition, SentinelEntity } from '../../../../system/sentinel';
-import { validateDefinition } from '../../../../system/sentinel';
+import { validateDefinition, DEFAULT_ESCALATION_RULES } from '../../../../system/sentinel';
 
 const COLLECTION = 'sentinels';
 
@@ -73,10 +73,15 @@ export class SentinelSaveServerCommand extends CommandBase<SentinelSaveParams, S
       id,
       definition,
       executions: [],
+      status: 'saved',
+      parentPersonaId: saveParams.parentPersonaId ?? (params as any).userId,
       createdAt: now,
       updatedAt: now,
       createdBy: (params as any).userId,
       isTemplate: saveParams.isTemplate,
+      tags: saveParams.tags,
+      escalationRules: saveParams.escalationRules ?? DEFAULT_ESCALATION_RULES,
+      executionCount: 0,
     };
 
     // Save to database

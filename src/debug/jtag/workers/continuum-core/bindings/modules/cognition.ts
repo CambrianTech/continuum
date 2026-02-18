@@ -24,6 +24,9 @@ import type {
 	GenomePagingState,
 	ActivateSkillResult,
 	AdequacyResult,
+	DomainClassification,
+	CoverageReport,
+	QualityScore,
 } from '../../../../shared/generated';
 
 // ============================================================================
@@ -70,6 +73,12 @@ export interface CognitionMixin {
 	cognitionCheckAdequacy(originalText: string, responses: Array<{ sender_name: string; text: string }>): Promise<AdequacyResult>;
 	cognitionHasEvaluated(personaId: string, messageId: string): Promise<boolean>;
 	cognitionMarkEvaluated(personaId: string, messageId: string): Promise<void>;
+	cognitionClassifyDomain(personaId: string, text: string): Promise<DomainClassification>;
+	cognitionSyncDomainClassifier(personaId: string): Promise<{ synced: boolean; total_domains: number; covered_domains: number }>;
+	cognitionRegisterDomainKeywords(personaId: string, domain: string, keywords: string[]): Promise<{ registered: boolean; domain: string; keywords_added: number }>;
+	cognitionGenomeRecordActivity(personaId: string, domain: string, success: boolean): Promise<{ recorded: boolean }>;
+	cognitionGenomeCoverageReport(personaId: string): Promise<CoverageReport>;
+	cognitionScoreInteraction(input: string, output: string, feedback?: string, taskSuccess?: boolean): Promise<QualityScore>;
 }
 
 export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -529,6 +538,113 @@ export function CognitionMixin<T extends new (...args: any[]) => RustCoreIPCClie
 			if (!response.success) {
 				throw new Error(response.error || 'Failed to mark message as evaluated');
 			}
+		}
+
+		/**
+		 * Classify text into a skill domain using adapter-aware keyword scoring.
+		 * Returns domain, confidence, and matching adapter (if any).
+		 */
+		async cognitionClassifyDomain(personaId: string, text: string): Promise<DomainClassification> {
+			const response = await this.request({
+				command: 'cognition/classify-domain',
+				persona_id: personaId,
+				text,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to classify domain');
+			}
+
+			return response.result as DomainClassification;
+		}
+
+		/**
+		 * Sync domain classifier with current adapter state.
+		 * Call after genome changes (training complete, adapter registered).
+		 */
+		async cognitionSyncDomainClassifier(personaId: string): Promise<{ synced: boolean; total_domains: number; covered_domains: number }> {
+			const response = await this.request({
+				command: 'cognition/sync-domain-classifier',
+				persona_id: personaId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to sync domain classifier');
+			}
+
+			return response.result as { synced: boolean; total_domains: number; covered_domains: number };
+		}
+
+		/**
+		 * Register new keywords for a domain (e.g., from academy curriculum).
+		 */
+		async cognitionRegisterDomainKeywords(personaId: string, domain: string, keywords: string[]): Promise<{ registered: boolean; domain: string; keywords_added: number }> {
+			const response = await this.request({
+				command: 'cognition/register-domain-keywords',
+				persona_id: personaId,
+				domain,
+				keywords,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to register domain keywords');
+			}
+
+			return response.result as { registered: boolean; domain: string; keywords_added: number };
+		}
+
+		/**
+		 * Record domain activity for gap detection.
+		 * Call after every inference response.
+		 */
+		async cognitionGenomeRecordActivity(personaId: string, domain: string, success: boolean): Promise<{ recorded: boolean }> {
+			const response = await this.request({
+				command: 'cognition/genome-record-activity',
+				persona_id: personaId,
+				domain,
+				success,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to record activity');
+			}
+
+			return response.result as { recorded: boolean };
+		}
+
+		/**
+		 * Get coverage report: which domains have adapters, which are gaps.
+		 */
+		async cognitionGenomeCoverageReport(personaId: string): Promise<CoverageReport> {
+			const response = await this.request({
+				command: 'cognition/genome-coverage-report',
+				persona_id: personaId,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to get coverage report');
+			}
+
+			return response.result as CoverageReport;
+		}
+
+		/**
+		 * Score interaction quality for training data selection.
+		 */
+		async cognitionScoreInteraction(input: string, output: string, feedback?: string, taskSuccess?: boolean): Promise<QualityScore> {
+			const response = await this.request({
+				command: 'cognition/score-interaction',
+				input,
+				output,
+				...(feedback !== undefined && { feedback }),
+				...(taskSuccess !== undefined && { task_success: taskSuccess }),
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to score interaction');
+			}
+
+			return response.result as QualityScore;
 		}
 	};
 }

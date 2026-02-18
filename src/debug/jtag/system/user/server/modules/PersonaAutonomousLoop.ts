@@ -18,6 +18,7 @@ import { RoomEntity } from '../../../data/entities/RoomEntity';
 import { inboxMessageToProcessable, type InboxTask, type QueueItem } from './QueueItemTypes';
 import { fromRustServiceItem } from './QueueItemTypes';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
+import { LearningScheduler } from '../../../genome/server/LearningScheduler';
 
 // Import PersonaUser directly - circular dependency is fine for type-only imports
 import type { PersonaUser } from '../PersonaUser';
@@ -26,8 +27,8 @@ export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
   private log: (message: string) => void;
 
-  constructor(private readonly personaUser: PersonaUser, logger?: (message: string) => void) {
-    this.log = logger || console.log.bind(console);
+  constructor(private readonly personaUser: PersonaUser, logger: (message: string) => void) {
+    this.log = logger;
   }
 
   /**
@@ -39,6 +40,20 @@ export class PersonaAutonomousLoop {
   startAutonomousServicing(): void {
     this.log(`🔄 ${this.personaUser.displayName}: Starting autonomous servicing (SIGNAL-BASED WAITING)`);
     this.servicingLoopActive = true;
+
+    // Register with system-wide learning scheduler for continuous learning
+    try {
+      const scheduler = LearningScheduler.sharedInstance();
+      scheduler.registerPersona(
+        this.personaUser.id,
+        this.personaUser.displayName,
+        this.personaUser.trainingManager,
+        this.personaUser.trainingAccumulator,
+      );
+    } catch {
+      // Non-fatal — continuous learning is optional
+    }
+
     this.runServiceLoop().catch((error: any) => {
       this.log(`❌ ${this.personaUser.displayName}: Service loop crashed: ${error}`);
     });
@@ -97,6 +112,12 @@ export class PersonaAutonomousLoop {
       await this.handleItem(queueItem, result.decision ?? undefined);
       itemsProcessed++;
     }
+
+    // After draining queue, tick the learning scheduler
+    // Low overhead: just increments a counter most cycles, triggers training when ready
+    LearningScheduler.sharedInstance().tick(this.personaUser.id).catch(err => {
+      this.log(`⚠️ ${this.personaUser.displayName}: Learning scheduler tick failed: ${err}`);
+    });
   }
 
   /**
@@ -119,14 +140,19 @@ export class PersonaAutonomousLoop {
     }
 
     // Activate appropriate LoRA adapter based on domain
-    if (item.domain) {
-      const domainToAdapter: Record<string, string> = {
-        'chat': 'conversational',
-        'code': 'typescript-expertise',
-        'self': 'self-improvement'
-      };
-      const adapterName = domainToAdapter[item.domain] || 'conversational';
-      await this.personaUser.memory.genome.activateSkill(adapterName);
+    // Uses Rust DomainClassifier for dynamic adapter-aware routing
+    if (item.type === 'message' && item.content && this.personaUser.rustCognitionBridge) {
+      try {
+        const classification = await this.personaUser.rustCognitionBridge.classifyDomain(item.content);
+        if (classification.adapter_name) {
+          await this.personaUser.memory.genome.activateSkill(classification.adapter_name);
+        }
+      } catch {
+        // Classification failure is non-fatal — proceed without adapter activation
+      }
+    } else if (item.domain) {
+      // Task-domain fallback for non-message items or when Rust bridge unavailable
+      await this.personaUser.memory.genome.activateForDomain(item.domain);
     }
 
     if (item.type === 'message') {
@@ -183,6 +209,14 @@ export class PersonaAutonomousLoop {
    */
   async stopServicing(): Promise<void> {
     this.servicingLoopActive = false;
+
+    // Unregister from learning scheduler
+    try {
+      LearningScheduler.sharedInstance().unregisterPersona(this.personaUser.id);
+    } catch {
+      // Non-fatal
+    }
+
     this.log(`🔄 ${this.personaUser.displayName}: Stopped autonomous servicing loop`);
   }
 }

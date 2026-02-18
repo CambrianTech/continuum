@@ -5,7 +5,7 @@
  * that implements IEmbeddable. It handles:
  * - Lazy embedding (only generate if not already present)
  * - Batch embedding for efficiency
- * - Model selection (Ollama local or OpenAI)
+ * - Model selection (local fastembed or OpenAI)
  * - Error handling with graceful degradation
  *
  * Usage:
@@ -21,7 +21,7 @@ import { needsEmbedding } from '../../data/interfaces/IEmbeddable';
 import { ISOString } from '../../data/domains/CoreTypes';
 
 /**
- * Default embedding model - all-minilm via Ollama
+ * Default embedding model - all-minilm via fastembed (ONNX)
  * 384 dimensions, fast local inference, no API costs
  */
 export const DEFAULT_EMBEDDING_MODEL: EmbeddingModel = DEFAULT_EMBEDDING_MODELS['all-minilm'];

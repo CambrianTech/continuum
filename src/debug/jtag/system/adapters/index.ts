@@ -2,7 +2,7 @@
  * Adapter System
  *
  * Unified interface for LoRA adapter management across providers:
- * - Local (Candle/Ollama)
+ * - Local (Candle)
  * - Together.ai
  * - Fireworks.ai
  * - (more to come)

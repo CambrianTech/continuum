@@ -87,7 +87,7 @@ export class AiAgentServerCommand extends AiAgentCommand {
       const provider = params.provider || 'anthropic';
       const model = params.model || (
         provider === 'anthropic' ? 'claude-sonnet-4-5-20250929' :
-        provider === 'candle' || provider === 'ollama' ? LOCAL_MODELS.DEFAULT :
+        provider === 'candle' ? LOCAL_MODELS.DEFAULT :
         'claude-sonnet-4-5-20250929'
       );
 

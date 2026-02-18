@@ -3,7 +3,7 @@
  * ====================================
  *
  * Tests message evaluation flow with mock processing.
- * No real Ollama inference - just verify result structure works.
+ * No real AI inference - just verify result structure works.
  *
  * Success Criteria:
  * - Worker receives evaluation request
@@ -292,7 +292,7 @@ async function runMockEvaluationTests() {
   console.log('\n🧪 WORKER THREAD MOCK EVALUATION TEST SUITE');
   console.log('='.repeat(60));
   console.log('Phase 2: Testing evaluation flow (mock processing)');
-  console.log('Verifies result structure before adding real Ollama inference.\n');
+  console.log('Verifies result structure before adding real Candle inference.\n');
 
   const results: TestResult[] = [];
 

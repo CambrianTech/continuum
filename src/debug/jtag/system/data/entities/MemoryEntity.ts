@@ -18,7 +18,8 @@ export enum MemoryType {
   DECISION = 'decision',
   TOOL_USE = 'tool-use',
   ERROR = 'error',
-  INSIGHT = 'insight'
+  INSIGHT = 'insight',
+  SENTINEL = 'sentinel'
 }
 
 /**

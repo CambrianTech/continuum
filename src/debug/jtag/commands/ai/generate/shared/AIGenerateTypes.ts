@@ -34,14 +34,11 @@ export interface AIGenerateParams extends CommandParams {
   // Preview mode - returns request instead of calling LLM
   preview?: boolean;
 
-  // Model configuration
-  model?: string;
+  // Model configuration — required for RAG budget and inference routing
+  model: string;
+  provider: 'openai' | 'anthropic' | 'local' | 'candle' | 'groq' | 'deepseek';
   temperature?: number;
   maxTokens?: number;
-
-  // Provider selection
-  // 'local' and 'candle' route to native Rust inference (Candle)
-  provider?: 'openai' | 'anthropic' | 'local' | 'candle' | 'groq' | 'deepseek';
 }
 
 // AI Generate Result

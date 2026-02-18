@@ -113,7 +113,7 @@ export class CandleAdapter extends BaseAIProviderAdapter {
 
     this.log(request, 'info', `🔧 TRACE-1: generateTextImpl START (requestId=${requestId.slice(0,8)})`);
 
-    // Determine model to use - map Ollama names to HuggingFace via central config
+    // Determine model to use - map legacy names to HuggingFace via central config
     const requestedModel = request.model || this.defaultModel;
     const modelId = LOCAL_MODELS.mapToHuggingFace(requestedModel);
 
@@ -300,13 +300,14 @@ export class CandleAdapter extends BaseAIProviderAdapter {
   }
 
   // ============================================================================
-  // Skill/Adapter Management (LoRA) - STUBBED
-  // TODO: Re-implement when gRPC server supports LoRA
+  // Skill/Adapter Management (LoRA) — Real gRPC Integration
   // ============================================================================
 
   /**
-   * Apply a LoRA skill/adapter to a model
-   * STUBBED: gRPC server doesn't support LoRA yet
+   * Apply a single LoRA skill/adapter to a model.
+   *
+   * Loads the adapter into the Rust inference server via gRPC, then applies
+   * the genome (multi-adapter stacking) so the model uses the new weights.
    */
   async applySkill(skillImplementation: {
     modelId: string;
@@ -314,46 +315,133 @@ export class CandleAdapter extends BaseAIProviderAdapter {
     adapterName: string;
     applyImmediately?: boolean;
   }): Promise<void> {
-    this.log(null, 'warn', `🧬 applySkill: LoRA not yet supported in gRPC server (adapter: ${skillImplementation.adapterName})`);
-    // Track for future use
     const modelId = LOCAL_MODELS.mapToHuggingFace(skillImplementation.modelId);
-    const adapters = this.loadedAdapters.get(modelId) || [];
-    adapters.push({
-      modelId,
-      adapterName: skillImplementation.adapterName,
-      adapterPath: skillImplementation.adapterPath
+    const { adapterName, adapterPath } = skillImplementation;
+
+    this.log(null, 'info', `🧬 applySkill: Loading adapter "${adapterName}" from ${adapterPath}`);
+
+    // Load adapter into Rust inference server
+    const loadResult = await this.client.loadAdapter(adapterName, adapterPath, {
+      scale: 1.0,
+      merge: false,
     });
-    this.loadedAdapters.set(modelId, adapters);
+
+    if (!loadResult.success) {
+      this.log(null, 'error', `🧬 applySkill: Failed to load adapter "${adapterName}": ${loadResult.error}`);
+      throw new Error(`Failed to load adapter "${adapterName}": ${loadResult.error}`);
+    }
+
+    this.log(null, 'info', `🧬 applySkill: Adapter "${adapterName}" loaded in ${loadResult.loadTimeMs}ms`);
+
+    // Track locally
+    const adapters = this.loadedAdapters.get(modelId) || [];
+    if (!adapters.some(a => a.adapterName === adapterName)) {
+      adapters.push({ modelId, adapterName, adapterPath });
+      this.loadedAdapters.set(modelId, adapters);
+    }
+
+    // Apply genome (rebuild model with all active adapters stacked)
+    if (skillImplementation.applyImmediately !== false) {
+      await this.rebuildGenome(modelId);
+    }
   }
 
   /**
-   * Load multiple adapters
-   * STUBBED: gRPC server doesn't support LoRA yet
+   * Load multiple adapters and apply the genome in one batch.
+   *
+   * More efficient than calling applySkill() per adapter — loads all first,
+   * then applies genome once: W' = W + Σ(scale_i × B_i @ A_i)
    */
   async applySkills(
     modelId: string,
     adapters: Array<{ adapterPath: string; adapterName: string }>
   ): Promise<void> {
-    this.log(null, 'warn', `🧬 applySkills: LoRA not yet supported in gRPC server (${adapters.length} adapters)`);
-    // Track for future use
+    this.log(null, 'info', `🧬 applySkills: Loading ${adapters.length} adapter(s) for model ${modelId}`);
+
     const tracked = this.loadedAdapters.get(modelId) || [];
+
     for (const adapter of adapters) {
-      tracked.push({ modelId, ...adapter });
+      // Skip if already loaded
+      if (tracked.some(a => a.adapterName === adapter.adapterName)) {
+        this.log(null, 'info', `🧬 applySkills: Adapter "${adapter.adapterName}" already loaded, skipping`);
+        continue;
+      }
+
+      const loadResult = await this.client.loadAdapter(
+        adapter.adapterName,
+        adapter.adapterPath,
+        { scale: 1.0, merge: false }
+      );
+
+      if (!loadResult.success) {
+        this.log(null, 'warn', `🧬 applySkills: Failed to load "${adapter.adapterName}": ${loadResult.error}`);
+        continue; // Skip failed adapter, continue with others
+      }
+
+      this.log(null, 'info', `🧬 applySkills: Loaded "${adapter.adapterName}" (${loadResult.loadTimeMs}ms)`);
+      tracked.push({ modelId, adapterName: adapter.adapterName, adapterPath: adapter.adapterPath });
     }
+
     this.loadedAdapters.set(modelId, tracked);
+
+    // Apply genome with all loaded adapters stacked
+    if (tracked.length > 0) {
+      await this.rebuildGenome(modelId);
+    }
   }
 
   /**
-   * Remove a LoRA skill/adapter
-   * STUBBED: gRPC server doesn't support LoRA yet
+   * Remove a LoRA skill/adapter from the model.
+   *
+   * Unloads from Rust inference server and rebuilds genome without it.
+   * SkillId format: "modelId:adapterName"
    */
   async removeSkill(skillId: string): Promise<void> {
     const [modelId, adapterName] = skillId.split(':');
-    this.log(null, 'warn', `🧬 removeSkill: LoRA not yet supported in gRPC server (adapter: ${adapterName})`);
-    // Update tracking
+    this.log(null, 'info', `🧬 removeSkill: Unloading adapter "${adapterName}" from model ${modelId}`);
+
+    // Unload from Rust inference server
+    const result = await this.client.unloadAdapter(adapterName);
+    if (!result.success) {
+      this.log(null, 'warn', `🧬 removeSkill: Failed to unload "${adapterName}": ${result.error}`);
+    }
+
+    // Update local tracking
     const adapters = this.loadedAdapters.get(modelId) || [];
     const filtered = adapters.filter((a) => a.adapterName !== adapterName);
     this.loadedAdapters.set(modelId, filtered);
+
+    // Rebuild genome without this adapter (if others remain)
+    if (filtered.length > 0) {
+      await this.rebuildGenome(modelId);
+    }
+  }
+
+  /**
+   * Rebuild the genome by applying all active adapters for a model.
+   *
+   * Calls gRPC ApplyGenome: W' = W + Σ(scale_i × B_i @ A_i)
+   * This stacks all loaded adapters into the model weights.
+   */
+  private async rebuildGenome(modelId: string): Promise<void> {
+    const adapters = this.loadedAdapters.get(modelId) || [];
+    if (adapters.length === 0) return;
+
+    const genomeEntries = adapters.map(a => ({
+      adapterId: a.adapterName,
+      scale: 1.0,
+    }));
+
+    this.log(null, 'info', `🧬 rebuildGenome: Applying ${genomeEntries.length} adapter(s) to model ${modelId}`);
+
+    const result = await this.client.applyGenome(genomeEntries);
+
+    if (!result.success) {
+      this.log(null, 'error', `🧬 rebuildGenome: Failed: ${result.error}`);
+      throw new Error(`Genome application failed: ${result.error}`);
+    }
+
+    this.log(null, 'info', `🧬 rebuildGenome: Applied ${result.adaptersApplied} adapters, ${result.layersMerged} layers merged (${result.applyTimeMs}ms)`);
   }
 
   // ============================================================================

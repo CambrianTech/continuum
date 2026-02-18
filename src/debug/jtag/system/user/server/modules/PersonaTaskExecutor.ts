@@ -23,6 +23,20 @@ import type {
   LoRATrainingResult
 } from '../../../genome/fine-tuning/shared/FineTuningTypes';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
+import { Commands } from '../../../core/shared/Commands';
+import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../../../../commands/genome/academy-session/shared/GenomeAcademySessionTypes';
+import type { RustCognitionBridge } from './RustCognitionBridge';
+
+/**
+ * Interface for PersonaUser dependency injection into task executor.
+ * Provides access to genome reload and domain classifier sync.
+ */
+export interface PersonaUserForTaskExecutor {
+  readonly rustCognitionBridge: RustCognitionBridge | null;
+  readonly limbicSystem: {
+    loadGenomeFromDatabase(): Promise<void>;
+  };
+}
 
 /**
  * PersonaTaskExecutor - Executes various task types for autonomous PersonaUsers
@@ -32,19 +46,30 @@ import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
  * - skill-audit: Evaluates performance by domain
  * - resume-work: Continues stale tasks
  * - fine-tune-lora: Trains LoRA adapters
+ * - enroll-academy: Self-enroll in academy for detected skill gaps
+ * - sentinel-complete/failed/escalation/approval: Sentinel lifecycle notifications
  */
 export class PersonaTaskExecutor {
   private log: (message: string) => void;
+  private personaUser?: PersonaUserForTaskExecutor;
 
   constructor(
     private readonly personaId: UUID,
     private readonly displayName: string,
     private readonly memory: PersonaMemory,
     private readonly personaState: PersonaStateManager,
-    private readonly provider: string = 'ollama',
-    logger?: (message: string) => void
+    private readonly provider: string = 'candle',
+    logger: (message: string) => void
   ) {
-    this.log = logger || console.log.bind(console);
+    this.log = logger;
+  }
+
+  /**
+   * Set PersonaUser reference for features that need genome/classifier access.
+   * Called after PersonaUser is fully initialized.
+   */
+  setPersonaUser(personaUser: PersonaUserForTaskExecutor): void {
+    this.personaUser = personaUser;
   }
 
   /**
@@ -76,6 +101,17 @@ export class PersonaTaskExecutor {
 
         case 'fine-tune-lora':
           outcome = await this.executeFineTuneLora(task);
+          break;
+
+        case 'enroll-academy':
+          outcome = await this.executeEnrollAcademy(task);
+          break;
+
+        case 'sentinel-complete':
+        case 'sentinel-failed':
+        case 'sentinel-escalation':
+        case 'sentinel-approval':
+          outcome = await this.executeSentinelTask(task);
           break;
 
         case 'write-feature':
@@ -526,12 +562,11 @@ export class PersonaTaskExecutor {
       };
 
       // 4. Get the appropriate fine-tuning adapter
-      // PEFT is preferred for local training (ollama, local) as it:
-      // - Supports any HuggingFace model (not just Ollama)
+      // PEFT is preferred for local training (candle, local) as it:
+      // - Supports any HuggingFace model
       // - Enables multi-adapter composition (genome vision)
       // - Works cross-platform (MPS/CUDA/CPU)
-      // - Doesn't require external binaries (llama.cpp finetune)
-      const localProviders = ['ollama', 'local', 'peft'];
+      const localProviders = ['candle', 'local', 'peft'];
       const effectiveProvider = localProviders.includes(this.provider.toLowerCase()) ? 'peft' : this.provider;
       const adapter = getFineTuningAdapter(effectiveProvider);
 
@@ -556,12 +591,10 @@ export class PersonaTaskExecutor {
           path: result.modelPath,
           sizeMB: 50, // Estimate - actual size varies
           priority: 0.5,
-          ollamaModelName: result.ollamaModelName // NEW: Registered Ollama model for inference
         });
 
-        const modelInfo = result.ollamaModelName ? ` → Ollama model: ${result.ollamaModelName}` : '';
-        this.log(`✅ ${this.displayName}: LoRA training complete! Adapter saved: ${result.modelPath}${modelInfo}`);
-        return `Fine-tuning complete for ${loraLayer}: ${result.metrics?.examplesProcessed || 0} examples, loss=${result.metrics?.finalLoss?.toFixed(4) || 'N/A'}${modelInfo}`;
+        this.log(`✅ ${this.displayName}: LoRA training complete! Adapter saved: ${result.modelPath}`);
+        return `Fine-tuning complete for ${loraLayer}: ${result.metrics?.examplesProcessed || 0} examples, loss=${result.metrics?.finalLoss?.toFixed(4) || 'N/A'}`;
       } else {
         this.log(`❌ ${this.displayName}: LoRA training failed: ${result.error}`);
         return `Fine-tuning failed for ${loraLayer}: ${result.error}`;
@@ -692,5 +725,173 @@ export class PersonaTaskExecutor {
         totalExamples: examples.length
       }
     };
+  }
+
+  /**
+   * Enroll in academy session for a detected skill gap.
+   * Triggered by SelfTaskGenerator when a domain has activity but no adapter.
+   */
+  private async executeEnrollAcademy(task: InboxTask): Promise<string> {
+    const domain = (task.metadata?.domain as string) ?? task.description;
+    const suggestedMode = (task.metadata?.suggested_mode as string) ?? 'knowledge';
+
+    this.log(`🎓 ${this.displayName}: Enrolling in academy for skill gap: ${domain} (mode=${suggestedMode})`);
+
+    // Check: no concurrent academy session already running
+    try {
+      const existing = await ORM.query<TaskEntity>({
+        collection: COLLECTIONS.TASKS,
+        filter: {
+          assigneeId: this.personaId,
+          taskType: 'enroll-academy',
+          status: 'in_progress',
+        },
+        sort: [{ field: 'createdAt', direction: 'desc' }],
+        limit: 1,
+      });
+
+      if (existing.data && existing.data.length > 0) {
+        return `Skipped: academy session already in progress for this persona`;
+      }
+    } catch {
+      // Query failure is non-fatal — proceed with enrollment
+    }
+
+    // Determine academy mode
+    const mode = suggestedMode === 'coding' || suggestedMode === 'project' || suggestedMode === 'knowledge'
+      ? suggestedMode
+      : 'knowledge';
+
+    try {
+      const result = await Commands.execute<GenomeAcademySessionParams, GenomeAcademySessionResult>(
+        'genome/academy-session',
+        {
+          personaId: this.personaId,
+          personaName: this.displayName,
+          skill: domain,
+          mode: mode as 'knowledge' | 'coding' | 'project',
+        }
+      );
+
+      const sessionId = result?.academySessionId ?? 'unknown';
+      return `Enrolled in academy: ${domain} (mode=${mode}, session=${sessionId})`;
+    } catch (error) {
+      return `Academy enrollment failed for ${domain}: ${error}`;
+    }
+  }
+
+  /**
+   * Handle sentinel lifecycle tasks (escalated from SentinelEscalationService)
+   *
+   * When a sentinel completes, fails, or needs approval, the persona processes
+   * the notification. This enables the persona to:
+   * - Acknowledge completion ("my training sentinel finished")
+   * - React to failures ("the build sentinel failed, should I retry?")
+   * - Recall similar past sentinel patterns for learning
+   */
+  private async executeSentinelTask(task: InboxTask): Promise<string> {
+    const metadata = task.metadata ?? {};
+    const sentinelName = metadata.sentinelName ?? 'unknown';
+    const sentinelStatus = metadata.sentinelStatus ?? task.taskType;
+    const error = metadata.error as string | undefined;
+
+    this.log(`🤖 ${this.displayName}: Sentinel notification — "${sentinelName}" ${sentinelStatus}`);
+
+    // Recall similar sentinel memories for context
+    const relevantMemories = await this.recallSentinelPatterns(sentinelName);
+    if (relevantMemories.length > 0) {
+      this.log(`🧠 ${this.displayName}: Recalled ${relevantMemories.length} similar sentinel executions`);
+    }
+
+    switch (task.taskType) {
+      case 'sentinel-complete': {
+        // If this was an academy session, reload genome to activate new adapters
+        const isAcademySentinel = typeof sentinelName === 'string' &&
+          (sentinelName.includes('academy') || sentinelName.includes('student') || sentinelName.includes('learning'));
+        if (isAcademySentinel && this.personaUser) {
+          this.log(`🧬 ${this.displayName}: Academy sentinel completed — reloading genome to activate new adapters`);
+          try {
+            await this.personaUser.limbicSystem.loadGenomeFromDatabase();
+            // Sync domain classifier with new adapters
+            if (this.personaUser.rustCognitionBridge) {
+              await this.personaUser.rustCognitionBridge.syncDomainClassifier();
+            }
+            this.log(`✅ ${this.displayName}: Genome reloaded and domain classifier synced after academy completion`);
+          } catch (error) {
+            this.log(`⚠️ ${this.displayName}: Post-academy genome reload failed: ${error}`);
+          }
+        }
+        return `Sentinel "${sentinelName}" completed successfully. ` +
+          (isAcademySentinel ? 'Genome reloaded with new adapters. ' : '') +
+          (relevantMemories.length > 0
+            ? `This is execution #${relevantMemories.length + 1} of similar sentinels.`
+            : 'First execution of this sentinel type.');
+      }
+
+      case 'sentinel-failed':
+        return `Sentinel "${sentinelName}" failed: ${error ?? 'unknown error'}. ` +
+          (relevantMemories.length > 0
+            ? `${relevantMemories.filter(m => m.context?.status === 'failed').length} previous failures recorded.`
+            : 'No prior execution history.');
+
+      case 'sentinel-escalation':
+        return `Sentinel "${sentinelName}" requires attention: ${task.description}`;
+
+      case 'sentinel-approval':
+        return `Sentinel "${sentinelName}" awaiting approval: ${task.description}`;
+
+      default:
+        return `Sentinel task: ${task.description}`;
+    }
+  }
+
+  /**
+   * Recall sentinel memories relevant to a given sentinel name or pattern.
+   *
+   * Queries the global memories collection for type='sentinel' memories
+   * belonging to this persona, filtered by sentinel name tags.
+   * Returns most recent first, limited to 10.
+   */
+  async recallSentinelPatterns(sentinelName?: string): Promise<Array<{
+    content: string;
+    context: Record<string, any>;
+    importance: number;
+    timestamp: any;
+  }>> {
+    try {
+      const filter: Record<string, any> = {
+        personaId: this.personaId,
+        type: 'sentinel',
+      };
+
+      const result = await Commands.execute('data/list', {
+        collection: 'memories',
+        filter,
+        orderBy: [{ field: 'timestamp', direction: 'desc' }],
+        limit: 10,
+      } as any) as any;
+
+      const memories = (result?.items ?? []) as Array<{
+        content: string;
+        context: Record<string, any>;
+        importance: number;
+        timestamp: any;
+        tags: string[];
+      }>;
+
+      // If a sentinel name is given, prioritize matching memories
+      if (sentinelName && memories.length > 0) {
+        const nameMatches = memories.filter(m =>
+          m.tags?.includes(sentinelName) ||
+          m.context?.sentinelName === sentinelName
+        );
+        if (nameMatches.length > 0) return nameMatches;
+      }
+
+      return memories;
+    } catch (err) {
+      this.log(`⚠️ ${this.displayName}: Failed to recall sentinel patterns: ${err}`);
+      return [];
+    }
   }
 }

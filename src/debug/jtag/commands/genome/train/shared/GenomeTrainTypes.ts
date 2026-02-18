@@ -1,0 +1,161 @@
+/**
+ * Genome Train Command - Shared Types
+ *
+ * Execute LoRA fine-tuning on a JSONL dataset using PEFTLoRAAdapter. Wraps trainLoRA() as a command for Sentinel pipeline orchestration
+ */
+
+import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
+import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
+import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import { Commands } from '@system/core/shared/Commands';
+import type { UUID } from '@system/core/types/CrossPlatformUUID';
+
+/**
+ * Genome Train Command Parameters
+ */
+export interface GenomeTrainParams extends CommandParams {
+  // Persona to train adapter for
+  personaId: UUID;
+  // Display name (used in adapter naming)
+  personaName: string;
+  // Trait type label for the adapter
+  traitType: string;
+  // Path to JSONL training dataset file
+  datasetPath: string;
+  // Base model to fine-tune — defaults to LOCAL_MODELS.DEFAULT.
+  // MUST match the persona's inference model (LoRA adapters are architecture-specific).
+  // QLoRA (4-bit quantized) is used automatically when GPU supports it,
+  // allowing training on large models (3B-8B) with minimal VRAM.
+  baseModel?: string;
+  // LoRA rank (default: 32)
+  rank?: number;
+  // Number of training epochs (default: 3)
+  epochs?: number;
+  // Learning rate (default: 0.0001)
+  learningRate?: number;
+  // Batch size (default: 4)
+  batchSize?: number;
+  // Enable 4-bit QLoRA quantization for training (default: true)
+  // Base model is quantized to 4-bit NF4; LoRA weights stay full precision.
+  // This allows training 3B-8B models on 8GB VRAM.
+  quantize?: boolean;
+  // Quantization bits: 4 or 8 (default: 4 for maximum VRAM efficiency)
+  quantizeBits?: 4 | 8;
+  // Async mode: return sentinel handle immediately, training runs in background.
+  // Subscribe to 'genome:training:complete' or 'sentinel:{handle}:complete' for results.
+  // Default: false (sync mode, blocks until training completes).
+  async?: boolean;
+}
+
+/**
+ * Factory function for creating GenomeTrainParams
+ */
+export const createGenomeTrainParams = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    // Persona to train adapter for
+    personaId: UUID;
+    // Display name (used in adapter naming)
+    personaName: string;
+    // Trait type label for the adapter
+    traitType: string;
+    // Path to JSONL training dataset file
+    datasetPath: string;
+    // Base model to fine-tune — should match persona's inference model
+    baseModel?: string;
+    // LoRA rank (default: 32)
+    rank?: number;
+    // Number of training epochs (default: 3)
+    epochs?: number;
+    // Learning rate (default: 0.0001)
+    learningRate?: number;
+    // Batch size (default: 4)
+    batchSize?: number;
+    // Enable QLoRA 4-bit quantization (default: true)
+    quantize?: boolean;
+    // Quantization bits (default: 4)
+    quantizeBits?: 4 | 8;
+  }
+): GenomeTrainParams => createPayload(context, sessionId, {
+  userId: SYSTEM_SCOPES.SYSTEM,
+  baseModel: data.baseModel ?? '',
+  rank: data.rank ?? 0,
+  epochs: data.epochs ?? 0,
+  learningRate: data.learningRate ?? 0,
+  batchSize: data.batchSize ?? 0,
+  quantize: data.quantize ?? true,
+  quantizeBits: data.quantizeBits ?? 4,
+  ...data
+});
+
+/**
+ * Training metrics returned after successful LoRA fine-tuning
+ */
+export interface GenomeTrainMetrics {
+  finalLoss: number;
+  trainingTime: number;
+  examplesProcessed: number;
+  epochs: number;
+}
+
+/**
+ * Genome Train Command Result
+ */
+export interface GenomeTrainResult extends CommandResult {
+  success: boolean;
+  // Path to the trained adapter files
+  adapterPath: string;
+  // Persisted GenomeLayerEntity ID (UUID) — used by downstream steps to reference the adapter
+  layerId?: UUID;
+  // Sentinel handle — references the Rust-managed process that ran training.
+  // Use `sentinel/status --handle=X` or `sentinel/logs/read --handle=X` to inspect.
+  sentinelHandle?: string;
+  // Training metrics
+  metrics: GenomeTrainMetrics;
+  error?: string;
+}
+
+/**
+ * Factory function for creating GenomeTrainResult with defaults
+ */
+export const createGenomeTrainResult = (
+  context: JTAGContext,
+  sessionId: UUID,
+  data: {
+    success: boolean;
+    // Path to the trained adapter files
+    adapterPath?: string;
+    // Training metrics
+    metrics?: GenomeTrainMetrics;
+    error?: string;
+  }
+): GenomeTrainResult => createPayload(context, sessionId, {
+  adapterPath: data.adapterPath ?? '',
+  metrics: data.metrics ?? { finalLoss: 0, trainingTime: 0, examplesProcessed: 0, epochs: 0 },
+  ...data
+});
+
+/**
+ * Smart Genome Train-specific inheritance from params
+ * Auto-inherits context and sessionId from params
+ * Must provide all required result fields
+ */
+export const createGenomeTrainResultFromParams = (
+  params: GenomeTrainParams,
+  differences: Omit<GenomeTrainResult, 'context' | 'sessionId' | 'userId'>
+): GenomeTrainResult => transformPayload(params, differences);
+
+/**
+ * Genome Train — Type-safe command executor
+ *
+ * Usage:
+ *   import { GenomeTrain } from '...shared/GenomeTrainTypes';
+ *   const result = await GenomeTrain.execute({ ... });
+ */
+export const GenomeTrain = {
+  execute(params: CommandInput<GenomeTrainParams>): Promise<GenomeTrainResult> {
+    return Commands.execute<GenomeTrainParams, GenomeTrainResult>('genome/train', params as Partial<GenomeTrainParams>);
+  },
+  commandName: 'genome/train' as const,
+} as const;

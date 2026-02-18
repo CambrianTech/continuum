@@ -10,7 +10,7 @@
  * - Development without GPU hardware
  *
  * Phase 7: Use mocks for all testing
- * Phase 8: Replace with real Ollama/HuggingFace adapters
+ * Phase 8: Replace with real Candle/PEFT adapters
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';

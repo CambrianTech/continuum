@@ -66,10 +66,12 @@ export class AIGenerateServerCommand extends AIGenerateCommand {
           params.roomId,
           targetPersonaId,
           {
+            modelId: params.model,
+            provider: params.provider,
             maxMessages: params.maxMessages || 20,
             includeArtifacts: params.includeArtifacts ?? true,
             includeMemories: params.includeMemories ?? true,
-            triggeringTimestamp: Date.now(),  // Preview shows current state (no race filtering for manual preview)
+            triggeringTimestamp: Date.now(),
             maxTokens: params.maxTokens ?? 2000,
           }
         );

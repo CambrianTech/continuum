@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/genome/train",
+  "version": "1.0.0",
+  "description": "Execute LoRA fine-tuning on a JSONL dataset using PEFTLoRAAdapter. Wraps trainLoRA() as a command for Sentinel pipeline orchestration",
+  "main": "server/GenomeTrainServerCommand.ts",
+  "types": "shared/GenomeTrainTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/GenomeTrainIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "genome/train"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

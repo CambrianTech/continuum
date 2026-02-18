@@ -7,7 +7,7 @@
  *
  * Key principles:
  * - NO hardcoded sleeps or delays
- * - Query actual queue load from Ollama adapter
+ * - Query actual queue load from Candle adapter
  * - Callers decide whether to proceed based on current load
  * - Adaptive: when queue clears, traffic resumes automatically
  *
@@ -27,7 +27,7 @@ import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIP
 export type OperationPriority = 'critical' | 'high' | 'normal' | 'low' | 'background';
 
 /**
- * Queue statistics from Ollama adapter
+ * Queue statistics from Candle adapter
  */
 interface QueueStats {
   queueSize: number;
@@ -51,7 +51,7 @@ const LOAD_THRESHOLDS: Record<OperationPriority, number> = {
 /**
  * BackpressureService - Adaptive load management singleton
  *
- * Queries Ollama queue stats and provides shouldProceed() decision
+ * Queries Candle queue stats and provides shouldProceed() decision
  */
 export class BackpressureService {
   private static cachedStats: QueueStats | null = null;
@@ -133,7 +133,7 @@ export class BackpressureService {
   }
 
   /**
-   * Get queue stats from Ollama adapter with caching
+   * Get queue stats from Candle adapter with caching
    * Cache prevents hammering the adapter on every check
    */
   private static getQueueStats(): QueueStats | null {
@@ -145,13 +145,13 @@ export class BackpressureService {
     }
 
     try {
-      // Get Ollama adapter from AIProviderDaemon
-      const adapter = AIProviderDaemon.getAdapter('ollama');
+      // Get Candle adapter from AIProviderDaemon
+      const adapter = AIProviderDaemon.getAdapter('candle');
       if (!adapter) {
         return null;
       }
 
-      // Check if adapter has getQueueStats method (OllamaAdapter does)
+      // Check if adapter has getQueueStats method
       if (typeof (adapter as any).getQueueStats !== 'function') {
         return null;
       }

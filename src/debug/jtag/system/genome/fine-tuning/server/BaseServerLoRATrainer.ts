@@ -4,9 +4,9 @@
  * Extends BaseLoRATrainer with Node.js-specific utilities like:
  * - File system operations
  * - Path resolution
- * - Process spawning
+ * - Python subprocess execution via Rust sentinel (process isolation + management)
  *
- * SERVER-ONLY: Uses Node.js APIs (fs, path, child_process)
+ * SERVER-ONLY: Uses Node.js APIs (fs, path) and Rust IPC (RustCoreIPCClient)
  */
 
 import { BaseLoRATrainer } from '../shared/BaseLoRATrainer';
@@ -15,7 +15,9 @@ import type {
   LoRATrainingRequest,
   TrainingDataset
 } from '../shared/FineTuningTypes';
-import { spawn, ChildProcess } from 'child_process';
+import { AdapterPackage, type AdapterPackageManifest } from '../../server/AdapterPackage';
+import type { TrainingMetadata } from '../../entities/GenomeLayerEntity';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -100,23 +102,26 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
    */
   protected async createConfigFile(
     request: LoRATrainingRequest,
-    capabilities: ReturnType<BaseServerLoRATrainer['getFineTuningCapabilities']>
+    capabilities: ReturnType<BaseServerLoRATrainer['getFineTuningCapabilities']>,
+    datasetPath?: string
   ): Promise<string> {
     const config = {
       baseModel: request.baseModel,
-      datasetPath: '', // Will be set by Python script
+      datasetPath: datasetPath ?? '',
       rank: request.rank ?? capabilities.defaultRank,
       alpha: request.alpha ?? capabilities.defaultAlpha,
       epochs: request.epochs ?? capabilities.defaultEpochs,
       learningRate: request.learningRate ?? capabilities.defaultLearningRate,
       batchSize: request.batchSize ?? capabilities.defaultBatchSize,
-      outputDir: '' // Will be set by Python script
+      quantize: request.quantize ?? true,
+      quantizeBits: request.quantizeBits ?? 4,
+      outputDir: '' // Set by --output CLI arg
     };
 
     const configPath = path.join(os.tmpdir(), `jtag-config-${Date.now()}.json`);
     await fs.promises.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
-    console.log(`   Config written to: ${configPath}`);
+    this.log('debug', `Config written to: ${configPath}`);
     return configPath;
   }
 
@@ -132,26 +137,33 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     const jsonl = TrainingDatasetBuilder.exportToJSONL(dataset);
     await fs.promises.writeFile(tempPath, jsonl, 'utf-8');
 
-    console.log(`   Dataset exported to: ${tempPath}`);
+    this.log('debug', `Dataset exported to: ${tempPath}`);
     return tempPath;
   }
 
   /**
-   * Execute Python training script via wrapper
+   * Execute Python training script via Rust sentinel process management.
    *
-   * Uses isolated conda environment via train-wrapper.sh
+   * Routes the Python subprocess through Rust's SentinelModule which provides:
+   * - kill_on_drop: automatic cleanup if sentinel is dropped
+   * - Timeout enforcement at the Rust level
+   * - Log capture to .sentinel-workspaces/{handle}/logs/
+   * - Handle-based tracking: cancellable, status-queryable
+   * - Concurrent execution management: Rust manages resource limits
    *
    * @param scriptName Python script name (e.g., 'peft-train.py')
    * @param configPath Path to config JSON file
    * @param outputDir Output directory for trained model
-   * @returns Training metrics
+   * @param timeoutSecs Timeout in seconds (default: 600 = 10 minutes)
+   * @returns Training metrics and sentinel handle
    * @protected
    */
   protected async executePythonScript(
     scriptName: string,
     configPath: string,
-    outputDir: string
-  ): Promise<{ finalLoss: number }> {
+    outputDir: string,
+    timeoutSecs: number = 600,
+  ): Promise<{ finalLoss: number; handle: string }> {
     const scriptPath = this.getTrainingScriptPath(scriptName);
     const wrapperPath = this.getPythonWrapperPath();
 
@@ -164,58 +176,58 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       );
     }
 
-    console.log(`   Executing: ${wrapperPath} ${scriptPath}`);
-    console.log(`   Config: ${configPath}`);
-    console.log(`   Output: ${outputDir}`);
+    this.log('info', `Executing training via Rust sentinel: script=${scriptPath}, config=${configPath}, output=${outputDir}`);
 
-    return new Promise((resolve, reject) => {
-      // Use wrapper script to run Python in isolated environment
-      const python = spawn(wrapperPath, [scriptPath, '--config', configPath, '--output', outputDir]);
-
-      let stderr = '';
-      let finalLoss = 0.5; // Default
-
-      python.stdout.on('data', (data: Buffer) => {
-        const text = data.toString();
-        process.stdout.write(text); // Stream to console
-
-        // Parse final loss from output
-        const lossMatch = text.match(/Final loss: ([\d.]+)/);
-        if (lossMatch) {
-          finalLoss = parseFloat(lossMatch[1]);
-        }
-      });
-
-      python.stderr.on('data', (data: Buffer) => {
-        const text = data.toString();
-        stderr += text;
-        process.stderr.write(text); // Stream to console
-      });
-
-      python.on('close', (code: number | null) => {
-        if (code === 0) {
-          console.log(`   Training script completed successfully`);
-          resolve({ finalLoss });
-        } else {
-          reject(new Error(`Training script failed with exit code ${code}\nStderr: ${stderr}`));
-        }
-      });
-
-      python.on('error', (error: Error) => {
-        reject(new Error(`Failed to spawn Python process: ${error.message}`));
-      });
+    // Route through Rust sentinel — process gets kill_on_drop, timeout, log capture
+    const rustClient = RustCoreIPCClient.getInstance();
+    const result = await rustClient.sentinelExecute({
+      command: wrapperPath,
+      args: [scriptPath, '--config', configPath, '--output', outputDir],
+      workingDir: process.cwd(),
+      timeout: timeoutSecs,
+      type: 'training',
     });
+
+    // Parse training output from sentinel logs
+    const output = result.output;
+    let finalLoss = 0.5; // Default
+
+    // Parse final loss from captured output
+    const lossMatch = output.match(/Final loss: ([\d.]+)/);
+    if (lossMatch) {
+      finalLoss = parseFloat(lossMatch[1]);
+    }
+
+    if (!result.success) {
+      // Extract stderr-like content from combined log
+      const errorLines = output.split('\n')
+        .filter(line => line.includes('[stderr]') || line.includes('Error') || line.includes('Traceback'))
+        .join('\n');
+      throw new Error(
+        `Training script failed with exit code ${result.exitCode}\n` +
+        `Handle: ${result.handle} (logs at sentinel/logs/read --handle=${result.handle})\n` +
+        `${errorLines || output.slice(-500)}`
+      );
+    }
+
+    this.log('info', `Training script completed via sentinel (loss=${finalLoss}, handle=${result.handle})`);
+    return { finalLoss, handle: result.handle };
   }
 
   /**
-   * Save trained adapter to genome storage
+   * Save trained adapter to genome storage with manifest
    *
    * @param request Training request (for naming)
    * @param outputDir Directory containing trained adapter files
-   * @returns Path to saved adapter
+   * @param trainingMetadata Training provenance metadata
+   * @returns Adapter path and manifest
    * @protected
    */
-  protected async saveAdapter(request: LoRATrainingRequest, outputDir: string): Promise<string> {
+  protected async saveAdapter(
+    request: LoRATrainingRequest,
+    outputDir: string,
+    trainingMetadata: TrainingMetadata,
+  ): Promise<{ adapterPath: string; manifest: AdapterPackageManifest }> {
     // Create genome adapters directory
     const adaptersDir = path.join('.continuum', 'genome', 'adapters');
     await fs.promises.mkdir(adaptersDir, { recursive: true });
@@ -225,16 +237,47 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
     const adapterPath = path.join(adaptersDir, adapterName);
     await fs.promises.mkdir(adapterPath, { recursive: true });
 
-    // Copy all adapter files from output directory
-    const files = await fs.promises.readdir(outputDir);
-    for (const file of files) {
-      const srcPath = path.join(outputDir, file);
-      const destPath = path.join(adapterPath, file);
-      await fs.promises.copyFile(srcPath, destPath);
-    }
+    // Copy all adapter files from output directory (handles both files and subdirectories)
+    await this.copyDirRecursive(outputDir, adapterPath);
 
-    console.log(`   Adapter files copied to: ${adapterPath}`);
-    return adapterPath;
+    // Calculate real size and content hash
+    const sizeMB = await AdapterPackage.calculateSizeMB(adapterPath);
+    const contentHash = await AdapterPackage.calculateContentHash(adapterPath);
+
+    // Build and write manifest
+    const manifest = AdapterPackage.buildManifest({
+      adapterPath,
+      personaId: request.personaId,
+      personaName: request.personaName,
+      traitType: request.traitType,
+      baseModel: request.baseModel,
+      rank: request.rank ?? 32,
+      sizeMB,
+      contentHash,
+      trainingMetadata,
+    });
+
+    await AdapterPackage.writeManifest(adapterPath, manifest);
+
+    this.log('info', `Adapter saved: ${adapterPath} (${sizeMB}MB, hash=${contentHash.slice(0, 12)})`);
+    return { adapterPath, manifest };
+  }
+
+  /**
+   * Recursively copy a directory's contents to a destination
+   */
+  private async copyDirRecursive(src: string, dest: string): Promise<void> {
+    const entries = await fs.promises.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+      if (entry.isDirectory()) {
+        await fs.promises.mkdir(destPath, { recursive: true });
+        await this.copyDirRecursive(srcPath, destPath);
+      } else {
+        await fs.promises.copyFile(srcPath, destPath);
+      }
+    }
   }
 
   /**
@@ -252,9 +295,9 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
         } else {
           await fs.promises.unlink(filePath);
         }
-        console.log(`   Cleaned up: ${filePath}`);
+        this.log('debug', `Cleaned up: ${filePath}`);
       } catch (error) {
-        console.warn(`   Failed to clean up ${filePath}:`, error);
+        this.log('warn', `Failed to clean up ${filePath}: ${error}`);
       }
     }
   }

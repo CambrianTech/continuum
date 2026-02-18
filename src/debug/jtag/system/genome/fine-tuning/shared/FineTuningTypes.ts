@@ -68,6 +68,11 @@ export interface LoRATrainingRequest {
   learningRate?: number;      // Learning rate (default: 0.0001)
   batchSize?: number;         // Batch size (default: 4)
 
+  // QLoRA quantization — quantize base model to fit largest model on hardware.
+  // LoRA weights stay full precision. A 3B model in 4-bit fits ~2GB VRAM.
+  quantize?: boolean;         // Enable QLoRA quantization (default: true)
+  quantizeBits?: 4 | 8;      // Quantization bits (default: 4 for NF4)
+
   // Output configuration
   outputPath?: string;        // Where to save adapter (default: system-generated)
 
@@ -84,7 +89,7 @@ export interface LoRATrainingResult {
   // Adapter location
   modelPath?: string;         // Local path to .safetensors file (local training)
   modelId?: string;           // Remote model ID (API training)
-  ollamaModelName?: string;   // Ollama model name (if using Ollama)
+  trainedModelName?: string;  // Trained model identifier for inference
 
   // Training metrics
   metrics?: {
@@ -96,6 +101,13 @@ export interface LoRATrainingResult {
     trainingTime: number;     // milliseconds
     examplesProcessed: number;
   };
+
+  // Adapter package manifest (written to adapter directory)
+  manifest?: import('../../shared/AdapterPackageTypes').AdapterPackageManifest;
+
+  // Sentinel handle — references the Rust-managed process that ran training.
+  // Use sentinel/status or sentinel/logs/read to inspect.
+  sentinelHandle?: string;
 
   // Error information
   error?: string;
@@ -140,7 +152,7 @@ export interface TrainingJob {
  * Fine-tuning strategy (how to train)
  */
 export type FineTuningStrategy =
-  | 'local-llama-cpp'    // Local training via llama.cpp (Ollama)
+  | 'local-llama-cpp'    // Local training via llama.cpp
   | 'local-pytorch'      // Local training via PyTorch + Transformers
   | 'remote-api';        // Remote training via provider API (OpenAI, DeepSeek, etc.)
 

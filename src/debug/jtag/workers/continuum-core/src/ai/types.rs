@@ -157,6 +157,23 @@ pub enum ToolChoice {
 // REQUEST/RESPONSE TYPES
 // ============================================================================
 
+/// Active LoRA adapter to apply during generation
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/ai/ActiveAdapterRequest.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveAdapterRequest {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default = "default_adapter_scale")]
+    pub scale: f64,
+}
+
+fn default_adapter_scale() -> f64 {
+    1.0
+}
+
 /// Text generation request
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/ai/TextGenerationRequest.ts")]
@@ -197,6 +214,11 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,
+
+    // LoRA adapters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_adapters: Option<Vec<ActiveAdapterRequest>>,
 
     // Request metadata
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -499,6 +521,7 @@ mod tests {
         ToolCall::export().expect("export ToolCall");
         ToolResult::export().expect("export ToolResult");
         ToolChoice::export().expect("export ToolChoice");
+        ActiveAdapterRequest::export().expect("export ActiveAdapterRequest");
         TextGenerationRequest::export().expect("export TextGenerationRequest");
         TextGenerationResponse::export().expect("export TextGenerationResponse");
         FinishReason::export().expect("export FinishReason");

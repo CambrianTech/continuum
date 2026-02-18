@@ -130,6 +130,26 @@ export class DataDaemonServer extends DataDaemonBase {
     initializeGovernanceNotifications();
     this.log.debug('Governance notifications initialized');
 
+    // Initialize sentinel escalation (sentinel lifecycle → persona inbox)
+    const { initializeSentinelEscalation } = await import('../../../system/sentinel/SentinelEscalationService');
+    initializeSentinelEscalation();
+    this.log.debug('Sentinel escalation service initialized');
+
+    // Initialize sentinel trigger service (auto-execute sentinels on event/cron/immediate)
+    const { initializeSentinelTriggers } = await import('../../../system/sentinel/SentinelTriggerService');
+    await initializeSentinelTriggers();
+    this.log.debug('Sentinel trigger service initialized');
+
+    // Initialize sentinel event bridge (Rust sentinel events → TypeScript Events)
+    const { initializeSentinelEventBridge } = await import('../../../system/sentinel/SentinelEventBridge');
+    initializeSentinelEventBridge();
+    this.log.debug('Sentinel event bridge initialized');
+
+    // Initialize training completion handler (async genome/train → post-training workflow)
+    const { initializeTrainingCompletionHandler } = await import('../../../system/genome/server/TrainingCompletionHandler');
+    initializeTrainingCompletionHandler();
+    this.log.debug('Training completion handler initialized');
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ DataDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
   }

@@ -32,8 +32,8 @@ export type PromptFormat =
  * provided at the parse/hydration boundary so the struct is always well-formed.
  */
 export interface ModelConfig {
-  readonly model?: string;
-  readonly provider?: string;           // AI provider (anthropic, openai, groq, deepseek, candle)
+  readonly model: string;               // Model ID — drives context window, budget, routing
+  readonly provider: string;            // AI provider (anthropic, openai, groq, deepseek, candle)
   readonly temperature?: number;
   readonly maxTokens: number;           // Maximum output tokens — REQUIRED
 

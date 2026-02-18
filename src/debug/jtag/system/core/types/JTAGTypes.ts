@@ -83,7 +83,7 @@ export interface CallerCapabilities {
  * based on model's context window capacity).
  */
 export interface ModelConfig {
-  /** AI provider (ollama, openai, anthropic, etc.) */
+  /** AI provider (candle, openai, anthropic, etc.) */
   provider?: string;
 
   /** Model name (llama3.2:3b, claude-3-5-sonnet, etc.) */

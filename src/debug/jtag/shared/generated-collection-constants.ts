@@ -13,6 +13,18 @@
  * TypeScript will catch any typos at compile time
  */
 export const COLLECTIONS = {
+  /** From BenchmarkResultEntity */
+  ACADEMY_BENCHMARK_RESULTS: 'academy_benchmark_results' as const,
+  /** From BenchmarkEntity */
+  ACADEMY_BENCHMARKS: 'academy_benchmarks' as const,
+  /** From CompetitionEntity */
+  ACADEMY_COMPETITIONS: 'academy_competitions' as const,
+  /** From AcademyCurriculumEntity */
+  ACADEMY_CURRICULA: 'academy_curricula' as const,
+  /** From AcademyExaminationEntity */
+  ACADEMY_EXAMINATIONS: 'academy_examinations' as const,
+  /** From AcademySessionEntity */
+  ACADEMY_SESSIONS: 'academy_sessions' as const,
   /** From ActivityEntity */
   ACTIVITIES: 'activities' as const,
   /** From AdapterDecisionLogEntity */

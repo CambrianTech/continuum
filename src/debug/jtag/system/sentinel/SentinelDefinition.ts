@@ -439,6 +439,10 @@ export interface SentinelExecutionResult {
 
 /**
  * SentinelEntity - Database-persisted sentinel with execution history
+ *
+ * This interface defines the data shape for sentinel persistence.
+ * The EntityClass (SentinelEntityClass) provides decorator metadata for the ORM.
+ * Commands construct plain objects matching this interface.
  */
 export interface SentinelEntity {
   /** Entity ID (UUID) */
@@ -450,6 +454,15 @@ export interface SentinelEntity {
   /** Execution history (most recent first) */
   executions: SentinelExecutionResult[];
 
+  /** Current lifecycle status */
+  status?: 'saved' | 'running' | 'completed' | 'failed' | 'paused' | 'cancelled';
+
+  /** Owning persona — every sentinel belongs to someone */
+  parentPersonaId?: string;
+
+  /** Current Rust-side handle ID (ephemeral, only valid while running) */
+  activeHandle?: string;
+
   /** Entity metadata */
   createdAt: string;
   updatedAt: string;
@@ -460,6 +473,25 @@ export interface SentinelEntity {
 
   /** Parent template ID if cloned */
   parentId?: string;
+
+  /** Tags for organization and search */
+  tags?: string[];
+
+  /** Escalation rules — when to notify the owning persona */
+  escalationRules?: Array<{
+    condition: 'error' | 'timeout' | 'unfamiliar' | 'approval_needed' | 'complete';
+    action: 'pause' | 'notify' | 'abort';
+    priority: 'low' | 'normal' | 'high' | 'urgent';
+  }>;
+
+  /** Aggregate: how many times executed */
+  executionCount?: number;
+
+  /** Last execution success/failure */
+  lastSuccess?: boolean;
+
+  /** Last execution timestamp */
+  lastRunAt?: string;
 }
 
 /**

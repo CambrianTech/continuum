@@ -122,6 +122,28 @@ export class GenomeDaemon {
   }
 
   /**
+   * Check if a persona is registered
+   */
+  isPersonaRegistered(personaId: UUID): boolean {
+    return this.personaStates.has(personaId);
+  }
+
+  /**
+   * Ensure a persona is registered, auto-registering with defaults if not.
+   * Idempotent — safe to call multiple times.
+   */
+  ensurePersonaRegistered(personaId: UUID, displayName?: string, quotaMB?: number): void {
+    if (!this.personaStates.has(personaId)) {
+      const state = new PersonaGenomeState({
+        personaId,
+        displayName: displayName ?? `persona-${personaId.slice(0, 8)}`,
+        memoryQuotaMB: quotaMB ?? this.config.defaultPersonaQuotaMB,
+      });
+      this.personaStates.set(personaId, state);
+    }
+  }
+
+  /**
    * Unregister persona (cleanup)
    */
   async unregisterPersona(personaId: UUID): Promise<void> {

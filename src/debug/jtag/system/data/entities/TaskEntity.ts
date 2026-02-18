@@ -40,6 +40,7 @@ export type TaskDomain =
   | 'analysis'      // Data analysis, research
   | 'canvas'        // Visual/drawing activities (collaborative canvas)
   | 'browser'       // Web browsing co-pilot
+  | 'sentinel'      // Sentinel lifecycle events (escalation, completion, approval)
   | 'self';         // Self-improvement tasks (memory, learning, audit)
 
 /**
@@ -79,7 +80,14 @@ export type TaskType =
   | 'memory-consolidation'
   | 'skill-audit'
   | 'fine-tune-lora'
-  | 'resume-work';
+  | 'resume-work'
+  | 'enroll-academy'
+
+  // Sentinel domain (sentinel lifecycle events → persona inbox)
+  | 'sentinel-complete'      // Sentinel finished successfully
+  | 'sentinel-failed'        // Sentinel failed with error
+  | 'sentinel-escalation'    // Sentinel needs human/persona attention
+  | 'sentinel-approval';     // Sentinel paused, awaiting approval
 
 export class TaskEntity extends BaseEntity {
   static readonly collection = COLLECTIONS.TASKS;

@@ -40,6 +40,9 @@ import type {
   ActivateSkillResult,
   GenomePagingState,
   AdequacyResult,
+  DomainClassification,
+  CoverageReport,
+  QualityScore,
 } from '../../../../shared/generated';
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import { SubsystemLogger } from './being/logging/SubsystemLogger';
@@ -958,6 +961,136 @@ export class RustCognitionBridge {
       const elapsed = performance.now() - start;
       this.logger.error(`genomeState FAILED after ${elapsed.toFixed(2)}ms`);
       this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Domain Classification — adapter-aware text routing
+  // ========================================================================
+
+  /**
+   * Classify text into a skill domain using Rust keyword scoring.
+   * Returns domain, confidence, and matching adapter (if any).
+   * THROWS on failure
+   */
+  async classifyDomain(text: string): Promise<DomainClassification> {
+    this.assertReady('classifyDomain');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionClassifyDomain(this.personaId, text);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`ClassifyDomain: '${text.slice(0, 40)}...' → domain=${result.domain}, confidence=${result.confidence.toFixed(2)}, adapter=${result.adapter_name || 'none'} (${elapsed.toFixed(2)}ms, rust=${result.decision_time_us}μs)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`classifyDomain FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Sync domain classifier with current adapter state.
+   * Call after genome changes (training complete, adapter registered).
+   * THROWS on failure
+   */
+  async syncDomainClassifier(): Promise<{ synced: boolean; total_domains: number; covered_domains: number }> {
+    this.assertReady('syncDomainClassifier');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionSyncDomainClassifier(this.personaId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`SyncDomainClassifier: ${result.total_domains} domains (${result.covered_domains} with adapters) (${elapsed.toFixed(2)}ms)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`syncDomainClassifier FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Register new keywords for a domain (e.g., from academy curriculum).
+   * THROWS on failure
+   */
+  async registerDomainKeywords(domain: string, keywords: string[]): Promise<void> {
+    this.assertReady('registerDomainKeywords');
+
+    try {
+      await this.client.cognitionRegisterDomainKeywords(this.personaId, domain, keywords);
+      this.logger.info(`RegisterDomainKeywords: added ${keywords.length} keywords to '${domain}'`);
+    } catch (error) {
+      this.logger.error(`registerDomainKeywords FAILED: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Domain Activity Tracking — gap detection
+  // ========================================================================
+
+  /**
+   * Record domain activity for gap detection.
+   * Call after every inference response.
+   * THROWS on failure
+   */
+  async recordActivity(domain: string, success: boolean): Promise<void> {
+    this.assertReady('recordActivity');
+
+    try {
+      await this.client.cognitionGenomeRecordActivity(this.personaId, domain, success);
+    } catch (error) {
+      this.logger.error(`recordActivity FAILED for domain '${domain}': ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get coverage report: which domains have adapters, which are gaps.
+   * THROWS on failure
+   */
+  async coverageReport(): Promise<CoverageReport> {
+    this.assertReady('coverageReport');
+    const start = performance.now();
+
+    try {
+      const result = await this.client.cognitionGenomeCoverageReport(this.personaId);
+      const elapsed = performance.now() - start;
+
+      this.logger.info(`CoverageReport: ${result.covered.length} covered, ${result.gaps.length} gaps, ratio=${(result.coverage_ratio * 100).toFixed(0)}% (${elapsed.toFixed(2)}ms)`);
+
+      return result;
+    } catch (error) {
+      const elapsed = performance.now() - start;
+      this.logger.error(`coverageReport FAILED after ${elapsed.toFixed(2)}ms`);
+      this.logger.error(`Error: ${error}`);
+      throw error;
+    }
+  }
+
+  // ========================================================================
+  // Interaction Quality Scoring — training data selection
+  // ========================================================================
+
+  /**
+   * Score interaction quality for training data selection.
+   * THROWS on failure
+   */
+  async scoreInteraction(input: string, output: string, feedback?: string, taskSuccess?: boolean): Promise<QualityScore> {
+    this.assertReady('scoreInteraction');
+
+    try {
+      return await this.client.cognitionScoreInteraction(input, output, feedback, taskSuccess);
+    } catch (error) {
+      this.logger.error(`scoreInteraction FAILED: ${error}`);
       throw error;
     }
   }

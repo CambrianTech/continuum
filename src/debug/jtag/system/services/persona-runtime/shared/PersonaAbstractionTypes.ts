@@ -21,7 +21,7 @@ export enum ModelProvider {
   ANTHROPIC = 'anthropic',     // Claude models (no public fine-tuning yet)
   DEEPSEEK = 'deepseek',       // DeepSeek models with custom fine-tuning
   CUSTOM = 'custom',           // Custom model servers
-  LOCAL = 'local'              // Local model hosting (Ollama, etc.)
+  LOCAL = 'local'              // Local model hosting (Candle)
 }
 
 /**

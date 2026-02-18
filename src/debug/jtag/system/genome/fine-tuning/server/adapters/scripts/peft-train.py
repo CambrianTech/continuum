@@ -52,6 +52,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     print(f"   Epochs: {config['epochs']}")
     print(f"   Learning rate: {config['learningRate']}")
     print(f"   Batch size: {config['batchSize']}")
+    print(f"   QLoRA: {config.get('quantize', True)} ({config.get('quantizeBits', 4)}-bit)")
 
     return config
 
@@ -71,9 +72,15 @@ def detect_device():
     return device
 
 
-def load_model_and_tokenizer(base_model: str, device: str):
-    """Load base model and tokenizer with optimal settings."""
+def load_model_and_tokenizer(base_model: str, device: str, quantize: bool = True, quantize_bits: int = 4):
+    """Load base model and tokenizer with QLoRA quantization when available.
+
+    QLoRA strategy: quantize the base model to 4-bit NF4 so you can train the
+    LARGEST model that fits on hardware. LoRA weights stay full precision.
+    A 3B model in 4-bit fits in ~2GB VRAM, 8B in ~5GB.
+    """
     print(f"\n🤖 Loading base model: {base_model}")
+    print(f"   Quantization: {'QLoRA ' + str(quantize_bits) + '-bit' if quantize else 'disabled'}")
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
@@ -82,29 +89,41 @@ def load_model_and_tokenizer(base_model: str, device: str):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load model with device-appropriate settings
-    if device == "cuda":
-        # CUDA: Use 4-bit quantization for memory efficiency
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            quantization_config=bnb_config,
-            device_map="auto",
-            trust_remote_code=True
-        )
-        model = prepare_model_for_kbit_training(model)
-    else:
-        # MPS/CPU: Load in float16 or float32
-        dtype = torch.float16 if device == "mps" else torch.float32
+    # QLoRA: Try 4-bit quantization on any device that supports BitsAndBytes
+    use_qlora = False
+    if quantize:
+        try:
+            if quantize_bits == 4:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16 if device == "cuda" else torch.float16,
+                    bnb_4bit_use_double_quant=True,
+                )
+            else:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                )
+
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True
+            )
+            model = prepare_model_for_kbit_training(model)
+            use_qlora = True
+            print(f"✅ QLoRA {quantize_bits}-bit quantization active")
+        except Exception as e:
+            print(f"⚠️  QLoRA failed ({e}), falling back to full precision")
+
+    if not use_qlora:
+        # Fallback: full precision (float16 on GPU, float32 on CPU)
+        dtype = torch.float16 if device in ("mps", "cuda") else torch.float32
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
             torch_dtype=dtype,
-            device_map={"": device},
+            device_map={"": device} if device != "cuda" else "auto",
             trust_remote_code=True
         )
 
@@ -168,11 +187,41 @@ def format_chat_template(example, tokenizer):
 
 def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
     """Execute LoRA training."""
+    num_examples = len(dataset)
+    batch_size = config['batchSize']
+    num_epochs = config['epochs']
+    learning_rate = config['learningRate']
+
+    # Dynamic gradient accumulation: target effective batch ~16 for large datasets,
+    # but for small datasets (< 32 examples), accumulate less so we get enough optimizer steps.
+    # With 20 examples and batch_size=4: steps_per_epoch=5
+    # grad_accum=1 → 5 optimizer steps/epoch → 15 total (3 epochs) — plenty of learning
+    # grad_accum=4 → 1 optimizer step/epoch → 3 total — all in warmup, no learning!
+    steps_per_epoch = max(1, num_examples // batch_size)
+    if steps_per_epoch <= 8:
+        gradient_accumulation = 1  # Small dataset: every mini-batch is an optimizer step
+    elif steps_per_epoch <= 32:
+        gradient_accumulation = 2  # Medium dataset
+    else:
+        gradient_accumulation = 4  # Large dataset: standard accumulation
+
+    total_optimizer_steps = (steps_per_epoch // gradient_accumulation) * num_epochs
+
+    # Dynamic warmup: 10% of total steps, minimum 1, cap at 10
+    # Never let warmup consume >30% of training (for tiny datasets)
+    warmup = max(1, min(10, total_optimizer_steps // 10))
+    if warmup > total_optimizer_steps * 0.3:
+        warmup = max(1, int(total_optimizer_steps * 0.1))
+
     print(f"\n🎯 Starting training...")
-    print(f"   Examples: {len(dataset)}")
-    print(f"   Epochs: {config['epochs']}")
-    print(f"   Batch size: {config['batchSize']}")
-    print(f"   Learning rate: {config['learningRate']}")
+    print(f"   Examples: {num_examples}")
+    print(f"   Epochs: {num_epochs}")
+    print(f"   Batch size: {batch_size}")
+    print(f"   Learning rate: {learning_rate}")
+    print(f"   Gradient accumulation: {gradient_accumulation} (effective batch={batch_size * gradient_accumulation})")
+    print(f"   Steps/epoch: {steps_per_epoch}, optimizer steps/epoch: {steps_per_epoch // gradient_accumulation}")
+    print(f"   Total optimizer steps: {total_optimizer_steps}")
+    print(f"   Warmup steps: {warmup}")
 
     # Formatting function for TRL 0.24+
     def formatting_func(example):
@@ -189,11 +238,11 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
     output_dir = config['outputDir']
     training_args = TrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=config['batchSize'],
-        gradient_accumulation_steps=4,
-        warmup_steps=5,
-        num_train_epochs=config['epochs'],
-        learning_rate=config['learningRate'],
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation,
+        warmup_steps=warmup,
+        num_train_epochs=num_epochs,
+        learning_rate=learning_rate,
         fp16=False,  # MPS doesn't support fp16
         bf16=False,
         logging_steps=1,
@@ -257,8 +306,12 @@ def main():
     # Step 2: Detect device
     device = detect_device()
 
-    # Step 3: Load base model and tokenizer
-    model, tokenizer = load_model_and_tokenizer(config['baseModel'], device)
+    # Step 3: Load base model and tokenizer (QLoRA quantization enabled by default)
+    model, tokenizer = load_model_and_tokenizer(
+        config['baseModel'], device,
+        quantize=config.get('quantize', True),
+        quantize_bits=config.get('quantizeBits', 4)
+    )
 
     # Step 4: Configure LoRA
     model = configure_lora(model, config['rank'], config['alpha'])

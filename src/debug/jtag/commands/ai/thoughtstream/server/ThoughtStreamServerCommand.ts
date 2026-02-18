@@ -102,6 +102,8 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
                 stream.contextId,
                 thought.personaId,
                 {
+                  modelId: params.modelId,
+                  provider: params.provider,
                   maxTokens: 2000,
                   maxMessages: 20,
                   maxMemories: 0,
@@ -394,6 +396,8 @@ export class ThoughtStreamServerCommand extends ThoughtStreamCommand {
                 entry.roomId,
                 personaId,
                 {
+                  modelId: params.modelId,
+                  provider: params.provider,
                   maxTokens: 2000,
                   maxMessages: 20,
                   maxMemories: 0,

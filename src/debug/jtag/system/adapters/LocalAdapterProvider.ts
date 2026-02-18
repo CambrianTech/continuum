@@ -1,7 +1,7 @@
 /**
  * Local Adapter Provider
  *
- * Manages LoRA adapters for local inference via Candle/Ollama.
+ * Manages LoRA adapters for local inference via Candle.
  * Direct weight merging - no cloud dependencies.
  */
 
@@ -20,13 +20,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Local adapter provider - Candle/Ollama inference
+ * Local adapter provider - Candle inference
  */
 export class LocalAdapterProvider implements IAdapterProvider {
   readonly name = 'local';
   readonly type: ProviderType = 'local';
   readonly source: AdapterSource = 'local';
-  readonly description = 'Local inference via Candle/Ollama with direct LoRA weight merging';
+  readonly description = 'Local inference via Candle with direct LoRA weight merging';
 
   private readonly registryPath: string;
   private readonly client: InferenceGrpcClient;

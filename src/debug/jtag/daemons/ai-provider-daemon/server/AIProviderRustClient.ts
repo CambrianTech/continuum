@@ -252,6 +252,7 @@ export class AIProviderRustClient {
       stopSequences: request.stopSequences,
       tools: request.tools,
       toolChoice: request.toolChoice,
+      activeAdapters: request.activeAdapters,
       requestId: request.requestId,
       userId: request.userId,
       roomId: request.roomId,

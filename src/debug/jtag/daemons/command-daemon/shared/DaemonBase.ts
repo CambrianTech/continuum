@@ -274,7 +274,7 @@ export abstract class DaemonBase extends JTAGModule implements MessageSubscriber
    *
    * Examples of what belongs here:
    * - Database connections and migrations
-   * - External service connections (Ollama, APIs)
+   * - External service connections (APIs)
    * - Loading cached data
    * - Health check initialization
    * - Periodic task registration

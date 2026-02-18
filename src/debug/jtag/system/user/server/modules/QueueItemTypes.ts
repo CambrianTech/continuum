@@ -84,6 +84,17 @@ export interface InboxTask extends BaseQueueItem {
     stdoutLines?: number;    // Lines of stdout output
     stderrLines?: number;    // Lines of stderr output
     errorPreview?: string;   // Preview of error message (first ~100 chars)
+    // Academy enrollment metadata (from SelfTaskGenerator enrollment detection)
+    domain?: string;                 // Skill domain for enrollment
+    suggested_mode?: string;         // Academy mode: 'knowledge' | 'coding' | 'project'
+    interaction_count?: number;      // Interactions in this domain before enrollment
+    failure_rate?: number;           // Failure rate in this domain
+    // Sentinel lifecycle metadata (from SentinelEscalationService)
+    sentinelName?: string;           // Human-readable sentinel name
+    sentinelEntityId?: string;       // Persistent entity ID in 'sentinels' collection
+    sentinelHandle?: string;         // Ephemeral Rust-side handle
+    sentinelStatus?: string;         // completed | failed | cancelled
+    error?: string;                  // Error message for failed sentinels
   };
 }
 
@@ -255,23 +266,7 @@ export function taskEntityToInboxTask(task: {
   estimatedDuration?: number;
   dependsOn?: UUID[];
   blockedBy?: UUID[];
-  metadata?: {
-    messageId?: UUID;
-    roomId?: UUID;
-    fileId?: UUID;
-    pullRequestId?: UUID;
-    gameId?: UUID;
-    moveNotation?: string;
-    exerciseId?: UUID;
-    skillName?: string;
-    loraLayer?: string;
-    trainingData?: unknown[];
-    originalTaskId?: UUID;
-    originalDomain?: TaskDomain;
-    targetDomain?: TaskDomain;
-    failureCount?: number;
-    failedTaskIds?: UUID[];
-  };
+  metadata?: InboxTask['metadata'];
 }): InboxTask {
   // Helper to safely convert Date | string | undefined to timestamp
   // NOTE: Rust ORM returns dates as ISO strings (e.g., "2026-02-07T18:17:56.886Z")

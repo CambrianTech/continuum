@@ -13,7 +13,10 @@
  * - LayerCache: LRU cache for performance
  */
 
-import type { UUID, Timestamp } from '../../../system/core/types/JTAGTypes';
+import type { UUID } from '../../../system/core/types/JTAGTypes';
+
+/** Unix timestamp in milliseconds */
+type Timestamp = number;
 
 // ============================================================================
 // LoRA Layer Types

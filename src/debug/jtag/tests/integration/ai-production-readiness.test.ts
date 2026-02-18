@@ -3,7 +3,7 @@
  * =============================
  *
  * Validates that our AI system can handle real production load without:
- * 1. Flooding Ollama (or any provider) with too many concurrent requests
+ * 1. Flooding any provider with too many concurrent requests
  * 2. Creating cascading failures across multiple personas
  * 3. Breaking when models timeout or fail
  * 4. Losing self-healing capability
@@ -14,7 +14,7 @@
  * - Concurrent AI responses with queue management
  * - Self-healing when providers fail
  *
- * Tests all available providers (free: Ollama, paid: OpenAI/Anthropic if keys present)
+ * Tests all available providers (free: Candle, paid: OpenAI/Anthropic if keys present)
  */
 
 import { runJtagCommand } from '../test-utils/CRUDTestUtils';
@@ -30,13 +30,13 @@ interface ProviderTest {
 const PROVIDER_TESTS: ProviderTest[] = [
   // Free providers (always test)
   {
-    name: 'Ollama/phi3:mini',
-    provider: 'ollama',
+    name: 'Candle/phi3:mini',
+    provider: 'candle',
     model: 'phi3:mini'
   },
   {
-    name: 'Ollama/llama3.2:1b',
-    provider: 'ollama',
+    name: 'Candle/llama3.2:1b',
+    provider: 'candle',
     model: 'llama3.2:1b'
   },
   // Paid providers (only test if API keys present)
@@ -145,7 +145,7 @@ async function testConcurrentChatLoad(): Promise<{
 
     promises.push(
       runJtagCommand(
-        `ai/generate --preferredProvider=ollama --model=phi3:mini --messages='${messagesParam}' --maxTokens=50`
+        `ai/generate --preferredProvider=candle --model=phi3:mini --messages='${messagesParam}' --maxTokens=50`
       ).catch((error) => ({ success: false, error: error.message }))
     );
   }
@@ -179,9 +179,9 @@ async function testSelfHealing(): Promise<{
   // Test 1: Can we detect health status?
   let healthCheckWorks = false;
   try {
-    // Health check should work even if Ollama is slow
+    // Health check should work even if Candle is slow
     const startTime = Date.now();
-    await runJtagCommand('ai/generate --preferredProvider=ollama --model=phi3:mini --messages=\'[{"role":"user","content":"hi"}]\' --maxTokens=10');
+    await runJtagCommand('ai/generate --preferredProvider=candle --model=phi3:mini --messages=\'[{"role":"user","content":"hi"}]\' --maxTokens=10');
     const responseTime = Date.now() - startTime;
 
     healthCheckWorks = responseTime < 30000; // Should respond within 30s
@@ -195,7 +195,7 @@ async function testSelfHealing(): Promise<{
   try {
     // Try with invalid model - should fail gracefully
     const result = await runJtagCommand(
-      'ai/generate --preferredProvider=ollama --model=nonexistent-model --messages=\'[{"role":"user","content":"test"}]\' --maxTokens=10'
+      'ai/generate --preferredProvider=candle --model=nonexistent-model --messages=\'[{"role":"user","content":"test"}]\' --maxTokens=10'
     );
 
     // Should return error, not crash

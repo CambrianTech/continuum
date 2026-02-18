@@ -47,6 +47,9 @@ export async function genomeActivate(
   try {
     const daemon = getDaemon();
 
+    // Auto-register persona if not already known to the genome daemon
+    daemon.ensurePersonaRegistered(params.personaId);
+
     const loaded = await daemon.loadAdapter(params.personaId, params.adapterId);
 
     if (!loaded) {

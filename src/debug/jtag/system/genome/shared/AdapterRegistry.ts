@@ -5,7 +5,7 @@
  * Used by GenomeDaemon for global coordination.
  *
  * Phase 7: Mock adapters only
- * Phase 8+: Real Ollama adapters
+ * Phase 8+: Real Candle/PEFT adapters
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';

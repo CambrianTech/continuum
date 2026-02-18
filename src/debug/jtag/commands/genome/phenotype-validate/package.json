@@ -1,0 +1,18 @@
+{
+  "name": "genome-phenotype-validate",
+  "displayName": "Genome Phenotype Validate",
+  "commandPath": "genome/phenotype-validate",
+  "description": "Validate training effectiveness by comparing pre/post responses using LLM-as-judge",
+  "category": "genome",
+  "version": "1.0.0",
+  "server": true,
+  "browser": false,
+  "params": [
+    { "name": "questions", "type": "json", "required": true, "description": "Array of {question, expectedAnswer} objects" },
+    { "name": "baselineResponses", "type": "json", "required": true, "description": "Pre-training responses" },
+    { "name": "adaptedResponses", "type": "json", "required": true, "description": "Post-training responses" },
+    { "name": "improvementThreshold", "type": "number", "required": false, "description": "Minimum score improvement (default: 5)" },
+    { "name": "model", "type": "string", "required": false, "description": "LLM for judging" },
+    { "name": "provider", "type": "string", "required": false, "description": "LLM provider" }
+  ]
+}

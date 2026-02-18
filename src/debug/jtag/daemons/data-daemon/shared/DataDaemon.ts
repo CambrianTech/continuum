@@ -1273,7 +1273,7 @@ export class DataDaemon {
    * @example
    * const result = await DataDaemon.generateEmbedding({
    *   text: 'We should use TypeScript for type safety',
-   *   model: { name: 'all-minilm', dimensions: 384, provider: 'ollama' }
+   *   model: { name: 'all-minilm', dimensions: 384, provider: 'fastembed' }
    * });
    */
   static async generateEmbedding(

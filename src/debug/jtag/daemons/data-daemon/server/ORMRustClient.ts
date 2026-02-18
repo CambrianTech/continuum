@@ -325,7 +325,14 @@ export class ORMRustClient {
       return { success: false, error: response.error || 'Store failed' };
     }
 
-    return { success: true, data };
+    // Merge Rust-generated fields (id, metadata) into the returned entity
+    // Rust auto-generates the UUID if not provided; the original `data` may lack it
+    const rustRecord = response.result?.data;
+    const mergedData = rustRecord
+      ? { ...data, id: rustRecord.id ?? data.id } as T
+      : data;
+
+    return { success: true, data: mergedData };
   }
 
   /**

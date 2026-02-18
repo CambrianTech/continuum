@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-16T23:55:14.456Z",
+  "generated": "2026-02-18T21:07:10.717Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1526,6 +1526,16 @@
           "type": "boolean",
           "required": false,
           "description": "isTemplate parameter"
+        },
+        "parentPersonaId": {
+          "type": "string",
+          "required": false,
+          "description": "parentPersonaId parameter"
+        },
+        "escalationRules": {
+          "type": "array",
+          "required": false,
+          "description": "escalationRules parameter"
         }
       }
     },
@@ -1552,6 +1562,21 @@
           "type": "boolean",
           "required": false,
           "description": "async parameter"
+        },
+        "entityId": {
+          "type": "string",
+          "required": false,
+          "description": "entityId parameter"
+        },
+        "parentPersonaId": {
+          "type": "string",
+          "required": false,
+          "description": "parentPersonaId parameter"
+        },
+        "sentinelName": {
+          "type": "string",
+          "required": false,
+          "description": "sentinelName parameter"
         },
         "command": {
           "type": "string",
@@ -1777,6 +1802,27 @@
           "type": "string",
           "required": false,
           "description": "search parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/cancel",
+      "description": "Cancel running sentinels by handle or filter. Supports three modes: - Direct: provide a `handle` to cancel one sentinel - Filtered: provide `type` and/or `status` to cancel matching sentinels - Default: no params cancels all running sentinels",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": false,
+          "description": "handle parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
         }
       }
     },
@@ -3357,6 +3403,123 @@
       }
     },
     {
+      "name": "genome/training-pipeline",
+      "description": "One-command entry point for full LoRA training workflow. Builds a Sentinel pipeline that prepares data, trains adapter, registers it, and activates it for a persona",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": false,
+          "description": "traitType parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "learningRate": {
+          "type": "number",
+          "required": false,
+          "description": "learningRate parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/train",
+      "description": "Execute LoRA fine-tuning on a JSONL dataset using PEFTLoRAAdapter. Wraps trainLoRA() as a command for Sentinel pipeline orchestration",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": true,
+          "description": "traitType parameter"
+        },
+        "datasetPath": {
+          "type": "string",
+          "required": true,
+          "description": "datasetPath parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "learningRate": {
+          "type": "number",
+          "required": false,
+          "description": "learningRate parameter"
+        },
+        "batchSize": {
+          "type": "number",
+          "required": false,
+          "description": "batchSize parameter"
+        },
+        "quantize": {
+          "type": "boolean",
+          "required": false,
+          "description": "quantize parameter"
+        },
+        "quantizeBits": {
+          "type": "string",
+          "required": false,
+          "description": "quantizeBits parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
+        }
+      }
+    },
+    {
       "name": "genome/activate",
       "description": "Activate adapter for persona Loads adapter into memory, evicting others if needed.",
       "params": {
@@ -3437,6 +3600,42 @@
       }
     },
     {
+      "name": "genome/phenotype-validate",
+      "description": "Genome Phenotype Validate Command Parameters",
+      "params": {
+        "questions": {
+          "type": "array",
+          "required": true,
+          "description": "questions parameter"
+        },
+        "baselineResponses": {
+          "type": "array",
+          "required": true,
+          "description": "baselineResponses parameter"
+        },
+        "adaptedResponses": {
+          "type": "array",
+          "required": true,
+          "description": "adaptedResponses parameter"
+        },
+        "improvementThreshold": {
+          "type": "number",
+          "required": false,
+          "description": "improvementThreshold parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        }
+      }
+    },
+    {
       "name": "genome/paging-unregister",
       "description": "Unregister persona from genome daemon - unloads all adapters for persona.",
       "params": {
@@ -3504,6 +3703,11 @@
       "name": "genome/paging-adapter-register",
       "description": "Genome Paging Adapter Register Command Types Register a mock LoRA adapter in the global adapter registry. This must be done before activating adapters for personas. Phase 7: Mock adapters only Phase 8+: Real Candle adapters",
       "params": {
+        "layerId": {
+          "type": "string",
+          "required": false,
+          "description": "layerId parameter"
+        },
         "adapterId": {
           "type": "string",
           "required": true,
@@ -3600,6 +3804,145 @@
       }
     },
     {
+      "name": "genome/gap-analysis",
+      "description": "Genome Gap Analysis Command Parameters",
+      "params": {
+        "competitionId": {
+          "type": "string",
+          "required": true,
+          "description": "competitionId parameter"
+        },
+        "personaId": {
+          "type": "string",
+          "required": false,
+          "description": "personaId parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/dataset-synthesize",
+      "description": "Uses an LLM to synthesize training data for a given topic/skill. Generates Q&A pairs in the persona's voice, saved as JSONL compatible with genome/train.",
+      "params": {
+        "topic": {
+          "type": "string",
+          "required": true,
+          "description": "topic parameter"
+        },
+        "skill": {
+          "type": "string",
+          "required": true,
+          "description": "skill parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "exampleCount": {
+          "type": "number",
+          "required": false,
+          "description": "exampleCount parameter"
+        },
+        "difficulty": {
+          "type": "string",
+          "required": false,
+          "description": "difficulty parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "outputPath": {
+          "type": "string",
+          "required": false,
+          "description": "outputPath parameter"
+        },
+        "groundingContext": {
+          "type": "string",
+          "required": false,
+          "description": "groundingContext parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/dataset-prepare",
+      "description": "Collect training data from chat history for a persona and export as JSONL dataset for LoRA fine-tuning",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "roomId": {
+          "type": "string",
+          "required": true,
+          "description": "roomId parameter"
+        },
+        "traitType": {
+          "type": "string",
+          "required": false,
+          "description": "traitType parameter"
+        },
+        "minMessages": {
+          "type": "number",
+          "required": false,
+          "description": "minMessages parameter"
+        },
+        "maxMessages": {
+          "type": "number",
+          "required": false,
+          "description": "maxMessages parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/compose",
+      "description": "Stack ordering (lower = applied first, default: index)",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "layers": {
+          "type": "array",
+          "required": true,
+          "description": "layers parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": true,
+          "description": "baseModel parameter"
+        },
+        "name": {
+          "type": "string",
+          "required": false,
+          "description": "name parameter"
+        },
+        "strategy": {
+          "type": "string",
+          "required": false,
+          "description": "strategy parameter"
+        },
+        "activate": {
+          "type": "boolean",
+          "required": false,
+          "description": "activate parameter"
+        }
+      }
+    },
+    {
       "name": "genome/batch-micro-tune",
       "description": "Perform a fast, in-memory LoRA micro-tune on accumulated training examples during recipe execution, without persisting weights to disk.",
       "params": {
@@ -3637,6 +3980,148 @@
           "type": "number",
           "required": false,
           "description": "maxExamples parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/academy-session",
+      "description": "Entry point for the Academy Dojo system. Creates an AcademySessionEntity and spawns dual sentinels (teacher + student) for autonomous skill training.",
+      "params": {
+        "personaId": {
+          "type": "string",
+          "required": true,
+          "description": "personaId parameter"
+        },
+        "personaName": {
+          "type": "string",
+          "required": true,
+          "description": "personaName parameter"
+        },
+        "skill": {
+          "type": "string",
+          "required": true,
+          "description": "skill parameter"
+        },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "description": "mode parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "maxTopicAttempts": {
+          "type": "number",
+          "required": false,
+          "description": "maxTopicAttempts parameter"
+        },
+        "passingScore": {
+          "type": "number",
+          "required": false,
+          "description": "passingScore parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
+        },
+        "challengeDir": {
+          "type": "string",
+          "required": false,
+          "description": "challengeDir parameter"
+        },
+        "sourceFile": {
+          "type": "string",
+          "required": false,
+          "description": "sourceFile parameter"
+        },
+        "testFile": {
+          "type": "string",
+          "required": false,
+          "description": "testFile parameter"
+        },
+        "testCommand": {
+          "type": "string",
+          "required": false,
+          "description": "testCommand parameter"
+        },
+        "projectDir": {
+          "type": "string",
+          "required": false,
+          "description": "projectDir parameter"
+        }
+      }
+    },
+    {
+      "name": "genome/academy-competition",
+      "description": "Launches a multi-persona competition: 1 shared teacher sentinel generates a curriculum, N student sentinels compete on the same exam questions. Rankings computed from exam scores across all topics.",
+      "params": {
+        "skill": {
+          "type": "string",
+          "required": true,
+          "description": "skill parameter"
+        },
+        "competitors": {
+          "type": "array",
+          "required": true,
+          "description": "competitors parameter"
+        },
+        "baseModel": {
+          "type": "string",
+          "required": false,
+          "description": "baseModel parameter"
+        },
+        "maxTopicAttempts": {
+          "type": "number",
+          "required": false,
+          "description": "maxTopicAttempts parameter"
+        },
+        "passingScore": {
+          "type": "number",
+          "required": false,
+          "description": "passingScore parameter"
+        },
+        "epochs": {
+          "type": "number",
+          "required": false,
+          "description": "epochs parameter"
+        },
+        "rank": {
+          "type": "number",
+          "required": false,
+          "description": "rank parameter"
+        },
+        "tournamentRounds": {
+          "type": "number",
+          "required": false,
+          "description": "tournamentRounds parameter"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": false,
+          "description": "provider parameter"
         }
       }
     },
@@ -6286,6 +6771,16 @@
           "required": false,
           "description": "limit parameter"
         },
+        "modelId": {
+          "type": "string",
+          "required": true,
+          "description": "modelId parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
+        },
         "showContent": {
           "type": "boolean",
           "required": false,
@@ -6660,6 +7155,16 @@
           "type": "string",
           "required": true,
           "description": "personaId parameter"
+        },
+        "modelId": {
+          "type": "string",
+          "required": true,
+          "description": "modelId parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
         },
         "maxMessages": {
           "type": "number",
@@ -7046,8 +7551,13 @@
         },
         "model": {
           "type": "string",
-          "required": false,
+          "required": true,
           "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
         },
         "temperature": {
           "type": "number",
@@ -7058,11 +7568,6 @@
           "type": "number",
           "required": false,
           "description": "maxTokens parameter"
-        },
-        "provider": {
-          "type": "string",
-          "required": false,
-          "description": "provider parameter"
         }
       }
     },

@@ -33,7 +33,7 @@ export class AIGenerationEntity extends BaseEntity {
 
   // AI model info
   @TextField()
-  provider!: string;              // 'openai', 'anthropic', 'ollama', etc.
+  provider!: string;              // 'openai', 'anthropic', 'candle', etc.
 
   @TextField()
   model!: string;                 // 'gpt-4', 'claude-3-opus', 'deepseek-r1', etc.

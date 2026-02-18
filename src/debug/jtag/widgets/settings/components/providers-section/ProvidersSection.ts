@@ -74,7 +74,7 @@ export class ProvidersSection extends ReactiveWidget {
       </div>
 
       <div class="info-box">
-        <strong>Choose your setup:</strong> Run AI locally for free with Ollama,
+        <strong>Choose your setup:</strong> Run AI locally for free with Candle (built-in),
         or connect cloud providers for more powerful models. You can use multiple providers.
         <span class="storage-note">
           Keys stored in <code>~/.continuum/config.env</code>
@@ -86,7 +86,7 @@ export class ProvidersSection extends ReactiveWidget {
         <h2 class="category-title">Local AI (Free)</h2>
         <p class="category-intro">
           Runs on your machine. No API key required. Private and unlimited.
-          <a href="https://ollama.ai" target="_blank">Download Ollama</a> if not installed.
+          Candle inference is built-in — no external downloads required.
         </p>
         ${localEntries.map(entry => this.renderProviderEntry(entry))}
       </div>

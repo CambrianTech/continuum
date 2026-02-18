@@ -97,7 +97,7 @@ export const DEFAULT_JTAG_ROUTER_CONFIG: ResolvedJTAGRouterConfig = {
     connectionTimeout: 10000 // 10 seconds
   },
   response: {
-    correlationTimeout: 60000, // 60 second timeout for commands (allows for full system startup)
+    correlationTimeout: 600000, // 10min safety net — CLI enforces the real per-command timeout
     enableCorrelation: true
   },
   transport: {
