@@ -245,7 +245,8 @@ export class ModelRegistry {
     if (all.length === 1) return all[0];
 
     // Multiple providers — return largest context window (cloud models win for backward compat)
-    console.log(`[ModelRegistry] Ambiguous lookup for "${modelId}": ${all.length} providers (${all.map(m => `${m.provider}:${m.contextWindow}`).join(', ')}). Returning largest context window.`);
+    // Note: This is expected for models that exist on both local (Candle) and cloud providers.
+    // The cloud entry (larger context) is returned for unscoped lookups. Use provider param for scoped.
     return all.reduce((best, current) =>
       current.contextWindow > best.contextWindow ? current : best
     );

@@ -49,6 +49,8 @@ export interface InteractionCapture {
   output: string;
   expectedOutput?: string;
   contextMetadata?: Record<string, unknown>;
+  /** Pre-computed quality rating from Rust scorer (0.0-1.0) */
+  qualityRating?: number;
 }
 
 /**
@@ -84,9 +86,9 @@ export class TrainingDataAccumulator {
   constructor(
     private personaId: UUID,
     private displayName: string,
-    logger?: (message: string) => void
+    logger: (message: string) => void
   ) {
-    this.log = logger || console.log.bind(console);
+    this.log = logger;
     this.log(`🧬 ${displayName}: TrainingDataAccumulator initialized`);
   }
 
@@ -105,7 +107,11 @@ export class TrainingDataAccumulator {
       output: capture.output,
       expectedOutput: capture.expectedOutput,
       timestamp: new Date(),
-      contextMetadata: capture.contextMetadata
+      contextMetadata: capture.contextMetadata,
+      // Attach pre-computed quality rating from Rust scorer if available
+      ...(capture.qualityRating !== undefined && {
+        feedback: { source: 'system' as const, rating: capture.qualityRating }
+      }),
     };
 
     // Store in domain buffer
@@ -145,14 +151,23 @@ export class TrainingDataAccumulator {
   }
 
   /**
-   * Check if domain has enough examples to trigger micro-tuning
+   * Check if domain has enough examples to trigger micro-tuning.
+   * Quality-weighted: 20 high-quality examples (rating > 0.7) OR full threshold.
    */
   shouldMicroTune(domain: string): boolean {
     const buffer = this.domainBuffers.get(domain);
     if (!buffer) return false;
 
     const threshold = this.getBatchThreshold(domain);
-    return buffer.length >= threshold;
+
+    // Standard threshold
+    if (buffer.length >= threshold) return true;
+
+    // Quality-weighted: enough high-quality examples trigger earlier
+    const highQuality = buffer.filter(e => (e.feedback?.rating ?? 0) > 0.7);
+    if (highQuality.length >= 20) return true;
+
+    return false;
   }
 
   /**

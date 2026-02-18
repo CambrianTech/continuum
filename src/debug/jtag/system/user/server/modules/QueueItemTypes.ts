@@ -84,6 +84,11 @@ export interface InboxTask extends BaseQueueItem {
     stdoutLines?: number;    // Lines of stdout output
     stderrLines?: number;    // Lines of stderr output
     errorPreview?: string;   // Preview of error message (first ~100 chars)
+    // Academy enrollment metadata (from SelfTaskGenerator enrollment detection)
+    domain?: string;                 // Skill domain for enrollment
+    suggested_mode?: string;         // Academy mode: 'knowledge' | 'coding' | 'project'
+    interaction_count?: number;      // Interactions in this domain before enrollment
+    failure_rate?: number;           // Failure rate in this domain
     // Sentinel lifecycle metadata (from SentinelEscalationService)
     sentinelName?: string;           // Human-readable sentinel name
     sentinelEntityId?: string;       // Persistent entity ID in 'sentinels' collection

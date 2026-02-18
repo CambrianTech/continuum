@@ -111,8 +111,8 @@ export class PersonaGenome {
    */
   private rustBridge: RustCognitionBridge | null = null;
 
-  constructor(config: PersonaGenomeConfig, logger?: (message: string) => void) {
-    this.log = logger || console.log.bind(console);
+  constructor(config: PersonaGenomeConfig, logger: (message: string) => void) {
+    this.log = logger;
     this.config = config;
 
     // Register initial adapters (but don't load them yet)
@@ -267,6 +267,26 @@ export class PersonaGenome {
       return this.activateSkillViaRust(skillName);
     }
     return this.activateSkillLocal(skillName);
+  }
+
+  /**
+   * Activate adapter by domain name (not adapter name).
+   * Searches registered adapters for one matching the given domain.
+   * Falls back to activateSkill if an exact match is found.
+   */
+  async activateForDomain(domain: string): Promise<void> {
+    // Search available and active adapters for one matching this domain
+    for (const [name, adapter] of this.availableAdapters) {
+      if (adapter.getDomain() === domain) {
+        return this.activateSkill(name);
+      }
+    }
+    for (const [name, adapter] of this.activeAdapters) {
+      if (adapter.getDomain() === domain) {
+        return this.activateSkill(name);
+      }
+    }
+    // No adapter for this domain — that's OK, it's a gap
   }
 
   /**

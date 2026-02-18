@@ -1,0 +1,51 @@
+{
+  "name": "url-shortener",
+  "description": "Build a URL shortener API with Express",
+  "skill": "web-api-development",
+  "difficulty": "beginner",
+  "milestones": [
+    {
+      "index": 0,
+      "name": "Express server + health endpoint",
+      "description": "Create an Express server listening on port 3456 with a GET /health endpoint that returns JSON {status:'ok'}",
+      "learningObjectives": ["Express setup", "Route handlers", "JSON responses"],
+      "testFile": "tests/milestone-1.test.ts",
+      "testCommand": "npx tsx tests/milestone-1.test.ts",
+      "acceptanceCriteria": [
+        "Server starts and listens on port 3456",
+        "GET /health returns HTTP 200",
+        "GET /health response body is {\"status\":\"ok\"}"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "URL shortening endpoint",
+      "description": "Add POST /shorten that accepts {url: string} and returns {shortCode, shortUrl}. Store mappings in memory. Generate 6-character alphanumeric short codes.",
+      "learningObjectives": ["POST handling", "Request body parsing", "In-memory data structures", "Random code generation"],
+      "testFile": "tests/milestone-2.test.ts",
+      "testCommand": "npx tsx tests/milestone-2.test.ts",
+      "acceptanceCriteria": [
+        "POST /shorten with {url} returns 201 with {shortCode, shortUrl}",
+        "shortCode is 6 alphanumeric characters",
+        "shortUrl contains the shortCode",
+        "Missing url returns 400",
+        "Previous milestone tests still pass (GET /health)"
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Redirect + click stats",
+      "description": "Add GET /:code that redirects (302) to the original URL, incrementing a click counter. Add GET /stats/:code that returns {url, shortCode, clicks}. Return 404 for unknown codes.",
+      "learningObjectives": ["URL parameters", "HTTP redirects", "State mutation", "Error handling"],
+      "testFile": "tests/milestone-3.test.ts",
+      "testCommand": "npx tsx tests/milestone-3.test.ts",
+      "acceptanceCriteria": [
+        "GET /:code redirects to original URL with 302",
+        "GET /:code increments click counter",
+        "GET /stats/:code returns {url, shortCode, clicks}",
+        "Unknown code returns 404 for both redirect and stats",
+        "All previous milestone tests still pass"
+      ]
+    }
+  ]
+}

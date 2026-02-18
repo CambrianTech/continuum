@@ -77,11 +77,56 @@ pub struct ActivateSkillResult {
 }
 
 // =============================================================================
+// DOMAIN ACTIVITY TYPES
+// =============================================================================
+
+/// Activity tracking for a single domain.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/DomainActivity.ts")]
+pub struct DomainActivity {
+    /// Domain name
+    pub domain: String,
+    /// Total interaction count
+    #[ts(type = "number")]
+    pub interaction_count: u64,
+    /// Successful interaction count
+    #[ts(type = "number")]
+    pub success_count: u64,
+    /// Failed interaction count
+    #[ts(type = "number")]
+    pub failure_count: u64,
+    /// Epoch ms of last activity
+    #[ts(type = "number")]
+    pub last_activity_ms: u64,
+    /// Whether this domain has a trained adapter
+    pub has_adapter: bool,
+    /// Adapter name if one exists
+    #[ts(optional)]
+    pub adapter_name: Option<String>,
+}
+
+/// Coverage report: what's covered, what's missing.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../shared/generated/persona/CoverageReport.ts")]
+pub struct CoverageReport {
+    /// Domains with trained adapters
+    pub covered: Vec<DomainActivity>,
+    /// Domains with activity but no adapter
+    pub gaps: Vec<DomainActivity>,
+    /// Total interactions across all domains
+    #[ts(type = "number")]
+    pub total_interactions: u64,
+    /// Ratio: covered_interactions / total_interactions
+    pub coverage_ratio: f32,
+}
+
+// =============================================================================
 // GENOME PAGING ENGINE
 // =============================================================================
 
 /// Per-persona genome paging engine.
-/// Tracks adapter state, makes eviction/activation decisions.
+/// Tracks adapter state, makes eviction/activation decisions,
+/// and monitors domain activity for gap detection.
 #[derive(Debug)]
 pub struct GenomePagingEngine {
     pub memory_budget_mb: f32,
@@ -90,6 +135,17 @@ pub struct GenomePagingEngine {
     active: HashMap<String, GenomeAdapterInfo>,
     /// Available (not loaded) adapters keyed by name
     available: HashMap<String, GenomeAdapterInfo>,
+    /// Domain activity tracking for gap detection
+    domain_activity: HashMap<String, DomainActivityInternal>,
+}
+
+/// Internal activity tracking (not exported — CoverageReport is the public API).
+#[derive(Debug, Clone)]
+struct DomainActivityInternal {
+    interaction_count: u64,
+    success_count: u64,
+    failure_count: u64,
+    last_activity_ms: u64,
 }
 
 impl GenomePagingEngine {
@@ -99,6 +155,7 @@ impl GenomePagingEngine {
             memory_used_mb: 0.0,
             active: HashMap::new(),
             available: HashMap::new(),
+            domain_activity: HashMap::new(),
         }
     }
 
@@ -207,6 +264,83 @@ impl GenomePagingEngine {
         }
 
         best_name
+    }
+
+    /// Record domain activity (called after every inference).
+    pub fn record_activity(&mut self, domain: &str, success: bool) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let entry = self.domain_activity.entry(domain.to_string()).or_insert(DomainActivityInternal {
+            interaction_count: 0,
+            success_count: 0,
+            failure_count: 0,
+            last_activity_ms: now_ms,
+        });
+
+        entry.interaction_count += 1;
+        if success {
+            entry.success_count += 1;
+        } else {
+            entry.failure_count += 1;
+        }
+        entry.last_activity_ms = now_ms;
+    }
+
+    /// Get coverage report — what domains are covered by adapters, what are gaps.
+    pub fn coverage_report(&self) -> CoverageReport {
+        // Build set of domains that have adapters
+        let mut adapter_domains: HashMap<String, String> = HashMap::new();
+        for adapter in self.active.values().chain(self.available.values()) {
+            adapter_domains.insert(adapter.domain.clone(), adapter.name.clone());
+        }
+
+        let mut covered = Vec::new();
+        let mut gaps = Vec::new();
+        let mut total_interactions: u64 = 0;
+        let mut covered_interactions: u64 = 0;
+
+        for (domain, activity) in &self.domain_activity {
+            total_interactions += activity.interaction_count;
+
+            let has_adapter = adapter_domains.contains_key(domain);
+            let adapter_name = adapter_domains.get(domain).cloned();
+
+            let da = DomainActivity {
+                domain: domain.clone(),
+                interaction_count: activity.interaction_count,
+                success_count: activity.success_count,
+                failure_count: activity.failure_count,
+                last_activity_ms: activity.last_activity_ms,
+                has_adapter,
+                adapter_name,
+            };
+
+            if has_adapter {
+                covered_interactions += activity.interaction_count;
+                covered.push(da);
+            } else {
+                gaps.push(da);
+            }
+        }
+
+        // Sort gaps by interaction count (most active gaps first)
+        gaps.sort_by(|a, b| b.interaction_count.cmp(&a.interaction_count));
+
+        let coverage_ratio = if total_interactions > 0 {
+            covered_interactions as f32 / total_interactions as f32
+        } else {
+            1.0 // No activity = fully covered (vacuous truth)
+        };
+
+        CoverageReport {
+            covered,
+            gaps,
+            total_interactions,
+            coverage_ratio,
+        }
     }
 
     /// Get current state snapshot for IPC response.
@@ -513,6 +647,64 @@ mod tests {
         );
     }
 
+    // ── Domain Activity Tracking ─────────────────────────────────────
+
+    #[test]
+    fn test_record_activity_creates_entry() {
+        let mut engine = GenomePagingEngine::new(200.0);
+        engine.record_activity("code", true);
+        engine.record_activity("code", true);
+        engine.record_activity("code", false);
+
+        let report = engine.coverage_report();
+        assert_eq!(report.total_interactions, 3);
+        assert_eq!(report.gaps.len(), 1, "Code domain with no adapter = gap");
+        assert_eq!(report.gaps[0].domain, "code");
+        assert_eq!(report.gaps[0].interaction_count, 3);
+        assert_eq!(report.gaps[0].success_count, 2);
+        assert_eq!(report.gaps[0].failure_count, 1);
+    }
+
+    #[test]
+    fn test_coverage_report_with_adapter() {
+        let mut engine = GenomePagingEngine::new(200.0);
+        engine.available.insert("ts-expert".into(), make_adapter("ts-expert", "code", 50.0, 0.5, false, 0));
+
+        engine.record_activity("code", true);
+        engine.record_activity("code", true);
+        engine.record_activity("chat", true);
+
+        let report = engine.coverage_report();
+        assert_eq!(report.covered.len(), 1, "Code domain has adapter → covered");
+        assert_eq!(report.gaps.len(), 1, "Chat domain has no adapter → gap");
+        assert_eq!(report.total_interactions, 3);
+        assert!((report.coverage_ratio - 2.0/3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_coverage_report_empty() {
+        let engine = GenomePagingEngine::new(200.0);
+        let report = engine.coverage_report();
+        assert!(report.covered.is_empty());
+        assert!(report.gaps.is_empty());
+        assert_eq!(report.total_interactions, 0);
+        assert!((report.coverage_ratio - 1.0).abs() < 0.01, "No activity = fully covered");
+    }
+
+    #[test]
+    fn test_gaps_sorted_by_interaction_count() {
+        let mut engine = GenomePagingEngine::new(200.0);
+        for _ in 0..5 { engine.record_activity("chat", true); }
+        for _ in 0..15 { engine.record_activity("creative", true); }
+        for _ in 0..2 { engine.record_activity("analysis", true); }
+
+        let report = engine.coverage_report();
+        assert_eq!(report.gaps.len(), 3);
+        assert_eq!(report.gaps[0].domain, "creative", "Most active gap first");
+        assert_eq!(report.gaps[1].domain, "chat");
+        assert_eq!(report.gaps[2].domain, "analysis");
+    }
+
     // ── ts-rs binding tests ───────────────────────────────────────────
 
     #[test]
@@ -528,5 +720,15 @@ mod tests {
     #[test]
     fn export_bindings_activateskillresult() {
         ActivateSkillResult::export_all().unwrap();
+    }
+
+    #[test]
+    fn export_bindings_domainactivity() {
+        DomainActivity::export_all().unwrap();
+    }
+
+    #[test]
+    fn export_bindings_coveragereport() {
+        CoverageReport::export_all().unwrap();
     }
 }

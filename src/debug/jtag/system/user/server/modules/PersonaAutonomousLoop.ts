@@ -27,8 +27,8 @@ export class PersonaAutonomousLoop {
   private servicingLoopActive: boolean = false;
   private log: (message: string) => void;
 
-  constructor(private readonly personaUser: PersonaUser, logger?: (message: string) => void) {
-    this.log = logger || console.log.bind(console);
+  constructor(private readonly personaUser: PersonaUser, logger: (message: string) => void) {
+    this.log = logger;
   }
 
   /**
@@ -140,14 +140,19 @@ export class PersonaAutonomousLoop {
     }
 
     // Activate appropriate LoRA adapter based on domain
-    if (item.domain) {
-      const domainToAdapter: Record<string, string> = {
-        'chat': 'conversational',
-        'code': 'typescript-expertise',
-        'self': 'self-improvement'
-      };
-      const adapterName = domainToAdapter[item.domain] || 'conversational';
-      await this.personaUser.memory.genome.activateSkill(adapterName);
+    // Uses Rust DomainClassifier for dynamic adapter-aware routing
+    if (item.type === 'message' && item.content && this.personaUser.rustCognitionBridge) {
+      try {
+        const classification = await this.personaUser.rustCognitionBridge.classifyDomain(item.content);
+        if (classification.adapter_name) {
+          await this.personaUser.memory.genome.activateSkill(classification.adapter_name);
+        }
+      } catch {
+        // Classification failure is non-fatal — proceed without adapter activation
+      }
+    } else if (item.domain) {
+      // Task-domain fallback for non-message items or when Rust bridge unavailable
+      await this.personaUser.memory.genome.activateForDomain(item.domain);
     }
 
     if (item.type === 'message') {

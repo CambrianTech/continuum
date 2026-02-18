@@ -60,8 +60,8 @@ export class PersonaMemory {
     this.client = client;
     this.log = logger || (() => {});
 
-    // Initialize genome (skill adapters) - pass logger
-    this.genome = new PersonaGenome(genomeConfig, logger);
+    // Initialize genome (skill adapters) - pass logger (use own log which has the fallback)
+    this.genome = new PersonaGenome(genomeConfig, this.log);
   }
 
   /**

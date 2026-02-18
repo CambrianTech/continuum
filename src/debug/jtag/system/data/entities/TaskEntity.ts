@@ -81,6 +81,7 @@ export type TaskType =
   | 'skill-audit'
   | 'fine-tune-lora'
   | 'resume-work'
+  | 'enroll-academy'
 
   // Sentinel domain (sentinel lifecycle events → persona inbox)
   | 'sentinel-complete'      // Sentinel finished successfully

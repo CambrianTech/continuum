@@ -38,10 +38,17 @@ export type AcademyEventAction =
   | 'exam:ready'
   | 'exam:responses'
   | 'exam:graded'
+  | 'challenge:ready'
+  | 'challenge:attempted'
   | 'topic:passed'
   | 'topic:remediate'
   | 'inference:demo'
   | 'quality:gate:failed'
+  | 'project:setup:complete'
+  | 'milestone:ready'
+  | 'milestone:attempted'
+  | 'milestone:retry'
+  | 'milestone:passed'
   | 'session:complete'
   | 'session:failed';
 
@@ -308,4 +315,182 @@ export interface TopicRemediatePayload {
 export interface RemediationDatasetReadyPayload extends DatasetReadyPayload {
   isRemediation: true;
   round: number;
+}
+
+// ============================================================================
+// Coding Challenge Pipeline Types
+// ============================================================================
+
+/**
+ * Configuration for the coding challenge teacher sentinel pipeline.
+ *
+ * The teacher analyzes bugs in a challenge, synthesizes debugging training data,
+ * and evaluates the student's fix attempts via deterministic test suites.
+ */
+export interface CodingTeacherPipelineConfig {
+  sessionId: UUID;
+  skill: string;
+  personaName: string;
+  baseModel: string;
+  challengeDir: string;
+  sourceFile: string;
+  testFile: string;
+  testCommand?: string;
+  config: AcademyConfig;
+}
+
+/**
+ * Configuration for the coding challenge student sentinel pipeline.
+ *
+ * The student trains on synthesized debugging data, then attempts to fix
+ * buggy code. The local baseModel is used for LLM fix steps so LoRA
+ * training can actually improve its performance.
+ */
+export interface CodingStudentPipelineConfig {
+  sessionId: UUID;
+  personaId: UUID;
+  personaName: string;
+  baseModel: string;
+  challengeDir: string;
+  sourceFile: string;
+  testFile: string;
+  testCommand?: string;
+  config: AcademyConfig;
+}
+
+/**
+ * Payload for challenge:ready — teacher presents a challenge for the student to attempt.
+ */
+export interface ChallengeReadyPayload {
+  sessionId: UUID;
+  challengeDir: string;
+  sourceFile: string;
+  testFile: string;
+  testCommand?: string;
+}
+
+/**
+ * Payload for challenge:attempted — student submits test results from their fix attempt.
+ */
+export interface ChallengeAttemptedPayload {
+  sessionId: UUID;
+  personaId: UUID;
+  testOutput: string;
+  topicIndex: number;
+  round: number;
+}
+
+// ============================================================================
+// Project-Based Academy Pipeline Types
+// ============================================================================
+
+/**
+ * Specification for a multi-milestone project.
+ * Read from project.json in the project directory.
+ */
+export interface ProjectSpec {
+  name: string;
+  description: string;
+  skill: string;
+  difficulty: 'beginner' | 'intermediate' | 'advanced';
+  milestones: MilestoneSpec[];
+}
+
+/**
+ * A single milestone within a project.
+ * Each milestone builds on the previous — code accumulates.
+ */
+export interface MilestoneSpec {
+  index: number;
+  name: string;
+  description: string;
+  learningObjectives: string[];
+  testFile: string;
+  testCommand?: string;
+  acceptanceCriteria: string[];
+  hints?: string[];
+}
+
+/**
+ * Rich payload emitted by the student after attempting a milestone.
+ * Contains everything the teacher needs to diagnose gaps.
+ */
+export interface MilestoneAttemptPayload {
+  sessionId: UUID;
+  personaId: UUID;
+  milestoneIndex: number;
+  attemptType: 'cold' | 'warm';
+  round: number;
+  sourceFiles: Record<string, string>;
+  compilationOutput: string;
+  testOutput: string;
+  fileTree: string;
+  diff?: string;
+}
+
+/**
+ * Payload for milestone:ready — teacher presents a milestone for the student.
+ */
+export interface MilestoneReadyPayload {
+  sessionId: UUID;
+  milestoneIndex: number;
+  milestone: MilestoneSpec;
+  testContent: string;
+}
+
+/**
+ * Payload for milestone:retry — teacher gives feedback + hints for warm attempt.
+ */
+export interface MilestoneRetryPayload {
+  sessionId: UUID;
+  milestoneIndex: number;
+  round: number;
+  feedback: string;
+  hints: string[];
+  weakConcepts: string[];
+}
+
+/**
+ * Payload for milestone:passed — student passed a milestone.
+ */
+export interface MilestonePassedPayload {
+  sessionId: UUID;
+  milestoneIndex: number;
+  round: number;
+  score: number;
+  attemptType: 'cold' | 'warm';
+}
+
+/**
+ * Payload for project:setup:complete — working directory is ready.
+ */
+export interface ProjectSetupCompletePayload {
+  sessionId: UUID;
+  workingDir: string;
+}
+
+/**
+ * Configuration for building the project teacher sentinel pipeline.
+ */
+export interface ProjectTeacherPipelineConfig {
+  sessionId: UUID;
+  skill: string;
+  personaName: string;
+  baseModel: string;
+  projectDir: string;
+  milestones: MilestoneSpec[];
+  config: AcademyConfig;
+}
+
+/**
+ * Configuration for building the project student sentinel pipeline.
+ */
+export interface ProjectStudentPipelineConfig {
+  sessionId: UUID;
+  personaId: UUID;
+  personaName: string;
+  baseModel: string;
+  projectDir: string;
+  milestones: MilestoneSpec[];
+  config: AcademyConfig;
 }

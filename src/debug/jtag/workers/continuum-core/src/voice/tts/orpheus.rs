@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::quantized_llama::ModelWeights;
+use crate::inference::vendored::quantized_llama::ModelWeights;
 use ndarray::Array2;
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;

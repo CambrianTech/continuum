@@ -72,15 +72,12 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'llama3.1:70b': 128000,
   'llama3.1:8b': 128000,
 
-  // HuggingFace IDs (Candle adapter) — FALLBACK only.
-  // Source of truth is CandleAdapter.capabilities().max_context_window in Rust,
-  // which feeds into ModelRegistry at startup via registerLocalModels().
-  // Candle quantized attention breaks at ~1000 input tokens on Metal.
-  // See: https://github.com/huggingface/candle/issues/1566
-  'meta-llama/Llama-3.1-8B-Instruct': 1400,
-  'unsloth/Llama-3.2-3B-Instruct': 1400,
-  'Qwen/Qwen2-1.5B-Instruct': 1400,
-  'Qwen/Qwen2-0.5B-Instruct': 1400,
+  // Local Candle models — practical throughput limit (NOT theoretical model max).
+  // BF16 full-batch prefill on Metal is O(n²): 3500 tokens = 55s, unusable.
+  // The Rust backend caps context_length() to BF16_PRACTICAL_CONTEXT.
+  // These entries are safety nets for the window between boot and model discovery.
+  // Once ModelRegistry is populated (from Rust IPC), it takes priority.
+  'unsloth/Llama-3.2-3B-Instruct': 2048,
 
   // Qwen Models — legacy short names
   'qwen2.5': 128000,

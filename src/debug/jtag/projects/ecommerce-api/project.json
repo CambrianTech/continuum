@@ -1,0 +1,150 @@
+{
+  "name": "ecommerce-api",
+  "description": "Build a functional ecommerce REST API with product catalog, shopping cart, user auth, checkout, and admin management",
+  "skill": "fullstack-api-development",
+  "difficulty": "advanced",
+  "milestones": [
+    {
+      "index": 0,
+      "name": "Product catalog API",
+      "description": "Create an Express server on port 3457 with a product catalog. Seed 6 products across 3 categories (electronics, clothing, books). Implement GET /health, GET /products (list all), and GET /products/:id (single product with 404 for unknown).",
+      "learningObjectives": [
+        "Express server setup",
+        "RESTful route design",
+        "JSON response formatting",
+        "Seeded data management",
+        "404 error handling"
+      ],
+      "testFile": "tests/milestone-1.test.ts",
+      "testCommand": "npx tsx tests/milestone-1.test.ts",
+      "acceptanceCriteria": [
+        "Server listens on port 3457",
+        "GET /health returns 200 {status:'ok'}",
+        "GET /products returns array of 6 seeded products",
+        "Each product has id, name, price, category, description, inStock fields",
+        "GET /products/:id returns single product",
+        "GET /products/:id with unknown ID returns 404"
+      ]
+    },
+    {
+      "index": 1,
+      "name": "Search, filter, and sort",
+      "description": "Add query parameter support to GET /products: filter by category, search by name (case-insensitive substring), filter by price range (minPrice/maxPrice), and sort (price_asc, price_desc, name_asc). Multiple filters can combine.",
+      "learningObjectives": [
+        "Query parameter parsing",
+        "Array filtering and chaining",
+        "Case-insensitive search",
+        "Sort comparators",
+        "Composable filter patterns"
+      ],
+      "testFile": "tests/milestone-2.test.ts",
+      "testCommand": "npx tsx tests/milestone-2.test.ts",
+      "acceptanceCriteria": [
+        "GET /products?category=electronics filters by category",
+        "GET /products?search=laptop does case-insensitive name search",
+        "GET /products?minPrice=10&maxPrice=50 filters by price range",
+        "GET /products?sort=price_asc sorts by price ascending",
+        "GET /products?sort=price_desc sorts by price descending",
+        "Multiple filters combine correctly",
+        "Previous milestone tests still pass"
+      ]
+    },
+    {
+      "index": 2,
+      "name": "Shopping cart",
+      "description": "Implement a session-based shopping cart using X-Session-Id header. POST /cart/items to add {productId, quantity}, GET /cart to view items with computed subtotals and total, PUT /cart/items/:productId to update quantity, DELETE /cart/items/:productId to remove. Each session has its own cart.",
+      "learningObjectives": [
+        "Session-based state management",
+        "Custom HTTP headers",
+        "CRUD on nested resources",
+        "Computed fields (subtotals, totals)",
+        "Input validation"
+      ],
+      "testFile": "tests/milestone-3.test.ts",
+      "testCommand": "npx tsx tests/milestone-3.test.ts",
+      "acceptanceCriteria": [
+        "POST /cart/items adds product to cart (requires X-Session-Id header)",
+        "GET /cart returns items with name, price, quantity, subtotal, and total",
+        "PUT /cart/items/:productId updates quantity",
+        "DELETE /cart/items/:productId removes item",
+        "Invalid productId returns 404",
+        "Missing X-Session-Id returns 400",
+        "Different sessions have independent carts",
+        "Previous milestone tests still pass"
+      ]
+    },
+    {
+      "index": 3,
+      "name": "User authentication",
+      "description": "Add user registration and login. POST /auth/register accepts {email, password, name}, stores user (reject duplicate emails). POST /auth/login accepts {email, password}, returns {token} (base64-encoded JSON with userId and email). GET /auth/me with Authorization: Bearer <token> returns user profile. Protected routes return 401 without valid token.",
+      "learningObjectives": [
+        "User registration and validation",
+        "Token-based authentication",
+        "Authorization middleware",
+        "Protected routes",
+        "Error responses for auth failures"
+      ],
+      "testFile": "tests/milestone-4.test.ts",
+      "testCommand": "npx tsx tests/milestone-4.test.ts",
+      "acceptanceCriteria": [
+        "POST /auth/register creates user and returns {userId, email, name}",
+        "POST /auth/register rejects duplicate email with 409",
+        "POST /auth/register rejects missing fields with 400",
+        "POST /auth/login returns {token} for valid credentials",
+        "POST /auth/login returns 401 for wrong password",
+        "GET /auth/me returns user profile with valid token",
+        "GET /auth/me returns 401 without token",
+        "Previous milestone tests still pass"
+      ]
+    },
+    {
+      "index": 4,
+      "name": "Checkout and orders",
+      "description": "Add order creation from cart. POST /orders (authenticated) creates an order from the user's cart, clears the cart, returns the order with items, total, and status 'confirmed'. GET /orders (authenticated) lists the user's orders. GET /orders/:id (authenticated) returns order detail. Reject if cart is empty.",
+      "learningObjectives": [
+        "Multi-resource transactions",
+        "Business logic (cart→order conversion)",
+        "Authenticated resource ownership",
+        "Order status management",
+        "Empty cart validation"
+      ],
+      "testFile": "tests/milestone-5.test.ts",
+      "testCommand": "npx tsx tests/milestone-5.test.ts",
+      "acceptanceCriteria": [
+        "POST /orders creates order from authenticated user's cart",
+        "Order includes items, total, status='confirmed', createdAt",
+        "Cart is cleared after successful order",
+        "POST /orders with empty cart returns 400",
+        "POST /orders without auth returns 401",
+        "GET /orders lists authenticated user's orders",
+        "GET /orders/:id returns order detail",
+        "GET /orders/:id returns 404 for other user's order",
+        "Previous milestone tests still pass"
+      ]
+    },
+    {
+      "index": 5,
+      "name": "Admin product management",
+      "description": "Add admin-only product management. The first registered user is automatically admin. POST /admin/products creates a new product. PUT /admin/products/:id updates a product. DELETE /admin/products/:id removes a product. Non-admin users get 403. All admin routes require authentication.",
+      "learningObjectives": [
+        "Role-based authorization",
+        "Admin vs user permissions",
+        "Product CRUD operations",
+        "403 Forbidden responses",
+        "Layered middleware (auth + role check)"
+      ],
+      "testFile": "tests/milestone-6.test.ts",
+      "testCommand": "npx tsx tests/milestone-6.test.ts",
+      "acceptanceCriteria": [
+        "POST /admin/products creates product (admin only)",
+        "PUT /admin/products/:id updates product fields",
+        "DELETE /admin/products/:id removes product from catalog",
+        "Non-admin user gets 403 on admin routes",
+        "Unauthenticated request gets 401 on admin routes",
+        "Created product appears in GET /products",
+        "Deleted product no longer appears in GET /products",
+        "Previous milestone tests still pass"
+      ]
+    }
+  ]
+}

@@ -82,13 +82,37 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
   }
 
   async getAvailableModels(): Promise<ModelInfo[]> {
+    // Try to get live model info from Rust CandleAdapter via IPC
+    if (this.client) {
+      try {
+        const result = await this.client.execute<{ models: Array<{ id: string; context_window: number; max_output_tokens?: number }> }>('ai/models/list', {});
+        if (result?.data?.models?.length) {
+          return result.data.models
+            .filter((m: { id: string }) => !m.id.includes('unknown'))
+            .map((m: { id: string; context_window: number; max_output_tokens?: number }) => ({
+              id: m.id,
+              name: `${m.id} (Candle Local)`,
+              provider: this.providerId,
+              capabilities: ['text-generation', 'chat'] as ModelCapability[],
+              contextWindow: m.context_window,
+              maxOutputTokens: m.max_output_tokens,
+              supportsStreaming: false,
+              supportsTools: false,
+            }));
+        }
+      } catch {
+        // Fall through to static default
+      }
+    }
+
+    // Static fallback before model loads
     return [
       {
-        id: 'llama3.2:3b',
-        name: 'Llama 3.2 3B (Quantized)',
+        id: 'unsloth/Llama-3.2-3B-Instruct',
+        name: 'Llama 3.2 3B Instruct (Candle Local)',
         provider: this.providerId,
         capabilities: ['text-generation', 'chat'],
-        contextWindow: 8192,
+        contextWindow: 2048, // BF16 practical limit on Metal
         supportsStreaming: false,
         supportsTools: false,
       },
@@ -151,7 +175,7 @@ export class CandleGrpcAdapter extends BaseAIProviderAdapter {
         isLocal: true,
         routingReason: 'explicit_provider',
         adaptersApplied: result.routing?.adaptersApplied || [],
-        modelRequested: request.model || 'llama3.2:3b',
+        modelRequested: request.model,
       };
 
       this.log(request, 'info', `[Candle] Complete: ${result.usage.outputTokens} tokens in ${responseTime}ms`);

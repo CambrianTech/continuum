@@ -9,6 +9,7 @@
 //! atomic access to engine + rate_limiter + sleep_state + adapters + genome.
 
 use crate::persona::cognition::PersonaCognitionEngine;
+use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::evaluator::{RateLimiterState, SleepState};
 use crate::persona::genome_paging::GenomePagingEngine;
 use crate::persona::inbox::PersonaInbox;
@@ -25,6 +26,7 @@ pub struct PersonaCognition {
     pub sleep_state: SleepState,
     pub adapter_registry: AdapterRegistry,
     pub genome_engine: GenomePagingEngine,
+    pub domain_classifier: DomainClassifier,
 }
 
 impl PersonaCognition {
@@ -48,6 +50,7 @@ impl PersonaCognition {
             sleep_state: SleepState::default(),
             adapter_registry: AdapterRegistry::default(),
             genome_engine: GenomePagingEngine::new(200.0),
+            domain_classifier: DomainClassifier::new(),
         }
     }
 }

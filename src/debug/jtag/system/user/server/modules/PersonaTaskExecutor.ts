@@ -24,6 +24,19 @@ import type {
 } from '../../../genome/fine-tuning/shared/FineTuningTypes';
 import type { TraitType } from '../../../genome/entities/GenomeLayerEntity';
 import { Commands } from '../../../core/shared/Commands';
+import type { GenomeAcademySessionParams, GenomeAcademySessionResult } from '../../../../commands/genome/academy-session/shared/GenomeAcademySessionTypes';
+import type { RustCognitionBridge } from './RustCognitionBridge';
+
+/**
+ * Interface for PersonaUser dependency injection into task executor.
+ * Provides access to genome reload and domain classifier sync.
+ */
+export interface PersonaUserForTaskExecutor {
+  readonly rustCognitionBridge: RustCognitionBridge | null;
+  readonly limbicSystem: {
+    loadGenomeFromDatabase(): Promise<void>;
+  };
+}
 
 /**
  * PersonaTaskExecutor - Executes various task types for autonomous PersonaUsers
@@ -33,9 +46,12 @@ import { Commands } from '../../../core/shared/Commands';
  * - skill-audit: Evaluates performance by domain
  * - resume-work: Continues stale tasks
  * - fine-tune-lora: Trains LoRA adapters
+ * - enroll-academy: Self-enroll in academy for detected skill gaps
+ * - sentinel-complete/failed/escalation/approval: Sentinel lifecycle notifications
  */
 export class PersonaTaskExecutor {
   private log: (message: string) => void;
+  private personaUser?: PersonaUserForTaskExecutor;
 
   constructor(
     private readonly personaId: UUID,
@@ -43,9 +59,17 @@ export class PersonaTaskExecutor {
     private readonly memory: PersonaMemory,
     private readonly personaState: PersonaStateManager,
     private readonly provider: string = 'candle',
-    logger?: (message: string) => void
+    logger: (message: string) => void
   ) {
-    this.log = logger || console.log.bind(console);
+    this.log = logger;
+  }
+
+  /**
+   * Set PersonaUser reference for features that need genome/classifier access.
+   * Called after PersonaUser is fully initialized.
+   */
+  setPersonaUser(personaUser: PersonaUserForTaskExecutor): void {
+    this.personaUser = personaUser;
   }
 
   /**
@@ -77,6 +101,10 @@ export class PersonaTaskExecutor {
 
         case 'fine-tune-lora':
           outcome = await this.executeFineTuneLora(task);
+          break;
+
+        case 'enroll-academy':
+          outcome = await this.executeEnrollAcademy(task);
           break;
 
         case 'sentinel-complete':
@@ -700,6 +728,59 @@ export class PersonaTaskExecutor {
   }
 
   /**
+   * Enroll in academy session for a detected skill gap.
+   * Triggered by SelfTaskGenerator when a domain has activity but no adapter.
+   */
+  private async executeEnrollAcademy(task: InboxTask): Promise<string> {
+    const domain = (task.metadata?.domain as string) ?? task.description;
+    const suggestedMode = (task.metadata?.suggested_mode as string) ?? 'knowledge';
+
+    this.log(`🎓 ${this.displayName}: Enrolling in academy for skill gap: ${domain} (mode=${suggestedMode})`);
+
+    // Check: no concurrent academy session already running
+    try {
+      const existing = await ORM.query<TaskEntity>({
+        collection: COLLECTIONS.TASKS,
+        filter: {
+          assigneeId: this.personaId,
+          taskType: 'enroll-academy',
+          status: 'in_progress',
+        },
+        sort: [{ field: 'createdAt', direction: 'desc' }],
+        limit: 1,
+      });
+
+      if (existing.data && existing.data.length > 0) {
+        return `Skipped: academy session already in progress for this persona`;
+      }
+    } catch {
+      // Query failure is non-fatal — proceed with enrollment
+    }
+
+    // Determine academy mode
+    const mode = suggestedMode === 'coding' || suggestedMode === 'project' || suggestedMode === 'knowledge'
+      ? suggestedMode
+      : 'knowledge';
+
+    try {
+      const result = await Commands.execute<GenomeAcademySessionParams, GenomeAcademySessionResult>(
+        'genome/academy-session',
+        {
+          personaId: this.personaId,
+          personaName: this.displayName,
+          skill: domain,
+          mode: mode as 'knowledge' | 'coding' | 'project',
+        }
+      );
+
+      const sessionId = result?.academySessionId ?? 'unknown';
+      return `Enrolled in academy: ${domain} (mode=${mode}, session=${sessionId})`;
+    } catch (error) {
+      return `Academy enrollment failed for ${domain}: ${error}`;
+    }
+  }
+
+  /**
    * Handle sentinel lifecycle tasks (escalated from SentinelEscalationService)
    *
    * When a sentinel completes, fails, or needs approval, the persona processes
@@ -723,11 +804,29 @@ export class PersonaTaskExecutor {
     }
 
     switch (task.taskType) {
-      case 'sentinel-complete':
+      case 'sentinel-complete': {
+        // If this was an academy session, reload genome to activate new adapters
+        const isAcademySentinel = typeof sentinelName === 'string' &&
+          (sentinelName.includes('academy') || sentinelName.includes('student') || sentinelName.includes('learning'));
+        if (isAcademySentinel && this.personaUser) {
+          this.log(`🧬 ${this.displayName}: Academy sentinel completed — reloading genome to activate new adapters`);
+          try {
+            await this.personaUser.limbicSystem.loadGenomeFromDatabase();
+            // Sync domain classifier with new adapters
+            if (this.personaUser.rustCognitionBridge) {
+              await this.personaUser.rustCognitionBridge.syncDomainClassifier();
+            }
+            this.log(`✅ ${this.displayName}: Genome reloaded and domain classifier synced after academy completion`);
+          } catch (error) {
+            this.log(`⚠️ ${this.displayName}: Post-academy genome reload failed: ${error}`);
+          }
+        }
         return `Sentinel "${sentinelName}" completed successfully. ` +
+          (isAcademySentinel ? 'Genome reloaded with new adapters. ' : '') +
           (relevantMemories.length > 0
             ? `This is execution #${relevantMemories.length + 1} of similar sentinels.`
             : 'First execution of this sentinel type.');
+      }
 
       case 'sentinel-failed':
         return `Sentinel "${sentinelName}" failed: ${error ?? 'unknown error'}. ` +

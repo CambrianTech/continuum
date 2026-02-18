@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 use uuid::Uuid;
 
+use super::genome_paging::GenomePagingEngine;
+
 /// Configuration for self-task generation intervals.
 pub struct SelfTaskGeneratorConfig {
     /// How often to review memory (default: 1 hour)
@@ -117,6 +119,8 @@ impl SelfTaskGenerator {
         }
 
         // 4. Learning opportunities (failed tasks)
+        // Note: enrollment detection happens separately via detect_enrollment_opportunities()
+        // which is called from the tick handler with access to the genome engine.
         match self.detect_learning_opportunities(db_path, executor).await {
             Ok(tasks) => {
                 for task in tasks {
@@ -231,6 +235,67 @@ impl SelfTaskGenerator {
         }
 
         Ok(resume_tasks)
+    }
+
+    /// Detect domains with activity but no adapter → create enrollment tasks.
+    /// Policy: minimum 10 interactions before suggesting enrollment.
+    /// Returns task JSON values ready for persistence.
+    pub fn detect_enrollment_opportunities(
+        &self,
+        genome: &GenomePagingEngine,
+    ) -> Vec<Value> {
+        let report = genome.coverage_report();
+        let mut tasks = Vec::new();
+
+        for gap in &report.gaps {
+            // Policy: minimum 10 interactions before suggesting enrollment
+            if gap.interaction_count < 10 {
+                continue;
+            }
+
+            let failure_rate = if gap.interaction_count > 0 {
+                gap.failure_count as f64 / gap.interaction_count as f64
+            } else {
+                0.0
+            };
+
+            // Determine academy mode based on domain characteristics
+            let suggested_mode = if gap.domain == "code" || gap.domain.contains("code")
+                || gap.domain.contains("typescript") || gap.domain.contains("python")
+                || gap.domain.contains("rust")
+            {
+                "coding"
+            } else if gap.domain == "creative" || gap.domain.contains("writ")
+                || gap.domain.contains("art") || gap.domain.contains("design")
+            {
+                "project"
+            } else {
+                "knowledge"
+            };
+
+            if let Some(mut task) = self.create_task(
+                "enroll-academy",
+                &format!(
+                    "[Self-Task] Skill gap detected: {} ({} interactions, {:.0}% failure rate, no adapter). Recommend academy enrollment.",
+                    gap.domain, gap.interaction_count, failure_rate * 100.0
+                ),
+                0.6,
+            ) {
+                // Enrich with metadata for the enrollment executor
+                if let Some(obj) = task.as_object_mut() {
+                    obj.insert("domain".to_string(), serde_json::json!(gap.domain));
+                    obj.insert("metadata".to_string(), serde_json::json!({
+                        "domain": gap.domain,
+                        "interaction_count": gap.interaction_count,
+                        "failure_rate": failure_rate,
+                        "suggested_mode": suggested_mode,
+                    }));
+                }
+                tasks.push(task);
+            }
+        }
+
+        tasks
     }
 
     /// Detect failed tasks and create learning opportunities grouped by domain.
@@ -447,5 +512,79 @@ mod tests {
         assert_eq!(task["taskType"], "memory-consolidation");
         assert_eq!(task["priority"], 0.5);
         assert_eq!(task["domain"], "self");
+    }
+
+    #[test]
+    fn test_detect_enrollment_below_threshold() {
+        let gen = SelfTaskGenerator::new(Uuid::new_v4());
+        let mut genome = GenomePagingEngine::new(200.0);
+
+        // Only 5 interactions — below the 10-interaction threshold
+        for _ in 0..5 {
+            genome.record_activity("web-api", true);
+        }
+
+        let tasks = gen.detect_enrollment_opportunities(&genome);
+        assert!(tasks.is_empty(), "Should not suggest enrollment with <10 interactions");
+    }
+
+    #[test]
+    fn test_detect_enrollment_above_threshold() {
+        let gen = SelfTaskGenerator::new(Uuid::new_v4());
+        let mut genome = GenomePagingEngine::new(200.0);
+
+        // 15 interactions with no adapter
+        for _ in 0..15 {
+            genome.record_activity("web-api", true);
+        }
+
+        let tasks = gen.detect_enrollment_opportunities(&genome);
+        assert_eq!(tasks.len(), 1, "Should suggest enrollment for gap with 15 interactions");
+        assert_eq!(tasks[0]["taskType"], "enroll-academy");
+        assert_eq!(tasks[0]["metadata"]["domain"], "web-api");
+        assert_eq!(tasks[0]["metadata"]["interaction_count"], 15);
+    }
+
+    #[test]
+    fn test_detect_enrollment_ignores_covered_domains() {
+        use crate::persona::genome_paging::GenomeAdapterInfo;
+
+        let gen = SelfTaskGenerator::new(Uuid::new_v4());
+        let mut genome = GenomePagingEngine::new(200.0);
+
+        // Register an adapter for the "code" domain
+        genome.sync_state(vec![
+            GenomeAdapterInfo {
+                name: "ts-expert".to_string(),
+                domain: "code".to_string(),
+                size_mb: 50.0,
+                priority: 0.5,
+                is_loaded: false,
+                last_used_ms: 0,
+                ollama_model_name: None,
+            }
+        ]);
+
+        // Record lots of activity in the covered domain
+        for _ in 0..20 {
+            genome.record_activity("code", true);
+        }
+
+        let tasks = gen.detect_enrollment_opportunities(&genome);
+        assert!(tasks.is_empty(), "Covered domain should not trigger enrollment");
+    }
+
+    #[test]
+    fn test_detect_enrollment_code_domain_suggests_coding_mode() {
+        let gen = SelfTaskGenerator::new(Uuid::new_v4());
+        let mut genome = GenomePagingEngine::new(200.0);
+
+        for _ in 0..12 {
+            genome.record_activity("code", true);
+        }
+
+        let tasks = gen.detect_enrollment_opportunities(&genome);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["metadata"]["suggested_mode"], "coding");
     }
 }

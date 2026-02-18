@@ -16,6 +16,7 @@ pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
 pub mod cognition;
+pub mod domain_classifier;
 pub mod evaluator;
 pub mod genome_paging;
 pub mod inbox;
@@ -34,8 +35,10 @@ pub use evaluator::{
     AdequacyResult, RecentResponse,
 };
 pub use inbox::PersonaInbox;
+pub use domain_classifier::{DomainClassifier, DomainClassification, QualityScore, QualityFactors};
 pub use genome_paging::{
     GenomeAdapterInfo, GenomePagingEngine, GenomePagingState, ActivateSkillResult,
+    DomainActivity, CoverageReport,
 };
 pub use model_selection::{
     AdapterInfo, AdapterRegistry, ModelSelectionRequest, ModelSelectionResult,

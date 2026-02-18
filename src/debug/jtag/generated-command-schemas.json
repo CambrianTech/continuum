@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-18T05:14:47.307Z",
+  "generated": "2026-02-18T21:07:10.717Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -4002,6 +4002,11 @@
           "required": true,
           "description": "skill parameter"
         },
+        "mode": {
+          "type": "string",
+          "required": false,
+          "description": "mode parameter"
+        },
         "baseModel": {
           "type": "string",
           "required": false,
@@ -4036,6 +4041,31 @@
           "type": "string",
           "required": false,
           "description": "provider parameter"
+        },
+        "challengeDir": {
+          "type": "string",
+          "required": false,
+          "description": "challengeDir parameter"
+        },
+        "sourceFile": {
+          "type": "string",
+          "required": false,
+          "description": "sourceFile parameter"
+        },
+        "testFile": {
+          "type": "string",
+          "required": false,
+          "description": "testFile parameter"
+        },
+        "testCommand": {
+          "type": "string",
+          "required": false,
+          "description": "testCommand parameter"
+        },
+        "projectDir": {
+          "type": "string",
+          "required": false,
+          "description": "projectDir parameter"
         }
       }
     },
@@ -6741,6 +6771,16 @@
           "required": false,
           "description": "limit parameter"
         },
+        "modelId": {
+          "type": "string",
+          "required": true,
+          "description": "modelId parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
+        },
         "showContent": {
           "type": "boolean",
           "required": false,
@@ -7115,6 +7155,16 @@
           "type": "string",
           "required": true,
           "description": "personaId parameter"
+        },
+        "modelId": {
+          "type": "string",
+          "required": true,
+          "description": "modelId parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
         },
         "maxMessages": {
           "type": "number",
@@ -7501,8 +7551,13 @@
         },
         "model": {
           "type": "string",
-          "required": false,
+          "required": true,
           "description": "model parameter"
+        },
+        "provider": {
+          "type": "string",
+          "required": true,
+          "description": "provider parameter"
         },
         "temperature": {
           "type": "number",
@@ -7513,11 +7568,6 @@
           "type": "number",
           "required": false,
           "description": "maxTokens parameter"
-        },
-        "provider": {
-          "type": "string",
-          "required": false,
-          "description": "provider parameter"
         }
       }
     },
