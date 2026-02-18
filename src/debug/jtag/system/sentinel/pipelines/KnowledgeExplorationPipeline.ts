@@ -137,15 +137,11 @@ function appendGitRepoSteps(
   // Build the find command with file globs
   const findArgs = globs.map(g => `-name "${g}"`).join(' -o ');
 
-  // Step N: Find matching files in the repo
+  // Step N: Find matching files in the repo (must use sh -c for pipe)
   steps.push({
     type: 'shell',
-    cmd: 'find',
-    args: [source.repoPath, '-type', 'f', '(', ...globs.flatMap(g => ['-name', g, '-o']).slice(0, -1), ')',
-      '-not', '-path', '*/node_modules/*',
-      '-not', '-path', '*/.git/*',
-      '-not', '-path', '*/dist/*',
-      '|', 'head', `-${maxFiles}`],
+    cmd: 'sh',
+    args: ['-c', `find ${source.repoPath} -type f \\( ${findArgs} \\) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" | head -${maxFiles}`],
     timeoutSecs: 30,
     workingDir: source.repoPath,
   });

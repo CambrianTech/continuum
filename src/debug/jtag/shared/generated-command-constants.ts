@@ -216,6 +216,7 @@ export const COMMANDS = {
   SEARCH_PARAMS: 'search/params',
   SEARCH_VECTOR: 'search/vector',
   SECURITY_SETUP: 'security/setup',
+  SENTINEL_CANCEL: 'sentinel/cancel',
   SENTINEL_LIST: 'sentinel/list',
   SENTINEL_LOAD: 'sentinel/load',
   SENTINEL_LOGS_LIST: 'sentinel/logs/list',

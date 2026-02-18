@@ -25,6 +25,7 @@ import type {
 } from '../../shared/FineTuningTypes';
 import type { UUID } from '../../../../../system/core/types/CrossPlatformUUID';
 import { LOCAL_MODELS } from '@system/shared/Constants';
+import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -215,11 +216,49 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
   }
 
   /**
-   * Check training status - NOT IMPLEMENTED YET
-   * TODO: Implement async handle pattern for this adapter
+   * Check training status via Rust sentinel handle.
+   *
+   * For PEFT local training, the sessionId IS the sentinel handle.
+   * In async mode, GenomeTrainServerCommand stores the handle and callers
+   * pass it here to query progress. In sync mode, this is never called
+   * (trainLoRA blocks until completion).
    */
-  async checkStatus(_sessionId: UUID): Promise<TrainingStatus> {
-    throw new Error(`${this.providerId}: checkStatus not implemented yet - adapter needs refactoring to async handle pattern`);
+  async checkStatus(sessionId: UUID): Promise<TrainingStatus> {
+    const rustClient = RustCoreIPCClient.getInstance();
+
+    try {
+      const result = await rustClient.sentinelStatus(sessionId);
+      const sentinelStatus = result.handle.status;
+
+      // Map sentinel status → TrainingStatus
+      const statusMap: Record<string, TrainingStatus['status']> = {
+        'running': 'running',
+        'completed': 'completed',
+        'failed': 'failed',
+        'cancelled': 'cancelled',
+      };
+
+      return {
+        status: statusMap[sentinelStatus] ?? 'failed',
+        progress: result.handle.progress != null ? result.handle.progress / 100 : undefined,
+        modelId: sentinelStatus === 'completed' ? sessionId : undefined,
+        error: result.handle.error,
+        metadata: {
+          sentinelHandle: sessionId,
+          exitCode: result.handle.exitCode,
+          logsDir: result.handle.logsDir,
+        },
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      // Handle not found = training never started or already cleaned up
+      return {
+        status: 'failed',
+        error: `Sentinel handle not found: ${message}`,
+        metadata: { sentinelHandle: sessionId },
+      };
+    }
   }
 
   /**
@@ -256,162 +295,4 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
     return exampleCount * epochs * 25; // 25ms per example per epoch (GPU)
   }
 
-  // ==================== PHASE 7.1 IMPLEMENTATION ====================
-  // All helper methods now inherited from BaseServerLoRATrainer
-
-  /**
-   * TODO Phase 7.1: Create Python training script with Unsloth
-   *
-   * @private
-   */
-  /*
-  private async createTrainingScript(
-    request: LoRATrainingRequest,
-    datasetPath: string
-  ): Promise<string> {
-    const rank = request.rank || this.getFineTuningCapabilities().defaultRank;
-    const alpha = request.alpha || this.getFineTuningCapabilities().defaultAlpha;
-    const epochs = request.epochs || this.getFineTuningCapabilities().defaultEpochs;
-    const learningRate = request.learningRate || this.getFineTuningCapabilities().defaultLearningRate;
-
-    const script = `
-import os
-from unsloth import FastLanguageModel
-import torch
-
-# Load model
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "${request.baseModel}",
-    max_seq_length = 2048,
-    dtype = None,
-    load_in_4bit = True,
-)
-
-# Add LoRA adapters
-model = FastLanguageModel.get_peft_model(
-    model,
-    r = ${rank},
-    lora_alpha = ${alpha},
-    target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
-    lora_dropout = 0,
-    bias = "none",
-    use_gradient_checkpointing = True,
-)
-
-# Load dataset
-from datasets import load_dataset
-dataset = load_dataset("json", data_files="${datasetPath}")
-
-# Training
-from trl import SFTTrainer
-from transformers import TrainingArguments
-
-trainer = SFTTrainer(
-    model = model,
-    tokenizer = tokenizer,
-    train_dataset = dataset["train"],
-    dataset_text_field = "text",
-    max_seq_length = 2048,
-    args = TrainingArguments(
-        per_device_train_batch_size = ${request.batchSize || 4},
-        gradient_accumulation_steps = 4,
-        warmup_steps = 5,
-        num_train_epochs = ${epochs},
-        learning_rate = ${learningRate},
-        fp16 = not torch.cuda.is_bf16_supported(),
-        bf16 = torch.cuda.is_bf16_supported(),
-        logging_steps = 1,
-        output_dir = "outputs",
-    ),
-)
-
-# Train
-trainer.train()
-
-# Save adapter
-model.save_pretrained("lora_model")
-tokenizer.save_pretrained("lora_model")
-
-print("Training complete!")
-`;
-
-    const scriptPath = path.join(os.tmpdir(), `jtag-train-${Date.now()}.py`);
-    await fs.promises.writeFile(scriptPath, script, 'utf-8');
-    return scriptPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Execute Unsloth training via subprocess
-   *
-   * @private
-   */
-  /*
-  private async executeUnslothTraining(scriptPath: string): Promise<TrainingMetrics> {
-    // Execute Python script, monitor output, extract metrics
-    // Use child_process.spawn() for real-time progress
-    return {
-      finalLoss: 0.5,
-      trainingSteps: 100,
-      examplesProcessed: 50
-    };
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Export trained model to GGUF format
-   *
-   * @private
-   */
-  /*
-  private async exportToGGUF(request: LoRATrainingRequest): Promise<string> {
-    // Use llama.cpp convert script to create GGUF
-    // model.save_pretrained_gguf() or llama.cpp/convert.py
-    const ggufPath = path.join(
-      os.tmpdir(),
-      `${request.baseModel}-${request.traitType}-${Date.now()}.gguf`
-    );
-    return ggufPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Save trained adapter to genome storage
-   *
-   * @private
-   */
-  /*
-  private async saveAdapter(request: LoRATrainingRequest, ggufPath: string): Promise<string> {
-    // Copy adapter from temp to genome storage
-    const adapterPath = path.join(
-      '.continuum/genome/adapters',
-      `${request.baseModel}-${request.traitType}-${Date.now()}.gguf`
-    );
-
-    // Ensure directory exists
-    await fs.promises.mkdir(path.dirname(adapterPath), { recursive: true });
-
-    // Copy adapter file
-    await fs.promises.copyFile(ggufPath, adapterPath);
-
-    return adapterPath;
-  }
-  */
-
-  /**
-   * TODO Phase 7.1: Clean up temporary files
-   *
-   * @private
-   */
-  /*
-  private async cleanupTempFiles(...paths: string[]): Promise<void> {
-    for (const filePath of paths) {
-      try {
-        await fs.promises.unlink(filePath);
-      } catch (error) {
-        console.warn(`Failed to clean up temp file: ${filePath}`, error);
-      }
-    }
-  }
-  */
 }

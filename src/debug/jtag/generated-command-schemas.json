@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-18T02:59:00.609Z",
+  "generated": "2026-02-18T05:14:47.307Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -1802,6 +1802,27 @@
           "type": "string",
           "required": false,
           "description": "search parameter"
+        }
+      }
+    },
+    {
+      "name": "sentinel/cancel",
+      "description": "Cancel running sentinels by handle or filter. Supports three modes: - Direct: provide a `handle` to cancel one sentinel - Filtered: provide `type` and/or `status` to cancel matching sentinels - Default: no params cancels all running sentinels",
+      "params": {
+        "handle": {
+          "type": "string",
+          "required": false,
+          "description": "handle parameter"
+        },
+        "type": {
+          "type": "string",
+          "required": false,
+          "description": "type parameter"
+        },
+        "status": {
+          "type": "string",
+          "required": false,
+          "description": "status parameter"
         }
       }
     },
