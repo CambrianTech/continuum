@@ -20,6 +20,8 @@
  */
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import { BenchmarkEntity } from '../../data/entities/BenchmarkEntity';
+import { BenchmarkResultEntity } from '../../data/entities/BenchmarkResultEntity';
 
 // ============================================================================
 // Pipeline Config
@@ -104,7 +106,7 @@ export function buildBenchmarkPipeline(config: BenchmarkPipelineConfig): Pipelin
       type: 'command',
       command: 'data/create',
       params: {
-        collection: 'academy_benchmarks',
+        collection: BenchmarkEntity.collection,
         data: {
           name,
           domain,
@@ -175,13 +177,12 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
   const { benchmarkId, personaId, personaName } = config;
 
   const steps: PipelineStep[] = [
-    // Step 0: Load the benchmark definition (use data/list + filter because
-    // academy_benchmarks is a dynamic collection without a registered entity)
+    // Step 0: Load the benchmark definition
     {
       type: 'command',
       command: 'data/list',
       params: {
-        collection: 'academy_benchmarks',
+        collection: BenchmarkEntity.collection,
         filter: { id: benchmarkId },
         limit: 1,
       },
@@ -248,7 +249,7 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
       type: 'command',
       command: 'data/create',
       params: {
-        collection: 'academy_benchmark_results',
+        collection: BenchmarkResultEntity.collection,
         data: {
           benchmarkId,
           benchmarkName: '{{steps.0.data.items.0.name}}',

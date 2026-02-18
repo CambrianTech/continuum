@@ -88,6 +88,8 @@ import { AcademyCurriculumEntity } from '../../../system/genome/entities/Academy
 import { AcademyExaminationEntity } from '../../../system/genome/entities/AcademyExaminationEntity';
 import { CompetitionEntity } from '../../../system/genome/entities/CompetitionEntity';
 import { SentinelEntity } from '../../../system/sentinel/entities/SentinelEntity';
+import { BenchmarkEntity } from '../../../system/data/entities/BenchmarkEntity';
+import { BenchmarkResultEntity } from '../../../system/data/entities/BenchmarkResultEntity';
 
 /**
  * Initialize entity registration for the storage adapter
@@ -149,6 +151,8 @@ export function initializeEntityRegistry(): void {
   new AcademyExaminationEntity();
   new CompetitionEntity();
   new SentinelEntity();
+  new BenchmarkEntity();
+  new BenchmarkResultEntity();
 
   registerEntity(UserEntity.collection, UserEntity);
   registerEntity(RoomEntity.collection, RoomEntity);
@@ -202,6 +206,8 @@ export function initializeEntityRegistry(): void {
   registerEntity(AcademyExaminationEntity.collection, AcademyExaminationEntity);
   registerEntity(CompetitionEntity.collection, CompetitionEntity);
   registerEntity(SentinelEntity.collection, SentinelEntity);
+  registerEntity(BenchmarkEntity.collection, BenchmarkEntity);
+  registerEntity(BenchmarkResultEntity.collection, BenchmarkResultEntity);
 
   log.info('All entities registered');
 }

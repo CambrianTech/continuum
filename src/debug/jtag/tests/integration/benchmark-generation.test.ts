@@ -25,6 +25,7 @@ import {
   type BenchmarkRunnerConfig,
 } from '../../system/sentinel/pipelines/BenchmarkPipeline';
 import type { SourceKnowledge, ExtractedFact } from '../../system/genome/shared/KnowledgeTypes';
+import { BenchmarkEntity } from '../../system/data/entities/BenchmarkEntity';
 
 // ─── Test Configuration ──────────────────────────────────────────────────────
 
@@ -175,7 +176,7 @@ async function main() {
       // Query the database for the benchmark created by the pipeline
       // (Rust pipeline doesn't expose individual step results through IPC)
       const benchmarkQuery = await runJtagCommand(
-        `data/list --collection=academy_benchmarks --filter='{"domain":"${BENCHMARK_DOMAIN}"}'`
+        `data/list --collection=${BenchmarkEntity.collection} --filter='{"domain":"${BENCHMARK_DOMAIN}"}'`
       );
 
       const benchmarks = (benchmarkQuery as any).items ?? [];
