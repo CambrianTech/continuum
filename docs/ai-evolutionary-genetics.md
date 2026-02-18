@@ -517,10 +517,10 @@ The tools we've built - genome capture, LoRA adapters, audit system, decision fr
 ## Related Documentation
 
 - [Fully NPM-Packable Modules](./fully-npm-packable-modules-shareable.md) - The distribution mechanism
-- [LoRA Genome Paging](../src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md) - Skill management
-- [Persona Convergence](../src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Architecture
-- [Audit System Design](../src/debug/jtag/generator/AUDIT-SYSTEM-DESIGN.md) - Quality signals
-- [Module Hibernation](../src/debug/jtag/generator/MODULE-HIBERNATION-SYSTEM.md) - Lifecycle management
+- [LoRA Genome Paging](../src/system/user/server/modules/LORA-GENOME-PAGING.md) - Skill management
+- [Persona Convergence](../src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md) - Architecture
+- [Audit System Design](../src/generator/AUDIT-SYSTEM-DESIGN.md) - Quality signals
+- [Module Hibernation](../src/generator/MODULE-HIBERNATION-SYSTEM.md) - Lifecycle management
 
 ---
 

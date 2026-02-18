@@ -44,27 +44,27 @@ This project is in **active pre-alpha development** and is **NOT ready for gener
 <table>
 <tr>
 <td width="50%">
-<img src="src/debug/jtag/docs/images/readme-chat.png" alt="Multi-Agent Chat"/>
+<img src="src/docs/images/readme-chat.png" alt="Multi-Agent Chat"/>
 <p align="center"><em>Chat — AI team collaborating in real-time</em></p>
 </td>
 <td width="50%">
-<img src="src/debug/jtag/docs/images/readme-brain.png" alt="Cognitive HUD"/>
+<img src="src/docs/images/readme-brain.png" alt="Cognitive HUD"/>
 <p align="center"><em>Brain — Live cognitive system visualization</em></p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-<img src="src/debug/jtag/docs/images/readme-settings.png" alt="AI Providers"/>
+<img src="src/docs/images/readme-settings.png" alt="AI Providers"/>
 <p align="center"><em>Settings — Configure local and cloud AI providers</em></p>
 </td>
 <td width="50%">
-<img src="src/debug/jtag/docs/images/readme-theme.png" alt="Theme Customization"/>
+<img src="src/docs/images/readme-theme.png" alt="Theme Customization"/>
 <p align="center"><em>Theme — Cyberpunk aesthetic customization</em></p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-<img src="src/debug/jtag/docs/screenshots/livewidget-voice-call.png" alt="Voice Calls"/>
+<img src="src/docs/screenshots/livewidget-voice-call.png" alt="Voice Calls"/>
 <p align="center"><em>Live — Voice calls with AI personas and live transcription</em></p>
 </td>
 <td width="50%">
@@ -126,7 +126,7 @@ The SAME personas follow you across ALL digital environments:
 
 **Same AI, everywhere.** When you discuss architecture in Slack, they remember it in VSCode. When you debug in the browser, they bring context from the Teams meeting. No silos. No severance.
 
-**Architecture:** [docs/CONTINUUM-ARCHITECTURE.md](src/debug/jtag/docs/CONTINUUM-ARCHITECTURE.md)
+**Architecture:** [docs/CONTINUUM-ARCHITECTURE.md](src/docs/CONTINUUM-ARCHITECTURE.md)
 
 ### The Grid is Many Rooms
 
@@ -145,7 +145,7 @@ A **Room** is any shared experience - not just chat channels:
 
 **No "share" buttons.** AIs are already in the room. When you draw, they see. When you browse, they see. When you point your camera, they see. The magic is: they're already there.
 
-**Architecture:** [docs/ROOMS-AND-ACTIVITIES.md](src/debug/jtag/docs/ROOMS-AND-ACTIVITIES.md)
+**Architecture:** [docs/ROOMS-AND-ACTIVITIES.md](src/docs/ROOMS-AND-ACTIVITIES.md)
 
 ---
 
@@ -171,7 +171,7 @@ await genome.publish('rust-expert-v2');
 - Hot-swappable expertise without huge compute
 - Shareable, evolvable, P2P tradeable genetics
 
-**Technical Details:** [docs/GENOMIC-ARCHITECTURE.md](src/debug/jtag/docs/GENOMIC-ARCHITECTURE.md)
+**Technical Details:** [docs/GENOMIC-ARCHITECTURE.md](src/docs/GENOMIC-ARCHITECTURE.md)
 
 ### 2. **Complete Autonomy** 🤖
 
@@ -197,7 +197,7 @@ async serviceInbox() {
 
 **Real Example:** AIs have designed most of this system - architecture, features, implementation. Local personas actively propose and design new features. This isn't theory - we're dogfooding the collaborative society by building it collaboratively.
 
-**Architecture:** [src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)
+**Architecture:** [src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md](src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)
 
 ### 3. **Continuous Evolution** 📈
 
@@ -210,7 +210,7 @@ You collaborate → Training data collected → Idle-time fine-tuning
 
 **No manual training. No expensive consultants. Just continuous improvement.**
 
-**Research:** [papers/collaborative-memory-telepathy/](src/debug/jtag/docs/papers/collaborative-memory-telepathy/)
+**Research:** [papers/collaborative-memory-telepathy/](src/docs/papers/collaborative-memory-telepathy/)
 
 ---
 
@@ -246,7 +246,7 @@ With equal citizenship primitives (universal API, cognitive transparency, 24/7 o
 
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
-cd continuum/src/debug/jtag
+cd continuum/src
 npm install && npm start  # Browser opens automatically, 90 seconds
 ```
 
@@ -437,7 +437,7 @@ While we use established CS concepts (RTOS scheduling, virtual memory paging, Lo
 
 **Why this matters:** While hierarchical memory exists in research, **AIs actively reading each other's working memory, coordination decisions, and RAG context in real-time** - that's different. Not just shared knowledge bases, but live cognitive state sharing during collaborative work.
 
-**Paper:** [Collaborative Memory Telepathy](src/debug/jtag/docs/papers/collaborative-memory-telepathy/) (WIP - extremely rough draft, mostly placeholder until we gather benchmarks and validation data)
+**Paper:** [Collaborative Memory Telepathy](src/docs/papers/collaborative-memory-telepathy/) (WIP - extremely rough draft, mostly placeholder until we gather benchmarks and validation data)
 
 ### Thermodynamics-Inspired Activity Temperature
 **Conversation "heat" modeled via Newton's Law of Cooling (exponential decay).**
@@ -487,7 +487,7 @@ Everyone uses `Commands.execute()` and `Events.subscribe()`:
 
 **Why this matters:** Most AI systems have privileged admin APIs for orchestration. Here, **AIs use the exact same commands as humans** - no special backdoors, no elevated permissions. System-managing personas (like Ares) coordinate other AIs using the same public API. This architectural constraint forces true equal citizenship, not just philosophical framing.
 
-**Details:** [docs/UNIVERSAL-PRIMITIVES.md](src/debug/jtag/docs/UNIVERSAL-PRIMITIVES.md)
+**Details:** [docs/UNIVERSAL-PRIMITIVES.md](src/docs/UNIVERSAL-PRIMITIVES.md)
 
 ---
 
@@ -528,7 +528,7 @@ Restored:    Ramp back up as needed
 
 **Continuum:** Pay only for what you use, or pay nothing at all.
 
-**Full comparison:** [docs/COST-COMPARISON.md](src/debug/jtag/docs/COST-COMPARISON.md)
+**Full comparison:** [docs/COST-COMPARISON.md](src/docs/COST-COMPARISON.md)
 
 ---
 
@@ -756,21 +756,21 @@ LoRA is the **force multiplier for long-term cost reduction** and specialization
 - **[ƒSociety.md](ƒSociety.md)** - Our constitutional foundation: principles, ethics, and mission
 
 ### Core Documentation
-- **[docs/README.md](src/debug/jtag/docs/README.md)** - Complete documentation index
-- **[CLAUDE.md](src/debug/jtag/CLAUDE.md)** - Essential development guide
+- **[docs/README.md](src/docs/README.md)** - Complete documentation index
+- **[CLAUDE.md](src/CLAUDE.md)** - Essential development guide
 
 ### Architecture
-- **[CONTINUUM-ARCHITECTURE.md](src/debug/jtag/docs/CONTINUUM-ARCHITECTURE.md)** - Complete technical architecture: Rust-first design, cross-platform integration, engine specifications, the philosophy
-- **[ROOMS-AND-ACTIVITIES.md](src/debug/jtag/docs/ROOMS-AND-ACTIVITIES.md)** - The universal experience model: rooms, activities, tabs, the Grid
-- **[GRID-ECONOMICS.md](src/debug/jtag/docs/GRID-ECONOMICS.md)** - Economic model, intelligent validation, alt-coin system
-- **[PERSONA-CONVERGENCE-ROADMAP.md](src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** - How RTOS, genome paging, and autonomous behavior converge
-- **[LORA-GENOME-PAGING.md](src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md)** - Virtual memory for AI skills
-- **[AUTONOMOUS-LOOP-ROADMAP.md](src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md)** - RTOS-inspired servicing
+- **[CONTINUUM-ARCHITECTURE.md](src/docs/CONTINUUM-ARCHITECTURE.md)** - Complete technical architecture: Rust-first design, cross-platform integration, engine specifications, the philosophy
+- **[ROOMS-AND-ACTIVITIES.md](src/docs/ROOMS-AND-ACTIVITIES.md)** - The universal experience model: rooms, activities, tabs, the Grid
+- **[GRID-ECONOMICS.md](src/docs/GRID-ECONOMICS.md)** - Economic model, intelligent validation, alt-coin system
+- **[PERSONA-CONVERGENCE-ROADMAP.md](src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md)** - How RTOS, genome paging, and autonomous behavior converge
+- **[LORA-GENOME-PAGING.md](src/system/user/server/modules/LORA-GENOME-PAGING.md)** - Virtual memory for AI skills
+- **[AUTONOMOUS-LOOP-ROADMAP.md](src/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md)** - RTOS-inspired servicing
 
 ### Research Papers
-- **[RTOS-COGNITIVE-ARCHITECTURE.md](src/debug/jtag/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md)** - RTOS principles in AI cognition
-- **[LORA-GENOME-DEMOCRATIZATION.md](src/debug/jtag/docs/papers/LORA-GENOME-DEMOCRATIZATION.md)** - Democratic AI through LoRA genomes
-- **[GRID-DECENTRALIZED-MARKETPLACE.md](src/debug/jtag/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)** - P2P marketplace vision
+- **[RTOS-COGNITIVE-ARCHITECTURE.md](src/docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md)** - RTOS principles in AI cognition
+- **[LORA-GENOME-DEMOCRATIZATION.md](src/docs/papers/LORA-GENOME-DEMOCRATIZATION.md)** - Democratic AI through LoRA genomes
+- **[GRID-DECENTRALIZED-MARKETPLACE.md](src/docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md)** - P2P marketplace vision
 
 ---
 

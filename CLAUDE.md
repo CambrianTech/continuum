@@ -337,7 +337,7 @@ let results = algo.execute(&input);
 4. **Repeat**
 
 ```bash
-cd src/debug/jtag
+cd src
 npm start                    # DEPLOYS code changes, takes 130s or so
 
 ./jtag ping #check for server and browser connection
@@ -970,7 +970,7 @@ npm start
 
 ### Documentation
 
-**Full Architecture**: `src/debug/jtag/system/user/server/modules/`
+**Full Architecture**: `src/system/user/server/modules/`
 - `AUTONOMOUS-LOOP-ROADMAP.md` - RTOS-inspired servicing
 - `SELF-MANAGED-QUEUE-DESIGN.md` - AI autonomy through tasks
 - `LORA-GENOME-PAGING.md` - Virtual memory for skills
@@ -1144,7 +1144,7 @@ The AIs will:
 **Fix**: Always take screenshot after deployment
 
 ### 3. WRONG WORKING DIRECTORY
-**Always work from**: `src/debug/jtag`
+**Always work from**: `src`
 **Commands**: `./jtag` NOT `./continuum`
 
 ### 4. IGNORE EXISTING TYPES
@@ -1433,10 +1433,10 @@ grep -r "UserEntity\|ChatMessageEntity" daemons/data-daemon/ | grep -v EntityReg
 # Should return zero results (except EntityRegistry.ts)
 ```
 
-### **[UNIVERSAL-PRIMITIVES.md](src/debug/jtag/docs/UNIVERSAL-PRIMITIVES.md)**
+### **[UNIVERSAL-PRIMITIVES.md](src/docs/UNIVERSAL-PRIMITIVES.md)**
 Commands.execute() and Events.subscribe()/emit() - the two primitives everything is built on.
 
-### **[GENERATOR-OOP-PHILOSOPHY.md](src/debug/jtag/docs/GENERATOR-OOP-PHILOSOPHY.md)** - CORE PHILOSOPHY
+### **[GENERATOR-OOP-PHILOSOPHY.md](src/docs/GENERATOR-OOP-PHILOSOPHY.md)** - CORE PHILOSOPHY
 Generators and OOP are intertwined parallel forces:
 - Generators ensure structural correctness at creation time
 - OOP/type system ensures behavioral correctness at runtime
@@ -1444,9 +1444,9 @@ Generators and OOP are intertwined parallel forces:
 - This enables tree-based delegation of ability with compounding capability
 
 ### **PersonaUser Convergence Docs**
-- `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
-- `src/debug/jtag/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md`
-- `src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md`
+- `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+- `src/system/user/server/modules/AUTONOMOUS-LOOP-ROADMAP.md`
+- `src/system/user/server/modules/LORA-GENOME-PAGING.md`
 
 **Quick tip**: If you're about to write code that duplicates patterns or violates architecture rules, STOP and read ARCHITECTURE-RULES.md first. Then apply the aggressive refactoring principle from this guide.
 

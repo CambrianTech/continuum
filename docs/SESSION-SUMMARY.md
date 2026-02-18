@@ -337,7 +337,7 @@ If you're resuming work (new Claude Code instance, new day, etc.):
 git log --oneline | head -5
 
 # System still working?
-cd src/debug/jtag
+cd src
 npm start
 # (wait 95 seconds)
 ./jtag ping

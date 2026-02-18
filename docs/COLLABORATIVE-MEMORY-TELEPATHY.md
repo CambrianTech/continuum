@@ -771,4 +771,4 @@ Current systems have AIs that:
 - RAG Memory Integration: `docs/RAG-MEMORY-INTEGRATION.md`
 - Phase 2B RAG Hippocampus: `docs/PHASE2B-RAG-HIPPOCAMPUS.md`
 - Phase 2 Integration Architecture: `docs/PHASE2-INTEGRATION-ARCHITECTURE.md`
-- Persona Convergence: `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+- Persona Convergence: `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`

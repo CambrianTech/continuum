@@ -388,17 +388,17 @@ Plot `sequenceNumber` vs `cognitiveLoad` to visualize stress patterns.
 
 ## Implementation Files
 
-- **Entities**: `src/debug/jtag/system/data/entities/`
+- **Entities**: `src/system/data/entities/`
   - `CognitionStateEntity.ts` - State snapshot structure
   - `CognitionPlanEntity.ts` - Plan lifecycle structure
 
-- **Logger**: `src/debug/jtag/system/user/server/modules/cognition/`
+- **Logger**: `src/system/user/server/modules/cognition/`
   - `CognitionLogger.ts` - Logging utilities
 
-- **Integration**: `src/debug/jtag/system/user/server/PersonaUser.ts`
+- **Integration**: `src/system/user/server/PersonaUser.ts`
   - Lines 318-1283: Cognition wrapper around chat logic
 
-- **Registry**: `src/debug/jtag/daemons/data-daemon/server/EntityRegistry.ts`
+- **Registry**: `src/daemons/data-daemon/server/EntityRegistry.ts`
   - Registers cognition entities with ORM
 
 ---

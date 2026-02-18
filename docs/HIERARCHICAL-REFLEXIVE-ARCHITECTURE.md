@@ -607,6 +607,6 @@ OpenAI and Anthropic are using sledgehammers for everything. We're using the rig
 ## References
 
 - Progressive Scoring: `docs/PHASE2-INTEGRATION-ARCHITECTURE.md`
-- RegexComplexityDetector: `src/debug/jtag/system/user/server/modules/RegexComplexityDetector.ts`
-- LoRA Genome Paging: `src/debug/jtag/system/user/server/modules/LORA-GENOME-PAGING.md`
-- PersonaUser Architecture: `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`
+- RegexComplexityDetector: `src/system/user/server/modules/RegexComplexityDetector.ts`
+- LoRA Genome Paging: `src/system/user/server/modules/LORA-GENOME-PAGING.md`
+- PersonaUser Architecture: `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md`

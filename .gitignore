@@ -13,7 +13,7 @@ build/
 continuum-jtag-*.tgz
 
 # Generated manifest files (use generated.ts instead)
-src/debug/jtag/manifests/
+src/manifests/
 
 # Generated test files
 test-config.md
@@ -162,7 +162,7 @@ src/ui/**/*.d.ts
 src/commands/**/*.js
 src/commands/**/*.js.map
 src/commands/**/*.d.ts
-/src/debug/jtag/.archive
+/src/.archive
 .tgz
 
 # Runtime directories (session data, logs, temp files)
@@ -178,4 +178,4 @@ src/commands/**/*.d.ts
 !CLAUDE.md
 !test*output.txt
 _archive/
-src/debug/jtag/.continuum/sessions/validation/
+src/.continuum/sessions/validation/

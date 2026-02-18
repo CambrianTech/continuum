@@ -144,7 +144,7 @@ tar -xzf /tmp/jtag-system-user-genome-*.tgz --strip-components=1
 ### Use Case 3: System Replication
 ```bash
 # Package entire JTAG system
-cd src/debug/jtag
+cd src
 npm pack
 # Creates: continuum-jtag-1.0.0.tgz (entire system!)
 
