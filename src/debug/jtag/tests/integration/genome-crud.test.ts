@@ -4,14 +4,12 @@
  * Tests Phase 1.1: GenomeEntity and GenomeLayerEntity registration
  *
  * Validates:
- * 1. GenomeLayerEntity CREATE/READ (with 768-dim embedding validation)
+ * 1. GenomeLayerEntity CREATE/READ (with 16-dim embedding validation)
  * 2. GenomeEntity CREATE/READ (with layer references)
  * 3. Database persistence for both entities
  */
 
 import { runJtagCommand } from '../test-utils/CRUDTestUtils';
-import { writeFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
 
 interface TestResult {
   operation: string;
@@ -20,14 +18,9 @@ interface TestResult {
   success: boolean;
 }
 
-// Generate 768-dimensional test embedding
+// Generate small test embedding (16-dim for CLI compatibility — CRUD test, not embedding quality test)
 function generateTestEmbedding(): number[] {
-  const embedding: number[] = [];
-  for (let i = 0; i < 768; i++) {
-    // Simple pattern: sin wave with exponential decay
-    embedding.push(Math.sin(i / 100) * Math.exp(-i / 1000));
-  }
-  return embedding;
+  return Array.from({ length: 16 }, (_, i) => Math.sin(i / 10) * Math.exp(-i / 20));
 }
 
 async function testGenomeCRUD() {
@@ -63,23 +56,19 @@ async function testGenomeCRUD() {
       }
     };
 
-    // Write data to temp file (command line too long with 768-dim array)
-    const tmpFile = join('/tmp', `genome-layer-${Date.now()}.json`);
-    writeFileSync(tmpFile, JSON.stringify(layerData));
+    const createLayerResult = await runJtagCommand(`data/create --collection="genome_layers" --data='${JSON.stringify(layerData)}'`);
 
-    const createLayerResult = await runJtagCommand(`${DATA_COMMANDS.CREATE} --collection="genome_layers" --dataFile="${tmpFile}"`);
-    unlinkSync(tmpFile); // Clean up temp file
-
-    if (!createLayerResult?.success || !createLayerResult?.id) {
+    const layerData2 = createLayerResult?.data as Record<string, unknown> | undefined;
+    if (!createLayerResult?.success || !layerData2?.id) {
       console.log(`❌ CREATE GenomeLayerEntity failed: ${createLayerResult?.error || 'Unknown error'}`);
       throw new Error('Failed to create GenomeLayerEntity');
     }
 
-    const layerId = createLayerResult.id;
+    const layerId = layerData2.id as string;
     console.log(`✅ Created GenomeLayerEntity: ${layerId}`);
 
     // Verify layer persisted to database
-    const dbReadLayer = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="genome_layers" --id="${layerId}"`);
+    const dbReadLayer = await runJtagCommand(`data/read --collection="genome_layers" --id="${layerId}"`);
     const layerPersisted = Boolean(dbReadLayer?.success && dbReadLayer?.found);
 
     results.push({
@@ -121,23 +110,19 @@ async function testGenomeCRUD() {
       }
     };
 
-    // Write data to temp file (command line too long with 768-dim array)
-    const tmpGenomeFile = join('/tmp', `genome-${Date.now()}.json`);
-    writeFileSync(tmpGenomeFile, JSON.stringify(genomeData));
+    const createGenomeResult = await runJtagCommand(`data/create --collection="genomes" --data='${JSON.stringify(genomeData)}'`);
 
-    const createGenomeResult = await runJtagCommand(`${DATA_COMMANDS.CREATE} --collection="genomes" --dataFile="${tmpGenomeFile}"`);
-    unlinkSync(tmpGenomeFile); // Clean up temp file
-
-    if (!createGenomeResult?.success || !createGenomeResult?.id) {
+    const genomeData2 = createGenomeResult?.data as Record<string, unknown> | undefined;
+    if (!createGenomeResult?.success || !genomeData2?.id) {
       console.log(`❌ CREATE GenomeEntity failed: ${createGenomeResult?.error || 'Unknown error'}`);
       throw new Error('Failed to create GenomeEntity');
     }
 
-    const genomeId = createGenomeResult.id;
+    const genomeId = genomeData2.id as string;
     console.log(`✅ Created GenomeEntity: ${genomeId}`);
 
     // Verify genome persisted to database
-    const dbReadGenome = await runJtagCommand(`${DATA_COMMANDS.READ} --collection="genomes" --id="${genomeId}"`);
+    const dbReadGenome = await runJtagCommand(`data/read --collection="genomes" --id="${genomeId}"`);
     const genomePersisted = Boolean(dbReadGenome?.success && dbReadGenome?.found);
 
     results.push({
@@ -152,11 +137,11 @@ async function testGenomeCRUD() {
     if (dbReadLayer?.data) {
       console.log('🔍 Verifying GenomeLayerEntity data integrity...');
       const layer = dbReadLayer.data;
-      const embeddingValid = Array.isArray(layer.embedding) && layer.embedding.length === 768;
+      const embeddingValid = Array.isArray(layer.embedding) && layer.embedding.length === 16;
       const fitnessValid = layer.fitness && typeof layer.fitness.accuracy === 'number';
       const metadataValid = layer.trainingMetadata && layer.trainingMetadata.epochs === 3;
 
-      console.log(`   - Embedding (768-dim): ${embeddingValid ? '✅' : '❌'}`);
+      console.log(`   - Embedding (16-dim): ${embeddingValid ? '✅' : '❌'}`);
       console.log(`   - Fitness data: ${fitnessValid ? '✅' : '❌'}`);
       console.log(`   - Training metadata: ${metadataValid ? '✅' : '❌'}\n`);
 
@@ -174,12 +159,12 @@ async function testGenomeCRUD() {
       const genome = dbReadGenome.data;
       const layersValid = Array.isArray(genome.layers) && genome.layers.length === 1;
       const layerRefValid = layersValid && genome.layers[0].layerId === layerId;
-      const embeddingValid = Array.isArray(genome.compositeEmbedding) && genome.compositeEmbedding.length === 768;
+      const embeddingValid = Array.isArray(genome.compositeEmbedding) && genome.compositeEmbedding.length === 16;
       const metadataValid = genome.metadata && genome.metadata.generation === 1;
 
       console.log(`   - Layer references: ${layersValid ? '✅' : '❌'}`);
       console.log(`   - Layer ID match: ${layerRefValid ? '✅' : '❌'}`);
-      console.log(`   - Composite embedding (768-dim): ${embeddingValid ? '✅' : '❌'}`);
+      console.log(`   - Composite embedding (16-dim): ${embeddingValid ? '✅' : '❌'}`);
       console.log(`   - Genome metadata: ${metadataValid ? '✅' : '❌'}\n`);
 
       results.push({

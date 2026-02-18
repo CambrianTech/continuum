@@ -163,6 +163,9 @@ export interface SentinelResultData {
   /** Whether operation completed (false if async) */
   completed: boolean;
 
+  /** Combined output from sync execution (only when async=false) */
+  output?: string;
+
   /** Sentinel-specific result data */
   data?: {
     success: boolean;

@@ -175,13 +175,15 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
   const { benchmarkId, personaId, personaName } = config;
 
   const steps: PipelineStep[] = [
-    // Step 0: Load the benchmark definition
+    // Step 0: Load the benchmark definition (use data/list + filter because
+    // academy_benchmarks is a dynamic collection without a registered entity)
     {
       type: 'command',
-      command: 'data/read',
+      command: 'data/list',
       params: {
         collection: 'academy_benchmarks',
-        id: benchmarkId,
+        filter: { id: benchmarkId },
+        limit: 1,
       },
     },
 
@@ -193,7 +195,7 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
         'Be precise and thorough. Answer each question separately.',
         '',
         'Questions:',
-        '{{steps.0.data.data.questions}}',
+        '{{steps.0.data.items.0.questions}}',
         '',
         'Output ONLY a JSON array of answers (no markdown, no code fences):',
         '[',
@@ -214,7 +216,7 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
         'Score each answer 0-100 based on accuracy and completeness.',
         '',
         'Questions with expected answers and rubrics:',
-        '{{steps.0.data.data.questions}}',
+        '{{steps.0.data.items.0.questions}}',
         '',
         'Student answers:',
         '{{steps.1.output}}',
@@ -226,7 +228,7 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
         '    {',
         '      "questionIndex": 0,',
         '      "score": <0-100>,',
-        '      "answer": "the student\'s answer",',
+        '      "answer": "the student answer verbatim",',
         '      "feedback": "why this score"',
         '    }',
         '  ],',
@@ -249,7 +251,7 @@ export function buildBenchmarkRunnerPipeline(config: BenchmarkRunnerConfig): Pip
         collection: 'academy_benchmark_results',
         data: {
           benchmarkId,
-          benchmarkName: '{{steps.0.data.data.name}}',
+          benchmarkName: '{{steps.0.data.items.0.name}}',
           personaId,
           personaName,
           overallScore: '{{steps.2.output.overallScore}}',

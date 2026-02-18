@@ -1,5 +1,5 @@
 {
-  "generated": "2026-02-17T23:43:14.855Z",
+  "generated": "2026-02-18T02:59:00.609Z",
   "version": "1.0.0",
   "commands": [
     {
@@ -3490,6 +3490,11 @@
           "type": "string",
           "required": false,
           "description": "quantizeBits parameter"
+        },
+        "async": {
+          "type": "boolean",
+          "required": false,
+          "description": "async parameter"
         }
       }
     },
@@ -3836,6 +3841,11 @@
           "type": "string",
           "required": false,
           "description": "outputPath parameter"
+        },
+        "groundingContext": {
+          "type": "string",
+          "required": false,
+          "description": "groundingContext parameter"
         }
       }
     },

@@ -202,28 +202,22 @@ async function main() {
   try {
     const chainPipeline = buildChainPipeline();
     const chainResult = await runJtagCommand(
-      `sentinel/run --type=pipeline --pipeline='${JSON.stringify(chainPipeline)}'`
+      `sentinel/run --type=pipeline --async=false --definition='${JSON.stringify(chainPipeline)}'`
     );
 
     const chainSuccess = Boolean(chainResult.success);
-    const stepsCompleted = (chainResult as any).stepsCompleted ?? 0;
-    const stepsTotal = (chainResult as any).stepsTotal ?? 0;
-
     console.log(`   Success: ${chainSuccess}`);
-    console.log(`   Steps: ${stepsCompleted}/${stepsTotal}`);
 
-    // Verify step results
-    const stepResults = (chainResult as any).stepResults ?? [];
-    if (stepResults.length > 0) {
-      console.log(`   Step 0 (shell): ${stepResults[0]?.output?.trim()}`);
-      console.log(`   Step 1 (shell): ${stepResults[1]?.output?.trim()}`);
-      console.log(`   Step 2 (llm): ${stepResults[2]?.output?.slice(0, 100)}`);
+    // Pipeline output from sync mode
+    const output = chainResult.output as string ?? '';
+    if (output) {
+      console.log(`   Pipeline output: ${output.slice(0, 200)}`);
     }
 
     results.push({
       phase: 'Shell→LLM Chain',
-      success: chainSuccess && stepsCompleted === stepsTotal,
-      details: `${stepsCompleted}/${stepsTotal} steps completed`,
+      success: chainSuccess,
+      details: chainSuccess ? 'All steps completed' : `Failed: ${chainResult.error}`,
     });
   } catch (error) {
     results.push({
@@ -243,17 +237,13 @@ async function main() {
   try {
     const condPipeline = buildConditionPipeline();
     const condResult = await runJtagCommand(
-      `sentinel/run --type=pipeline --pipeline='${JSON.stringify(condPipeline)}'`
+      `sentinel/run --type=pipeline --async=false --definition='${JSON.stringify(condPipeline)}'`
     );
 
     const condSuccess = Boolean(condResult.success);
     console.log(`   Success: ${condSuccess}`);
-
-    const stepResults = (condResult as any).stepResults ?? [];
-    if (stepResults.length > 1) {
-      // The condition step should have executed the 'then' branch
-      console.log(`   Step 0 output: "${stepResults[0]?.output?.trim()}"`);
-      console.log(`   Step 1 (condition): success=${stepResults[1]?.success}`);
+    if (condResult.output) {
+      console.log(`   Output: ${String(condResult.output).slice(0, 200)}`);
     }
 
     results.push({
@@ -279,18 +269,19 @@ async function main() {
   try {
     const loopPipeline = buildLoopPipeline();
     const loopResult = await runJtagCommand(
-      `sentinel/run --type=pipeline --pipeline='${JSON.stringify(loopPipeline)}'`
+      `sentinel/run --type=pipeline --async=false --definition='${JSON.stringify(loopPipeline)}'`
     );
 
     const loopSuccess = Boolean(loopResult.success);
-    const stepsCompleted = (loopResult as any).stepsCompleted ?? 0;
     console.log(`   Success: ${loopSuccess}`);
-    console.log(`   Steps completed: ${stepsCompleted}`);
+    if (loopResult.output) {
+      console.log(`   Output: ${String(loopResult.output).slice(0, 200)}`);
+    }
 
     results.push({
       phase: 'Loop Execution',
       success: loopSuccess,
-      details: `Loop completed with ${stepsCompleted} step records`,
+      details: loopSuccess ? 'Loop completed successfully' : `Failed: ${loopResult.error}`,
     });
   } catch (error) {
     results.push({
@@ -310,7 +301,7 @@ async function main() {
   try {
     const emitPipeline = buildEmitPipeline();
     const emitResult = await runJtagCommand(
-      `sentinel/run --type=pipeline --pipeline='${JSON.stringify(emitPipeline)}'`
+      `sentinel/run --type=pipeline --async=false --definition='${JSON.stringify(emitPipeline)}'`
     );
 
     const emitSuccess = Boolean(emitResult.success);

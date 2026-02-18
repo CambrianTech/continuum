@@ -391,9 +391,10 @@ async function main() {
       const isCollaborationCommand = command.startsWith('collaboration/');
       const isChallengeCommand = command.startsWith('challenge/');
       const isCodeCommand = command.startsWith('code/');
+      const isSentinelCommand = command.startsWith('sentinel/');
       const needsLongerTimeout = isAICommand || isSocialCommand || isInterfaceCommand || isCollaborationCommand || isCodeCommand;
-      const needsLongTimeout = isGenomeCommand || isChallengeCommand || isInferenceCommand;
-      const defaultTimeoutMs = needsLongTimeout ? 300000 : needsLongerTimeout ? 60000 : 10000; // 5min for genome/challenge/inference, 60s for AI/social/interface/collaboration/code, 10s for others
+      const needsLongTimeout = isGenomeCommand || isChallengeCommand || isInferenceCommand || isSentinelCommand;
+      const defaultTimeoutMs = needsLongTimeout ? 300000 : needsLongerTimeout ? 60000 : 10000; // 5min for genome/challenge/inference/sentinel, 60s for AI/social/interface/collaboration/code, 10s for others
       const timeoutMs = userTimeoutMs ?? defaultTimeoutMs;
       const timeoutSeconds = timeoutMs / 1000;
 

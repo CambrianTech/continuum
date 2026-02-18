@@ -137,7 +137,7 @@ async function main() {
     console.log('─'.repeat(60));
 
     const genResult = await runJtagCommand(
-      `sentinel/run --type=pipeline --pipeline='${JSON.stringify(pipeline)}'`
+      `sentinel/run --type=pipeline --async=false --definition='${JSON.stringify(pipeline)}'`
     );
 
     const genSuccess = Boolean(genResult.success);
@@ -146,14 +146,14 @@ async function main() {
     if (!genSuccess) {
       console.log(`   Error: ${genResult.error}`);
     } else {
-      const stepResults = (genResult as any).stepResults ?? [];
-      const llmOutput = stepResults[0];
-      if (llmOutput?.output) {
+      // The output from sync mode contains the pipeline's combined output
+      const output = genResult.output as string ?? '';
+      if (output) {
         try {
-          const parsed = JSON.parse(llmOutput.output);
+          const parsed = JSON.parse(output);
           console.log(`   Questions generated: ${parsed.questions?.length ?? 0}`);
         } catch {
-          console.log(`   LLM output: ${llmOutput.output.slice(0, 200)}...`);
+          console.log(`   Pipeline output: ${output.slice(0, 200)}...`);
         }
       }
     }
@@ -172,12 +172,21 @@ async function main() {
       console.log('Phase 4: BENCHMARK SCORING (base model)');
       console.log('─'.repeat(60));
 
-      // Get the benchmark ID from the creation step
-      const stepResults = (genResult as any).stepResults ?? [];
-      const createStep = stepResults[1];
-      const benchmarkId = createStep?.data?.data?.id;
+      // Query the database for the benchmark created by the pipeline
+      // (Rust pipeline doesn't expose individual step results through IPC)
+      const benchmarkQuery = await runJtagCommand(
+        `data/list --collection=academy_benchmarks --filter='{"domain":"${BENCHMARK_DOMAIN}"}'`
+      );
+
+      const benchmarks = (benchmarkQuery as any).items ?? [];
+      const benchmark = benchmarks[benchmarks.length - 1]; // Most recent
+      const benchmarkId = benchmark?.id;
+
+      console.log(`   Found ${benchmarks.length} benchmark(s) for domain "${BENCHMARK_DOMAIN}"`);
 
       if (benchmarkId) {
+        console.log(`   Benchmark ID: ${benchmarkId}`);
+
         const runnerPipelineForScoring = buildBenchmarkRunnerPipeline({
           benchmarkId,
           personaId: TEST_PERSONA_ID,
@@ -185,36 +194,32 @@ async function main() {
         });
 
         const scoreResult = await runJtagCommand(
-          `sentinel/run --type=pipeline --pipeline='${JSON.stringify(runnerPipelineForScoring)}'`
+          `sentinel/run --type=pipeline --async=false --definition='${JSON.stringify(runnerPipelineForScoring)}'`
         );
 
         const scoreSuccess = Boolean(scoreResult.success);
         console.log(`   Scoring: ${scoreSuccess ? 'SUCCESS' : 'FAILED'}`);
 
-        if (scoreSuccess) {
-          const scoreStepResults = (scoreResult as any).stepResults ?? [];
-          const gradeStep = scoreStepResults[2];
-          if (gradeStep?.output) {
-            try {
-              const grades = JSON.parse(gradeStep.output);
-              console.log(`   Base model score: ${grades.overallScore}/100`);
-              console.log(`   (Expected: low score for fictional Nexaflux facts)`);
-            } catch {
-              console.log(`   Could not parse grade output`);
-            }
+        if (scoreSuccess && scoreResult.output) {
+          try {
+            const grades = JSON.parse(scoreResult.output as string);
+            console.log(`   Base model score: ${grades.overallScore}/100`);
+            console.log(`   (Expected: low score for fictional Nexaflux facts)`);
+          } catch {
+            console.log(`   Score output: ${String(scoreResult.output).slice(0, 200)}`);
           }
         }
 
         results.push({
           phase: 'Benchmark Scoring',
           success: scoreSuccess,
-          details: scoreSuccess ? 'Benchmark scored successfully' : `Failed: ${scoreResult.error}`,
+          details: scoreSuccess ? 'Benchmark scored successfully' : `Failed: ${scoreResult.error ?? scoreResult.output ?? 'unknown'}`,
         });
       } else {
         results.push({
           phase: 'Benchmark Scoring',
           success: false,
-          details: 'Could not extract benchmark ID from creation step',
+          details: 'No benchmark found in database after pipeline execution',
         });
       }
     }

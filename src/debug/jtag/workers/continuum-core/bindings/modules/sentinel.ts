@@ -235,12 +235,19 @@ export function SentinelMixin<T extends new (...args: any[]) => RustCoreIPCClien
 
 				const status = await this.sentinelStatus(handle);
 				if (status.handle.status !== 'running') {
-					// Get the combined log output
-					const logs = await this.sentinelLogsTail(handle, 'combined', 10000);
+					// Get the combined log output (some sentinel types may not have log streams)
+					let output = '';
+					try {
+						const logs = await this.sentinelLogsTail(handle, 'combined', 10000);
+						output = logs.content;
+					} catch {
+						// Pipeline-type sentinels may not produce log streams — use error from status
+						output = status.handle.error || '';
+					}
 					return {
-						success: status.handle.status === 'completed' && status.handle.exitCode === 0,
-						exitCode: status.handle.exitCode ?? -1,
-						output: logs.content,
+						success: status.handle.status === 'completed' && (status.handle.exitCode === 0 || status.handle.exitCode === undefined),
+						exitCode: status.handle.exitCode ?? (status.handle.status === 'completed' ? 0 : -1),
+						output,
 						handle,
 					};
 				}
