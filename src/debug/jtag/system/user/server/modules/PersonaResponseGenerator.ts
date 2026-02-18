@@ -88,6 +88,7 @@ export interface PersonaResponseGeneratorConfig {
   logger: import('./PersonaLogger').PersonaLogger;  // For persona-specific logging
   genome?: import('./PersonaGenome').PersonaGenome;  // For accessing trained LoRA adapters
   trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;  // For capturing interactions
+  rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;  // For domain classification + quality scoring
 }
 
 /**
@@ -106,6 +107,7 @@ export class PersonaResponseGenerator {
   private logger: import('./PersonaLogger').PersonaLogger;
   private genome?: import('./PersonaGenome').PersonaGenome;
   private trainingAccumulator?: import('./TrainingDataAccumulator').TrainingDataAccumulator;
+  private rustCognitionBridge?: import('./RustCognitionBridge').RustCognitionBridge;
 
   /** Content deduplicator - prevents same content from being posted within time window */
   private contentDeduplicator: ContentDeduplicator;
@@ -133,6 +135,7 @@ export class PersonaResponseGenerator {
     this.getSessionId = config.getSessionId;
     this.genome = config.genome;
     this.trainingAccumulator = config.trainingAccumulator;
+    this.rustCognitionBridge = config.rustCognitionBridge;
 
     // Initialize modular helpers
     this.contentDeduplicator = new ContentDeduplicator({ log: this.log.bind(this) });
@@ -145,7 +148,7 @@ export class PersonaResponseGenerator {
    */
   private async getEffectiveModel(taskDomain?: string): Promise<string> {
     if (!this._rustBridge) throw new Error('Rust bridge not initialized — cannot select model');
-    const baseModel = this.modelConfig.model || LOCAL_MODELS.DEFAULT;
+    const baseModel = this.modelConfig.model;
     const result = await this._rustBridge.selectModel(baseModel, taskDomain);
     return result.model;
   }
@@ -297,8 +300,8 @@ export class PersonaResponseGenerator {
             includeArtifacts: true,
             includeMemories: true,
             voiceSessionId,
-            provider: this.modelConfig.provider || 'candle',
-            toolCapability: getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig),
+            provider: this.modelConfig.provider,
+            toolCapability: getToolCapability(this.modelConfig.provider, this.modelConfig),
             currentMessage: {
               role: 'user',
               content: originalMessage.content.text,
@@ -324,7 +327,7 @@ export class PersonaResponseGenerator {
       let systemPrompt = fullRAGContext.identity.systemPrompt;
 
       // Tool capability for XML parsing (still needed for response parsing, not injection)
-      const toolCap = getToolCapability(this.modelConfig.provider || 'candle', this.modelConfig);
+      const toolCap = getToolCapability(this.modelConfig.provider, this.modelConfig);
 
       // Log system prompt size for monitoring
       this.log(`📋 ${this.personaName}: [RAG] ${systemPrompt.length} chars (~${Math.ceil(systemPrompt.length / 4)} tokens), toolCap=${toolCap}, provider=${this.modelConfig.provider}`);
@@ -555,7 +558,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // never INCREASE beyond what the model config specifies.
       const configMaxTokens = this.modelConfig.maxTokens;
       const ragAdjusted = fullRAGContext.metadata.adjustedMaxTokens;
-      let effectiveMaxTokens = ragAdjusted && ragAdjusted < configMaxTokens
+      // Use != null (not truthy) so 0 is properly handled — 0 means budget is blown.
+      let effectiveMaxTokens = (ragAdjusted != null && ragAdjusted < configMaxTokens)
         ? ragAdjusted
         : configMaxTokens;
 
@@ -576,8 +580,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       }
 
       this.log(`📊 ${this.personaName}: RAG metadata check:`, {
-        hasAdjustedMaxTokens: !!fullRAGContext.metadata.adjustedMaxTokens,
-        adjustedMaxTokens: fullRAGContext.metadata.adjustedMaxTokens,
+        hasAdjustedMaxTokens: ragAdjusted != null,
+        adjustedMaxTokens: ragAdjusted,
         inputTokenCount: fullRAGContext.metadata.inputTokenCount,
         configMaxTokens: this.modelConfig.maxTokens,
         effectiveMaxTokens: effectiveMaxTokens,
@@ -585,13 +589,21 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         provider: this.modelConfig.provider
       });
 
+      // Budget blown: prompt already exceeds context window, no room for output tokens.
+      // This means calculateSafeMessageCount selected too many messages — a bug upstream.
+      // Don't send to inference (it'll just error). Log and bail.
+      if (effectiveMaxTokens <= 0) {
+        this.log(`❌ ${this.personaName}: Budget blown — input tokens (${fullRAGContext.metadata.inputTokenCount}) exceed context window. Skipping inference.`);
+        return { success: false, error: 'Context budget exceeded — prompt too large for model', storedToolResultIds: [] };
+      }
+
       const effectiveModel = await this.getEffectiveModel();
       const request: TextGenerationRequest = {
         messages,
         model: effectiveModel,  // Use trained model if available, otherwise base model
         temperature: this.modelConfig.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,    // Bug #5 fix: Use adjusted value from two-dimensional budget
-        provider: this.modelConfig.provider || 'candle',
+        provider: this.modelConfig.provider,
         intelligenceLevel: this.entity.intelligenceLevel,  // Pass PersonaUser intelligence level to adapter
         // CRITICAL: personaContext enables per-persona logging and prevents "unknown" rejections
         personaContext: {
@@ -613,7 +625,7 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
 
       // 🎰 PHASE 3.3a: Request inference slot from coordinator
       // This prevents thundering herd - only N personas can generate simultaneously per provider
-      const provider = this.modelConfig.provider || 'candle';
+      const provider = this.modelConfig.provider;
 
       // Native tools from RAG budget (ToolDefinitionsSource handles prioritization + budget)
       const toolMeta = fullRAGContext.metadata?.toolDefinitions;
@@ -654,8 +666,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       PromptCapture.capture({
         personaId: this.personaId,
         personaName: this.personaName,
-        model: request.model || this.modelConfig.model || 'unknown',
-        provider: request.provider || 'candle',
+        model: effectiveModel,
+        provider: this.modelConfig.provider,
         temperature: request.temperature ?? 0.7,
         maxTokens: effectiveMaxTokens,
         messages: messages.map(m => ({
@@ -717,8 +729,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         const inputTokenEstimate = messages.reduce((sum, m) => sum + Math.ceil(getMessageText(m.content).length / 4), 0);  // ~4 chars/token
         const outputTokenEstimate = Math.ceil(aiResponse.text.length / 4);
         const cost = calculateModelCost(
-          this.modelConfig.provider ?? 'candle',
-          this.modelConfig.model ?? LOCAL_MODELS.DEFAULT,
+          this.modelConfig.provider,
+          this.modelConfig.model,
           inputTokenEstimate,
           outputTokenEstimate
         );
@@ -726,8 +738,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider ?? 'candle',
-          this.modelConfig.model ?? LOCAL_MODELS.DEFAULT,
+          this.modelConfig.provider,
+          this.modelConfig.model,
           `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...`,  // First 2 messages as prompt summary
           inputTokenEstimate,
           outputTokenEstimate,
@@ -1099,8 +1111,8 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
         CognitionLogger.logResponseGeneration(
           this.personaId,
           this.personaName,
-          this.modelConfig.provider || 'candle',
-          this.modelConfig.model || LOCAL_MODELS.DEFAULT,
+          this.modelConfig.provider,
+          this.modelConfig.model,
           messages ? `${messages.slice(0, 2).map(m => `[${m.role}] ${messagePreview(m.content, 100)}`).join('\\n')}...` : '[messages unavailable]',
           messages ? messages.reduce((sum, m) => sum + getMessageText(m.content).length, 0) : 0,
           0,  // No completion tokens on error
@@ -1223,14 +1235,34 @@ Remember: This is voice chat, not a written essay. Be brief, be natural, be huma
       // 🧬 CONTINUOUS LEARNING: Capture interaction for training data accumulation
       // Every successful response becomes a training example. When the buffer fills,
       // PersonaTrainingManager triggers fine-tuning automatically.
+      // Uses Rust domain classification + quality scoring for better training data selection.
       if (this.trainingAccumulator) {
-        const domain = this.inferTrainingDomain(originalMessage);
+        const inputText = originalMessage.content.text;
+        const outputText = aiResponse.text.trim();
+
+        // Use Rust classifier for consistent domain bucketing (falls back to TS if unavailable)
+        let domain: string;
+        let qualityRating: number | undefined;
+        if (this.rustCognitionBridge) {
+          try {
+            const classification = await this.rustCognitionBridge.classifyDomain(inputText);
+            domain = classification.domain;
+            // Record activity for gap detection
+            this.rustCognitionBridge.recordActivity(domain, true).catch(() => {});
+          } catch {
+            domain = this.inferTrainingDomain(originalMessage);
+          }
+        } else {
+          domain = this.inferTrainingDomain(originalMessage);
+        }
+
         this.trainingAccumulator.captureInteraction({
           roleId: this.personaId,
           personaId: this.personaId,
           domain,
-          input: originalMessage.content.text,
-          output: aiResponse.text.trim(),
+          input: inputText,
+          output: outputText,
+          qualityRating,
         }).catch(err => this.log(`⚠️ Failed to capture interaction for training: ${err}`));
       }
 

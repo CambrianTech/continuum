@@ -390,15 +390,29 @@ export class PersonaUser extends AIUser {
   ) {
     super(entity, state, storage, client); // ✅ Pass client to BaseUser for event subscriptions
 
-    // Extract modelConfig from entity (stored via Object.assign during creation)
-    // CRITICAL: Get provider defaults first, then merge with entity's explicit values
-    // This ensures REST providers get their correct default models (not llama3.2:3b)
-    const provider = entity.modelConfig?.provider || 'candle';
-    const providerDefaults = getModelConfigForProvider(provider);
+    // PersonaUser MUST have a provider — it's an AI, not a human.
+    // Model ID comes from getModelConfigForProvider() defaults if not set on entity.
+    if (!entity.modelConfig?.provider) {
+      throw new Error(
+        `PersonaUser '${entity.displayName}' missing required modelConfig.provider. ` +
+        `Every persona must have provider set in seed data.`
+      );
+    }
+    // Provider defaults fill in model, temperature, maxTokens, systemPrompt etc.
+    // Entity's explicit values override defaults.
+    const providerDefaults = getModelConfigForProvider(entity.modelConfig.provider);
     this.modelConfig = {
       ...providerDefaults,
-      ...entity.modelConfig  // Entity values override defaults if explicitly set
+      ...entity.modelConfig
     };
+    // Validate the MERGED result has both model and provider
+    if (!this.modelConfig.model || !this.modelConfig.provider) {
+      throw new Error(
+        `PersonaUser '${entity.displayName}' modelConfig incomplete after merge with provider defaults. ` +
+        `model=${this.modelConfig.model}, provider=${this.modelConfig.provider}. ` +
+        `Check DEFAULT_MODEL_CONFIGS for provider '${entity.modelConfig.provider}'.`
+      );
+    }
 
     // Extract mediaConfig from entity, default to opt-out (no auto-loading)
     // Merge with defaults to ensure all required fields are present
@@ -545,9 +559,17 @@ export class PersonaUser extends AIUser {
       this.displayName,
       this.memory,
       this.personaState,
-      this.modelConfig.provider || 'candle',
+      this.modelConfig.provider,
       cognitionLogger
     );
+
+    // Wire PersonaUser ref for genome reload + domain classifier sync after academy sessions
+    this.taskExecutor.setPersonaUser({
+      rustCognitionBridge: this.rustCognitionBridge,
+      limbicSystem: {
+        loadGenomeFromDatabase: () => this.limbic?.loadGenomeFromDatabase() ?? Promise.resolve(),
+      },
+    });
 
     // CNS scheduling inlined into PersonaAutonomousLoop (calls Rust serviceCycleFull directly)
 
@@ -1503,8 +1525,8 @@ export class PersonaUser extends AIUser {
     timer.setMeta('personaId', this.entity.uniqueId);
     timer.setMeta('displayName', this.displayName);
     timer.setMeta('context', request.context || 'unknown');
-    timer.setMeta('provider', this.modelConfig.provider || 'candle');
-    timer.setMeta('model', this.modelConfig.model || LOCAL_MODELS.DEFAULT);
+    timer.setMeta('provider', this.modelConfig.provider);
+    timer.setMeta('model', this.modelConfig.model);
 
     try {
       const messages: { role: 'system' | 'user'; content: string }[] = [];
@@ -1524,10 +1546,10 @@ export class PersonaUser extends AIUser {
 
       const genRequest: TextGenerationRequest = {
         messages,
-        model: this.modelConfig.model || LOCAL_MODELS.DEFAULT,
+        model: this.modelConfig.model,
         temperature: request.temperature ?? this.modelConfig.temperature ?? 0.7,
         maxTokens: request.maxTokens ?? this.modelConfig.maxTokens,
-        provider: this.modelConfig.provider || 'candle',
+        provider: this.modelConfig.provider,
         intelligenceLevel: this.entity.intelligenceLevel,
         personaContext: {
           uniqueId: this.entity.uniqueId,

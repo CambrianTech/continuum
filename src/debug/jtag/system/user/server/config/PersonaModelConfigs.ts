@@ -113,11 +113,14 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
 };
 
 /**
- * Get model configuration for a provider
- * Falls back to candle if provider not found
+ * Get model configuration for a provider.
+ * Throws if provider has no config — every provider must be registered.
  */
 export function getModelConfigForProvider(provider: string): ModelConfig {
-  const baseConfig = DEFAULT_MODEL_CONFIGS[provider] || DEFAULT_MODEL_CONFIGS['candle'];
+  const baseConfig = DEFAULT_MODEL_CONFIGS[provider];
+  if (!baseConfig) {
+    throw new Error(`No model config for provider '${provider}'. Add it to DEFAULT_MODEL_CONFIGS.`);
+  }
 
   // Add SOTA capability to cloud providers
   if (SOTA_PROVIDERS.has(provider)) {
