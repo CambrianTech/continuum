@@ -42,8 +42,8 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
     }
 
     // Build the synthesis prompt
-    const systemPrompt = this._buildSystemPrompt(personaName, skill);
-    const userPrompt = this._buildUserPrompt(topic, difficulty, exampleCount);
+    const systemPrompt = this._buildSystemPrompt(personaName, skill, params.groundingContext);
+    const userPrompt = this._buildUserPrompt(topic, difficulty, exampleCount, params.groundingContext);
 
     // Call LLM to generate training data
     const generateParams: Partial<AIGenerateParams> = {
@@ -111,10 +111,11 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
   }
 
   /**
-   * Build the system prompt that sets the persona's voice for data synthesis
+   * Build the system prompt that sets the persona's voice for data synthesis.
+   * When groundingContext is provided, adds strict grounding instructions.
    */
-  private _buildSystemPrompt(personaName: string, skill: string): string {
-    return [
+  private _buildSystemPrompt(personaName: string, skill: string, groundingContext?: string): string {
+    const lines = [
       `You are a training data generator for an AI persona named "${personaName}".`,
       `Your job is to create high-quality conversational training examples that teach the skill "${skill}".`,
       '',
@@ -125,24 +126,50 @@ export class GenomeDatasetSynthesizeServerCommand extends CommandBase<GenomeData
       '',
       `${personaName}'s responses should be helpful, knowledgeable, and natural.`,
       'Each example should be self-contained and teach a specific concept.',
-      '',
-      'Output ONLY a JSON array — no markdown, no explanations, no code fences.',
-    ].join('\n');
+    ];
+
+    if (groundingContext) {
+      lines.push(
+        '',
+        'CRITICAL GROUNDING REQUIREMENT:',
+        'Ground ALL training examples in these verified facts:',
+        '',
+        groundingContext,
+        '',
+        'Do NOT invent facts. Every answer must be traceable to the facts above.',
+        'Questions should test knowledge OF these facts. Answers must cite or reflect them accurately.',
+      );
+    }
+
+    lines.push('', 'Output ONLY a JSON array — no markdown, no explanations, no code fences.');
+
+    return lines.join('\n');
   }
 
   /**
-   * Build the user prompt requesting specific training examples
+   * Build the user prompt requesting specific training examples.
+   * When grounded, emphasizes factual accuracy over creativity.
    */
-  private _buildUserPrompt(topic: string, difficulty: string, count: number): string {
-    return [
+  private _buildUserPrompt(topic: string, difficulty: string, count: number, groundingContext?: string): string {
+    const lines = [
       `Generate ${count} training conversation examples about: "${topic}"`,
       `Difficulty level: ${difficulty}`,
       '',
       'Each example should have 2-4 message turns (user question, assistant answer, optional follow-up).',
-      'Cover diverse aspects of the topic. Make questions natural and varied.',
-      '',
-      'Output as a JSON array of objects with "messages" arrays.',
-    ].join('\n');
+    ];
+
+    if (groundingContext) {
+      lines.push(
+        'Focus on factual accuracy — every answer must reflect the grounding facts provided.',
+        'Cover different facts across examples to maximize knowledge coverage.',
+      );
+    } else {
+      lines.push('Cover diverse aspects of the topic. Make questions natural and varied.');
+    }
+
+    lines.push('', 'Output as a JSON array of objects with "messages" arrays.');
+
+    return lines.join('\n');
   }
 
   /**

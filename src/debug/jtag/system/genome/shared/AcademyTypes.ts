@@ -199,6 +199,17 @@ export interface TeacherPipelineConfig {
   personaName: string;
   baseModel: string;
   config: AcademyConfig;
+  /**
+   * Data sources for knowledge synthesis (optional).
+   * When provided, the teacher explores these sources first and grounds
+   * all training data in extracted facts. When absent, uses pure LLM generation.
+   */
+  dataSources?: import('./KnowledgeTypes').DataSourceConfig[];
+  /**
+   * Whether to auto-generate a persistent benchmark from extracted knowledge.
+   * Only relevant when dataSources are provided.
+   */
+  generateBenchmark?: boolean;
 }
 
 /**

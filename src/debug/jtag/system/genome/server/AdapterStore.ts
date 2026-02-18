@@ -14,6 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '../../core/config/SystemPaths';
+import { LOCAL_MODELS } from '../../shared/Constants';
 
 /**
  * Adapter manifest — the metadata written by genome/train to each adapter directory
@@ -137,6 +138,68 @@ export class AdapterStore {
         byDomain.set(domain, adapter);
       } else {
         // Keep the most recent
+        const existingTime = new Date(existing.manifest.createdAt).getTime();
+        const newTime = new Date(adapter.manifest.createdAt).getTime();
+        if (newTime > existingTime) {
+          byDomain.set(domain, adapter);
+        }
+      }
+    }
+
+    return byDomain;
+  }
+
+  /**
+   * Normalize a model name to its canonical HuggingFace ID
+   *
+   * Handles short names ("smollm2:135m"), bare names ("llama3.2"),
+   * and full HuggingFace IDs ("unsloth/Llama-3.2-3B-Instruct").
+   * Returns lowercase for consistent comparison.
+   */
+  static normalizeModelName(modelName: string): string {
+    return LOCAL_MODELS.mapToHuggingFace(modelName).toLowerCase();
+  }
+
+  /**
+   * Check if an adapter is compatible with a given inference model
+   *
+   * LoRA adapters are architecture-specific — an adapter trained on SmolLM2
+   * CANNOT be applied to Llama-3.2. The tensor shapes won't match.
+   */
+  static isCompatibleWithModel(adapter: DiscoveredAdapter, inferenceModel: string): boolean {
+    const adapterBase = AdapterStore.normalizeModelName(adapter.manifest.baseModel);
+    const inferenceBase = AdapterStore.normalizeModelName(inferenceModel);
+    return adapterBase === inferenceBase;
+  }
+
+  /**
+   * Discover adapters for a persona, filtered by model compatibility
+   *
+   * This is the primary method for production use — returns only adapters
+   * that can actually be applied to the current inference model.
+   */
+  static discoverCompatible(personaId: string, inferenceModel: string): DiscoveredAdapter[] {
+    return AdapterStore.discoverForPersona(personaId)
+      .filter(a => a.hasWeights && AdapterStore.isCompatibleWithModel(a, inferenceModel));
+  }
+
+  /**
+   * Get latest compatible adapter per domain for a persona
+   *
+   * Like latestByDomainForPersona but filtered to only adapters
+   * matching the inference model architecture.
+   */
+  static latestCompatibleByDomain(personaId: string, inferenceModel: string): Map<string, DiscoveredAdapter> {
+    const compatible = AdapterStore.discoverCompatible(personaId, inferenceModel);
+    const byDomain = new Map<string, DiscoveredAdapter>();
+
+    for (const adapter of compatible) {
+      const domain = adapter.manifest.traitType;
+      const existing = byDomain.get(domain);
+
+      if (!existing) {
+        byDomain.set(domain, adapter);
+      } else {
         const existingTime = new Date(existing.manifest.createdAt).getTime();
         const newTime = new Date(adapter.manifest.createdAt).getTime();
         if (newTime > existingTime) {

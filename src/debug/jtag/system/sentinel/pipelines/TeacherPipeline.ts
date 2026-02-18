@@ -3,172 +3,124 @@
  *
  * The teacher sentinel is the intelligent half of the Academy Dojo.
  * It uses LLM steps to:
- * 1. Research the skill domain and design a progressive curriculum
- * 2. For each topic: synthesize training data, wait for student to train,
+ * 1. (Optional) Explore data sources and extract verified facts
+ * 2. Research the skill domain and design a progressive curriculum
+ * 3. For each topic: synthesize training data, wait for student to train,
  *    generate exams, grade responses, decide pass/fail/remediate
- * 3. When student fails: generate targeted remedial data, re-train, re-exam
- * 4. Emit events for inter-sentinel coordination with the student
+ * 4. When student fails: generate targeted remedial data, re-train, re-exam
+ * 5. Emit events for inter-sentinel coordination with the student
  *
  * All intelligence comes from LLM prompts — the pipeline structure is
  * just control flow. The teacher adapts curriculum based on exam results,
  * generating more data where the student is weak.
+ *
+ * Knowledge Synthesis Mode (when dataSources provided):
+ *   Step 0: Nested sentinel — KnowledgeExplorationPipeline → SourceKnowledge
+ *   Step 1: LLM — Design curriculum grounded in extracted facts
+ *   Steps 2+: Same as ungrounded mode, shifted by 1
+ *
+ * Pure Generation Mode (no dataSources — backward compatible):
+ *   Step 0: LLM — Design curriculum from scratch
+ *   Steps 1+: Same as original
  */
 
 import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
 import type { TeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
 import { academyEvent } from '../../genome/shared/AcademyTypes';
+import { buildKnowledgeExplorationPipeline } from './KnowledgeExplorationPipeline';
 
 /**
  * Build the teacher sentinel pipeline.
  *
- * Step flow:
- *   0: LLM — Research skill, design curriculum (3-5 progressive topics)
- *   1: Command — data/create academy_curricula (persist curriculum)
- *   2: Emit — curriculum:ready
- *   3: Outer Loop (over topics, count=5):
- *     outer.0: Command — genome/dataset-synthesize (initial training data)
- *     outer.1: Emit — dataset:ready { datasetPath, topicIndex }
- *     outer.2: Watch — training:complete (student finished initial training)
- *     outer.3: Inner Loop (exam attempts, count=maxTopicAttempts, until=passed):
- *       inner.0: LLM — Generate exam questions
- *       inner.1: Command — data/create academy_examinations
- *       inner.2: Emit — exam:ready { examId, questions }
- *       inner.3: Watch — exam:responses (student answered)
- *       inner.4: LLM — Grade responses
- *       inner.5: Command — data/update academy_examinations
- *       inner.6: Emit — exam:graded { scores, passed }
- *       inner.7: Condition — if passed: emit topic:passed
- *                            else: synthesize remedial data, emit dataset:ready, watch training:complete
- *   4: Emit — session:complete
+ * When config.dataSources is provided, prepends a knowledge exploration
+ * step that extracts facts from the sources. The curriculum LLM and
+ * all dataset-synthesize calls receive grounding context from the
+ * extracted facts.
+ *
+ * When config.dataSources is absent, behaves identically to the
+ * original pure-generation pipeline.
  */
 export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
   const { sessionId, skill, personaName, baseModel, config: academyConfig } = config;
+  const hasKnowledgeSources = config.dataSources && config.dataSources.length > 0;
 
   const evt = (action: string) => academyEvent(sessionId, action as any);
 
-  const steps: PipelineStep[] = [
-    // Step 0: Design curriculum via LLM
-    {
-      type: 'llm',
-      prompt: [
-        `You are designing a training curriculum to teach the skill "${skill}" to an AI persona named "${personaName}".`,
-        '',
-        `Design a curriculum with 3-5 progressive topics, ordered from foundational to advanced.`,
-        `Each topic should build on the previous one.`,
-        '',
-        'Output ONLY a JSON object with this structure (no markdown, no code fences):',
-        '{',
-        '  "skill": "the-skill-name",',
-        '  "topics": [',
-        '    {',
-        '      "name": "Topic Name",',
-        '      "description": "What this topic covers and why it matters",',
-        '      "difficulty": "beginner|intermediate|advanced"',
-        '    }',
-        '  ]',
-        '}',
-      ].join('\n'),
-      ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-      ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-      temperature: 0.7,
-      maxTokens: 2048,
-    },
+  const steps: PipelineStep[] = [];
 
-    // Step 1: Persist curriculum to database
-    {
-      type: 'command',
-      command: 'data/create',
-      params: {
-        collection: 'academy_curricula',
-        data: {
-          sessionId,
-          skill,
-          topics: '{{steps.0.output}}',  // LLM output parsed by Rust interpolation
-          generatedBy: '{{steps.0.data.model}}',
-          totalTopics: 0,  // Updated after parsing
-          completedTopics: 0,
-        },
-      },
-    },
+  // Track step indices for interpolation references
+  let nextStepIdx = 0;
 
-    // Step 2: Emit curriculum:ready
-    {
-      type: 'emit',
-      event: evt('curriculum:ready'),
-      payload: {
-        sessionId,
-        curriculumId: '{{steps.1.data.data.id}}',
-      },
-    },
+  // === Optional Step 0: Knowledge Exploration ===
+  let knowledgeStepIdx: number | undefined;
+  if (hasKnowledgeSources) {
+    const explorationPipeline = buildKnowledgeExplorationPipeline({
+      dataSources: config.dataSources!,
+      model: academyConfig.teacherModel,
+      provider: academyConfig.teacherProvider,
+    });
 
-    // Step 3: Outer loop — iterate over topics
-    // {{input.iteration}} is the topic index (0-based)
-    // Intra-loop references: outer.N for outer loop steps
-    {
-      type: 'loop',
-      count: 5,  // Max topics (safety limit matching curriculum max)
-      steps: [
-        // outer.0: Synthesize initial training data for current topic
-        {
-          type: 'command',
-          command: 'genome/dataset-synthesize',
-          params: {
-            topic: '{{steps.0.output.topics.{{input.iteration}}.name}}',
-            skill,
-            personaName,
-            exampleCount: academyConfig.examplesPerTopic,
-            difficulty: '{{steps.0.output.topics.{{input.iteration}}.difficulty}}',
-            ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-            ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-          },
-        },
+    steps.push({
+      type: 'sentinel',
+      pipeline: explorationPipeline,
+    });
+    knowledgeStepIdx = nextStepIdx++;
+  }
 
-        // outer.1: Emit dataset:ready for student (initial training)
-        {
-          type: 'emit',
-          event: evt('dataset:ready'),
-          payload: {
-            sessionId,
-            datasetPath: '{{loop.0.data.datasetPath}}',
-            topicIndex: '{{input.iteration}}',
-            topicName: '{{steps.0.output.topics.{{input.iteration}}.name}}',
-            exampleCount: '{{loop.0.data.exampleCount}}',
-          },
-        },
+  // === Curriculum Design Step (LLM) ===
+  const curriculumStepIdx = nextStepIdx++;
+  steps.push(buildCurriculumStep(skill, personaName, academyConfig, knowledgeStepIdx));
 
-        // outer.2: Wait for student to finish initial training
-        {
-          type: 'watch',
-          event: evt('training:complete'),
-          timeoutSecs: 600,  // 10 minutes for training
-        },
-
-        // outer.3: Inner loop — exam/grade/remediate cycle
-        // Uses `until` to break when grading says passed=true.
-        // maxIterations is the safety cap (maxTopicAttempts).
-        // Each iteration: exam → grade → (if failed) remediate → re-train
-        {
-          type: 'loop',
-          until: '{{loop.4.output.passed}}',
-          maxIterations: academyConfig.maxTopicAttempts,
-          steps: buildExamRetrySteps(
-            sessionId, skill, personaName, academyConfig, evt,
-          ),
-        },
-      ],
-    },
-
-    // Step 4: Emit session:complete
-    {
-      type: 'emit',
-      event: evt('session:complete'),
-      payload: {
+  // === Persist Curriculum ===
+  const persistStepIdx = nextStepIdx++;
+  steps.push({
+    type: 'command',
+    command: 'data/create',
+    params: {
+      collection: 'academy_curricula',
+      data: {
         sessionId,
         skill,
-        personaName,
+        topics: `{{steps.${curriculumStepIdx}.output}}`,
+        generatedBy: `{{steps.${curriculumStepIdx}.data.model}}`,
+        totalTopics: 0,
+        completedTopics: 0,
       },
     },
-  ];
+  });
+
+  // === Emit curriculum:ready ===
+  const emitCurriculumStepIdx = nextStepIdx++;
+  steps.push({
+    type: 'emit',
+    event: evt('curriculum:ready'),
+    payload: {
+      sessionId,
+      curriculumId: `{{steps.${persistStepIdx}.data.data.id}}`,
+    },
+  });
+
+  // === Outer Loop: iterate over topics ===
+  const loopStepIdx = nextStepIdx++;
+  steps.push({
+    type: 'loop',
+    count: 5,
+    steps: buildTopicLoopSteps(
+      sessionId, skill, personaName, academyConfig, evt,
+      curriculumStepIdx, knowledgeStepIdx,
+    ),
+  });
+
+  // === Emit session:complete ===
+  steps.push({
+    type: 'emit',
+    event: evt('session:complete'),
+    payload: {
+      sessionId,
+      skill,
+      personaName,
+    },
+  });
 
   return {
     name: `academy-teacher-${skill}`,
@@ -178,8 +130,136 @@ export function buildTeacherPipeline(config: TeacherPipelineConfig): Pipeline {
       skill,
       personaName,
       baseModel,
+      ...(hasKnowledgeSources && { knowledgeSynthesis: true }),
     },
   };
+}
+
+/**
+ * Build the curriculum design LLM step.
+ * When knowledgeStepIdx is provided, includes extracted facts for grounding.
+ */
+function buildCurriculumStep(
+  skill: string,
+  personaName: string,
+  academyConfig: TeacherPipelineConfig['config'],
+  knowledgeStepIdx?: number,
+): PipelineStep {
+  const promptLines = [
+    `You are designing a training curriculum to teach the skill "${skill}" to an AI persona named "${personaName}".`,
+    '',
+  ];
+
+  if (knowledgeStepIdx !== undefined) {
+    promptLines.push(
+      'You have access to verified source knowledge extracted from real data sources.',
+      'Use these facts to design a curriculum that teaches THIS SPECIFIC knowledge:',
+      '',
+      `{{steps.${knowledgeStepIdx}.output}}`,
+      '',
+      'Design topics that cover the key areas found in the source knowledge.',
+      'Each topic should teach a distinct subset of the extracted facts.',
+      '',
+    );
+  }
+
+  promptLines.push(
+    'Design a curriculum with 3-5 progressive topics, ordered from foundational to advanced.',
+    'Each topic should build on the previous one.',
+    '',
+    'Output ONLY a JSON object with this structure (no markdown, no code fences):',
+    '{',
+    '  "skill": "the-skill-name",',
+    '  "topics": [',
+    '    {',
+    '      "name": "Topic Name",',
+    '      "description": "What this topic covers and why it matters",',
+    '      "difficulty": "beginner|intermediate|advanced"',
+    '    }',
+    '  ]',
+    '}',
+  );
+
+  return {
+    type: 'llm',
+    prompt: promptLines.join('\n'),
+    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
+    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+    temperature: 0.7,
+    maxTokens: 2048,
+  };
+}
+
+/**
+ * Build the outer loop steps for iterating over curriculum topics.
+ *
+ * Each iteration: synthesize data → emit → wait for training → exam loop.
+ * When knowledgeStepIdx is provided, passes groundingContext to synthesis.
+ */
+function buildTopicLoopSteps(
+  sessionId: string,
+  skill: string,
+  personaName: string,
+  academyConfig: TeacherPipelineConfig['config'],
+  evt: (action: string) => string,
+  curriculumStepIdx: number,
+  knowledgeStepIdx?: number,
+): PipelineStep[] {
+  // Build the synthesize params — conditionally include groundingContext
+  const synthesizeParams: Record<string, unknown> = {
+    topic: `{{steps.${curriculumStepIdx}.output.topics.{{input.iteration}}.name}}`,
+    skill,
+    personaName,
+    exampleCount: academyConfig.examplesPerTopic,
+    difficulty: `{{steps.${curriculumStepIdx}.output.topics.{{input.iteration}}.difficulty}}`,
+    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
+    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+  };
+
+  if (knowledgeStepIdx !== undefined) {
+    // Pass the extracted facts as grounding context for synthesis
+    synthesizeParams.groundingContext = `{{steps.${knowledgeStepIdx}.output}}`;
+  }
+
+  return [
+    // outer.0: Synthesize initial training data for current topic
+    {
+      type: 'command',
+      command: 'genome/dataset-synthesize',
+      params: synthesizeParams,
+    },
+
+    // outer.1: Emit dataset:ready for student (initial training)
+    {
+      type: 'emit',
+      event: evt('dataset:ready'),
+      payload: {
+        sessionId,
+        datasetPath: '{{loop.0.data.datasetPath}}',
+        topicIndex: '{{input.iteration}}',
+        topicName: `{{steps.${curriculumStepIdx}.output.topics.{{input.iteration}}.name}}`,
+        exampleCount: '{{loop.0.data.exampleCount}}',
+      },
+    },
+
+    // outer.2: Wait for student to finish initial training
+    {
+      type: 'watch',
+      event: evt('training:complete'),
+      timeoutSecs: 600,
+    },
+
+    // outer.3: Inner loop — exam/grade/remediate cycle
+    {
+      type: 'loop',
+      until: '{{loop.4.output.passed}}',
+      maxIterations: academyConfig.maxTopicAttempts,
+      steps: buildExamRetrySteps(
+        sessionId, skill, personaName, academyConfig, evt,
+        curriculumStepIdx, knowledgeStepIdx,
+      ),
+    },
+  ];
 }
 
 /**
@@ -204,18 +284,36 @@ function buildExamRetrySteps(
   personaName: string,
   academyConfig: TeacherPipelineConfig['config'],
   evt: (action: string) => string,
+  curriculumStepIdx: number,
+  knowledgeStepIdx?: number,
 ): PipelineStep[] {
+  // Build remedial synthesize params
+  const remediationSynthesizeParams: Record<string, unknown> = {
+    topic: `{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}`,
+    skill,
+    personaName,
+    exampleCount: academyConfig.examplesPerTopic,
+    difficulty: `{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.difficulty}}`,
+    remediationFeedback: '{{loop.4.output.feedback}}',
+    weakAreas: '{{loop.4.output.weakAreas}}',
+    ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
+    ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
+  };
+
+  if (knowledgeStepIdx !== undefined) {
+    remediationSynthesizeParams.groundingContext = `{{steps.${knowledgeStepIdx}.output}}`;
+  }
+
   return [
     // inner.0: Generate exam questions via LLM
     {
       type: 'llm',
       prompt: [
-        `Generate ${academyConfig.questionsPerExam} exam questions to test mastery of the topic: "{{steps.0.output.topics.{{input.parent_iteration}}.name}}"`,
+        `Generate ${academyConfig.questionsPerExam} exam questions to test mastery of the topic: "{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}"`,
         `This is part of the "${skill}" curriculum for persona "${personaName}".`,
-        `Difficulty: {{steps.0.output.topics.{{input.parent_iteration}}.difficulty}}`,
+        `Difficulty: {{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.difficulty}}`,
         `This is exam attempt {{input.iteration}} (0-indexed).`,
         '',
-        // On retry attempts, include feedback from previous grading
         '{{#if input.iteration}}',
         'The student failed the previous attempt. Focus questions on weak areas.',
         '{{/if}}',
@@ -269,14 +367,14 @@ function buildExamRetrySteps(
     {
       type: 'watch',
       event: evt('exam:responses'),
-      timeoutSecs: 300,  // 5 minutes for exam
+      timeoutSecs: 300,
     },
 
     // inner.4: Grade responses via LLM
     {
       type: 'llm',
       prompt: [
-        `Grade the following exam responses for the topic "{{steps.0.output.topics.{{input.parent_iteration}}.name}}".`,
+        `Grade the following exam responses for the topic "{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}".`,
         `Passing score: ${academyConfig.passingScore}/100`,
         `This is attempt {{input.iteration}} (0-indexed).`,
         '',
@@ -301,7 +399,7 @@ function buildExamRetrySteps(
       ].join('\n'),
       ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
       ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-      temperature: 0.3,  // Lower temperature for consistent grading
+      temperature: 0.3,
       maxTokens: 2048,
     },
 
@@ -373,18 +471,7 @@ function buildExamRetrySteps(
         {
           type: 'command',
           command: 'genome/dataset-synthesize',
-          params: {
-            topic: '{{steps.0.output.topics.{{input.parent_iteration}}.name}}',
-            skill,
-            personaName,
-            exampleCount: academyConfig.examplesPerTopic,
-            difficulty: '{{steps.0.output.topics.{{input.parent_iteration}}.difficulty}}',
-            // Include remediation context for targeted synthesis
-            remediationFeedback: '{{loop.4.output.feedback}}',
-            weakAreas: '{{loop.4.output.weakAreas}}',
-            ...(academyConfig.teacherModel && { model: academyConfig.teacherModel }),
-            ...(academyConfig.teacherProvider && { provider: academyConfig.teacherProvider }),
-          },
+          params: remediationSynthesizeParams,
         },
 
         // Emit remedial dataset:ready for student to re-train
@@ -395,7 +482,7 @@ function buildExamRetrySteps(
             sessionId,
             datasetPath: '{{loop.9.data.datasetPath}}',
             topicIndex: '{{input.parent_iteration}}',
-            topicName: '{{steps.0.output.topics.{{input.parent_iteration}}.name}}',
+            topicName: `{{steps.${curriculumStepIdx}.output.topics.{{input.parent_iteration}}.name}}`,
             exampleCount: '{{loop.9.data.exampleCount}}',
             isRemediation: true,
             round: '{{input.iteration}}',

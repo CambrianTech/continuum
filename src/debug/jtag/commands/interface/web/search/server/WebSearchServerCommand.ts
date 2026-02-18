@@ -12,6 +12,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext, JTAGPayload } from '@system/core/types/JTAGTypes';
 import type { WebSearchParams, WebSearchResult, SearchResult } from '../shared/WebSearchTypes';
 import { createWebSearchResultFromParams } from '../shared/WebSearchTypes';
+import { searchRateLimiter } from './SearchRateLimiter';
 
 export class WebSearchServerCommand extends CommandBase<WebSearchParams, WebSearchResult> {
 
@@ -22,31 +23,97 @@ export class WebSearchServerCommand extends CommandBase<WebSearchParams, WebSear
   }
 
   /**
-   * Execute web search - uses Brave API if available, falls back to DuckDuckGo
+   * Execute web search with caching, deduplication, and rate limiting.
+   *
+   * Priority chain:
+   * 1. Return cached result if available (24hr TTL)
+   * 2. Deduplicate: if same query is in-flight, share the promise
+   * 3. Use Brave API if key set AND quota available
+   * 4. DuckDuckGo if no Brave key or quota exhausted
    */
   async execute(params: JTAGPayload): Promise<WebSearchResult> {
     const searchParams = params as WebSearchParams;
+    const maxResults = searchParams.maxResults ?? 10;
 
-    console.log(`🔍 SERVER: Searching web for: "${searchParams.query}"`);
+    console.log(`🔍 SERVER: Searching web for: "${searchParams.query}" (Brave remaining: ${searchRateLimiter.braveRemaining})`);
+
+    // 1. Check cache
+    const cached = searchRateLimiter.getCached(searchParams.query, maxResults, searchParams.domains);
+    if (cached) {
+      console.log(`📦 SERVER: Cache hit for "${searchParams.query}"`);
+      return createWebSearchResultFromParams(searchParams, {
+        success: true,
+        query: searchParams.query,
+        results: cached.results,
+        totalResults: cached.totalResults,
+      });
+    }
+
+    // 2. Check in-flight deduplication
+    const inflight = searchRateLimiter.getInflight(searchParams.query, maxResults, searchParams.domains);
+    if (inflight) {
+      console.log(`🔄 SERVER: Deduplicating in-flight request for "${searchParams.query}"`);
+      const shared = await inflight;
+      return createWebSearchResultFromParams(searchParams, {
+        success: true,
+        query: searchParams.query,
+        results: shared.results,
+        totalResults: shared.totalResults,
+      });
+    }
+
+    // 3. Execute search with deduplication tracking
+    const searchPromise = this._executeSearch(searchParams);
+    const cleanup = searchRateLimiter.setInflight(
+      searchParams.query, maxResults, searchParams.domains, searchPromise,
+    );
 
     try {
-      if (WebSearchServerCommand.BRAVE_API_KEY) {
-        return await this.searchWithBrave(searchParams);
-      } else {
-        console.log('⚠️ No BRAVE_SEARCH_API_KEY set, using DuckDuckGo fallback');
-        return await this.searchWithDuckDuckGo(searchParams);
-      }
+      const result = await searchPromise;
+
+      // Cache successful results
+      searchRateLimiter.setCached(
+        searchParams.query, maxResults, searchParams.domains,
+        result.results, result.totalResults,
+      );
+
+      return createWebSearchResultFromParams(searchParams, {
+        success: true,
+        query: searchParams.query,
+        results: result.results,
+        totalResults: result.totalResults,
+      });
     } catch (error) {
       console.error(`❌ SERVER: Web search failed:`, error);
-
       return createWebSearchResultFromParams(searchParams, {
         success: false,
         query: searchParams.query,
         results: [],
         totalResults: 0,
-        error: error instanceof Error ? error.message : 'Unknown error'
+        error: error instanceof Error ? error.message : 'Unknown error',
       });
+    } finally {
+      cleanup();
     }
+  }
+
+  /**
+   * Internal search execution — picks provider based on availability
+   */
+  private async _executeSearch(searchParams: WebSearchParams): Promise<{ results: SearchResult[]; totalResults: number }> {
+    if (WebSearchServerCommand.BRAVE_API_KEY && searchRateLimiter.braveAvailable) {
+      const result = await this.searchWithBrave(searchParams);
+      return { results: result.results, totalResults: result.totalResults };
+    }
+
+    if (WebSearchServerCommand.BRAVE_API_KEY && !searchRateLimiter.braveAvailable) {
+      console.log('⚠️ SERVER: Brave API quota exhausted, using DuckDuckGo');
+    } else {
+      console.log('⚠️ SERVER: No BRAVE_SEARCH_API_KEY set, using DuckDuckGo');
+    }
+
+    const result = await this.searchWithDuckDuckGo(searchParams);
+    return { results: result.results, totalResults: result.totalResults };
   }
 
   /**
@@ -72,6 +139,7 @@ export class WebSearchServerCommand extends CommandBase<WebSearchParams, WebSear
       throw new Error(`Brave API error ${response.status}: ${errorText}`);
     }
 
+    searchRateLimiter.recordBraveRequest();
     const data = await response.json();
     const results: SearchResult[] = [];
 

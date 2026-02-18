@@ -353,19 +353,32 @@ Helper AI, Teacher AI, CodeReview AI, etc. all running
 ```
 **Status**: Exists but needs improvement for repo-scale indexing
 
-### ⚠️ LoRA Fine-Tuning (Needs Integration)
+### ✅ LoRA Fine-Tuning (PROVEN WORKING)
 ```typescript
-// Current: Stubs, no actual training
-// Needed: Unsloth integration, JSONL export, periodic training
+// Full pipeline: dataset-prepare → PEFT train → adapter register → load → merge → inference
+// Proven E2E: 0% → 100% on Nexaflux test (lora-inference-improvement.test.ts)
+// PEFT peft-train.py: dynamic grad_accum and warmup based on dataset size
+// AdapterStore: filesystem-based single source of truth for adapter discovery
+// Candle: ensure_adapters() + rebuild_with_stacked_lora() for LoRA application
+// 196 LoRA layers per adapter on Llama-3.2-3B
 ```
-**Status**: Architecture complete, implementation TODO
+**Status**: Complete, proven end-to-end. Academy Dojo dual-sentinel architecture working.
+
+### ✅ Knowledge Synthesis (NEW)
+```typescript
+// KnowledgeExplorationPipeline: explores git repos, web, docs → ExtractedFact[]
+// Grounded synthesis: genome/dataset-synthesize + groundingContext
+// BenchmarkPipeline: auto-generates persistent test suites from extracted knowledge
+// SearchRateLimiter: Brave quota tracking, 24hr cache, in-flight deduplication
+```
+**Status**: Pipeline builders implemented, E2E tests pending.
 
 ### ⚠️ Autonomous Loop (Partially Done)
 ```typescript
-// Current: PersonaInbox, PersonaState, ChatCoordinationStream exist
-// Needed: Wire into PersonaUser, enable continuous servicing
+// Current: PersonaInbox, PersonaState, ChatCoordinationStream, LearningScheduler exist
+// Needed: Full PersonaUser convergence loop with genome paging and sentinel orchestration
 ```
-**Status**: Modules exist, integration TODO
+**Status**: Modules exist, convergence integration in progress
 
 ---
 

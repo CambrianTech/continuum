@@ -32,6 +32,12 @@ export interface GenomeDatasetSynthesizeParams extends CommandParams {
   provider?: string;
   /** Override default output path */
   outputPath?: string;
+  /**
+   * Grounding context — verified facts that ALL generated examples must be traceable to.
+   * When provided, the synthesis prompt instructs the LLM to ground every answer
+   * in these facts rather than inventing freely. Used by KnowledgeExplorationPipeline.
+   */
+  groundingContext?: string;
 }
 
 /**
@@ -49,6 +55,7 @@ export const createGenomeDatasetSynthesizeParams = (
     model?: string;
     provider?: string;
     outputPath?: string;
+    groundingContext?: string;
   }
 ): GenomeDatasetSynthesizeParams => createPayload(context, sessionId, {
   userId: SYSTEM_SCOPES.SYSTEM,

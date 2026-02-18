@@ -2495,6 +2495,18 @@ When all 24 tasks pass, the sentinel architecture is validated as a complete evo
 
 ## Implementation Status: Rust-Centric Architecture
 
+### Completion Criteria
+
+| System | Phase | Status | E2E Test | What It Proves |
+|--------|-------|--------|----------|----------------|
+| Pipeline Engine | A | 12/15 | `sentinel-multi-step-pipeline.test.ts` | Shell+LLM+Command chain correctly |
+| Lifecycle | B | 9/10 | `sentinel-adapter-integration.test.ts` | Persistence, ownership, triggers |
+| Genome | C | 8/8 DONE | `genome-fine-tuning-e2e.test.ts` | Training pipeline E2E |
+| Academy | D | 9/9 DONE | `lora-inference-improvement.test.ts` | Student measurably improves |
+| Knowledge Synthesis | D.5 | 7/10 | `knowledge-synthesis-repo.test.ts` | Teacher learns from real data |
+| Benchmarks | D.5 | 1/3 | `benchmark-generation.test.ts` | Auto-generated test suites |
+| Marketplace | E | 0/7 | — | Genome export/import/sharing |
+
 **Design principle**: Rust (`continuum-core`) is where the real execution lives. TypeScript provides wrapping, CLI commands, and portability to browser/server environments.
 
 ### Primary Layer: Rust — Pipeline Execution, Process Isolation, Concurrency
@@ -2657,6 +2669,21 @@ The selection pressure that drives genome evolution.
 - [x] **Competitive ranking** — `CompetitorEntry` tracks per-persona `topicScores[]`, `averageScore`, `rank`, `layerIds[]`. Rankings computed from exam scores across all topics. `CompetitionRankingPayload` event broadcasts rankings.
 - [x] **Inference demos** — Student pipeline emits `inference:demo` event with sample Q&A comparison (baseline vs adapted) after quality gate passes. `InferenceDemoPayload` includes scores, improvement, and sample answers.
 
+### Phase D.5: Knowledge Synthesis & Benchmarks
+
+The teacher learns from ANY data source — code repos, web, conversations, documents — not just LLM generation.
+
+- [x] **Foundation types** — `KnowledgeTypes.ts`: `SourceKnowledge`, `ExtractedFact`, `DataSourceConfig`, `BenchmarkDefinition`, `BenchmarkResult`
+- [x] **Grounded synthesis** — `genome/dataset-synthesize` accepts optional `groundingContext` — when provided, all generated training data must be traceable to verified facts
+- [x] **KnowledgeExplorationPipeline** — Builds sentinel pipeline to explore data sources and produce `SourceKnowledge`. Source types: `git-repo` (shell: find files, git log, read content), `web-research` (command: search + fetch), `conversation-log`, `document-set`, `pure-generation`
+- [x] **TeacherPipeline knowledge integration** — When `dataSources` provided, prepends knowledge exploration nested sentinel, includes extracted facts in curriculum design, passes `groundingContext` to all synthesis calls. Backward compatible: no dataSources = pure generation.
+- [x] **BenchmarkPipeline** — Generates persistent benchmark (test suite) from `SourceKnowledge`. LLM creates questions with expected answers and rubrics, persists to `academy_benchmarks` collection.
+- [x] **BenchmarkRunnerPipeline** — Runs persona against benchmark: load questions → answer → grade → persist `BenchmarkResult`. Pre/post comparison proves training worked.
+- [x] **Web search rate limiting** — `SearchRateLimiter`: Brave API quota tracking (2000/month), auto-fallback to DuckDuckGo on exhaustion, in-flight request deduplication, 24hr LRU cache
+- [ ] **Headless browser rendering** — `interface/web/render` command using Puppeteer for JS-heavy/Cloudflare sites. Sentinels choose fetch (fast) vs render (JS-capable).
+- [ ] **E2E: knowledge-synthesis-repo** — Teacher explores jtag codebase, extracts facts, synthesizes grounded training data, student trains, answers repo-specific questions, phenotype validates improvement
+- [ ] **E2E: benchmark-generation** — Generate benchmark from Nexaflux knowledge, run against base model (low score), train adapter, re-run (high score)
+
 ### Phase E: Marketplace & Distribution
 
 Share evolved capabilities across the community.
@@ -2717,6 +2744,14 @@ Long-term vision items.
 - [RECIPE-SYSTEM-REQUIREMENTS.md](recipes/RECIPE-SYSTEM-REQUIREMENTS.md) — Recipe→Sentinel unification
 - [SENTINEL-AI-INTEGRATION.md](personas/SENTINEL-AI-INTEGRATION.md) — Sentinel + persona convergence vision
 - [ACADEMY-DOJO-ARCHITECTURE.md](personas/ACADEMY-DOJO-ARCHITECTURE.md) — Dual-sentinel teacher/student learning system
+
+### Pipeline Templates
+
+- [TeacherPipeline.ts](../system/sentinel/pipelines/TeacherPipeline.ts) — Academy teacher (curriculum, synthesis, exams, grading, remediation)
+- [StudentPipeline.ts](../system/sentinel/pipelines/StudentPipeline.ts) — Academy student (pre-test, train, exam, phenotype validate)
+- [LoRATrainingPipeline.ts](../system/sentinel/pipelines/LoRATrainingPipeline.ts) — Standalone LoRA training pipeline
+- [KnowledgeExplorationPipeline.ts](../system/sentinel/pipelines/KnowledgeExplorationPipeline.ts) — Data source exploration and fact extraction
+- [BenchmarkPipeline.ts](../system/sentinel/pipelines/BenchmarkPipeline.ts) — Benchmark generation and runner pipelines
 - [sentinel-lora-training.md](sentinel-lora-training.md) — LoRA training pipeline commands + Academy quick start
 
 ### External

@@ -116,11 +116,11 @@ function generateTrainingData(): string {
  * Essential for passing complex JSON args that contain quotes, newlines, etc.
  * The ./jtag script passes "$@" to node, so array args work correctly.
  */
-function runJtagDirect(args: string[]): Record<string, unknown> {
+function runJtagDirect(args: string[], timeoutMs = 120_000): Record<string, unknown> {
   const result = spawnSync('./jtag', args, {
     encoding: 'utf8',
     cwd: process.cwd(),
-    timeout: 120_000,
+    timeout: timeoutMs,
   });
 
   const output = result.stdout || '';
@@ -184,13 +184,15 @@ async function phase1_baseline(): Promise<GeneratedResponse[]> {
     console.log(`  Q${i + 1}: ${q.question}`);
 
     // Use spawnSync to avoid shell escaping — force local provider for fair comparison
+    // 120s timeout: 3B model on Metal takes ~10s/generation, but Candle serializes requests
     const result = runJtagDirect([
       'inference/generate',
       `--prompt=${q.question}`,
       '--provider=candle',
       '--maxTokens=256',
       '--temperature=0.3',
-    ]);
+      '--timeout=120000',
+    ], 180_000);
 
     if (!result.success) {
       console.log(`  A${i + 1}: ERROR: ${result.error}\n`);
@@ -228,12 +230,21 @@ async function phase2_train(): Promise<TrainResult> {
   const lineCount = jsonl.split('\n').length;
   console.log(`  Written ${lineCount} training examples to ${DATASET_PATH}`);
 
-  // Call genome/train
-  console.log(`  Starting training (this may take 30-120 seconds)...\n`);
+  // Call genome/train via spawnSync — training on 3B with QLoRA takes 2-5 minutes
+  console.log(`  Starting training on ${LOCAL_MODELS.DEFAULT} (2-5 minutes with QLoRA)...\n`);
 
-  const result = await runJtagCommand(
-    `genome/train --personaId="${TEST_PERSONA_ID}" --personaName="${TEST_PERSONA_NAME}" --traitType="${TRAIT_TYPE}" --datasetPath="${DATASET_PATH}" --baseModel="${LOCAL_MODELS.DEFAULT}" --epochs=3 --rank=32`
-  );
+  const result = runJtagDirect([
+    'genome/train',
+    `--personaId=${TEST_PERSONA_ID}`,
+    `--personaName=${TEST_PERSONA_NAME}`,
+    `--traitType=${TRAIT_TYPE}`,
+    `--datasetPath=${DATASET_PATH}`,
+    `--baseModel=${LOCAL_MODELS.DEFAULT}`,
+    '--epochs=5',
+    '--rank=32',
+    '--learningRate=0.0002',
+    '--timeout=600000',
+  ], 600_000);
 
   if (!result.success) {
     throw new Error(`Training failed: ${result.error ?? 'unknown error'}`);
@@ -283,7 +294,8 @@ async function phase3_adapted(adapterName: string): Promise<GeneratedResponse[]>
       `--adapters=${JSON.stringify([adapterName])}`,
       '--maxTokens=256',
       '--temperature=0.3',
-    ]);
+      '--timeout=120000',
+    ], 180_000);
 
     if (!result.success) {
       console.log(`  A${i + 1}: ERROR: ${result.error}\n`);
@@ -323,7 +335,8 @@ async function phase4_validate(
     `--baselineResponses=${JSON.stringify(baselineResponses)}`,
     `--adaptedResponses=${JSON.stringify(adaptedResponses)}`,
     '--improvementThreshold=5',
-  ]);
+    '--timeout=120000',
+  ], 180_000);
 
   if (!result.success) {
     throw new Error(`Phenotype validation failed: ${result.error ?? 'unknown error'}`);

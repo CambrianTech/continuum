@@ -69,12 +69,16 @@ export class LimbicSystem {
   private readonly personaId: UUID;
   private readonly displayName: string;
 
+  // Inference model for compatibility checks
+  private readonly inferenceModel: string;
+
   // Client getter for database access
   private readonly getClient: () => JTAGClient | undefined;
 
   constructor(personaUser: PersonaUserForLimbic) {
     this.personaId = personaUser.id;
     this.displayName = personaUser.displayName;
+    this.inferenceModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
     this.getClient = () => personaUser.client;
 
     // Initialize logger first
@@ -91,7 +95,9 @@ export class LimbicSystem {
 
     // Discover real adapters from filesystem for this persona
     // AdapterStore is the SINGLE SOURCE OF TRUTH for what adapters exist
-    const discoveredAdapters = AdapterStore.latestByDomainForPersona(personaUser.id);
+    // Only include adapters compatible with this persona's inference model
+    const inferenceModel = personaUser.modelConfig.model || LOCAL_MODELS.DEFAULT;
+    const discoveredAdapters = AdapterStore.latestCompatibleByDomain(personaUser.id, inferenceModel);
     const initialAdapters = Array.from(discoveredAdapters.values()).map(adapter => ({
       name: adapter.manifest.name,
       domain: adapter.manifest.traitType,
@@ -100,8 +106,15 @@ export class LimbicSystem {
       priority: 0.7,
     }));
 
+    // Also log incompatible adapters so the user knows they exist but need retraining
+    const allAdapters = AdapterStore.discoverForPersona(personaUser.id).filter(a => a.hasWeights);
+    const incompatible = allAdapters.length - initialAdapters.length;
+
     if (initialAdapters.length > 0) {
-      this.logger.info(`Discovered ${initialAdapters.length} trained adapters on disk: [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
+      this.logger.info(`Discovered ${initialAdapters.length} compatible adapters (model=${inferenceModel}): [${initialAdapters.map(a => `${a.name} (${a.domain})`).join(', ')}]`);
+    }
+    if (incompatible > 0) {
+      this.logger.info(`Skipped ${incompatible} incompatible adapters (trained on different base model)`);
     }
 
     this.memory = new PersonaMemory(
@@ -222,6 +235,19 @@ export class LimbicSystem {
         }
 
         const layer = layerResult.data;
+
+        // Validate adapter path exists and is compatible with inference model
+        if (!AdapterStore.isValidAdapterPath(layer.modelPath)) {
+          this.logger.warn(`Skipping layer ${layer.name} — adapter path missing: ${layer.modelPath}`);
+          continue;
+        }
+
+        // Check model compatibility via manifest if available
+        const adapterInfo = AdapterStore.discoverAll().find(a => a.dirPath === layer.modelPath);
+        if (adapterInfo && !AdapterStore.isCompatibleWithModel(adapterInfo, this.inferenceModel)) {
+          this.logger.warn(`Skipping layer ${layer.name} — trained on ${adapterInfo.manifest.baseModel}, incompatible with ${this.inferenceModel}`);
+          continue;
+        }
 
         // Register adapter in PersonaGenome
         this.memory.genome.registerAdapter({

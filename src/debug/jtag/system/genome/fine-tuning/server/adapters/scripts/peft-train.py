@@ -187,11 +187,41 @@ def format_chat_template(example, tokenizer):
 
 def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
     """Execute LoRA training."""
+    num_examples = len(dataset)
+    batch_size = config['batchSize']
+    num_epochs = config['epochs']
+    learning_rate = config['learningRate']
+
+    # Dynamic gradient accumulation: target effective batch ~16 for large datasets,
+    # but for small datasets (< 32 examples), accumulate less so we get enough optimizer steps.
+    # With 20 examples and batch_size=4: steps_per_epoch=5
+    # grad_accum=1 → 5 optimizer steps/epoch → 15 total (3 epochs) — plenty of learning
+    # grad_accum=4 → 1 optimizer step/epoch → 3 total — all in warmup, no learning!
+    steps_per_epoch = max(1, num_examples // batch_size)
+    if steps_per_epoch <= 8:
+        gradient_accumulation = 1  # Small dataset: every mini-batch is an optimizer step
+    elif steps_per_epoch <= 32:
+        gradient_accumulation = 2  # Medium dataset
+    else:
+        gradient_accumulation = 4  # Large dataset: standard accumulation
+
+    total_optimizer_steps = (steps_per_epoch // gradient_accumulation) * num_epochs
+
+    # Dynamic warmup: 10% of total steps, minimum 1, cap at 10
+    # Never let warmup consume >30% of training (for tiny datasets)
+    warmup = max(1, min(10, total_optimizer_steps // 10))
+    if warmup > total_optimizer_steps * 0.3:
+        warmup = max(1, int(total_optimizer_steps * 0.1))
+
     print(f"\n🎯 Starting training...")
-    print(f"   Examples: {len(dataset)}")
-    print(f"   Epochs: {config['epochs']}")
-    print(f"   Batch size: {config['batchSize']}")
-    print(f"   Learning rate: {config['learningRate']}")
+    print(f"   Examples: {num_examples}")
+    print(f"   Epochs: {num_epochs}")
+    print(f"   Batch size: {batch_size}")
+    print(f"   Learning rate: {learning_rate}")
+    print(f"   Gradient accumulation: {gradient_accumulation} (effective batch={batch_size * gradient_accumulation})")
+    print(f"   Steps/epoch: {steps_per_epoch}, optimizer steps/epoch: {steps_per_epoch // gradient_accumulation}")
+    print(f"   Total optimizer steps: {total_optimizer_steps}")
+    print(f"   Warmup steps: {warmup}")
 
     # Formatting function for TRL 0.24+
     def formatting_func(example):
@@ -208,11 +238,11 @@ def train(config: Dict[str, Any], model, tokenizer, dataset, device: str):
     output_dir = config['outputDir']
     training_args = TrainingArguments(
         output_dir=output_dir,
-        per_device_train_batch_size=config['batchSize'],
-        gradient_accumulation_steps=4,
-        warmup_steps=5,
-        num_train_epochs=config['epochs'],
-        learning_rate=config['learningRate'],
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation,
+        warmup_steps=warmup,
+        num_train_epochs=num_epochs,
+        learning_rate=learning_rate,
         fp16=False,  # MPS doesn't support fp16
         bf16=False,
         logging_steps=1,

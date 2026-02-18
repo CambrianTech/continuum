@@ -200,7 +200,7 @@ export abstract class JTAGClient extends JTAGBase implements ITransportHandler {
   // TODO: Remove discoveredCommands - redundant with CommandsInterface (ISSUE 2)
   protected discoveredCommands: Map<string, CommandSignature> = new Map();
   protected systemInstance?: JTAGSystem;
-  protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(60000); // 60s for AI/inference commands
+  protected responseCorrelator: ResponseCorrelator = new ResponseCorrelator(600000); // 10min safety net — CLI enforces the real per-command timeout
   
   // Connection Broker for intelligent connection management
   protected connectionBroker?: IConnectionBroker;
@@ -1186,9 +1186,8 @@ export class RemoteConnection implements JTAGConnection {
       throw new Error(`Transport failed to send command at ${sendResult.timestamp}`);
     }
 
-    // Wait for correlated response using the shared correlation interface
-    // 60s timeout for AI/inference commands that may take longer
-    const response = await this.correlator.waitForResponse(correlationId, 60000);
+    // Wait for correlated response — 10min safety net, CLI enforces the real per-command timeout
+    const response = await this.correlator.waitForResponse(correlationId, 600000);
     return response;
   }
 
