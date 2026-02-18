@@ -48,6 +48,29 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
     return LOCAL_MODELS.mapToHuggingFace(shortName);
   }
 
+  // ── Public accessors for async mode (GenomeTrainServerCommand) ────────────
+
+  /** Path to the Python environment wrapper script. */
+  get wrapperPath(): string {
+    return this.getPythonWrapperPath();
+  }
+
+  /** Path to the peft-train.py training script. */
+  get scriptPath(): string {
+    return this.getTrainingScriptPath('peft-train.py');
+  }
+
+  /** Export dataset to temp JSONL for async training. */
+  async exportDatasetForAsync(dataset: import('../../shared/FineTuningTypes').TrainingDataset): Promise<string> {
+    return this.exportDatasetToJSONL(dataset);
+  }
+
+  /** Create config JSON for async training. */
+  async createConfigForAsync(request: import('../../shared/FineTuningTypes').LoRATrainingRequest, datasetPath: string): Promise<string> {
+    const capabilities = this.getFineTuningCapabilities();
+    return this.createConfigFile(request, capabilities, datasetPath);
+  }
+
   /**
    * Check if PEFT adapter supports fine-tuning
    *

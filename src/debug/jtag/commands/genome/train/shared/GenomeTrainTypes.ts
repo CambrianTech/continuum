@@ -41,6 +41,10 @@ export interface GenomeTrainParams extends CommandParams {
   quantize?: boolean;
   // Quantization bits: 4 or 8 (default: 4 for maximum VRAM efficiency)
   quantizeBits?: 4 | 8;
+  // Async mode: return sentinel handle immediately, training runs in background.
+  // Subscribe to 'genome:training:complete' or 'sentinel:{handle}:complete' for results.
+  // Default: false (sync mode, blocks until training completes).
+  async?: boolean;
 }
 
 /**

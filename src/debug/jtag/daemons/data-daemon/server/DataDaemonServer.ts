@@ -140,6 +140,16 @@ export class DataDaemonServer extends DataDaemonBase {
     await initializeSentinelTriggers();
     this.log.debug('Sentinel trigger service initialized');
 
+    // Initialize sentinel event bridge (Rust sentinel events → TypeScript Events)
+    const { initializeSentinelEventBridge } = await import('../../../system/sentinel/SentinelEventBridge');
+    initializeSentinelEventBridge();
+    this.log.debug('Sentinel event bridge initialized');
+
+    // Initialize training completion handler (async genome/train → post-training workflow)
+    const { initializeTrainingCompletionHandler } = await import('../../../system/genome/server/TrainingCompletionHandler');
+    initializeTrainingCompletionHandler();
+    this.log.debug('Training completion handler initialized');
+
     const deferredMs = Date.now() - deferredStart;
     this.log.info(`✅ DataDaemonServer: DEFERRED init complete (${deferredMs}ms)`);
   }

@@ -62,3 +62,10 @@ export {
   listActiveTriggers,
   parseCronSchedule,
 } from './SentinelTriggerService';
+
+// Event bridge (Rust sentinel events → TypeScript Events)
+export {
+  sentinelEventBridge,
+  initializeSentinelEventBridge,
+  shutdownSentinelEventBridge,
+} from './SentinelEventBridge';

@@ -1,8 +1,12 @@
 /**
  * Genome Train Command - Server Implementation
  *
- * Loads JSONL dataset, validates Python environment, runs PEFT LoRA training,
- * returns adapter path and training metrics.
+ * Two modes:
+ *   sync (default):  Blocks until training completes, returns adapter + metrics.
+ *                    Used by sentinel pipeline command steps that need the result.
+ *   async:           Returns sentinel handle immediately, training runs in background.
+ *                    Used by CLI/widget callers that want non-blocking + real-time events.
+ *                    TrainingCompletionHandler processes the result when done.
  */
 
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
@@ -15,9 +19,16 @@ import { PEFTLoRAAdapter } from '@system/genome/fine-tuning/server/adapters/PEFT
 import { AdapterPackage } from '@system/genome/server/AdapterPackage';
 import { GenomeLayerEntity } from '@system/genome/entities/GenomeLayerEntity';
 import { DataCreate } from '@commands/data/create/shared/DataCreateTypes';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { sentinelEventBridge } from '@system/sentinel/SentinelEventBridge';
+import { registerSentinelHandle } from '@system/sentinel/SentinelEscalationService';
+import { registerTrainingCompletion } from '@system/genome/server/TrainingCompletionHandler';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 import { Logger } from '@system/core/logging/Logger';
 import { LOCAL_MODELS } from '@system/shared/Constants';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
 
 export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, GenomeTrainResult> {
   private readonly log = Logger.create('genome/train', 'genome');
@@ -29,8 +40,9 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
   async execute(params: GenomeTrainParams): Promise<GenomeTrainResult> {
     const { personaId, personaName, traitType, datasetPath } = params;
     const baseModel = params.baseModel ?? LOCAL_MODELS.DEFAULT;
+    const asyncMode = (params as any).async === true;
 
-    this.log.info(`GENOME TRAIN: persona=${personaName}, model=${baseModel}, dataset=${datasetPath}`);
+    this.log.info(`GENOME TRAIN: persona=${personaName}, model=${baseModel}, dataset=${datasetPath}, async=${asyncMode}`);
 
     if (!personaId) {
       throw new ValidationError('personaId', 'Missing required parameter. See genome/train README.');
@@ -83,9 +95,116 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       });
     }
 
-    this.log.info(`Loaded ${dataset.examples.length} examples, starting training...`);
+    this.log.info(`Loaded ${dataset.examples.length} examples`);
 
-    // 4. Build training request and execute
+    // ── ASYNC MODE: fire-and-forget, return handle immediately ──────────────
+    if (asyncMode) {
+      return this._executeAsync(params, adapter, dataset, personaId, personaName, traitType, baseModel);
+    }
+
+    // ── SYNC MODE: block until complete (default, backward compatible) ──────
+    return this._executeSync(params, adapter, dataset, personaId, personaName, traitType, baseModel);
+  }
+
+  /**
+   * Async mode: start training sentinel, register for completion handling, return handle.
+   * Post-training work (adapter save, entity creation) runs in TrainingCompletionHandler.
+   */
+  private async _executeAsync(
+    params: GenomeTrainParams,
+    adapter: PEFTLoRAAdapter,
+    dataset: ReturnType<typeof TrainingDatasetBuilder.loadFromJSONL> extends Promise<infer T> ? T : never,
+    personaId: UUID,
+    personaName: string,
+    traitType: string,
+    baseModel: string,
+  ): Promise<GenomeTrainResult> {
+    // Prepare training files (same as sync path)
+    const hfModelName = LOCAL_MODELS.mapToHuggingFace(baseModel);
+    const datasetTempPath = await adapter.exportDatasetForAsync(dataset);
+    const configPath = await adapter.createConfigForAsync(
+      { ...params, baseModel: hfModelName } as any,
+      datasetTempPath,
+    );
+    const outputDir = path.join(os.tmpdir(), `jtag-training-${Date.now()}`);
+    await fs.promises.mkdir(outputDir, { recursive: true });
+
+    // Get script paths from adapter
+    const wrapperPath = adapter.wrapperPath;
+    const scriptPath = adapter.scriptPath;
+
+    // Start training via Rust sentinel (returns immediately)
+    const rustClient = RustCoreIPCClient.getInstance();
+    const runResult = await rustClient.sentinelRun({
+      command: wrapperPath,
+      args: [scriptPath, '--config', configPath, '--output', outputDir],
+      workingDir: process.cwd(),
+      timeout: 600,
+      type: 'training',
+    });
+
+    const handle = runResult.handle;
+    this.log.info(`Async training started: handle=${handle}`);
+
+    // Register with event bridge (polls Rust, emits TypeScript Events)
+    sentinelEventBridge.watch(handle, 'training', {
+      personaId,
+      personaName,
+      traitType,
+      baseModel,
+    });
+
+    // Register with escalation service (routes completion to persona inbox)
+    registerSentinelHandle(
+      handle,
+      '', // No entity ID for ad-hoc training
+      personaId,
+      undefined,
+      `genome-train-${personaName}-${traitType}`,
+    );
+
+    // Register completion context (TrainingCompletionHandler will process when done)
+    registerTrainingCompletion({
+      handle,
+      personaId,
+      personaName,
+      traitType,
+      baseModel,
+      rank: params.rank ?? 32,
+      epochs: params.epochs ?? 3,
+      exampleCount: dataset.examples.length,
+      outputDir,
+      datasetPath: datasetTempPath,
+      configPath,
+      startTime: Date.now(),
+    });
+
+    return createGenomeTrainResultFromParams(params, {
+      success: true,
+      adapterPath: '', // Not yet known — will be set by completion handler
+      sentinelHandle: handle,
+      metrics: {
+        finalLoss: 0,
+        trainingTime: 0,
+        examplesProcessed: dataset.examples.length,
+        epochs: params.epochs ?? 3,
+      },
+    });
+  }
+
+  /**
+   * Sync mode: block until training completes, return full result.
+   * Used by sentinel pipeline command steps that need the result immediately.
+   */
+  private async _executeSync(
+    params: GenomeTrainParams,
+    adapter: PEFTLoRAAdapter,
+    dataset: ReturnType<typeof TrainingDatasetBuilder.loadFromJSONL> extends Promise<infer T> ? T : never,
+    personaId: UUID,
+    personaName: string,
+    traitType: string,
+    baseModel: string,
+  ): Promise<GenomeTrainResult> {
     const result = await adapter.trainLoRA({
       personaId,
       personaName,
@@ -125,7 +244,6 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
         this.log.info(`GenomeLayerEntity created: ${layerId}`);
       } catch (error) {
         this.log.warn(`Failed to persist GenomeLayerEntity: ${error}`);
-        // Training succeeded — don't fail the whole operation for persistence issues
       }
     }
 
