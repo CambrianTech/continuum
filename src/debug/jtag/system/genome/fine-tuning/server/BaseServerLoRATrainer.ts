@@ -4,9 +4,9 @@
  * Extends BaseLoRATrainer with Node.js-specific utilities like:
  * - File system operations
  * - Path resolution
- * - Process spawning
+ * - Python subprocess execution via Rust sentinel (process isolation + management)
  *
- * SERVER-ONLY: Uses Node.js APIs (fs, path, child_process)
+ * SERVER-ONLY: Uses Node.js APIs (fs, path) and Rust IPC (RustCoreIPCClient)
  */
 
 import { BaseLoRATrainer } from '../shared/BaseLoRATrainer';
@@ -17,7 +17,7 @@ import type {
 } from '../shared/FineTuningTypes';
 import { AdapterPackage, type AdapterPackageManifest } from '../../server/AdapterPackage';
 import type { TrainingMetadata } from '../../entities/GenomeLayerEntity';
-import { spawn, ChildProcess } from 'child_process';
+import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -142,21 +142,28 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
   }
 
   /**
-   * Execute Python training script via wrapper
+   * Execute Python training script via Rust sentinel process management.
    *
-   * Uses isolated conda environment via train-wrapper.sh
+   * Routes the Python subprocess through Rust's SentinelModule which provides:
+   * - kill_on_drop: automatic cleanup if sentinel is dropped
+   * - Timeout enforcement at the Rust level
+   * - Log capture to .sentinel-workspaces/{handle}/logs/
+   * - Handle-based tracking: cancellable, status-queryable
+   * - Concurrent execution management: Rust manages resource limits
    *
    * @param scriptName Python script name (e.g., 'peft-train.py')
    * @param configPath Path to config JSON file
    * @param outputDir Output directory for trained model
-   * @returns Training metrics
+   * @param timeoutSecs Timeout in seconds (default: 600 = 10 minutes)
+   * @returns Training metrics and sentinel handle
    * @protected
    */
   protected async executePythonScript(
     scriptName: string,
     configPath: string,
-    outputDir: string
-  ): Promise<{ finalLoss: number }> {
+    outputDir: string,
+    timeoutSecs: number = 600,
+  ): Promise<{ finalLoss: number; handle: string }> {
     const scriptPath = this.getTrainingScriptPath(scriptName);
     const wrapperPath = this.getPythonWrapperPath();
 
@@ -169,45 +176,42 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
       );
     }
 
-    this.log('info', `Executing training: script=${scriptPath}, config=${configPath}, output=${outputDir}`);
+    this.log('info', `Executing training via Rust sentinel: script=${scriptPath}, config=${configPath}, output=${outputDir}`);
 
-    return new Promise((resolve, reject) => {
-      // Use wrapper script to run Python in isolated environment
-      const python = spawn(wrapperPath, [scriptPath, '--config', configPath, '--output', outputDir]);
-
-      let stderr = '';
-      let finalLoss = 0.5; // Default
-
-      python.stdout.on('data', (data: Buffer) => {
-        const text = data.toString();
-        this.log('debug', text.trim());
-
-        // Parse final loss from output
-        const lossMatch = text.match(/Final loss: ([\d.]+)/);
-        if (lossMatch) {
-          finalLoss = parseFloat(lossMatch[1]);
-        }
-      });
-
-      python.stderr.on('data', (data: Buffer) => {
-        const text = data.toString();
-        stderr += text;
-        this.log('warn', text.trim());
-      });
-
-      python.on('close', (code: number | null) => {
-        if (code === 0) {
-          this.log('info', `Training script completed (loss=${finalLoss})`);
-          resolve({ finalLoss });
-        } else {
-          reject(new Error(`Training script failed with exit code ${code}\nStderr: ${stderr}`));
-        }
-      });
-
-      python.on('error', (error: Error) => {
-        reject(new Error(`Failed to spawn Python process: ${error.message}`));
-      });
+    // Route through Rust sentinel — process gets kill_on_drop, timeout, log capture
+    const rustClient = RustCoreIPCClient.getInstance();
+    const result = await rustClient.sentinelExecute({
+      command: wrapperPath,
+      args: [scriptPath, '--config', configPath, '--output', outputDir],
+      workingDir: process.cwd(),
+      timeout: timeoutSecs,
+      type: 'training',
     });
+
+    // Parse training output from sentinel logs
+    const output = result.output;
+    let finalLoss = 0.5; // Default
+
+    // Parse final loss from captured output
+    const lossMatch = output.match(/Final loss: ([\d.]+)/);
+    if (lossMatch) {
+      finalLoss = parseFloat(lossMatch[1]);
+    }
+
+    if (!result.success) {
+      // Extract stderr-like content from combined log
+      const errorLines = output.split('\n')
+        .filter(line => line.includes('[stderr]') || line.includes('Error') || line.includes('Traceback'))
+        .join('\n');
+      throw new Error(
+        `Training script failed with exit code ${result.exitCode}\n` +
+        `Handle: ${result.handle} (logs at sentinel/logs/read --handle=${result.handle})\n` +
+        `${errorLines || output.slice(-500)}`
+      );
+    }
+
+    this.log('info', `Training script completed via sentinel (loss=${finalLoss}, handle=${result.handle})`);
+    return { finalLoss, handle: result.handle };
   }
 
   /**

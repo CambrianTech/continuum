@@ -110,7 +110,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
     }
 
     const adapterPath = result.modelPath ?? '';
-    this.log.info(`Adapter saved to ${adapterPath}`);
+    this.log.info(`Adapter saved to ${adapterPath} (sentinel=${result.sentinelHandle})`);
 
     // Create GenomeLayerEntity and persist to database
     let layerId: UUID | undefined;
@@ -133,6 +133,7 @@ export class GenomeTrainServerCommand extends CommandBase<GenomeTrainParams, Gen
       success: true,
       adapterPath,
       layerId,
+      sentinelHandle: result.sentinelHandle,
       metrics: {
         finalLoss: result.metrics?.finalLoss ?? 0,
         trainingTime: result.metrics?.trainingTime ?? 0,

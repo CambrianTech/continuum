@@ -105,6 +105,10 @@ export interface LoRATrainingResult {
   // Adapter package manifest (written to adapter directory)
   manifest?: import('../../shared/AdapterPackageTypes').AdapterPackageManifest;
 
+  // Sentinel handle — references the Rust-managed process that ran training.
+  // Use sentinel/status or sentinel/logs/read to inspect.
+  sentinelHandle?: string;
+
   // Error information
   error?: string;
   errorDetails?: unknown;

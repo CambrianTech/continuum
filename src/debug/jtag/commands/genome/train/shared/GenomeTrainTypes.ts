@@ -104,6 +104,9 @@ export interface GenomeTrainResult extends CommandResult {
   adapterPath: string;
   // Persisted GenomeLayerEntity ID (UUID) — used by downstream steps to reference the adapter
   layerId?: UUID;
+  // Sentinel handle — references the Rust-managed process that ran training.
+  // Use `sentinel/status --handle=X` or `sentinel/logs/read --handle=X` to inspect.
+  sentinelHandle?: string;
   // Training metrics
   metrics: GenomeTrainMetrics;
   error?: string;

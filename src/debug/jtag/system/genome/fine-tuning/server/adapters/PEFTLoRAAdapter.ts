@@ -153,7 +153,7 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
     await fs.promises.mkdir(outputDir, { recursive: true });
 
     try {
-      // 4. Execute Python training script (using base class helper)
+      // 4. Execute Python training script via Rust sentinel (process isolation + management)
       const metrics = await this.executePythonScript('peft-train.py', configPath, outputDir);
 
       const trainingTime = Date.now() - startTime;
@@ -171,12 +171,13 @@ export class PEFTLoRAAdapter extends BaseServerLoRATrainer {
       // 6. Copy adapter to genome storage with manifest (using base class helper)
       const { adapterPath, manifest } = await this.saveAdapter(request, outputDir, trainingMetadata);
 
-      this.log('info', `Training complete in ${(trainingTime / 1000).toFixed(2)}s, adapter=${adapterPath}`);
+      this.log('info', `Training complete in ${(trainingTime / 1000).toFixed(2)}s, adapter=${adapterPath}, sentinel=${metrics.handle}`);
 
       return {
         success: true,
         modelPath: adapterPath,
         manifest,
+        sentinelHandle: metrics.handle,
         metrics: {
           trainingTime,
           finalLoss: metrics.finalLoss,
