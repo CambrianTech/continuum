@@ -132,11 +132,17 @@ export class PersonaAutonomousLoop {
 
     // If this is a task, update status to 'in_progress' in database (prevents re-polling)
     if (item.type === 'task') {
-      await ORM.update<TaskEntity>(
-        COLLECTIONS.TASKS,
-        item.taskId,
-        { status: 'in_progress', startedAt: new Date() }
-      );
+      try {
+        await ORM.update<TaskEntity>(
+          COLLECTIONS.TASKS,
+          item.taskId,
+          { status: 'in_progress', startedAt: new Date() }
+        );
+      } catch {
+        // Task was deleted between dequeue and execution — skip it
+        this.log(`⚠️ ${this.personaUser.displayName}: Task ${item.taskId.slice(0, 8)} vanished before execution`);
+        return;
+      }
     }
 
     // Activate appropriate LoRA adapter based on domain

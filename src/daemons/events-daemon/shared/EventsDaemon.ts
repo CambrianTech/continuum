@@ -17,9 +17,9 @@ import { DaemonBase } from '../../command-daemon/shared/DaemonBase';
 class EventRateLimiter {
   private counts = new Map<string, number>();
   private windowStart = Date.now();
-  private readonly windowMs = 100;      // 100ms window
-  private readonly maxPerWindow = 20;   // Max 20 of same event per window
-  private readonly warnThreshold = 10;  // Warn at 10+ per window
+  private readonly windowMs = 1000;      // 1-second window (matches Rust-side rate limiter)
+  private readonly maxPerWindow = 200;   // Max 200 of same event per second
+  private readonly warnThreshold = 100;  // Warn at 100+ per second
   private blocked = new Set<string>();
   private warned = new Set<string>();   // Track warned events to avoid spam
 

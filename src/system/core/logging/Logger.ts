@@ -53,6 +53,7 @@ import { LogLevel, FileMode, createLoggerConfig, parseFileMode } from './LoggerT
 import type { LoggerConfig, LogCategory } from './LoggerTypes';
 import { inferCategory } from './CategoryInference';
 import { ComponentLogger, type ParentLogger } from './ComponentLogger';
+import { LogBatcher } from './LogBatcher';
 import { LogLevelRegistry } from './LogLevelRegistry';
 
 // Re-export types for consumers
@@ -100,7 +101,8 @@ class LoggerClass implements ParentLogger {
   private readonly MAX_QUEUE_SIZE = 1000;             // Max buffered messages
 
   // ParentLogger interface - public for ComponentLogger access
-  public workerClient: LoggerWorkerClient | null = null;
+  private workerClient: LoggerWorkerClient | null = null;
+  public logBatcher: LogBatcher | null = null;
   public useRustLogger: boolean = USE_RUST_LOGGER;
   public logDir: string;
 
@@ -152,6 +154,8 @@ class LoggerClass implements ParentLogger {
           if (this.config.enableConsoleLogging) {
             console.log('🦀 [Logger] Connected to continuum-core LoggerModule');
           }
+          // Initialize batcher now that connection is live
+          this.logBatcher = new LogBatcher(this.workerClient!);
         })
         .catch((err) => {
           console.error('⚠️⚠️⚠️  [Logger] CONTINUUM-CORE CONNECTION FAILED - FALLING BACK TO TYPESCRIPT LOGGING ⚠️⚠️⚠️');
@@ -159,6 +163,7 @@ class LoggerClass implements ParentLogger {
           console.error('⚠️  [Logger] Error:', err.message);
           console.error('⚠️  [Logger] To start workers: npm run worker:start');
           this.workerClient = null;
+          this.logBatcher = null;
         });
     }
 
@@ -397,6 +402,10 @@ class LoggerClass implements ParentLogger {
     this.fileStreams.clear();
     this.logQueues.clear();
     this.logTimers.clear();
+
+    if (this.logBatcher) {
+      this.logBatcher.destroy();
+    }
 
     if (this.workerClient) {
       this.workerClient.disconnect();

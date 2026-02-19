@@ -115,6 +115,20 @@ pub struct WriteLogResult {
     pub bytes_written: usize,
 }
 
+/// Payload for log/write-batch requests (multiple entries in one IPC call).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteLogBatchPayload {
+    pub entries: Vec<WriteLogPayload>,
+}
+
+/// Result of log/write-batch command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteLogBatchResult {
+    pub entries_queued: usize,
+}
+
 /// Result of log/ping command.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../shared/generated/logger/LoggerPingResult.ts")]
@@ -586,6 +600,30 @@ impl LoggerModule {
         })
     }
 
+    fn handle_write_batch(&self, params: Value) -> Result<CommandResult, String> {
+        // Extract payload (WorkerClient nests under "payload", support both patterns)
+        let payload_value = if let Some(nested) = params.get("payload") {
+            nested.clone()
+        } else {
+            params.clone()
+        };
+
+        let batch: WriteLogBatchPayload =
+            serde_json::from_value(payload_value).map_err(|e| format!("Invalid batch payload: {e}"))?;
+
+        let count = batch.entries.len();
+        for entry in batch.entries {
+            // Queue each entry through the existing channel (writer thread handles actual I/O)
+            let _ = self.log_tx.try_send(entry);
+        }
+
+        self.requests_processed.fetch_add(1, Ordering::Relaxed);
+
+        CommandResult::json(&WriteLogBatchResult {
+            entries_queued: count,
+        })
+    }
+
     fn handle_ping(&self) -> Result<CommandResult, String> {
         let active_categories = self.file_cache.lock().unwrap_or_else(|e| e.into_inner()).len();
 
@@ -632,6 +670,7 @@ impl ServiceModule for LoggerModule {
     ) -> Result<CommandResult, String> {
         match command {
             "log/write" => self.handle_write(params),
+            "log/write-batch" => self.handle_write_batch(params),
             "log/ping" => self.handle_ping(),
             _ => Err(format!("Unknown logger command: {command}")),
         }
