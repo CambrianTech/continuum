@@ -59,6 +59,7 @@ impl SileroRawVAD {
         }
 
         let candidates = vec![
+            PathBuf::from("workers/models/vad/silero_vad.onnx"),
             PathBuf::from("models/vad/silero_vad.onnx"),
             PathBuf::from("workers/streaming-core/models/vad/silero_vad.onnx"),
         ];

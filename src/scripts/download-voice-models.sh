@@ -108,4 +108,64 @@ else
   echo -e "${GREEN}Piper TTS model already exists${NC}"
 fi
 
+# Kokoro TTS model (fast, high quality, local ONNX)
+KOKORO_DIR="$MODELS_DIR/kokoro"
+KOKORO_VOICES_DIR="$KOKORO_DIR/voices"
+KOKORO_MODEL="$KOKORO_DIR/model_quantized.onnx"
+KOKORO_TOKENIZER="$KOKORO_DIR/tokenizer.json"
+KOKORO_VOICE="$KOKORO_VOICES_DIR/af.bin"
+
+KOKORO_BASE_URL="https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main"
+KOKORO_MODEL_URL="$KOKORO_BASE_URL/onnx/model_quantized.onnx"
+KOKORO_TOKENIZER_URL="$KOKORO_BASE_URL/tokenizer.json"
+KOKORO_VOICE_URL="$KOKORO_BASE_URL/voices/af.bin"
+
+mkdir -p "$KOKORO_VOICES_DIR"
+
+# Clean up stale vocab.json (wrong URL in earlier versions, produces 15-byte error file)
+if [ -f "$KOKORO_DIR/vocab.json" ] && [ "$(wc -c < "$KOKORO_DIR/vocab.json")" -lt 100 ]; then
+  rm -f "$KOKORO_DIR/vocab.json"
+fi
+
+if [ ! -f "$KOKORO_MODEL" ] || [ ! -f "$KOKORO_TOKENIZER" ] || [ ! -f "$KOKORO_VOICE" ]; then
+  echo -e "${YELLOW}Downloading Kokoro TTS model (82M, high quality, ~40-80MB)...${NC}"
+
+  if command -v curl &> /dev/null; then
+    [ ! -f "$KOKORO_MODEL" ] && curl -L --progress-bar -o "$KOKORO_MODEL" "$KOKORO_MODEL_URL"
+    [ ! -f "$KOKORO_TOKENIZER" ] && curl -L --progress-bar -o "$KOKORO_TOKENIZER" "$KOKORO_TOKENIZER_URL"
+    [ ! -f "$KOKORO_VOICE" ] && curl -L --progress-bar -o "$KOKORO_VOICE" "$KOKORO_VOICE_URL"
+  elif command -v wget &> /dev/null; then
+    [ ! -f "$KOKORO_MODEL" ] && wget -q --show-progress -O "$KOKORO_MODEL" "$KOKORO_MODEL_URL"
+    [ ! -f "$KOKORO_TOKENIZER" ] && wget -q --show-progress -O "$KOKORO_TOKENIZER" "$KOKORO_TOKENIZER_URL"
+    [ ! -f "$KOKORO_VOICE" ] && wget -q --show-progress -O "$KOKORO_VOICE" "$KOKORO_VOICE_URL"
+  fi
+
+  if [ -f "$KOKORO_MODEL" ] && [ -f "$KOKORO_TOKENIZER" ] && [ -f "$KOKORO_VOICE" ]; then
+    echo -e "${GREEN}Kokoro TTS model downloaded${NC}"
+  else
+    echo -e "${YELLOW}Kokoro TTS download incomplete${NC}"
+  fi
+else
+  echo -e "${GREEN}Kokoro TTS model already exists${NC}"
+fi
+
+# Silero VAD model (voice activity detection)
+SILERO_DIR="$MODELS_DIR/vad"
+SILERO_MODEL="$SILERO_DIR/silero_vad.onnx"
+SILERO_URL="https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx"
+
+mkdir -p "$SILERO_DIR"
+
+if [ ! -f "$SILERO_MODEL" ]; then
+  echo -e "${YELLOW}Downloading Silero VAD model (~2MB)...${NC}"
+  if command -v curl &> /dev/null; then
+    curl -L --progress-bar -o "$SILERO_MODEL" "$SILERO_URL"
+  elif command -v wget &> /dev/null; then
+    wget -q --show-progress -O "$SILERO_MODEL" "$SILERO_URL"
+  fi
+  echo -e "${GREEN}Silero VAD model downloaded${NC}"
+else
+  echo -e "${GREEN}Silero VAD model already exists${NC}"
+fi
+
 echo -e "${GREEN}Voice model check complete${NC}"

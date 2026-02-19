@@ -179,8 +179,13 @@ pub trait TextToSpeech: Send + Sync {
 }
 
 /// TTS Registry - manages available adapters
+///
+/// Uses Vec to preserve registration order (= priority order).
+/// First registered = highest priority = tried first during init.
 pub struct TTSRegistry {
     adapters: HashMap<&'static str, Arc<dyn TextToSpeech>>,
+    /// Registration order — determines init priority (first = highest)
+    priority: Vec<&'static str>,
     active: Option<&'static str>,
 }
 
@@ -188,15 +193,17 @@ impl TTSRegistry {
     pub fn new() -> Self {
         Self {
             adapters: HashMap::new(),
+            priority: Vec::new(),
             active: None,
         }
     }
 
-    /// Register an adapter
+    /// Register an adapter (order matters — first registered = highest priority)
     pub fn register(&mut self, adapter: Arc<dyn TextToSpeech>) {
         let name = adapter.name();
         tracing::info!("TTS: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
+        self.priority.push(name);
 
         // Auto-select first registered adapter
         if self.active.is_none() {
@@ -227,11 +234,13 @@ impl TTSRegistry {
         self.adapters.get(name).cloned()
     }
 
-    /// List all registered adapters
+    /// List all registered adapters in priority order
     pub fn list(&self) -> Vec<(&'static str, bool)> {
-        self.adapters
+        self.priority
             .iter()
-            .map(|(name, adapter)| (*name, adapter.is_initialized()))
+            .filter_map(|name| {
+                self.adapters.get(name).map(|adapter| (*name, adapter.is_initialized()))
+            })
             .collect()
     }
 
@@ -316,18 +325,38 @@ pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSE
     adapter.synthesize(text, &resolved).await
 }
 
-/// Initialize the active adapter, falling back to next adapter on failure
-pub async fn initialize() -> Result<(), TTSError> {
+/// Initialize the active adapter, falling back to next adapter on failure.
+///
+/// Uses a defined priority order (not HashMap iteration order, which is random).
+/// If `preferred` is specified, it's tried first before the default priority.
+pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), TTSError> {
     let registry = get_registry();
-    let adapter_names: Vec<&'static str> = registry.read().list().iter().map(|(name, _)| *name).collect();
 
-    for name in &adapter_names {
+    // Defined priority: kokoro (fast local) → edge (fast cloud) → piper → orpheus → silence
+    let default_priority: Vec<&str> = vec!["kokoro", "edge", "piper", "orpheus", "silence"];
+
+    // Build final order: preferred first (if specified and exists), then remaining in priority
+    let mut order: Vec<&str> = Vec::new();
+    if let Some(pref) = preferred {
+        if registry.read().get(pref).is_some() {
+            order.push(pref);
+        }
+    }
+    for name in &default_priority {
+        if !order.contains(name) {
+            order.push(name);
+        }
+    }
+
+    for name in &order {
         let adapter = registry.read().get(name);
         if let Some(adapter) = adapter {
             match adapter.initialize().await {
                 Ok(()) => {
-                    tracing::info!("TTS: '{}' initialized successfully", name);
-                    let _ = registry.write().set_active(name);
+                    // Use adapter.name() which returns &'static str
+                    let static_name = adapter.name();
+                    tracing::info!("TTS: '{}' initialized successfully", static_name);
+                    let _ = registry.write().set_active(static_name);
                     return Ok(());
                 }
                 Err(e) => {
@@ -338,6 +367,11 @@ pub async fn initialize() -> Result<(), TTSError> {
     }
 
     Err(TTSError::ModelNotLoaded("No TTS adapter could be initialized".into()))
+}
+
+/// Initialize the active adapter with default priority (kokoro → edge → piper → orpheus → silence)
+pub async fn initialize() -> Result<(), TTSError> {
+    initialize_with_preference(None).await
 }
 
 /// Synthesize using a specific adapter by name (bypasses active adapter)

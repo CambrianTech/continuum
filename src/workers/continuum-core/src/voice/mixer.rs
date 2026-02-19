@@ -176,7 +176,7 @@ impl ParticipantStream {
                     info!("🎯 ProductionVAD initialized for {}", self.display_name);
                 }
                 Err(e) => {
-                    debug!("VAD init failed for {} (test mode): {:?}", self.display_name, e);
+                    warn!("⚠️ VAD init failed for {}: {:?}", self.display_name, e);
                     // In tests, VAD may not be available - gracefully disable
                     self.vad = None;
                 }

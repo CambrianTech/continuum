@@ -108,12 +108,43 @@ impl KokoroTTS {
         candidates.into_iter().find(|path| path.is_dir())
     }
 
-    /// Load Kokoro vocab from JSON file
+    /// Load Kokoro vocab from tokenizer.json (HuggingFace format) or legacy vocab.json
     fn load_vocab() -> Result<HashMap<char, i64>, TTSError> {
+        // Try tokenizer.json first (HuggingFace format, downloaded from ONNX community repo)
+        let tokenizer_path = PathBuf::from("models/kokoro/tokenizer.json");
+        if tokenizer_path.exists() {
+            let content = std::fs::read_to_string(&tokenizer_path)
+                .map_err(TTSError::IoError)?;
+
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse tokenizer.json: {e}")))?;
+
+            let vocab_obj = parsed
+                .get("model")
+                .and_then(|m| m.get("vocab"))
+                .ok_or_else(|| TTSError::ModelNotLoaded(
+                    "tokenizer.json missing model.vocab section".into(),
+                ))?;
+
+            let raw: HashMap<String, i64> = serde_json::from_value(vocab_obj.clone())
+                .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab from tokenizer.json: {e}")))?;
+
+            let mut vocab = HashMap::new();
+            for (key, value) in raw {
+                if let Some(ch) = key.chars().next() {
+                    vocab.insert(ch, value);
+                }
+            }
+
+            info!("Kokoro vocab loaded from tokenizer.json: {} entries", vocab.len());
+            return Ok(vocab);
+        }
+
+        // Legacy fallback: standalone vocab.json
         let vocab_path = PathBuf::from("models/kokoro/vocab.json");
         if !vocab_path.exists() {
             return Err(TTSError::ModelNotLoaded(
-                "Kokoro vocab.json not found at models/kokoro/vocab.json".into(),
+                "Kokoro tokenizer not found at models/kokoro/tokenizer.json or models/kokoro/vocab.json".into(),
             ));
         }
 
@@ -123,7 +154,6 @@ impl KokoroTTS {
         let raw: HashMap<String, i64> = serde_json::from_str(&content)
             .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab.json: {e}")))?;
 
-        // Convert string keys to char keys
         let mut vocab = HashMap::new();
         for (key, value) in raw {
             if let Some(ch) = key.chars().next() {
@@ -131,7 +161,7 @@ impl KokoroTTS {
             }
         }
 
-        info!("Kokoro vocab loaded: {} entries", vocab.len());
+        info!("Kokoro vocab loaded from vocab.json: {} entries", vocab.len());
         Ok(vocab)
     }
 
@@ -654,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Requires models/kokoro/vocab.json on disk
+    #[ignore] // Requires models/kokoro/tokenizer.json on disk
     fn test_load_vocab_real() {
         let original_cwd = set_jtag_cwd();
 

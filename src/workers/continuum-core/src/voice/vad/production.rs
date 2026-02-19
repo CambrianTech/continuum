@@ -34,6 +34,11 @@ pub struct ProductionVADConfig {
 
     /// Use two-stage VAD (WebRTC → Silero) for 5400x faster silence processing
     pub use_two_stage: bool,
+
+    /// Maximum sentence duration in frames before forced split
+    /// Prevents unbounded buffer accumulation during continuous speech
+    /// 312 frames × 32ms = ~10 seconds (Whisper handles up to 30s but CPU is slow)
+    pub max_sentence_frames: u32,
 }
 
 impl Default for ProductionVADConfig {
@@ -59,6 +64,10 @@ impl Default for ProductionVADConfig {
 
             // Two-stage for performance
             use_two_stage: true,
+
+            // Force split at 10 seconds (312 frames × 32ms)
+            // Prevents Whisper from getting 38s+ audio chunks that take forever on CPU
+            max_sentence_frames: 312,
         }
     }
 }
@@ -124,6 +133,12 @@ impl SentenceBuffer {
     fn should_transcribe(&self) -> bool {
         if self.speech_frames < self.config.min_speech_frames {
             return false; // Too short, probably spurious
+        }
+
+        // Force split at max sentence length (prevents 38s+ chunks that overwhelm Whisper)
+        let total_frames = self.speech_frames + self.silence_frames;
+        if total_frames >= self.config.max_sentence_frames {
+            return true;
         }
 
         // End of sentence: long enough silence
