@@ -23,6 +23,7 @@ import { JTAGClientServer } from '../../../system/core/client/server/JTAGClientS
 import { AIDecisionLogger } from '../../../system/ai/server/AIDecisionLogger';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { SystemPaths } from '../../../system/core/config/SystemPaths';
+import { UserEntityCache } from '../../../system/user/server/UserEntityCache';
 
 export class UserDaemonServer extends UserDaemon {
   private static instance: UserDaemonServer | null = null;
@@ -388,10 +389,10 @@ export class UserDaemonServer extends UserDaemon {
    * Start continuous monitoring loops (using base class interval management)
    */
   protected startMonitoringLoops(): boolean {
-    // User monitoring loop - every 5 seconds
+    // User monitoring loop - every 30 seconds (was 5s — caused 134+ redundant ORM reads)
     this.registerInterval('user-monitoring', async () => {
       await this.runUserMonitoringLoop();
-    }, 5000);
+    }, 30000);
 
     // State reconciliation loop - every 30 seconds
     this.registerInterval('state-reconciliation', async () => {
@@ -429,6 +430,9 @@ export class UserDaemonServer extends UserDaemon {
         ...r.data,
         id: r.id
       } as UserEntity));
+
+      // Populate UserEntityCache — eliminates redundant ORM reads for CallerDetector et al.
+      UserEntityCache.instance.setAll(users);
 
       // Check each user
       for (const user of users) {

@@ -24,6 +24,7 @@ import { UserStateEntity } from '../../../system/data/entities/UserStateEntity';
 import { UserIdentityResolver } from '../../../system/user/shared/UserIdentityResolver';
 import { Logger } from '../../../system/core/logging/Logger';
 import { SystemPaths } from '../../../system/core/config/SystemPaths';
+import { UserEntityCache } from '../../../system/user/server/UserEntityCache';
 import {
   type SessionMetadata,
   type CreateSessionParams,
@@ -425,8 +426,8 @@ export class SessionDaemonServer extends SessionDaemon {
         throw new Error(`Invalid userId: ${userId} - this indicates a bug in session creation or identity resolution`);
       }
 
-      // Load UserEntity from database
-      const userEntity = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+      // Load UserEntity from cache (eliminates redundant ORM reads)
+      const userEntity = await UserEntityCache.instance.read(userId);
       if (!userEntity) {
         throw new Error(`User ${userId} not found in database`);
       }

@@ -9,9 +9,8 @@
 
 import type { JTAGContext, CallerType, CallerCapabilities } from '../core/types/JTAGTypes';
 import type { UUID } from '../core/types/CrossPlatformUUID';
-import { ORM } from '../../daemons/data-daemon/server/ORM';
-import { COLLECTIONS } from '../data/config/DatabaseConfig';
 import type { UserEntity } from '../data/entities/UserEntity';
+import { UserEntityCache } from './UserEntityCache';
 
 /**
  * Detect caller type from JTAGContext and userId
@@ -35,9 +34,9 @@ export async function detectCallerType(context: JTAGContext, userId: UUID): Prom
     return context.callerType;
   }
 
-  // 2. Look up user by userId
+  // 2. Look up user by userId (cached — eliminates ~134 ORM reads/session)
   try {
-    const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const user = await UserEntityCache.instance.read(userId);
 
     if (!user) {
       console.warn(`CallerDetector: User not found for userId=${userId}, defaulting to 'script'`);
@@ -77,7 +76,7 @@ export async function detectCallerType(context: JTAGContext, userId: UUID): Prom
  */
 export async function getCallerCapabilities(userId: UUID): Promise<CallerCapabilities> {
   try {
-    const user = await ORM.read<UserEntity>(COLLECTIONS.USERS, userId);
+    const user = await UserEntityCache.instance.read(userId);
 
     if (!user) {
       console.warn(`CallerDetector: User not found for userId=${userId}, returning default capabilities`);
