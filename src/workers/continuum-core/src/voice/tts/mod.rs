@@ -337,12 +337,12 @@ pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSE
 pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), TTSError> {
     let registry = get_registry();
 
-    // Priority: pocket (quality + cloning) → kokoro (fast fallback) → edge (cloud) → orpheus (expressive) → piper → silence
-    // Pocket: 117M Candle, voice cloning from WAV/embeddings, 8 preset voices — BEST QUALITY
+    // Priority: edge (fast, concurrent) → pocket (local, voice cloning) → kokoro (fast offline) → orpheus → piper → silence
+    // Edge: 300+ neural voices, <200ms, concurrent (no Mutex) — BEST FOR LIVE CALLS
+    // Pocket: 117M Candle, voice cloning, 8 preset voices — but 23x slower than realtime on CPU, single Mutex
     // Kokoro: 82M ONNX, ~97ms, fast reliable fallback — SPEED
-    // Edge: 300+ neural voices, <200ms, requires internet (FLAKY — Microsoft API returns empty audio)
     // Orpheus: 3B GGUF, emotion tags, LoRA-trainable — CUSTOM VOICES
-    let default_priority: Vec<&str> = vec!["pocket", "kokoro", "edge", "orpheus", "piper", "silence"];
+    let default_priority: Vec<&str> = vec!["edge", "pocket", "kokoro", "orpheus", "piper", "silence"];
 
     // Build final order: preferred first (if specified and exists), then remaining in priority
     let mut order: Vec<&str> = Vec::new();

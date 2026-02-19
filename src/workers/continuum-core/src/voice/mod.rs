@@ -3,6 +3,7 @@ pub mod audio_router;
 pub mod call_server;
 pub mod capabilities;
 pub mod handle;
+pub mod media;
 pub mod mixer;
 pub mod orchestrator;
 pub mod stt;

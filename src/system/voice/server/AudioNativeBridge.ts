@@ -1,17 +1,20 @@
 /**
  * AudioNativeBridge - Manages audio-native AI connections to voice calls
  *
- * Unlike AIAudioBridge (which handles text-based models via TTS/STT),
- * this bridge connects audio-native models that can:
- * - Hear raw audio directly
- * - Speak audio directly (no TTS needed)
+ * ARCHITECTURE (streaming, not polling):
+ * - WebSocket to call server for real-time room audio (AI hears the room)
+ * - IPC to Rust for audio injection (AI speaks into the mixer)
+ * - Audio-native adapters handle their own realtime API connections
  *
- * Supported models:
- * - Qwen3-Omni (Alibaba) - Open source, self-hostable
- * - GPT-4o Realtime (OpenAI) - Closed source
- * - Gemini Live (Google) - Closed source
+ * Audio flow:
+ *   Room participants → call_server mixer → WebSocket binary frames → adapter.sendAudio()
+ *   adapter.onAudioOutput() → resample → IPC voice/inject-audio → call_server mixer
+ *
+ * This mirrors AIAudioBridge but for models that natively process audio
+ * (Gemini Live, Qwen3-Omni, GPT-4o Realtime) instead of text-based TTS/STT.
  */
 
+import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type {
   IAudioNativeAdapter,
@@ -21,39 +24,71 @@ import type {
 import { DEFAULT_AUDIO_NATIVE_CONFIG, AUDIO_NATIVE_VOICES } from '../shared/AudioNativeTypes';
 import { Qwen3OmniRealtimeAdapter } from './adapters/Qwen3OmniRealtimeAdapter';
 import { GeminiLiveAdapter } from './adapters/GeminiLiveAdapter';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
+
+/** Call server sample rate (single source of truth: audio_constants.rs AUDIO_SAMPLE_RATE) */
+const CALL_SERVER_SAMPLE_RATE = 16000;
+
+const STREAMING_CORE_URL = process.env.STREAMING_CORE_WS_URL || 'ws://127.0.0.1:50053';
 
 /**
  * Registry of audio-native adapter factories
  */
 const ADAPTER_FACTORIES: Record<string, (apiKey?: string) => IAudioNativeAdapter> = {
-  // Qwen3-Omni (Alibaba DashScope)
   'qwen3-omni-flash-realtime': (apiKey) => new Qwen3OmniRealtimeAdapter(apiKey),
   'qwen3-omni': (apiKey) => new Qwen3OmniRealtimeAdapter(apiKey),
-  // Gemini Live (Google) - Free tier available
   'gemini-2.5-flash-native-audio-preview': (apiKey) => new GeminiLiveAdapter(apiKey),
   'gemini-live': (apiKey) => new GeminiLiveAdapter(apiKey),
-  // Future: Add OpenAI gpt-realtime
 };
 
+// CallMessage types matching Rust call_server.rs
+interface JoinMessage {
+  type: 'Join';
+  call_id: string;
+  user_id: string;
+  display_name: string;
+  is_ai: boolean;
+}
+
+interface LeaveMessage {
+  type: 'Leave';
+}
+
 /**
- * Active connection with adapter
+ * Active connection: adapter + WebSocket stream to call server
  */
 interface ActiveConnection extends AudioNativeConnection {
   adapter: IAudioNativeAdapter;
+  /** WebSocket to call server for receiving mixed room audio as a stream */
+  ws: WebSocket | null;
+  /** Adapter's output sample rate (e.g. 24000 for Qwen3-Omni) */
+  outputSampleRate: number;
+  /** Adapter's input sample rate (e.g. 16000) */
+  inputSampleRate: number;
 }
 
 /**
  * AudioNativeBridge - Singleton managing all audio-native AI connections
+ *
+ * Each audio-native AI gets:
+ * 1. A WebSocket to the call server (receives mixed room audio as binary stream)
+ * 2. An adapter connection to the model's realtime API
+ * 3. An IPC client for injecting audio back into the mixer
  */
 export class AudioNativeBridge {
   private static _instance: AudioNativeBridge | null = null;
-  private connections: Map<string, ActiveConnection> = new Map(); // keyed by `${callId}-${userId}`
+  private connections: Map<string, ActiveConnection> = new Map();
+  private ipcClient: RustCoreIPCClient;
 
   private constructor() {
-    console.log('🎙️ AudioNativeBridge: Initialized');
+    this.ipcClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
+    this.ipcClient.connect().catch(err => {
+      console.error('🎙️ AudioNativeBridge: Failed to connect IPC:', err);
+    });
+    console.log('🎙️ AudioNativeBridge: Initialized (WebSocket stream + IPC injection)');
   }
 
   static get instance(): AudioNativeBridge {
@@ -67,12 +102,10 @@ export class AudioNativeBridge {
    * Check if a model is audio-native
    */
   isAudioNativeModel(modelId: string): boolean {
-    // Check if we have a factory for this model
     if (ADAPTER_FACTORIES[modelId]) {
       return true;
     }
 
-    // Check prefixes for versioned models
     const audioNativeModels = [
       'qwen3-omni',
       'gpt-4o-realtime',
@@ -87,7 +120,11 @@ export class AudioNativeBridge {
   }
 
   /**
-   * Connect an audio-native AI to a voice call
+   * Connect an audio-native AI to a voice call.
+   *
+   * Sets up bidirectional audio streaming:
+   * - Room audio → WebSocket → adapter.sendAudio() (AI hears the room)
+   * - adapter.onAudioOutput() → IPC inject → mixer (AI speaks to the room)
    */
   async joinCall(
     callId: string,
@@ -103,7 +140,6 @@ export class AudioNativeBridge {
       return true;
     }
 
-    // Find adapter factory
     const factory = ADAPTER_FACTORIES[modelId] ||
                     ADAPTER_FACTORIES[this.normalizeModelId(modelId)];
 
@@ -114,20 +150,17 @@ export class AudioNativeBridge {
 
     try {
       const adapter = factory();
-
-      // Select voice deterministically from userId
       const voice = this.selectVoice(userId, modelId);
 
-      // Connect to the model's realtime API
-      await adapter.connect({
+      const sessionConfig: AudioNativeSessionConfig = {
         ...DEFAULT_AUDIO_NATIVE_CONFIG,
         ...config,
         voice,
         instructions: `You are ${displayName}, participating in a voice conversation. Be natural, conversational, and concise.`,
-      });
+      };
 
-      // Set up event handlers
-      this.setupAdapterHandlers(adapter, callId, userId, displayName);
+      // Connect to the model's realtime API
+      await adapter.connect(sessionConfig);
 
       // Store connection
       const connection: ActiveConnection = {
@@ -137,15 +170,93 @@ export class AudioNativeBridge {
         callId,
         isConnected: true,
         adapter,
+        ws: null,
+        outputSampleRate: sessionConfig.outputAudioFormat.sampleRate,
+        inputSampleRate: sessionConfig.inputAudioFormat.sampleRate,
       };
       this.connections.set(key, connection);
 
-      console.log(`🎙️ AudioNativeBridge: ${displayName} (${modelId}) joined call ${callId.slice(0, 8)}`);
+      // Set up adapter event handlers (output audio → mixer injection)
+      this.setupAdapterHandlers(adapter, callId, userId, displayName, connection);
+
+      // Connect WebSocket to call server for streaming room audio
+      await this.connectCallServerStream(key, connection);
+
+      console.log(`🎙️ AudioNativeBridge: ${displayName} (${modelId}) joined call ${callId.slice(0, 8)} with bidirectional audio stream`);
       return true;
 
     } catch (error) {
       console.error(`🎙️ AudioNativeBridge: Failed to connect ${displayName}:`, error);
       return false;
+    }
+  }
+
+  /**
+   * Connect WebSocket to call server for receiving mixed room audio.
+   * Binary frames from the server contain mix-minus audio (everything except this AI's own audio).
+   * These frames are forwarded to the adapter so the AI can hear the room in real-time.
+   */
+  private connectCallServerStream(key: string, connection: ActiveConnection): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(STREAMING_CORE_URL);
+      connection.ws = ws;
+
+      ws.on('open', () => {
+        console.log(`🎙️ AudioNativeBridge: ${connection.displayName} connected to call server stream`);
+
+        // Join as AI participant — server creates ring buffer for audio buffering
+        const joinMsg: JoinMessage = {
+          type: 'Join',
+          call_id: connection.callId,
+          user_id: connection.userId,
+          display_name: connection.displayName,
+          is_ai: true,
+        };
+        ws.send(JSON.stringify(joinMsg));
+        resolve();
+      });
+
+      // Binary frames = mixed room audio (i16 LE PCM at 16kHz)
+      // Forward to adapter so the AI can hear the room
+      ws.on('message', (data: WebSocket.Data) => {
+        if (Buffer.isBuffer(data) || data instanceof ArrayBuffer) {
+          this.handleRoomAudioFrame(key, data);
+        }
+        // JSON messages (transcriptions, etc.) are ignored — audio-native models
+        // hear the room directly, they don't need text transcriptions
+      });
+
+      ws.on('error', (error) => {
+        console.error(`🎙️ AudioNativeBridge: Stream error for ${connection.displayName}:`, error);
+        reject(error);
+      });
+
+      ws.on('close', (code, reason) => {
+        console.log(`🎙️ AudioNativeBridge: Stream closed for ${connection.displayName} (${code}: ${reason})`);
+        connection.ws = null;
+      });
+    });
+  }
+
+  /**
+   * Handle a binary audio frame from the call server.
+   * Converts from call server format (16kHz i16 LE) to adapter input format
+   * and forwards to the audio-native model.
+   */
+  private handleRoomAudioFrame(key: string, data: WebSocket.Data): void {
+    const connection = this.connections.get(key);
+    if (!connection || !connection.adapter.isConnected()) return;
+
+    // Convert raw bytes to Int16Array (little-endian PCM from call server)
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+    const samples = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
+
+    // Resample if adapter expects different rate than call server (16kHz)
+    if (connection.inputSampleRate !== CALL_SERVER_SAMPLE_RATE) {
+      const resampled = linearResample(samples, CALL_SERVER_SAMPLE_RATE, connection.inputSampleRate);
+      connection.adapter.sendAudio(resampled);
+    } else {
+      connection.adapter.sendAudio(samples);
     }
   }
 
@@ -157,39 +268,18 @@ export class AudioNativeBridge {
     const connection = this.connections.get(key);
 
     if (connection) {
+      // Disconnect adapter from model's realtime API
       await connection.adapter.disconnect();
+
+      // Disconnect WebSocket from call server
+      if (connection.ws && connection.ws.readyState === WebSocket.OPEN) {
+        const leaveMsg: LeaveMessage = { type: 'Leave' };
+        connection.ws.send(JSON.stringify(leaveMsg));
+        connection.ws.close();
+      }
+
       this.connections.delete(key);
       console.log(`🎙️ AudioNativeBridge: ${connection.displayName} left call`);
-    }
-  }
-
-  /**
-   * Send audio to an audio-native AI
-   *
-   * Call this with raw audio samples from the call mixer.
-   * The AI will hear this audio and potentially respond.
-   */
-  sendAudio(callId: string, userId: UUID, samples: Int16Array): void {
-    const key = `${callId}-${userId}`;
-    const connection = this.connections.get(key);
-
-    if (connection && connection.adapter.isConnected()) {
-      connection.adapter.sendAudio(samples);
-    }
-  }
-
-  /**
-   * Send audio to ALL audio-native AIs in a call
-   *
-   * This is used to broadcast mixed audio to all audio-native participants.
-   */
-  broadcastAudio(callId: string, samples: Int16Array, excludeUserId?: UUID): void {
-    for (const [key, connection] of this.connections) {
-      if (key.startsWith(callId) && connection.userId !== excludeUserId) {
-        if (connection.adapter.isConnected()) {
-          connection.adapter.sendAudio(samples);
-        }
-      }
     }
   }
 
@@ -199,7 +289,6 @@ export class AudioNativeBridge {
   cancelResponse(callId: string, userId: UUID): void {
     const key = `${callId}-${userId}`;
     const connection = this.connections.get(key);
-
     if (connection) {
       connection.adapter.cancelResponse();
     }
@@ -238,62 +327,76 @@ export class AudioNativeBridge {
   // ============================================================================
 
   /**
-   * Set up event handlers for an adapter
+   * Set up event handlers for adapter output.
+   * When the audio-native model produces audio, inject it into the call mixer.
    */
   private setupAdapterHandlers(
     adapter: IAudioNativeAdapter,
     callId: string,
     userId: UUID,
-    displayName: string
+    displayName: string,
+    connection: ActiveConnection
   ): void {
-    // Handle audio output from the AI
+    // Audio output from the AI → inject into call mixer via IPC
     adapter.onAudioOutput((samples) => {
-      this.handleAudioOutput(callId, userId, displayName, samples);
+      this.injectAudioToMixer(callId, userId, displayName, samples, connection.outputSampleRate);
     });
 
-    // Handle transcripts (what the AI is saying)
+    // Transcripts → broadcast so text-based AIs can see what was said
     adapter.onTranscript((text, isFinal) => {
       if (isFinal) {
         this.handleTranscript(callId, userId, displayName, text);
       }
     });
 
-    // Handle speech detection (for turn-taking)
+    // Speech detection → turn-taking coordination
     adapter.onSpeechDetected((started) => {
-      this.handleSpeechDetected(callId, userId, displayName, started);
+      Events.emit('voice:audio-native:speech-detected', {
+        callId,
+        userId,
+        displayName,
+        started,
+        timestamp: Date.now(),
+      });
     });
 
-    // Handle errors
     adapter.onError((error) => {
       console.error(`🎙️ AudioNativeBridge: Error from ${displayName}:`, error);
     });
   }
 
   /**
-   * Handle audio output from an audio-native AI
-   *
-   * This audio needs to be injected into the call mixer so
-   * humans and other participants can hear it.
+   * Inject audio-native model output into the call mixer.
+   * Resamples from adapter output rate (e.g. 24kHz) to call server rate (16kHz)
+   * and sends via IPC to Rust call_manager.inject_audio().
    */
-  private handleAudioOutput(
+  private async injectAudioToMixer(
     callId: string,
     userId: UUID,
     displayName: string,
-    samples: Int16Array
-  ): void {
-    // Emit event for VoiceWebSocketHandler to inject into call
-    // The audio is 24kHz from Qwen3-Omni, may need resampling to 16kHz
-    Events.emit('voice:audio-native:output', {
-      callId,
-      userId,
-      displayName,
-      samples: Array.from(samples), // Convert to regular array for event serialization
-      sampleRate: 24000,
-    });
+    samples: Int16Array,
+    adapterSampleRate: number
+  ): Promise<void> {
+    try {
+      // Ensure IPC is connected
+      if (!this.ipcClient.connected) {
+        await this.ipcClient.connect();
+      }
+
+      // Resample to call server rate if needed
+      const resampled = adapterSampleRate === CALL_SERVER_SAMPLE_RATE
+        ? samples
+        : linearResample(samples, adapterSampleRate, CALL_SERVER_SAMPLE_RATE);
+
+      // Inject via IPC — audio goes directly into the Rust mixer
+      await this.ipcClient.voiceInjectAudio(callId, userId, Array.from(resampled));
+    } catch (error) {
+      console.error(`🎙️ AudioNativeBridge: inject failed for ${displayName}:`, error);
+    }
   }
 
   /**
-   * Handle transcript from an audio-native AI (what they said)
+   * Handle transcript from an audio-native AI (broadcast so text-based AIs see it)
    */
   private async handleTranscript(
     callId: string,
@@ -303,7 +406,6 @@ export class AudioNativeBridge {
   ): Promise<void> {
     console.log(`🎙️ AudioNativeBridge: ${displayName} said: "${text.slice(0, 50)}..."`);
 
-    // Broadcast to other participants (for text-based AIs to see)
     if (DataDaemon.jtagContext) {
       await Events.emit(
         DataDaemon.jtagContext,
@@ -319,25 +421,6 @@ export class AudioNativeBridge {
         { scope: EVENT_SCOPES.GLOBAL }
       );
     }
-  }
-
-  /**
-   * Handle speech detection from audio-native AI's VAD
-   */
-  private handleSpeechDetected(
-    callId: string,
-    userId: UUID,
-    displayName: string,
-    started: boolean
-  ): void {
-    // Emit for turn-taking coordination
-    Events.emit('voice:audio-native:speech-detected', {
-      callId,
-      userId,
-      displayName,
-      started,
-      timestamp: Date.now(),
-    });
   }
 
   /**
@@ -361,7 +444,6 @@ export class AudioNativeBridge {
    * Select a voice deterministically from userId
    */
   private selectVoice(userId: string, modelId: string): string {
-    // Determine voice set based on model
     let voices: readonly string[];
     const lower = modelId.toLowerCase();
 
@@ -373,15 +455,44 @@ export class AudioNativeBridge {
       voices = AUDIO_NATIVE_VOICES['qwen3-omni'] ?? ['Cherry'];
     }
 
-    // Simple hash to select voice
     let hash = 0;
     for (let i = 0; i < userId.length; i++) {
       hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
     }
 
-    const voiceIndex = hash % voices.length;
-    return voices[voiceIndex];
+    return voices[hash % voices.length];
   }
+}
+
+// ============================================================================
+// Audio Utilities
+// ============================================================================
+
+/**
+ * Linear interpolation resampling between sample rates.
+ * Used for converting between call server (16kHz) and audio-native models (24kHz).
+ *
+ * For production, this is adequate for speech audio — it preserves intelligibility.
+ * If we need higher quality later, we can switch to sinc interpolation.
+ */
+function linearResample(input: Int16Array, fromRate: number, toRate: number): Int16Array {
+  if (fromRate === toRate) return input;
+
+  const ratio = fromRate / toRate;
+  const outputLen = Math.ceil(input.length / ratio);
+  const output = new Int16Array(outputLen);
+
+  for (let i = 0; i < outputLen; i++) {
+    const srcIdx = i * ratio;
+    const srcFloor = Math.floor(srcIdx);
+    const srcCeil = Math.min(srcFloor + 1, input.length - 1);
+    const frac = srcIdx - srcFloor;
+
+    // Linear interpolation between adjacent samples
+    output[i] = Math.round(input[srcFloor] * (1 - frac) + input[srcCeil] * frac);
+  }
+
+  return output;
 }
 
 /**

@@ -247,7 +247,9 @@ export class AIAudioBridge {
 
       // ONE Rust IPC call: synthesize + inject into call mixer.
       // Audio stays in Rust — no TypeScript intermediation, no round-trips.
-      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId);
+      // Explicit 'edge' adapter: <200ms, concurrent (no Mutex), 300+ distinct voices.
+      // Pocket-TTS is 23x slower than realtime on CPU — unusable for live calls.
+      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId, 'edge');
 
       const audioDurationMs = result.durationMs;
       console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke ${audioDurationMs}ms via Rust: "${text.slice(0, 50)}..."`);

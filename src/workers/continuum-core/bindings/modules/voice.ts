@@ -43,6 +43,7 @@ export interface VoiceMixin {
 	voiceShouldRouteTts(sessionId: string, personaId: string): Promise<boolean>;
 	voiceSynthesize(text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
 	voiceSpeakInCall(callId: string, userId: string, text: string, voice?: string, adapter?: string): Promise<VoiceSynthesizeResult>;
+	voiceInjectAudio(callId: string, userId: string, samples: number[]): Promise<void>;
 }
 
 export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBase>(Base: T) {
@@ -131,6 +132,27 @@ export function VoiceMixin<T extends new (...args: any[]) => RustCoreIPCClientBa
 				numSamples: response.result?.num_samples || 0,
 				adapter: response.result?.adapter || 'unknown',
 			};
+		}
+
+		/**
+		 * Inject pre-synthesized audio into a call's mixer.
+		 * Used by AudioNativeBridge to push audio-native model output into the room.
+		 */
+		async voiceInjectAudio(
+			callId: string,
+			userId: string,
+			samples: number[]
+		): Promise<void> {
+			const response = await this.request({
+				command: 'voice/inject-audio',
+				call_id: callId,
+				user_id: userId,
+				samples,
+			});
+
+			if (!response.success) {
+				throw new Error(response.error || 'Failed to inject audio');
+			}
 		}
 
 		/**

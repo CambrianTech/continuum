@@ -69,8 +69,13 @@ impl TextToSpeech for EdgeTTS {
 
         info!("Edge-TTS: Fetching voice list from Microsoft...");
 
-        let voices = msedge_tts::voice::get_voices_list()
-            .map_err(|e| TTSError::SynthesisFailed(format!("Failed to fetch Edge voices: {e}")))?;
+        // get_voices_list() does blocking HTTP — must use spawn_blocking
+        let voices = tokio::task::spawn_blocking(|| {
+            msedge_tts::voice::get_voices_list()
+                .map_err(|e| TTSError::SynthesisFailed(format!("Failed to fetch Edge voices: {e}")))
+        })
+        .await
+        .map_err(|e| TTSError::SynthesisFailed(format!("Voice list task join: {e}")))??;
 
         info!("Edge-TTS: {} voices available", voices.len());
 
@@ -127,49 +132,61 @@ impl TextToSpeech for EdgeTTS {
             super::truncate_str(text, 50)
         );
 
-        // Connect and synthesize — request raw PCM directly (no MP3 decode needed)
-        let start = std::time::Instant::now();
+        // msedge_tts uses blocking WebSocket (tungstenite). MUST run on spawn_blocking
+        // to avoid deadlocking the tokio runtime (commands dispatch via rt_handle.spawn).
+        // Wrapped in 15s timeout to prevent indefinite hangs on network issues.
+        let text = text.to_string();
+        let voice_name_owned = voice_name;
 
-        let mut tts = msedge_tts::tts::client::connect()
-            .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS connection failed: {e}")))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            tokio::task::spawn_blocking(move || {
+            let start = std::time::Instant::now();
 
-        let config = msedge_tts::tts::SpeechConfig {
-            voice_name: voice_name.clone(),
-            audio_format: "raw-16khz-16bit-mono-pcm".to_string(),
-            pitch: 0,
-            rate: 0,
-            volume: 0,
-        };
+            let mut tts = msedge_tts::tts::client::connect()
+                .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS connection failed: {e}")))?;
 
-        let audio = tts
-            .synthesize(text, &config)
-            .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS synthesis failed: {e}")))?;
+            let config = msedge_tts::tts::SpeechConfig {
+                voice_name: voice_name_owned,
+                audio_format: "raw-16khz-16bit-mono-pcm".to_string(),
+                pitch: 0,
+                rate: 0,
+                volume: 0,
+            };
 
-        let network_ms = start.elapsed().as_millis();
+            let audio = tts
+                .synthesize(&text, &config)
+                .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS synthesis failed: {e}")))?;
 
-        // Raw PCM bytes → i16 samples (no decoding needed)
-        let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
+            let network_ms = start.elapsed().as_millis();
 
-        if samples.is_empty() {
-            return Err(TTSError::SynthesisFailed(
-                "Edge-TTS returned empty audio".into(),
-            ));
-        }
+            let samples = Self::pcm_bytes_to_i16(&audio.audio_bytes);
 
-        let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
+            if samples.is_empty() {
+                return Err(TTSError::SynthesisFailed(
+                    "Edge-TTS returned empty audio".into(),
+                ));
+            }
 
-        info!(
-            "Edge-TTS: {} samples ({}ms audio) in {}ms network",
-            samples.len(),
-            dur,
-            network_ms
-        );
+            let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
 
-        Ok(SynthesisResult {
-            samples,
-            sample_rate: AUDIO_SAMPLE_RATE,
-            duration_ms: dur,
+            info!(
+                "Edge-TTS: {} samples ({}ms audio) in {}ms network",
+                samples.len(),
+                dur,
+                network_ms
+            );
+
+            Ok(SynthesisResult {
+                samples,
+                sample_rate: AUDIO_SAMPLE_RATE,
+                duration_ms: dur,
+            })
         })
+        )
+        .await
+        .map_err(|_| TTSError::SynthesisFailed("Edge-TTS timed out after 15s".into()))?
+        .map_err(|e| TTSError::SynthesisFailed(format!("Edge-TTS task join: {e}")))?
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

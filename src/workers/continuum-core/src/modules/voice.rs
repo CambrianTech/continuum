@@ -2,7 +2,8 @@
 //!
 //! Handles: voice/register-session, voice/on-utterance, voice/should-route-tts,
 //!          voice/synthesize, voice/speak-in-call, voice/synthesize-handle,
-//!          voice/play-handle, voice/discard-handle, voice/transcribe
+//!          voice/play-handle, voice/discard-handle, voice/transcribe,
+//!          voice/inject-audio
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
@@ -298,6 +299,22 @@ impl ServiceModule for VoiceModule {
                         })
                     }).collect::<Vec<_>>()
                 })))
+            }
+
+            "voice/inject-audio" => {
+                let _timer = TimingGuard::new("module", "voice_inject_audio");
+                let call_id = p.str("call_id")?;
+                let user_id = p.str("user_id")?;
+                let samples: Vec<i16> = p.json("samples")?;
+
+                self.state.call_manager.inject_audio(call_id, user_id, samples).await
+                    .map_err(|e| {
+                        log_error!("module", "voice_inject_audio", "inject-audio failed: {}", e);
+                        format!("inject-audio failed: {}", e)
+                    })?;
+
+                log_info!("module", "voice_inject_audio", "Injected audio into call {} for {}", call_id, user_id);
+                Ok(CommandResult::Json(serde_json::json!({ "success": true })))
             }
 
             _ => Err(format!("Unknown voice command: {command}")),

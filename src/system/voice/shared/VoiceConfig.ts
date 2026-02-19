@@ -71,7 +71,7 @@ export interface VoiceConfig {
 // Default configuration (easily overrideable)
 export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
   tts: {
-    adapter: TTS_ADAPTERS.POCKET,  // Pocket-TTS 117M — voice cloning, 8 preset voices, best quality local
+    adapter: TTS_ADAPTERS.EDGE,  // Edge TTS <200ms, concurrent, 300+ voices — best for live calls
 
     adapters: {
       kokoro: {
