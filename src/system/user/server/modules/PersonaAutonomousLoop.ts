@@ -160,8 +160,16 @@ export class PersonaAutonomousLoop {
       const senderIsHuman = item.senderType === 'human';
       const messageText = item.content ?? '';
 
-      await this.personaUser.evaluateAndPossiblyRespondWithCognition(processable, senderIsHuman, messageText, decision);
-      await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
+      // ALWAYS advance bookmark, even if response fails. Otherwise a single
+      // failed message (e.g., provider 400/timeout) blocks the persona forever —
+      // Rust re-polls the same un-bookmarked message every tick cycle.
+      try {
+        await this.personaUser.evaluateAndPossiblyRespondWithCognition(processable, senderIsHuman, messageText, decision);
+      } catch (error: any) {
+        this.log(`⚠️ ${this.personaUser.displayName}: Failed to respond to message ${item.id?.slice(0, 8)}: ${error.message ?? error}`);
+      } finally {
+        await this.personaUser.updateMessageBookmark(item.roomId, item.timestamp, item.id);
+      }
 
       const totalMs = performance.now() - handlerStart;
       this.log(`[TIMING] ${this.personaUser.displayName}: handleItem total=${totalMs.toFixed(1)}ms (hasDecision=${!!decision})`);
