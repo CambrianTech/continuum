@@ -503,7 +503,7 @@ export function createScroller<T extends BaseEntity>(
 
       // Check for duplicate using EntityManager
       if (entityManager.has(entityId)) {
-        console.log(`🔄 EntityScroller: Updating existing entity: ${entityId}`);
+        // Update existing entity in-place
         // Update existing entity
         entityManager.update(entityId, entity);
 
@@ -516,7 +516,7 @@ export function createScroller<T extends BaseEntity>(
           existingElement.replaceWith(newElement);
         }
 
-        console.log(`🔧 EntityScroller: Updated existing entity with ID: ${entityId}`);
+        // Entity updated
         return;
       }
 
@@ -541,7 +541,7 @@ export function createScroller<T extends BaseEntity>(
 
       // Check for duplicate using EntityManager
       if (entityManager.has(entityId)) {
-        console.log(`🔄 EntityScroller: Updating existing entity: ${entityId}`);
+        // Update existing entity in-place
         // Update existing entity - no auto-scroll for updates
         entityManager.update(entityId, entity);
 
@@ -554,7 +554,7 @@ export function createScroller<T extends BaseEntity>(
           existingElement.replaceWith(newElement);
         }
 
-        console.log(`🔧 EntityScroller: Updated existing entity with ID: ${entityId}`);
+        // Entity updated
         return;
       }
 
