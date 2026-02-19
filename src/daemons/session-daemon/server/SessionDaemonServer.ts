@@ -414,14 +414,9 @@ export class SessionDaemonServer extends SessionDaemon {
      * Load existing user (citizen) by ID
      */
     private async getUserById(userId: UUID): Promise<BaseUser> {
-      // DEBUG: Always log getUserById calls to trace identity bugs - BYPASS LOGGER
-      console.error(`🔍🔍🔍 getUserById CALLED: userId=${JSON.stringify(userId)}, type=${typeof userId}, value=${userId}`);
-      this.log.info(`🔍 getUserById: userId=${JSON.stringify(userId)}, type=${typeof userId}, stringified=${String(userId)}`);
-
-      // CRITICAL: Validate userId is not the string "undefined" (indicates serialization bug upstream)
+      // Validate userId is not the string "undefined" (indicates serialization bug upstream)
       if (!userId || userId === 'undefined' || (userId as any) === undefined) {
-        console.error(`❌❌❌ getUserById VALIDATION FAILED: userId=${userId}`);
-        this.log.error(`❌ getUserById called with invalid userId`);
+        this.log.error(`getUserById called with invalid userId: ${userId}`);
         this.log.error(`Stack trace:`, new Error().stack);
         throw new Error(`Invalid userId: ${userId} - this indicates a bug in session creation or identity resolution`);
       }
@@ -477,51 +472,32 @@ export class SessionDaemonServer extends SessionDaemon {
      * This avoids hardcoding names and works with any seeded owner.
      */
     private async findSeededHumanOwner(): Promise<BaseUser | null> {
-      console.error(`🔍🔍🔍 findSeededHumanOwner: Starting search...`);
-
       // Look for all human users
       const result = await ORM.query<UserEntity>({
         collection: COLLECTIONS.USERS,
         filter: { type: 'human' }
       });
 
-      console.error(`🔍🔍🔍 findSeededHumanOwner: Query result - success=${result.success}, hasData=${!!result.data}, count=${result.data?.length || 0}`);
-
       if (!result.success || !result.data || result.data.length === 0) {
-        console.error(`🔍🔍🔍 findSeededHumanOwner: No human users found, returning null`);
         return null;
       }
-
-      // Debug: log all human users
-      console.error(`🔍🔍🔍 findSeededHumanOwner: Found ${result.data.length} human users:`);
-      result.data.forEach((record, i) => {
-        console.error(`  [${i}] uniqueId="${record.data.uniqueId}", id="${record.id}", recordId="${record.data.id}", startsWithAnon=${record.data.uniqueId?.startsWith('anon-')}`);
-      });
 
       // Find the first non-anonymous human (uniqueId doesn't start with "anon-")
-      // DataRecord<T> wraps entity in .data property
-      // CRITICAL FIX: Use record.id instead of record.data.id (DataRecord issue)
+      // DataRecord<T> wraps entity in .data property — use record.id, not entity.id
       const seededOwner = result.data.find(record => {
         const entity = record.data;
-        const matches = entity.uniqueId && !entity.uniqueId.startsWith('anon-') && record.id;  // Use record.id, not entity.id!
-        console.error(`🔍🔍🔍 findSeededHumanOwner: Checking uniqueId="${entity.uniqueId}", record.id="${record.id}", matches=${matches}`);
-        return matches;
+        return entity.uniqueId && !entity.uniqueId.startsWith('anon-') && record.id;
       });
 
-      console.error(`🔍🔍🔍 findSeededHumanOwner: Found seededOwner=${seededOwner ? seededOwner.data.uniqueId : 'null'}`);
-
       if (!seededOwner) {
-        console.error(`🔍🔍🔍 findSeededHumanOwner: No non-anonymous human found, returning null`);
         return null;
       }
 
-      // CRITICAL FIX: Use record.id instead of record.data.id
       if (!seededOwner.id) {
-        console.error(`❌ findSeededHumanOwner: Found seeded owner but record.id is undefined! uniqueId=${seededOwner.data.uniqueId}`);
+        this.log.error(`findSeededHumanOwner: Found seeded owner but record.id is undefined! uniqueId=${seededOwner.data.uniqueId}`);
         return null;
       }
 
-      console.error(`🔍🔍🔍 findSeededHumanOwner: Loading user with id=${seededOwner.id}`);
       return await this.getUserById(seededOwner.id);
     }
 
@@ -712,54 +688,38 @@ export class SessionDaemonServer extends SessionDaemon {
         case 'browser-ui': {
           // Browser identity: Use deviceId to find/create user
           // Server is source of truth - browser doesn't send userId
-          console.error(`🌐🌐🌐 BROWSER-UI CASE ENTERED`);
-          this.log.info(`🌐 Browser-ui session: resolving human identity from deviceId`);
+          this.log.info(`Browser-ui session: resolving human identity from deviceId`);
 
           const deviceId = identity?.deviceId;
-          console.error(`🌐🌐🌐 deviceId: ${deviceId}`);
 
           if (deviceId) {
-            console.error(`🌐🌐🌐 deviceId EXISTS, calling findUserByDeviceId...`);
             // Look for existing user associated with this device
             const existingUser = await this.findUserByDeviceId(deviceId);
-            console.error(`🌐🌐🌐 findUserByDeviceId returned: ${existingUser ? existingUser.displayName : 'null'}`);
             if (existingUser) {
               user = existingUser;
-              console.error(`🌐🌐🌐 ASSIGNED user from existingUser: ${user.displayName}`);
-              this.log.info(`✅ Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
+              this.log.info(`Found existing user for device: ${user.displayName} (${user.id.slice(0, 8)}...)`);
             } else {
-              console.error(`🌐🌐🌐 No existingUser, checking for seeded owner...`);
               // New device - check for seeded owner (human without anon- prefix)
               const seededOwner = await this.findSeededHumanOwner();
-              console.error(`🌐🌐🌐 findSeededHumanOwner returned: ${seededOwner ? seededOwner.displayName : 'null'}`);
               if (seededOwner) {
                 user = seededOwner;
-                console.error(`🌐🌐🌐 ASSIGNED user from seededOwner: ${user.displayName}`);
-                this.log.info(`✅ Associating new device with seeded owner: ${user.displayName}`);
+                this.log.info(`Associating new device with seeded owner: ${user.displayName}`);
               } else {
-                console.error(`🌐🌐🌐 No seededOwner, creating anonymous human...`);
-                this.log.info(`📝 New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
+                this.log.info(`New device ${deviceId.slice(0, 12)}... - creating anonymous human`);
                 user = await this.createAnonymousHuman(params, deviceId);
-                console.error(`🌐🌐🌐 ASSIGNED user from createAnonymousHuman: ${user.displayName}`);
               }
             }
           } else {
-            console.error(`🌐🌐🌐 NO deviceId, checking for seeded owner...`);
             // No deviceId - check for seeded owner first
             const seededOwner = await this.findSeededHumanOwner();
-            console.error(`🌐🌐🌐 findSeededHumanOwner returned: ${seededOwner ? seededOwner.displayName : 'null'}`);
             if (seededOwner) {
               user = seededOwner;
-              console.error(`🌐🌐🌐 ASSIGNED user from seededOwner (no deviceId): ${user.displayName}`);
-              this.log.info(`✅ Using seeded owner: ${user.displayName} (no deviceId)`);
+              this.log.info(`Using seeded owner: ${user.displayName} (no deviceId)`);
             } else {
-              console.error(`🌐🌐🌐 No seededOwner (no deviceId), creating anonymous human...`);
-              this.log.info(`📝 No deviceId - creating anonymous human`);
+              this.log.info(`No deviceId - creating anonymous human`);
               user = await this.createAnonymousHuman(params, undefined);
-              console.error(`🌐🌐🌐 ASSIGNED user from createAnonymousHuman (no deviceId): ${user.displayName}`);
             }
           }
-          console.error(`🌐🌐🌐 BROWSER-UI CASE COMPLETE, user: ${user ? user.displayName : 'UNDEFINED!!!'}`);
           break;
         }
 

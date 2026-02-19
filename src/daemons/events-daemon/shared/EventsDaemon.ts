@@ -40,7 +40,7 @@ class EventRateLimiter {
           .sort((a, b) => b[1] - a[1]);
 
         if (hotEvents.length > 0) {
-          console.warn(`⚠️ EVENT ACTIVITY: ${hotEvents.map(([e, c]) => `${e}(${c})`).join(', ')}`);
+          console.warn(`[EventRateLimiter] EVENT ACTIVITY: ${hotEvents.map(([e, c]) => `${e}(${c})`).join(', ')}`);
         }
       }
 
@@ -63,7 +63,7 @@ class EventRateLimiter {
     if (count === this.warnThreshold && !this.warned.has(eventName)) {
       this.warned.add(eventName);
       this.totalWarned++;
-      console.warn(`⚠️ EVENT TRENDING: "${eventName}" at ${count}x in ${this.windowMs}ms (blocking at ${this.maxPerWindow})`);
+      console.warn(`[EventRateLimiter] EVENT TRENDING: "${eventName}" at ${count}x in ${this.windowMs}ms (blocking at ${this.maxPerWindow})`);
     }
 
     // Block if over threshold
@@ -75,7 +75,7 @@ class EventRateLimiter {
       if (this.blockedHistory.length > 100) {
         this.blockedHistory.shift();
       }
-      console.error(`🛑 EVENT CASCADE BLOCKED: "${eventName}" fired ${count}x in ${this.windowMs}ms`);
+      console.error(`[EventRateLimiter] EVENT CASCADE BLOCKED: "${eventName}" fired ${count}x in ${this.windowMs}ms`);
       return true;
     }
 

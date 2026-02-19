@@ -161,7 +161,6 @@ export class DatabaseHandleRegistry {
 
     // Initialize default handle metadata
     const expandedDbPath = getDatabasePath();
-    console.log(`📦 DatabaseHandleRegistry: Path registry initialized (default db: ${expandedDbPath})`);
 
     this.handleMetadata.set(DEFAULT_HANDLE, {
       adapter: 'rust' as AdapterType,  // All I/O goes through Rust
@@ -218,7 +217,6 @@ export class DatabaseHandleRegistry {
           throw new Error('SQLite config requires either "path" or "filename" property');
         }
         // Just register the path - Rust handles actual connections
-        console.log(`📦 DatabaseHandleRegistry: Registered handle ${handle.substring(0, 8)}... → ${dbPath}`);
         break;
       }
 
