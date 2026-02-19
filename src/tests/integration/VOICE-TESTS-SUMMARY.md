@@ -200,7 +200,7 @@ npx vitest run tests/integration/voice-orchestrator.test.ts -t "Turn Arbitration
 After automated tests pass, validate with real system:
 
 ```bash
-cd src/debug/jtag
+cd src
 npm start  # Wait 90+ seconds
 ```
 

@@ -684,7 +684,7 @@ continuum/
 │               ├── server.rs              # Unix socket server
 │               └── protocol.rs            # Message format
 │
-├── src/debug/jtag/
+├── src/
 │   ├── widgets/                           # THE FACE (TypeScript + Lit)
 │   │   ├── chat/ChatWidget.ts
 │   │   ├── live/LiveWidget.ts

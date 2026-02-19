@@ -775,7 +775,7 @@ As more developers use this:
 export GITHUB_TOKEN="ghp_your_token_here"
 
 # 2. Extract training data from recent PRs
-cd src/debug/jtag
+cd src
 ./jtag github/extract-range --from=150 --to=169 --output="datasets/bootstrap.jsonl"
 
 # 3. Train initial adapter

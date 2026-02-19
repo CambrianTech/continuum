@@ -145,7 +145,7 @@ Player: "We need to cross this bridge safely" [#root]
 ### ✅ **COMPLETE** (as of November 12, 2025)
 
 **Data Layer**:
-- `ChatMessageEntity.replyToId` field (src/debug/jtag/system/data/entities/ChatMessageEntity.ts)
+- `ChatMessageEntity.replyToId` field (src/system/data/entities/ChatMessageEntity.ts)
 - Threading fully supported in database storage
 
 **Commands**:

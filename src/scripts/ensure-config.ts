@@ -261,7 +261,7 @@ async function ensureConfig(): Promise<void> {
       if (newKeys.size > 0) {
         console.log(`📝 Found ${newKeys.size} new configuration key(s): ${Array.from(newKeys).join(', ')}`);
         console.log(`   Add them manually from the template or regenerate config`);
-        console.log(`   Template: src/debug/jtag/scripts/ensure-config.ts`);
+        console.log(`   Template: src/scripts/ensure-config.ts`);
       } else {
         console.log(`✅ Config up to date: ${CONFIG_PATH}`);
       }

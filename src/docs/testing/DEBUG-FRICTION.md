@@ -112,7 +112,7 @@ This document captures critical friction points encountered during autonomous de
 **Specific Example**: When server went down during development, got:
 ```
 ❌ websocket-server-client: connection error: Error: WebSocket error: Unknown WebSocket error
-    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
+    at <anonymous> (/Volumes/FlashGordon/cambrian/continuum/src/system/transports/websocket-transport/shared/WebSocketTransportClient.ts:119:24)
     [... 20 lines of stack trace]
 🔍 PROBLEM: No JTAG system is currently running
 ✅ IMMEDIATE ACTION: Run "npm start" and wait 60 seconds

@@ -376,7 +376,7 @@ Shows:
 ### Hot-Reload Deployment
 
 ```bash
-cd src/debug/jtag
+cd src
 npm start  # 90-180 seconds - cleans, builds, deploys, restarts everything
 ```
 
@@ -507,7 +507,7 @@ Comprehensive multi-layer testing:
 
 ### Code Structure
 ```
-src/debug/jtag/
+src/
 ├── commands/          # 66+ commands (self-routing)
 ├── daemons/          # 14+ system services
 ├── widgets/          # Browser UI components
@@ -532,7 +532,7 @@ src/debug/jtag/
 
 ### What Gets Shipped
 
-The `src/debug/jtag/` directory contains:
+The `src/` directory contains:
 
 1. **Package:** Published to npm as `@continuum/jtag`
 2. **Global CLI:** `npm install -g @continuum/jtag` → `continuum` or `jtag` commands
@@ -635,7 +635,7 @@ This is not just a tool. It's a new model for how humans and AI can work togethe
 ## Getting Started
 
 ```bash
-cd src/debug/jtag
+cd src
 
 # First time setup
 npm install

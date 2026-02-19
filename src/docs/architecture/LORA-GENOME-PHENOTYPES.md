@@ -325,7 +325,7 @@ Each phenotype declares its capabilities:
 ### Current PersonaUser Flow
 
 ```typescript
-// src/debug/jtag/system/user/server/PersonaUser.ts
+// src/system/user/server/PersonaUser.ts
 
 async serviceInbox(): Promise<void> {
   // 1. Check inbox

@@ -37,9 +37,9 @@ if [ "$ENABLE_TYPESCRIPT_CHECK" = true ]; then
     echo "🔨 Running TypeScript compilation..."
     npm run build:ts
     # Restore version.ts to avoid timestamp-only changes in commit
-    cd ../../..
-    git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
-    cd src/debug/jtag
+    cd ..
+    git restore src/shared/version.ts 2>/dev/null || true
+    cd src
     echo "✅ TypeScript compilation passed"
 else
     echo "⏭️  Phase 1: TypeScript compilation SKIPPED (disabled in config)"
@@ -56,10 +56,10 @@ echo "📋 Phase 1.5: Strict Lint (modified files only)"
 echo "-------------------------------------"
 
 # Get list of staged TypeScript files (excluding node_modules, dist, generated)
-TS_FILES=$(cd ../../.. && git diff --cached --name-only --diff-filter=ACMR | grep -E 'src/debug/jtag/.*\.tsx?$' | grep -v 'node_modules' | grep -v 'dist/' | grep -v '/generated' | grep -v 'generated-command' || true)
+TS_FILES=$(cd .. && git diff --cached --name-only --diff-filter=ACMR | grep -E 'src/.*\.tsx?$' | grep -v 'node_modules' | grep -v 'dist/' | grep -v '/generated' | grep -v 'generated-command' || true)
 
 # Get list of staged Rust files
-RS_FILES=$(cd ../../.. && git diff --cached --name-only --diff-filter=ACMR | grep -E 'src/debug/jtag/workers/.*\.rs$' | grep -v 'target/' || true)
+RS_FILES=$(cd .. && git diff --cached --name-only --diff-filter=ACMR | grep -E 'src/workers/.*\.rs$' | grep -v 'target/' || true)
 
 LINT_FAILED=false
 
@@ -71,7 +71,7 @@ if [ -n "$TS_FILES" ]; then
     echo ""
 
     # Run ESLint on modified files only (paths relative to jtag dir)
-    LINT_OUTPUT=$(cd ../../.. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 2>&1) || {
+    LINT_OUTPUT=$(cd .. && echo "$TS_FILES" | xargs npx eslint --max-warnings 0 2>&1) || {
         echo ""
         echo "╔════════════════════════════════════════════════════════════════╗"
         echo "║  ❌ TYPESCRIPT LINT FAILED - BLOCKING COMMIT                   ║"
@@ -125,7 +125,7 @@ echo ""
 
 # Detect if code changes require deployment
 echo "🔍 Checking if code changes require deployment..."
-cd ../../..
+cd ..
 CODE_CHANGED=false
 
 # Check if any TypeScript, JavaScript, or browser bundle files are being committed
@@ -139,7 +139,7 @@ else
     echo "📄 Only documentation/config changes - deployment may not be needed"
 fi
 
-cd src/debug/jtag
+cd src
 
 # Determine if restart is needed based on strategy
 if [ "$ENABLE_SYSTEM_RESTART" = true ]; then
@@ -333,9 +333,9 @@ EOF
         echo "📋 Validation artifacts created for bulletproof validation..."
 
         # Stage validation directory from repo root
-        REPO_ROOT="../../.."
+        REPO_ROOT=".."
         cd "$REPO_ROOT"
-        git add "src/debug/jtag/$VALIDATION_RUN_DIR" 2>/dev/null || true
+        git add "src/$VALIDATION_RUN_DIR" 2>/dev/null || true
         cd - > /dev/null
         echo "✅ Validation artifacts staged for commit (or already ignored)"
 
@@ -365,14 +365,14 @@ echo "🧹 Phase 4: Cleaning up test artifacts"
 echo "-----------------------------------------------------------"
 
 # Restore files that get auto-generated during npm start
-cd ../../..
+cd ..
 echo "🔄 Restoring auto-generated files to avoid commit noise..."
-git restore src/debug/jtag/package.json 2>/dev/null || true
-git restore src/debug/jtag/package-lock.json 2>/dev/null || true
-git restore src/debug/jtag/generated-command-schemas.json 2>/dev/null || true
-git restore src/debug/jtag/shared/version.ts 2>/dev/null || true
-git restore src/debug/jtag/.continuum/sessions/validation/test-output.txt 2>/dev/null || true
-cd src/debug/jtag
+git restore src/package.json 2>/dev/null || true
+git restore src/package-lock.json 2>/dev/null || true
+git restore src/generated-command-schemas.json 2>/dev/null || true
+git restore src/shared/version.ts 2>/dev/null || true
+git restore src/.continuum/sessions/validation/test-output.txt 2>/dev/null || true
+cd src
 echo "✅ Test artifacts cleaned up"
 
 # Final Summary

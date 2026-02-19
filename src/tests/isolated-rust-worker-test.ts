@@ -189,7 +189,7 @@ async function runTests(): Promise<void> {
     try {
       const logs = child_process.execSync(
         'tail -50 .continuum/jtag/logs/system/rust-worker.log 2>/dev/null || echo "No log"',
-        { encoding: 'utf8', cwd: '/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag' }
+        { encoding: 'utf8', cwd: '/Volumes/FlashGordon/cambrian/continuum/src' }
       );
       log('INFO', 'Last worker logs:\n' + logs);
     } catch {

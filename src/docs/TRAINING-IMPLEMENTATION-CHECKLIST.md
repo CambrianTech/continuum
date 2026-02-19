@@ -676,7 +676,7 @@ docs: update CLAUDE.md with training commands
 ### 1. Forgetting to run `npm start`
 After editing TypeScript files, ALWAYS run:
 ```bash
-cd src/debug/jtag
+cd src
 npm start  # Wait 90+ seconds
 ```
 

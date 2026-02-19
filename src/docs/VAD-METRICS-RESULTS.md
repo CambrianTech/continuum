@@ -302,7 +302,7 @@ Tracks predictions with confidence scores for:
 ## Running the Tests
 
 ```bash
-cd /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/workers/streaming-core
+cd /Volumes/FlashGordon/cambrian/continuum/src/workers/streaming-core
 
 # Individual VAD tests
 cargo test --release test_rms_vad_metrics -- --nocapture

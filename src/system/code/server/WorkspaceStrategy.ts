@@ -314,7 +314,7 @@ export class WorkspaceStrategy {
 
     // Register with Rust CodeDaemon — worktree is the write location, JTAG root is read-only.
     // CRITICAL: Must register with personaId (UUID), not handle — Rust looks up by personaId
-    // Use JTAG root (process.cwd()) as read root, NOT git root — code files are under src/debug/jtag/
+    // Use JTAG root (process.cwd()) as read root, NOT git root — code files are under src/
     const jtagRoot = process.cwd();
     log.info(`🔧 Registering workspace with Rust: personaId=${config.personaId}, workspaceRoot=${worktreeDir}, readRoots=[${jtagRoot}]`);
     await CodeDaemon.createWorkspace(config.personaId, worktreeDir, [jtagRoot]);

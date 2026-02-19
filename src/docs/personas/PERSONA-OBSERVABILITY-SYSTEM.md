@@ -920,7 +920,7 @@ export class PersonaMCPServer {
 - `docs/personas/PERSONA-BEING-ARCHITECTURE.md` - Mind/Body/Soul decomposition
 - `docs/personas/PHASE3-COGNITION-TOOLS-PLAN.md` - Cognitive architecture
 - `docs/papers/RTOS-COGNITIVE-ARCHITECTURE.md` - Autonomous servicing loop
-- `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md` - Integration vision
+- `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md` - Integration vision
 
 ### Inspiration
 - **Unreal Engine**: Blueprint visual scripting (industrial node editor)

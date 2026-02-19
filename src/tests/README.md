@@ -214,10 +214,10 @@ npm run test:manual
 npm test
 
 # Test JTAG module specifically from continuum root
-npm test -- src/debug/jtag/
+npm test -- src/
 
 # Independent JTAG testing (can run without continuum)
-cd src/debug/jtag && npm test
+cd src && npm test
 ```
 
 ## 📊 Test Coverage Matrix
@@ -286,7 +286,7 @@ npm run test:manual
 
 ### **Standalone Testing (JTAG as independent NPM module)**
 ```bash
-cd src/debug/jtag
+cd src
 npm test                    # Runs complete JTAG test suite independently
 npm run test:all           # All layers + integration + browser tests  
 npm start                  # Launches examples/end-to-end-demo.js
@@ -296,7 +296,7 @@ npm start                  # Launches examples/end-to-end-demo.js
 ```bash
 # From continuum root
 npm test                   # Includes JTAG in full continuum test suite
-npm test -- src/debug/jtag # Tests JTAG module as part of continuum
+npm test -- src # Tests JTAG module as part of continuum
 ```
 
 **Success Validation** (Both modes):

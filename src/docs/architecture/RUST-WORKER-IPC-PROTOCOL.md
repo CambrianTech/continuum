@@ -1233,7 +1233,7 @@ To integrate this into JTAG (future work):
 
 1. **Move Rust worker into main codebase**:
    ```
-   src/debug/jtag/workers/
+   src/workers/
    ├── logger/                   # Logger worker
    │   ├── Cargo.toml
    │   ├── src/main.rs

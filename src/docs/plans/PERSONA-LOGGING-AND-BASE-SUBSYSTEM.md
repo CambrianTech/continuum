@@ -730,7 +730,7 @@ grep "duration:" .continuum/sessions/user/helper-ai-uuid/logs/tools.log
 
 - `docs/personas/PERSONA-OBSERVABILITY-SYSTEM.md` - Full observability vision (this plan implements Phases 1 & 3)
 - `docs/personas/PERSONA-BEING-ARCHITECTURE.md` - Mind/Body/Soul decomposition
-- `src/debug/jtag/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md` - Integration architecture
+- `src/system/user/server/modules/PERSONA-CONVERGENCE-ROADMAP.md` - Integration architecture
 
 ---
 

@@ -37,17 +37,17 @@ export abstract class BaseServerLoRATrainer extends BaseLoRATrainer {
   /**
    * Get the project root directory
    *
-   * From adapter location (src/debug/jtag/system/genome/fine-tuning/server/adapters),
+   * From adapter location (src/system/genome/fine-tuning/server/adapters),
    * navigate up to the project root (e.g., /path/to/project/continuum).
    *
-   * Calculation: adapters → server → fine-tuning → genome → system → jtag → debug → src → continuum (9 levels)
+   * Calculation: adapters → server → fine-tuning → genome → system → src → continuum (7 levels)
    *
    * @protected
    */
   protected getProjectRoot(): string {
     // __dirname will be the compiled location in the server directory
-    // From src/debug/jtag/system/genome/fine-tuning/server, go up 7 levels to reach project root
-    return path.resolve(__dirname, '../../../../../../..');
+    // From src/system/genome/fine-tuning/server, go up 5 levels to reach project root
+    return path.resolve(__dirname, '../../../../..');
   }
 
   /**

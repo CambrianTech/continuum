@@ -594,9 +594,9 @@ describe('data/list with field projection', () => {
 
 ## References
 
-- [FieldDecorators.ts](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/data/decorators/FieldDecorators.ts) - Decorator implementation
-- [ARCHITECTURE-RULES.md](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/docs/ARCHITECTURE-RULES.md) - Entity system rules
-- [DataTypes.ts](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/daemons/data-daemon/shared/DataTypes.ts) - Data command types
+- [FieldDecorators.ts](/Volumes/FlashGordon/cambrian/continuum/src/system/data/decorators/FieldDecorators.ts) - Decorator implementation
+- [ARCHITECTURE-RULES.md](/Volumes/FlashGordon/cambrian/continuum/src/docs/ARCHITECTURE-RULES.md) - Entity system rules
+- [DataTypes.ts](/Volumes/FlashGordon/cambrian/continuum/src/daemons/data-daemon/shared/DataTypes.ts) - Data command types
 
 ---
 

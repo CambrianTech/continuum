@@ -100,7 +100,7 @@ Only after proving the component works perfectly, integrate it into the live sys
 
 ```bash
 # Copy to live location
-cp -r /tmp/my-new-command src/debug/jtag/commands/
+cp -r /tmp/my-new-command src/commands/
 
 # Verify compilation
 npm run build:ts
@@ -135,11 +135,11 @@ Final verification that integration didn't break anything, then commit.
 tail -f .continuum/sessions/user/shared/*/logs/server.log
 
 # If all good, commit
-git add src/debug/jtag/commands/my-new-command
+git add src/commands/my-new-command
 git commit -m "Add my-new-command with validation"
 
 # If broken, rollback
-git restore src/debug/jtag/commands/my-new-command
+git restore src/commands/my-new-command
 # OR
 git stash
 ```
@@ -242,12 +242,12 @@ npx tsx generator/CommandGenerator.ts /tmp/my-spec.json /tmp/output
 npx tsx /tmp/test-generated-command.ts
 
 # 3. INTEGRATION - Copy to live system when proven
-cp -r /tmp/output/my-command src/debug/jtag/commands/
+cp -r /tmp/output/my-command src/commands/
 npm start
 
 # 4. VERIFY AND COMMIT
 ./jtag my-command --test
-git add src/debug/jtag/commands/my-command
+git add src/commands/my-command
 git commit -m "Add generated my-command"
 ```
 
@@ -535,13 +535,13 @@ EOF
 npx tsx /tmp/test-code-metrics.ts
 
 # Stage 3: INTEGRATION (only if tests pass)
-cp -r /tmp/output/code-metrics src/debug/jtag/commands/
+cp -r /tmp/output/code-metrics src/commands/
 npm run build:ts
 npm start
 
 # Stage 4: VERIFY AND COMMIT
 ./jtag code-metrics --filePath="main.ts"
-git add src/debug/jtag/commands/code-metrics
+git add src/commands/code-metrics
 git commit -m "Add code-metrics command"
 ```
 
@@ -641,7 +641,7 @@ EOF
 # Open index.html in browser, verify it renders
 
 # Stage 3: INTEGRATION
-cp metrics-widget.js src/debug/jtag/widgets/metrics-widget/
+cp metrics-widget.js src/widgets/metrics-widget/
 # Add to main-widget's imports
 npm start
 

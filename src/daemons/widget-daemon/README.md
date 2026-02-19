@@ -164,7 +164,7 @@ class TrainingWidget extends BaseWidget {
 
 ### **JTAG Widget System:**
 ```
-src/debug/jtag/
+src/
 ├── daemons/
 │   ├── widget-daemon/                    # Widget-JTAG bridge
 │   │   ├── shared/WidgetDaemon.ts

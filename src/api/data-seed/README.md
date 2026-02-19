@@ -6,7 +6,7 @@
 
 ### 1. Complete System Setup (Recommended)
 ```bash
-cd src/debug/jtag
+cd src
 npm start                           # Start JTAG system (REQUIRED FIRST)
 npx tsx api/data-seed/seed-data.ts  # Complete reset and seed
 ```
@@ -82,7 +82,7 @@ api/data-seed/
 
 ### First Time Setup
 1. Clone repository
-2. `cd src/debug/jtag`
+2. `cd src`
 3. `npm install`
 4. `npm start` (starts system, opens browser)
 5. `npx tsx api/data-seed/seed-data.ts` (creates all data)

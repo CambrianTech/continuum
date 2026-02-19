@@ -142,7 +142,7 @@ export class UserStateEntity extends BaseEntity {
   // Enables cd, pwd, and path-relative operations per-user
   @JsonField()
   shellState?: {
-    currentWorkingDir: string;    // Current directory (default: src/debug/jtag)
+    currentWorkingDir: string;    // Current directory (default: src)
     history?: string[];           // Command history (optional, for future use)
     environment?: Record<string, string>; // Environment variables (optional)
   };

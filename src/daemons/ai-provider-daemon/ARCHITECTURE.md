@@ -419,10 +419,10 @@ interface AICapabilities {
 
 ## Related Documents
 
-- [PersonaUser.ts](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/user/shared/PersonaUser.ts) - AI persona implementation
-- [ChatRAGBuilder.ts](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/system/rag/builders/ChatRAGBuilder.ts) - RAG context building
-- [AIProviderTypes.ts](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/daemons/ai-provider-daemon/shared/AIProviderTypes.ts) - Type definitions
-- [OllamaAdapter.ts](/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/daemons/ai-provider-daemon/shared/OllamaAdapter.ts) - Reference adapter implementation
+- [PersonaUser.ts](/Volumes/FlashGordon/cambrian/continuum/src/system/user/shared/PersonaUser.ts) - AI persona implementation
+- [ChatRAGBuilder.ts](/Volumes/FlashGordon/cambrian/continuum/src/system/rag/builders/ChatRAGBuilder.ts) - RAG context building
+- [AIProviderTypes.ts](/Volumes/FlashGordon/cambrian/continuum/src/daemons/ai-provider-daemon/shared/AIProviderTypes.ts) - Type definitions
+- [OllamaAdapter.ts](/Volumes/FlashGordon/cambrian/continuum/src/daemons/ai-provider-daemon/shared/OllamaAdapter.ts) - Reference adapter implementation
 
 ## Changelog
 

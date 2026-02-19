@@ -265,7 +265,7 @@ npx tsx /tmp/output/my-command/test/unit/MyCommandCommand.test.ts
 
 ```bash
 # 7. Copy to live system (only after unit tests pass)
-cp -r /tmp/output/my-command src/debug/jtag/commands/
+cp -r /tmp/output/my-command src/commands/
 
 # 8. Deploy
 npm run build:ts
@@ -283,7 +283,7 @@ npx tsx commands/my-command/test/integration/MyCommandIntegration.test.ts
 
 ```bash
 # 11. All tests pass - safe to commit
-git add src/debug/jtag/commands/my-command
+git add src/commands/my-command
 git commit -m "Add my-command with comprehensive tests"
 
 # No fear of regressions - tests prove it works

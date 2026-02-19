@@ -55,7 +55,7 @@ async function testServerClient() {
     if (error instanceof Error && error.message.includes('timeout')) {
       console.log('\n💡 This likely means the JTAG system is not running or not ready.');
       console.log('🚀 To start the system:');
-      console.log('   cd src/debug/jtag');
+      console.log('   cd src');
       console.log('   npm run system:start');
       console.log('   sleep 45  # Wait for full build');
       console.log('   npx tsx test-server-client.ts');

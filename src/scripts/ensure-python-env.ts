@@ -37,7 +37,7 @@ if (!fs.existsSync(BOOTSTRAP_SCRIPT)) {
   console.error('This file should exist at .continuum/genome/python/bootstrap.sh');
   console.error('');
   console.error('To restore from backup:');
-  console.error('  cd src/debug/jtag');
+  console.error('  cd src');
   console.error('  tar xzf backups/legacy-continuum-valuable-*.tgz -C /tmp');
   console.error('  cp /tmp/legacy-continuum-backup/genome-scripts/* ../../.continuum/genome/python/');
   process.exit(1);

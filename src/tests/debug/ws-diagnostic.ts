@@ -124,7 +124,7 @@ ws.on('error', (err) => {
   console.log(`❌ WebSocket error: ${err.message}`);
   if (err.message.includes('ECONNREFUSED')) {
     console.log(`   Server is not running on port ${WS_PORT}`);
-    console.log(`   Run: cd src/debug/jtag && npm start`);
+    console.log(`   Run: cd src && npm start`);
   }
   process.exit(1);
 });

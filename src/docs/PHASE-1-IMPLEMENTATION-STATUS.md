@@ -410,7 +410,7 @@ Phase 1 is complete when:
 
 ```bash
 # 1. Start from the right directory
-cd src/debug/jtag
+cd src
 
 # 2. Read the implementation status (this file)
 cat docs/PHASE-1-IMPLEMENTATION-STATUS.md

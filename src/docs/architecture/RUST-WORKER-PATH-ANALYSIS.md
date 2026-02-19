@@ -58,7 +58,7 @@ srwxr-xr-x  1 joel  wheel  0 Dec  9 20:24 /tmp/logger-worker.sock
 ### Socket Path (Logger.ts:175)
 ```typescript
 const socketPath = path.join(process.cwd(), '.continuum', 'jtag', 'workers', 'logger.sock');
-// Resolves to: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/.continuum/jtag/workers/logger.sock
+// Resolves to: /Volumes/FlashGordon/cambrian/continuum/src/.continuum/jtag/workers/logger.sock
 ```
 
 ### Binary Path (Logger.ts:217)
@@ -107,7 +107,7 @@ System works fine without Rust worker.
 ### Check Current Process State
 ```bash
 # Is Logger trying to use Rust worker?
-Current working directory: /Volumes/FlashGordon/cambrian/continuum/src/debug/jtag
+Current working directory: /Volumes/FlashGordon/cambrian/continuum/src
 
 # Check if any logger-worker processes exist:
 No logger-worker processes running

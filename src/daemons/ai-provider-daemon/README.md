@@ -53,7 +53,7 @@ Provider Registry
 Following our modular command architecture:
 
 ```
-src/debug/jtag/daemons/ai-provider-daemon/
+src/daemons/ai-provider-daemon/
 ├── shared/
 │   ├── AIProviderTypes.ts           # Core types and interfaces
 │   └── ProviderCapabilities.ts      # Capability definitions

@@ -1656,7 +1656,7 @@ class DataDaemonServer {
 
 ```
 /Volumes/FlashGordon/cambrian/continuum/
-└── src/debug/jtag/
+└── src/
     ├── .continuum/
     │   ├── genome/
     │   │   ├── adapters/                    # Deployed adapters

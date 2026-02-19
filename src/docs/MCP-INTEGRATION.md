@@ -6,7 +6,7 @@ JTAG exposes all its commands as MCP (Model Context Protocol) tools, enabling an
 
 **One-time setup:**
 ```bash
-cd src/debug/jtag
+cd src
 npm run mcp:setup
 ```
 
@@ -23,7 +23,7 @@ claude mcp list
 If the automated setup doesn't work:
 
 ```bash
-cd src/debug/jtag
+cd src
 
 # Make wrapper executable
 chmod +x mcp-wrapper.sh
@@ -124,7 +124,7 @@ The wrapper script handles the working directory correctly, which is required fo
 ### "JTAG system not running" when calling tools
 The MCP server can't connect to JTAG. Start the system:
 ```bash
-cd src/debug/jtag
+cd src
 npm start  # Wait ~90 seconds
 ```
 

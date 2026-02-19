@@ -145,12 +145,12 @@ const transport = await TransportFactory.createTransport(
 **Convenient Session Access**:
 ```bash
 # Current user session (symlink for easy access)
-/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/test-bench/.continuum/jtag/currentUser/
+/Volumes/FlashGordon/cambrian/continuum/src/examples/test-bench/.continuum/jtag/currentUser/
 ├── logs/          # All browser/server transport logs
 └── screenshots/   # Transport command outputs
 
 # System session  
-/Volumes/FlashGordon/cambrian/continuum/src/debug/jtag/examples/test-bench/.continuum/jtag/system/
+/Volumes/FlashGordon/cambrian/continuum/src/examples/test-bench/.continuum/jtag/system/
 └── logs/          # System-level transport logs
 ```
 

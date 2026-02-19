@@ -369,7 +369,7 @@ Rooms are where activity happens. Same primitives, infinite possibilities:
 ```bash
 # Clone and install
 git clone <repo-url>
-cd continuum/src/debug/jtag
+cd continuum/src
 npm install
 
 # Configure API keys (optional — works without, just no AI responses)

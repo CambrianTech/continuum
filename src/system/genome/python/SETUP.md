@@ -111,7 +111,7 @@ For automated testing/deployment:
 # .github/workflows/test.yml (example)
 - name: Setup PEFT Environment
   run: |
-    cd src/debug/jtag/system/genome/python
+    cd src/system/genome/python
     python3 -m venv venv
     source venv/bin/activate
     pip install -r requirements.txt

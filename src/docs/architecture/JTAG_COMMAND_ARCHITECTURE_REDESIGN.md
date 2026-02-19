@@ -224,8 +224,8 @@ interface JTAGMCPTools {
   "mcpServers": {
     "jtag": {
       "command": "node",
-      "args": ["./src/debug/jtag/mcp-server.js"],
-      "cwd": "/path/to/continuum/src/debug/jtag",
+      "args": ["./src/mcp-server.js"],
+      "cwd": "/path/to/continuum/src",
       "env": {
         "JTAG_MODE": "mcp",
         "LOG_LEVEL": "info"

@@ -208,7 +208,7 @@ After running automated tests, validate with real system:
 
 ### 1. Deploy and Start Call
 ```bash
-cd src/debug/jtag
+cd src
 npm start  # Wait 90+ seconds
 
 # In browser:
