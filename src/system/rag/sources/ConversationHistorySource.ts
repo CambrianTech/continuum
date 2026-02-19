@@ -329,35 +329,103 @@ export class ConversationHistorySource implements RAGSource {
         };
       });
 
-      // ── TOKEN BUDGET ENFORCEMENT ──────────────────────────────────
-      // Iterate newest-to-oldest, accumulating actual token counts.
-      // Stop when the allocated budget is exhausted. This is the ONLY
-      // constraint — no guessed message counts, no artificial caps.
-      let accumulatedTokens = 0;
-      let budgetCutoff = allLlmMessages.length;
+      // ── TOKEN BUDGET ENFORCEMENT WITH CONSOLIDATION ────────────────
+      // Two-tier strategy: recent messages verbatim, older messages consolidated.
+      // Nothing is silently lost — the AI always sees the full conversation arc.
+      //
+      // Budget split: 85% for recent verbatim, 15% reserved for consolidated older messages.
+      // If everything fits in 85%, the remaining budget rolls into verbatim (no consolidation needed).
+
+      const verbatimBudget = Math.floor(allocatedBudget * 0.85);
+      const consolidationBudget = allocatedBudget - verbatimBudget;
+
+      // Pass 1: Fill recent messages verbatim (newest-first) until verbatim budget exhausted
+      let verbatimTokens = 0;
+      let verbatimCutoff = allLlmMessages.length;
       for (let i = 0; i < allLlmMessages.length; i++) {
         const msgTokens = this.estimateTokens(allLlmMessages[i].content);
-        if (accumulatedTokens + msgTokens > allocatedBudget) {
-          budgetCutoff = i;
+        if (verbatimTokens + msgTokens > verbatimBudget) {
+          verbatimCutoff = i;
           break;
         }
-        accumulatedTokens += msgTokens;
+        verbatimTokens += msgTokens;
       }
 
-      // Take messages that fit, then reverse to chronological (oldest-first) for LLM
-      const budgetedMessages = allLlmMessages.slice(0, budgetCutoff).reverse();
+      // If everything fit, no consolidation needed — use full budget for verbatim
+      if (verbatimCutoff === allLlmMessages.length) {
+        // Try to fit more with the consolidation budget too
+        let totalTokens = verbatimTokens;
+        // Already have all messages, just reverse to chronological
+        const budgetedMessages = allLlmMessages.slice().reverse();
+
+        const loadTimeMs = performance.now() - startTime;
+        log.debug(`Loaded ${budgetedMessages.length}/${allLlmMessages.length} messages in ${loadTimeMs.toFixed(1)}ms (~${totalTokens}/${allocatedBudget} token budget, all fit)`);
+
+        return {
+          sourceName: this.name,
+          tokenCount: totalTokens,
+          loadTimeMs,
+          messages: budgetedMessages,
+          metadata: {
+            messageCount: budgetedMessages.length,
+            totalAvailable: allLlmMessages.length,
+            roomId: context.roomId,
+            personaId: context.personaId
+          }
+        };
+      }
+
+      // Pass 2: Consolidate older messages that didn't fit verbatim.
+      // Compress each to "SenderName: first line..." — preserves conversation
+      // arc and topic awareness without consuming full token budget.
+      const olderMessages = allLlmMessages.slice(verbatimCutoff); // newest-first still
+      const consolidatedLines: string[] = [];
+      let consolidatedTokens = 0;
+
+      // Walk oldest-to-newest through the overflow messages
+      for (let i = olderMessages.length - 1; i >= 0; i--) {
+        const msg = olderMessages[i];
+        const firstLine = msg.content.split('\n')[0].slice(0, 120);
+        const compressed = `${msg.name}: ${firstLine}`;
+        const lineTokens = this.estimateTokens(compressed + '\n');
+        if (consolidatedTokens + lineTokens > consolidationBudget) break;
+        consolidatedLines.push(compressed);
+        consolidatedTokens += lineTokens;
+      }
+
+      // Build final message array: consolidated summary + verbatim recent
+      const resultMessages: LLMMessage[] = [];
+      const totalTokens = verbatimTokens + consolidatedTokens;
+
+      if (consolidatedLines.length > 0) {
+        const skippedCount = olderMessages.length - consolidatedLines.length;
+        const header = skippedCount > 0
+          ? `[Earlier conversation (${olderMessages.length} messages, ${skippedCount} omitted for space):]`
+          : `[Earlier conversation (${olderMessages.length} messages):]`;
+
+        resultMessages.push({
+          role: 'user' as const,
+          content: header + '\n' + consolidatedLines.join('\n'),
+          name: 'system-context'
+        });
+      }
+
+      // Verbatim messages: reverse to chronological (oldest-first)
+      const verbatimMessages = allLlmMessages.slice(0, verbatimCutoff).reverse();
+      resultMessages.push(...verbatimMessages);
 
       const loadTimeMs = performance.now() - startTime;
-
-      log.debug(`Loaded ${budgetedMessages.length}/${allLlmMessages.length} messages in ${loadTimeMs.toFixed(1)}ms (~${accumulatedTokens}/${allocatedBudget} token budget)`);
+      log.debug(`Loaded ${verbatimMessages.length} verbatim + ${consolidatedLines.length} consolidated (of ${olderMessages.length} older) in ${loadTimeMs.toFixed(1)}ms (~${totalTokens}/${allocatedBudget} token budget)`);
 
       return {
         sourceName: this.name,
-        tokenCount: accumulatedTokens,
+        tokenCount: totalTokens,
         loadTimeMs,
-        messages: budgetedMessages,
+        messages: resultMessages,
         metadata: {
-          messageCount: budgetedMessages.length,
+          messageCount: resultMessages.length,
+          verbatimCount: verbatimMessages.length,
+          consolidatedCount: consolidatedLines.length,
           totalAvailable: allLlmMessages.length,
           roomId: context.roomId,
           personaId: context.personaId
