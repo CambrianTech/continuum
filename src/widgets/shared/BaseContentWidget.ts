@@ -7,6 +7,7 @@
  */
 
 import { BaseWidget, type WidgetConfig } from './BaseWidget';
+import { EventsDaemonBrowser } from '../../daemons/events-daemon/browser/EventsDaemonBrowser';
 import type { UUID } from '../../system/core/types/CrossPlatformUUID';
 import type {
   ContentItem,
@@ -290,6 +291,11 @@ export abstract class BaseContentWidget extends BaseWidget {
    */
   private setupContentEventListeners(): void {
     this.verbose() && console.log(`🎯 ${this.config.widgetName}: Setting up content event listeners...`);
+
+    // Register DOM interest for content events (filter-first pattern)
+    EventsDaemonBrowser.registerDOMInterest('content:switched');
+    EventsDaemonBrowser.registerDOMInterest('content:opened');
+    EventsDaemonBrowser.registerDOMInterest('content:closed');
 
     // Listen for global content events
     document.addEventListener('content:switched', (event: Event) => {

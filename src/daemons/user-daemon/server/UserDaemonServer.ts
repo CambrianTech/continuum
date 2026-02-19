@@ -237,10 +237,12 @@ export class UserDaemonServer extends UserDaemon {
 
       this.log.info(`🔧 UserDaemon: Found ${personas.length} personas to initialize`);
 
-      // Ensure each persona has correct state
-      for (const persona of personas) {
-        this.log.info(`🔧 UserDaemon: Processing persona: ${persona.displayName}`);
-        await this.ensurePersonaCorrectState(persona);
+      // Batched parallel initialization — 6 concurrent to avoid thundering herd on DB/Rust
+      const BATCH_SIZE = 6;
+      for (let i = 0; i < personas.length; i += BATCH_SIZE) {
+        const batch = personas.slice(i, i + BATCH_SIZE);
+        this.log.info(`🔧 UserDaemon: Initializing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(personas.length / BATCH_SIZE)} (${batch.map(p => p.displayName).join(', ')})`);
+        await Promise.all(batch.map(p => this.ensurePersonaCorrectState(p)));
       }
 
       this.log.info(`✅ UserDaemon: ensurePersonaClients() complete - processed ${personas.length} personas`);

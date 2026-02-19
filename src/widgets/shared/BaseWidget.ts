@@ -26,6 +26,7 @@ import { WIDGET_DEFAULTS} from './WidgetConstants';
 import type { CommandErrorResponse, CommandResponse, CommandSuccessResponse } from '../../daemons/command-daemon/shared/CommandResponseTypes';
 import { Commands } from '../../system/core/shared/Commands';
 import { FILE_COMMANDS } from '../../commands/file/shared/FileCommandConstants';
+import { EventsDaemonBrowser } from '../../daemons/events-daemon/browser/EventsDaemonBrowser';
 import type { UserEntity } from '../../system/data/entities/UserEntity';
 import type { UserStateEntity } from '../../system/data/entities/UserStateEntity';
 import type { DataListParams, DataListResult } from '../../commands/data/list/shared/DataListTypes';
@@ -788,6 +789,9 @@ export abstract class BaseWidget extends HTMLElement {
     this.dispatcherEventTypes.add(eventName);
 
     this.verbose() && console.log(`🔗 BaseWidget: Setting up event dispatcher for ${eventName}`);
+
+    // Register DOM interest so EventsDaemonBrowser knows to dispatch this event to DOM
+    EventsDaemonBrowser.registerDOMInterest(eventName);
 
     // Listen for server-originated events via the JTAG event system
     // These events come from EventsDaemon when server emits events
