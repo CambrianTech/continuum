@@ -1,22 +1,18 @@
 /**
  * AIAudioBridge - Connects AI personas to the Rust streaming-core call server
  *
- * ARCHITECTURE NOTE: Transcription is handled by Rust call_server, NOT here.
- * Rust does VAD-based speech detection and runs Whisper natively.
- * Transcriptions flow: Rust → browser WebSocket → Events → VoiceOrchestrator
+ * ARCHITECTURE:
+ * - Transcription: Rust call_server does VAD + Whisper natively
+ * - Speaking: Rust voice/speak-in-call synthesizes + injects audio in one call
+ * - WebSocket connections: AI participants join calls for presence/mixing
  *
- * This bridge ONLY handles:
- * 1. TTS injection (AI speaking INTO the call)
- * 2. Maintaining WebSocket connections for AI participants
- *
- * Previously this did TypeScript-side transcription (buffer concat, RMS, base64)
- * which was wasteful - all that work is now done efficiently in Rust.
+ * Audio NEVER leaves Rust. Synthesis and injection happen in one IPC call.
+ * TypeScript only handles coordination (who speaks when) and event emission.
  */
 
 import WebSocket from 'ws';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { getVoiceService } from './VoiceService';
-// Note: adapter selection is now handled by VoiceService config (no hardcoded adapter here)
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';
@@ -58,9 +54,14 @@ const STREAMING_CORE_URL = process.env.STREAMING_CORE_WS_URL || 'ws://127.0.0.1:
 export class AIAudioBridge {
   private static _instance: AIAudioBridge | null = null;
   private connections: Map<string, AIConnection> = new Map(); // keyed by `${callId}-${userId}`
+  private ipcClient: RustCoreIPCClient;
 
   private constructor() {
-    console.log('🤖 AIAudioBridge: Initialized');
+    this.ipcClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
+    this.ipcClient.connect().catch(err => {
+      console.error('🤖 AIAudioBridge: Failed to connect IPC to continuum-core:', err);
+    });
+    console.log('🤖 AIAudioBridge: Initialized (Rust IPC for synthesis + injection)');
   }
 
   static get instance(): AIAudioBridge {
@@ -217,12 +218,14 @@ export class AIAudioBridge {
 
   /**
    * Inject TTS audio into the call (AI speaking)
+   *
+   * Audio NEVER leaves Rust. One IPC call does synthesis + injection.
+   * TypeScript only coordinates (who speaks when) and emits events for UI.
+   *
    * @param voice - Voice identifier passed to Rust TTS adapter. Can be:
-   *                - Named voice ("af", "am_adam") → used directly
-   *                - Numeric seed ("42") → modulo into adapter's voice list
-   *                - Any string (uniqueId, UUID, display name) → hashed to pick voice
-   *                If not provided, uses userId so each AI gets a consistent unique voice.
-   *                The Rust adapter's resolve_voice() handles all mapping.
+   *                - Named voice ("alba", "marius") → used directly
+   *                - Any string (uniqueId, UUID) → hashed to pick voice
+   *                If not provided, uses userId so each AI gets a consistent voice.
    */
   async speak(callId: string, userId: UUID, text: string, voice?: string): Promise<void> {
     const key = `${callId}-${userId}`;
@@ -230,115 +233,59 @@ export class AIAudioBridge {
 
     if (!connection || !connection.isConnected) {
       console.warn(`🤖 AIAudioBridge: Cannot speak - ${userId.slice(0, 8)} not in call (connection exists=${!!connection}, isConnected=${connection?.isConnected})`);
-
-      // CRITICAL: Emit speech event even on failure so VoiceOrchestrator
-      // can clear cooldown lock and chain to the next responder.
-      // Without this, the voice coordination chain breaks permanently.
-      const failedEvent = {
-        sessionId: callId,
-        speakerId: userId,
-        speakerName: 'unknown',
-        text,
-        audioDurationMs: 0,
-        failed: true,
-        timestamp: Date.now()
-      };
-
-      if (DataDaemon.jtagContext) {
-        await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', failedEvent, { scope: EVENT_SCOPES.GLOBAL });
-      } else {
-        Events.emit('voice:ai:speech', failedEvent);
-      }
+      await this.emitSpeechEvent(callId, userId, 'unknown', text, 0, true);
       return;
     }
 
     try {
-      // Pass userId as voice identifier — Rust adapter's resolve_voice() handles mapping
-      // This ensures each AI always gets a consistent unique voice per adapter
+      // Reconnect IPC if needed (Rust worker may have restarted)
+      if (!this.ipcClient.connected) {
+        await this.ipcClient.connect();
+      }
+
       const voiceId = voice ?? userId;
 
-      // Use VoiceService (handles TTS synthesis)
-      const voiceService = getVoiceService();
-      const result = await voiceService.synthesizeSpeech({
-        text,
-        userId,
-        voice: voiceId,  // Speaker ID for multi-speaker models
-        // adapter comes from VoiceService config (default: kokoro)
-      });
+      // ONE Rust IPC call: synthesize + inject into call mixer.
+      // Audio stays in Rust — no TypeScript intermediation, no round-trips.
+      const result = await this.ipcClient.voiceSpeakInCall(callId, userId, text, voiceId);
 
-      // result.audioSamples is already i16 array ready to send
-      const samples = result.audioSamples;
-      const audioDurationSec = samples.length / 16000;
+      const audioDurationMs = result.durationMs;
+      console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke ${audioDurationMs}ms via Rust: "${text.slice(0, 50)}..."`);
 
-      // SERVER-SIDE BUFFERING: Send ALL audio at once
-      // Rust server has a 60-second ring buffer per AI participant
-      // Server pulls frames at precise 32ms intervals (tokio::time::interval)
-      // This eliminates JavaScript timing jitter from the audio pipeline
-
-      console.log(`🤖 AIAudioBridge: ${connection.displayName} sending ${samples.length} samples (${audioDurationSec.toFixed(1)}s) to server buffer`);
-
-      // Send audio in chunks to avoid WebSocket frame size limits
-      const chunkSize = 16000 * 5; // 5 seconds per chunk
-      for (let offset = 0; offset < samples.length; offset += chunkSize) {
-        const chunk = samples.slice(offset, Math.min(offset + chunkSize, samples.length));
-
-        if (connection.ws.readyState === WebSocket.OPEN) {
-          const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-          connection.ws.send(buffer);
-        }
-      }
-
-      // BROADCAST to browser + other AIs: Emit AFTER TTS synthesis and audio send
-      // This syncs caption display with actual audio playback (audio is now in server buffer)
-      // Browser LiveWidget subscribes to show AI caption/speaker highlight
-      const speechEvent = {
-        sessionId: callId,
-        speakerId: userId,
-        speakerName: connection.displayName,
-        text,
-        audioDurationMs: Math.round(audioDurationSec * 1000),
-        timestamp: Date.now()
-      };
-
-      if (DataDaemon.jtagContext) {
-        console.log(`🤖 AIAudioBridge: Emitting voice:ai:speech (audioDurationMs=${speechEvent.audioDurationMs})`);
-        await Events.emit(
-          DataDaemon.jtagContext,
-          'voice:ai:speech',
-          speechEvent,
-          {
-            scope: EVENT_SCOPES.GLOBAL  // Broadcast to all environments including browser
-          }
-        );
-      } else {
-        // Fallback: emit without context (auto-context mode)
-        console.warn(`🤖 AIAudioBridge: DataDaemon.jtagContext is null, emitting voice:ai:speech without context`);
-        Events.emit('voice:ai:speech', speechEvent);
-      }
-
-      console.log(`🤖 AIAudioBridge: ${connection.displayName} spoke: "${text.slice(0, 50)}..."`);
+      await this.emitSpeechEvent(callId, userId, connection.displayName, text, audioDurationMs, false);
 
     } catch (error) {
-      console.error(`🤖 AIAudioBridge: TTS/send error:`, error);
+      console.error(`🤖 AIAudioBridge: speak failed for ${connection.displayName}:`, error);
+      await this.emitSpeechEvent(callId, userId, connection.displayName, text, 0, true);
+    }
+  }
 
-      // CRITICAL: Emit speech event on failure so VoiceOrchestrator
-      // can clear cooldown lock and chain to the next responder.
-      // Without this, TTS timeout (30s) permanently blocks the voice chain.
-      const failedEvent = {
-        sessionId: callId,
-        speakerId: userId,
-        speakerName: connection.displayName,
-        text,
-        audioDurationMs: 0,
-        failed: true,
-        timestamp: Date.now()
-      };
+  /**
+   * Emit voice:ai:speech event for VoiceOrchestrator coordination + browser UI.
+   * ALWAYS emits on both success and failure — without this, the voice chain breaks.
+   */
+  private async emitSpeechEvent(
+    callId: string,
+    userId: UUID,
+    displayName: string,
+    text: string,
+    audioDurationMs: number,
+    failed: boolean
+  ): Promise<void> {
+    const event = {
+      sessionId: callId,
+      speakerId: userId,
+      speakerName: displayName,
+      text,
+      audioDurationMs,
+      failed,
+      timestamp: Date.now()
+    };
 
-      if (DataDaemon.jtagContext) {
-        await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', failedEvent, { scope: EVENT_SCOPES.GLOBAL });
-      } else {
-        Events.emit('voice:ai:speech', failedEvent);
-      }
+    if (DataDaemon.jtagContext) {
+      await Events.emit(DataDaemon.jtagContext, 'voice:ai:speech', event, { scope: EVENT_SCOPES.GLOBAL });
+    } else {
+      Events.emit('voice:ai:speech', event);
     }
   }
 

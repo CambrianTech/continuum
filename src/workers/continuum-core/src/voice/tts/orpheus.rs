@@ -18,8 +18,8 @@
 //! Download from: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft
 //! SNAC decoder: https://huggingface.co/hubertsiuzdak/snac_24khz
 
+use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
@@ -267,35 +267,16 @@ impl OrpheusTts {
             pcm_24k.len() as f64 / SNAC_SAMPLE_RATE as f64
         );
 
-        // ── Step 5: Resample 24kHz → 16kHz ───────────────────────────────
-        let pcm_16k = Self::resample(&pcm_24k, SNAC_SAMPLE_RATE, AUDIO_SAMPLE_RATE)?;
-
-        // ── Step 6: f32 → i16 ─────────────────────────────────────────────
-        let samples: Vec<i16> = pcm_16k
-            .iter()
-            .map(|&s| {
-                let clamped = s.clamp(-1.0, 1.0);
-                (clamped * 32767.0) as i16
-            })
-            .collect();
-
-        let duration_ms = (samples.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
+        // ── Step 5: Normalize to standard 16kHz i16 PCM ──────────────────
+        let result = audio_utils::normalize_audio(&pcm_24k, SNAC_SAMPLE_RATE)?;
 
         info!(
             "Orpheus: Synthesized \"{}\" → {}ms audio",
-            if text.len() > 50 {
-                format!("{}...", &text[..50])
-            } else {
-                text.to_string()
-            },
-            duration_ms
+            super::truncate_str(text, 50),
+            result.duration_ms
         );
 
-        Ok(SynthesisResult {
-            samples,
-            sample_rate: AUDIO_SAMPLE_RATE,
-            duration_ms,
-        })
+        Ok(result)
     }
 
     /// Autoregressive audio token generation with the Llama model
@@ -495,61 +476,6 @@ impl OrpheusTts {
         Ok(data.to_vec())
     }
 
-    /// Resample audio from source rate to target rate using rubato
-    fn resample(
-        samples: &[f32],
-        from_rate: u32,
-        to_rate: u32,
-    ) -> Result<Vec<f32>, TTSError> {
-        if from_rate == to_rate {
-            return Ok(samples.to_vec());
-        }
-
-        use rubato::{FftFixedInOut, Resampler};
-
-        let chunk_size = 1024;
-        let mut resampler = FftFixedInOut::<f32>::new(
-            from_rate as usize,
-            to_rate as usize,
-            chunk_size,
-            1, // mono
-        )
-        .map_err(|e| TTSError::SynthesisFailed(format!("Resampler init: {e}")))?;
-
-        let mut output = Vec::with_capacity(
-            (samples.len() as f64 * to_rate as f64 / from_rate as f64) as usize + chunk_size,
-        );
-
-        // Process in chunks
-        let input_frames_per_chunk = resampler.input_frames_next();
-        let mut pos = 0;
-
-        while pos + input_frames_per_chunk <= samples.len() {
-            let chunk = &samples[pos..pos + input_frames_per_chunk];
-            let result = resampler
-                .process(&[chunk], None)
-                .map_err(|e| TTSError::SynthesisFailed(format!("Resample chunk: {e}")))?;
-            output.extend_from_slice(&result[0]);
-            pos += input_frames_per_chunk;
-        }
-
-        // Handle remaining samples (zero-pad to fill last chunk)
-        if pos < samples.len() {
-            let remaining = &samples[pos..];
-            let mut padded = vec![0.0f32; input_frames_per_chunk];
-            padded[..remaining.len()].copy_from_slice(remaining);
-            let result = resampler
-                .process(&[&padded], None)
-                .map_err(|e| TTSError::SynthesisFailed(format!("Resample tail: {e}")))?;
-            // Only take proportional output for the non-padded input
-            let output_samples =
-                (remaining.len() as f64 * to_rate as f64 / from_rate as f64) as usize;
-            let take = output_samples.min(result[0].len());
-            output.extend_from_slice(&result[0][..take]);
-        }
-
-        Ok(output)
-    }
 }
 
 impl Default for OrpheusTts {
@@ -649,9 +575,9 @@ impl TextToSpeech for OrpheusTts {
             audio_end_token_id,
         };
 
-        ORPHEUS_MODEL
-            .set(Arc::new(Mutex::new(model)))
-            .map_err(|_| TTSError::ModelNotLoaded("Failed to set global model".into()))?;
+        let _ = ORPHEUS_MODEL
+            .set(Arc::new(Mutex::new(model)));
+        // OnceLock::set Err = another thread already initialized — that's fine
 
         info!("Orpheus: All models loaded successfully");
         Ok(())

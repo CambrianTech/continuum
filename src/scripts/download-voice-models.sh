@@ -149,6 +149,47 @@ else
   echo -e "${GREEN}Kokoro TTS model already exists${NC}"
 fi
 
+# Pocket-TTS voice embeddings (voice cloning presets)
+# Model weights auto-download via HF hub on first use (~236MB, gated — requires HF_TOKEN)
+# Voice embeddings are pre-computed audio prompts for 8 preset voices
+POCKET_DIR="$MODELS_DIR/pocket-tts/voices"
+POCKET_BASE_URL="https://huggingface.co/kyutai/pocket-tts/resolve/main/embeddings"
+POCKET_VOICES="alba cosette eponine fantine javert jean marius azelma"
+
+mkdir -p "$POCKET_DIR"
+
+# Check if any voices are missing
+POCKET_MISSING=false
+for voice in $POCKET_VOICES; do
+  if [ ! -f "$POCKET_DIR/${voice}.safetensors" ]; then
+    POCKET_MISSING=true
+    break
+  fi
+done
+
+if [ "$POCKET_MISSING" = true ]; then
+  if [ -n "$HF_TOKEN" ]; then
+    echo -e "${YELLOW}Downloading Pocket-TTS voice embeddings (8 voices, ~4MB total)...${NC}"
+    for voice in $POCKET_VOICES; do
+      if [ ! -f "$POCKET_DIR/${voice}.safetensors" ]; then
+        echo -e "  Downloading ${voice}..."
+        if command -v curl &> /dev/null; then
+          curl -sL -H "Authorization: Bearer $HF_TOKEN" -o "$POCKET_DIR/${voice}.safetensors" "$POCKET_BASE_URL/${voice}.safetensors"
+        elif command -v wget &> /dev/null; then
+          wget -q --header="Authorization: Bearer $HF_TOKEN" -O "$POCKET_DIR/${voice}.safetensors" "$POCKET_BASE_URL/${voice}.safetensors"
+        fi
+      fi
+    done
+    echo -e "${GREEN}Pocket-TTS voice embeddings downloaded${NC}"
+  else
+    echo -e "${YELLOW}Pocket-TTS: Skipping voice embeddings (no HF_TOKEN in config.env)${NC}"
+    echo -e "${YELLOW}  To enable: 1) Accept terms at https://huggingface.co/kyutai/pocket-tts${NC}"
+    echo -e "${YELLOW}  2) Set HF_TOKEN in ~/.continuum/config.env${NC}"
+  fi
+else
+  echo -e "${GREEN}Pocket-TTS voice embeddings already exist${NC}"
+fi
+
 # Silero VAD model (voice activity detection)
 SILERO_DIR="$MODELS_DIR/vad"
 SILERO_MODEL="$SILERO_DIR/silero_vad.onnx"
@@ -166,6 +207,18 @@ if [ ! -f "$SILERO_MODEL" ]; then
   echo -e "${GREEN}Silero VAD model downloaded${NC}"
 else
   echo -e "${GREEN}Silero VAD model already exists${NC}"
+fi
+
+# Orpheus TTS (3B, LoRA-trainable — manual download required)
+# Gated model: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft
+# GGUF via llama.cpp for inference, Unsloth for LoRA training
+# Too large for auto-download (~6GB). Download manually:
+#   mkdir -p models/orpheus && cd models/orpheus
+#   huggingface-cli download canopylabs/orpheus-3b-0.1-ft --local-dir .
+ORPHEUS_DIR="$MODELS_DIR/orpheus"
+if [ ! -d "$ORPHEUS_DIR" ] || [ -z "$(ls -A "$ORPHEUS_DIR" 2>/dev/null)" ]; then
+  echo -e "${YELLOW}Orpheus TTS (3B, LoRA-trainable): Not installed${NC}"
+  echo -e "${YELLOW}  Optional — download from: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft${NC}"
 fi
 
 echo -e "${GREEN}Voice model check complete${NC}"

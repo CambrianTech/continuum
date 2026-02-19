@@ -45,6 +45,10 @@ candle-nn.workspace = true  # For VarBuilder
 candle-transformers.workspace = true
 tokenizers = { workspace = true, features = ["onig"] }
 
+# Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
+# Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
+pocket-tts = { version = "0.6", default-features = false }
+
 # Model loading (for inference module)
 safetensors.workspace = true  # Model weight files
 hf-hub.workspace = true       # HuggingFace model downloads

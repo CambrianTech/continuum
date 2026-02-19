@@ -259,7 +259,167 @@ export const LOCAL_MODELS = {
   }
 } as const;
 
+
 /**
+ * TTS_MODELS - SINGLE SOURCE OF TRUTH for Text-to-Speech models
+ *
+ * ⚠️ CRITICAL: ALL TTS model metadata must be defined here
+ * ⚠️ NEVER hardcode HF repos, sample rates, or model paths in individual adapters
+ * ⚠️ Same pattern as LOCAL_MODELS — centralize, reference everywhere
+ *
+ * Each TTS adapter in Rust reads from this via IPC or build-time config.
+ * Adding a new TTS model means ONE entry here, not scattered across adapter files.
+ */
+export const TTS_MODELS = {
+  /** Edge-TTS — Microsoft's free neural TTS API (cloud, no key needed) */
+  EDGE: {
+    id: 'edge',
+    name: 'Edge TTS',
+    nativeSampleRate: 16000,    // Requested as raw-16khz-16bit-mono-pcm
+    paramCount: 0,               // Cloud — unknown params
+    runtime: 'cloud' as const,
+    requiresInternet: true,
+    requiresHfToken: false,
+    voiceCloning: false,
+    emotionTags: false,
+    loraTrainable: false,
+    defaultVoice: 'en-US-AriaNeural',
+    voiceCount: 300,             // 300+ neural voices, 100+ languages
+    description: 'Microsoft neural voices — 300+ distinct voices, <200ms, cloud',
+  },
+
+  /** Pocket-TTS — Kyutai's 100M CPU-native Candle TTS with voice cloning */
+  POCKET: {
+    id: 'pocket',
+    name: 'Pocket TTS',
+    hfRepo: 'kyutai/pocket-tts',
+    hfVariant: 'b6369a24',
+    hfWeightsFile: 'tts_b6369a24.safetensors',
+    nativeSampleRate: 24000,     // Mimi codec native rate
+    paramCount: 100_000_000,     // 100M
+    modelSizeMB: 236,
+    runtime: 'candle' as const,
+    requiresInternet: false,     // After initial download
+    requiresHfToken: true,       // Gated model — accept terms on HF first
+    voiceCloning: true,          // From 5-15s WAV reference audio
+    emotionTags: false,
+    loraTrainable: false,        // Not LLM-based, uses FlowLM
+    defaultVoice: 'alba',
+    presetVoices: ['alba', 'fantine', 'cosette', 'eponine', 'azelma', 'marius', 'javert', 'jean'],
+    voiceCount: 8,
+    voiceDir: 'models/pocket-tts/voices',  // Place reference WAVs here
+    description: 'Kyutai 100M Candle — fast CPU TTS, voice cloning from WAV reference',
+  },
+
+  /** Orpheus — 3B Llama-based TTS with emotion control */
+  ORPHEUS: {
+    id: 'orpheus',
+    name: 'Orpheus TTS',
+    hfRepo: 'canopylabs/orpheus-3b-0.1-ft',
+    hfSnacRepo: 'hubertsiuzdak/snac_24khz',
+    nativeSampleRate: 24000,     // SNAC codec native rate
+    paramCount: 3_000_000_000,   // 3B
+    modelSizeMB: 2048,           // Q4_K_M GGUF
+    runtime: 'candle' as const,
+    weightFormat: 'gguf' as const,
+    requiresInternet: false,
+    requiresHfToken: false,
+    voiceCloning: false,
+    emotionTags: true,           // <laugh> <sigh> <gasp> <cry>
+    loraTrainable: true,         // Llama architecture — same LoRA pipeline
+    architectureFamily: 'llama',
+    defaultVoice: 'tara',
+    presetVoices: ['tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'],
+    voiceCount: 8,
+    modelDir: 'models/orpheus',
+    modelFiles: ['model-q4_k_m.gguf', 'tokenizer.json', 'snac_decoder.onnx'],
+    description: 'Llama-3B GGUF — expressive with emotion tags, LoRA-trainable',
+  },
+
+  /** Kokoro — 82M ONNX TTS, fast offline */
+  KOKORO: {
+    id: 'kokoro',
+    name: 'Kokoro TTS',
+    hfRepo: 'onnx-community/Kokoro-82M-v1.0-ONNX',
+    nativeSampleRate: 24000,
+    paramCount: 82_000_000,      // 82M
+    modelSizeMB: 330,
+    runtime: 'onnx' as const,
+    requiresInternet: false,
+    requiresHfToken: false,
+    voiceCloning: false,
+    emotionTags: false,
+    loraTrainable: false,        // ONNX — no LoRA injection
+    defaultVoice: 'af',
+    presetVoices: ['af', 'af_bella', 'af_nicole', 'af_sarah', 'af_sky', 'am_adam', 'am_michael', 'bf_emma', 'bf_isabella', 'bm_george', 'bm_lewis'],
+    voiceCount: 11,
+    modelDir: 'models/kokoro-v1.0',
+    modelFiles: ['model.onnx', 'tokenizer.json', 'voices/'],
+    description: 'ONNX 82M — fast offline fallback, ~97ms TTFB',
+  },
+
+  /** Piper — ONNX TTS (offline fallback) */
+  PIPER: {
+    id: 'piper',
+    name: 'Piper TTS',
+    hfRepo: 'rhasspy/piper-voices',
+    nativeSampleRate: 22050,     // Most Piper models are 22050Hz
+    paramCount: 0,               // Varies by voice model
+    runtime: 'onnx' as const,
+    requiresInternet: false,
+    requiresHfToken: false,
+    voiceCloning: false,
+    emotionTags: false,
+    loraTrainable: false,
+    defaultVoice: 'default',
+    voiceCount: 1,               // One model per voice
+    modelDir: 'models/piper',
+    modelFiles: ['model.onnx', 'model.onnx.json'],
+    description: 'ONNX — offline fallback, production-grade',
+  },
+
+  /** Silence — testing adapter */
+  SILENCE: {
+    id: 'silence',
+    name: 'Silence',
+    nativeSampleRate: 16000,
+    paramCount: 0,
+    runtime: 'none' as const,
+    requiresInternet: false,
+    requiresHfToken: false,
+    voiceCloning: false,
+    emotionTags: false,
+    loraTrainable: false,
+    defaultVoice: 'default',
+    voiceCount: 1,
+    description: 'Testing adapter — generates silence',
+  },
+} as const;
+
+/** Type for TTS model IDs */
+export type TTSModelId = keyof typeof TTS_MODELS;
+
+/**
+ * STT_MODELS - SINGLE SOURCE OF TRUTH for Speech-to-Text models
+ */
+export const STT_MODELS = {
+  WHISPER: {
+    id: 'whisper',
+    name: 'Whisper',
+    hfRepo: 'ggerganov/whisper.cpp',
+    hfModelFile: 'ggml-base.en.bin',
+    modelDir: 'models/whisper',
+    description: 'OpenAI Whisper via whisper.cpp — reliable, multilingual',
+  },
+  MOONSHINE: {
+    id: 'moonshine',
+    name: 'Moonshine',
+    hfRepo: 'UsefulSensors/moonshine',
+    modelDir: 'models/moonshine',
+    description: 'ONNX — sub-100ms, great for live transcription',
+  },
+} as const;
+
 
 /**
  * Command Names - SINGLE SOURCE OF TRUTH

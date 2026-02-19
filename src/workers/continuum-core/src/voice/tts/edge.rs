@@ -8,6 +8,7 @@
 //! Quality: High (Microsoft Neural voices).
 //! Voices: 300+ voices across 100+ languages.
 
+use super::audio_utils;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use async_trait::async_trait;
@@ -155,19 +156,19 @@ impl TextToSpeech for EdgeTTS {
             ));
         }
 
-        let duration_ms = (samples.len() as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
+        let dur = audio_utils::duration_ms(samples.len(), AUDIO_SAMPLE_RATE);
 
         info!(
             "Edge-TTS: {} samples ({}ms audio) in {}ms network",
             samples.len(),
-            duration_ms,
+            dur,
             network_ms
         );
 
         Ok(SynthesisResult {
             samples,
             sample_rate: AUDIO_SAMPLE_RATE,
-            duration_ms,
+            duration_ms: dur,
         })
     }
 

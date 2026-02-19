@@ -275,7 +275,7 @@ impl ServiceModule for VoiceModule {
                     samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64
                 );
 
-                let transcript = stt_service::transcribe_speech_sync(&samples, language)
+                let transcript = stt_service::transcribe_speech_async(&samples, language).await
                     .map_err(|e| {
                         log_error!("module", "voice_transcribe", "STT failed: {}", e);
                         format!("STT failed: {}", e)

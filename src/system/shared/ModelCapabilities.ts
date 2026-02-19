@@ -416,6 +416,76 @@ export interface ModelAdapterProfile {
 
 
 // ═══════════════════════════════════════════════════════════════════════
+// TTS / AUDIO MODEL CAPABILITIES
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Audio codec type used by TTS models.
+ * Determines native sample rate and decoder requirements.
+ */
+export enum AudioCodec {
+  /** Mimi codec (Kyutai) — 24kHz, used by Pocket-TTS */
+  MIMI = 'mimi',
+
+  /** SNAC codec (Neural Audio Codec) — 24kHz, used by Orpheus */
+  SNAC = 'snac',
+
+  /** Raw ONNX output — rate varies by model */
+  ONNX_RAW = 'onnx_raw',
+
+  /** Cloud API PCM — requested at specific rate */
+  CLOUD_PCM = 'cloud_pcm',
+
+  /** No codec (testing) */
+  NONE = 'none',
+}
+
+/**
+ * TTS-specific capability profile.
+ * Mirrors ModelAdapterProfile but for speech synthesis models.
+ *
+ * Attached to ModelMetadata.ttsProfile when the model is a TTS model.
+ * Enables algorithmic queries like:
+ *   "Find TTS models that support voice cloning + run on Metal"
+ *   "Find LoRA-trainable TTS models for custom voices"
+ */
+export interface TTSCapabilityProfile {
+  /** Audio codec used by this model */
+  readonly codec: AudioCodec;
+
+  /** Native sample rate of the model's output (before resampling) */
+  readonly nativeSampleRate: number;
+
+  /** Supports voice cloning from reference audio? */
+  readonly voiceCloning: boolean;
+
+  /** Supports inline emotion tags? (<laugh>, <sigh>, etc.) */
+  readonly emotionTags: boolean;
+
+  /** Can LoRA adapters be trained on this model? (requires LLM architecture) */
+  readonly loraTrainable: boolean;
+
+  /** Architecture family (for LoRA compatibility, e.g., 'llama') */
+  readonly architectureFamily?: string;
+
+  /** Number of preset voices */
+  readonly voiceCount: number;
+
+  /** Requires internet for synthesis? */
+  readonly requiresInternet: boolean;
+
+  /** Requires HuggingFace token for model download? */
+  readonly requiresHfToken: boolean;
+
+  /** Inference runtime */
+  readonly runtime: InferenceRuntime;
+
+  /** Hardware profile (VRAM, accelerator, measured latency) */
+  readonly hardware?: HardwareProfile;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
 // QUERY HELPERS
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -473,4 +543,31 @@ export function fitsInVram(
 ): boolean {
   if (!profile?.hardware) return false;
   return profile.hardware.inferenceVramMB <= availableVramMB;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// TTS QUERY HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Check if a TTS model supports voice cloning from reference audio.
+ */
+export function supportsVoiceCloning(profile: TTSCapabilityProfile | undefined): boolean {
+  return profile?.voiceCloning ?? false;
+}
+
+/**
+ * Check if a TTS model supports LoRA training for custom voices.
+ * Requires LLM-based architecture (e.g., Llama/Orpheus).
+ */
+export function supportsTTSLoRA(profile: TTSCapabilityProfile | undefined): boolean {
+  return profile?.loraTrainable ?? false;
+}
+
+/**
+ * Check if a TTS model can run offline (no internet required after download).
+ */
+export function isOfflineTTS(profile: TTSCapabilityProfile | undefined): boolean {
+  return profile ? !profile.requiresInternet : false;
 }

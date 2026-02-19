@@ -777,8 +777,8 @@ impl CallManager {
             (handle, display_name)
         };
 
-        // Step 2: Synthesize (blocking TTS, creates own runtime)
-        let synthesis = tts_service::synthesize_speech_sync(text, voice, adapter)
+        // Step 2: Synthesize (async — runs in current tokio context)
+        let synthesis = tts_service::synthesize_speech_async(text, voice, adapter).await
             .map_err(|e| format!("TTS failed: {e}"))?;
 
         let num_samples = synthesis.samples.len();

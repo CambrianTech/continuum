@@ -1,18 +1,21 @@
 //! Text-to-Speech (TTS) Adapter System
 //!
-//! Modular TTS with swappable backends:
-//! - Kokoro (local, ONNX, 82M params - PRIMARY, fast)
-//! - Edge (Microsoft Edge neural voices - online, free, <200ms)
-//! - Orpheus (local, Candle GGUF, 3B params - expressive with emotion tags)
-//! - Piper (local, ONNX - fallback)
-//! - Silence (fallback for testing)
+//! Modular TTS with swappable backends (priority order):
+//! - Pocket (local, Candle, 117M - PRIMARY, voice cloning, 8 preset voices)
+//! - Kokoro (local, ONNX, 82M - fast fallback)
+//! - Edge (Microsoft neural voices, online, free, <200ms, 300+ voices - FLAKY)
+//! - Orpheus (local, Candle GGUF, 3B - LoRA-trainable, emotion tags)
+//! - Piper (local, ONNX - offline fallback)
+//! - Silence (testing only)
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
+pub(crate) mod audio_utils;
 mod edge;
 mod kokoro;
 mod orpheus;
 mod piper;
+mod pocket;
 mod phonemizer;
 mod silence;
 
@@ -20,6 +23,7 @@ pub use edge::EdgeTTS;
 pub use kokoro::KokoroTTS;
 pub use orpheus::OrpheusTts;
 pub use piper::PiperTTS;
+pub use pocket::PocketTTS;
 pub use silence::SilenceTTS;
 pub(crate) use phonemizer::Phonemizer;
 
@@ -267,22 +271,23 @@ pub fn init_registry() {
     let registry = TTS_REGISTRY.get_or_init(|| {
         let mut reg = TTSRegistry::new();
 
-        // Register Kokoro (local, ONNX, 82M) - PRIMARY
-        // Kokoro is the default because it:
-        // - Fast (~97ms TTFB, 82M params)
-        // - High quality voices (natural sounding)
-        // - Uses espeak-ng phonemizer (deterministic)
-        reg.register(Arc::new(KokoroTTS::new()));
-
-        // Register Edge-TTS (online, Microsoft neural voices) - fast online option
-        // No model files needed, <200ms latency, 300+ voices
+        // Register Edge-TTS (online, Microsoft neural voices) - PRIMARY
+        // Best quality: 300+ unique neural voices, <200ms, each persona gets distinct voice
         reg.register(Arc::new(EdgeTTS::new()));
+
+        // Register Pocket-TTS (local, Candle, 100M) - fast CPU TTS with voice cloning
+        // ≤600ms TTFA, 8 preset voices, clone any voice from 5-15s WAV reference audio
+        reg.register(Arc::new(PocketTTS::new()));
+
+        // Register Orpheus (local, Candle GGUF, 3B) - expressive with emotion tags
+        // LoRA-trainable (Llama architecture), <laugh> <sigh> <gasp> emotion control
+        reg.register(Arc::new(OrpheusTts::new()));
+
+        // Register Kokoro (local, ONNX, 82M) - fast offline fallback
+        reg.register(Arc::new(KokoroTTS::new()));
 
         // Register Piper (local, ONNX) - fallback
         reg.register(Arc::new(PiperTTS::new()));
-
-        // Register Orpheus (local, Candle GGUF, 3B) - expressive with emotion tags
-        reg.register(Arc::new(OrpheusTts::new()));
 
         // Register Silence adapter - testing fallback
         reg.register(Arc::new(SilenceTTS::new()));
@@ -332,8 +337,12 @@ pub async fn synthesize(text: &str, voice: &str) -> Result<SynthesisResult, TTSE
 pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), TTSError> {
     let registry = get_registry();
 
-    // Defined priority: kokoro (fast local) → edge (fast cloud) → piper → orpheus → silence
-    let default_priority: Vec<&str> = vec!["kokoro", "edge", "piper", "orpheus", "silence"];
+    // Priority: pocket (quality + cloning) → kokoro (fast fallback) → edge (cloud) → orpheus (expressive) → piper → silence
+    // Pocket: 117M Candle, voice cloning from WAV/embeddings, 8 preset voices — BEST QUALITY
+    // Kokoro: 82M ONNX, ~97ms, fast reliable fallback — SPEED
+    // Edge: 300+ neural voices, <200ms, requires internet (FLAKY — Microsoft API returns empty audio)
+    // Orpheus: 3B GGUF, emotion tags, LoRA-trainable — CUSTOM VOICES
+    let default_priority: Vec<&str> = vec!["pocket", "kokoro", "edge", "orpheus", "piper", "silence"];
 
     // Build final order: preferred first (if specified and exists), then remaining in priority
     let mut order: Vec<&str> = Vec::new();
@@ -369,7 +378,7 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
     Err(TTSError::ModelNotLoaded("No TTS adapter could be initialized".into()))
 }
 
-/// Initialize the active adapter with default priority (kokoro → edge → piper → orpheus → silence)
+/// Initialize the active adapter with default priority (pocket → kokoro → edge → orpheus → piper → silence)
 pub async fn initialize() -> Result<(), TTSError> {
     initialize_with_preference(None).await
 }
