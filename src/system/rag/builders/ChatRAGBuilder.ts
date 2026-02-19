@@ -1287,73 +1287,43 @@ LIMITS:
   }
 
   /**
-   * Calculate safe message count based on model context window (Bug #5 fix)
-   * Uses same logic as RAGBudgetServerCommand to prevent context overflow
+   * Calculate message fetch limit for artifact scanning and legacy paths.
+   *
+   * ConversationHistorySource enforces the real token budget by accumulating
+   * actual token counts — this method only provides a generous fetch limit.
+   * For slow local models, latency-aware budgeting reduces the fetch count
+   * to avoid loading messages that would definitely exceed the latency cap.
    */
   private calculateSafeMessageCount(options: RAGBuildOptions): number {
-    // If maxMessages explicitly provided, use it (allows manual override)
     if (options?.maxMessages !== undefined) {
       return options.maxMessages;
     }
 
-    // modelId is required on RAGBuildOptions — no fallback needed.
     const modelId = options.modelId;
-    const maxTokens = options.maxTokens;
-    const systemPromptTokens = options.systemPromptTokens ?? 500;
-    const targetUtilization = 0.8;  // 80% target, 20% safety margin
-    // Llama tokenizer averages ~3 chars/token (not 4).
-    // At ~1000 chars/message average, that's ~333 tokens. Use 350 with margin.
-    const avgTokensPerMessage = 350;
-
-    // Provider-scoped context window lookup — prevents cross-provider collisions
     const contextWindow = getContextWindow(modelId, options.provider);
-
-    // LATENCY-AWARE BUDGETING: For slow local models, apply latency constraint
-    // This prevents timeouts from massive prompts (e.g., 20K tokens at 10ms/token = 200s!)
-    const latencyInputLimit = getLatencyAwareTokenLimit(modelId, undefined, options.provider);
     const isSlowModel = isSlowLocalModel(modelId, options.provider);
-    const inferenceSpeed = getInferenceSpeed(modelId, options.provider);
 
-    // Calculate context window constraint (total context - output reservation)
-    const contextWindowBudget = contextWindow - maxTokens - systemPromptTokens;
+    if (isSlowModel) {
+      // For slow local models, use latency-aware constraint to avoid fetching
+      // way more messages than could ever be processed within timeout.
+      const latencyInputLimit = getLatencyAwareTokenLimit(modelId, undefined, options.provider);
+      const inferenceSpeed = getInferenceSpeed(modelId, options.provider);
+      const systemPromptTokens = options.systemPromptTokens ?? 500;
+      const latencyBudget = latencyInputLimit - systemPromptTokens;
+      // Rough estimate for fetch limit only — real enforcement is in the source
+      const fetchLimit = Math.max(5, Math.floor(latencyBudget / 200));
 
-    // Latency constraint applies to INPUT tokens only (not output)
-    // For slow local models: latencyLimit = 30s × 100 TPS = 3000 input tokens
-    const latencyBudget = latencyInputLimit - systemPromptTokens;
+      this.log(`📊 ChatRAGBuilder: Slow model fetch limit for ${modelId}: ${fetchLimit} (${inferenceSpeed} TPS, latency budget=${latencyBudget})`);
+      return fetchLimit;
+    }
 
-    // Use the MORE RESTRICTIVE limit
-    // For fast cloud APIs: contextWindowBudget is usually the limiter
-    // For slow local models: latencyBudget is usually the limiter
-    const availableForMessages = isSlowModel
-      ? Math.min(contextWindowBudget, latencyBudget)
-      : contextWindowBudget;
+    // For fast models, generous fetch limit — token budget enforcement
+    // happens in ConversationHistorySource via actual token accumulation.
+    // context window / 200 chars avg msg / 3 chars per token ≈ generous upper bound
+    const generousFetchLimit = Math.max(50, Math.floor(contextWindow / 600));
 
-    // Target 80% of available (20% safety margin)
-    const targetTokens = availableForMessages * targetUtilization;
-
-    // Calculate safe message count
-    const safeMessageCount = Math.floor(targetTokens / avgTokensPerMessage);
-
-    // Clamp to [2, 50] — never force more messages than the budget allows.
-    // Previous bug: minMessages=5 overrode safeMessageCount=4 for 2048 context → overflow.
-    const clampedMessageCount = Math.max(2, Math.min(50, safeMessageCount));
-
-    // Log with latency info for slow models
-    const latencyInfo = isSlowModel
-      ? `\n  ⚡ LATENCY CONSTRAINT: ${inferenceSpeed} TPS → ${latencyInputLimit} input tokens @ 30s target`
-      : '';
-    const limitingFactor = isSlowModel && latencyBudget < contextWindowBudget
-      ? ' (LIMITED BY LATENCY)'
-      : '';
-
-    this.log(`📊 ChatRAGBuilder: Budget calculation for ${modelId}:
-  Context Window: ${contextWindow} tokens (provider=${options.provider ?? 'unscoped'})
-  Context Budget: ${contextWindowBudget} tokens (after output + system reservation)${latencyInfo}
-  Latency Budget: ${latencyBudget} tokens
-  Available for Messages: ${availableForMessages}${limitingFactor}
-  Safe Message Count: ${safeMessageCount} → ${clampedMessageCount} (clamped)`);
-
-    return clampedMessageCount;
+    this.log(`📊 ChatRAGBuilder: Fetch limit for ${modelId}: ${generousFetchLimit} (contextWindow=${contextWindow})`);
+    return generousFetchLimit;
   }
 
   /**
